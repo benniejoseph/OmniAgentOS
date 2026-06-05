@@ -1,0 +1,200 @@
+import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
+import { EMBEDDING_DIMENSIONS } from "@/lib/config";
+
+type SqlClient = NeonQueryFunction<false, false>;
+
+let sqlClient: SqlClient | null = null;
+let schemaReady: Promise<void> | null = null;
+
+export function hasDatabaseUrl() {
+  return Boolean(process.env.DATABASE_URL?.trim());
+}
+
+export function getStorageBackend() {
+  if (hasDatabaseUrl()) {
+    return "postgres";
+  }
+
+  if (process.env.VERCEL) {
+    return "ephemeral";
+  }
+
+  return "file";
+}
+
+export function getSql() {
+  if (!hasDatabaseUrl()) {
+    throw new Error("DATABASE_URL is not configured.");
+  }
+
+  if (!sqlClient) {
+    sqlClient = neon(process.env.DATABASE_URL!);
+  }
+
+  return sqlClient;
+}
+
+export async function ensureDatabaseSchema() {
+  if (!hasDatabaseUrl()) {
+    return;
+  }
+
+  if (!schemaReady) {
+    const sql = getSql();
+    schemaReady = (async () => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_memories (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          tags TEXT[] NOT NULL DEFAULT '{}',
+          scope TEXT NOT NULL,
+          source TEXT NOT NULL,
+          importance DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+          embedding JSONB,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_memories_type_idx ON omni_memories (type)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_memories_updated_at_idx ON omni_memories (updated_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_memories_tags_idx ON omni_memories USING GIN (tags)`;
+      await sql`
+        CREATE INDEX IF NOT EXISTS omni_memories_text_idx
+        ON omni_memories
+        USING GIN (to_tsvector('english', title || ' ' || content))
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_knowledge_documents (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          source TEXT NOT NULL,
+          source_type TEXT NOT NULL DEFAULT 'text',
+          tags TEXT[] NOT NULL DEFAULT '{}',
+          content_hash TEXT NOT NULL,
+          chunk_count INTEGER NOT NULL DEFAULT 0,
+          total_characters INTEGER NOT NULL DEFAULT 0,
+          metadata JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_documents_updated_at_idx ON omni_knowledge_documents (updated_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_documents_source_idx ON omni_knowledge_documents (source)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_documents_tags_idx ON omni_knowledge_documents USING GIN (tags)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_knowledge_chunks (
+          id TEXT PRIMARY KEY,
+          document_id TEXT NOT NULL REFERENCES omni_knowledge_documents(id) ON DELETE CASCADE,
+          chunk_index INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          tags TEXT[] NOT NULL DEFAULT '{}',
+          source TEXT NOT NULL,
+          token_estimate INTEGER NOT NULL DEFAULT 0,
+          character_count INTEGER NOT NULL DEFAULT 0,
+          embedding JSONB,
+          metadata JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_document_id_idx ON omni_knowledge_chunks (document_id, chunk_index ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_updated_at_idx ON omni_knowledge_chunks (updated_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_tags_idx ON omni_knowledge_chunks USING GIN (tags)`;
+      await sql`
+        CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_text_idx
+        ON omni_knowledge_chunks
+        USING GIN (to_tsvector('english', title || ' ' || content))
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_agent_runs (
+          id TEXT PRIMARY KEY,
+          mode TEXT NOT NULL,
+          status TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          messages JSONB NOT NULL DEFAULT '[]',
+          model TEXT,
+          memory_context_count INTEGER NOT NULL DEFAULT 0,
+          consolidation_count INTEGER NOT NULL DEFAULT 0,
+          response TEXT,
+          error TEXT,
+          started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          completed_at TIMESTAMPTZ,
+          consolidated_at TIMESTAMPTZ,
+          consolidation_error TEXT
+        )
+      `;
+      await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS consolidation_count INTEGER NOT NULL DEFAULT 0`;
+      await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS consolidated_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS consolidation_error TEXT`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_started_at_idx ON omni_agent_runs (started_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_status_idx ON omni_agent_runs (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_consolidated_at_idx ON omni_agent_runs (consolidated_at DESC)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_agent_events (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL REFERENCES omni_agent_runs(id) ON DELETE CASCADE,
+          type TEXT NOT NULL,
+          payload JSONB NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_agent_events_run_id_idx ON omni_agent_events (run_id, created_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_agent_events_type_idx ON omni_agent_events (type)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_tool_executions (
+          id TEXT PRIMARY KEY,
+          tool_id TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          risk_level INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          dry_run BOOLEAN NOT NULL DEFAULT FALSE,
+          approval_required BOOLEAN NOT NULL DEFAULT FALSE,
+          input JSONB NOT NULL DEFAULT '{}',
+          output JSONB,
+          reason TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          completed_at TIMESTAMPTZ
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_tool_id_idx ON omni_tool_executions (tool_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_status_idx ON omni_tool_executions (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_created_at_idx ON omni_tool_executions (created_at DESC)`;
+      await ensureVectorSchema(sql);
+    })();
+  }
+
+  await schemaReady;
+}
+
+async function ensureVectorSchema(sql: SqlClient) {
+  try {
+    await sql`CREATE EXTENSION IF NOT EXISTS vector`;
+    await sql.query(`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS embedding_vector vector(${EMBEDDING_DIMENSIONS})`);
+    await sql.query(
+      `ALTER TABLE omni_knowledge_chunks ADD COLUMN IF NOT EXISTS embedding_vector vector(${EMBEDDING_DIMENSIONS})`,
+    );
+    await sql`
+      CREATE INDEX IF NOT EXISTS omni_memories_embedding_vector_idx
+      ON omni_memories
+      USING hnsw (embedding_vector vector_cosine_ops)
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_embedding_vector_idx
+      ON omni_knowledge_chunks
+      USING hnsw (embedding_vector vector_cosine_ops)
+    `;
+  } catch (error) {
+    console.warn(
+      "pgvector schema unavailable; continuing with JSON embeddings.",
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
