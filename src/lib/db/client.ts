@@ -42,6 +42,8 @@ export async function ensureDatabaseSchema() {
   if (!schemaReady) {
     const sql = getSql();
     schemaReady = (async () => {
+      await sql`SELECT pg_advisory_lock(271828182)`;
+      try {
       await sql`
         CREATE TABLE IF NOT EXISTS omni_memories (
           id TEXT PRIMARY KEY,
@@ -214,10 +216,18 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_mcp_tools_status_idx ON omni_mcp_tools (status)`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_mcp_tools_connector_name_idx ON omni_mcp_tools (connector_id, name)`;
       await ensureVectorSchema(sql);
+      } finally {
+        await sql`SELECT pg_advisory_unlock(271828182)`;
+      }
     })();
   }
 
-  await schemaReady;
+  try {
+    await schemaReady;
+  } catch (error) {
+    schemaReady = null;
+    throw error;
+  }
 }
 
 async function ensureVectorSchema(sql: SqlClient) {
