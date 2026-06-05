@@ -67,7 +67,7 @@ export const tools: Capability[] = [
     id: "connector.mcp",
     name: "MCP Connector",
     description: "Register remote MCP servers as governed tool providers.",
-    status: "planned",
+    status: "active",
   },
   {
     id: "connector.openapi",
@@ -88,7 +88,7 @@ export const connectorTypes: Capability[] = [
     id: "mcp",
     name: "MCP Servers",
     description: "Universal tool/resource/prompt bridge for third-party systems.",
-    status: "planned",
+    status: "active",
   },
   {
     id: "rest",

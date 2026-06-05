@@ -34,13 +34,17 @@ When Postgres supports pgvector, the app adds vector columns and indexes for sem
 - `/api/runs` run ledger endpoint
 - `/api/tools` governed tool registry, policy, and audit endpoint
 - `/api/tools/execute` schema-validated tool execution endpoint with dry-run defaults
+- `/api/connectors` MCP connector registration and discovery endpoint
+- `/api/connectors/:id/discover` MCP tool rediscovery endpoint
 - Command center panels for knowledge ingest, memory browser, and knowledge library
 - Command center panel for governed tool dry-runs, executions, and audit review
+- Command center panel for MCP connector registration, discovery, and discovered tool review
 - Local memory and knowledge persisted under `.omniagent/`
-- Postgres-backed memory, RAG documents/chunks, run history, and tool audit history when `DATABASE_URL` is configured
+- Postgres-backed memory, RAG documents/chunks, run history, tool audit history, MCP connectors, and discovered MCP tool schemas when `DATABASE_URL` is configured
 - Hybrid retrieval across durable memories and source chunks with semantic, keyword, recency, and importance signals
 - Memory consolidation after completed runs into durable facts, preferences, procedures, decisions, and tasks
 - Governed tool execution with risk levels, approval gates, planned connector blocking, and immutable audit records
+- MCP connector host for Streamable HTTP servers; discovered tools flow into the governed tool registry and inherit risk/audit policy
 
 ## Implementation Roadmap
 

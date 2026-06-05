@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { embedTexts } from "@/lib/openai/client";
+import { getMcpGovernedTool } from "@/lib/connectors/governed-tools";
+import { callMcpTool } from "@/lib/connectors/mcp-client";
+import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { saveMemory, searchMemories } from "@/lib/memory/store";
 import type { MemoryType } from "@/lib/memory/types";
 import { ingestTextDocument } from "@/lib/rag/retriever";
@@ -45,7 +48,7 @@ export async function executeGovernedTool({
   dryRun?: boolean;
   approved?: boolean;
 }) {
-  const tool = getGovernedTool(toolId);
+  const tool = getGovernedTool(toolId) || (await getMcpGovernedTool(toolId));
   if (!tool) {
     const record = createToolExecutionRecord({
       toolId,
@@ -214,6 +217,40 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>) {
     };
   }
 
+  if (tool.category === "mcp") {
+    const mcpTool = await getMcpToolById(tool.id);
+    if (!mcpTool) {
+      throw new Error(`MCP tool ${tool.id} is not registered.`);
+    }
+
+    const connector = await getMcpConnector(mcpTool.connectorId);
+    if (!connector) {
+      throw new Error(`MCP connector ${mcpTool.connectorId} is not registered.`);
+    }
+
+    if (connector.status !== "active" || mcpTool.status !== "active") {
+      throw new Error("MCP connector or tool is not active.");
+    }
+
+    return {
+      connector: {
+        id: connector.id,
+        name: connector.name,
+        endpoint: connector.endpoint,
+      },
+      tool: {
+        id: mcpTool.id,
+        name: mcpTool.name,
+        riskLevel: mcpTool.riskLevel,
+      },
+      result: await callMcpTool({
+        connector,
+        toolName: mcpTool.name,
+        args: parsed,
+      }),
+    };
+  }
+
   throw new Error(`No handler is registered for ${tool.id}.`);
 }
 
@@ -241,6 +278,10 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return runsListSchema.parse(input);
   }
 
+  if (tool.category === "mcp") {
+    return input;
+  }
+
   return input;
 }
 
@@ -251,6 +292,10 @@ function describeSideEffects(toolId: string) {
 
   if (toolId === "knowledge.ingest") {
     return ["writes omni_knowledge_documents", "writes omni_knowledge_chunks", "writes compatible memory records"];
+  }
+
+  if (toolId.startsWith("mcp:")) {
+    return ["remote MCP tool call", "side effects depend on discovered tool annotations and connector policy"];
   }
 
   return ["read-only"];

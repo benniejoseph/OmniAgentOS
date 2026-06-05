@@ -11,7 +11,7 @@ export type ToolDefinition = {
   id: string;
   name: string;
   description: string;
-  category: "memory" | "knowledge" | "runs" | "connector";
+  category: "memory" | "knowledge" | "runs" | "connector" | "mcp";
   status: "active" | "planned";
   riskLevel: ToolRiskLevel;
   dryRunSupported: boolean;

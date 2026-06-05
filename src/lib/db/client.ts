@@ -167,6 +167,52 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_tool_id_idx ON omni_tool_executions (tool_id)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_status_idx ON omni_tool_executions (status)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_created_at_idx ON omni_tool_executions (created_at DESC)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_mcp_connectors (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          endpoint TEXT NOT NULL,
+          transport TEXT NOT NULL DEFAULT 'streamable_http',
+          auth_type TEXT NOT NULL DEFAULT 'none',
+          auth_token_env TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          default_risk_level INTEGER NOT NULL DEFAULT 2,
+          approval_required BOOLEAN NOT NULL DEFAULT TRUE,
+          tool_count INTEGER NOT NULL DEFAULT 0,
+          capabilities JSONB NOT NULL DEFAULT '{}',
+          instructions TEXT,
+          server_version JSONB,
+          last_discovered_at TIMESTAMPTZ,
+          last_error TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_mcp_connectors_status_idx ON omni_mcp_connectors (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_mcp_connectors_updated_at_idx ON omni_mcp_connectors (updated_at DESC)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_mcp_tools (
+          id TEXT PRIMARY KEY,
+          connector_id TEXT NOT NULL REFERENCES omni_mcp_connectors(id) ON DELETE CASCADE,
+          connector_name TEXT NOT NULL,
+          name TEXT NOT NULL,
+          title TEXT,
+          description TEXT,
+          input_schema JSONB NOT NULL DEFAULT '{}',
+          output_schema JSONB,
+          annotations JSONB,
+          risk_level INTEGER NOT NULL DEFAULT 2,
+          approval_required BOOLEAN NOT NULL DEFAULT TRUE,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_mcp_tools_connector_id_idx ON omni_mcp_tools (connector_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_mcp_tools_status_idx ON omni_mcp_tools (status)`;
+      await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_mcp_tools_connector_name_idx ON omni_mcp_tools (connector_id, name)`;
       await ensureVectorSchema(sql);
     })();
   }

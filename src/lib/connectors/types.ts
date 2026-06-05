@@ -1,0 +1,56 @@
+import type { ToolRiskLevel } from "@/lib/tools/types";
+
+export type McpConnectorTransport = "streamable_http";
+export type McpConnectorAuthType = "none" | "bearer_env";
+export type McpConnectorStatus = "active" | "error" | "disabled";
+export type McpToolStatus = "active" | "disabled";
+
+export type McpConnectorRecord = {
+  id: string;
+  name: string;
+  endpoint: string;
+  transport: McpConnectorTransport;
+  authType: McpConnectorAuthType;
+  authTokenEnv?: string;
+  status: McpConnectorStatus;
+  defaultRiskLevel: ToolRiskLevel;
+  approvalRequired: boolean;
+  toolCount: number;
+  capabilities?: Record<string, unknown>;
+  instructions?: string;
+  serverVersion?: Record<string, unknown>;
+  lastDiscoveredAt?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type McpToolRecord = {
+  id: string;
+  connectorId: string;
+  connectorName: string;
+  name: string;
+  title?: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+  riskLevel: ToolRiskLevel;
+  approvalRequired: boolean;
+  status: McpToolStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type McpConnectorLedger = {
+  connectors: McpConnectorRecord[];
+  tools: McpToolRecord[];
+};
+
+export type McpConnectorStats = {
+  total: number;
+  active: number;
+  error: number;
+  toolCount: number;
+  latest: McpConnectorRecord[];
+};

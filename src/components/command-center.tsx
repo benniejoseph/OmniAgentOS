@@ -84,6 +84,49 @@ type ToolsResponse = {
   };
 };
 
+type McpConnectorRecord = {
+  id: string;
+  name: string;
+  endpoint: string;
+  transport: "streamable_http";
+  authType: "none" | "bearer_env";
+  authTokenEnv?: string;
+  status: "active" | "error" | "disabled";
+  defaultRiskLevel: RiskLevel;
+  approvalRequired: boolean;
+  toolCount: number;
+  lastDiscoveredAt?: string;
+  lastError?: string;
+  updatedAt: string;
+};
+
+type McpToolRecord = {
+  id: string;
+  connectorId: string;
+  connectorName: string;
+  name: string;
+  title?: string;
+  description?: string;
+  riskLevel: RiskLevel;
+  approvalRequired: boolean;
+  status: "active" | "disabled";
+  updatedAt: string;
+};
+
+type ConnectorStats = {
+  total: number;
+  active: number;
+  error: number;
+  toolCount: number;
+  latest: McpConnectorRecord[];
+};
+
+type ConnectorsResponse = {
+  connectors: McpConnectorRecord[];
+  tools: McpToolRecord[];
+  stats: ConnectorStats;
+};
+
 type CapabilityResponse = {
   openaiConfigured: boolean;
   databaseConfigured: boolean;
@@ -109,6 +152,7 @@ type CapabilityResponse = {
     latest: AgentRun[];
   };
   toolExecutions: ToolAuditSummary;
+  mcpConnectors: ConnectorStats;
   registry: {
     agents: Capability[];
     tools: Capability[];
@@ -235,6 +279,11 @@ export function CommandCenter() {
   const [selectedToolId, setSelectedToolId] = useState("memory.search");
   const [toolInput, setToolInput] = useState(defaultToolInputs["memory.search"]);
   const [toolResult, setToolResult] = useState("");
+  const [connectorState, setConnectorState] = useState<ConnectorsResponse | null>(null);
+  const [connectorName, setConnectorName] = useState("Primary MCP server");
+  const [connectorEndpoint, setConnectorEndpoint] = useState("https://example.com/mcp");
+  const [connectorAuthEnv, setConnectorAuthEnv] = useState("");
+  const [connectorResult, setConnectorResult] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -257,6 +306,10 @@ export function CommandCenter() {
       .then((response) => response.json())
       .then(setToolState)
       .catch(() => undefined);
+    fetch("/api/connectors")
+      .then((response) => response.json())
+      .then(setConnectorState)
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -278,6 +331,9 @@ export function CommandCenter() {
   const toolAuditStats = toolState?.audits || capabilities?.toolExecutions;
   const latestToolAudits = toolAuditStats?.latest || [];
   const selectedTool = toolState?.tools.find((tool) => tool.id === selectedToolId);
+  const connectorStats = connectorState?.stats || capabilities?.mcpConnectors;
+  const latestConnectors = connectorState?.connectors.slice(0, 5) || [];
+  const latestMcpTools = connectorState?.tools.slice(0, 5) || [];
   const storageLabel =
     capabilities?.storageBackend === "postgres"
       ? "Postgres"
@@ -446,6 +502,54 @@ export function CommandCenter() {
     }
   }
 
+  async function registerConnector(discover: boolean) {
+    if (!connectorName.trim() || !connectorEndpoint.trim()) {
+      return;
+    }
+
+    setStatus(discover ? "registering and discovering MCP" : "registering MCP");
+    setConnectorResult("");
+
+    try {
+      const response = await fetch("/api/connectors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: connectorName,
+          endpoint: connectorEndpoint,
+          authType: connectorAuthEnv.trim() ? "bearer_env" : "none",
+          authTokenEnv: connectorAuthEnv.trim() || undefined,
+          defaultRiskLevel: 2,
+          approvalRequired: true,
+          discover,
+        }),
+      });
+      const data = await response.json();
+      setConnectorResult(formatToolResult(data));
+      setStatus(data.error ? "MCP discovery held" : discover ? "MCP discovered" : "MCP registered");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "MCP registration failed");
+    }
+  }
+
+  async function discoverConnector(connectorId: string) {
+    setStatus("discovering MCP");
+    setConnectorResult("");
+
+    try {
+      const response = await fetch(`/api/connectors/${connectorId}/discover`, {
+        method: "POST",
+      });
+      const data = await response.json();
+      setConnectorResult(formatToolResult(data));
+      setStatus(data.error ? "MCP discovery held" : "MCP discovered");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "MCP discovery failed");
+    }
+  }
+
   function refreshCapabilities() {
     fetch("/api/capabilities")
       .then((response) => response.json())
@@ -457,6 +561,13 @@ export function CommandCenter() {
     fetch("/api/tools")
       .then((response) => response.json())
       .then(setToolState)
+      .catch(() => undefined);
+  }
+
+  function refreshConnectors() {
+    fetch("/api/connectors")
+      .then((response) => response.json())
+      .then(setConnectorState)
       .catch(() => undefined);
   }
 
@@ -474,6 +585,7 @@ export function CommandCenter() {
       })
       .catch(() => undefined);
     refreshTools();
+    refreshConnectors();
   }
 
   return (
@@ -489,7 +601,7 @@ export function CommandCenter() {
               <h1 className="text-2xl font-semibold">Agentic orchestration command center</h1>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-8">
+          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-9">
             <StatusPill icon={<Brain size={15} />} label="Memory" value={`${capabilities?.memory.total ?? 0}`} />
             <StatusPill
               icon={<Database size={15} />}
@@ -499,6 +611,7 @@ export function CommandCenter() {
             <StatusPill icon={<BookOpen size={15} />} label="Docs" value={`${capabilities?.knowledge.documents ?? 0}`} />
             <StatusPill icon={<History size={15} />} label="Runs" value={`${capabilities?.runs.total ?? 0}`} />
             <StatusPill icon={<Cable size={15} />} label="Tools" value={`${governedActiveTools.length || activeTools.length}`} />
+            <StatusPill icon={<Cable size={15} />} label="MCP" value={`${connectorStats?.toolCount ?? 0}`} />
             <StatusPill icon={<ShieldCheck size={15} />} label="Audits" value={`${toolAuditStats?.total ?? 0}`} />
             <StatusPill icon={<HardDrive size={15} />} label="Store" value={storageLabel} />
             <StatusPill
@@ -677,6 +790,76 @@ export function CommandCenter() {
                       No tool audits recorded yet.
                     </p>
                   )}
+                </div>
+              </div>
+            </section>
+
+            <section className="panel rounded-lg p-4">
+              <div className="mb-4 flex items-center gap-2">
+                <Cable className="text-primary" size={18} />
+                <h2 className="font-semibold">MCP connectors</h2>
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Servers" value={`${connectorStats?.total ?? 0}`} />
+                <MiniStat label="Active" value={`${connectorStats?.active ?? 0}`} />
+                <MiniStat label="Tools" value={`${connectorStats?.toolCount ?? 0}`} />
+              </div>
+              <div className="flex flex-col gap-3">
+                <input
+                  value={connectorName}
+                  onChange={(event) => setConnectorName(event.target.value)}
+                  className="h-10 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
+                  aria-label="MCP connector name"
+                />
+                <input
+                  value={connectorEndpoint}
+                  onChange={(event) => setConnectorEndpoint(event.target.value)}
+                  className="h-10 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
+                  aria-label="MCP endpoint URL"
+                />
+                <input
+                  value={connectorAuthEnv}
+                  onChange={(event) => setConnectorAuthEnv(event.target.value.toUpperCase())}
+                  className="h-10 rounded-md border border-line bg-background px-3 font-mono text-sm outline-none focus:border-primary"
+                  placeholder="TOKEN_ENV_NAME"
+                  aria-label="MCP bearer token environment variable"
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => registerConnector(false)}
+                    className="flex h-10 items-center justify-center gap-2 rounded-md border border-line text-sm font-medium text-foreground transition hover:border-primary"
+                  >
+                    <CheckCircle2 size={15} />
+                    Register
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => registerConnector(true)}
+                    className="flex h-10 items-center justify-center gap-2 rounded-md border border-primary/60 text-sm font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                  >
+                    <Search size={15} />
+                    Discover
+                  </button>
+                </div>
+                {connectorResult ? (
+                  <pre className="max-h-48 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
+                    {connectorResult}
+                  </pre>
+                ) : null}
+                <div className="flex flex-col gap-3">
+                  {latestConnectors.length ? (
+                    latestConnectors.map((connector) => (
+                      <McpConnectorRow key={connector.id} connector={connector} onDiscover={discoverConnector} />
+                    ))
+                  ) : (
+                    <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+                      No MCP connectors registered.
+                    </p>
+                  )}
+                  {latestMcpTools.map((tool) => (
+                    <McpToolRow key={tool.id} tool={tool} />
+                  ))}
                 </div>
               </div>
             </section>
@@ -877,6 +1060,59 @@ function ToolAuditRow({ record }: { record: ToolExecutionRecord }) {
   );
 }
 
+function McpConnectorRow({
+  connector,
+  onDiscover,
+}: {
+  connector: McpConnectorRecord;
+  onDiscover: (connectorId: string) => void;
+}) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", connectorTone(connector.status))}>
+          {connector.status}
+        </span>
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", riskTone(connector.defaultRiskLevel))}>
+          R{connector.defaultRiskLevel}
+        </span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{connector.name}</p>
+      <p className="mt-2 truncate font-mono text-[11px] text-muted">{connector.endpoint}</p>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <span className="font-mono text-[11px] text-muted">{connector.toolCount} tools</span>
+        <button
+          type="button"
+          onClick={() => onDiscover(connector.id)}
+          className="h-8 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+        >
+          Refresh
+        </button>
+      </div>
+      {connector.lastError ? (
+        <p className="mt-2 line-clamp-2 text-xs leading-5 text-danger">{connector.lastError}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function McpToolRow({ tool }: { tool: McpToolRecord }) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="rounded bg-primary/16 px-2 py-1 font-mono text-[11px] text-primary">mcp tool</span>
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", riskTone(tool.riskLevel))}>
+          R{tool.riskLevel}
+        </span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{tool.title || tool.name}</p>
+      <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">
+        {tool.description || tool.connectorName}
+      </p>
+    </div>
+  );
+}
+
 function MemoryRow({ memory }: { memory: MemoryRecord }) {
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
@@ -1016,6 +1252,18 @@ function riskTone(riskLevel: RiskLevel) {
   }
 
   return "bg-danger/14 text-danger";
+}
+
+function connectorTone(status: McpConnectorRecord["status"]) {
+  if (status === "active") {
+    return "bg-primary/16 text-primary";
+  }
+
+  if (status === "error") {
+    return "bg-danger/14 text-danger";
+  }
+
+  return "bg-background text-muted";
 }
 
 function formatToolResult(value: unknown) {

@@ -1,4 +1,5 @@
 import { hasOpenAIKey } from "@/lib/config";
+import { getMcpConnectorStats } from "@/lib/connectors/store";
 import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
 import { getMemoryStats } from "@/lib/memory/store";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
@@ -17,6 +18,7 @@ export async function GET() {
     knowledge: await getKnowledgeStats(),
     runs: await getRunStats(),
     toolExecutions: await getToolExecutionStats(),
+    mcpConnectors: await getMcpConnectorStats(),
     registry: getCapabilityRegistry(),
   });
 }
