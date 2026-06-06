@@ -21,18 +21,8 @@ export async function authorizeRequest({
 
   try {
     requirePermission(context, action);
-    await recordSecurityAudit({
-      context,
-      action,
-      resourceType,
-      resourceId,
-      decision: "allow",
-      riskLevel,
-      metadata,
-    });
-    return context;
   } catch (error) {
-    await recordSecurityAudit({
+    await recordAuditSafely({
       context,
       action,
       resourceType,
@@ -44,6 +34,17 @@ export async function authorizeRequest({
     });
     throw error;
   }
+
+  await recordAuditSafely({
+    context,
+    action,
+    resourceType,
+    resourceId,
+    decision: "allow",
+    riskLevel,
+    metadata,
+  });
+  return context;
 }
 
 export function forbiddenResponse(error: unknown) {
@@ -55,4 +56,12 @@ export function securityHeaders(context: SecurityContext) {
     "x-omni-tenant-id": context.tenantId,
     "x-omni-actor-role": context.role,
   };
+}
+
+async function recordAuditSafely(args: Parameters<typeof recordSecurityAudit>[0]) {
+  try {
+    await recordSecurityAudit(args);
+  } catch (error) {
+    console.warn("Security audit write failed.", error instanceof Error ? error.message : error);
+  }
 }
