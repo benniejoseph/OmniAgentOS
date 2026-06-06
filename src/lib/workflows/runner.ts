@@ -3,6 +3,7 @@ import { saveMemory } from "@/lib/memory/store";
 import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { buildDynamicWorkflowPlan } from "@/lib/workflows/planner";
 import {
   appendWorkflowEvent,
   getWorkflowRunDetail,
@@ -259,13 +260,18 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
 
   if (stepKey === "verify") {
     const executeOutput = stepOutput(detail, "execute");
+    const planOutput = stepOutput(detail, "plan");
+    const plan = parsePlanOutput(planOutput);
+    const criteria = plan?.plan.acceptanceCriteria || [
+      "workflow state persisted",
+      "execution output captured",
+      "report step can persist durable summary",
+    ];
     return {
       passed: Boolean(executeOutput?.response || executeOutput?.deliverable),
-      checks: [
-        "workflow state persisted",
-        "execution output captured",
-        "report step can persist durable summary",
-      ],
+      checks: criteria,
+      plannerValidation: plan?.validation,
+      dynamicPlanId: plan?.id,
     };
   }
 
@@ -276,25 +282,37 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
   throw new Error(`No workflow step registered for ${stepKey}.`);
 }
 
-function buildPlan(detail: WorkflowRunDetail) {
+async function buildPlan(detail: WorkflowRunDetail) {
   const retrieveOutput = stepOutput(detail, "retrieve_context");
+  const record = await buildDynamicWorkflowPlan({
+    goal: detail.run.goal,
+    mode: detail.run.input.mode || "orchestrate",
+    workflowRunId: detail.run.id,
+    requireApproval: detail.run.approvalRequired,
+  });
+  await appendWorkflowEvent(detail.run.id, "workflow.dynamic_plan.created", {
+    planId: record.id,
+    planner: record.planner,
+    nodeCount: record.plan.nodes.length,
+    highestRiskLevel: record.highestRiskLevel,
+    approvalRequired: record.approvalRequired,
+  });
   return {
+    id: record.id,
+    planner: record.planner,
+    model: record.model,
+    status: record.status,
+    contextTraceId: record.contextTraceId,
+    validation: record.validation,
+    highestRiskLevel: record.highestRiskLevel,
+    approvalRequired: record.approvalRequired,
+    confidence: record.confidence,
+    plan: record.plan,
     objective: detail.run.goal,
-    tasks: [
-      "Validate runtime and connector readiness.",
-      "Retrieve durable memory and RAG context.",
-      "Create a bounded execution plan.",
-      detail.run.approvalRequired ? "Pause for approval before side-effecting work." : "Continue without approval gate.",
-      "Execute the plan and capture output.",
-      "Verify output against acceptance criteria.",
-      "Persist a workflow report to long-term memory.",
-    ],
-    acceptanceCriteria: [
-      "Every step has a persisted status, attempt count, and event trail.",
-      "Failures remain retryable until max attempts are exhausted.",
-      "Pause, resume, cancel, approve, and retry signals change durable state.",
-      "Final report is available from workflow result and memory.",
-    ],
+    tasks: record.plan.nodes.map((node) => node.label),
+    acceptanceCriteria: record.plan.acceptanceCriteria,
+    selectedToolIds: record.plan.selectedToolIds,
+    connectorTargets: record.plan.connectorTargets,
     contextCount: Number(retrieveOutput?.contextCount || 0),
   };
 }
@@ -342,13 +360,18 @@ async function executeGoal(detail: WorkflowRunDetail) {
 async function persistWorkflowReport(detail: WorkflowRunDetail) {
   const executeOutput = stepOutput(detail, "execute");
   const verifyOutput = stepOutput(detail, "verify");
+  const planOutput = stepOutput(detail, "plan");
+  const plan = parsePlanOutput(planOutput);
   const content = [
     `Workflow: ${detail.run.workflowType}`,
     `Goal: ${detail.run.goal}`,
     `Status: completed`,
+    plan ? `Dynamic plan: ${plan.id} (${plan.planner}, confidence ${plan.confidence.toFixed(2)})` : "",
+    plan ? `Plan nodes: ${plan.plan.nodes.map((node) => node.label).join(" -> ")}` : "",
+    plan ? `Selected tools: ${plan.plan.selectedToolIds.join(", ") || "none"}` : "",
     `Execution: ${String(executeOutput?.response || executeOutput?.deliverable || "No execution output.")}`,
     `Verification: ${JSON.stringify(verifyOutput || {})}`,
-  ].join("\n\n");
+  ].filter(Boolean).join("\n\n");
   const embedding = (await embedTexts([content]))?.[0];
   const memory = await saveMemory({
     type: "episode",
@@ -363,6 +386,7 @@ async function persistWorkflowReport(detail: WorkflowRunDetail) {
   return {
     report: content,
     memoryId: memory.id,
+    dynamicPlanId: plan?.id,
   };
 }
 
@@ -382,4 +406,24 @@ async function completeWorkflow(runId: string) {
 
 function stepOutput(detail: WorkflowRunDetail, stepKey: WorkflowStepKey) {
   return detail.steps.find((step) => step.stepKey === stepKey)?.output;
+}
+
+function parsePlanOutput(output: Record<string, unknown> | undefined) {
+  if (!output || typeof output !== "object") {
+    return undefined;
+  }
+  if (typeof output.id !== "string" || !output.plan || typeof output.plan !== "object") {
+    return undefined;
+  }
+  return output as {
+    id: string;
+    planner: string;
+    confidence: number;
+    validation: Record<string, unknown>;
+    plan: {
+      acceptanceCriteria: string[];
+      selectedToolIds: string[];
+      nodes: Array<{ label: string }>;
+    };
+  };
 }

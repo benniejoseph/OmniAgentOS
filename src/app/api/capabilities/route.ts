@@ -13,6 +13,7 @@ import { getRunStats } from "@/lib/runs/store";
 import { getSecurityStats } from "@/lib/security/audit-store";
 import { canPerform, resolveSecurityContext, rbacRules, secretVaultPolicy, securityErrorResponse } from "@/lib/security/context";
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
+import { getWorkflowPlanStats } from "@/lib/workflows/planner";
 import { getWorkflowStats } from "@/lib/workflows/store";
 
 export const runtime = "nodejs";
@@ -40,6 +41,7 @@ export async function GET(request: Request) {
     mcpConnectors: await getMcpConnectorStats(),
     openApiConnectors: await getOpenApiConnectorStats(),
     workflows: await getWorkflowStats(),
+    workflowPlans: await getWorkflowPlanStats(),
     operationJobs: await getOperationJobStats(),
     evaluations: await getEvalStats(),
     security: {

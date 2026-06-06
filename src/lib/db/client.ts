@@ -431,6 +431,30 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_runs_workflow_type_idx ON omni_workflow_runs (workflow_type)`;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS omni_workflow_plans (
+          id TEXT PRIMARY KEY,
+          workflow_run_id TEXT REFERENCES omni_workflow_runs(id) ON DELETE SET NULL,
+          goal TEXT NOT NULL,
+          status TEXT NOT NULL,
+          planner TEXT NOT NULL,
+          model TEXT,
+          plan JSONB NOT NULL DEFAULT '{}',
+          validation JSONB NOT NULL DEFAULT '{}',
+          context_trace_id TEXT,
+          highest_risk_level INTEGER NOT NULL DEFAULT 0,
+          approval_required BOOLEAN NOT NULL DEFAULT FALSE,
+          confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+          error TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_plans_run_id_idx ON omni_workflow_plans (workflow_run_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_plans_status_idx ON omni_workflow_plans (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_plans_created_at_idx ON omni_workflow_plans (created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_plans_risk_idx ON omni_workflow_plans (highest_risk_level DESC)`;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS omni_workflow_steps (
           id TEXT PRIMARY KEY,
           workflow_run_id TEXT NOT NULL REFERENCES omni_workflow_runs(id) ON DELETE CASCADE,

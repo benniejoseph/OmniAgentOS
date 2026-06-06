@@ -27,6 +27,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - MCP connector registry for Streamable HTTP endpoints, token env-var references, server capabilities, discovered tool schemas, and connector health
 - OpenAPI connector registry for JSON/YAML specs, base URLs, token env-var references, imported operations, request schemas, and connector health
 - Durable workflow runtime with persisted runs, steps, events, Postgres-backed operation jobs, leases, retry backoff, approval waits, operator signals, and report persistence
+- Dynamic workflow planner with typed DAG generation, tool/connector selection, execution policy, verification criteria, and persisted planner ledger
 - Vercel Cron-secured production workflow queue ticks through `/api/workflows/tick`, with opportunistic post-response draining through Next.js `after()`
 - Operations center with approval queue, failed work summary, active workflow summary, connector error summary, and durable approval actions
 - External connection catalog for MCP/OpenAPI adapter setup across common production apps
@@ -59,6 +60,10 @@ flowchart TD
   GOV --> POLICY["Risk Policy and Approval Gates"]
   GOV --> AUDIT["Tool Audit Ledger"]
   API --> WF["Durable Workflow Runtime"]
+  WF --> WPLAN["Dynamic Workflow Planner"]
+  WPLAN --> CTX
+  WPLAN --> GOV
+  WPLAN --> DB
   API --> OQ["Operation Job Queue"]
   WF --> WSTEPS["Persisted Steps and Signals"]
   OQ --> WF
@@ -69,6 +74,7 @@ flowchart TD
   API --> EVAL["Evaluation Harness"]
   EVAL --> GOV
   EVAL --> WF
+  EVAL --> WPLAN
   EVAL --> RAG
   EVAL --> DB
   API --> SEC["Security Controls"]
@@ -115,3 +121,4 @@ flowchart TD
 14. Durable runtime hardening: add Postgres operation jobs, queue leases, expired-lease repair, retry backoff, workflow dedupe keys, queue health reporting, and post-response drains. Done.
 15. Adaptive context engine: add retrieval policy routing, evidence grading, diversity-aware packing, retrieval trace observability, and queue/workflow integration. Done.
 16. Graph memory engine: add concept/entity extraction, memory graph nodes/edges/builds, graph search, graph-context packing, and graph regression checks. Done.
+17. Dynamic workflow planner: add structured goal decomposition, typed DAG planner, governed tool/connector selection, execution policy, verification criteria, planner ledger, and workflow integration. Done.

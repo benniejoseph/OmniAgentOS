@@ -88,6 +88,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "workflow.dynamic_planner",
+    name: "Dynamic Workflow Planner",
+    description: "Decompose goals into typed DAGs with tool selection, risk policy, verification, and memory feedback.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

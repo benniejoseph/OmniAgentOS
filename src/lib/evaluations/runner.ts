@@ -12,6 +12,7 @@ import { buildContextPack, getContextEngineStats } from "@/lib/rag/context-engin
 import { retrieveContext } from "@/lib/rag/retriever";
 import { canPerform, redactSensitive } from "@/lib/security/context";
 import { enqueueWorkflowRunTick, processWorkflowQueue } from "@/lib/workflows/queue";
+import { buildDynamicWorkflowPlan, getWorkflowPlanStats } from "@/lib/workflows/planner";
 import { createWorkflowRun, getWorkflowRunDetail } from "@/lib/workflows/store";
 import {
   completeEvalRun,
@@ -119,6 +120,22 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
     expected: {
       finalStatus: "completed",
       maxTicks: 8,
+    },
+  },
+  {
+    id: "workflow.dynamic_planner",
+    name: "Dynamic workflow planner",
+    description: "Builds a typed workflow DAG with tool selection, approval policy, validation, persistence, and workflow-run integration.",
+    type: "workflow",
+    input: {
+      goal: "Plan a production-safe agent workflow that researches context, chooses tools, verifies output, and persists memory.",
+      mode: "orchestrate",
+    },
+    expected: {
+      minNodes: 4,
+      minSelectedTools: 2,
+      validDag: true,
+      persisted: true,
     },
   },
   {
@@ -253,6 +270,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "workflow.lifecycle") {
     return evaluateWorkflowLifecycle(evalCase);
+  }
+
+  if (evalCase.id === "workflow.dynamic_planner") {
+    return evaluateDynamicPlanner(evalCase);
   }
 
   if (evalCase.id === "security.rbac_controls") {
@@ -489,6 +510,62 @@ async function evaluateWorkflowLifecycle(evalCase: EvalCaseDefinition): Promise<
       reportPreview: typeof report === "string" ? report.slice(0, 600) : undefined,
     },
     estimatedCostUsd: estimateCost(evalCase, { goal: evalCase.input.goal, report }),
+  };
+}
+
+async function evaluateDynamicPlanner(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const goal = String(evalCase.input.goal || "");
+  const mode = String(evalCase.input.mode || "orchestrate") as "orchestrate" | "research" | "execute" | "learn";
+  const detail = await createWorkflowRun({
+    goal,
+    mode,
+    requireApproval: false,
+    maxAttempts: 2,
+    metadata: {
+      source: "evaluation",
+      caseId: evalCase.id,
+    },
+  });
+  const plan = await buildDynamicWorkflowPlan({
+    goal,
+    mode,
+    workflowRunId: detail.run.id,
+    requireApproval: false,
+  });
+  const stats = await getWorkflowPlanStats();
+  const checks = {
+    nodeCount: plan.plan.nodes.length >= Number(evalCase.expected.minNodes || 1),
+    selectedTools: plan.plan.selectedToolIds.length >= Number(evalCase.expected.minSelectedTools || 1),
+    validDag: plan.validation.isDag === Boolean(evalCase.expected.validDag),
+    dependenciesResolved: plan.validation.missingDependencies.length === 0,
+    hasVerification: plan.plan.nodes.some((node) => node.kind === "verify"),
+    persisted: Boolean(evalCase.expected.persisted) ? stats.total > 0 && plan.workflowRunId === detail.run.id : true,
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      workflowRunId: detail.run.id,
+      planId: plan.id,
+      planner: plan.planner,
+      model: plan.model,
+      checks,
+      nodeCount: plan.plan.nodes.length,
+      edgeCount: plan.plan.edges.length,
+      selectedToolIds: plan.plan.selectedToolIds,
+      highestRiskLevel: plan.highestRiskLevel,
+      approvalRequired: plan.approvalRequired,
+      confidence: plan.confidence,
+      validation: plan.validation,
+      stats: {
+        total: stats.total,
+        averageConfidence: stats.averageConfidence,
+      },
+    },
+    estimatedCostUsd: estimateTextCost(goal),
   };
 }
 

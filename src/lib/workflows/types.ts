@@ -20,6 +20,86 @@ export type WorkflowStepKey =
   | "verify"
   | "persist_report";
 
+export type WorkflowPlanNodeKind =
+  | "research"
+  | "tool"
+  | "approval"
+  | "execute"
+  | "verify"
+  | "memory"
+  | "report";
+
+export type WorkflowPlanPolicy = "auto" | "dry_run" | "approval_required" | "manual";
+
+export type WorkflowPlanNode = {
+  id: string;
+  label: string;
+  kind: WorkflowPlanNodeKind;
+  description: string;
+  dependsOn: string[];
+  toolIds: string[];
+  connectorTargets: string[];
+  riskLevel: 0 | 1 | 2 | 3;
+  approvalRequired: boolean;
+  policy: WorkflowPlanPolicy;
+  acceptanceCriteria: string[];
+  expectedOutputs: string[];
+};
+
+export type WorkflowPlanEdge = {
+  from: string;
+  to: string;
+  condition: string;
+};
+
+export type WorkflowDynamicPlan = {
+  objective: string;
+  summary: string;
+  mode: "orchestrate" | "research" | "execute" | "learn";
+  assumptions: string[];
+  constraints: string[];
+  risks: string[];
+  acceptanceCriteria: string[];
+  nodes: WorkflowPlanNode[];
+  edges: WorkflowPlanEdge[];
+  selectedToolIds: string[];
+  connectorTargets: string[];
+  executionPolicy: {
+    highestRiskLevel: 0 | 1 | 2 | 3;
+    requiresApproval: boolean;
+    defaultPolicy: WorkflowPlanPolicy;
+    notes: string[];
+  };
+  verificationPlan: string[];
+  memoryPlan: string[];
+  confidence: number;
+};
+
+export type WorkflowPlanValidation = {
+  isDag: boolean;
+  missingDependencies: string[];
+  unreachableNodes: string[];
+  policyWarnings: string[];
+};
+
+export type WorkflowPlanRecord = {
+  id: string;
+  workflowRunId?: string;
+  goal: string;
+  status: "planned" | "failed";
+  planner: "openai" | "deterministic";
+  model: string;
+  plan: WorkflowDynamicPlan;
+  validation: WorkflowPlanValidation;
+  contextTraceId?: string;
+  highestRiskLevel: 0 | 1 | 2 | 3;
+  approvalRequired: boolean;
+  confidence: number;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type WorkflowRunInput = {
   goal: string;
   mode?: "orchestrate" | "research" | "execute" | "learn";
@@ -91,4 +171,13 @@ export type WorkflowStats = {
   active: number;
   waitingApproval: number;
   latest: WorkflowRunRecord[];
+};
+
+export type WorkflowPlanStats = {
+  total: number;
+  byStatus: Record<string, number>;
+  approvalRequired: number;
+  highRisk: number;
+  averageConfidence: number;
+  latest: WorkflowPlanRecord[];
 };
