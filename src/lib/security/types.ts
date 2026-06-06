@@ -5,7 +5,13 @@ export type SecurityContext = {
   tenantId: string;
   actorId: string;
   role: SecurityRole;
-  source: "headers" | "default";
+  source: "headers" | "default" | "session";
+  auth?: {
+    userId: string;
+    email: string;
+    sessionId: string;
+    tenantName: string;
+  };
 };
 
 export type SecurityAuditRecord = {

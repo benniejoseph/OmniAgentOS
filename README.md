@@ -47,6 +47,10 @@ When Postgres supports pgvector, the app adds vector columns and indexes for sem
 - `/api/evaluations/:id` evaluation run detail endpoint
 - `/api/security/context` tenant, actor, role, RBAC, and secret-vault policy endpoint
 - `/api/security/audits` RBAC allow/deny audit endpoint
+- `/api/auth/session` current auth/session state endpoint
+- `/api/auth/login` password session sign-in endpoint
+- `/api/auth/logout` session revocation endpoint
+- `/api/auth/control-plane` tenant, user, membership, and session admin endpoint
 - Command center panels for knowledge ingest, memory browser, and knowledge library
 - Command center panel for governed tool dry-runs, executions, and audit review
 - Command center panel for MCP connector registration, discovery, and discovered tool review
@@ -54,6 +58,7 @@ When Postgres supports pgvector, the app adds vector columns and indexes for sem
 - Command center panel for durable workflow start, tick, approval, pause/resume, retry, and cancel controls
 - Command center panel for regression suite runs, pass rate, latency, and cost estimates
 - Command center panel for tenant context, RBAC rules, secret policy, and security audit trails
+- Command center panel for auth mode, current identity, tenant users, and admin user creation
 - Local memory and knowledge persisted under `.omniagent/`
 - Postgres-backed memory, RAG documents/chunks, run history, tool audit history, MCP connectors, OpenAPI connectors, and discovered tool schemas when `DATABASE_URL` is configured
 - Hybrid retrieval across durable memories and source chunks with semantic, keyword, recency, and importance signals
@@ -64,6 +69,7 @@ When Postgres supports pgvector, the app adds vector columns and indexes for sem
 - Durable workflow runtime for persisted step execution with retries, approval waits, operator signals, event history, and final report persistence
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
 - Tenant-aware security controls with viewer/operator/admin/system roles, server-only secret env-var references, redacted audit metadata, and persisted RBAC allow/deny records
+- First-party identity control plane with scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
 
 ## Connector Secrets
 
@@ -72,6 +78,8 @@ Connector records store environment variable names only. Put bearer tokens or AP
 ## Security Context
 
 Requests can pass `x-omni-tenant-id`, `x-omni-user-id`, and `x-omni-user-role` headers. Without headers, the app uses `OMNIAGENT_DEFAULT_TENANT`, `OMNIAGENT_DEFAULT_ACTOR`, and `OMNIAGENT_DEFAULT_ROLE`; the template keeps the dashboard operator-friendly with `admin`.
+
+Set `OMNIAGENT_AUTH_ENABLED=true` to enforce authenticated sessions instead of trusting headers/defaults. Configure `OMNIAGENT_BOOTSTRAP_EMAIL` and `OMNIAGENT_BOOTSTRAP_PASSWORD` before enabling auth so the first admin can sign in and manage users.
 
 ## Implementation Roadmap
 

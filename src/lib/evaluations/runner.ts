@@ -1,4 +1,6 @@
 import { hasOpenAIKey } from "@/lib/config";
+import { hashPassword, verifyPassword } from "@/lib/auth/crypto";
+import { isAuthEnforced } from "@/lib/auth/store";
 import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
@@ -100,6 +102,20 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       secretRedacted: true,
     },
   },
+  {
+    id: "auth.identity_controls",
+    name: "Identity controls",
+    description: "Verifies password hashing, session auth mode reporting, and identity RBAC permissions.",
+    type: "security",
+    input: {
+      passwordFixture: "session auth regression",
+    },
+    expected: {
+      passwordVerified: true,
+      viewerDeniedIdentity: true,
+      adminAllowedIdentity: true,
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -185,6 +201,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "security.rbac_controls") {
     return evaluateSecurityControls();
+  }
+
+  if (evalCase.id === "auth.identity_controls") {
+    return evaluateIdentityControls();
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -307,6 +327,7 @@ function evaluateSecurityControls(): CaseResult {
     viewerDeniedConnectorManagement: !canPerform("viewer", "manage.connector"),
     operatorCanExecuteTools: canPerform("operator", "execute.tool"),
     adminCanReadSecurity: canPerform("admin", "read.security"),
+    adminCanManageIdentity: canPerform("admin", "manage.identity"),
     secretRedacted: redacted.apiKey === "[redacted]" && redacted.nested?.authorization === "[redacted]",
     harmlessMetadataPreserved: redacted.nested?.harmless === "visible",
   };
@@ -320,6 +341,29 @@ function evaluateSecurityControls(): CaseResult {
     output: {
       checks,
       redacted,
+    },
+  };
+}
+
+async function evaluateIdentityControls(): Promise<CaseResult> {
+  const passwordHash = await hashPassword("session auth regression");
+  const checks = {
+    passwordVerified: await verifyPassword("session auth regression", passwordHash),
+    wrongPasswordRejected: !(await verifyPassword("wrong password", passwordHash)),
+    viewerDeniedIdentity: !canPerform("viewer", "manage.identity"),
+    operatorDeniedIdentity: !canPerform("operator", "manage.identity"),
+    adminAllowedIdentity: canPerform("admin", "manage.identity"),
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      authEnforced: isAuthEnforced(),
+      hashFormat: passwordHash.split("$")[0],
     },
   };
 }

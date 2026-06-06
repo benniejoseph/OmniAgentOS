@@ -13,12 +13,16 @@ import {
   HardDrive,
   History,
   Layers3,
+  LogIn,
+  LogOut,
   Play,
   Search,
   Send,
   ShieldCheck,
   Sparkles,
   UploadCloud,
+  UserPlus,
+  Users,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
@@ -304,7 +308,13 @@ type SecurityContext = {
   tenantId: string;
   actorId: string;
   role: SecurityRole;
-  source: "headers" | "default";
+  source: "headers" | "default" | "session";
+  auth?: {
+    userId: string;
+    email: string;
+    sessionId: string;
+    tenantName: string;
+  };
 };
 
 type SecurityAuditRecord = {
@@ -350,6 +360,67 @@ type SecurityState = {
   stats?: SecurityStats;
   records: SecurityAuditRecord[];
   policy?: SecurityPolicy;
+};
+
+type AuthTenant = {
+  id: string;
+  name: string;
+  slug: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type AuthUser = {
+  id: string;
+  email: string;
+  name?: string;
+  status: "active" | "disabled";
+  lastLoginAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type AuthMembership = {
+  id: string;
+  tenantId: string;
+  userId: string;
+  role: SecurityRole;
+  status: "active" | "disabled";
+  createdAt: string;
+  updatedAt: string;
+};
+
+type AuthSessionResponse = {
+  authEnabled: boolean;
+  bootstrapConfigured: boolean;
+  authenticated: boolean;
+  context?: SecurityContext;
+  user?: AuthUser;
+  tenant?: AuthTenant;
+  membership?: AuthMembership;
+  stats?: AuthControlPlane["stats"];
+};
+
+type AuthControlPlane = {
+  authEnabled: boolean;
+  bootstrapConfigured: boolean;
+  stats: {
+    tenants: number;
+    users: number;
+    activeUsers: number;
+    sessions: number;
+  };
+  tenants: AuthTenant[];
+  users: AuthUser[];
+  memberships: AuthMembership[];
+  sessions: {
+    id: string;
+    userId: string;
+    tenantId: string;
+    expiresAt: string;
+    createdAt: string;
+    lastSeenAt: string;
+  }[];
 };
 
 type CapabilityResponse = {
@@ -530,53 +601,17 @@ export function CommandCenter() {
   const [evaluationState, setEvaluationState] = useState<EvaluationsResponse | null>(null);
   const [evaluationResult, setEvaluationResult] = useState("");
   const [securityState, setSecurityState] = useState<SecurityState | null>(null);
+  const [authState, setAuthState] = useState<AuthSessionResponse | null>(null);
+  const [authControlPlane, setAuthControlPlane] = useState<AuthControlPlane | null>(null);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
+  const [identityEmail, setIdentityEmail] = useState("");
+  const [identityName, setIdentityName] = useState("");
+  const [identityPassword, setIdentityPassword] = useState("");
+  const [identityRole, setIdentityRole] = useState<SecurityRole>("viewer");
+  const [identityResult, setIdentityResult] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    fetch("/api/capabilities")
-      .then((response) => response.json())
-      .then(setCapabilities)
-      .catch(() => setStatus("capability check failed"));
-    fetch("/api/memory?limit=5")
-      .then((response) => response.json())
-      .then((data) => setMemories(data.memories || []))
-      .catch(() => undefined);
-    fetch("/api/knowledge?limit=5")
-      .then((response) => response.json())
-      .then((data) => {
-        setDocuments(data.documents || []);
-        setChunks(data.chunks || []);
-      })
-      .catch(() => undefined);
-    fetch("/api/tools")
-      .then((response) => response.json())
-      .then(setToolState)
-      .catch(() => undefined);
-    fetch("/api/connectors")
-      .then((response) => response.json())
-      .then(setConnectorState)
-      .catch(() => undefined);
-    fetch("/api/openapi-connectors")
-      .then((response) => response.json())
-      .then(setOpenApiState)
-      .catch(() => undefined);
-    fetch("/api/workflows?limit=5")
-      .then((response) => response.json())
-      .then(setWorkflowState)
-      .catch(() => undefined);
-    fetch("/api/evaluations?limit=5")
-      .then((response) => response.json())
-      .then(setEvaluationState)
-      .catch(() => undefined);
-    refreshSecurity();
-  }, []);
-
-  useEffect(() => {
-    viewportRef.current?.scrollTo({
-      top: viewportRef.current.scrollHeight,
-      behavior: "smooth",
-    });
-  }, [messages]);
 
   const activeTools = useMemo(
     () => capabilities?.registry.tools.filter((tool) => tool.status === "active") || [],
@@ -607,12 +642,61 @@ export function CommandCenter() {
   const latestSecurityAudits =
     securityState?.records.length ? securityState.records : securityStats?.latest || [];
   const securityRules = securityPolicy?.rbacRules.slice(0, 5) || [];
+  const authStats = authControlPlane?.stats || authState?.stats;
+  const authUsers = authControlPlane?.users.slice(0, 5) || [];
+  const currentIdentity = authState?.user?.email || securityContext?.actorId || "anonymous";
+  const authMode = authState?.authEnabled ? "Enforced" : "Open";
   const storageLabel =
     capabilities?.storageBackend === "postgres"
       ? "Postgres"
       : capabilities?.storageBackend === "ephemeral"
         ? "Ephemeral"
         : "File";
+
+  async function initializeWorkspace() {
+    const auth = await refreshAuth();
+    if (auth?.authEnabled && !auth.authenticated) {
+      setStatus("sign-in required");
+      return;
+    }
+
+    setStatus("idle");
+    refreshWorkspace();
+  }
+
+  async function signIn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthMessage("signing in");
+
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: authEmail, password: authPassword }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || data.error || "Sign-in failed.");
+      }
+      setAuthPassword("");
+      setAuthMessage("signed in");
+      setStatus("idle");
+      await refreshAuth();
+      refreshWorkspace();
+    } catch (error) {
+      setAuthMessage(error instanceof Error ? error.message : "Sign-in failed.");
+    }
+  }
+
+  async function signOut() {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+    setAuthControlPlane(null);
+    setCapabilities(null);
+    setSecurityState(null);
+    setAuthMessage("signed out");
+    setStatus("sign-in required");
+    await refreshAuth();
+  }
 
   async function submitMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -960,6 +1044,74 @@ export function CommandCenter() {
     }
   }
 
+  async function createIdentityUser() {
+    const email = identityEmail.trim();
+    if (!email) {
+      return;
+    }
+
+    setIdentityResult("creating user");
+
+    try {
+      const response = await fetch("/api/auth/control-plane", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          name: identityName.trim() || undefined,
+          role: identityRole,
+          password: identityPassword.trim() || undefined,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || data.error || "User creation failed.");
+      }
+
+      setIdentityEmail("");
+      setIdentityName("");
+      setIdentityPassword("");
+      setIdentityResult(
+        data.generatedPassword
+          ? `created ${data.user.email}; temporary password ${data.generatedPassword}`
+          : `created ${data.user.email}`,
+      );
+      setAuthControlPlane(data.controlPlane || null);
+      refreshSecurity();
+    } catch (error) {
+      setIdentityResult(error instanceof Error ? error.message : "User creation failed.");
+    }
+  }
+
+  async function refreshAuth() {
+    try {
+      const data = (await fetch("/api/auth/session").then((response) => response.json())) as AuthSessionResponse;
+      setAuthState(data);
+
+      if (!data.authEnabled || data.authenticated) {
+        refreshAuthControlPlane();
+      } else {
+        setAuthControlPlane(null);
+      }
+
+      return data;
+    } catch {
+      setAuthState({
+        authEnabled: false,
+        bootstrapConfigured: false,
+        authenticated: false,
+      });
+      return null;
+    }
+  }
+
+  function refreshAuthControlPlane() {
+    fetch("/api/auth/control-plane")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => setAuthControlPlane(data))
+      .catch(() => undefined);
+  }
+
   function refreshCapabilities() {
     fetch("/api/capabilities")
       .then((response) => response.json())
@@ -1043,6 +1195,40 @@ export function CommandCenter() {
     refreshSecurity();
   }
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void initializeWorkspace();
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // Initial workspace load should run once; follow-up refreshes are explicit after mutations.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    viewportRef.current?.scrollTo({
+      top: viewportRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [messages]);
+
+  if (!authState) {
+    return <LoadingShell label="Loading identity" />;
+  }
+
+  if (authState.authEnabled && !authState.authenticated) {
+    return (
+      <AuthGate
+        email={authEmail}
+        password={authPassword}
+        message={authMessage}
+        bootstrapConfigured={authState.bootstrapConfigured}
+        onEmailChange={setAuthEmail}
+        onPasswordChange={setAuthPassword}
+        onSubmit={signIn}
+      />
+    );
+  }
+
   return (
     <main className="min-h-screen subtle-grid px-4 py-4 text-foreground sm:px-6 lg:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-4">
@@ -1075,6 +1261,7 @@ export function CommandCenter() {
             <StatusPill icon={<Cable size={15} />} label="MCP" value={`${connectorStats?.toolCount ?? 0}`} />
             <StatusPill icon={<Globe2 size={15} />} label="REST" value={`${openApiStats?.operationCount ?? 0}`} />
             <StatusPill icon={<ShieldCheck size={15} />} label="Audits" value={`${toolAuditStats?.total ?? 0}`} />
+            <StatusPill icon={<Users size={15} />} label="Auth" value={authMode} />
             <StatusPill icon={<HardDrive size={15} />} label="Store" value={storageLabel} />
             <StatusPill
               icon={<Sparkles size={15} />}
@@ -1316,6 +1503,104 @@ export function CommandCenter() {
                     No security audits recorded yet.
                   </p>
                 )}
+              </div>
+            </section>
+
+            <section className="panel rounded-lg p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Users className="text-primary" size={18} />
+                  <h2 className="font-semibold">Identity control</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={signOut}
+                  className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+                >
+                  <LogOut size={13} />
+                  Sign out
+                </button>
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Mode" value={authMode} />
+                <MiniStat label="Users" value={`${authStats?.users ?? 0}`} />
+                <MiniStat label="Sessions" value={`${authStats?.sessions ?? 0}`} />
+              </div>
+              <div className="mb-3 rounded-md border border-line bg-background/54 p-3 text-xs">
+                <p className="text-muted">Current identity</p>
+                <p className="mt-1 truncate font-mono text-foreground">{currentIdentity}</p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <span className="rounded border border-line px-1.5 py-1 font-mono text-[10px] text-muted">
+                    {authState.tenant?.name || securityContext?.tenantId || "default"}
+                  </span>
+                  <span className="rounded border border-line px-1.5 py-1 font-mono text-[10px] text-muted">
+                    {authState.membership?.role || securityContext?.role || "admin"}
+                  </span>
+                </div>
+              </div>
+              <div className="flex flex-col gap-3">
+                <input
+                  value={identityEmail}
+                  onChange={(event) => setIdentityEmail(event.target.value)}
+                  className="h-10 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
+                  placeholder="user@example.com"
+                  aria-label="New user email"
+                />
+                <input
+                  value={identityName}
+                  onChange={(event) => setIdentityName(event.target.value)}
+                  className="h-10 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
+                  placeholder="Display name"
+                  aria-label="New user display name"
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    value={identityRole}
+                    onChange={(event) => setIdentityRole(event.target.value as SecurityRole)}
+                    className="h-10 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
+                    aria-label="New user role"
+                  >
+                    <option value="viewer">viewer</option>
+                    <option value="operator">operator</option>
+                    <option value="admin">admin</option>
+                  </select>
+                  <input
+                    value={identityPassword}
+                    onChange={(event) => setIdentityPassword(event.target.value)}
+                    className="h-10 min-w-0 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
+                    placeholder="Password"
+                    type="password"
+                    aria-label="New user password"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={createIdentityUser}
+                  className="flex h-10 items-center justify-center gap-2 rounded-md border border-primary/60 text-sm font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                >
+                  <UserPlus size={15} />
+                  Create user
+                </button>
+                {identityResult ? (
+                  <pre className="max-h-32 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
+                    {identityResult}
+                  </pre>
+                ) : null}
+                <div className="flex flex-col gap-3">
+                  {authUsers.length ? (
+                    authUsers.map((user) => (
+                      <AuthUserRow
+                        key={user.id}
+                        user={user}
+                        membership={authControlPlane?.memberships.find((item) => item.userId === user.id)}
+                      />
+                    ))
+                  ) : (
+                    <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+                      No identity users recorded yet.
+                    </p>
+                  )}
+                </div>
               </div>
             </section>
 
@@ -1727,11 +2012,124 @@ function StatusPill({
   );
 }
 
+function LoadingShell({ label }: { label: string }) {
+  return (
+    <main className="min-h-screen subtle-grid px-4 py-4 text-foreground sm:px-6 lg:px-8">
+      <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-7xl items-center justify-center">
+        <div className="panel w-full max-w-md rounded-lg p-5">
+          <div className="mb-3 flex items-center gap-3">
+            <div className="flex size-10 items-center justify-center rounded-md bg-primary text-primary-ink">
+              <Layers3 size={20} />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-primary">OmniAgent OS</p>
+              <h1 className="text-xl font-semibold">{label}</h1>
+            </div>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-background">
+            <div className="h-full w-1/2 rounded-full bg-primary" />
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function AuthGate({
+  email,
+  password,
+  message,
+  bootstrapConfigured,
+  onEmailChange,
+  onPasswordChange,
+  onSubmit,
+}: {
+  email: string;
+  password: string;
+  message: string;
+  bootstrapConfigured: boolean;
+  onEmailChange: (value: string) => void;
+  onPasswordChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <main className="min-h-screen subtle-grid px-4 py-4 text-foreground sm:px-6 lg:px-8">
+      <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-7xl items-center justify-center">
+        <form onSubmit={onSubmit} className="panel w-full max-w-md rounded-lg p-5">
+          <div className="mb-5 flex items-center gap-3">
+            <div className="flex size-11 items-center justify-center rounded-md bg-primary text-primary-ink">
+              <ShieldCheck size={22} />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-primary">OmniAgent OS</p>
+              <h1 className="text-xl font-semibold">Sign in</h1>
+            </div>
+          </div>
+          <div className="flex flex-col gap-3">
+            <input
+              value={email}
+              onChange={(event) => onEmailChange(event.target.value)}
+              className="h-11 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
+              placeholder="Email"
+              type="email"
+              autoComplete="email"
+              aria-label="Email"
+            />
+            <input
+              value={password}
+              onChange={(event) => onPasswordChange(event.target.value)}
+              className="h-11 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
+              placeholder="Password"
+              type="password"
+              autoComplete="current-password"
+              aria-label="Password"
+            />
+            <button
+              type="submit"
+              className="flex h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 font-medium text-primary-ink transition hover:brightness-110"
+            >
+              <LogIn size={16} />
+              Sign in
+            </button>
+          </div>
+          {message ? <p className="mt-4 rounded-md border border-line bg-background/54 p-3 text-sm text-muted">{message}</p> : null}
+          {!bootstrapConfigured ? (
+            <p className="mt-3 rounded-md border border-danger/40 bg-danger/10 p-3 text-sm leading-6 text-danger">
+              Bootstrap credentials are not configured.
+            </p>
+          ) : null}
+        </form>
+      </div>
+    </main>
+  );
+}
+
 function MiniStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-line bg-background/70 px-2 py-2">
       <p className="text-muted">{label}</p>
       <p className="mt-1 font-mono text-sm text-foreground">{value}</p>
+    </div>
+  );
+}
+
+function AuthUserRow({ user, membership }: { user: AuthUser; membership?: AuthMembership }) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", user.status === "active" ? "bg-primary/16 text-primary" : "bg-danger/14 text-danger")}>
+          {user.status}
+        </span>
+        <span className="shrink-0 rounded border border-line px-2 py-1 font-mono text-[11px] text-muted">
+          {membership?.role || "none"}
+        </span>
+      </div>
+      <p className="truncate text-sm font-medium leading-5">{user.email}</p>
+      {user.name ? <p className="mt-1 line-clamp-1 text-xs leading-5 text-muted">{user.name}</p> : null}
+      <div className="mt-3 flex items-center justify-between gap-3 font-mono text-[11px] text-muted">
+        <span>{membership?.tenantId || "default"}</span>
+        <span>{user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleDateString() : "never"}</span>
+      </div>
     </div>
   );
 }

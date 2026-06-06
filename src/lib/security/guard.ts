@@ -1,4 +1,4 @@
-import { getSecurityContext, requirePermission, securityErrorResponse } from "@/lib/security/context";
+import { requirePermission, resolveSecurityContext, securityErrorResponse } from "@/lib/security/context";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
 import type { SecurityContext } from "@/lib/security/types";
 
@@ -17,7 +17,7 @@ export async function authorizeRequest({
   riskLevel?: number;
   metadata?: Record<string, unknown>;
 }) {
-  const context = getSecurityContext(request);
+  const context = await resolveSecurityContext(request);
 
   try {
     requirePermission(context, action);

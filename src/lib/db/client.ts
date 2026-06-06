@@ -44,29 +44,29 @@ export async function ensureDatabaseSchema() {
     schemaReady = (async () => {
       await sql`SELECT pg_advisory_lock(271828182)`;
       try {
-      await sql`
-        CREATE TABLE IF NOT EXISTS omni_memories (
-          id TEXT PRIMARY KEY,
-          type TEXT NOT NULL,
-          title TEXT NOT NULL,
-          content TEXT NOT NULL,
-          tags TEXT[] NOT NULL DEFAULT '{}',
-          scope TEXT NOT NULL,
-          source TEXT NOT NULL,
-          importance DOUBLE PRECISION NOT NULL DEFAULT 0.5,
-          embedding JSONB,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-      `;
-      await sql`CREATE INDEX IF NOT EXISTS omni_memories_type_idx ON omni_memories (type)`;
-      await sql`CREATE INDEX IF NOT EXISTS omni_memories_updated_at_idx ON omni_memories (updated_at DESC)`;
-      await sql`CREATE INDEX IF NOT EXISTS omni_memories_tags_idx ON omni_memories USING GIN (tags)`;
-      await sql`
-        CREATE INDEX IF NOT EXISTS omni_memories_text_idx
-        ON omni_memories
-        USING GIN (to_tsvector('english', title || ' ' || content))
-      `;
+        await sql`
+          CREATE TABLE IF NOT EXISTS omni_memories (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            tags TEXT[] NOT NULL DEFAULT '{}',
+            scope TEXT NOT NULL,
+            source TEXT NOT NULL,
+            importance DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+            embedding JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `;
+        await sql`CREATE INDEX IF NOT EXISTS omni_memories_type_idx ON omni_memories (type)`;
+        await sql`CREATE INDEX IF NOT EXISTS omni_memories_updated_at_idx ON omni_memories (updated_at DESC)`;
+        await sql`CREATE INDEX IF NOT EXISTS omni_memories_tags_idx ON omni_memories USING GIN (tags)`;
+        await sql`
+          CREATE INDEX IF NOT EXISTS omni_memories_text_idx
+          ON omni_memories
+          USING GIN (to_tsvector('english', title || ' ' || content))
+        `;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_knowledge_documents (
@@ -362,6 +362,62 @@ export async function ensureDatabaseSchema() {
       `;
       await sql`CREATE INDEX IF NOT EXISTS omni_eval_results_run_id_idx ON omni_eval_results (eval_run_id, created_at ASC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_eval_results_case_id_idx ON omni_eval_results (case_id)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_auth_tenants (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          slug TEXT NOT NULL UNIQUE,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_auth_tenants_slug_idx ON omni_auth_tenants (slug)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_auth_users (
+          id TEXT PRIMARY KEY,
+          email TEXT NOT NULL UNIQUE,
+          name TEXT,
+          password_hash TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          last_login_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_auth_users_email_idx ON omni_auth_users (email)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_auth_users_status_idx ON omni_auth_users (status)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_auth_memberships (
+          id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL REFERENCES omni_auth_tenants(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL REFERENCES omni_auth_users(id) ON DELETE CASCADE,
+          role TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_auth_memberships_tenant_user_idx ON omni_auth_memberships (tenant_id, user_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_auth_memberships_user_idx ON omni_auth_memberships (user_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_auth_memberships_role_idx ON omni_auth_memberships (role)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_auth_sessions (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES omni_auth_users(id) ON DELETE CASCADE,
+          tenant_id TEXT NOT NULL REFERENCES omni_auth_tenants(id) ON DELETE CASCADE,
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at TIMESTAMPTZ NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_auth_sessions_token_hash_idx ON omni_auth_sessions (token_hash)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_auth_sessions_user_idx ON omni_auth_sessions (user_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_auth_sessions_expires_idx ON omni_auth_sessions (expires_at)`;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_security_audits (

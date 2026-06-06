@@ -93,6 +93,12 @@ export const tools: Capability[] = [
     description: "Tenant-aware roles, server-only secret references, sensitive metadata redaction, and audit trails.",
     status: "active",
   },
+  {
+    id: "auth.control_plane",
+    name: "Identity Control Plane",
+    description: "Session auth, tenant memberships, user roles, and admin identity management.",
+    status: "active",
+  },
 ];
 
 export const connectorTypes: Capability[] = [

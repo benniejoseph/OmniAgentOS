@@ -26,6 +26,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - Durable workflow runtime with persisted runs, steps, events, retries, approval waits, operator signals, and report persistence
 - Evaluation harness with persisted suites, case results, pass/warn/fail status, retrieval checks, workflow lifecycle checks, latency, and cost estimates
 - Security controls with tenant-scoped context headers, RBAC roles, server-only secret env-var references, sensitive metadata redaction, and persisted allow/deny audit trails
+- Identity control plane with auth-enabled mode, scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
 
 ## Architecture
 
@@ -58,6 +59,12 @@ flowchart TD
   SEC --> RBAC["RBAC Policy"]
   SEC --> SAUDIT["Security Audit Ledger"]
   SAUDIT --> DB
+  API --> AUTH["Identity Control Plane"]
+  AUTH --> USERS["Users, Tenants, Memberships"]
+  AUTH --> SESS["Hashed Sessions"]
+  USERS --> DB
+  SESS --> DB
+  AUTH --> SEC
   GOV --> SEC
   WF --> SEC
   EVAL --> SEC
@@ -85,3 +92,4 @@ flowchart TD
 7. Workflow runtime: add durable queues for long-running jobs, retries, signals, and resumes. Done.
 8. Evaluation harness: add regression tasks, retrieval quality checks, and cost/latency metrics. Done.
 9. Security controls: add tenant boundaries, RBAC, secret vaulting, and audit trails. Done.
+10. Auth and tenant control plane: add session auth, tenants, users, memberships, role-derived contexts, and admin user creation. Done.

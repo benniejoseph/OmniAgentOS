@@ -1,3 +1,5 @@
+import { getSessionToken } from "@/lib/auth/session";
+import { getSessionIdentity, isAuthEnforced } from "@/lib/auth/store";
 import type { RbacRule, SecurityContext, SecurityRole } from "@/lib/security/types";
 
 const roles: SecurityRole[] = ["viewer", "operator", "admin", "system"];
@@ -39,6 +41,16 @@ export const rbacRules: RbacRule[] = [
     description: "Read security context, RBAC policy, and audit records.",
     roles: ["admin", "system"],
   },
+  {
+    action: "read.identity",
+    description: "Read tenants, users, memberships, and active identity sessions.",
+    roles: ["admin", "system"],
+  },
+  {
+    action: "manage.identity",
+    description: "Create users, assign tenant roles, and administer the identity control plane.",
+    roles: ["admin", "system"],
+  },
 ];
 
 export class SecurityPolicyError extends Error {
@@ -65,6 +77,19 @@ export function getSecurityContext(request?: Request): SecurityContext {
   };
 }
 
+export async function resolveSecurityContext(request?: Request): Promise<SecurityContext> {
+  if (!isAuthEnforced()) {
+    return getSecurityContext(request);
+  }
+
+  const identity = await getSessionIdentity(getSessionToken(request));
+  if (!identity) {
+    throw new SecurityPolicyError("Authentication required.", 401);
+  }
+
+  return identity.context;
+}
+
 export function canPerform(role: SecurityRole, action: string) {
   const rule = rbacRules.find((item) => item.action === action);
   return Boolean(rule?.roles.includes(role));
@@ -78,7 +103,10 @@ export function requirePermission(context: SecurityContext, action: string) {
 
 export function securityErrorResponse(error: unknown) {
   if (error instanceof SecurityPolicyError) {
-    return Response.json({ error: "Forbidden", message: error.message }, { status: error.status });
+    return Response.json(
+      { error: error.status === 401 ? "Unauthorized" : "Forbidden", message: error.message },
+      { status: error.status },
+    );
   }
 
   throw error;
