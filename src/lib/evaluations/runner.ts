@@ -7,7 +7,9 @@ import {
   dispatchAlertDeliveries,
   enqueueAlertDeliveriesForActiveIncidents,
   getAlertDeliveryPolicies,
+  getAlertSchedulerState,
   getAlertDeliveryStats,
+  runScheduledAlertDispatch,
 } from "@/lib/diagnostics/alerts";
 import { getHealthStats, runSystemDiagnostics } from "@/lib/diagnostics/health";
 import {
@@ -278,6 +280,21 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       signedWebhook: true,
     },
   },
+  {
+    id: "operations.alert_scheduler",
+    name: "Alert scheduler",
+    description: "Exercises the secured production cron alert path, scheduler metadata, limits, and delivery progress signals.",
+    type: "operations",
+    input: {
+      queueLimit: 10,
+      dispatchLimit: 10,
+    },
+    expected: {
+      schedulerMetadata: true,
+      registryTool: "ops.alert_scheduler",
+      deliveryProgress: true,
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -403,6 +420,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.alert_delivery") {
     return evaluateAlertDelivery(evalCase);
+  }
+
+  if (evalCase.id === "operations.alert_scheduler") {
+    return evaluateAlertScheduler(evalCase);
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -1177,6 +1198,67 @@ async function evaluateAlertDelivery(evalCase: EvalCaseDefinition): Promise<Case
         maxAttempts: policy.maxAttempts,
       })),
       signaturePreview: signature?.slice(0, 18),
+    },
+  };
+}
+
+async function evaluateAlertScheduler(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const queueLimit = Number(evalCase.input.queueLimit || 10);
+  const dispatchLimit = Number(evalCase.input.dispatchLimit || 10);
+  const activeIncidents = await listIncidents({ status: "active", limit: queueLimit });
+  const schedulerBefore = getAlertSchedulerState();
+  const scheduled = await runScheduledAlertDispatch({
+    trigger: "evaluation.alert_scheduler",
+    queueLimit,
+    dispatchLimit,
+  });
+  const registry = getCapabilityRegistry();
+  const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
+  const checks = {
+    schedulerMetadata: Boolean(evalCase.expected.schedulerMetadata)
+      ? scheduled.scheduler.path === "/api/workflows/tick" &&
+        scheduled.scheduler.schedule === "0 0 * * *" &&
+        scheduled.scheduler.queueLimit >= 1 &&
+        scheduled.scheduler.dispatchLimit >= 1
+      : true,
+    cronSecretInspectable: typeof scheduled.scheduler.cronSecretConfigured === "boolean",
+    registryToolAvailable: activeToolIds.has(String(evalCase.expected.registryTool || "ops.alert_scheduler")),
+    statsAvailable: typeof scheduled.stats.total === "number" && typeof scheduled.stats.runnable === "number",
+    targetReadinessVisible: scheduled.scheduler.readyTargets >= 2,
+    deliveryProgress: Boolean(evalCase.expected.deliveryProgress)
+      ? !activeIncidents.length ||
+        scheduled.enqueued.length > 0 ||
+        scheduled.dispatch.processed.length > 0 ||
+        scheduled.stats.delivered > 0
+      : true,
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      activeIncidentCount: activeIncidents.length,
+      schedulerBefore,
+      schedulerAfter: scheduled.scheduler,
+      trigger: scheduled.trigger,
+      enqueued: scheduled.enqueued.length,
+      dispatch: {
+        processed: scheduled.dispatch.processed.length,
+        delivered: scheduled.dispatch.delivered,
+        skipped: scheduled.dispatch.skipped,
+        failed: scheduled.dispatch.failed,
+      },
+      stats: {
+        total: scheduled.stats.total,
+        queued: scheduled.stats.queued,
+        runnable: scheduled.stats.runnable,
+        delivered: scheduled.stats.delivered,
+        failed: scheduled.stats.failed,
+        readyTargets: scheduled.stats.readyTargets,
+      },
     },
   };
 }

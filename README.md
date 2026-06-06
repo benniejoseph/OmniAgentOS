@@ -27,11 +27,24 @@ For scheduled production workflow ticks on Vercel, set:
 CRON_SECRET=
 OMNIAGENT_QUEUE_LEASE_SECONDS=120
 OMNIAGENT_WORKFLOW_DRAIN_LIMIT=2
+OMNIAGENT_ALERT_QUEUE_LIMIT=10
+OMNIAGENT_ALERT_DISPATCH_LIMIT=10
 ```
 
 Without `DATABASE_URL`, local development uses `.omniagent/` and Vercel uses ephemeral `/tmp/omniagent`.
 When Postgres supports pgvector, the app adds vector columns and HNSW indexes for semantic retrieval. Keep `OPENAI_EMBEDDING_DIMENSIONS` at or below `2000` for HNSW indexing; larger JSON embeddings are normalized into the pgvector index dimension.
-Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue. User actions enqueue workflow tick jobs, lease them for bounded execution, retry failed jobs with backoff, and opportunistically drain work after responses with Next.js `after()`. The included `vercel.json` schedules `/api/workflows/tick` once daily as a Hobby-compatible safety net. Pro deployments can raise the cadence by changing the cron expression.
+Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue. User actions enqueue workflow tick jobs, lease them for bounded execution, retry failed jobs with backoff, and opportunistically drain work after responses with Next.js `after()`. The included `vercel.json` schedules `/api/workflows/tick` once daily as a Hobby-compatible safety net. That secured tick also queues and dispatches incident alert deliveries through the alert scheduler. Pro deployments can raise the cadence by changing the cron expression.
+
+For external alert delivery, set one or more of:
+
+```bash
+OMNIAGENT_ALERT_WEBHOOK_URL=
+OMNIAGENT_ALERT_WEBHOOK_SECRET=
+SLACK_WEBHOOK_URL=
+RESEND_API_KEY=
+OMNIAGENT_ALERT_EMAIL_TO=
+OMNIAGENT_ALERT_EMAIL_FROM=
+```
 
 ## What Is Included
 
@@ -66,7 +79,7 @@ Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue
 - `/api/workflows/:id` durable workflow detail endpoint
 - `/api/workflows/:id/tick` enqueue and lease one persisted workflow step
 - `/api/workflows/:id/signal` pause, resume, approve, retry, or cancel a workflow
-- `/api/workflows/tick` lease queued workflow jobs for cron or operator control
+- `/api/workflows/tick` lease queued workflow jobs and scheduled alert deliveries for cron or operator control
 - `/api/triggers` webhook workflow trigger management and audit endpoint
 - `/api/triggers/:id/dispatch` signed webhook dispatch endpoint that creates and enqueues workflow runs
 - `/api/evaluations` regression suite start/list endpoint
@@ -88,7 +101,7 @@ Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue
 - Command center panel for pending approvals, failed work, active workflows, and connector errors
 - Command center health counters for system status, incidents, and completed recovery actions
 - Command center incident response controls for active incidents, acknowledgements, resolutions, and remediation playbooks
-- Command center alert delivery controls for queueing active incident alerts and dispatching pending deliveries
+- Command center alert delivery controls for queueing active incident alerts, dispatching pending deliveries, and exercising the scheduled alert tick
 - Connection catalog for GitHub, Gmail, Slack, Notion, Google Drive, Supabase, Neon, Upstash, browser automation, custom MCP, and custom OpenAPI adapter setup
 - Local memory and knowledge persisted under `.omniagent/`
 - Postgres-backed memory, RAG documents/chunks, run history, tool audit history, MCP connectors, OpenAPI connectors, and discovered tool schemas when `DATABASE_URL` is configured
@@ -107,12 +120,13 @@ Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue
 - Self-healing repair path for expired operation-job leases and stale workflow execution
 - Incident management with normalized incident records, status lifecycle, event history, alert target metadata, and operator playbooks
 - Alert delivery with dashboard/ops persistence, signed outbound webhooks, Slack/email adapters, retry/backoff, and escalation policy metadata
-- Vercel Cron integration for secured production workflow queue ticks with `CRON_SECRET`
+- Vercel Cron integration for secured production workflow queue ticks and scheduled alert dispatch with `CRON_SECRET`
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
 - Operations regression case for approval queue, operations overview, and connection catalog readiness
 - Operations regression case for persisted health diagnostics, SLO metrics, incident consistency, and repair ledgers
 - Operations regression case for incident sync, alert routing metadata, acknowledgement actions, and playbook execution
 - Operations regression case for alert delivery queueing, dispatch lifecycle, delivery policies, target readiness, and signed webhook support
+- Operations regression case for secured scheduled alert dispatch metadata, queue/dispatch limits, and delivery progress
 - Tenant-aware security controls with viewer/operator/admin/system roles, server-only secret env-var references, redacted audit metadata, and persisted RBAC allow/deny records
 - First-party identity control plane with scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
 

@@ -15,6 +15,16 @@ export const WORKFLOW_DRAIN_LIMIT = normalizePositiveInteger(
   process.env.OMNIAGENT_WORKFLOW_DRAIN_LIMIT,
   2,
 );
+export const ALERT_SCHEDULER_CRON_PATH = "/api/workflows/tick";
+export const ALERT_SCHEDULER_CRON_SCHEDULE = "0 0 * * *";
+export const ALERT_SCHEDULER_QUEUE_LIMIT = normalizePositiveInteger(
+  process.env.OMNIAGENT_ALERT_QUEUE_LIMIT,
+  10,
+);
+export const ALERT_SCHEDULER_DISPATCH_LIMIT = normalizePositiveInteger(
+  process.env.OMNIAGENT_ALERT_DISPATCH_LIMIT,
+  10,
+);
 export const WORKFLOW_PLANNER_TIMEOUT_MS = normalizePositiveInteger(
   process.env.OMNIAGENT_WORKFLOW_PLANNER_TIMEOUT_MS,
   8000,

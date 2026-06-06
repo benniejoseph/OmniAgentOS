@@ -32,8 +32,8 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - Native webhook trigger layer with signed event intake, trigger/event audit ledgers, workflow run creation, and durable queue enqueue
 - Production health diagnostics with component status, SLO metrics, incident ledgers, and self-healing repair actions
 - Incident management with normalized incident lifecycle, alert routing metadata, acknowledgement/resolution actions, event history, and remediation playbooks
-- Alert delivery with signed outbound webhooks, Slack/email adapters, delivery retry/backoff, target readiness, and escalation policy metadata
-- Vercel Cron-secured production workflow queue ticks through `/api/workflows/tick`, with opportunistic post-response draining through Next.js `after()`
+- Alert delivery with signed outbound webhooks, Slack/email adapters, delivery retry/backoff, target readiness, escalation policy metadata, and scheduled production dispatch
+- Vercel Cron-secured production workflow queue and scheduled alert delivery ticks through `/api/workflows/tick`, with opportunistic post-response draining through Next.js `after()`
 - Operations center with approval queue, failed work summary, active workflow summary, connector error summary, and durable approval actions
 - External connection catalog for MCP/OpenAPI adapter setup across common production apps
 - Evaluation harness with persisted suites, case results, pass/warn/fail status, retrieval checks, workflow lifecycle checks, latency, and cost estimates
@@ -107,6 +107,10 @@ flowchart TD
   ALERTS --> INCIDENTS
   ALERTS --> WEBHOOKS["Outbound Webhooks / Slack / Email"]
   ALERTS --> DB
+  API --> CRON["Secured Vercel Cron Tick"]
+  CRON --> WF
+  CRON --> ALERTS
+  CRON --> SAUDIT
   API --> SEC["Security Controls"]
   SEC --> RBAC["RBAC Policy"]
   SEC --> SAUDIT["Security Audit Ledger"]
@@ -157,3 +161,4 @@ flowchart TD
 20. Production health diagnostics: add health and diagnostics APIs, persisted component/SLO ledgers, self-healing repair actions, command-center health counters, and regression coverage. Done.
 21. Incident management: add normalized incidents, event history, alert routing metadata, acknowledgement/resolution actions, remediation playbooks, command-center controls, and regression coverage. Done.
 22. Alert delivery: add persisted alert deliveries, signed outbound webhooks, Slack/email adapters, retry/backoff, escalation policy metadata, command-center controls, and regression coverage. Done.
+23. Scheduled alert operations: extend the secured Vercel cron tick to queue and dispatch incident alerts, expose scheduler readiness and limits in the command center, and add scheduler regression coverage. Done.

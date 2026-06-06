@@ -130,6 +130,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "ops.alert_scheduler",
+    name: "Alert Scheduler",
+    description: "Runs scheduled alert queueing and dispatch from the secured production cron tick.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

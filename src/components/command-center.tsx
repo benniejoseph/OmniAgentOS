@@ -562,6 +562,17 @@ type AlertDeliveryPolicy = {
   escalationAfterMinutes: number;
 };
 
+type AlertSchedulerState = {
+  enabled: boolean;
+  path: string;
+  schedule: string;
+  cronSecretConfigured: boolean;
+  queueLimit: number;
+  dispatchLimit: number;
+  readyTargets: number;
+  configuredExternalTargets: number;
+};
+
 type AlertDeliveryStats = {
   total: number;
   queued: number;
@@ -576,6 +587,7 @@ type AlertDeliveryStats = {
   latest: AlertDeliveryRecord[];
   policies: AlertDeliveryPolicy[];
   targets: IncidentAlertTarget[];
+  scheduler: AlertSchedulerState;
 };
 
 type AlertsResponse = {
@@ -1068,6 +1080,7 @@ export function CommandCenter() {
   const incidentStats = incidentState?.stats || capabilities?.incidents;
   const activeIncidents = incidentState?.incidents || incidentStats?.latest || [];
   const alertStats = alertState?.stats || capabilities?.alerts;
+  const alertScheduler = alertStats?.scheduler;
   const latestAlertDeliveries = alertState?.deliveries || alertStats?.latest || [];
   const contextStats = capabilities?.contextEngine;
   const graphStats = capabilities?.memoryGraph;
@@ -1559,6 +1572,25 @@ export function CommandCenter() {
     }
   }
 
+  async function runAlertScheduler() {
+    setStatus("running alert scheduler");
+    setAlertResult("");
+
+    try {
+      const response = await fetch("/api/workflows/tick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 3, alerts: true, alertQueueLimit: 10, alertDispatchLimit: 10 }),
+      });
+      const data = await response.json();
+      setAlertResult(formatToolResult(data));
+      setStatus(response.ok ? "alert scheduler complete" : "alert scheduler failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "alert scheduler failed");
+    }
+  }
+
   function applyConnectionTemplate(template: ConnectionCatalogItem) {
     const authEnv = template.authEnvVars[0] || "";
 
@@ -2003,6 +2035,11 @@ export function CommandCenter() {
                 <MiniStat label="Sent" value={`${alertStats?.delivered ?? 0}`} />
                 <MiniStat label="External" value={`${alertStats?.configuredExternalTargets ?? 0}`} />
               </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Cron" value={alertScheduler?.enabled ? "enabled" : "secret"} />
+                <MiniStat label="Schedule" value={alertScheduler?.schedule || "0 0 * * *"} />
+                <MiniStat label="Limits" value={`${alertScheduler?.queueLimit ?? 10}/${alertScheduler?.dispatchLimit ?? 10}`} />
+              </div>
               <div className="mb-3 grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -2039,6 +2076,14 @@ export function CommandCenter() {
                   Dispatch
                 </button>
               </div>
+              <button
+                type="button"
+                onClick={runAlertScheduler}
+                className="mb-3 flex h-9 w-full items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-primary"
+              >
+                <Activity size={14} />
+                Scheduler tick
+              </button>
               {diagnosticsResult ? (
                 <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                   {diagnosticsResult}
@@ -2895,9 +2940,9 @@ function AuthGate({
 
 function MiniStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-line bg-background/70 px-2 py-2">
+    <div className="min-w-0 rounded-md border border-line bg-background/70 px-2 py-2">
       <p className="text-muted">{label}</p>
-      <p className="mt-1 font-mono text-sm text-foreground">{value}</p>
+      <p className="mt-1 break-words font-mono text-sm text-foreground">{value}</p>
     </div>
   );
 }

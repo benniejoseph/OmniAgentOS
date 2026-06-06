@@ -1,4 +1,10 @@
 import { createHmac, randomUUID } from "node:crypto";
+import {
+  ALERT_SCHEDULER_CRON_PATH,
+  ALERT_SCHEDULER_CRON_SCHEDULE,
+  ALERT_SCHEDULER_DISPATCH_LIMIT,
+  ALERT_SCHEDULER_QUEUE_LIMIT,
+} from "@/lib/config";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import {
   getIncidentAlertTargets,
@@ -46,6 +52,17 @@ export type AlertDeliveryPolicy = {
   escalationAfterMinutes: number;
 };
 
+export type AlertSchedulerState = {
+  enabled: boolean;
+  path: string;
+  schedule: string;
+  cronSecretConfigured: boolean;
+  queueLimit: number;
+  dispatchLimit: number;
+  readyTargets: number;
+  configuredExternalTargets: number;
+};
+
 export type AlertDeliveryStats = {
   total: number;
   queued: number;
@@ -60,6 +77,15 @@ export type AlertDeliveryStats = {
   latest: AlertDeliveryRecord[];
   policies: AlertDeliveryPolicy[];
   targets: IncidentAlertTarget[];
+  scheduler: AlertSchedulerState;
+};
+
+export type ScheduledAlertDispatchResult = {
+  trigger: string;
+  enqueued: AlertDeliveryRecord[];
+  dispatch: DispatchResult;
+  stats: AlertDeliveryStats;
+  scheduler: AlertSchedulerState;
 };
 
 type AlertDeliveryLedger = {
@@ -72,7 +98,7 @@ type EnqueueAlertOptions = {
   includeUnconfigured?: boolean;
 };
 
-type DispatchResult = {
+export type DispatchResult = {
   processed: AlertDeliveryRecord[];
   delivered: number;
   skipped: number;
@@ -105,6 +131,21 @@ let alertFileWriteQueue: Promise<void> = Promise.resolve();
 
 export function getAlertDeliveryPolicies() {
   return alertPolicies;
+}
+
+export function getAlertSchedulerState(targets = getIncidentAlertTargets("critical")): AlertSchedulerState {
+  const readyTargets = targets.filter((target) => target.status === "ready");
+
+  return {
+    enabled: Boolean(process.env.CRON_SECRET?.trim()),
+    path: ALERT_SCHEDULER_CRON_PATH,
+    schedule: ALERT_SCHEDULER_CRON_SCHEDULE,
+    cronSecretConfigured: Boolean(process.env.CRON_SECRET?.trim()),
+    queueLimit: ALERT_SCHEDULER_QUEUE_LIMIT,
+    dispatchLimit: ALERT_SCHEDULER_DISPATCH_LIMIT,
+    readyTargets: readyTargets.length,
+    configuredExternalTargets: readyTargets.filter((target) => !["dashboard", "ops"].includes(target.channel)).length,
+  };
 }
 
 export async function enqueueAlertDeliveriesForIncident(
@@ -197,6 +238,30 @@ export async function dispatchAlertDeliveries(limit = 10): Promise<DispatchResul
   return { processed, delivered, skipped, failed };
 }
 
+export async function runScheduledAlertDispatch({
+  trigger = "operator.scheduler",
+  queueLimit = ALERT_SCHEDULER_QUEUE_LIMIT,
+  dispatchLimit = ALERT_SCHEDULER_DISPATCH_LIMIT,
+}: {
+  trigger?: string;
+  queueLimit?: number;
+  dispatchLimit?: number;
+} = {}): Promise<ScheduledAlertDispatchResult> {
+  const boundedQueueLimit = Math.min(Math.max(queueLimit, 1), 50);
+  const boundedDispatchLimit = Math.min(Math.max(dispatchLimit, 1), 50);
+  const enqueued = await enqueueAlertDeliveriesForActiveIncidents(boundedQueueLimit);
+  const dispatch = await dispatchAlertDeliveries(boundedDispatchLimit);
+  const stats = await getAlertDeliveryStats();
+
+  return {
+    trigger,
+    enqueued,
+    dispatch,
+    stats,
+    scheduler: stats.scheduler,
+  };
+}
+
 export async function listAlertDeliveries({
   incidentId,
   status = "all",
@@ -261,6 +326,7 @@ export async function getAlertDeliveryStats(): Promise<AlertDeliveryStats> {
   const deliveries = await listAlertDeliveries({ limit: 500 });
   const now = Date.now();
   const targets = getIncidentAlertTargets("critical");
+  const scheduler = getAlertSchedulerState(targets);
 
   return {
     total: deliveries.length,
@@ -279,6 +345,7 @@ export async function getAlertDeliveryStats(): Promise<AlertDeliveryStats> {
     latest: deliveries.slice(0, 8),
     policies: alertPolicies,
     targets,
+    scheduler,
   };
 }
 
