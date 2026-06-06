@@ -1,5 +1,7 @@
-import { tickWorkflowRun } from "@/lib/workflows/runner";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { getOperationJobStats } from "@/lib/operations/job-queue";
+import { processWorkflowQueue } from "@/lib/workflows/queue";
+import { getWorkflowRunDetail } from "@/lib/workflows/store";
 
 export const runtime = "nodejs";
 
@@ -16,7 +18,16 @@ export async function POST(
       resourceType: "workflow",
       resourceId: id,
     });
-    return Response.json(await tickWorkflowRun(id));
+    const queue = await processWorkflowQueue({
+      workflowRunId: id,
+      limit: 1,
+      bootstrapQueuedRuns: false,
+    });
+    return Response.json({
+      detail: await getWorkflowRunDetail(id),
+      queue,
+      stats: await getOperationJobStats(),
+    });
   } catch (error) {
     try {
       return forbiddenResponse(error);

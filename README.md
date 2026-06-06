@@ -25,11 +25,13 @@ For scheduled production workflow ticks on Vercel, set:
 
 ```bash
 CRON_SECRET=
+OMNIAGENT_QUEUE_LEASE_SECONDS=120
+OMNIAGENT_WORKFLOW_DRAIN_LIMIT=2
 ```
 
 Without `DATABASE_URL`, local development uses `.omniagent/` and Vercel uses ephemeral `/tmp/omniagent`.
 When Postgres supports pgvector, the app adds vector columns and HNSW indexes for semantic retrieval. Keep `OPENAI_EMBEDDING_DIMENSIONS` at or below `2000` for HNSW indexing; larger JSON embeddings are normalized into the pgvector index dimension.
-The included `vercel.json` schedules `/api/workflows/tick` once daily, which is the Hobby-compatible Vercel Cron cadence. Pro deployments can raise the cadence by changing the cron expression.
+Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue. User actions enqueue workflow tick jobs, lease them for bounded execution, retry failed jobs with backoff, and opportunistically drain work after responses with Next.js `after()`. The included `vercel.json` schedules `/api/workflows/tick` once daily as a Hobby-compatible safety net. Pro deployments can raise the cadence by changing the cron expression.
 
 ## What Is Included
 
@@ -52,9 +54,9 @@ The included `vercel.json` schedules `/api/workflows/tick` once daily, which is 
 - `/api/openapi-connectors/:id/import` OpenAPI operation re-import endpoint
 - `/api/workflows` durable workflow start/list endpoint
 - `/api/workflows/:id` durable workflow detail endpoint
-- `/api/workflows/:id/tick` advance one persisted workflow step
+- `/api/workflows/:id/tick` enqueue and lease one persisted workflow step
 - `/api/workflows/:id/signal` pause, resume, approve, retry, or cancel a workflow
-- `/api/workflows/tick` advance queued workflows for cron or operator control
+- `/api/workflows/tick` lease queued workflow jobs for cron or operator control
 - `/api/evaluations` regression suite start/list endpoint
 - `/api/evaluations/:id` evaluation run detail endpoint
 - `/api/security/context` tenant, actor, role, RBAC, and secret-vault policy endpoint
@@ -80,7 +82,7 @@ The included `vercel.json` schedules `/api/workflows/tick` once daily, which is 
 - Governed tool execution with risk levels, approval gates, durable approve/reject decisions, planned connector blocking, and immutable audit records
 - MCP connector host for Streamable HTTP servers; discovered tools flow into the governed tool registry and inherit risk/audit policy
 - OpenAPI connector importer for JSON/YAML specs; imported REST operations flow into the governed tool registry with env-var based auth, dry-runs, approval gates, and audit policy
-- Durable workflow runtime for persisted step execution with retries, approval waits, operator signals, event history, and final report persistence
+- Durable workflow runtime for persisted step execution with Postgres queue leases, retries, approval waits, operator signals, event history, and final report persistence
 - Vercel Cron integration for secured production workflow queue ticks with `CRON_SECRET`
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
 - Operations regression case for approval queue, operations overview, and connection catalog readiness

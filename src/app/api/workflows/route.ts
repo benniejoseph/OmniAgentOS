@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { getOperationJobStats } from "@/lib/operations/job-queue";
+import { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { createWorkflowRun, getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
 
 export const runtime = "nodejs";
@@ -18,6 +20,7 @@ export async function GET(request: Request) {
   return Response.json({
     runs: await listWorkflowRuns(limit),
     stats: await getWorkflowStats(),
+    queue: await getOperationJobStats(),
   });
 }
 
@@ -44,5 +47,7 @@ export async function POST(request: Request) {
   }
 
   const detail = await createWorkflowRun(parsed.data);
-  return Response.json(detail, { status: 201 });
+  const queueJob = await enqueueWorkflowRunTick(detail.run.id, "workflow_created");
+  scheduleWorkflowQueueDrain();
+  return Response.json({ ...detail, queueJob }, { status: 201 });
 }

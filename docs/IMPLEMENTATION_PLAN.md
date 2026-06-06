@@ -24,8 +24,8 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - Durable approval metadata for governed tool records, including approve/reject decisions, approver, decision time, and reason
 - MCP connector registry for Streamable HTTP endpoints, token env-var references, server capabilities, discovered tool schemas, and connector health
 - OpenAPI connector registry for JSON/YAML specs, base URLs, token env-var references, imported operations, request schemas, and connector health
-- Durable workflow runtime with persisted runs, steps, events, retries, approval waits, operator signals, and report persistence
-- Vercel Cron-secured production workflow queue ticks through `/api/workflows/tick`
+- Durable workflow runtime with persisted runs, steps, events, Postgres-backed operation jobs, leases, retry backoff, approval waits, operator signals, and report persistence
+- Vercel Cron-secured production workflow queue ticks through `/api/workflows/tick`, with opportunistic post-response draining through Next.js `after()`
 - Operations center with approval queue, failed work summary, active workflow summary, connector error summary, and durable approval actions
 - External connection catalog for MCP/OpenAPI adapter setup across common production apps
 - Evaluation harness with persisted suites, case results, pass/warn/fail status, retrieval checks, workflow lifecycle checks, latency, and cost estimates
@@ -50,7 +50,10 @@ flowchart TD
   GOV --> POLICY["Risk Policy and Approval Gates"]
   GOV --> AUDIT["Tool Audit Ledger"]
   API --> WF["Durable Workflow Runtime"]
+  API --> OQ["Operation Job Queue"]
   WF --> WSTEPS["Persisted Steps and Signals"]
+  OQ --> WF
+  OQ --> DB
   WSTEPS --> DB
   WF --> RAG
   WF --> MEM
@@ -100,3 +103,4 @@ flowchart TD
 11. Vercel Cron workflow ticker: add a secured scheduled production queue tick endpoint. Done.
 12. Approval and operations center: add durable tool approvals, workflow/tool approval queue, operations overview, and external connection catalog. Done.
 13. pgvector production hardening: align OpenAI embedding dimensions with pgvector HNSW limits, migrate vector columns, backfill vector indexes, and remove noisy fallback warnings. Done.
+14. Durable runtime hardening: add Postgres operation jobs, queue leases, expired-lease repair, retry backoff, workflow dedupe keys, queue health reporting, and post-response drains. Done.

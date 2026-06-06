@@ -7,6 +7,14 @@ export const EMBEDDING_DIMENSIONS = normalizePositiveInteger(
 );
 export const PGVECTOR_HNSW_MAX_DIMENSIONS = 2000;
 export const VECTOR_INDEX_DIMENSIONS = Math.min(EMBEDDING_DIMENSIONS, PGVECTOR_HNSW_MAX_DIMENSIONS);
+export const OPERATION_QUEUE_LEASE_SECONDS = normalizePositiveInteger(
+  process.env.OMNIAGENT_QUEUE_LEASE_SECONDS,
+  120,
+);
+export const WORKFLOW_DRAIN_LIMIT = normalizePositiveInteger(
+  process.env.OMNIAGENT_WORKFLOW_DRAIN_LIMIT,
+  2,
+);
 
 export function hasOpenAIKey() {
   return Boolean(process.env.OPENAI_API_KEY?.trim());

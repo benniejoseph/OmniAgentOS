@@ -380,6 +380,35 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_events_type_idx ON omni_workflow_events (type)`;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS omni_operation_jobs (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          payload JSONB NOT NULL DEFAULT '{}',
+          dedupe_key TEXT,
+          priority INTEGER NOT NULL DEFAULT 0,
+          attempt INTEGER NOT NULL DEFAULT 0,
+          max_attempts INTEGER NOT NULL DEFAULT 3,
+          run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          locked_at TIMESTAMPTZ,
+          lease_owner TEXT,
+          lease_expires_at TIMESTAMPTZ,
+          last_error TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          completed_at TIMESTAMPTZ
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_operation_jobs_status_run_at_idx ON omni_operation_jobs (status, run_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_operation_jobs_type_status_idx ON omni_operation_jobs (type, status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_operation_jobs_updated_at_idx ON omni_operation_jobs (updated_at DESC)`;
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS omni_operation_jobs_dedupe_key_idx
+        ON omni_operation_jobs (dedupe_key)
+        WHERE dedupe_key IS NOT NULL
+      `;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS omni_eval_runs (
           id TEXT PRIMARY KEY,
           suite TEXT NOT NULL,

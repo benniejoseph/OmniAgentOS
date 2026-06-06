@@ -232,11 +232,17 @@ type OperationsResponse = {
     failedTools: number;
     connectorErrors: number;
     runningRuns: number;
+    queuedJobs: number;
+    runningJobs: number;
+    failedJobs: number;
+    runnableJobs: number;
+    expiredLeases: number;
   };
   latest: {
     workflows: WorkflowRunRecord[];
     toolExecutions: ToolExecutionRecord[];
     agentRuns: AgentRun[];
+    operationJobs: OperationJobRecord[];
     connectors: Array<{
       id: string;
       name: string;
@@ -324,9 +330,37 @@ type WorkflowStats = {
   latest: WorkflowRunRecord[];
 };
 
+type OperationJobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
+
+type OperationJobRecord = {
+  id: string;
+  type: "workflow.tick";
+  status: OperationJobStatus;
+  payload: Record<string, unknown>;
+  dedupeKey?: string;
+  priority: number;
+  attempt: number;
+  maxAttempts: number;
+  runAt: string;
+  lockedAt?: string;
+  leaseExpiresAt?: string;
+  lastError?: string;
+  updatedAt: string;
+};
+
+type OperationJobStats = {
+  total: number;
+  byStatus: Record<string, number>;
+  runnable: number;
+  delayed: number;
+  expiredLeases: number;
+  latest: OperationJobRecord[];
+};
+
 type WorkflowsResponse = {
   runs: WorkflowRunRecord[];
   stats: WorkflowStats;
+  queue: OperationJobStats;
 };
 
 type EvalResultStatus = "pass" | "fail" | "warn";
@@ -554,6 +588,7 @@ type CapabilityResponse = {
   mcpConnectors: ConnectorStats;
   openApiConnectors: OpenApiConnectorStats;
   workflows: WorkflowStats;
+  operationJobs: OperationJobStats;
   evaluations: EvalStats;
   security: {
     context: SecurityContext;
@@ -739,6 +774,7 @@ export function CommandCenter() {
   const latestOpenApiConnectors = openApiState?.connectors.slice(0, 5) || [];
   const latestOpenApiOperations = openApiState?.operations.slice(0, 5) || [];
   const workflowStats = workflowState?.stats || capabilities?.workflows;
+  const queueStats = workflowState?.queue || capabilities?.operationJobs;
   const latestWorkflows = workflowState?.runs.slice(0, 5) || capabilities?.workflows.latest || [];
   const approvalQueue = approvalState?.items || operationState?.approvals.items || [];
   const approvalStats = approvalState?.stats || operationState?.approvals.stats;
@@ -1555,6 +1591,11 @@ export function CommandCenter() {
                 <MiniStat label="Connectors" value={`${operationSummary?.connectorErrors ?? 0} errors`} />
                 <MiniStat label="Runs" value={`${operationSummary?.runningRuns ?? 0} running`} />
               </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Queued" value={`${operationSummary?.queuedJobs ?? queueStats?.byStatus.queued ?? 0}`} />
+                <MiniStat label="Runnable" value={`${operationSummary?.runnableJobs ?? queueStats?.runnable ?? 0}`} />
+                <MiniStat label="Leases" value={`${operationSummary?.expiredLeases ?? queueStats?.expiredLeases ?? 0} stale`} />
+              </div>
               {approvalResult ? (
                 <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                   {approvalResult}
@@ -1586,6 +1627,11 @@ export function CommandCenter() {
                 <MiniStat label="Total" value={`${workflowStats?.total ?? 0}`} />
                 <MiniStat label="Active" value={`${workflowStats?.active ?? 0}`} />
                 <MiniStat label="Approval" value={`${workflowStats?.waitingApproval ?? 0}`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Queue" value={`${queueStats?.byStatus.queued ?? 0}`} />
+                <MiniStat label="Running" value={`${queueStats?.byStatus.running ?? 0}`} />
+                <MiniStat label="Failed jobs" value={`${queueStats?.byStatus.failed ?? 0}`} />
               </div>
               <div className="flex flex-col gap-3">
                 <textarea

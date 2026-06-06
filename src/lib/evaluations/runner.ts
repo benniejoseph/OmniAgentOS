@@ -8,8 +8,8 @@ import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import { getApprovalQueue, getOperationsOverview } from "@/lib/operations/queue";
 import { retrieveContext } from "@/lib/rag/retriever";
 import { canPerform, redactSensitive } from "@/lib/security/context";
-import { createWorkflowRun } from "@/lib/workflows/store";
-import { tickWorkflowRun } from "@/lib/workflows/runner";
+import { enqueueWorkflowRunTick, processWorkflowQueue } from "@/lib/workflows/queue";
+import { createWorkflowRun, getWorkflowRunDetail } from "@/lib/workflows/store";
 import {
   completeEvalRun,
   createEvalRun,
@@ -302,9 +302,15 @@ async function evaluateWorkflowLifecycle(evalCase: EvalCaseDefinition): Promise<
   });
   const maxTicks = Number(evalCase.input.maxTicks || 8);
   let current = detail;
+  await enqueueWorkflowRunTick(detail.run.id, "evaluation_workflow_lifecycle");
 
   for (let index = 0; index < maxTicks && current?.run.status !== "completed" && current?.run.status !== "failed"; index++) {
-    current = await tickWorkflowRun(detail.run.id);
+    const queue = await processWorkflowQueue({
+      workflowRunId: detail.run.id,
+      limit: 1,
+      bootstrapQueuedRuns: false,
+    });
+    current = queue.jobs[0]?.detail || (await getWorkflowRunDetail(detail.run.id)) || current;
   }
 
   const finalStatus = current?.run.status;
@@ -319,6 +325,7 @@ async function evaluateWorkflowLifecycle(evalCase: EvalCaseDefinition): Promise<
       workflowRunId: detail.run.id,
       finalStatus,
       completedSteps,
+      queueBacked: true,
       resultKeys: current?.run.result ? Object.keys(current.run.result) : [],
       reportPreview: typeof report === "string" ? report.slice(0, 600) : undefined,
     },

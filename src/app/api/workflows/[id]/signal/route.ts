@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
 
 export const runtime = "nodejs";
@@ -30,7 +31,24 @@ export async function POST(
       resourceId: id,
       metadata: parsed.data,
     });
-    return Response.json(await signalWorkflowRun(id, parsed.data.signal));
+    const detail = await signalWorkflowRun(id, parsed.data.signal);
+    let queueJob;
+    let canceledJobs;
+
+    if (parsed.data.signal === "pause" || parsed.data.signal === "cancel") {
+      canceledJobs = await cancelWorkflowRunTick(id, `Workflow ${parsed.data.signal} signal received.`);
+    }
+
+    if (parsed.data.signal === "resume" || parsed.data.signal === "approve" || parsed.data.signal === "retry") {
+      queueJob = await enqueueWorkflowRunTick(id, `workflow_${parsed.data.signal}`);
+      scheduleWorkflowQueueDrain();
+    }
+
+    return Response.json({
+      ...detail,
+      queueJob,
+      canceledJobs,
+    });
   } catch (error) {
     try {
       return forbiddenResponse(error);

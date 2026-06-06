@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getToolExecution, saveToolExecution } from "@/lib/tools/audit-store";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
 
 export const runtime = "nodejs";
@@ -37,7 +38,14 @@ export async function POST(
         metadata: parsed.data,
       });
       const signal = parsed.data.decision === "approve" ? "approve" : "cancel";
-      return Response.json(await signalWorkflowRun(id, signal));
+      const detail = await signalWorkflowRun(id, signal);
+      if (signal === "approve") {
+        const queueJob = await enqueueWorkflowRunTick(id, "workflow_approval");
+        scheduleWorkflowQueueDrain();
+        return Response.json({ ...detail, queueJob });
+      }
+      const canceledJobs = await cancelWorkflowRunTick(id, "Workflow approval rejected.");
+      return Response.json({ ...detail, canceledJobs });
     } catch (error) {
       try {
         return forbiddenResponse(error);

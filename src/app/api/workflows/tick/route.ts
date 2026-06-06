@@ -2,7 +2,8 @@ import { z } from "zod";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import type { SecurityContext } from "@/lib/security/types";
-import { tickQueuedWorkflows } from "@/lib/workflows/runner";
+import { getOperationJobStats } from "@/lib/operations/job-queue";
+import { processWorkflowQueue } from "@/lib/workflows/queue";
 
 export const runtime = "nodejs";
 
@@ -45,17 +46,22 @@ export async function GET(request: Request) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const runs = await tickQueuedWorkflows(cronTickLimit);
+  const queue = await processWorkflowQueue({ limit: cronTickLimit });
   await recordSecurityAudit({
     context,
     action: "manage.workflow",
     resourceType: "workflow_queue",
     decision: "allow",
     reason: "Vercel Cron workflow tick.",
-    metadata: { trigger: "vercel_cron", limit: cronTickLimit, count: runs.length },
+    metadata: { trigger: "vercel_cron", limit: cronTickLimit, count: queue.leased },
   });
 
-  return Response.json({ runs, count: runs.length, trigger: "vercel_cron" });
+  return Response.json({
+    queue,
+    stats: await getOperationJobStats(),
+    count: queue.leased,
+    trigger: "vercel_cron",
+  });
 }
 
 export async function POST(request: Request) {
@@ -80,8 +86,12 @@ export async function POST(request: Request) {
     return forbiddenResponse(error);
   }
 
-  const runs = await tickQueuedWorkflows(parsed.data.limit || 5);
-  return Response.json({ runs, count: runs.length });
+  const queue = await processWorkflowQueue({ limit: parsed.data.limit || 5 });
+  return Response.json({
+    queue,
+    stats: await getOperationJobStats(),
+    count: queue.leased,
+  });
 }
 
 function getCronSecurityContext(): SecurityContext {

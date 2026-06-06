@@ -78,7 +78,7 @@ export const tools: Capability[] = [
   {
     id: "workflow.temporal",
     name: "Durable Workflow Runtime",
-    description: "Run long jobs through persisted steps with retries, approvals, signals, and resumes.",
+    description: "Run long jobs through queued leases, persisted steps, retries, approvals, signals, and resumes.",
     status: "active",
   },
   {

@@ -5,6 +5,7 @@ import { getStorageBackend, getVectorStoreStatus, hasDatabaseUrl } from "@/lib/d
 import { getEvalStats } from "@/lib/evaluations/store";
 import { getMemoryStats } from "@/lib/memory/store";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
+import { getOperationJobStats } from "@/lib/operations/job-queue";
 import { getKnowledgeStats } from "@/lib/rag/store";
 import { getRunStats } from "@/lib/runs/store";
 import { getSecurityStats } from "@/lib/security/audit-store";
@@ -35,6 +36,7 @@ export async function GET(request: Request) {
     mcpConnectors: await getMcpConnectorStats(),
     openApiConnectors: await getOpenApiConnectorStats(),
     workflows: await getWorkflowStats(),
+    operationJobs: await getOperationJobStats(),
     evaluations: await getEvalStats(),
     security: {
       context: securityContext,

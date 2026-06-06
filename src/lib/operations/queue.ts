@@ -1,5 +1,6 @@
 import { listMcpConnectors } from "@/lib/connectors/store";
 import { listOpenApiConnectors } from "@/lib/connectors/openapi-store";
+import { getOperationJobStats, listOperationJobs } from "@/lib/operations/job-queue";
 import { listAgentRuns } from "@/lib/runs/store";
 import { redactSensitive } from "@/lib/security/context";
 import { getToolExecutionStats, listPendingToolApprovals, listToolExecutions } from "@/lib/tools/audit-store";
@@ -68,6 +69,8 @@ export async function getOperationsOverview() {
     agentRuns,
     mcpConnectors,
     openApiConnectors,
+    operationJobStats,
+    operationJobs,
   ] = await Promise.all([
     getApprovalQueue(25),
     listWorkflowRuns(20),
@@ -77,6 +80,8 @@ export async function getOperationsOverview() {
     listAgentRuns(20),
     listMcpConnectors(),
     listOpenApiConnectors(),
+    getOperationJobStats(),
+    listOperationJobs(20),
   ]);
   const connectorErrors =
     mcpConnectors.filter((connector) => connector.status === "error").length +
@@ -91,11 +96,17 @@ export async function getOperationsOverview() {
       failedTools: toolStats.byStatus.failed || 0,
       connectorErrors,
       runningRuns: agentRuns.filter((run) => run.status === "running").length,
+      queuedJobs: operationJobStats.byStatus.queued || 0,
+      runningJobs: operationJobStats.byStatus.running || 0,
+      failedJobs: operationJobStats.byStatus.failed || 0,
+      runnableJobs: operationJobStats.runnable,
+      expiredLeases: operationJobStats.expiredLeases,
     },
     latest: {
       workflows: workflowRuns,
       toolExecutions,
       agentRuns,
+      operationJobs,
       connectors: [...mcpConnectors, ...openApiConnectors]
         .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
         .slice(0, 10),
