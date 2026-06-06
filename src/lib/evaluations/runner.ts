@@ -20,12 +20,13 @@ import {
   getIncidentPlaybooks,
   getIncidentStats,
   listIncidents,
+  resolveIncidentByFingerprint,
 } from "@/lib/diagnostics/incidents";
 import { runIncidentPlaybook } from "@/lib/diagnostics/playbooks";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { connectionCatalog } from "@/lib/connectors/catalog";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
-import { runObservabilitySloMonitor, type ObservabilitySloPolicy } from "@/lib/observability/slo-monitor";
+import { createSloIncidentFingerprint, runObservabilitySloMonitor, type ObservabilitySloPolicy } from "@/lib/observability/slo-monitor";
 import { getObservabilityStats, listObservabilityEvents, recordRuntimeEvent } from "@/lib/observability/store";
 import { getMemoryGraphStats, rebuildMemoryGraph, searchMemoryGraph } from "@/lib/memory/graph";
 import { listMemories, saveMemory } from "@/lib/memory/store";
@@ -1528,6 +1529,11 @@ async function evaluateSloAlerting(evalCase: EvalCaseDefinition): Promise<CaseRe
   };
   const passed = Object.values(checks).filter(Boolean).length;
   const total = Object.keys(checks).length;
+  const cleanup = await resolveIncidentByFingerprint(createSloIncidentFingerprint(policies[0]), {
+    actorId: "evaluation",
+    resolution: "Resolved evaluation-only SLO alerting incident.",
+    metadata: { policyId, correlationId },
+  }).catch(() => null);
 
   return {
     status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
@@ -1542,6 +1548,7 @@ async function evaluateSloAlerting(evalCase: EvalCaseDefinition): Promise<CaseRe
         queuedAlerts: result.queuedAlerts,
         incidentActions: result.incidentActions.length,
       },
+      cleanupResolved: Boolean(cleanup),
       action: action ? {
         incidentId: action.incident?.id,
         created: action.created,
