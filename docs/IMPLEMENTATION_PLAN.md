@@ -11,7 +11,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - File-backed local memory and knowledge ledgers in `.omniagent/`
 - Neon/Postgres-backed durable memory, source documents, source chunks, and run ledger when `DATABASE_URL` is configured
 - RAG v2 knowledge layer with `omni_knowledge_documents` and `omni_knowledge_chunks`
-- Best-effort pgvector columns and HNSW indexes for semantic retrieval
+- pgvector columns and HNSW indexes for semantic retrieval, using a pgvector-safe embedding dimension
 - Hybrid retrieval with semantic, keyword, recency, and memory-importance signals
 - Manual memory writes and manual knowledge ingestion
 - Automatic memory consolidation after successful runs into facts, preferences, procedures, decisions, and unresolved tasks
@@ -99,3 +99,4 @@ flowchart TD
 10. Auth and tenant control plane: add session auth, tenants, users, memberships, role-derived contexts, and admin user creation. Done.
 11. Vercel Cron workflow ticker: add a secured scheduled production queue tick endpoint. Done.
 12. Approval and operations center: add durable tool approvals, workflow/tool approval queue, operations overview, and external connection catalog. Done.
+13. pgvector production hardening: align OpenAI embedding dimensions with pgvector HNSW limits, migrate vector columns, backfill vector indexes, and remove noisy fallback warnings. Done.

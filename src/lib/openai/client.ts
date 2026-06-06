@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import type { ResponseFormatTextJSONSchemaConfig } from "openai/resources/responses/responses";
-import { AGENT_MODEL, EMBEDDING_MODEL, hasOpenAIKey } from "@/lib/config";
+import { AGENT_MODEL, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, hasOpenAIKey } from "@/lib/config";
 
 let client: OpenAI | null = null;
 
@@ -26,6 +26,9 @@ export async function embedTexts(input: string[]) {
   const response = await getOpenAIClient().embeddings.create({
     model: EMBEDDING_MODEL,
     input,
+    ...(EMBEDDING_MODEL.startsWith("text-embedding-3")
+      ? { dimensions: EMBEDDING_DIMENSIONS }
+      : {}),
   });
 
   return response.data.map((item) => item.embedding);

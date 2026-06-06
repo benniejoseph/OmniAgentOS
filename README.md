@@ -13,6 +13,7 @@ npm run dev
 Open `http://localhost:3000`.
 
 The app runs in fallback mode until `OPENAI_API_KEY` is set in `.env.local`.
+Embeddings default to `text-embedding-3-large` with `OPENAI_EMBEDDING_DIMENSIONS=1536`, which keeps pgvector HNSW indexes compatible with Neon/Postgres.
 
 For durable production memory, run history, and RAG documents, attach a Postgres database and set:
 
@@ -27,7 +28,7 @@ CRON_SECRET=
 ```
 
 Without `DATABASE_URL`, local development uses `.omniagent/` and Vercel uses ephemeral `/tmp/omniagent`.
-When Postgres supports pgvector, the app adds vector columns and indexes for semantic retrieval.
+When Postgres supports pgvector, the app adds vector columns and HNSW indexes for semantic retrieval. Keep `OPENAI_EMBEDDING_DIMENSIONS` at or below `2000` for HNSW indexing; larger JSON embeddings are normalized into the pgvector index dimension.
 The included `vercel.json` schedules `/api/workflows/tick` once daily, which is the Hobby-compatible Vercel Cron cadence. Pro deployments can raise the cadence by changing the cron expression.
 
 ## What Is Included

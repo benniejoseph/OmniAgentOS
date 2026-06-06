@@ -1,7 +1,7 @@
 import { hasOpenAIKey } from "@/lib/config";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
-import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
+import { getStorageBackend, getVectorStoreStatus, hasDatabaseUrl } from "@/lib/db/client";
 import { getEvalStats } from "@/lib/evaluations/store";
 import { getMemoryStats } from "@/lib/memory/store";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
@@ -27,6 +27,7 @@ export async function GET(request: Request) {
     openaiConfigured: hasOpenAIKey(),
     databaseConfigured: hasDatabaseUrl(),
     storageBackend: getStorageBackend(),
+    vectorStore: await getVectorStoreStatus(),
     memory: await getMemoryStats(),
     knowledge: await getKnowledgeStats(),
     runs: await getRunStats(),

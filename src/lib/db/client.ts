@@ -1,5 +1,5 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
-import { EMBEDDING_DIMENSIONS } from "@/lib/config";
+import { PGVECTOR_HNSW_MAX_DIMENSIONS, VECTOR_INDEX_DIMENSIONS } from "@/lib/config";
 
 type SqlClient = NeonQueryFunction<false, false>;
 
@@ -20,6 +20,50 @@ export function getStorageBackend() {
   }
 
   return "file";
+}
+
+export async function getVectorStoreStatus() {
+  if (!hasDatabaseUrl()) {
+    return {
+      configured: false,
+      hnswSupported: VECTOR_INDEX_DIMENSIONS <= PGVECTOR_HNSW_MAX_DIMENSIONS,
+      dimensions: VECTOR_INDEX_DIMENSIONS,
+    };
+  }
+
+  await ensureDatabaseSchema();
+  const [extensionRows, indexRows] = await Promise.all([
+    getSql()`SELECT extversion FROM pg_extension WHERE extname = 'vector' LIMIT 1`,
+    getSql()`
+      SELECT indexname
+      FROM pg_indexes
+      WHERE schemaname = current_schema()
+        AND indexname IN (
+          'omni_memories_embedding_vector_idx',
+          'omni_knowledge_chunks_embedding_vector_idx'
+        )
+    `,
+  ]);
+  const indexNames = new Set(indexRows.map((row) => String(row.indexname)));
+  const memoryColumnDimensions = await getVectorColumnDimensions(getSql(), "omni_memories");
+  const knowledgeColumnDimensions = await getVectorColumnDimensions(getSql(), "omni_knowledge_chunks");
+
+  return {
+    configured:
+      Boolean(extensionRows[0]) &&
+      memoryColumnDimensions === VECTOR_INDEX_DIMENSIONS &&
+      knowledgeColumnDimensions === VECTOR_INDEX_DIMENSIONS &&
+      indexNames.has("omni_memories_embedding_vector_idx") &&
+      indexNames.has("omni_knowledge_chunks_embedding_vector_idx"),
+    extensionInstalled: Boolean(extensionRows[0]),
+    extensionVersion: extensionRows[0]?.extversion ? String(extensionRows[0].extversion) : undefined,
+    dimensions: VECTOR_INDEX_DIMENSIONS,
+    hnswSupported: VECTOR_INDEX_DIMENSIONS <= PGVECTOR_HNSW_MAX_DIMENSIONS,
+    memoryColumnDimensions,
+    knowledgeColumnDimensions,
+    memoryIndexed: indexNames.has("omni_memories_embedding_vector_idx"),
+    knowledgeIndexed: indexNames.has("omni_knowledge_chunks_embedding_vector_idx"),
+  };
 }
 
 export function getSql() {
@@ -469,24 +513,95 @@ export async function ensureDatabaseSchema() {
 async function ensureVectorSchema(sql: SqlClient) {
   try {
     await sql`CREATE EXTENSION IF NOT EXISTS vector`;
-    await sql.query(`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS embedding_vector vector(${EMBEDDING_DIMENSIONS})`);
-    await sql.query(
-      `ALTER TABLE omni_knowledge_chunks ADD COLUMN IF NOT EXISTS embedding_vector vector(${EMBEDDING_DIMENSIONS})`,
-    );
-    await sql`
-      CREATE INDEX IF NOT EXISTS omni_memories_embedding_vector_idx
-      ON omni_memories
-      USING hnsw (embedding_vector vector_cosine_ops)
-    `;
-    await sql`
-      CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_embedding_vector_idx
-      ON omni_knowledge_chunks
-      USING hnsw (embedding_vector vector_cosine_ops)
-    `;
+    await ensureVectorColumn({
+      sql,
+      tableName: "omni_memories",
+      indexName: "omni_memories_embedding_vector_idx",
+    });
+    await ensureVectorColumn({
+      sql,
+      tableName: "omni_knowledge_chunks",
+      indexName: "omni_knowledge_chunks_embedding_vector_idx",
+    });
   } catch (error) {
-    console.warn(
-      "pgvector schema unavailable; continuing with JSON embeddings.",
-      error instanceof Error ? error.message : error,
-    );
+    if (process.env.OMNIAGENT_LOG_PGVECTOR_FAILURES === "true") {
+      console.info(
+        "pgvector schema unavailable; continuing with JSON embeddings.",
+        error instanceof Error ? error.message : error,
+      );
+    }
   }
+}
+
+async function ensureVectorColumn({
+  sql,
+  tableName,
+  indexName,
+}: {
+  sql: SqlClient;
+  tableName: "omni_memories" | "omni_knowledge_chunks";
+  indexName: string;
+}) {
+  const dimensions = await getVectorColumnDimensions(sql, tableName);
+  if (dimensions !== VECTOR_INDEX_DIMENSIONS) {
+    await sql.query(`DROP INDEX IF EXISTS ${indexName}`);
+    await sql.query(`ALTER TABLE ${tableName} DROP COLUMN IF EXISTS embedding_vector`);
+    await sql.query(`ALTER TABLE ${tableName} ADD COLUMN embedding_vector vector(${VECTOR_INDEX_DIMENSIONS})`);
+  }
+
+  await backfillVectorColumn(sql, tableName);
+
+  if (VECTOR_INDEX_DIMENSIONS <= PGVECTOR_HNSW_MAX_DIMENSIONS) {
+    await sql.query(`
+      CREATE INDEX IF NOT EXISTS ${indexName}
+      ON ${tableName}
+      USING hnsw (embedding_vector vector_cosine_ops)
+    `);
+  }
+}
+
+async function getVectorColumnDimensions(
+  sql: SqlClient,
+  tableName: "omni_memories" | "omni_knowledge_chunks",
+) {
+  const rows = await sql.query(
+    `
+      SELECT CASE WHEN attribute.atttypmod >= 0 THEN attribute.atttypmod ELSE NULL END AS dimensions
+      FROM pg_attribute attribute
+      JOIN pg_class class ON class.oid = attribute.attrelid
+      JOIN pg_namespace namespace ON namespace.oid = class.relnamespace
+      WHERE namespace.nspname = current_schema()
+        AND class.relname = $1
+        AND attribute.attname = 'embedding_vector'
+        AND NOT attribute.attisdropped
+      LIMIT 1
+    `,
+    [tableName],
+  );
+
+  return rows[0]?.dimensions === null || rows[0]?.dimensions === undefined
+    ? undefined
+    : Number(rows[0].dimensions);
+}
+
+async function backfillVectorColumn(
+  sql: SqlClient,
+  tableName: "omni_memories" | "omni_knowledge_chunks",
+) {
+  await sql.query(`
+    UPDATE ${tableName}
+    SET embedding_vector = (
+      '[' || (
+        SELECT string_agg(item.value::text, ',' ORDER BY item.ordinality)
+        FROM jsonb_array_elements_text(embedding) WITH ORDINALITY AS item(value, ordinality)
+        WHERE item.ordinality <= ${VECTOR_INDEX_DIMENSIONS}
+      ) || ']'
+    )::vector
+    WHERE embedding_vector IS NULL
+      AND CASE
+        WHEN jsonb_typeof(embedding) = 'array'
+        THEN jsonb_array_length(embedding) >= ${VECTOR_INDEX_DIMENSIONS}
+        ELSE false
+      END
+  `);
 }

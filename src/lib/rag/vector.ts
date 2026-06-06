@@ -1,11 +1,23 @@
-import { EMBEDDING_DIMENSIONS } from "@/lib/config";
+import { VECTOR_INDEX_DIMENSIONS } from "@/lib/config";
 
 export function toVectorLiteral(embedding?: number[] | null) {
-  if (!embedding?.length || embedding.length !== EMBEDDING_DIMENSIONS) {
+  const normalized = normalizeEmbeddingDimensions(embedding);
+  if (!normalized) {
     return null;
   }
 
-  return `[${embedding.map((value) => normalizeVectorNumber(value)).join(",")}]`;
+  return `[${normalized.map((value) => normalizeVectorNumber(value)).join(",")}]`;
+}
+
+export function normalizeEmbeddingDimensions(
+  embedding?: number[] | null,
+  dimensions = VECTOR_INDEX_DIMENSIONS,
+) {
+  if (!embedding?.length || embedding.length < dimensions) {
+    return null;
+  }
+
+  return embedding.slice(0, dimensions);
 }
 
 export function parseEmbedding(value: unknown): number[] | undefined {
@@ -26,7 +38,9 @@ export function parseEmbedding(value: unknown): number[] | undefined {
 }
 
 export function cosineSimilarity(a: number[], b: number[]) {
-  if (a.length !== b.length || a.length === 0) {
+  const normalizedA = normalizeEmbeddingDimensions(a);
+  const normalizedB = normalizeEmbeddingDimensions(b);
+  if (!normalizedA || !normalizedB || normalizedA.length !== normalizedB.length) {
     return 0;
   }
 
@@ -34,10 +48,10 @@ export function cosineSimilarity(a: number[], b: number[]) {
   let normA = 0;
   let normB = 0;
 
-  for (let i = 0; i < a.length; i += 1) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
+  for (let i = 0; i < normalizedA.length; i += 1) {
+    dot += normalizedA[i] * normalizedB[i];
+    normA += normalizedA[i] * normalizedA[i];
+    normB += normalizedB[i] * normalizedB[i];
   }
 
   if (!normA || !normB) {

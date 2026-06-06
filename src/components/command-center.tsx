@@ -519,6 +519,17 @@ type CapabilityResponse = {
   openaiConfigured: boolean;
   databaseConfigured: boolean;
   storageBackend: "postgres" | "ephemeral" | "file";
+  vectorStore: {
+    configured: boolean;
+    extensionInstalled?: boolean;
+    extensionVersion?: string;
+    dimensions: number;
+    hnswSupported: boolean;
+    memoryColumnDimensions?: number;
+    knowledgeColumnDimensions?: number;
+    memoryIndexed?: boolean;
+    knowledgeIndexed?: boolean;
+  };
   memory: {
     total: number;
     embedded: number;
@@ -1426,6 +1437,11 @@ export function CommandCenter() {
             <StatusPill icon={<CheckCircle2 size={15} />} label="Approval" value={`${approvalStats?.total ?? 0}`} />
             <StatusPill icon={<Users size={15} />} label="Auth" value={authMode} />
             <StatusPill icon={<HardDrive size={15} />} label="Store" value={storageLabel} />
+            <StatusPill
+              icon={<Database size={15} />}
+              label="Vector"
+              value={capabilities?.vectorStore.configured ? "HNSW" : "JSON"}
+            />
             <StatusPill
               icon={<Sparkles size={15} />}
               label="OpenAI"
