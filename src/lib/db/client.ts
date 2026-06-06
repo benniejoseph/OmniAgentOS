@@ -199,7 +199,7 @@ export async function ensureDatabaseSchema() {
       await sql`
         CREATE INDEX IF NOT EXISTS omni_memory_graph_nodes_text_idx
         ON omni_memory_graph_nodes
-        USING GIN (to_tsvector('english', label || ' ' || summary || ' ' || array_to_string(tags, ' ')))
+        USING GIN (to_tsvector('english', label || ' ' || summary))
       `;
 
       await sql`
