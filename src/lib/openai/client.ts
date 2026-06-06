@@ -68,25 +68,30 @@ export async function createStructuredResponse({
   input,
   schema,
   name,
+  abortSignal,
 }: {
   instructions: string;
   input: string;
   schema: ResponseFormatTextJSONSchemaConfig["schema"];
   name: string;
+  abortSignal?: AbortSignal;
 }) {
-  const response = await getOpenAIClient().responses.create({
-    model: AGENT_MODEL,
-    instructions,
-    input,
-    text: {
-      format: {
-        type: "json_schema",
-        name,
-        strict: true,
-        schema,
+  const response = await getOpenAIClient().responses.create(
+    {
+      model: AGENT_MODEL,
+      instructions,
+      input,
+      text: {
+        format: {
+          type: "json_schema",
+          name,
+          strict: true,
+          schema,
+        },
       },
     },
-  });
+    { signal: abortSignal },
+  );
 
   return response.output_text;
 }

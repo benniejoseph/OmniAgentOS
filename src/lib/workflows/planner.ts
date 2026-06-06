@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { AGENT_MODEL, hasOpenAIKey } from "@/lib/config";
+import { AGENT_MODEL, WORKFLOW_PLANNER_TIMEOUT_MS, hasOpenAIKey } from "@/lib/config";
 import { listMcpGovernedTools, listOpenApiGovernedTools } from "@/lib/connectors/governed-tools";
 import { connectionCatalog } from "@/lib/connectors/catalog";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
@@ -211,19 +211,24 @@ async function generatePlan({
   }
 
   try {
-    const raw = await createStructuredResponse({
-      name: "dynamic_workflow_plan",
-      schema: dynamicPlanJsonSchema,
-      instructions: buildPlannerInstructions(),
-      input: [
-        `Goal:\n${goal}`,
-        `Mode: ${mode}`,
-        `Operator requires approval: ${requireApproval ? "yes" : "no"}`,
-        `Context trace: ${contextTraceId || "none"}`,
-        `Available tools:\n${JSON.stringify(toolCandidates.slice(0, 18), null, 2)}`,
-        `Context evidence:\n${contextBlock.slice(0, 8000)}`,
-      ].join("\n\n"),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error("Workflow planner timed out.")), WORKFLOW_PLANNER_TIMEOUT_MS);
+    const raw = await createStructuredResponse(
+      {
+        name: "dynamic_workflow_plan",
+        schema: dynamicPlanJsonSchema,
+        instructions: buildPlannerInstructions(),
+        input: [
+          `Goal:\n${goal}`,
+          `Mode: ${mode}`,
+          `Operator requires approval: ${requireApproval ? "yes" : "no"}`,
+          `Context trace: ${contextTraceId || "none"}`,
+          `Available tools:\n${JSON.stringify(toolCandidates.slice(0, 18), null, 2)}`,
+          `Context evidence:\n${contextBlock.slice(0, 6000)}`,
+        ].join("\n\n"),
+        abortSignal: controller.signal,
+      },
+    ).finally(() => clearTimeout(timer));
     const parsed = dynamicPlanSchema.parse(JSON.parse(raw));
     return {
       planner: "openai",

@@ -15,6 +15,10 @@ export const WORKFLOW_DRAIN_LIMIT = normalizePositiveInteger(
   process.env.OMNIAGENT_WORKFLOW_DRAIN_LIMIT,
   2,
 );
+export const WORKFLOW_PLANNER_TIMEOUT_MS = normalizePositiveInteger(
+  process.env.OMNIAGENT_WORKFLOW_PLANNER_TIMEOUT_MS,
+  8000,
+);
 
 export function hasOpenAIKey() {
   return Boolean(process.env.OPENAI_API_KEY?.trim());
