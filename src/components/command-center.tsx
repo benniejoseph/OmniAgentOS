@@ -793,9 +793,16 @@ type ObservabilitySloPolicy = {
   comparator: SloComparator;
   warningThreshold: number;
   criticalThreshold: number;
+  warningSeverity: IncidentSeverity;
+  criticalSeverity: IncidentSeverity;
   unit: "ratio" | "ms" | "count";
   componentId: string;
   enabled: boolean;
+  alertTargetIds: string[];
+  suppressionMinutes: number;
+  metadata: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 type ObservabilitySloEvaluation = {
@@ -815,6 +822,13 @@ type ObservabilitySloSnapshot = {
   policies: ObservabilitySloPolicy[];
   evaluations: ObservabilitySloEvaluation[];
   breaches: ObservabilitySloEvaluation[];
+};
+
+type ObservabilitySloPolicyResponse = {
+  policies: ObservabilitySloPolicy[];
+  defaults: ObservabilitySloPolicy[];
+  alertTargets: IncidentAlertTarget[];
+  snapshot: ObservabilitySloSnapshot;
 };
 
 type SecurityRole = "viewer" | "operator" | "admin" | "system";
@@ -1149,6 +1163,15 @@ export function CommandCenter() {
   const [evaluationResult, setEvaluationResult] = useState("");
   const [observabilityState, setObservabilityState] = useState<ObservabilityResponse | null>(null);
   const [observabilitySloState, setObservabilitySloState] = useState<ObservabilitySloSnapshot | null>(null);
+  const [sloPolicyState, setSloPolicyState] = useState<ObservabilitySloPolicyResponse | null>(null);
+  const [selectedSloPolicyId, setSelectedSloPolicyId] = useState("");
+  const [sloWarningThreshold, setSloWarningThreshold] = useState("");
+  const [sloCriticalThreshold, setSloCriticalThreshold] = useState("");
+  const [sloWarningSeverity, setSloWarningSeverity] = useState<IncidentSeverity>("warning");
+  const [sloCriticalSeverity, setSloCriticalSeverity] = useState<IncidentSeverity>("critical");
+  const [sloSuppressionMinutes, setSloSuppressionMinutes] = useState("");
+  const [sloPolicyEnabled, setSloPolicyEnabled] = useState(true);
+  const [sloTargetIds, setSloTargetIds] = useState<string[]>([]);
   const [observabilityResult, setObservabilityResult] = useState("");
   const [securityState, setSecurityState] = useState<SecurityState | null>(null);
   const [authState, setAuthState] = useState<AuthSessionResponse | null>(null);
@@ -1206,6 +1229,15 @@ export function CommandCenter() {
   const observabilityStats = observabilityState?.stats || capabilities?.observability;
   const latestObservabilityEvents = observabilityState?.events || observabilityStats?.latest || [];
   const observabilitySlo = observabilitySloState || capabilities?.observabilitySlo;
+  const sloPolicies = sloPolicyState?.policies || observabilitySlo?.policies || [];
+  const selectedSloPolicy = sloPolicies.find((policy) => policy.id === selectedSloPolicyId) || sloPolicies[0];
+  const sloAlertTargets = sloPolicyState?.alertTargets || alertTargetHealth.map((target) => ({
+    id: target.id,
+    name: target.name,
+    channel: target.channel,
+    status: target.targetStatus,
+    description: target.blockingReasons[0] || target.channel,
+  }));
   const observabilityBreaches = observabilitySlo?.breaches || [];
   const securityContext = securityState?.context || capabilities?.security.context;
   const securityStats = securityState?.stats || capabilities?.security.stats;
@@ -1223,6 +1255,17 @@ export function CommandCenter() {
       : capabilities?.storageBackend === "ephemeral"
         ? "Ephemeral"
         : "File";
+
+  function loadSloPolicyForm(policy: ObservabilitySloPolicy) {
+    setSelectedSloPolicyId(policy.id);
+    setSloWarningThreshold(String(policy.warningThreshold));
+    setSloCriticalThreshold(String(policy.criticalThreshold));
+    setSloWarningSeverity(policy.warningSeverity);
+    setSloCriticalSeverity(policy.criticalSeverity);
+    setSloSuppressionMinutes(String(policy.suppressionMinutes));
+    setSloPolicyEnabled(policy.enabled);
+    setSloTargetIds(policy.alertTargetIds || []);
+  }
 
   async function initializeWorkspace() {
     const auth = await refreshAuth();
@@ -1742,6 +1785,82 @@ export function CommandCenter() {
     }
   }
 
+  async function saveSloPolicy() {
+    if (!selectedSloPolicy) {
+      return;
+    }
+    setStatus("saving SLO policy");
+    setObservabilityResult("");
+
+    try {
+      const response = await fetch("/api/observability/slo/policies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "upsert_policy",
+          policy: {
+            ...selectedSloPolicy,
+            warningThreshold: Number(sloWarningThreshold),
+            criticalThreshold: Number(sloCriticalThreshold),
+            warningSeverity: sloWarningSeverity,
+            criticalSeverity: sloCriticalSeverity,
+            suppressionMinutes: Number(sloSuppressionMinutes),
+            enabled: sloPolicyEnabled,
+            alertTargetIds: sloTargetIds,
+          },
+        }),
+      });
+      const data = await response.json();
+      setObservabilityResult(formatToolResult(data));
+      if (data.policies) {
+        setSloPolicyState(data);
+        setObservabilitySloState(data.snapshot);
+        const savedPolicy = data.policies.find((policy: ObservabilitySloPolicy) => policy.id === selectedSloPolicy.id);
+        if (savedPolicy) {
+          loadSloPolicyForm(savedPolicy);
+        }
+      }
+      setStatus(response.ok ? "SLO policy saved" : "SLO policy save failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "SLO policy save failed");
+    }
+  }
+
+  async function resetSloPolicies() {
+    setStatus("resetting SLO policies");
+    setObservabilityResult("");
+
+    try {
+      const response = await fetch("/api/observability/slo/policies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reset_defaults" }),
+      });
+      const data = await response.json();
+      setObservabilityResult(formatToolResult(data));
+      if (data.policies) {
+        setSloPolicyState(data);
+        setObservabilitySloState(data.snapshot);
+        if (data.policies[0]) {
+          loadSloPolicyForm(data.policies[0]);
+        }
+      }
+      setStatus(response.ok ? "SLO policies reset" : "SLO policy reset failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "SLO policy reset failed");
+    }
+  }
+
+  function toggleSloTarget(targetId: string) {
+    setSloTargetIds((current) =>
+      current.includes(targetId)
+        ? current.filter((id) => id !== targetId)
+        : [...current, targetId],
+    );
+  }
+
   function applyConnectionTemplate(template: ConnectionCatalogItem) {
     const authEnv = template.authEnvVars[0] || "";
 
@@ -1939,6 +2058,22 @@ export function CommandCenter() {
       .catch(() => undefined);
   }
 
+  function refreshSloPolicies() {
+    fetch("/api/observability/slo/policies")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (data) {
+          setSloPolicyState(data);
+          setObservabilitySloState(data.snapshot);
+          const policy = data.policies.find((item: ObservabilitySloPolicy) => item.id === selectedSloPolicyId) || data.policies[0];
+          if (policy) {
+            loadSloPolicyForm(policy);
+          }
+        }
+      })
+      .catch(() => undefined);
+  }
+
   function refreshSecurity() {
     Promise.all([
       fetch("/api/security/context")
@@ -1984,6 +2119,7 @@ export function CommandCenter() {
     refreshEvaluations();
     refreshObservability();
     refreshObservabilitySlo();
+    refreshSloPolicies();
     refreshSecurity();
   }
 
@@ -2201,6 +2337,122 @@ export function CommandCenter() {
                 <Activity size={14} />
                 Run SLO monitor
               </button>
+              {selectedSloPolicy ? (
+                <div className="mb-3 rounded-md border border-line bg-background/54 p-3">
+                  <div className="mb-2 grid grid-cols-1 gap-2">
+                    <select
+                      value={selectedSloPolicy.id}
+                      onChange={(event) => {
+                        const policy = sloPolicies.find((item) => item.id === event.target.value);
+                        if (policy) {
+                          loadSloPolicyForm(policy);
+                        }
+                      }}
+                      className="h-9 rounded-md border border-line bg-background px-2 text-xs outline-none focus:border-primary"
+                      aria-label="SLO policy"
+                    >
+                      {sloPolicies.map((policy) => (
+                        <option key={policy.id} value={policy.id}>
+                          {policy.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="mb-2 grid grid-cols-2 gap-2">
+                    <input
+                      value={sloWarningThreshold}
+                      onChange={(event) => setSloWarningThreshold(event.target.value)}
+                      className="h-9 rounded-md border border-line bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                      aria-label="Warning threshold"
+                      inputMode="decimal"
+                    />
+                    <input
+                      value={sloCriticalThreshold}
+                      onChange={(event) => setSloCriticalThreshold(event.target.value)}
+                      className="h-9 rounded-md border border-line bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                      aria-label="Critical threshold"
+                      inputMode="decimal"
+                    />
+                  </div>
+                  <div className="mb-2 grid grid-cols-3 gap-2">
+                    <select
+                      value={sloWarningSeverity}
+                      onChange={(event) => setSloWarningSeverity(event.target.value as IncidentSeverity)}
+                      className="h-9 rounded-md border border-line bg-background px-2 text-xs outline-none focus:border-primary"
+                      aria-label="Warning severity"
+                    >
+                      <option value="info">info</option>
+                      <option value="warning">warning</option>
+                      <option value="critical">critical</option>
+                    </select>
+                    <select
+                      value={sloCriticalSeverity}
+                      onChange={(event) => setSloCriticalSeverity(event.target.value as IncidentSeverity)}
+                      className="h-9 rounded-md border border-line bg-background px-2 text-xs outline-none focus:border-primary"
+                      aria-label="Critical severity"
+                    >
+                      <option value="info">info</option>
+                      <option value="warning">warning</option>
+                      <option value="critical">critical</option>
+                    </select>
+                    <input
+                      value={sloSuppressionMinutes}
+                      onChange={(event) => setSloSuppressionMinutes(event.target.value)}
+                      className="h-9 rounded-md border border-line bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                      aria-label="Suppression minutes"
+                      inputMode="numeric"
+                    />
+                  </div>
+                  <div className="mb-3 flex flex-wrap gap-1.5">
+                    {sloAlertTargets.slice(0, 5).map((target) => (
+                      <label
+                        key={target.id}
+                        className={clsx(
+                          "flex h-7 items-center gap-1.5 rounded border px-2 text-[11px] transition",
+                          sloTargetIds.includes(target.id)
+                            ? "border-primary bg-primary/14 text-primary"
+                            : "border-line text-muted",
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={sloTargetIds.includes(target.id)}
+                          onChange={() => toggleSloTarget(target.id)}
+                          className="size-3 accent-current"
+                        />
+                        {target.id}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <label className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={sloPolicyEnabled}
+                        onChange={(event) => setSloPolicyEnabled(event.target.checked)}
+                        className="size-3 accent-current"
+                      />
+                      Enabled
+                    </label>
+                    <button
+                      type="button"
+                      onClick={saveSloPolicy}
+                      className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                    >
+                      <CheckCircle2 size={14} />
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetSloPolicies}
+                      className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-danger"
+                    >
+                      <History size={14} />
+                      Reset
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               {observabilityResult ? (
                 <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                   {observabilityResult}
@@ -3260,7 +3512,11 @@ function SloPolicyRow({ evaluation }: { evaluation: ObservabilitySloEvaluation }
       <div className="mt-3 grid grid-cols-3 gap-1.5 font-mono text-[11px] text-muted">
         <span>{formatSloMetric(evaluation.value, evaluation.policy.unit)}</span>
         <span>{evaluation.threshold === undefined ? "inside" : formatSloMetric(evaluation.threshold, evaluation.policy.unit)}</span>
-        <span>{evaluation.policy.enabled ? "enabled" : "off"}</span>
+        <span>{evaluation.policy.suppressionMinutes}m</span>
+      </div>
+      <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[10px] text-muted">
+        <span className="truncate">{evaluation.policy.alertTargetIds.length ? evaluation.policy.alertTargetIds.join(",") : "default targets"}</span>
+        <span className="shrink-0">{evaluation.policy.enabled ? "enabled" : "off"}</span>
       </div>
     </div>
   );

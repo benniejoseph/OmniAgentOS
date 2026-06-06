@@ -27,6 +27,12 @@ import { executeGovernedTool } from "@/lib/tools/executor";
 import { connectionCatalog } from "@/lib/connectors/catalog";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import { createSloIncidentFingerprint, runObservabilitySloMonitor, type ObservabilitySloPolicy } from "@/lib/observability/slo-monitor";
+import {
+  deleteObservabilitySloPolicy,
+  getObservabilitySloPolicy,
+  listObservabilitySloPolicies,
+  saveObservabilitySloPolicy,
+} from "@/lib/observability/slo-policy-store";
 import { getObservabilityStats, listObservabilityEvents, recordRuntimeEvent } from "@/lib/observability/store";
 import { getMemoryGraphStats, rebuildMemoryGraph, searchMemoryGraph } from "@/lib/memory/graph";
 import { listMemories, saveMemory } from "@/lib/memory/store";
@@ -347,6 +353,24 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       registryTool: "ops.slo_alerting",
     },
   },
+  {
+    id: "operations.slo_policy_management",
+    name: "SLO policy management",
+    description: "Validates durable SLO policy configuration for thresholds, severities, routing, suppression, enablement, and cleanup.",
+    type: "operations",
+    input: {
+      policyPrefix: "eval_policy",
+    },
+    expected: {
+      persisted: true,
+      thresholdsConfigurable: true,
+      severityConfigurable: true,
+      routingConfigurable: true,
+      suppressionConfigurable: true,
+      cleanup: true,
+      registryTool: "ops.slo_policy_management",
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -488,6 +512,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.slo_alerting") {
     return evaluateSloAlerting(evalCase);
+  }
+
+  if (evalCase.id === "operations.slo_policy_management") {
+    return evaluateSloPolicyManagement(evalCase);
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -1491,9 +1519,14 @@ async function evaluateSloAlerting(evalCase: EvalCaseDefinition): Promise<CaseRe
       comparator: "greater_than_or_equal",
       warningThreshold: 1,
       criticalThreshold: 5,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
       unit: "count",
       componentId: "observability",
       enabled: true,
+      alertTargetIds: ["dashboard", "ops"],
+      suppressionMinutes: 0,
+      metadata: { source: "evaluation" },
     },
   ];
   const result = await runObservabilitySloMonitor({
@@ -1556,6 +1589,77 @@ async function evaluateSloAlerting(evalCase: EvalCaseDefinition): Promise<CaseRe
         severityChanged: action.severityChanged,
         alertDeliveries: action.alertDeliveries.length,
       } : undefined,
+    },
+  };
+}
+
+async function evaluateSloPolicyManagement(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const policyId = `${String(evalCase.input.policyPrefix || "eval_policy")}_${Date.now()}`;
+  const policy: ObservabilitySloPolicy = {
+    id: policyId,
+    name: "Evaluation configurable SLO policy",
+    description: "Temporary evaluation policy for configurable SLO management.",
+    metric: "routeFailures",
+    comparator: "greater_than_or_equal",
+    warningThreshold: 9999,
+    criticalThreshold: 19999,
+    warningSeverity: "info",
+    criticalSeverity: "warning",
+    unit: "count",
+    componentId: "observability",
+    enabled: true,
+    alertTargetIds: ["dashboard", "ops"],
+    suppressionMinutes: 17,
+    metadata: { source: "evaluation" },
+  };
+  const saved = await saveObservabilitySloPolicy(policy);
+  const fetched = await getObservabilitySloPolicy(policyId);
+  const allPolicies = await listObservabilitySloPolicies({ includeDisabled: true });
+  const registry = getCapabilityRegistry();
+  const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
+  const cleanup = await deleteObservabilitySloPolicy(policyId).catch(() => false);
+  const afterCleanup = await getObservabilitySloPolicy(policyId);
+  const checks = {
+    persisted: Boolean(evalCase.expected.persisted)
+      ? Boolean(fetched && allPolicies.some((item) => item.id === policyId))
+      : true,
+    thresholdsConfigurable: Boolean(evalCase.expected.thresholdsConfigurable)
+      ? fetched?.warningThreshold === policy.warningThreshold && fetched?.criticalThreshold === policy.criticalThreshold
+      : true,
+    severityConfigurable: Boolean(evalCase.expected.severityConfigurable)
+      ? fetched?.warningSeverity === "info" && fetched?.criticalSeverity === "warning"
+      : true,
+    routingConfigurable: Boolean(evalCase.expected.routingConfigurable)
+      ? JSON.stringify(fetched?.alertTargetIds || []) === JSON.stringify(policy.alertTargetIds)
+      : true,
+    suppressionConfigurable: Boolean(evalCase.expected.suppressionConfigurable)
+      ? fetched?.suppressionMinutes === 17
+      : true,
+    cleanup: Boolean(evalCase.expected.cleanup)
+      ? cleanup === true && afterCleanup === null
+      : true,
+    registryToolAvailable: activeToolIds.has(String(evalCase.expected.registryTool || "ops.slo_policy_management")),
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      policyId,
+      saved: {
+        id: saved.id,
+        warningThreshold: saved.warningThreshold,
+        criticalThreshold: saved.criticalThreshold,
+        warningSeverity: saved.warningSeverity,
+        criticalSeverity: saved.criticalSeverity,
+        alertTargetIds: saved.alertTargetIds,
+        suppressionMinutes: saved.suppressionMinutes,
+      },
+      policyCount: allPolicies.length,
+      cleanup,
     },
   };
 }

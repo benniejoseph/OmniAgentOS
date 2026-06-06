@@ -822,6 +822,30 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_category_created_idx ON omni_observability_events (category, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_correlation_idx ON omni_observability_events (correlation_id, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_route_created_idx ON omni_observability_events (route, created_at DESC)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_observability_slo_policies (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          metric TEXT NOT NULL,
+          comparator TEXT NOT NULL,
+          warning_threshold DOUBLE PRECISION NOT NULL,
+          critical_threshold DOUBLE PRECISION NOT NULL,
+          warning_severity TEXT NOT NULL DEFAULT 'warning',
+          critical_severity TEXT NOT NULL DEFAULT 'critical',
+          unit TEXT NOT NULL,
+          component_id TEXT NOT NULL DEFAULT 'observability',
+          enabled BOOLEAN NOT NULL DEFAULT TRUE,
+          alert_target_ids TEXT[] NOT NULL DEFAULT '{}',
+          suppression_minutes INTEGER NOT NULL DEFAULT 120,
+          metadata JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policies_enabled_idx ON omni_observability_slo_policies (enabled, updated_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policies_metric_idx ON omni_observability_slo_policies (metric)`;
       await ensureVectorSchema(sql);
     } finally {
       await sql`SELECT pg_advisory_unlock(271828182)`;

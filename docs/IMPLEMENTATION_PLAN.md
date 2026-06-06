@@ -35,7 +35,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - Alert delivery with signed outbound webhooks, Slack/email adapters, delivery retry/backoff, target readiness probes, failed-delivery recovery, escalation policy metadata, and scheduled production dispatch
 - Vercel Cron-secured production workflow queue, observability SLO monitor, and scheduled alert delivery ticks through `/api/workflows/tick`, with opportunistic post-response draining through Next.js `after()`
 - Operations center with approval queue, failed work summary, active workflow summary, connector error summary, and durable approval actions
-- Observability console with durable runtime events, correlation IDs, SLO summaries, SLO breach policies, route failure counts, monitor controls, and secret-safe metadata
+- Observability console with durable runtime events, correlation IDs, SLO summaries, configurable SLO policies, route failure counts, monitor controls, and secret-safe metadata
 - External connection catalog for MCP/OpenAPI adapter setup across common production apps
 - Evaluation harness with persisted suites, case results, pass/warn/fail status, retrieval checks, workflow lifecycle checks, latency, and cost estimates
 - Security controls with tenant-scoped context headers, RBAC roles, server-only secret env-var references, sensitive metadata redaction, and persisted allow/deny audit trails
@@ -114,6 +114,8 @@ flowchart TD
   CRON --> SAUDIT
   API --> OBS["Observability Console"]
   OBS --> SLO["SLO Monitor"]
+  SLO --> SLOPOL["SLO Policy Store"]
+  SLOPOL --> DB
   SLO --> INCIDENTS
   SLO --> ALERTS
   WF --> OBS
@@ -175,3 +177,4 @@ flowchart TD
 24. Alert operations hardening: add secret-safe target health probes, blocked external target accounting, failed-delivery retry controls, command-center target health rows, and regression coverage. Done.
 25. Observability console: add durable runtime events, correlation IDs, SLO/error summaries, observability API, command-center timeline, and regression coverage. Done.
 26. Observability SLO alerting: add SLO policy evaluation, breach-to-incident sync, alert queue integration, cron/operator monitor execution, command-center controls, and regression coverage. Done.
+27. SLO policy management: add durable SLO policies, threshold/severity/routing/suppression configuration, default reset, command-center editor controls, and regression coverage. Done.

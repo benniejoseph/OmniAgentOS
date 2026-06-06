@@ -1,28 +1,23 @@
 import { enqueueAlertDeliveriesForIncident, type AlertDeliveryRecord } from "@/lib/diagnostics/alerts";
 import {
+  getIncidentAlertTargets,
   resolveIncidentByFingerprint,
+  updateIncidentMetadata,
   upsertIncidentFromSignal,
   type IncidentEventRecord,
   type IncidentRecord,
   type IncidentSeverity,
 } from "@/lib/diagnostics/incidents";
+import {
+  listObservabilitySloPolicies,
+  type ObservabilitySloPolicy,
+  type SloComparator,
+  type SloMetric,
+} from "@/lib/observability/slo-policy-store";
 import { getObservabilityStats, recordRuntimeEventSafely, type ObservabilityStats } from "@/lib/observability/store";
 
-export type SloMetric = "errorRate" | "availability" | "latencyP95Ms" | "routeFailures";
-export type SloComparator = "greater_than" | "greater_than_or_equal" | "less_than" | "less_than_or_equal";
-
-export type ObservabilitySloPolicy = {
-  id: string;
-  name: string;
-  description: string;
-  metric: SloMetric;
-  comparator: SloComparator;
-  warningThreshold: number;
-  criticalThreshold: number;
-  unit: "ratio" | "ms" | "count";
-  componentId: string;
-  enabled: boolean;
-};
+export { getDefaultObservabilitySloPolicies } from "@/lib/observability/slo-policy-store";
+export type { ObservabilitySloPolicy, SloComparator, SloMetric } from "@/lib/observability/slo-policy-store";
 
 export type ObservabilitySloEvaluation = {
   policy: ObservabilitySloPolicy;
@@ -52,6 +47,7 @@ export type ObservabilitySloIncidentAction = {
   reopened?: boolean;
   severityChanged?: boolean;
   resolved?: boolean;
+  alertSuppressed?: boolean;
   alertDeliveries: AlertDeliveryRecord[];
 };
 
@@ -64,66 +60,14 @@ export type ObservabilitySloMonitorResult = ObservabilitySloSnapshot & {
 
 export const observabilitySloIncidentPrefix = "observability:slo";
 
-export function getDefaultObservabilitySloPolicies(): ObservabilitySloPolicy[] {
-  return [
-    {
-      id: "error_budget",
-      name: "Error budget burn",
-      description: "Runtime error events must stay within a 2% operating budget across the recent event window.",
-      metric: "errorRate",
-      comparator: "greater_than",
-      warningThreshold: 0.02,
-      criticalThreshold: 0.1,
-      unit: "ratio",
-      componentId: "observability",
-      enabled: true,
-    },
-    {
-      id: "availability_floor",
-      name: "Availability floor",
-      description: "Route-level availability should stay at or above 99.5% across the recent event window.",
-      metric: "availability",
-      comparator: "less_than",
-      warningThreshold: 0.995,
-      criticalThreshold: 0.98,
-      unit: "ratio",
-      componentId: "observability",
-      enabled: true,
-    },
-    {
-      id: "route_failures",
-      name: "Route failure budget",
-      description: "Any route failure is surfaced immediately; five or more recent failures escalate to critical.",
-      metric: "routeFailures",
-      comparator: "greater_than_or_equal",
-      warningThreshold: 1,
-      criticalThreshold: 5,
-      unit: "count",
-      componentId: "observability",
-      enabled: true,
-    },
-    {
-      id: "latency_p95",
-      name: "P95 latency ceiling",
-      description: "The recent runtime event P95 latency should stay below eight seconds.",
-      metric: "latencyP95Ms",
-      comparator: "greater_than",
-      warningThreshold: 8000,
-      criticalThreshold: 15000,
-      unit: "ms",
-      componentId: "observability",
-      enabled: true,
-    },
-  ];
-}
-
 export async function getObservabilitySloSnapshot({
-  policies = getDefaultObservabilitySloPolicies(),
+  policies,
 }: {
   policies?: ObservabilitySloPolicy[];
 } = {}): Promise<ObservabilitySloSnapshot> {
   const stats = await getObservabilityStats();
-  const enabledPolicies = policies.filter((policy) => policy.enabled);
+  const enabledPolicies = (policies || await listObservabilitySloPolicies({ includeDisabled: false }))
+    .filter((policy) => policy.enabled);
   const evaluations = enabledPolicies.map((policy) => evaluateSloPolicy(policy, stats));
   const breaches = evaluations.filter((evaluation) => evaluation.breached);
 
@@ -192,6 +136,7 @@ export async function runObservabilitySloMonitor({
       title: `Observability SLO breach: ${evaluation.policy.name}`,
       message: evaluation.message,
       actorId,
+      alertTargets: alertTargetsForPolicy(evaluation.policy, evaluation.severity),
       metadata: {
         source: "observability_slo_monitor",
         trigger,
@@ -212,12 +157,23 @@ export async function runObservabilitySloMonitor({
       },
     });
     let alertDeliveries: AlertDeliveryRecord[] = [];
-    if (queueAlerts && shouldQueueAlert(upserted)) {
+    const alertDecision = shouldQueueAlert({
+      ...upserted,
+      policy: evaluation.policy,
+      checkedAt: snapshot.checkedAt,
+      severity: evaluation.severity,
+    });
+    if (queueAlerts && alertDecision.queue) {
       alertDeliveries = await enqueueAlertDeliveriesForIncident(upserted.incident, {
         eventId: upserted.event.id,
         reason: `observability.slo.${evaluation.policy.id}`,
       });
       queuedAlerts += alertDeliveries.length;
+      await updateIncidentMetadata(upserted.incident.id, {
+        sloLastAlertedAt: snapshot.checkedAt,
+        sloLastAlertPolicyId: evaluation.policy.id,
+        sloLastAlertSeverity: evaluation.severity,
+      }).catch(() => undefined);
     }
     incidentActions.push({
       policyId: evaluation.policy.id,
@@ -227,6 +183,7 @@ export async function runObservabilitySloMonitor({
       created: upserted.created,
       reopened: upserted.reopened,
       severityChanged: upserted.severityChanged,
+      alertSuppressed: alertDecision.suppressed,
       alertDeliveries,
     });
   }
@@ -250,6 +207,8 @@ export async function runObservabilitySloMonitor({
         value: evaluation.value,
         threshold: evaluation.threshold,
         metric: evaluation.policy.metric,
+        suppressionMinutes: evaluation.policy.suppressionMinutes,
+        alertTargetIds: evaluation.policy.alertTargetIds,
       })),
       queuedAlerts,
       incidentActions: incidentActions.length,
@@ -273,7 +232,11 @@ function evaluateSloPolicy(policy: ObservabilitySloPolicy, stats: ObservabilityS
   const value = metricValue(policy.metric, stats);
   const critical = compare(value, policy.comparator, policy.criticalThreshold);
   const warning = compare(value, policy.comparator, policy.warningThreshold);
-  const severity: IncidentSeverity | undefined = critical ? "critical" : warning ? "warning" : undefined;
+  const severity: IncidentSeverity | undefined = critical
+    ? policy.criticalSeverity
+    : warning
+      ? policy.warningSeverity
+      : undefined;
   const threshold = critical ? policy.criticalThreshold : warning ? policy.warningThreshold : undefined;
 
   return {
@@ -293,8 +256,33 @@ function shouldQueueAlert(input: {
   created: boolean;
   reopened: boolean;
   severityChanged: boolean;
+  incident: IncidentRecord;
+  policy: ObservabilitySloPolicy;
+  checkedAt: string;
+  severity: IncidentSeverity;
 }) {
-  return input.created || input.reopened || input.severityChanged;
+  if (input.created || input.reopened || input.severityChanged) {
+    return { queue: true, suppressed: false };
+  }
+
+  const lastAlertedAt = typeof input.incident.metadata.sloLastAlertedAt === "string"
+    ? Date.parse(input.incident.metadata.sloLastAlertedAt)
+    : 0;
+  const suppressionMs = input.policy.suppressionMinutes * 60 * 1000;
+  const suppressed = suppressionMs > 0 && lastAlertedAt > 0 && Date.parse(input.checkedAt) - lastAlertedAt < suppressionMs;
+  return {
+    queue: input.severity === "critical" && !suppressed,
+    suppressed,
+  };
+}
+
+function alertTargetsForPolicy(policy: ObservabilitySloPolicy, severity: IncidentSeverity) {
+  const targets = getIncidentAlertTargets(severity);
+  if (!policy.alertTargetIds.length) {
+    return targets;
+  }
+  const allowed = new Set(policy.alertTargetIds);
+  return targets.filter((target) => allowed.has(target.id));
 }
 
 function metricValue(metric: SloMetric, stats: ObservabilityStats) {

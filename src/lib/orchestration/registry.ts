@@ -154,6 +154,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "ops.slo_policy_management",
+    name: "SLO Policy Management",
+    description: "Configures SLO thresholds, severities, alert routing targets, suppression windows, and policy enablement.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

@@ -618,6 +618,27 @@ export async function resolveIncidentByFingerprint(
   return resolveIncident(incident.id, input);
 }
 
+export async function updateIncidentMetadata(
+  incidentId: string,
+  metadata: Record<string, unknown>,
+) {
+  const incident = await getIncident(incidentId);
+  if (!incident) {
+    return null;
+  }
+
+  const next: IncidentRecord = {
+    ...incident,
+    metadata: {
+      ...incident.metadata,
+      ...metadata,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+  await saveIncident(next);
+  return next;
+}
+
 export async function recordIncidentEvent(input: {
   incidentId: string;
   type: IncidentEventType;
