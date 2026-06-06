@@ -8,6 +8,7 @@ import { getIncidentStats } from "@/lib/diagnostics/incidents";
 import { getEvalStats } from "@/lib/evaluations/store";
 import { getMemoryGraphStats } from "@/lib/memory/graph";
 import { getMemoryStats } from "@/lib/memory/store";
+import { getObservabilitySloSnapshot } from "@/lib/observability/slo-monitor";
 import { getObservabilityStats } from "@/lib/observability/store";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import { getOperationJobStats } from "@/lib/operations/job-queue";
@@ -55,6 +56,7 @@ export async function GET(request: Request) {
     incidents: await getIncidentStats(),
     alerts: await getAlertDeliveryStats(),
     observability: await getObservabilityStats(),
+    observabilitySlo: await getObservabilitySloSnapshot(),
     evaluations: await getEvalStats(),
     security: {
       context: securityContext,

@@ -25,6 +25,7 @@ import { runIncidentPlaybook } from "@/lib/diagnostics/playbooks";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { connectionCatalog } from "@/lib/connectors/catalog";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
+import { runObservabilitySloMonitor, type ObservabilitySloPolicy } from "@/lib/observability/slo-monitor";
 import { getObservabilityStats, listObservabilityEvents, recordRuntimeEvent } from "@/lib/observability/store";
 import { getMemoryGraphStats, rebuildMemoryGraph, searchMemoryGraph } from "@/lib/memory/graph";
 import { listMemories, saveMemory } from "@/lib/memory/store";
@@ -329,6 +330,22 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       secretSafe: true,
     },
   },
+  {
+    id: "operations.slo_alerting",
+    name: "SLO alerting",
+    description: "Validates observability SLO breach detection, incident creation, alert queueing, recovery policy metadata, and registry exposure.",
+    type: "operations",
+    input: {
+      route: "/api/evaluations",
+    },
+    expected: {
+      breachDetected: true,
+      incidentAction: true,
+      alertQueued: true,
+      policyEvidence: true,
+      registryTool: "ops.slo_alerting",
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -466,6 +483,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.observability_console") {
     return evaluateObservabilityConsole(evalCase);
+  }
+
+  if (evalCase.id === "operations.slo_alerting") {
+    return evaluateSloAlerting(evalCase);
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -1437,6 +1458,97 @@ async function evaluateObservabilityConsole(evalCase: EvalCaseDefinition): Promi
         correlationId: event.correlationId,
         metadata: event.metadata,
       })),
+    },
+  };
+}
+
+async function evaluateSloAlerting(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const correlationId = `eval:slo:${Date.now()}`;
+  const route = String(evalCase.input.route || "/api/evaluations");
+  await recordRuntimeEvent({
+    level: "error",
+    category: "evaluation",
+    action: "observability.slo_eval_failure_marker",
+    route,
+    method: "POST",
+    statusCode: 500,
+    durationMs: 25,
+    correlationId,
+    resourceType: "evaluation",
+    message: "SLO alerting evaluation failure marker.",
+    metadata: {
+      policyFixture: "route failure breach",
+    },
+  });
+  const policyId = `eval_route_failure_${Date.now()}`;
+  const policies: ObservabilitySloPolicy[] = [
+    {
+      id: policyId,
+      name: "Evaluation route failure policy",
+      description: "Evaluation-only policy that breaches when at least one route failure exists.",
+      metric: "routeFailures",
+      comparator: "greater_than_or_equal",
+      warningThreshold: 1,
+      criticalThreshold: 5,
+      unit: "count",
+      componentId: "observability",
+      enabled: true,
+    },
+  ];
+  const result = await runObservabilitySloMonitor({
+    trigger: "evaluation.slo_alerting",
+    actorId: "evaluation",
+    correlationId,
+    queueAlerts: true,
+    resolveRecovered: false,
+    policies,
+  });
+  const registry = getCapabilityRegistry();
+  const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
+  const action = result.incidentActions.find((item) => item.policyId === policyId);
+  const checks = {
+    breachDetected: Boolean(evalCase.expected.breachDetected)
+      ? result.breaches.some((breach) => breach.policy.id === policyId)
+      : true,
+    incidentAction: Boolean(evalCase.expected.incidentAction)
+      ? Boolean(action?.incident && action.event && (action.created || action.reopened || action.severityChanged))
+      : true,
+    alertQueued: Boolean(evalCase.expected.alertQueued)
+      ? (action?.alertDeliveries.length || 0) >= 2 && result.queuedAlerts >= 2
+      : true,
+    policyEvidence: Boolean(evalCase.expected.policyEvidence)
+      ? result.evaluations.some((evaluation) =>
+          evaluation.policy.id === policyId &&
+          evaluation.value >= 1 &&
+          evaluation.threshold === 1 &&
+          evaluation.message.includes("breached"),
+        )
+      : true,
+    registryToolAvailable: activeToolIds.has(String(evalCase.expected.registryTool || "ops.slo_alerting")),
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      policyId,
+      correlationId,
+      result: {
+        healthy: result.healthy,
+        breaches: result.breaches.length,
+        queuedAlerts: result.queuedAlerts,
+        incidentActions: result.incidentActions.length,
+      },
+      action: action ? {
+        incidentId: action.incident?.id,
+        created: action.created,
+        reopened: action.reopened,
+        severityChanged: action.severityChanged,
+        alertDeliveries: action.alertDeliveries.length,
+      } : undefined,
     },
   };
 }

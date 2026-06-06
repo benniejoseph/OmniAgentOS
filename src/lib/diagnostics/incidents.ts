@@ -501,6 +501,123 @@ export async function resolveIncident(
   return { incident: next, event };
 }
 
+export async function upsertIncidentFromSignal(input: {
+  fingerprint: string;
+  componentId: string;
+  severity: IncidentSeverity;
+  title: string;
+  message: string;
+  actorId?: string;
+  metadata?: Record<string, unknown>;
+  playbookIds?: string[];
+  alertTargets?: IncidentAlertTarget[];
+}) {
+  const now = new Date().toISOString();
+  const existing = await getIncidentByFingerprint(input.fingerprint);
+  const alertTargets = input.alertTargets || getIncidentAlertTargets(input.severity);
+  const playbookIds = input.playbookIds || selectPlaybookIds(input.componentId);
+
+  if (!existing) {
+    const incident: IncidentRecord = {
+      id: randomUUID(),
+      fingerprint: input.fingerprint,
+      componentId: input.componentId,
+      severity: input.severity,
+      status: "open",
+      title: input.title,
+      message: input.message,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      occurrenceCount: 1,
+      alertTargets,
+      playbookIds,
+      metadata: input.metadata || {},
+      createdAt: now,
+      updatedAt: now,
+    };
+    await saveIncident(incident);
+    const event = await recordIncidentEvent({
+      incidentId: incident.id,
+      type: "opened",
+      actorId: input.actorId,
+      message: `Opened ${incident.severity} incident for ${incident.componentId}.`,
+      metadata: { fingerprint: input.fingerprint, ...(input.metadata || {}) },
+    });
+    await recordIncidentEvent({
+      incidentId: incident.id,
+      type: "alert_routed",
+      actorId: input.actorId,
+      message: `Routed incident to ${alertTargets.filter((target) => target.status === "ready").length} ready target(s).`,
+      metadata: { targets: alertTargets },
+    }).catch(() => undefined);
+    return {
+      incident,
+      event,
+      created: true,
+      reopened: false,
+      severityChanged: false,
+    };
+  }
+
+  const severityChanged = existing.severity !== input.severity;
+  const escalated = severityRank(input.severity) > severityRank(existing.severity);
+  const reopened = existing.status === "resolved";
+  const incident: IncidentRecord = {
+    ...existing,
+    severity: input.severity,
+    status: reopened || escalated ? "open" : existing.status,
+    title: input.title,
+    message: input.message,
+    lastSeenAt: now,
+    occurrenceCount: existing.occurrenceCount + 1,
+    resolvedAt: reopened ? undefined : existing.resolvedAt,
+    resolvedBy: reopened ? undefined : existing.resolvedBy,
+    resolution: reopened ? undefined : existing.resolution,
+    alertTargets,
+    playbookIds,
+    metadata: {
+      ...existing.metadata,
+      ...(input.metadata || {}),
+    },
+    updatedAt: now,
+  };
+  await saveIncident(incident);
+  const event = await recordIncidentEvent({
+    incidentId: incident.id,
+    type: reopened ? "reopened" : "observed",
+    actorId: input.actorId,
+    message: reopened
+      ? `Reopened incident for ${incident.componentId}.`
+      : `Observed incident for ${incident.componentId}.`,
+    metadata: {
+      fingerprint: input.fingerprint,
+      severityChanged,
+      previousSeverity: existing.severity,
+      ...(input.metadata || {}),
+    },
+  });
+
+  return {
+    incident,
+    event,
+    created: false,
+    reopened,
+    severityChanged,
+  };
+}
+
+export async function resolveIncidentByFingerprint(
+  fingerprint: string,
+  input: { actorId: string; resolution?: string; metadata?: Record<string, unknown> },
+) {
+  const incident = await getIncidentByFingerprint(fingerprint);
+  if (!incident || incident.status === "resolved") {
+    return null;
+  }
+
+  return resolveIncident(incident.id, input);
+}
+
 export async function recordIncidentEvent(input: {
   incidentId: string;
   type: IncidentEventType;
@@ -664,6 +781,10 @@ function selectPlaybookIds(componentId: string) {
   return playbooks
     .filter((playbook) => playbook.componentIds.includes("*") || playbook.componentIds.includes(componentId))
     .map((playbook) => playbook.id);
+}
+
+function severityRank(severity: IncidentSeverity) {
+  return severity === "critical" ? 3 : severity === "warning" ? 2 : 1;
 }
 
 function incidentFromRow(row: Record<string, unknown>): IncidentRecord {

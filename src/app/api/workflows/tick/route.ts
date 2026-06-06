@@ -4,6 +4,7 @@ import {
   ALERT_SCHEDULER_QUEUE_LIMIT,
 } from "@/lib/config";
 import { getAlertDeliveryStats, runScheduledAlertDispatch } from "@/lib/diagnostics/alerts";
+import { runObservabilitySloMonitor } from "@/lib/observability/slo-monitor";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
 import { SecurityPolicyError } from "@/lib/security/context";
@@ -16,6 +17,7 @@ export const runtime = "nodejs";
 
 const tickSchema = z.object({
   limit: z.number().int().min(1).max(10).optional(),
+  slo: z.boolean().optional(),
   alerts: z.boolean().optional(),
   alertQueueLimit: z.number().int().min(1).max(50).optional(),
   alertDispatchLimit: z.number().int().min(1).max(50).optional(),
@@ -59,14 +61,20 @@ export async function GET(request: Request) {
   }
 
   try {
-    const [queue, alerts] = await Promise.all([
+    const [queue, slo] = await Promise.all([
       processWorkflowQueue({ limit: cronTickLimit }),
-      runScheduledAlertDispatch({
+      runObservabilitySloMonitor({
         trigger: "vercel_cron",
-        queueLimit: ALERT_SCHEDULER_QUEUE_LIMIT,
-        dispatchLimit: ALERT_SCHEDULER_DISPATCH_LIMIT,
+        actorId: context.actorId,
+        correlationId: telemetry.correlationId,
+        queueAlerts: false,
       }),
     ]);
+    const alerts = await runScheduledAlertDispatch({
+      trigger: "vercel_cron",
+      queueLimit: ALERT_SCHEDULER_QUEUE_LIMIT,
+      dispatchLimit: ALERT_SCHEDULER_DISPATCH_LIMIT,
+    });
     await recordSecurityAudit({
       context,
       action: "manage.workflow",
@@ -77,6 +85,9 @@ export async function GET(request: Request) {
         trigger: "vercel_cron",
         workflowLimit: cronTickLimit,
         workflowLeased: queue.leased,
+        sloHealthy: slo.healthy,
+        sloBreaches: slo.breaches.length,
+        sloIncidentActions: slo.incidentActions.length,
         alertQueueLimit: alerts.scheduler.queueLimit,
         alertDispatchLimit: alerts.scheduler.dispatchLimit,
         alertEnqueued: alerts.enqueued.length,
@@ -101,6 +112,9 @@ export async function GET(request: Request) {
       metadata: {
         workflowLeased: queue.leased,
         workflowCompleted: queue.completed,
+        sloHealthy: slo.healthy,
+        sloBreaches: slo.breaches.length,
+        sloIncidentActions: slo.incidentActions.length,
         alertEnqueued: alerts.enqueued.length,
         alertProcessed: alerts.dispatch.processed.length,
         alertDelivered: alerts.dispatch.delivered,
@@ -110,6 +124,7 @@ export async function GET(request: Request) {
 
     return Response.json({
       queue,
+      slo,
       alerts,
       stats: {
         operationJobs: await getOperationJobStats(),
@@ -177,6 +192,14 @@ export async function POST(request: Request) {
       metadata: parsed.data,
     });
     const queue = await processWorkflowQueue({ limit: parsed.data.limit || 5 });
+    const slo = parsed.data.slo
+      ? await runObservabilitySloMonitor({
+          trigger: "operator.workflow_tick",
+          actorId: context.actorId,
+          correlationId: telemetry.correlationId,
+          queueAlerts: !parsed.data.alerts,
+        })
+      : undefined;
     const alerts = parsed.data.alerts
       ? await runScheduledAlertDispatch({
           trigger: "operator.workflow_tick",
@@ -204,6 +227,10 @@ export async function POST(request: Request) {
       metadata: {
         workflowLeased: queue.leased,
         workflowCompleted: queue.completed,
+        sloEnabled: Boolean(parsed.data.slo),
+        sloHealthy: slo?.healthy,
+        sloBreaches: slo?.breaches.length || 0,
+        sloIncidentActions: slo?.incidentActions.length || 0,
         alertsEnabled: Boolean(parsed.data.alerts),
         alertEnqueued: alerts?.enqueued.length || 0,
         alertProcessed: alerts?.dispatch.processed.length || 0,
@@ -211,6 +238,7 @@ export async function POST(request: Request) {
     });
     return Response.json({
       queue,
+      slo,
       alerts,
       stats,
       count: queue.leased,

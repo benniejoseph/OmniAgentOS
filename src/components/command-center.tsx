@@ -782,6 +782,41 @@ type ObservabilityResponse = {
   stats: ObservabilityStats;
 };
 
+type SloMetric = "errorRate" | "availability" | "latencyP95Ms" | "routeFailures";
+type SloComparator = "greater_than" | "greater_than_or_equal" | "less_than" | "less_than_or_equal";
+
+type ObservabilitySloPolicy = {
+  id: string;
+  name: string;
+  description: string;
+  metric: SloMetric;
+  comparator: SloComparator;
+  warningThreshold: number;
+  criticalThreshold: number;
+  unit: "ratio" | "ms" | "count";
+  componentId: string;
+  enabled: boolean;
+};
+
+type ObservabilitySloEvaluation = {
+  policy: ObservabilitySloPolicy;
+  value: number;
+  breached: boolean;
+  severity?: IncidentSeverity;
+  threshold?: number;
+  margin: number;
+  message: string;
+};
+
+type ObservabilitySloSnapshot = {
+  checkedAt: string;
+  healthy: boolean;
+  stats: ObservabilityStats;
+  policies: ObservabilitySloPolicy[];
+  evaluations: ObservabilitySloEvaluation[];
+  breaches: ObservabilitySloEvaluation[];
+};
+
 type SecurityRole = "viewer" | "operator" | "admin" | "system";
 type SecurityDecision = "allow" | "deny";
 
@@ -953,6 +988,7 @@ type CapabilityResponse = {
   incidents: IncidentStats;
   alerts: AlertDeliveryStats;
   observability: ObservabilityStats;
+  observabilitySlo: ObservabilitySloSnapshot;
   evaluations: EvalStats;
   security: {
     context: SecurityContext;
@@ -1112,6 +1148,8 @@ export function CommandCenter() {
   const [evaluationState, setEvaluationState] = useState<EvaluationsResponse | null>(null);
   const [evaluationResult, setEvaluationResult] = useState("");
   const [observabilityState, setObservabilityState] = useState<ObservabilityResponse | null>(null);
+  const [observabilitySloState, setObservabilitySloState] = useState<ObservabilitySloSnapshot | null>(null);
+  const [observabilityResult, setObservabilityResult] = useState("");
   const [securityState, setSecurityState] = useState<SecurityState | null>(null);
   const [authState, setAuthState] = useState<AuthSessionResponse | null>(null);
   const [authControlPlane, setAuthControlPlane] = useState<AuthControlPlane | null>(null);
@@ -1167,6 +1205,8 @@ export function CommandCenter() {
   const latestEvaluationCases = evaluationState?.cases.slice(0, 4) || [];
   const observabilityStats = observabilityState?.stats || capabilities?.observability;
   const latestObservabilityEvents = observabilityState?.events || observabilityStats?.latest || [];
+  const observabilitySlo = observabilitySloState || capabilities?.observabilitySlo;
+  const observabilityBreaches = observabilitySlo?.breaches || [];
   const securityContext = securityState?.context || capabilities?.security.context;
   const securityStats = securityState?.stats || capabilities?.security.stats;
   const securityPolicy = securityState?.policy || capabilities?.security.policy;
@@ -1663,7 +1703,7 @@ export function CommandCenter() {
       const response = await fetch("/api/workflows/tick", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ limit: 3, alerts: true, alertQueueLimit: 10, alertDispatchLimit: 10 }),
+        body: JSON.stringify({ limit: 3, slo: true, alerts: true, alertQueueLimit: 10, alertDispatchLimit: 10 }),
       });
       const data = await response.json();
       setAlertResult(formatToolResult(data));
@@ -1671,6 +1711,34 @@ export function CommandCenter() {
       refreshWorkspace();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "alert scheduler failed");
+    }
+  }
+
+  async function runSloMonitor() {
+    setStatus("running SLO monitor");
+    setObservabilityResult("");
+
+    try {
+      const response = await fetch("/api/observability/slo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "run_monitor",
+          queueAlerts: true,
+          resolveRecovered: true,
+          dispatchAlerts: true,
+          dispatchLimit: 10,
+        }),
+      });
+      const data = await response.json();
+      setObservabilityResult(formatToolResult(data));
+      if (data.result) {
+        setObservabilitySloState(data.result);
+      }
+      setStatus(response.ok ? "SLO monitor complete" : "SLO monitor failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "SLO monitor failed");
     }
   }
 
@@ -1864,6 +1932,13 @@ export function CommandCenter() {
       .catch(() => undefined);
   }
 
+  function refreshObservabilitySlo() {
+    fetch("/api/observability/slo")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => data && setObservabilitySloState(data))
+      .catch(() => undefined);
+  }
+
   function refreshSecurity() {
     Promise.all([
       fetch("/api/security/context")
@@ -1908,6 +1983,7 @@ export function CommandCenter() {
     refreshConnectionCatalog();
     refreshEvaluations();
     refreshObservability();
+    refreshObservabilitySlo();
     refreshSecurity();
   }
 
@@ -2108,11 +2184,34 @@ export function CommandCenter() {
                 <MiniStat label="P95" value={`${observabilityStats?.p95DurationMs ?? 0}ms`} />
               </div>
               <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Breaches" value={`${observabilityBreaches.length}`} />
+                <MiniStat label="Policies" value={`${observabilitySlo?.policies.length ?? 0}`} />
+                <MiniStat label="Checked" value={observabilitySlo?.checkedAt ? new Date(observabilitySlo.checkedAt).toLocaleTimeString() : "never"} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
                 <MiniStat label="API" value={`${observabilityStats?.byCategory.api ?? 0}`} />
                 <MiniStat label="Workflow" value={`${observabilityStats?.byCategory.workflow ?? 0}`} />
                 <MiniStat label="Alerts" value={`${observabilityStats?.byCategory.alert ?? 0}`} />
               </div>
+              <button
+                type="button"
+                onClick={runSloMonitor}
+                className="mb-3 flex h-9 w-full items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+              >
+                <Activity size={14} />
+                Run SLO monitor
+              </button>
+              {observabilityResult ? (
+                <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
+                  {observabilityResult}
+                </pre>
+              ) : null}
               <div className="flex flex-col gap-3">
+                {observabilitySlo?.evaluations.length ? (
+                  observabilitySlo.evaluations.slice(0, 4).map((evaluation) => (
+                    <SloPolicyRow key={evaluation.policy.id} evaluation={evaluation} />
+                  ))
+                ) : null}
                 {latestObservabilityEvents.length ? (
                   latestObservabilityEvents.slice(0, 8).map((event) => (
                     <ObservabilityEventRow key={event.id} event={event} />
@@ -3145,6 +3244,28 @@ function ObservabilityEventRow({ event }: { event: ObservabilityEventRecord }) {
   );
 }
 
+function SloPolicyRow({ evaluation }: { evaluation: ObservabilitySloEvaluation }) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", evaluation.breached ? incidentSeverityTone(evaluation.severity || "warning") : "bg-primary/16 text-primary")}>
+          {evaluation.breached ? evaluation.severity : "healthy"}
+        </span>
+        <span className="shrink-0 rounded border border-line px-2 py-1 font-mono text-[11px] text-muted">
+          {evaluation.policy.metric}
+        </span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{evaluation.policy.name}</p>
+      <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">{evaluation.message}</p>
+      <div className="mt-3 grid grid-cols-3 gap-1.5 font-mono text-[11px] text-muted">
+        <span>{formatSloMetric(evaluation.value, evaluation.policy.unit)}</span>
+        <span>{evaluation.threshold === undefined ? "inside" : formatSloMetric(evaluation.threshold, evaluation.policy.unit)}</span>
+        <span>{evaluation.policy.enabled ? "enabled" : "off"}</span>
+      </div>
+    </div>
+  );
+}
+
 function SecurityAuditRow({ record }: { record: SecurityAuditRecord }) {
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
@@ -3846,6 +3967,16 @@ function observabilityTone(level: ObservabilityLevel) {
     return "bg-accent/16 text-accent";
   }
   return "bg-primary/16 text-primary";
+}
+
+function formatSloMetric(value: number, unit: ObservabilitySloPolicy["unit"]) {
+  if (unit === "ratio") {
+    return `${Math.round(value * 10000) / 100}%`;
+  }
+  if (unit === "ms") {
+    return `${value}ms`;
+  }
+  return `${value}`;
 }
 
 function workflowTone(status: WorkflowRunStatus) {

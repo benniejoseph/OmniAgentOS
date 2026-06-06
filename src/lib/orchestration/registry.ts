@@ -148,6 +148,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "ops.slo_alerting",
+    name: "SLO Alerting",
+    description: "Evaluates observability SLO policies, opens or resolves breach incidents, and routes alert deliveries.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",
