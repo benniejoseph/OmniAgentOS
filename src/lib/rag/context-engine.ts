@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import type { MemorySearchResult } from "@/lib/memory/types";
 import { embedTexts } from "@/lib/openai/client";
+import { searchMemoryGraph } from "@/lib/memory/graph";
 import { searchMemories } from "@/lib/memory/store";
 import { searchKnowledge } from "@/lib/rag/store";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
@@ -74,6 +75,7 @@ export async function buildContextPack(
       results: [],
       memoryResults: [],
       knowledgeResults: [],
+      graphResults: [],
       contextBlock: formatContextPack([], profile),
     };
     if (options.persistTrace !== false) {
@@ -91,14 +93,16 @@ export async function buildContextPack(
 
   const retrievalQuery = profile.expandedQueries.join("\n");
   const queryEmbedding = (await embedTexts([retrievalQuery || normalizedQuery]))?.[0];
-  const [memoryResults, knowledgeResults] = await Promise.all([
+  const [memoryResults, knowledgeResults, graphResults] = await Promise.all([
     searchMemories(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding }),
     searchKnowledge(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding }),
+    searchMemoryGraph(normalizedQuery, { limit: Math.min(candidateLimit, 24) }),
   ]);
   const evidence = scoreEvidenceItems({
     profile,
     memoryResults,
     knowledgeResults,
+    graphResults,
   });
   const selected = selectDiverseEvidence(evidence, limit);
   const traceResults = selected.map((item) => ({
@@ -117,7 +121,7 @@ export async function buildContextPack(
       : await saveRetrievalTrace({
           query: normalizedQuery,
           profile,
-          resultCount: memoryResults.length + knowledgeResults.length,
+          resultCount: memoryResults.length + knowledgeResults.length + graphResults.length,
           selectedCount: selected.length,
           latencyMs: Date.now() - startedAt,
           results: traceResults,
@@ -129,6 +133,7 @@ export async function buildContextPack(
     results: selected,
     memoryResults,
     knowledgeResults,
+    graphResults,
     contextBlock: formatContextPack(selected, profile),
     trace,
   };
@@ -294,10 +299,12 @@ function scoreEvidenceItems({
   profile,
   memoryResults,
   knowledgeResults,
+  graphResults,
 }: {
   profile: RetrievalProfile;
   memoryResults: MemorySearchResult[];
   knowledgeResults: KnowledgeSearchResult[];
+  graphResults: import("@/lib/memory/types").MemoryGraphSearchResult[];
 }) {
   const memoryItems = memoryResults.map<ContextEvidenceItem>((result) => {
     const record = result.record;
@@ -355,7 +362,34 @@ function scoreEvidenceItems({
     };
   });
 
-  return [...memoryItems, ...knowledgeItems].sort((left, right) => right.utilityScore - left.utilityScore);
+  const graphItems = graphResults.map<ContextEvidenceItem>((result) => {
+    const graphBoost = graphIntentBoost(profile, result.node.kind, result.node.tags);
+    const supportScore = clamp01(result.score);
+    const neighborhoodStrength = clamp01(result.neighborhood.reduce((sum, item) => sum + item.weight, 0) / 4);
+    const utilityScore = clamp01(result.score * 0.68 + graphBoost + result.node.weight * 0.12 + neighborhoodStrength * 0.08);
+    return {
+      id: result.node.id,
+      kind: "graph",
+      sourceKey: `graph:${result.communityId}`,
+      title: `Graph Memory: ${result.node.label}`,
+      content: formatGraphEvidence(result),
+      score: result.score,
+      utilityScore,
+      supportScore,
+      diversityScore: 1,
+      freshnessScore: 0.72,
+      confidence: clamp01(utilityScore * 0.66 + supportScore * 0.24 + neighborhoodStrength * 0.1),
+      reasons: [
+        ...result.reasons,
+        `intent: ${profile.intent}`,
+        graphBoost > 0 ? "intent-aligned graph neighborhood" : "",
+        result.neighborhood.length ? "connected memory evidence" : "",
+      ].filter(Boolean),
+      result,
+    };
+  });
+
+  return [...memoryItems, ...knowledgeItems, ...graphItems].sort((left, right) => right.utilityScore - left.utilityScore);
 }
 
 function selectDiverseEvidence(items: ContextEvidenceItem[], limit: number) {
@@ -419,7 +453,7 @@ function formatContextPack(items: ContextEvidenceItem[], profile: RetrievalProfi
   const ordered = positionalPack(items);
   const evidence = ordered.map((item, index) => {
     const header = [
-      `[${index + 1}] ${item.kind === "memory" ? "Memory" : "Knowledge"}: ${item.title}`,
+      `[${index + 1}] ${evidenceKindLabel(item.kind)}: ${item.title}`,
       `mode: ${profile.mode}; confidence: ${item.confidence.toFixed(2)}; utility: ${item.utilityScore.toFixed(2)}`,
       `reasons: ${item.reasons.slice(0, 6).join(", ") || "ranked context"}`,
     ];
@@ -573,6 +607,49 @@ function knowledgeIntentBoost(profile: RetrievalProfile, sourceType: string, tag
     boost += 0.04;
   }
   return boost;
+}
+
+function graphIntentBoost(profile: RetrievalProfile, kind: string, tags: string[]) {
+  let boost = 0;
+  if (profile.mode === "global") {
+    boost += 0.18;
+  }
+  if (profile.intent === "global_synthesis") {
+    boost += 0.12;
+  }
+  if (profile.intent === "operational" && (kind === "workflow" || kind === "tool")) {
+    boost += 0.1;
+  }
+  if (tags.some((tag) => profile.queryTerms.includes(tag))) {
+    boost += 0.08;
+  }
+  return boost;
+}
+
+function formatGraphEvidence(result: import("@/lib/memory/types").MemoryGraphSearchResult) {
+  const neighbors = result.neighborhood
+    .map((item) => `- ${item.relation}: ${item.node.label} (weight ${item.weight.toFixed(2)})`)
+    .join("\n");
+  return [
+    result.node.summary || `Graph memory node for ${result.node.label}.`,
+    "",
+    `Community: ${result.communityId}`,
+    `Node kind: ${result.node.kind}`,
+    `Source memories: ${result.node.memoryIds.length}`,
+    `Retrieval traces: ${result.node.traceIds.length}`,
+    result.node.tags.length ? `Tags: ${result.node.tags.join(", ")}` : "",
+    neighbors ? `Connected signals:\n${neighbors}` : "Connected signals: none recorded yet.",
+  ].filter(Boolean).join("\n");
+}
+
+function evidenceKindLabel(kind: ContextEvidenceItem["kind"]) {
+  if (kind === "memory") {
+    return "Memory";
+  }
+  if (kind === "knowledge") {
+    return "Knowledge";
+  }
+  return "Graph";
 }
 
 function freshnessFromDate(value: string) {

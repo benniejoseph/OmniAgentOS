@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { indexMemoryGraphRecords } from "@/lib/memory/graph";
 import { listMemories, saveMemory, searchMemories } from "@/lib/memory/store";
 import { embedTexts } from "@/lib/openai/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -56,6 +57,7 @@ export async function POST(request: Request) {
       scope: "workspace",
       embedding,
     });
+    await indexMemoryGraphRecords([record], "memory.manual");
 
     return Response.json({ record }, { status: 201 });
   } catch (error) {

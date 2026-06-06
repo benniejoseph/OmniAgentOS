@@ -34,7 +34,7 @@ export async function* runAgent(
   }
 
   try {
-    yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory and RAG." });
+    yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
     const retrieval = await buildContextPack(query, { limit: 8 });
     await updateRunContextCount(run.id, retrieval.results.length);
     yield await emit({

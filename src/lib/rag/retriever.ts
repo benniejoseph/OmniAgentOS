@@ -1,5 +1,6 @@
 import { embedTexts } from "@/lib/openai/client";
 import { chunkText } from "@/lib/rag/chunk";
+import { indexMemoryGraphRecords } from "@/lib/memory/graph";
 import { saveMemory, searchMemories } from "@/lib/memory/store";
 import type { MemorySearchResult } from "@/lib/memory/types";
 import { createKnowledgeDocument, searchKnowledge } from "@/lib/rag/store";
@@ -47,6 +48,7 @@ export async function ingestTextDocument({
       }),
     );
   }
+  await indexMemoryGraphRecords(records, "knowledge.ingest");
 
   return {
     document: knowledge.document,

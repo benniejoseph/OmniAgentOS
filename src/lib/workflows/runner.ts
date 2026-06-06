@@ -227,6 +227,7 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
       contextCount: retrieval.results.length,
       memoryCount: retrieval.memoryResults.length,
       knowledgeCount: retrieval.knowledgeResults.length,
+      graphCount: retrieval.graphResults.length,
       mode: retrieval.profile.mode,
       intent: retrieval.profile.intent,
       traceId: retrieval.trace?.id,

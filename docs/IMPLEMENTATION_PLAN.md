@@ -14,6 +14,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - pgvector columns and HNSW indexes for semantic retrieval, using a pgvector-safe embedding dimension
 - Hybrid retrieval with semantic, keyword, recency, and memory-importance signals
 - Adaptive context engine with query profiling, retrieve/no-retrieve routing, evidence confidence, source diversification, positional context packing, and persisted retrieval traces
+- Graph memory engine that derives concept/entity communities from durable memories and retrieval traces, then feeds graph neighborhoods into context packs for multi-hop synthesis
 - Manual memory writes and manual knowledge ingestion
 - Automatic memory consolidation after successful runs into facts, preferences, procedures, decisions, and unresolved tasks
 - Memory browser and knowledge library panels in the command center
@@ -47,6 +48,10 @@ flowchart TD
   CTX --> RTRACE["Retrieval Traces"]
   RTRACE --> DB
   MEM --> DB["Neon Postgres / pgvector"]
+  MEM --> MGRAPH["Graph Memory"]
+  RTRACE --> MGRAPH
+  MGRAPH --> CTX
+  MGRAPH --> DB
   DOCS --> DB
   API --> REG["Capability Registry"]
   REG --> TOOLS["Tools and Connectors"]
@@ -109,3 +114,4 @@ flowchart TD
 13. pgvector production hardening: align OpenAI embedding dimensions with pgvector HNSW limits, migrate vector columns, backfill vector indexes, and remove noisy fallback warnings. Done.
 14. Durable runtime hardening: add Postgres operation jobs, queue leases, expired-lease repair, retry backoff, workflow dedupe keys, queue health reporting, and post-response drains. Done.
 15. Adaptive context engine: add retrieval policy routing, evidence grading, diversity-aware packing, retrieval trace observability, and queue/workflow integration. Done.
+16. Graph memory engine: add concept/entity extraction, memory graph nodes/edges/builds, graph search, graph-context packing, and graph regression checks. Done.

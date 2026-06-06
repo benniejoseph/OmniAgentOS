@@ -52,6 +52,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "memory.graph",
+    name: "Graph Memory",
+    description: "Builds entity/concept communities from memories and retrieval traces for multi-hop context.",
+    status: "active",
+  },
+  {
     id: "rag.ingest",
     name: "Ingest Knowledge",
     description: "Chunks documents, embeds when OpenAI is configured, and stores retrievable context.",

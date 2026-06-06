@@ -38,6 +38,7 @@ Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue
 - Command center UI for agent runs
 - `/api/agent` streaming orchestration endpoint
 - `/api/memory` long-term memory endpoint
+- `/api/memory/graph` graph-memory search, stats, and rebuild endpoint
 - `/api/ingest` text ingestion endpoint
 - `/api/knowledge` document, chunk, and knowledge-search endpoint
 - `/api/retrieval/plan` adaptive context-engine endpoint with evidence packing and retrieval traces
@@ -80,6 +81,7 @@ Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue
 - Postgres-backed memory, RAG documents/chunks, run history, tool audit history, MCP connectors, OpenAPI connectors, and discovered tool schemas when `DATABASE_URL` is configured
 - Hybrid retrieval across durable memories and source chunks with semantic, keyword, recency, and importance signals
 - Adaptive context engine with query routing, evidence confidence, source diversity, positional context packing, and persisted retrieval traces
+- Graph memory over durable memories and retrieval traces, with concept/entity communities feeding multi-hop context back into the adaptive context engine
 - Memory consolidation after completed runs into durable facts, preferences, procedures, decisions, and tasks
 - Governed tool execution with risk levels, approval gates, durable approve/reject decisions, planned connector blocking, and immutable audit records
 - MCP connector host for Streamable HTTP servers; discovered tools flow into the governed tool registry and inherit risk/audit policy

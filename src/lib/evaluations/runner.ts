@@ -5,6 +5,8 @@ import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { connectionCatalog } from "@/lib/connectors/catalog";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
+import { getMemoryGraphStats, rebuildMemoryGraph, searchMemoryGraph } from "@/lib/memory/graph";
+import { listMemories, saveMemory } from "@/lib/memory/store";
 import { getApprovalQueue, getOperationsOverview } from "@/lib/operations/queue";
 import { buildContextPack, getContextEngineStats } from "@/lib/rag/context-engine";
 import { retrieveContext } from "@/lib/rag/retriever";
@@ -71,6 +73,22 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       minSelectedEvidence: 1,
       tracePersisted: true,
       allowedModes: ["global", "hybrid"],
+    },
+  },
+  {
+    id: "memory.graph_engine",
+    name: "Graph memory engine",
+    description: "Builds concept/entity communities from durable memories and retrieval traces, then verifies graph evidence can feed the context engine.",
+    type: "retrieval",
+    input: {
+      query: "adaptive RAG graph memory workflow approvals evaluation security",
+      limit: 6,
+    },
+    expected: {
+      minNodes: 4,
+      minEdges: 3,
+      minGraphResults: 1,
+      contextSelectsGraph: true,
     },
   },
   {
@@ -225,6 +243,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
     return evaluateContextEngine(evalCase);
   }
 
+  if (evalCase.id === "memory.graph_engine") {
+    return evaluateMemoryGraph(evalCase);
+  }
+
   if (evalCase.id === "tool.policy_dry_run") {
     return evaluateToolPolicy(evalCase);
   }
@@ -331,6 +353,79 @@ async function evaluateContextEngine(evalCase: EvalCaseDefinition): Promise<Case
     },
     estimatedCostUsd: estimateTextCost(query),
   };
+}
+
+async function evaluateMemoryGraph(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const query = String(evalCase.input.query || "");
+  const limit = Number(evalCase.input.limit || 6);
+  await ensureGraphEvalSeedMemory();
+  const rebuild = await rebuildMemoryGraph({
+    source: "evaluation",
+    memoryLimit: 500,
+    traceLimit: 200,
+  });
+  const graphResults = await searchMemoryGraph(query, { limit });
+  const pack = await buildContextPack(query, { limit });
+  const stats = await getMemoryGraphStats();
+  const checks = {
+    nodesBuilt: stats.nodes >= Number(evalCase.expected.minNodes || 1),
+    edgesBuilt: stats.edges >= Number(evalCase.expected.minEdges || 1),
+    communitiesAvailable: stats.communities >= 1,
+    graphSearchResults: graphResults.length >= Number(evalCase.expected.minGraphResults || 1),
+    contextSelectsGraph: pack.results.some((item) => item.kind === "graph") === Boolean(evalCase.expected.contextSelectsGraph),
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      query,
+      checks,
+      rebuild: {
+        id: rebuild.build.id,
+        nodeCount: rebuild.build.nodeCount,
+        edgeCount: rebuild.build.edgeCount,
+        latencyMs: rebuild.build.latencyMs,
+      },
+      stats: {
+        nodes: stats.nodes,
+        edges: stats.edges,
+        communities: stats.communities,
+        averageDegree: stats.averageDegree,
+      },
+      topGraphResults: graphResults.slice(0, 3).map((result) => ({
+        label: result.node.label,
+        kind: result.node.kind,
+        communityId: result.communityId,
+        score: result.score,
+        neighbors: result.neighborhood.map((item) => item.node.label).slice(0, 5),
+      })),
+      contextEvidenceKinds: pack.results.map((item) => item.kind),
+      traceId: pack.trace?.id,
+    },
+    estimatedCostUsd: estimateTextCost(query),
+  };
+}
+
+async function ensureGraphEvalSeedMemory() {
+  const title = "Graph memory evaluation seed";
+  const memories = await listMemories();
+  if (memories.some((memory) => memory.title === title)) {
+    return;
+  }
+
+  await saveMemory({
+    type: "procedure",
+    title,
+    content:
+      "OmniAgent OS should connect adaptive RAG, graph memory, durable workflow approvals, pgvector retrieval, security controls, and evaluation traces into a multi-hop agentic orchestration context.",
+    tags: ["graph-memory", "rag", "workflow", "approval", "evaluation", "security"],
+    source: "evaluation",
+    scope: "workspace",
+    importance: 0.9,
+  });
 }
 
 async function evaluateToolPolicy(evalCase: EvalCaseDefinition): Promise<CaseResult> {

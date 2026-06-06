@@ -176,6 +176,72 @@ export async function ensureDatabaseSchema() {
       `;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS omni_memory_graph_nodes (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          label TEXT NOT NULL,
+          slug TEXT NOT NULL UNIQUE,
+          aliases TEXT[] NOT NULL DEFAULT '{}',
+          summary TEXT NOT NULL DEFAULT '',
+          weight DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+          source_count INTEGER NOT NULL DEFAULT 0,
+          memory_ids TEXT[] NOT NULL DEFAULT '{}',
+          trace_ids TEXT[] NOT NULL DEFAULT '{}',
+          tags TEXT[] NOT NULL DEFAULT '{}',
+          metadata JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_memory_graph_nodes_kind_idx ON omni_memory_graph_nodes (kind)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_memory_graph_nodes_updated_at_idx ON omni_memory_graph_nodes (updated_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_memory_graph_nodes_tags_idx ON omni_memory_graph_nodes USING GIN (tags)`;
+      await sql`
+        CREATE INDEX IF NOT EXISTS omni_memory_graph_nodes_text_idx
+        ON omni_memory_graph_nodes
+        USING GIN (to_tsvector('english', label || ' ' || summary || ' ' || array_to_string(tags, ' ')))
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_memory_graph_edges (
+          id TEXT PRIMARY KEY,
+          source_node_id TEXT NOT NULL REFERENCES omni_memory_graph_nodes(id) ON DELETE CASCADE,
+          target_node_id TEXT NOT NULL REFERENCES omni_memory_graph_nodes(id) ON DELETE CASCADE,
+          relation TEXT NOT NULL,
+          weight DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+          evidence_count INTEGER NOT NULL DEFAULT 0,
+          memory_ids TEXT[] NOT NULL DEFAULT '{}',
+          trace_ids TEXT[] NOT NULL DEFAULT '{}',
+          metadata JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_memory_graph_edges_source_idx ON omni_memory_graph_edges (source_node_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_memory_graph_edges_target_idx ON omni_memory_graph_edges (target_node_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_memory_graph_edges_relation_idx ON omni_memory_graph_edges (relation)`;
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS omni_memory_graph_edges_unique_idx
+        ON omni_memory_graph_edges (source_node_id, target_node_id, relation)
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_memory_graph_builds (
+          id TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          source TEXT NOT NULL,
+          memory_count INTEGER NOT NULL DEFAULT 0,
+          trace_count INTEGER NOT NULL DEFAULT 0,
+          node_count INTEGER NOT NULL DEFAULT 0,
+          edge_count INTEGER NOT NULL DEFAULT 0,
+          latency_ms INTEGER NOT NULL DEFAULT 0,
+          error TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_memory_graph_builds_created_at_idx ON omni_memory_graph_builds (created_at DESC)`;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS omni_agent_runs (
           id TEXT PRIMARY KEY,
           mode TEXT NOT NULL,

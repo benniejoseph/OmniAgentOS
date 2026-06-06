@@ -88,6 +88,21 @@ export type ContextEvidenceItem =
       confidence: number;
       reasons: string[];
       result: KnowledgeSearchResult;
+    }
+  | {
+      id: string;
+      kind: "graph";
+      sourceKey: string;
+      title: string;
+      content: string;
+      score: number;
+      utilityScore: number;
+      supportScore: number;
+      diversityScore: number;
+      freshnessScore: number;
+      confidence: number;
+      reasons: string[];
+      result: import("@/lib/memory/types").MemoryGraphSearchResult;
     };
 
 export type RetrievalTraceRecord = {
@@ -116,6 +131,7 @@ export type ContextPack = {
   results: ContextEvidenceItem[];
   memoryResults: import("@/lib/memory/types").MemorySearchResult[];
   knowledgeResults: KnowledgeSearchResult[];
+  graphResults: import("@/lib/memory/types").MemoryGraphSearchResult[];
   contextBlock: string;
   trace?: RetrievalTraceRecord;
 };

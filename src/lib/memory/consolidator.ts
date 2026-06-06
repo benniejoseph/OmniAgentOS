@@ -2,6 +2,7 @@ import { z } from "zod";
 import { hasOpenAIKey } from "@/lib/config";
 import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
 import type { AgentMode } from "@/lib/orchestration/types";
+import { indexMemoryGraphRecords } from "@/lib/memory/graph";
 import { saveMemory } from "@/lib/memory/store";
 import type { MemoryRecord } from "@/lib/memory/types";
 
@@ -132,6 +133,7 @@ async function persistConsolidatedItems({
       }),
     );
   }
+  await indexMemoryGraphRecords(saved, "memory.consolidator");
 
   return saved;
 }

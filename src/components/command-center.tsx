@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   Database,
   FileText,
+  GitBranch,
   Globe2,
   HardDrive,
   History,
@@ -379,6 +380,29 @@ type ContextEngineStats = {
   latest: RetrievalTraceRecord[];
 };
 
+type MemoryGraphStats = {
+  nodes: number;
+  edges: number;
+  communities: number;
+  averageDegree: number;
+  latestBuild?: {
+    id: string;
+    status: "completed" | "failed";
+    source: string;
+    nodeCount: number;
+    edgeCount: number;
+    latencyMs: number;
+    createdAt: string;
+  };
+  topNodes: Array<{
+    id: string;
+    kind: string;
+    label: string;
+    weight: number;
+    sourceCount: number;
+  }>;
+};
+
 type WorkflowsResponse = {
   runs: WorkflowRunRecord[];
   stats: WorkflowStats;
@@ -591,6 +615,7 @@ type CapabilityResponse = {
     embedded: number;
     byType: Record<string, number>;
   };
+  memoryGraph: MemoryGraphStats;
   knowledge: {
     documents: number;
     chunks: number;
@@ -799,6 +824,7 @@ export function CommandCenter() {
   const workflowStats = workflowState?.stats || capabilities?.workflows;
   const queueStats = workflowState?.queue || capabilities?.operationJobs;
   const contextStats = capabilities?.contextEngine;
+  const graphStats = capabilities?.memoryGraph;
   const latestWorkflows = workflowState?.runs.slice(0, 5) || capabilities?.workflows.latest || [];
   const approvalQueue = approvalState?.items || operationState?.approvals.items || [];
   const approvalStats = approvalState?.stats || operationState?.approvals.stats;
@@ -1482,6 +1508,7 @@ export function CommandCenter() {
               label="Learned"
               value={`${capabilities?.runs.consolidated.memories ?? 0}`}
             />
+            <StatusPill icon={<GitBranch size={15} />} label="Graph" value={`${graphStats?.nodes ?? 0}`} />
             <StatusPill icon={<BookOpen size={15} />} label="Docs" value={`${capabilities?.knowledge.documents ?? 0}`} />
             <StatusPill icon={<Search size={15} />} label="Context" value={`${contextStats?.traces ?? 0}`} />
             <StatusPill icon={<History size={15} />} label="Runs" value={`${capabilities?.runs.total ?? 0}`} />
@@ -2233,6 +2260,11 @@ export function CommandCenter() {
                 <MiniStat label="Traces" value={`${contextStats?.traces ?? 0}`} />
                 <MiniStat label="Ctx avg" value={`${contextStats?.averageSelectedCount ?? 0}`} />
                 <MiniStat label="Latency" value={`${contextStats?.averageLatencyMs ?? 0}ms`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Graph" value={`${graphStats?.nodes ?? 0}`} />
+                <MiniStat label="Edges" value={`${graphStats?.edges ?? 0}`} />
+                <MiniStat label="Groups" value={`${graphStats?.communities ?? 0}`} />
               </div>
               <div className="flex flex-col gap-3">
                 {documents.map((document) => (
