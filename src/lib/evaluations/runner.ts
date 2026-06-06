@@ -3,6 +3,14 @@ import { hashPassword, verifyPassword } from "@/lib/auth/crypto";
 import { isAuthEnforced } from "@/lib/auth/store";
 import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
 import { getHealthStats, runSystemDiagnostics } from "@/lib/diagnostics/health";
+import {
+  acknowledgeIncident,
+  getIncidentAlertTargets,
+  getIncidentPlaybooks,
+  getIncidentStats,
+  listIncidents,
+} from "@/lib/diagnostics/incidents";
+import { runIncidentPlaybook } from "@/lib/diagnostics/playbooks";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { connectionCatalog } from "@/lib/connectors/catalog";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
@@ -231,6 +239,22 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       recoveryLedger: true,
     },
   },
+  {
+    id: "operations.incident_management",
+    name: "Incident management",
+    description: "Validates incident lifecycle sync, alert routing metadata, acknowledgement actions, and remediation playbook availability.",
+    type: "operations",
+    input: {
+      runDiagnostics: true,
+      actorId: "evaluation",
+    },
+    expected: {
+      playbooks: true,
+      alertTargets: true,
+      lifecycleActions: true,
+      eventLedger: true,
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -348,6 +372,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.self_healing") {
     return evaluateSelfHealingDiagnostics(evalCase);
+  }
+
+  if (evalCase.id === "operations.incident_management") {
+    return evaluateIncidentManagement(evalCase);
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -957,6 +985,100 @@ async function evaluateSelfHealingDiagnostics(evalCase: EvalCaseDefinition): Pro
         incidents: stats.incidents,
         recoveryActions: stats.recoveryActions,
       },
+    },
+  };
+}
+
+async function evaluateIncidentManagement(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const actorId = String(evalCase.input.actorId || "evaluation");
+  const check = evalCase.input.runDiagnostics
+    ? await runSystemDiagnostics({ scope: "diagnostics" })
+    : undefined;
+  const playbooks = getIncidentPlaybooks();
+  const alertTargets = getIncidentAlertTargets("critical");
+  const activeBefore = await listIncidents({ status: "active", limit: 10 });
+  const targetIncident = activeBefore[0];
+  let actionSummary: Record<string, unknown> | undefined;
+
+  if (targetIncident) {
+    const acknowledgement = await acknowledgeIncident(targetIncident.id, {
+      actorId,
+      reason: "Evaluation acknowledgement smoke.",
+      metadata: { caseId: evalCase.id },
+    });
+    const playbookId = acknowledgement?.incident.playbookIds.find((id) =>
+      playbooks.some((playbook) => playbook.id === id && playbook.autoRunnable),
+    );
+    const playbookResult = playbookId
+      ? await runIncidentPlaybook({
+          incidentId: targetIncident.id,
+          playbookId,
+          actorId,
+        })
+      : null;
+    actionSummary = {
+      incidentId: targetIncident.id,
+      acknowledged: acknowledgement?.incident.status === "acknowledged",
+      playbookId,
+      playbookStatus: playbookResult?.status,
+      eventId: acknowledgement?.event.id,
+    };
+  }
+
+  const stats = await getIncidentStats();
+  const activeAfter = await listIncidents({ status: "active", limit: 10 });
+  const checks = {
+    healthSynced: check ? stats.total >= activeAfter.length : true,
+    statsAvailable: typeof stats.active === "number" && typeof stats.open === "number",
+    playbooksAvailable: Boolean(evalCase.expected.playbooks) ? playbooks.length >= 3 : true,
+    alertTargetsAvailable: Boolean(evalCase.expected.alertTargets)
+      ? alertTargets.some((target) => target.channel === "dashboard" && target.status === "ready") &&
+        alertTargets.some((target) => target.channel === "ops" && target.status === "ready")
+      : true,
+    lifecycleActions: Boolean(evalCase.expected.lifecycleActions)
+      ? !targetIncident || Boolean(actionSummary?.acknowledged)
+      : true,
+    eventLedger: Boolean(evalCase.expected.eventLedger)
+      ? stats.total === 0 || stats.latestEvents.length > 0
+      : true,
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      checkId: check?.id,
+      actionSummary,
+      stats: {
+        total: stats.total,
+        active: stats.active,
+        open: stats.open,
+        acknowledged: stats.acknowledged,
+        resolved: stats.resolved,
+        criticalOpen: stats.criticalOpen,
+        warningOpen: stats.warningOpen,
+      },
+      activeIncidents: activeAfter.map((incident) => ({
+        id: incident.id,
+        componentId: incident.componentId,
+        severity: incident.severity,
+        status: incident.status,
+        playbookIds: incident.playbookIds,
+      })),
+      playbooks: playbooks.map((playbook) => ({
+        id: playbook.id,
+        automation: playbook.automation,
+        autoRunnable: playbook.autoRunnable,
+      })),
+      alertTargets: alertTargets.map((target) => ({
+        id: target.id,
+        channel: target.channel,
+        status: target.status,
+        targetEnv: target.targetEnv,
+      })),
     },
   };
 }

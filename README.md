@@ -51,6 +51,9 @@ Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue
 - `/api/operations` production operations overview endpoint
 - `/api/health` public production health endpoint with component status and SLO metrics
 - `/api/diagnostics` authenticated diagnostics and self-healing repair endpoint
+- `/api/incidents` authenticated incident lifecycle, stats, playbook, and alert-routing endpoint
+- `/api/incidents/:id` incident detail and event history endpoint
+- `/api/incidents/:id/actions` acknowledge, resolve, and remediation-playbook action endpoint
 - `/api/connection-catalog` connector template catalog for external app targets
 - `/api/connectors` MCP connector registration and discovery endpoint
 - `/api/connectors/:id/discover` MCP tool rediscovery endpoint
@@ -83,6 +86,7 @@ Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue
 - Command center panel for auth mode, current identity, tenant users, and admin user creation
 - Command center panel for pending approvals, failed work, active workflows, and connector errors
 - Command center health counters for system status, incidents, and completed recovery actions
+- Command center incident response controls for active incidents, acknowledgements, resolutions, and remediation playbooks
 - Connection catalog for GitHub, Gmail, Slack, Notion, Google Drive, Supabase, Neon, Upstash, browser automation, custom MCP, and custom OpenAPI adapter setup
 - Local memory and knowledge persisted under `.omniagent/`
 - Postgres-backed memory, RAG documents/chunks, run history, tool audit history, MCP connectors, OpenAPI connectors, and discovered tool schemas when `DATABASE_URL` is configured
@@ -99,10 +103,12 @@ Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue
 - Native webhook workflow triggers with HMAC signature support, trigger/event ledgers, workflow run creation, and durable queue enqueue
 - Production health diagnostics across database, OpenAI configuration, vector store, operation jobs, workflows, planner, triggers, evaluations, tools, memory, and connectors
 - Self-healing repair path for expired operation-job leases and stale workflow execution
+- Incident management with normalized incident records, status lifecycle, event history, alert target metadata, and operator playbooks
 - Vercel Cron integration for secured production workflow queue ticks with `CRON_SECRET`
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
 - Operations regression case for approval queue, operations overview, and connection catalog readiness
 - Operations regression case for persisted health diagnostics, SLO metrics, incident consistency, and repair ledgers
+- Operations regression case for incident sync, alert routing metadata, acknowledgement actions, and playbook execution
 - Tenant-aware security controls with viewer/operator/admin/system roles, server-only secret env-var references, redacted audit metadata, and persisted RBAC allow/deny records
 - First-party identity control plane with scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
 

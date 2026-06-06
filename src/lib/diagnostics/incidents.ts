@@ -1,0 +1,741 @@
+import { randomUUID } from "node:crypto";
+import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import type { HealthIncident, SystemHealthRecord } from "@/lib/diagnostics/health";
+import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { getDataPath } from "@/lib/storage/paths";
+
+export type IncidentSeverity = "info" | "warning" | "critical";
+export type IncidentStatus = "open" | "acknowledged" | "resolved";
+export type IncidentEventType =
+  | "opened"
+  | "observed"
+  | "reopened"
+  | "acknowledged"
+  | "resolved"
+  | "playbook_run"
+  | "alert_routed";
+
+export type IncidentAlertTarget = {
+  id: string;
+  name: string;
+  channel: "dashboard" | "ops" | "webhook" | "email" | "slack";
+  status: "ready" | "requires_config";
+  targetEnv?: string;
+  description: string;
+};
+
+export type IncidentPlaybook = {
+  id: string;
+  name: string;
+  description: string;
+  componentIds: string[];
+  automation: "diagnostics_repair" | "health_recheck" | "manual";
+  autoRunnable: boolean;
+  riskLevel: 0 | 1 | 2 | 3;
+};
+
+export type IncidentRecord = {
+  id: string;
+  fingerprint: string;
+  componentId: string;
+  severity: IncidentSeverity;
+  status: IncidentStatus;
+  title: string;
+  message: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastCheckId?: string;
+  occurrenceCount: number;
+  acknowledgedAt?: string;
+  acknowledgedBy?: string;
+  acknowledgementReason?: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  resolution?: string;
+  alertTargets: IncidentAlertTarget[];
+  playbookIds: string[];
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type IncidentEventRecord = {
+  id: string;
+  incidentId: string;
+  type: IncidentEventType;
+  actorId?: string;
+  message: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type IncidentLedger = {
+  incidents: IncidentRecord[];
+  events: IncidentEventRecord[];
+};
+
+export type IncidentStats = {
+  total: number;
+  open: number;
+  acknowledged: number;
+  resolved: number;
+  active: number;
+  criticalOpen: number;
+  warningOpen: number;
+  byComponent: Record<string, number>;
+  latest: IncidentRecord[];
+  latestEvents: IncidentEventRecord[];
+  playbooks: IncidentPlaybook[];
+  alertTargets: IncidentAlertTarget[];
+};
+
+type ListIncidentOptions = {
+  status?: IncidentStatus | "active" | "all";
+  limit?: number;
+};
+
+type IncidentSyncResult = {
+  incidents: IncidentRecord[];
+  events: IncidentEventRecord[];
+};
+
+const playbooks: IncidentPlaybook[] = [
+  {
+    id: "diagnostics.repair_runtime",
+    name: "Repair runtime leases",
+    description: "Run diagnostics repair to release expired queue leases and requeue stale workflows.",
+    componentIds: ["operation_queue", "workflows"],
+    automation: "diagnostics_repair",
+    autoRunnable: true,
+    riskLevel: 1,
+  },
+  {
+    id: "diagnostics.recheck",
+    name: "Recheck health",
+    description: "Run a fresh diagnostics pass and persist updated component evidence.",
+    componentIds: ["*"],
+    automation: "health_recheck",
+    autoRunnable: true,
+    riskLevel: 0,
+  },
+  {
+    id: "connectors.review_credentials",
+    name: "Review connector credentials",
+    description: "Inspect connector env-var references, failed imports, and external API reachability.",
+    componentIds: ["connectors"],
+    automation: "manual",
+    autoRunnable: false,
+    riskLevel: 2,
+  },
+  {
+    id: "vector_store.rebuild_index",
+    name: "Rebuild vector index",
+    description: "Verify pgvector extension state, embedding dimensions, vector columns, and HNSW indexes.",
+    componentIds: ["vector_store"],
+    automation: "manual",
+    autoRunnable: false,
+    riskLevel: 2,
+  },
+  {
+    id: "evaluations.run_regression",
+    name: "Run regression suite",
+    description: "Run focused evaluations to isolate degraded quality, latency, or workflow regressions.",
+    componentIds: ["evaluations", "planner", "tools", "triggers"],
+    automation: "manual",
+    autoRunnable: false,
+    riskLevel: 1,
+  },
+];
+
+let incidentFileWriteQueue: Promise<void> = Promise.resolve();
+
+export function getIncidentPlaybooks() {
+  return playbooks;
+}
+
+export function getIncidentAlertTargets(severity: IncidentSeverity = "warning"): IncidentAlertTarget[] {
+  const targets: IncidentAlertTarget[] = [
+    {
+      id: "dashboard",
+      name: "Command center",
+      channel: "dashboard",
+      status: "ready",
+      description: "Show active incidents in the operations center.",
+    },
+    {
+      id: "ops-ledger",
+      name: "Ops ledger",
+      channel: "ops",
+      status: "ready",
+      description: "Persist incident events, acknowledgements, resolutions, and playbook runs.",
+    },
+    {
+      id: "webhook",
+      name: "Webhook route",
+      channel: "webhook",
+      status: process.env.OMNIAGENT_ALERT_WEBHOOK_URL ? "ready" : "requires_config",
+      targetEnv: "OMNIAGENT_ALERT_WEBHOOK_URL",
+      description: "Route critical incident notifications to an external incident webhook.",
+    },
+    {
+      id: "email",
+      name: "Email route",
+      channel: "email",
+      status: process.env.OMNIAGENT_ALERT_EMAIL_TO && process.env.RESEND_API_KEY ? "ready" : "requires_config",
+      targetEnv: "OMNIAGENT_ALERT_EMAIL_TO",
+      description: "Route incident summaries to an operator email address.",
+    },
+    {
+      id: "slack",
+      name: "Slack route",
+      channel: "slack",
+      status: process.env.SLACK_WEBHOOK_URL ? "ready" : "requires_config",
+      targetEnv: "SLACK_WEBHOOK_URL",
+      description: "Route incident summaries to a Slack incoming webhook.",
+    },
+  ];
+
+  if (severity === "critical") {
+    return targets;
+  }
+
+  return targets.filter((target) => target.channel === "dashboard" || target.channel === "ops");
+}
+
+export async function syncIncidentsFromHealthCheck(check: SystemHealthRecord): Promise<IncidentSyncResult> {
+  const now = new Date().toISOString();
+  const activeFingerprints = new Set(check.incidents.map(createIncidentFingerprint));
+  const checkedComponentIds = new Set(check.components.map((component) => component.id));
+  const changedIncidents: IncidentRecord[] = [];
+  const events: IncidentEventRecord[] = [];
+
+  for (const healthIncident of check.incidents) {
+    const component = check.components.find((item) => item.id === healthIncident.componentId);
+    const fingerprint = createIncidentFingerprint(healthIncident);
+    const existing = await getIncidentByFingerprint(fingerprint);
+    const selectedPlaybookIds = selectPlaybookIds(healthIncident.componentId);
+    const alertTargets = getIncidentAlertTargets(healthIncident.severity);
+
+    if (!existing) {
+      const record: IncidentRecord = {
+        id: randomUUID(),
+        fingerprint,
+        componentId: healthIncident.componentId,
+        severity: healthIncident.severity,
+        status: "open",
+        title: component ? `${component.name} ${healthIncident.severity}` : `${healthIncident.componentId} ${healthIncident.severity}`,
+        message: healthIncident.message,
+        firstSeenAt: check.createdAt,
+        lastSeenAt: check.createdAt,
+        lastCheckId: check.id,
+        occurrenceCount: 1,
+        alertTargets,
+        playbookIds: selectedPlaybookIds,
+        metadata: {
+          healthIncidentId: healthIncident.id,
+          componentMetrics: component?.metrics || healthIncident.metadata || {},
+          checkStatus: check.status,
+        },
+        createdAt: now,
+        updatedAt: now,
+      };
+      await saveIncident(record);
+      changedIncidents.push(record);
+      events.push(await recordIncidentEvent({
+        incidentId: record.id,
+        type: "opened",
+        message: `Opened ${record.severity} incident for ${record.componentId}.`,
+        metadata: { checkId: check.id, fingerprint },
+      }));
+      events.push(await recordIncidentEvent({
+        incidentId: record.id,
+        type: "alert_routed",
+        message: `Routed incident to ${alertTargets.filter((target) => target.status === "ready").length} ready target(s).`,
+        metadata: { targets: alertTargets },
+      }));
+      continue;
+    }
+
+    const wasResolved = existing.status === "resolved";
+    const record: IncidentRecord = {
+      ...existing,
+      severity: healthIncident.severity,
+      status: wasResolved ? "open" : existing.status,
+      message: healthIncident.message,
+      lastSeenAt: check.createdAt,
+      lastCheckId: check.id,
+      occurrenceCount: existing.occurrenceCount + 1,
+      resolvedAt: wasResolved ? undefined : existing.resolvedAt,
+      resolvedBy: wasResolved ? undefined : existing.resolvedBy,
+      resolution: wasResolved ? undefined : existing.resolution,
+      alertTargets,
+      playbookIds: selectedPlaybookIds,
+      metadata: {
+        ...existing.metadata,
+        healthIncidentId: healthIncident.id,
+        componentMetrics: component?.metrics || healthIncident.metadata || {},
+        checkStatus: check.status,
+      },
+      updatedAt: now,
+    };
+    await saveIncident(record);
+    changedIncidents.push(record);
+    events.push(await recordIncidentEvent({
+      incidentId: record.id,
+      type: wasResolved ? "reopened" : "observed",
+      message: wasResolved
+        ? `Reopened incident for ${record.componentId}.`
+        : `Observed incident for ${record.componentId}.`,
+      metadata: { checkId: check.id, fingerprint, status: record.status },
+    }));
+  }
+
+  const activeIncidents = await listIncidents({ status: "active", limit: 500 });
+  for (const incident of activeIncidents) {
+    if (!checkedComponentIds.has(incident.componentId) || activeFingerprints.has(incident.fingerprint)) {
+      continue;
+    }
+    const resolved = await resolveIncident(incident.id, {
+      actorId: "system",
+      resolution: `Resolved by health check ${check.id}.`,
+      metadata: { checkId: check.id },
+    });
+    if (resolved) {
+      changedIncidents.push(resolved.incident);
+      events.push(resolved.event);
+    }
+  }
+
+  return { incidents: changedIncidents, events };
+}
+
+export async function listIncidents(options: ListIncidentOptions = {}) {
+  const limit = Math.min(Math.max(options.limit || 50, 1), 500);
+  const status = options.status || "active";
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = status === "all"
+      ? await getSql()`
+          SELECT *
+          FROM omni_incidents
+          ORDER BY updated_at DESC
+          LIMIT ${limit}
+        `
+      : status === "active"
+        ? await getSql()`
+            SELECT *
+            FROM omni_incidents
+            WHERE status IN ('open', 'acknowledged')
+            ORDER BY updated_at DESC
+            LIMIT ${limit}
+          `
+        : await getSql()`
+            SELECT *
+            FROM omni_incidents
+            WHERE status = ${status}
+            ORDER BY updated_at DESC
+            LIMIT ${limit}
+          `;
+    return rows.map(incidentFromRow);
+  }
+
+  const ledger = await readIncidentLedger();
+  return ledger.incidents
+    .filter((incident) => status === "all" || (status === "active" ? incident.status !== "resolved" : incident.status === status))
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    .slice(0, limit);
+}
+
+export async function getIncident(incidentId: string) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_incidents
+      WHERE id = ${incidentId}
+      LIMIT 1
+    `;
+    return rows[0] ? incidentFromRow(rows[0]) : null;
+  }
+
+  const ledger = await readIncidentLedger();
+  return ledger.incidents.find((incident) => incident.id === incidentId) || null;
+}
+
+export async function getIncidentDetail(incidentId: string) {
+  const incident = await getIncident(incidentId);
+  if (!incident) {
+    return null;
+  }
+
+  return {
+    incident,
+    events: await listIncidentEvents(incidentId, 100),
+    playbooks: playbooks.filter((playbook) => incident.playbookIds.includes(playbook.id)),
+  };
+}
+
+export async function listIncidentEvents(incidentId: string, limit = 50) {
+  const boundedLimit = Math.min(Math.max(limit, 1), 200);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_incident_events
+      WHERE incident_id = ${incidentId}
+      ORDER BY created_at DESC
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map(incidentEventFromRow);
+  }
+
+  const ledger = await readIncidentLedger();
+  return ledger.events
+    .filter((event) => event.incidentId === incidentId)
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    .slice(0, boundedLimit);
+}
+
+export async function getIncidentStats(): Promise<IncidentStats> {
+  const [incidents, latestEvents] = await Promise.all([
+    listIncidents({ status: "all", limit: 500 }),
+    listLatestIncidentEvents(10),
+  ]);
+  const active = incidents.filter((incident) => incident.status !== "resolved");
+
+  return {
+    total: incidents.length,
+    open: incidents.filter((incident) => incident.status === "open").length,
+    acknowledged: incidents.filter((incident) => incident.status === "acknowledged").length,
+    resolved: incidents.filter((incident) => incident.status === "resolved").length,
+    active: active.length,
+    criticalOpen: active.filter((incident) => incident.severity === "critical").length,
+    warningOpen: active.filter((incident) => incident.severity === "warning").length,
+    byComponent: active.reduce<Record<string, number>>((acc, incident) => {
+      acc[incident.componentId] = (acc[incident.componentId] || 0) + 1;
+      return acc;
+    }, {}),
+    latest: active.slice(0, 5),
+    latestEvents,
+    playbooks,
+    alertTargets: getIncidentAlertTargets("critical"),
+  };
+}
+
+export async function acknowledgeIncident(
+  incidentId: string,
+  input: { actorId: string; reason?: string; metadata?: Record<string, unknown> },
+) {
+  const incident = await getIncident(incidentId);
+  if (!incident) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const next: IncidentRecord = {
+    ...incident,
+    status: incident.status === "resolved" ? "resolved" : "acknowledged",
+    acknowledgedAt: incident.status === "resolved" ? incident.acknowledgedAt : now,
+    acknowledgedBy: incident.status === "resolved" ? incident.acknowledgedBy : input.actorId,
+    acknowledgementReason: input.reason || incident.acknowledgementReason,
+    updatedAt: now,
+  };
+  await saveIncident(next);
+  const event = await recordIncidentEvent({
+    incidentId,
+    type: "acknowledged",
+    actorId: input.actorId,
+    message: input.reason ? `Acknowledged: ${input.reason}` : "Acknowledged incident.",
+    metadata: input.metadata || {},
+  });
+
+  return { incident: next, event };
+}
+
+export async function resolveIncident(
+  incidentId: string,
+  input: { actorId: string; resolution?: string; metadata?: Record<string, unknown> },
+) {
+  const incident = await getIncident(incidentId);
+  if (!incident) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const next: IncidentRecord = {
+    ...incident,
+    status: "resolved",
+    resolvedAt: now,
+    resolvedBy: input.actorId,
+    resolution: input.resolution || "Resolved by operator.",
+    updatedAt: now,
+  };
+  await saveIncident(next);
+  const event = await recordIncidentEvent({
+    incidentId,
+    type: "resolved",
+    actorId: input.actorId,
+    message: next.resolution || "Resolved incident.",
+    metadata: input.metadata || {},
+  });
+
+  return { incident: next, event };
+}
+
+export async function recordIncidentEvent(input: {
+  incidentId: string;
+  type: IncidentEventType;
+  actorId?: string;
+  message: string;
+  metadata?: Record<string, unknown>;
+}) {
+  const event: IncidentEventRecord = {
+    id: randomUUID(),
+    incidentId: input.incidentId,
+    type: input.type,
+    actorId: input.actorId,
+    message: input.message,
+    metadata: input.metadata || {},
+    createdAt: new Date().toISOString(),
+  };
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    await getSql()`
+      INSERT INTO omni_incident_events (
+        id, incident_id, type, actor_id, message, metadata, created_at
+      )
+      VALUES (
+        ${event.id}, ${event.incidentId}, ${event.type}, ${event.actorId || null},
+        ${event.message}, ${JSON.stringify(event.metadata)}::jsonb, ${event.createdAt}
+      )
+    `;
+    return event;
+  }
+
+  await mutateIncidentLedger((ledger) => {
+    ledger.events.unshift(event);
+    return trimIncidentLedger(ledger);
+  });
+  return event;
+}
+
+async function getIncidentByFingerprint(fingerprint: string) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_incidents
+      WHERE fingerprint = ${fingerprint}
+      LIMIT 1
+    `;
+    return rows[0] ? incidentFromRow(rows[0]) : null;
+  }
+
+  const ledger = await readIncidentLedger();
+  return ledger.incidents.find((incident) => incident.fingerprint === fingerprint) || null;
+}
+
+async function saveIncident(record: IncidentRecord) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    await getSql()`
+      INSERT INTO omni_incidents (
+        id, fingerprint, component_id, severity, status, title, message,
+        first_seen_at, last_seen_at, last_check_id, occurrence_count,
+        acknowledged_at, acknowledged_by, acknowledgement_reason,
+        resolved_at, resolved_by, resolution, alert_targets, playbook_ids,
+        metadata, created_at, updated_at
+      )
+      VALUES (
+        ${record.id}, ${record.fingerprint}, ${record.componentId}, ${record.severity},
+        ${record.status}, ${record.title}, ${record.message}, ${record.firstSeenAt},
+        ${record.lastSeenAt}, ${record.lastCheckId || null}, ${record.occurrenceCount},
+        ${record.acknowledgedAt || null}, ${record.acknowledgedBy || null},
+        ${record.acknowledgementReason || null}, ${record.resolvedAt || null},
+        ${record.resolvedBy || null}, ${record.resolution || null},
+        ${JSON.stringify(record.alertTargets)}::jsonb, ${record.playbookIds},
+        ${JSON.stringify(record.metadata)}::jsonb, ${record.createdAt}, ${record.updatedAt}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        fingerprint = EXCLUDED.fingerprint,
+        component_id = EXCLUDED.component_id,
+        severity = EXCLUDED.severity,
+        status = EXCLUDED.status,
+        title = EXCLUDED.title,
+        message = EXCLUDED.message,
+        first_seen_at = EXCLUDED.first_seen_at,
+        last_seen_at = EXCLUDED.last_seen_at,
+        last_check_id = EXCLUDED.last_check_id,
+        occurrence_count = EXCLUDED.occurrence_count,
+        acknowledged_at = EXCLUDED.acknowledged_at,
+        acknowledged_by = EXCLUDED.acknowledged_by,
+        acknowledgement_reason = EXCLUDED.acknowledgement_reason,
+        resolved_at = EXCLUDED.resolved_at,
+        resolved_by = EXCLUDED.resolved_by,
+        resolution = EXCLUDED.resolution,
+        alert_targets = EXCLUDED.alert_targets,
+        playbook_ids = EXCLUDED.playbook_ids,
+        metadata = EXCLUDED.metadata,
+        updated_at = EXCLUDED.updated_at
+    `;
+    return record;
+  }
+
+  await mutateIncidentLedger((ledger) => {
+    ledger.incidents = [record, ...ledger.incidents.filter((incident) => incident.id !== record.id)];
+    return trimIncidentLedger(ledger);
+  });
+  return record;
+}
+
+async function listLatestIncidentEvents(limit = 10) {
+  const boundedLimit = Math.min(Math.max(limit, 1), 100);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_incident_events
+      ORDER BY created_at DESC
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map(incidentEventFromRow);
+  }
+
+  const ledger = await readIncidentLedger();
+  return ledger.events
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    .slice(0, boundedLimit);
+}
+
+async function readIncidentLedger() {
+  return readJsonFile<IncidentLedger>(getIncidentFile(), { incidents: [], events: [] });
+}
+
+async function mutateIncidentLedger(mutator: (ledger: IncidentLedger) => IncidentLedger) {
+  incidentFileWriteQueue = incidentFileWriteQueue.then(
+    async () => {
+      const ledger = mutator(await readIncidentLedger());
+      await writeIncidentLedger(ledger);
+    },
+    async () => {
+      const ledger = mutator(await readIncidentLedger());
+      await writeIncidentLedger(ledger);
+    },
+  );
+  await incidentFileWriteQueue;
+}
+
+async function writeIncidentLedger(ledger: IncidentLedger) {
+  await writeJsonFile(getIncidentFile(), trimIncidentLedger(ledger));
+}
+
+function trimIncidentLedger(ledger: IncidentLedger): IncidentLedger {
+  return {
+    incidents: ledger.incidents.slice(0, 1000),
+    events: ledger.events.slice(0, 3000),
+  };
+}
+
+function createIncidentFingerprint(incident: HealthIncident) {
+  return `${incident.componentId}:${incident.id}`;
+}
+
+function selectPlaybookIds(componentId: string) {
+  return playbooks
+    .filter((playbook) => playbook.componentIds.includes("*") || playbook.componentIds.includes(componentId))
+    .map((playbook) => playbook.id);
+}
+
+function incidentFromRow(row: Record<string, unknown>): IncidentRecord {
+  return {
+    id: String(row.id),
+    fingerprint: String(row.fingerprint),
+    componentId: String(row.component_id),
+    severity: normalizeSeverity(row.severity),
+    status: normalizeStatus(row.status),
+    title: String(row.title),
+    message: String(row.message),
+    firstSeenAt: normalizeDate(row.first_seen_at),
+    lastSeenAt: normalizeDate(row.last_seen_at),
+    lastCheckId: row.last_check_id ? String(row.last_check_id) : undefined,
+    occurrenceCount: Number(row.occurrence_count || 1),
+    acknowledgedAt: row.acknowledged_at ? normalizeDate(row.acknowledged_at) : undefined,
+    acknowledgedBy: row.acknowledged_by ? String(row.acknowledged_by) : undefined,
+    acknowledgementReason: row.acknowledgement_reason ? String(row.acknowledgement_reason) : undefined,
+    resolvedAt: row.resolved_at ? normalizeDate(row.resolved_at) : undefined,
+    resolvedBy: row.resolved_by ? String(row.resolved_by) : undefined,
+    resolution: row.resolution ? String(row.resolution) : undefined,
+    alertTargets: parseArray(row.alert_targets) as IncidentAlertTarget[],
+    playbookIds: parseStringArray(row.playbook_ids),
+    metadata: parseObject(row.metadata) || {},
+    createdAt: normalizeDate(row.created_at),
+    updatedAt: normalizeDate(row.updated_at),
+  };
+}
+
+function incidentEventFromRow(row: Record<string, unknown>): IncidentEventRecord {
+  return {
+    id: String(row.id),
+    incidentId: String(row.incident_id),
+    type: normalizeEventType(row.type),
+    actorId: row.actor_id ? String(row.actor_id) : undefined,
+    message: String(row.message),
+    metadata: parseObject(row.metadata) || {},
+    createdAt: normalizeDate(row.created_at),
+  };
+}
+
+function normalizeSeverity(value: unknown): IncidentSeverity {
+  const severity = String(value || "warning");
+  if (severity === "critical" || severity === "info") {
+    return severity;
+  }
+  return "warning";
+}
+
+function normalizeStatus(value: unknown): IncidentStatus {
+  const status = String(value || "open");
+  if (status === "acknowledged" || status === "resolved") {
+    return status;
+  }
+  return "open";
+}
+
+function normalizeEventType(value: unknown): IncidentEventType {
+  const type = String(value || "observed");
+  const allowed: IncidentEventType[] = [
+    "opened",
+    "observed",
+    "reopened",
+    "acknowledged",
+    "resolved",
+    "playbook_run",
+    "alert_routed",
+  ];
+  return allowed.includes(type as IncidentEventType) ? (type as IncidentEventType) : "observed";
+}
+
+function parseArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function parseStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function parseObject(value: unknown): Record<string, unknown> | undefined {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function normalizeDate(value: unknown) {
+  return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function getIncidentFile() {
+  return getDataPath("incidents.json");
+}

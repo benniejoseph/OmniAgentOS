@@ -448,6 +448,85 @@ type HealthStats = {
   };
 };
 
+type IncidentSeverity = "info" | "warning" | "critical";
+type IncidentStatus = "open" | "acknowledged" | "resolved";
+
+type IncidentAlertTarget = {
+  id: string;
+  name: string;
+  channel: "dashboard" | "ops" | "webhook" | "email" | "slack";
+  status: "ready" | "requires_config";
+  targetEnv?: string;
+  description: string;
+};
+
+type IncidentPlaybook = {
+  id: string;
+  name: string;
+  description: string;
+  componentIds: string[];
+  automation: "diagnostics_repair" | "health_recheck" | "manual";
+  autoRunnable: boolean;
+  riskLevel: RiskLevel;
+};
+
+type IncidentRecord = {
+  id: string;
+  fingerprint: string;
+  componentId: string;
+  severity: IncidentSeverity;
+  status: IncidentStatus;
+  title: string;
+  message: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastCheckId?: string;
+  occurrenceCount: number;
+  acknowledgedAt?: string;
+  acknowledgedBy?: string;
+  acknowledgementReason?: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  resolution?: string;
+  alertTargets: IncidentAlertTarget[];
+  playbookIds: string[];
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type IncidentEventRecord = {
+  id: string;
+  incidentId: string;
+  type: "opened" | "observed" | "reopened" | "acknowledged" | "resolved" | "playbook_run" | "alert_routed";
+  actorId?: string;
+  message: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+type IncidentStats = {
+  total: number;
+  open: number;
+  acknowledged: number;
+  resolved: number;
+  active: number;
+  criticalOpen: number;
+  warningOpen: number;
+  byComponent: Record<string, number>;
+  latest: IncidentRecord[];
+  latestEvents: IncidentEventRecord[];
+  playbooks: IncidentPlaybook[];
+  alertTargets: IncidentAlertTarget[];
+};
+
+type IncidentsResponse = {
+  incidents: IncidentRecord[];
+  stats: IncidentStats;
+  playbooks: IncidentPlaybook[];
+  alertTargets: IncidentAlertTarget[];
+};
+
 type RetrievalTraceRecord = {
   id: string;
   query: string;
@@ -731,6 +810,7 @@ type CapabilityResponse = {
   workflowTriggers: WorkflowTriggerStats;
   operationJobs: OperationJobStats;
   health: HealthStats;
+  incidents: IncidentStats;
   evaluations: EvalStats;
   security: {
     context: SecurityContext;
@@ -882,6 +962,8 @@ export function CommandCenter() {
   const [operationState, setOperationState] = useState<OperationsResponse | null>(null);
   const [approvalResult, setApprovalResult] = useState("");
   const [diagnosticsResult, setDiagnosticsResult] = useState("");
+  const [incidentState, setIncidentState] = useState<IncidentsResponse | null>(null);
+  const [incidentResult, setIncidentResult] = useState("");
   const [connectionCatalog, setConnectionCatalog] = useState<ConnectionCatalogResponse | null>(null);
   const [evaluationState, setEvaluationState] = useState<EvaluationsResponse | null>(null);
   const [evaluationResult, setEvaluationResult] = useState("");
@@ -922,6 +1004,8 @@ export function CommandCenter() {
   const triggerStats = capabilities?.workflowTriggers;
   const queueStats = workflowState?.queue || capabilities?.operationJobs;
   const healthStats = capabilities?.health;
+  const incidentStats = incidentState?.stats || capabilities?.incidents;
+  const activeIncidents = incidentState?.incidents || incidentStats?.latest || [];
   const contextStats = capabilities?.contextEngine;
   const graphStats = capabilities?.memoryGraph;
   const latestWorkflows = workflowState?.runs.slice(0, 5) || capabilities?.workflows.latest || [];
@@ -1357,6 +1441,42 @@ export function CommandCenter() {
     }
   }
 
+  async function handleIncidentAction(
+    incident: IncidentRecord,
+    action: "acknowledge" | "resolve" | "run_playbook",
+  ) {
+    const playbookId = action === "run_playbook"
+      ? incident.playbookIds.find((id) =>
+          (incidentState?.playbooks || incidentStats?.playbooks || []).some((playbook) => playbook.id === id && playbook.autoRunnable),
+        ) || incident.playbookIds[0]
+      : undefined;
+    setStatus(action === "run_playbook" ? "running incident playbook" : `${action} incident`);
+    setIncidentResult("");
+
+    try {
+      const response = await fetch(`/api/incidents/${incident.id}/actions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          playbookId,
+          reason:
+            action === "acknowledge"
+              ? "Acknowledged from command center."
+              : action === "resolve"
+                ? "Resolved from command center."
+                : undefined,
+        }),
+      });
+      const data = await response.json();
+      setIncidentResult(formatToolResult(data));
+      setStatus(response.ok ? `incident ${action} complete` : "incident action failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "incident action failed");
+    }
+  }
+
   function applyConnectionTemplate(template: ConnectionCatalogItem) {
     const authEnv = template.authEnvVars[0] || "";
 
@@ -1512,6 +1632,13 @@ export function CommandCenter() {
       .catch(() => undefined);
   }
 
+  function refreshIncidents() {
+    fetch("/api/incidents?status=active&limit=8")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => data && setIncidentState(data))
+      .catch(() => undefined);
+  }
+
   function refreshConnectionCatalog() {
     fetch("/api/connection-catalog")
       .then((response) => (response.ok ? response.json() : null))
@@ -1565,6 +1692,7 @@ export function CommandCenter() {
     refreshWorkflows();
     refreshApprovals();
     refreshOperations();
+    refreshIncidents();
     refreshConnectionCatalog();
     refreshEvaluations();
     refreshSecurity();
@@ -1633,6 +1761,7 @@ export function CommandCenter() {
             <StatusPill icon={<CheckCircle2 size={15} />} label="Nodes" value={`${planExecutionStats?.total ?? 0}`} />
             <StatusPill icon={<Cable size={15} />} label="Triggers" value={`${triggerStats?.active ?? 0}`} />
             <StatusPill icon={<Activity size={15} />} label="Health" value={healthStats?.latestStatus || "unknown"} />
+            <StatusPill icon={<ShieldCheck size={15} />} label="Incidents" value={`${incidentStats?.active ?? 0}`} />
             <StatusPill
               icon={<BarChart3 size={15} />}
               label="Evals"
@@ -1773,6 +1902,11 @@ export function CommandCenter() {
                 <MiniStat label="Incidents" value={`${healthStats?.incidents ?? 0}`} />
                 <MiniStat label="Recoveries" value={`${healthStats?.recoveryActions ?? 0}`} />
               </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Open" value={`${incidentStats?.open ?? 0}`} />
+                <MiniStat label="Ack" value={`${incidentStats?.acknowledged ?? 0}`} />
+                <MiniStat label="Critical" value={`${incidentStats?.criticalOpen ?? 0}`} />
+              </div>
               <div className="mb-3 grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -1796,12 +1930,30 @@ export function CommandCenter() {
                   {diagnosticsResult}
                 </pre>
               ) : null}
+              {incidentResult ? (
+                <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
+                  {incidentResult}
+                </pre>
+              ) : null}
               {approvalResult ? (
                 <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                   {approvalResult}
                 </pre>
               ) : null}
               <div className="flex flex-col gap-3">
+                {activeIncidents.length ? (
+                  activeIncidents.slice(0, 5).map((incident) => (
+                    <IncidentRow
+                      key={incident.id}
+                      incident={incident}
+                      onAction={handleIncidentAction}
+                    />
+                  ))
+                ) : (
+                  <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+                    No active incidents.
+                  </p>
+                )}
                 {approvalQueue.length ? (
                   approvalQueue.slice(0, 6).map((item) => (
                     <ApprovalQueueRow
@@ -2714,6 +2866,65 @@ function ToolAuditRow({ record }: { record: ToolExecutionRecord }) {
   );
 }
 
+function IncidentRow({
+  incident,
+  onAction,
+}: {
+  incident: IncidentRecord;
+  onAction: (incident: IncidentRecord, action: "acknowledge" | "resolve" | "run_playbook") => void;
+}) {
+  const canAcknowledge = incident.status === "open";
+  const canPlaybook = incident.playbookIds.length > 0;
+
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", incidentStatusTone(incident.status))}>
+          {incident.status}
+        </span>
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", incidentSeverityTone(incident.severity))}>
+          {incident.severity}
+        </span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{incident.title}</p>
+      <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">{incident.message}</p>
+      <div className="mt-3 grid grid-cols-3 gap-1.5 font-mono text-[11px] text-muted">
+        <span className="truncate">{incident.componentId}</span>
+        <span>{incident.occurrenceCount} seen</span>
+        <span>{new Date(incident.lastSeenAt).toLocaleTimeString()}</span>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-1.5">
+        <button
+          type="button"
+          disabled={!canAcknowledge}
+          onClick={() => onAction(incident, "acknowledge")}
+          className="flex h-8 items-center justify-center gap-1 rounded-md border border-line px-1.5 text-xs font-medium text-foreground transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <CheckCircle2 size={12} />
+          Ack
+        </button>
+        <button
+          type="button"
+          disabled={!canPlaybook}
+          onClick={() => onAction(incident, "run_playbook")}
+          className="flex h-8 items-center justify-center gap-1 rounded-md border border-line px-1.5 text-xs font-medium text-foreground transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <Activity size={12} />
+          Fix
+        </button>
+        <button
+          type="button"
+          onClick={() => onAction(incident, "resolve")}
+          className="flex h-8 items-center justify-center gap-1 rounded-md border border-line px-1.5 text-xs font-medium text-foreground transition hover:border-danger"
+        >
+          <XCircle size={12} />
+          Resolve
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ApprovalQueueRow({
   item,
   onDecide,
@@ -3179,6 +3390,30 @@ function decisionTone(decision: SecurityDecision) {
   }
 
   return "bg-danger/14 text-danger";
+}
+
+function incidentStatusTone(status: IncidentStatus) {
+  if (status === "open") {
+    return "bg-danger/14 text-danger";
+  }
+
+  if (status === "acknowledged") {
+    return "bg-accent/14 text-accent";
+  }
+
+  return "bg-primary/16 text-primary";
+}
+
+function incidentSeverityTone(severity: IncidentSeverity) {
+  if (severity === "critical") {
+    return "bg-danger/14 text-danger";
+  }
+
+  if (severity === "warning") {
+    return "bg-accent/14 text-accent";
+  }
+
+  return "bg-background text-muted";
 }
 
 function workflowTone(status: WorkflowRunStatus) {

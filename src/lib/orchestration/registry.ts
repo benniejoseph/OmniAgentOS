@@ -118,6 +118,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "ops.incident_manager",
+    name: "Incident Manager",
+    description: "Tracks incident lifecycle, alert routing metadata, acknowledgements, resolutions, and remediation playbooks.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

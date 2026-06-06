@@ -3,6 +3,7 @@ import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
 import { getStorageBackend, getVectorStoreStatus, hasDatabaseUrl } from "@/lib/db/client";
 import { getHealthStats } from "@/lib/diagnostics/health";
+import { getIncidentStats } from "@/lib/diagnostics/incidents";
 import { getEvalStats } from "@/lib/evaluations/store";
 import { getMemoryGraphStats } from "@/lib/memory/graph";
 import { getMemoryStats } from "@/lib/memory/store";
@@ -49,6 +50,7 @@ export async function GET(request: Request) {
     workflowTriggers: await getWorkflowTriggerStats(),
     operationJobs: await getOperationJobStats(),
     health: await getHealthStats(),
+    incidents: await getIncidentStats(),
     evaluations: await getEvalStats(),
     security: {
       context: securityContext,

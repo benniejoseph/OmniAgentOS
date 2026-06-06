@@ -607,6 +607,51 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_system_health_checks_created_idx ON omni_system_health_checks (created_at DESC)`;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS omni_incidents (
+          id TEXT PRIMARY KEY,
+          fingerprint TEXT NOT NULL UNIQUE,
+          component_id TEXT NOT NULL,
+          severity TEXT NOT NULL,
+          status TEXT NOT NULL,
+          title TEXT NOT NULL,
+          message TEXT NOT NULL,
+          first_seen_at TIMESTAMPTZ NOT NULL,
+          last_seen_at TIMESTAMPTZ NOT NULL,
+          last_check_id TEXT,
+          occurrence_count INTEGER NOT NULL DEFAULT 1,
+          acknowledged_at TIMESTAMPTZ,
+          acknowledged_by TEXT,
+          acknowledgement_reason TEXT,
+          resolved_at TIMESTAMPTZ,
+          resolved_by TEXT,
+          resolution TEXT,
+          alert_targets JSONB NOT NULL DEFAULT '[]',
+          playbook_ids TEXT[] NOT NULL DEFAULT '{}',
+          metadata JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_incidents_status_idx ON omni_incidents (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_incidents_component_idx ON omni_incidents (component_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_incidents_severity_idx ON omni_incidents (severity)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_incidents_updated_idx ON omni_incidents (updated_at DESC)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_incident_events (
+          id TEXT PRIMARY KEY,
+          incident_id TEXT NOT NULL REFERENCES omni_incidents(id) ON DELETE CASCADE,
+          type TEXT NOT NULL,
+          actor_id TEXT,
+          message TEXT NOT NULL,
+          metadata JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_incident_events_incident_idx ON omni_incident_events (incident_id, created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_incident_events_created_idx ON omni_incident_events (created_at DESC)`;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS omni_eval_runs (
           id TEXT PRIMARY KEY,
           suite TEXT NOT NULL,

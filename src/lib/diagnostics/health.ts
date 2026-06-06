@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { ensureDatabaseSchema, getSql, getStorageBackend, getVectorStoreStatus, hasDatabaseUrl } from "@/lib/db/client";
+import { syncIncidentsFromHealthCheck } from "@/lib/diagnostics/incidents";
 import { getEvalStats } from "@/lib/evaluations/store";
 import { getMemoryStats } from "@/lib/memory/store";
 import { getOperationJobStats, listOperationJobs, repairExpiredOperationJobs } from "@/lib/operations/job-queue";
@@ -313,7 +314,11 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
     createdAt: new Date().toISOString(),
   };
 
-  return saveHealthCheck(record);
+  const saved = await saveHealthCheck(record);
+  await syncIncidentsFromHealthCheck(saved).catch((error) => {
+    console.warn("Incident sync failed.", error instanceof Error ? error.message : error);
+  });
+  return saved;
 }
 
 export async function getLatestHealthChecks(limit = 20) {
