@@ -20,8 +20,15 @@ For durable production memory, run history, and RAG documents, attach a Postgres
 DATABASE_URL=
 ```
 
+For scheduled production workflow ticks on Vercel, set:
+
+```bash
+CRON_SECRET=
+```
+
 Without `DATABASE_URL`, local development uses `.omniagent/` and Vercel uses ephemeral `/tmp/omniagent`.
 When Postgres supports pgvector, the app adds vector columns and indexes for semantic retrieval.
+The included `vercel.json` schedules `/api/workflows/tick` once daily, which is the Hobby-compatible Vercel Cron cadence. Pro deployments can raise the cadence by changing the cron expression.
 
 ## What Is Included
 
@@ -67,6 +74,7 @@ When Postgres supports pgvector, the app adds vector columns and indexes for sem
 - MCP connector host for Streamable HTTP servers; discovered tools flow into the governed tool registry and inherit risk/audit policy
 - OpenAPI connector importer for JSON/YAML specs; imported REST operations flow into the governed tool registry with env-var based auth, dry-runs, approval gates, and audit policy
 - Durable workflow runtime for persisted step execution with retries, approval waits, operator signals, event history, and final report persistence
+- Vercel Cron integration for secured production workflow queue ticks with `CRON_SECRET`
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
 - Tenant-aware security controls with viewer/operator/admin/system roles, server-only secret env-var references, redacted audit metadata, and persisted RBAC allow/deny records
 - First-party identity control plane with scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
