@@ -13,7 +13,10 @@ export type IncidentEventType =
   | "acknowledged"
   | "resolved"
   | "playbook_run"
-  | "alert_routed";
+  | "alert_routed"
+  | "alert_delivery_queued"
+  | "alert_delivered"
+  | "alert_delivery_failed";
 
 export type IncidentAlertTarget = {
   id: string;
@@ -247,12 +250,14 @@ export async function syncIncidentsFromHealthCheck(check: SystemHealthRecord): P
         message: `Opened ${record.severity} incident for ${record.componentId}.`,
         metadata: { checkId: check.id, fingerprint },
       }));
-      events.push(await recordIncidentEvent({
+      const alertEvent = await recordIncidentEvent({
         incidentId: record.id,
         type: "alert_routed",
         message: `Routed incident to ${alertTargets.filter((target) => target.status === "ready").length} ready target(s).`,
         metadata: { targets: alertTargets },
-      }));
+      });
+      events.push(alertEvent);
+      await enqueueAlertDeliverySafely(record, alertEvent.id, "incident.opened");
       continue;
     }
 
@@ -280,14 +285,18 @@ export async function syncIncidentsFromHealthCheck(check: SystemHealthRecord): P
     };
     await saveIncident(record);
     changedIncidents.push(record);
-    events.push(await recordIncidentEvent({
+    const observedEvent = await recordIncidentEvent({
       incidentId: record.id,
       type: wasResolved ? "reopened" : "observed",
       message: wasResolved
         ? `Reopened incident for ${record.componentId}.`
         : `Observed incident for ${record.componentId}.`,
       metadata: { checkId: check.id, fingerprint, status: record.status },
-    }));
+    });
+    events.push(observedEvent);
+    if (wasResolved || record.severity === "critical") {
+      await enqueueAlertDeliverySafely(record, observedEvent.id, wasResolved ? "incident.reopened" : "incident.observed");
+    }
   }
 
   const activeIncidents = await listIncidents({ status: "active", limit: 500 });
@@ -307,6 +316,15 @@ export async function syncIncidentsFromHealthCheck(check: SystemHealthRecord): P
   }
 
   return { incidents: changedIncidents, events };
+}
+
+async function enqueueAlertDeliverySafely(incident: IncidentRecord, eventId: string, reason: string) {
+  try {
+    const { enqueueAlertDeliveriesForIncident } = await import("@/lib/diagnostics/alerts");
+    await enqueueAlertDeliveriesForIncident(incident, { eventId, reason });
+  } catch (error) {
+    console.warn("Alert delivery enqueue failed.", error instanceof Error ? error.message : error);
+  }
 }
 
 export async function listIncidents(options: ListIncidentOptions = {}) {
@@ -713,6 +731,9 @@ function normalizeEventType(value: unknown): IncidentEventType {
     "resolved",
     "playbook_run",
     "alert_routed",
+    "alert_delivery_queued",
+    "alert_delivered",
+    "alert_delivery_failed",
   ];
   return allowed.includes(type as IncidentEventType) ? (type as IncidentEventType) : "observed";
 }

@@ -32,6 +32,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - Native webhook trigger layer with signed event intake, trigger/event audit ledgers, workflow run creation, and durable queue enqueue
 - Production health diagnostics with component status, SLO metrics, incident ledgers, and self-healing repair actions
 - Incident management with normalized incident lifecycle, alert routing metadata, acknowledgement/resolution actions, event history, and remediation playbooks
+- Alert delivery with signed outbound webhooks, Slack/email adapters, delivery retry/backoff, target readiness, and escalation policy metadata
 - Vercel Cron-secured production workflow queue ticks through `/api/workflows/tick`, with opportunistic post-response draining through Next.js `after()`
 - Operations center with approval queue, failed work summary, active workflow summary, connector error summary, and durable approval actions
 - External connection catalog for MCP/OpenAPI adapter setup across common production apps
@@ -102,6 +103,10 @@ flowchart TD
   INCIDENTS --> OQ
   INCIDENTS --> WF
   INCIDENTS --> DB
+  API --> ALERTS["Alert Delivery"]
+  ALERTS --> INCIDENTS
+  ALERTS --> WEBHOOKS["Outbound Webhooks / Slack / Email"]
+  ALERTS --> DB
   API --> SEC["Security Controls"]
   SEC --> RBAC["RBAC Policy"]
   SEC --> SAUDIT["Security Audit Ledger"]
@@ -151,3 +156,4 @@ flowchart TD
 19. Webhook workflow triggers: add signed event intake, trigger and event ledgers, workflow run creation, durable queue enqueue, command-center stats, and regression coverage. Done.
 20. Production health diagnostics: add health and diagnostics APIs, persisted component/SLO ledgers, self-healing repair actions, command-center health counters, and regression coverage. Done.
 21. Incident management: add normalized incidents, event history, alert routing metadata, acknowledgement/resolution actions, remediation playbooks, command-center controls, and regression coverage. Done.
+22. Alert delivery: add persisted alert deliveries, signed outbound webhooks, Slack/email adapters, retry/backoff, escalation policy metadata, command-center controls, and regression coverage. Done.

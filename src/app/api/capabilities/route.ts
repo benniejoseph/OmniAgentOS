@@ -2,6 +2,7 @@ import { hasOpenAIKey } from "@/lib/config";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
 import { getStorageBackend, getVectorStoreStatus, hasDatabaseUrl } from "@/lib/db/client";
+import { getAlertDeliveryStats } from "@/lib/diagnostics/alerts";
 import { getHealthStats } from "@/lib/diagnostics/health";
 import { getIncidentStats } from "@/lib/diagnostics/incidents";
 import { getEvalStats } from "@/lib/evaluations/store";
@@ -51,6 +52,7 @@ export async function GET(request: Request) {
     operationJobs: await getOperationJobStats(),
     health: await getHealthStats(),
     incidents: await getIncidentStats(),
+    alerts: await getAlertDeliveryStats(),
     evaluations: await getEvalStats(),
     security: {
       context: securityContext,

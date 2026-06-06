@@ -527,6 +527,64 @@ type IncidentsResponse = {
   alertTargets: IncidentAlertTarget[];
 };
 
+type AlertDeliveryStatus = "queued" | "running" | "delivered" | "failed" | "skipped";
+
+type AlertDeliveryRecord = {
+  id: string;
+  incidentId: string;
+  incidentEventId?: string;
+  targetId: string;
+  channel: IncidentAlertTarget["channel"];
+  status: AlertDeliveryStatus;
+  severity: IncidentSeverity;
+  dedupeKey: string;
+  payload: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  attempt: number;
+  maxAttempts: number;
+  runAt: string;
+  lockedAt?: string;
+  leaseOwner?: string;
+  leaseExpiresAt?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  deliveredAt?: string;
+};
+
+type AlertDeliveryPolicy = {
+  id: string;
+  name: string;
+  minSeverity: IncidentSeverity;
+  channels: IncidentAlertTarget["channel"][];
+  maxAttempts: number;
+  retryBackoffSeconds: number[];
+  escalationAfterMinutes: number;
+};
+
+type AlertDeliveryStats = {
+  total: number;
+  queued: number;
+  running: number;
+  delivered: number;
+  failed: number;
+  skipped: number;
+  runnable: number;
+  readyTargets: number;
+  configuredExternalTargets: number;
+  byChannel: Record<string, number>;
+  latest: AlertDeliveryRecord[];
+  policies: AlertDeliveryPolicy[];
+  targets: IncidentAlertTarget[];
+};
+
+type AlertsResponse = {
+  deliveries: AlertDeliveryRecord[];
+  stats: AlertDeliveryStats;
+  policies: AlertDeliveryPolicy[];
+  targets: IncidentAlertTarget[];
+};
+
 type RetrievalTraceRecord = {
   id: string;
   query: string;
@@ -811,6 +869,7 @@ type CapabilityResponse = {
   operationJobs: OperationJobStats;
   health: HealthStats;
   incidents: IncidentStats;
+  alerts: AlertDeliveryStats;
   evaluations: EvalStats;
   security: {
     context: SecurityContext;
@@ -964,6 +1023,8 @@ export function CommandCenter() {
   const [diagnosticsResult, setDiagnosticsResult] = useState("");
   const [incidentState, setIncidentState] = useState<IncidentsResponse | null>(null);
   const [incidentResult, setIncidentResult] = useState("");
+  const [alertState, setAlertState] = useState<AlertsResponse | null>(null);
+  const [alertResult, setAlertResult] = useState("");
   const [connectionCatalog, setConnectionCatalog] = useState<ConnectionCatalogResponse | null>(null);
   const [evaluationState, setEvaluationState] = useState<EvaluationsResponse | null>(null);
   const [evaluationResult, setEvaluationResult] = useState("");
@@ -1006,6 +1067,8 @@ export function CommandCenter() {
   const healthStats = capabilities?.health;
   const incidentStats = incidentState?.stats || capabilities?.incidents;
   const activeIncidents = incidentState?.incidents || incidentStats?.latest || [];
+  const alertStats = alertState?.stats || capabilities?.alerts;
+  const latestAlertDeliveries = alertState?.deliveries || alertStats?.latest || [];
   const contextStats = capabilities?.contextEngine;
   const graphStats = capabilities?.memoryGraph;
   const latestWorkflows = workflowState?.runs.slice(0, 5) || capabilities?.workflows.latest || [];
@@ -1477,6 +1540,25 @@ export function CommandCenter() {
     }
   }
 
+  async function runAlertAction(action: "enqueue_active" | "dispatch" | "enqueue_and_dispatch") {
+    setStatus(action === "dispatch" ? "dispatching alerts" : "queueing alerts");
+    setAlertResult("");
+
+    try {
+      const response = await fetch("/api/alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, limit: 10 }),
+      });
+      const data = await response.json();
+      setAlertResult(formatToolResult(data));
+      setStatus(response.ok ? `alerts ${action.replaceAll("_", " ")} complete` : "alert action failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "alert action failed");
+    }
+  }
+
   function applyConnectionTemplate(template: ConnectionCatalogItem) {
     const authEnv = template.authEnvVars[0] || "";
 
@@ -1639,6 +1721,13 @@ export function CommandCenter() {
       .catch(() => undefined);
   }
 
+  function refreshAlerts() {
+    fetch("/api/alerts?limit=8")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => data && setAlertState(data))
+      .catch(() => undefined);
+  }
+
   function refreshConnectionCatalog() {
     fetch("/api/connection-catalog")
       .then((response) => (response.ok ? response.json() : null))
@@ -1693,6 +1782,7 @@ export function CommandCenter() {
     refreshApprovals();
     refreshOperations();
     refreshIncidents();
+    refreshAlerts();
     refreshConnectionCatalog();
     refreshEvaluations();
     refreshSecurity();
@@ -1762,6 +1852,7 @@ export function CommandCenter() {
             <StatusPill icon={<Cable size={15} />} label="Triggers" value={`${triggerStats?.active ?? 0}`} />
             <StatusPill icon={<Activity size={15} />} label="Health" value={healthStats?.latestStatus || "unknown"} />
             <StatusPill icon={<ShieldCheck size={15} />} label="Incidents" value={`${incidentStats?.active ?? 0}`} />
+            <StatusPill icon={<Send size={15} />} label="Alerts" value={`${alertStats?.queued ?? 0}`} />
             <StatusPill
               icon={<BarChart3 size={15} />}
               label="Evals"
@@ -1907,6 +1998,11 @@ export function CommandCenter() {
                 <MiniStat label="Ack" value={`${incidentStats?.acknowledged ?? 0}`} />
                 <MiniStat label="Critical" value={`${incidentStats?.criticalOpen ?? 0}`} />
               </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Alerts" value={`${alertStats?.queued ?? 0} queued`} />
+                <MiniStat label="Sent" value={`${alertStats?.delivered ?? 0}`} />
+                <MiniStat label="External" value={`${alertStats?.configuredExternalTargets ?? 0}`} />
+              </div>
               <div className="mb-3 grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -1925,6 +2021,24 @@ export function CommandCenter() {
                   Repair
                 </button>
               </div>
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => runAlertAction("enqueue_active")}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-primary"
+                >
+                  <Send size={14} />
+                  Queue alerts
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runAlertAction("dispatch")}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                >
+                  <Activity size={14} />
+                  Dispatch
+                </button>
+              </div>
               {diagnosticsResult ? (
                 <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                   {diagnosticsResult}
@@ -1933,6 +2047,11 @@ export function CommandCenter() {
               {incidentResult ? (
                 <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                   {incidentResult}
+                </pre>
+              ) : null}
+              {alertResult ? (
+                <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
+                  {alertResult}
                 </pre>
               ) : null}
               {approvalResult ? (
@@ -1954,6 +2073,11 @@ export function CommandCenter() {
                     No active incidents.
                   </p>
                 )}
+                {latestAlertDeliveries.length ? (
+                  latestAlertDeliveries.slice(0, 4).map((delivery) => (
+                    <AlertDeliveryRow key={delivery.id} delivery={delivery} />
+                  ))
+                ) : null}
                 {approvalQueue.length ? (
                   approvalQueue.slice(0, 6).map((item) => (
                     <ApprovalQueueRow
@@ -2925,6 +3049,28 @@ function IncidentRow({
   );
 }
 
+function AlertDeliveryRow({ delivery }: { delivery: AlertDeliveryRecord }) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", alertDeliveryTone(delivery.status))}>
+          {delivery.status}
+        </span>
+        <span className="shrink-0 rounded border border-line px-2 py-1 font-mono text-[11px] text-muted">
+          {delivery.channel}
+        </span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{delivery.targetId}</p>
+      <div className="mt-3 grid grid-cols-3 gap-1.5 font-mono text-[11px] text-muted">
+        <span>{delivery.severity}</span>
+        <span>{delivery.attempt}/{delivery.maxAttempts}</span>
+        <span>{new Date(delivery.updatedAt).toLocaleTimeString()}</span>
+      </div>
+      {delivery.lastError ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-danger">{delivery.lastError}</p> : null}
+    </div>
+  );
+}
+
 function ApprovalQueueRow({
   item,
   onDecide,
@@ -3410,6 +3556,22 @@ function incidentSeverityTone(severity: IncidentSeverity) {
   }
 
   if (severity === "warning") {
+    return "bg-accent/14 text-accent";
+  }
+
+  return "bg-background text-muted";
+}
+
+function alertDeliveryTone(status: AlertDeliveryStatus) {
+  if (status === "delivered") {
+    return "bg-primary/16 text-primary";
+  }
+
+  if (status === "failed") {
+    return "bg-danger/14 text-danger";
+  }
+
+  if (status === "running" || status === "queued") {
     return "bg-accent/14 text-accent";
   }
 

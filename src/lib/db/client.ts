@@ -652,6 +652,35 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_incident_events_created_idx ON omni_incident_events (created_at DESC)`;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS omni_alert_deliveries (
+          id TEXT PRIMARY KEY,
+          incident_id TEXT NOT NULL REFERENCES omni_incidents(id) ON DELETE CASCADE,
+          incident_event_id TEXT,
+          target_id TEXT NOT NULL,
+          channel TEXT NOT NULL,
+          status TEXT NOT NULL,
+          severity TEXT NOT NULL,
+          dedupe_key TEXT NOT NULL UNIQUE,
+          payload JSONB NOT NULL DEFAULT '{}',
+          response JSONB,
+          attempt INTEGER NOT NULL DEFAULT 0,
+          max_attempts INTEGER NOT NULL DEFAULT 3,
+          run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          locked_at TIMESTAMPTZ,
+          lease_owner TEXT,
+          lease_expires_at TIMESTAMPTZ,
+          last_error TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          delivered_at TIMESTAMPTZ
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_alert_deliveries_status_run_idx ON omni_alert_deliveries (status, run_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_alert_deliveries_incident_idx ON omni_alert_deliveries (incident_id, updated_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_alert_deliveries_target_idx ON omni_alert_deliveries (target_id, status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_alert_deliveries_updated_idx ON omni_alert_deliveries (updated_at DESC)`;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS omni_eval_runs (
           id TEXT PRIMARY KEY,
           suite TEXT NOT NULL,

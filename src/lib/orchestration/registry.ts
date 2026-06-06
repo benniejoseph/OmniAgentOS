@@ -124,6 +124,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "ops.alert_delivery",
+    name: "Alert Delivery",
+    description: "Dispatches incident alerts through dashboard, ops ledger, signed webhooks, Slack, and email with retry/backoff.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

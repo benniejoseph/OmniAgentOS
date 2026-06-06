@@ -2,6 +2,13 @@ import { hasOpenAIKey } from "@/lib/config";
 import { hashPassword, verifyPassword } from "@/lib/auth/crypto";
 import { isAuthEnforced } from "@/lib/auth/store";
 import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  createAlertWebhookSignature,
+  dispatchAlertDeliveries,
+  enqueueAlertDeliveriesForActiveIncidents,
+  getAlertDeliveryPolicies,
+  getAlertDeliveryStats,
+} from "@/lib/diagnostics/alerts";
 import { getHealthStats, runSystemDiagnostics } from "@/lib/diagnostics/health";
 import {
   acknowledgeIncident,
@@ -255,6 +262,22 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       eventLedger: true,
     },
   },
+  {
+    id: "operations.alert_delivery",
+    name: "Alert delivery",
+    description: "Queues and dispatches incident alert deliveries with target policy metadata, retry state, and signed webhook support.",
+    type: "operations",
+    input: {
+      runDiagnostics: true,
+      dispatchLimit: 10,
+    },
+    expected: {
+      policies: true,
+      targets: true,
+      deliveryLifecycle: true,
+      signedWebhook: true,
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -376,6 +399,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.incident_management") {
     return evaluateIncidentManagement(evalCase);
+  }
+
+  if (evalCase.id === "operations.alert_delivery") {
+    return evaluateAlertDelivery(evalCase);
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -1079,6 +1106,77 @@ async function evaluateIncidentManagement(evalCase: EvalCaseDefinition): Promise
         status: target.status,
         targetEnv: target.targetEnv,
       })),
+    },
+  };
+}
+
+async function evaluateAlertDelivery(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  if (evalCase.input.runDiagnostics) {
+    await runSystemDiagnostics({ scope: "diagnostics" });
+  }
+  const activeIncidents = await listIncidents({ status: "active", limit: 10 });
+  const dispatchLimit = Number(evalCase.input.dispatchLimit || 10);
+  const enqueued = activeIncidents.length
+    ? await enqueueAlertDeliveriesForActiveIncidents(dispatchLimit)
+    : [];
+  const dispatch = await dispatchAlertDeliveries(dispatchLimit);
+  const stats = await getAlertDeliveryStats();
+  const policies = getAlertDeliveryPolicies();
+  const signature = createAlertWebhookSignature(
+    JSON.stringify({ test: "alert-delivery" }),
+    "evaluation-secret",
+  );
+  const checks = {
+    statsAvailable: typeof stats.total === "number" && typeof stats.runnable === "number",
+    policiesAvailable: Boolean(evalCase.expected.policies) ? policies.length >= 2 : true,
+    targetsVisible: Boolean(evalCase.expected.targets)
+      ? stats.targets.some((target) => target.channel === "dashboard" && target.status === "ready") &&
+        stats.targets.some((target) => target.channel === "ops" && target.status === "ready")
+      : true,
+    deliveryLifecycle: Boolean(evalCase.expected.deliveryLifecycle)
+      ? !activeIncidents.length || enqueued.length > 0 || dispatch.processed.length > 0
+      : true,
+    dashboardOrOpsDelivered: !activeIncidents.length || dispatch.delivered > 0 || stats.delivered > 0,
+    signedWebhook: Boolean(evalCase.expected.signedWebhook)
+      ? typeof signature === "string" && signature.startsWith("sha256=")
+      : true,
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      activeIncidentCount: activeIncidents.length,
+      enqueued: enqueued.map((delivery) => ({
+        id: delivery.id,
+        targetId: delivery.targetId,
+        channel: delivery.channel,
+        status: delivery.status,
+      })),
+      dispatch: {
+        processed: dispatch.processed.length,
+        delivered: dispatch.delivered,
+        skipped: dispatch.skipped,
+        failed: dispatch.failed,
+      },
+      stats: {
+        total: stats.total,
+        queued: stats.queued,
+        delivered: stats.delivered,
+        failed: stats.failed,
+        skipped: stats.skipped,
+        readyTargets: stats.readyTargets,
+        configuredExternalTargets: stats.configuredExternalTargets,
+      },
+      policies: policies.map((policy) => ({
+        id: policy.id,
+        channels: policy.channels,
+        maxAttempts: policy.maxAttempts,
+      })),
+      signaturePreview: signature?.slice(0, 18),
     },
   };
 }
