@@ -159,16 +159,29 @@ export async function ensureDatabaseSchema() {
           status TEXT NOT NULL,
           dry_run BOOLEAN NOT NULL DEFAULT FALSE,
           approval_required BOOLEAN NOT NULL DEFAULT FALSE,
+          tenant_id TEXT,
+          actor_id TEXT,
           input JSONB NOT NULL DEFAULT '{}',
           output JSONB,
           reason TEXT,
+          approval_decision TEXT,
+          approved_by TEXT,
+          approved_at TIMESTAMPTZ,
+          approval_reason TEXT,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           completed_at TIMESTAMPTZ
         )
       `;
+      await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS tenant_id TEXT`;
+      await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS actor_id TEXT`;
+      await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS approval_decision TEXT`;
+      await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS approved_by TEXT`;
+      await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS approval_reason TEXT`;
       await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_tool_id_idx ON omni_tool_executions (tool_id)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_status_idx ON omni_tool_executions (status)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_created_at_idx ON omni_tool_executions (created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_tenant_status_idx ON omni_tool_executions (tenant_id, status)`;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_mcp_connectors (

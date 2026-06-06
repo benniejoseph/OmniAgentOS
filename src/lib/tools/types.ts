@@ -5,7 +5,8 @@ export type ToolExecutionStatus =
   | "executed"
   | "approval_required"
   | "blocked"
-  | "failed";
+  | "failed"
+  | "rejected";
 
 export type ToolDefinition = {
   id: string;
@@ -21,6 +22,8 @@ export type ToolDefinition = {
 
 export type ToolExecutionRecord = {
   id: string;
+  tenantId?: string;
+  actorId?: string;
   toolId: string;
   toolName: string;
   riskLevel: ToolRiskLevel;
@@ -30,6 +33,10 @@ export type ToolExecutionRecord = {
   input: Record<string, unknown>;
   output?: unknown;
   reason?: string;
+  approvalDecision?: "approved" | "rejected";
+  approvedBy?: string;
+  approvedAt?: string;
+  approvalReason?: string;
   createdAt: string;
   completedAt?: string;
 };

@@ -41,6 +41,10 @@ The included `vercel.json` schedules `/api/workflows/tick` once daily, which is 
 - `/api/runs` run ledger endpoint
 - `/api/tools` governed tool registry, policy, and audit endpoint
 - `/api/tools/execute` schema-validated tool execution endpoint with dry-run defaults
+- `/api/approvals` pending workflow/tool approval queue endpoint
+- `/api/approvals/:id` durable approve/reject endpoint for workflows and tool execution records
+- `/api/operations` production operations overview endpoint
+- `/api/connection-catalog` connector template catalog for external app targets
 - `/api/connectors` MCP connector registration and discovery endpoint
 - `/api/connectors/:id/discover` MCP tool rediscovery endpoint
 - `/api/openapi-connectors` OpenAPI connector registration and import endpoint
@@ -66,16 +70,19 @@ The included `vercel.json` schedules `/api/workflows/tick` once daily, which is 
 - Command center panel for regression suite runs, pass rate, latency, and cost estimates
 - Command center panel for tenant context, RBAC rules, secret policy, and security audit trails
 - Command center panel for auth mode, current identity, tenant users, and admin user creation
+- Command center panel for pending approvals, failed work, active workflows, and connector errors
+- Connection catalog for GitHub, Gmail, Slack, Notion, Google Drive, Supabase, Neon, Upstash, browser automation, custom MCP, and custom OpenAPI adapter setup
 - Local memory and knowledge persisted under `.omniagent/`
 - Postgres-backed memory, RAG documents/chunks, run history, tool audit history, MCP connectors, OpenAPI connectors, and discovered tool schemas when `DATABASE_URL` is configured
 - Hybrid retrieval across durable memories and source chunks with semantic, keyword, recency, and importance signals
 - Memory consolidation after completed runs into durable facts, preferences, procedures, decisions, and tasks
-- Governed tool execution with risk levels, approval gates, planned connector blocking, and immutable audit records
+- Governed tool execution with risk levels, approval gates, durable approve/reject decisions, planned connector blocking, and immutable audit records
 - MCP connector host for Streamable HTTP servers; discovered tools flow into the governed tool registry and inherit risk/audit policy
 - OpenAPI connector importer for JSON/YAML specs; imported REST operations flow into the governed tool registry with env-var based auth, dry-runs, approval gates, and audit policy
 - Durable workflow runtime for persisted step execution with retries, approval waits, operator signals, event history, and final report persistence
 - Vercel Cron integration for secured production workflow queue ticks with `CRON_SECRET`
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
+- Operations regression case for approval queue, operations overview, and connection catalog readiness
 - Tenant-aware security controls with viewer/operator/admin/system roles, server-only secret env-var references, redacted audit metadata, and persisted RBAC allow/deny records
 - First-party identity control plane with scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
 

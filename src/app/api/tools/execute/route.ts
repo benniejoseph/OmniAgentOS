@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import type { SecurityContext } from "@/lib/security/types";
+import { getToolExecution } from "@/lib/tools/audit-store";
 import { executeGovernedTool } from "@/lib/tools/executor";
 
 export const runtime = "nodejs";
@@ -9,6 +11,7 @@ const executeSchema = z.object({
   input: z.record(z.string(), z.unknown()).default({}),
   dryRun: z.boolean().optional(),
   approved: z.boolean().optional(),
+  approvalExecutionId: z.string().min(1).optional(),
 });
 
 export async function POST(request: Request) {
@@ -22,9 +25,10 @@ export async function POST(request: Request) {
     );
   }
 
+  let context: SecurityContext | undefined;
   if (parsed.data.dryRun === false) {
     try {
-      await authorizeRequest({
+      context = await authorizeRequest({
         request,
         action: "execute.tool",
         resourceType: "tool",
@@ -36,11 +40,28 @@ export async function POST(request: Request) {
     }
   }
 
+  const approvalRecord = parsed.data.approvalExecutionId
+    ? await getToolExecution(parsed.data.approvalExecutionId)
+    : undefined;
+
+  if (parsed.data.approvalExecutionId && !approvalRecord) {
+    return Response.json({ error: "Approval record not found." }, { status: 404 });
+  }
+
+  if (approvalRecord && approvalRecord.status !== "approval_required") {
+    return Response.json(
+      { error: "Approval record is not pending.", status: approvalRecord.status },
+      { status: 409 },
+    );
+  }
+
   const result = await executeGovernedTool({
-    toolId: parsed.data.toolId,
-    input: parsed.data.input,
+    toolId: approvalRecord?.toolId || parsed.data.toolId,
+    input: approvalRecord?.input || parsed.data.input,
     dryRun: parsed.data.dryRun ?? true,
-    approved: parsed.data.approved ?? false,
+    approved: Boolean(approvalRecord && parsed.data.approved),
+    context,
+    existingRecord: approvalRecord,
   });
   const status =
     result.record.status === "blocked" || result.record.status === "approval_required"

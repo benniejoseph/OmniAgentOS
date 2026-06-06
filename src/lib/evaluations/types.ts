@@ -1,4 +1,4 @@
-export type EvalCaseType = "system" | "retrieval" | "tool" | "workflow" | "security";
+export type EvalCaseType = "system" | "retrieval" | "tool" | "workflow" | "security" | "operations";
 export type EvalRunStatus = "running" | "completed" | "failed";
 export type EvalResultStatus = "pass" | "fail" | "warn";
 

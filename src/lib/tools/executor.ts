@@ -12,8 +12,9 @@ import { searchKnowledge } from "@/lib/rag/store";
 import { listAgentRuns } from "@/lib/runs/store";
 import { createToolExecutionRecord, saveToolExecution } from "@/lib/tools/audit-store";
 import { evaluateToolPolicy } from "@/lib/tools/policy";
+import type { SecurityContext } from "@/lib/security/types";
 import { getGovernedTool } from "@/lib/tools/registry";
-import type { ToolDefinition } from "@/lib/tools/types";
+import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 const searchSchema = z.object({
   query: z.string().min(1),
@@ -44,11 +45,17 @@ export async function executeGovernedTool({
   input,
   dryRun = true,
   approved = false,
+  context,
+  existingRecord,
+  approvalReason,
 }: {
   toolId: string;
   input: Record<string, unknown>;
   dryRun?: boolean;
   approved?: boolean;
+  context?: SecurityContext;
+  existingRecord?: ToolExecutionRecord;
+  approvalReason?: string;
 }) {
   const tool =
     getGovernedTool(toolId) ||
@@ -56,6 +63,8 @@ export async function executeGovernedTool({
     (await getOpenApiGovernedTool(toolId));
   if (!tool) {
     const record = createToolExecutionRecord({
+      tenantId: context?.tenantId,
+      actorId: context?.actorId,
       toolId,
       toolName: "Unknown tool",
       riskLevel: 3,
@@ -73,6 +82,8 @@ export async function executeGovernedTool({
 
   const decision = evaluateToolPolicy({ tool, approved });
   const baseRecord = {
+    tenantId: existingRecord?.tenantId || context?.tenantId,
+    actorId: existingRecord?.actorId || context?.actorId,
     toolId: tool.id,
     toolName: tool.name,
     riskLevel: decision.riskLevel,
@@ -81,17 +92,31 @@ export async function executeGovernedTool({
     input,
     reason: decision.reason,
   };
+  const createRecord = (patch: Omit<ToolExecutionRecord, "id" | "createdAt">) => {
+    if (!existingRecord) {
+      return createToolExecutionRecord(patch);
+    }
+
+    return {
+      ...existingRecord,
+      ...patch,
+      id: existingRecord.id,
+      createdAt: existingRecord.createdAt,
+      input: existingRecord.input,
+    };
+  };
 
   if (decision.blocked) {
-    const record = createToolExecutionRecord({
+    const record = createRecord({
       ...baseRecord,
       status: "blocked" as const,
+      completedAt: new Date().toISOString(),
     });
     return { record: await saveToolExecution(record), result: null };
   }
 
   if (decision.approvalRequired && !decision.allowed && !dryRun) {
-    const record = createToolExecutionRecord({
+    const record = createRecord({
       ...baseRecord,
       status: "approval_required" as const,
     });
@@ -101,7 +126,7 @@ export async function executeGovernedTool({
   try {
     if (dryRun) {
       const preview = dryRunTool(tool, input);
-      const record = createToolExecutionRecord({
+      const record = createRecord({
         ...baseRecord,
         status: "dry_run" as const,
         output: preview,
@@ -111,16 +136,20 @@ export async function executeGovernedTool({
     }
 
     const result = await runTool(tool, input);
-    const record = createToolExecutionRecord({
+    const record = createRecord({
       ...baseRecord,
       status: "executed" as const,
       output: result,
+      approvalDecision: decision.approvalRequired ? "approved" as const : undefined,
+      approvedBy: decision.approvalRequired ? context?.actorId : undefined,
+      approvedAt: decision.approvalRequired ? new Date().toISOString() : undefined,
+      approvalReason,
       completedAt: new Date().toISOString(),
     });
     return { record: await saveToolExecution(record), result };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Tool execution failed.";
-    const record = createToolExecutionRecord({
+    const record = createRecord({
       ...baseRecord,
       status: "failed" as const,
       output: { error: message },

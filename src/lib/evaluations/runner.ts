@@ -3,7 +3,9 @@ import { hashPassword, verifyPassword } from "@/lib/auth/crypto";
 import { isAuthEnforced } from "@/lib/auth/store";
 import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
 import { executeGovernedTool } from "@/lib/tools/executor";
+import { connectionCatalog } from "@/lib/connectors/catalog";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
+import { getApprovalQueue, getOperationsOverview } from "@/lib/operations/queue";
 import { retrieveContext } from "@/lib/rag/retriever";
 import { canPerform, redactSensitive } from "@/lib/security/context";
 import { createWorkflowRun } from "@/lib/workflows/store";
@@ -116,6 +118,18 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       adminAllowedIdentity: true,
     },
   },
+  {
+    id: "operations.approval_center",
+    name: "Operations approval center",
+    description: "Verifies the approval queue, operations overview, and connection catalog surfaces.",
+    type: "operations",
+    input: {},
+    expected: {
+      minCatalogTargets: 8,
+      operationsSummary: true,
+      approvalStats: true,
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -205,6 +219,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "auth.identity_controls") {
     return evaluateIdentityControls();
+  }
+
+  if (evalCase.id === "operations.approval_center") {
+    return evaluateOperationsCenter();
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -364,6 +382,38 @@ async function evaluateIdentityControls(): Promise<CaseResult> {
       checks,
       authEnforced: isAuthEnforced(),
       hashFormat: passwordHash.split("$")[0],
+    },
+  };
+}
+
+async function evaluateOperationsCenter(): Promise<CaseResult> {
+  const [approvals, operations] = await Promise.all([
+    getApprovalQueue(10),
+    getOperationsOverview(),
+  ]);
+  const checks = {
+    catalogTargetsReady: connectionCatalog.length >= 8,
+    catalogHasMcp: connectionCatalog.some((connector) => connector.adapter === "mcp"),
+    catalogHasOpenApi: connectionCatalog.some((connector) => connector.adapter === "openapi"),
+    approvalStatsAvailable: typeof approvals.stats.total === "number",
+    operationsSummaryAvailable: typeof operations.summary.pendingApprovals === "number",
+    latestLedgersAvailable: Array.isArray(operations.latest.toolExecutions) && Array.isArray(operations.latest.workflows),
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      approvalStats: approvals.stats,
+      operationSummary: operations.summary,
+      catalogTargets: connectionCatalog.map((connector) => ({
+        id: connector.id,
+        adapter: connector.adapter,
+        riskLevel: connector.riskLevel,
+      })),
     },
   };
 }

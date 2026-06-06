@@ -21,10 +21,13 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - Capability registry for specialist agents, tools, and connector types
 - Run ledger for runs, events, status, prompt, model, context count, response, and errors
 - Tool ledger for tool id, risk level, status, dry-run flag, approval requirement, inputs, outputs, and reasons
+- Durable approval metadata for governed tool records, including approve/reject decisions, approver, decision time, and reason
 - MCP connector registry for Streamable HTTP endpoints, token env-var references, server capabilities, discovered tool schemas, and connector health
 - OpenAPI connector registry for JSON/YAML specs, base URLs, token env-var references, imported operations, request schemas, and connector health
 - Durable workflow runtime with persisted runs, steps, events, retries, approval waits, operator signals, and report persistence
 - Vercel Cron-secured production workflow queue ticks through `/api/workflows/tick`
+- Operations center with approval queue, failed work summary, active workflow summary, connector error summary, and durable approval actions
+- External connection catalog for MCP/OpenAPI adapter setup across common production apps
 - Evaluation harness with persisted suites, case results, pass/warn/fail status, retrieval checks, workflow lifecycle checks, latency, and cost estimates
 - Security controls with tenant-scoped context headers, RBAC roles, server-only secret env-var references, sensitive metadata redaction, and persisted allow/deny audit trails
 - Identity control plane with auth-enabled mode, scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
@@ -95,3 +98,4 @@ flowchart TD
 9. Security controls: add tenant boundaries, RBAC, secret vaulting, and audit trails. Done.
 10. Auth and tenant control plane: add session auth, tenants, users, memberships, role-derived contexts, and admin user creation. Done.
 11. Vercel Cron workflow ticker: add a secured scheduled production queue tick endpoint. Done.
+12. Approval and operations center: add durable tool approvals, workflow/tool approval queue, operations overview, and external connection catalog. Done.

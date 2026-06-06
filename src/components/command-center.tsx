@@ -23,6 +23,7 @@ import {
   UploadCloud,
   UserPlus,
   Users,
+  XCircle,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
@@ -43,7 +44,7 @@ type Capability = {
 };
 
 type RiskLevel = 0 | 1 | 2 | 3;
-type ToolExecutionStatus = "dry_run" | "executed" | "approval_required" | "blocked" | "failed";
+type ToolExecutionStatus = "dry_run" | "executed" | "approval_required" | "blocked" | "failed" | "rejected";
 
 type GovernedTool = {
   id: string;
@@ -57,6 +58,8 @@ type GovernedTool = {
 
 type ToolExecutionRecord = {
   id: string;
+  tenantId?: string;
+  actorId?: string;
   toolId: string;
   toolName: string;
   riskLevel: RiskLevel;
@@ -66,6 +69,10 @@ type ToolExecutionRecord = {
   input: Record<string, unknown>;
   output?: unknown;
   reason?: string;
+  approvalDecision?: "approved" | "rejected";
+  approvedBy?: string;
+  approvedAt?: string;
+  approvalReason?: string;
   createdAt: string;
   completedAt?: string;
 };
@@ -179,6 +186,91 @@ type OpenApiConnectorsResponse = {
   stats: OpenApiConnectorStats;
 };
 
+type ApprovalQueueItem =
+  | {
+      kind: "tool";
+      id: string;
+      title: string;
+      status: "approval_required";
+      riskLevel: number;
+      requestedBy?: string;
+      tenantId?: string;
+      reason?: string;
+      createdAt: string;
+      input: Record<string, unknown>;
+      record: ToolExecutionRecord;
+    }
+  | {
+      kind: "workflow";
+      id: string;
+      title: string;
+      status: "waiting_approval";
+      riskLevel: number;
+      requestedBy?: string;
+      tenantId?: string;
+      reason?: string;
+      createdAt: string;
+      input: Record<string, unknown>;
+      record: WorkflowRunRecord;
+    };
+
+type ApprovalQueueResponse = {
+  items: ApprovalQueueItem[];
+  stats: {
+    total: number;
+    tools: number;
+    workflows: number;
+  };
+};
+
+type OperationsResponse = {
+  approvals: ApprovalQueueResponse;
+  summary: {
+    pendingApprovals: number;
+    activeWorkflows: number;
+    failedWorkflows: number;
+    failedTools: number;
+    connectorErrors: number;
+    runningRuns: number;
+  };
+  latest: {
+    workflows: WorkflowRunRecord[];
+    toolExecutions: ToolExecutionRecord[];
+    agentRuns: AgentRun[];
+    connectors: Array<{
+      id: string;
+      name: string;
+      status: string;
+      updatedAt: string;
+    }>;
+  };
+};
+
+type ConnectionCatalogItem = {
+  id: string;
+  name: string;
+  category: "code" | "communication" | "knowledge" | "data" | "automation" | "browser";
+  adapter: "mcp" | "openapi" | "native";
+  status: "ready" | "requires_credentials" | "planned";
+  baseUrl?: string;
+  endpoint?: string;
+  authEnvVars: string[];
+  authHeaderName?: string;
+  capabilities: string[];
+  riskLevel: RiskLevel;
+  approvalRequired: boolean;
+};
+
+type ConnectionCatalogResponse = {
+  connectors: ConnectionCatalogItem[];
+  stats: {
+    total: number;
+    mcp: number;
+    openapi: number;
+    planned: number;
+  };
+};
+
 type WorkflowRunStatus =
   | "queued"
   | "running"
@@ -243,7 +335,7 @@ type EvalCaseDefinition = {
   id: string;
   name: string;
   description: string;
-  type: "system" | "retrieval" | "tool" | "workflow" | "security";
+  type: "system" | "retrieval" | "tool" | "workflow" | "security" | "operations";
   input: Record<string, unknown>;
   expected: Record<string, unknown>;
 };
@@ -598,6 +690,10 @@ export function CommandCenter() {
   const [workflowState, setWorkflowState] = useState<WorkflowsResponse | null>(null);
   const [workflowGoal, setWorkflowGoal] = useState("Run a durable Plan-Execute-Verify workflow for this agent OS.");
   const [workflowResult, setWorkflowResult] = useState("");
+  const [approvalState, setApprovalState] = useState<ApprovalQueueResponse | null>(null);
+  const [operationState, setOperationState] = useState<OperationsResponse | null>(null);
+  const [approvalResult, setApprovalResult] = useState("");
+  const [connectionCatalog, setConnectionCatalog] = useState<ConnectionCatalogResponse | null>(null);
   const [evaluationState, setEvaluationState] = useState<EvaluationsResponse | null>(null);
   const [evaluationResult, setEvaluationResult] = useState("");
   const [securityState, setSecurityState] = useState<SecurityState | null>(null);
@@ -633,6 +729,10 @@ export function CommandCenter() {
   const latestOpenApiOperations = openApiState?.operations.slice(0, 5) || [];
   const workflowStats = workflowState?.stats || capabilities?.workflows;
   const latestWorkflows = workflowState?.runs.slice(0, 5) || capabilities?.workflows.latest || [];
+  const approvalQueue = approvalState?.items || operationState?.approvals.items || [];
+  const approvalStats = approvalState?.stats || operationState?.approvals.stats;
+  const operationSummary = operationState?.summary;
+  const connectionTemplates = connectionCatalog?.connectors || [];
   const evaluationStats = evaluationState?.stats || capabilities?.evaluations;
   const latestEvaluations = evaluationState?.runs.slice(0, 5) || (capabilities?.evaluations.latest ? [capabilities.evaluations.latest] : []);
   const latestEvaluationCases = evaluationState?.cases.slice(0, 4) || [];
@@ -1025,6 +1125,44 @@ export function CommandCenter() {
     }
   }
 
+  async function decideApproval(item: ApprovalQueueItem, decision: "approve" | "reject") {
+    setStatus(`${item.kind} ${decision}`);
+    setApprovalResult("");
+
+    try {
+      const response = await fetch(`/api/approvals/${item.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: item.kind, decision }),
+      });
+      const data = await response.json();
+      setApprovalResult(formatToolResult(data));
+      setStatus(response.ok ? `${item.kind} ${decision} complete` : `${item.kind} ${decision} failed`);
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : `${item.kind} ${decision} failed`);
+    }
+  }
+
+  function applyConnectionTemplate(template: ConnectionCatalogItem) {
+    const authEnv = template.authEnvVars[0] || "";
+
+    if (template.adapter === "mcp") {
+      setConnectorName(template.name);
+      setConnectorEndpoint(template.endpoint || "https://example.com/mcp");
+      setConnectorAuthEnv(authEnv);
+      setConnectorResult(`Applied ${template.name} MCP template`);
+      return;
+    }
+
+    setOpenApiName(template.name);
+    setOpenApiSpecUrl("");
+    setOpenApiBaseUrl(template.baseUrl || "");
+    setOpenApiAuthEnv(authEnv);
+    setOpenApiAuthHeader(template.authHeaderName || "authorization");
+    setOpenApiResult(`Applied ${template.name} OpenAPI template`);
+  }
+
   async function runEvaluations() {
     setStatus("running evaluations");
     setEvaluationResult("");
@@ -1147,6 +1285,27 @@ export function CommandCenter() {
       .catch(() => undefined);
   }
 
+  function refreshApprovals() {
+    fetch("/api/approvals?limit=8")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => data && setApprovalState(data))
+      .catch(() => undefined);
+  }
+
+  function refreshOperations() {
+    fetch("/api/operations")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => data && setOperationState(data))
+      .catch(() => undefined);
+  }
+
+  function refreshConnectionCatalog() {
+    fetch("/api/connection-catalog")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => data && setConnectionCatalog(data))
+      .catch(() => undefined);
+  }
+
   function refreshEvaluations() {
     fetch("/api/evaluations?limit=5")
       .then((response) => response.json())
@@ -1191,6 +1350,9 @@ export function CommandCenter() {
     refreshConnectors();
     refreshOpenApiConnectors();
     refreshWorkflows();
+    refreshApprovals();
+    refreshOperations();
+    refreshConnectionCatalog();
     refreshEvaluations();
     refreshSecurity();
   }
@@ -1261,6 +1423,7 @@ export function CommandCenter() {
             <StatusPill icon={<Cable size={15} />} label="MCP" value={`${connectorStats?.toolCount ?? 0}`} />
             <StatusPill icon={<Globe2 size={15} />} label="REST" value={`${openApiStats?.operationCount ?? 0}`} />
             <StatusPill icon={<ShieldCheck size={15} />} label="Audits" value={`${toolAuditStats?.total ?? 0}`} />
+            <StatusPill icon={<CheckCircle2 size={15} />} label="Approval" value={`${approvalStats?.total ?? 0}`} />
             <StatusPill icon={<Users size={15} />} label="Auth" value={authMode} />
             <StatusPill icon={<HardDrive size={15} />} label="Store" value={storageLabel} />
             <StatusPill
@@ -1357,6 +1520,42 @@ export function CommandCenter() {
                 ) : (
                   <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
                     No runs recorded yet.
+                  </p>
+                )}
+              </div>
+            </section>
+
+            <section className="panel rounded-lg p-4">
+              <div className="mb-4 flex items-center gap-2">
+                <ShieldCheck className="text-primary" size={18} />
+                <h2 className="font-semibold">Operations center</h2>
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Approvals" value={`${operationSummary?.pendingApprovals ?? approvalStats?.total ?? 0}`} />
+                <MiniStat label="Active" value={`${operationSummary?.activeWorkflows ?? workflowStats?.active ?? 0}`} />
+                <MiniStat label="Failures" value={`${(operationSummary?.failedWorkflows ?? 0) + (operationSummary?.failedTools ?? 0)}`} />
+              </div>
+              <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
+                <MiniStat label="Connectors" value={`${operationSummary?.connectorErrors ?? 0} errors`} />
+                <MiniStat label="Runs" value={`${operationSummary?.runningRuns ?? 0} running`} />
+              </div>
+              {approvalResult ? (
+                <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
+                  {approvalResult}
+                </pre>
+              ) : null}
+              <div className="flex flex-col gap-3">
+                {approvalQueue.length ? (
+                  approvalQueue.slice(0, 6).map((item) => (
+                    <ApprovalQueueRow
+                      key={`${item.kind}:${item.id}`}
+                      item={item}
+                      onDecide={decideApproval}
+                    />
+                  ))
+                ) : (
+                  <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+                    No pending approvals.
                   </p>
                 )}
               </div>
@@ -1682,6 +1881,33 @@ export function CommandCenter() {
                     </p>
                   )}
                 </div>
+              </div>
+            </section>
+
+            <section className="panel rounded-lg p-4">
+              <div className="mb-4 flex items-center gap-2">
+                <Cable className="text-primary" size={18} />
+                <h2 className="font-semibold">Connection catalog</h2>
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Targets" value={`${connectionCatalog?.stats.total ?? 0}`} />
+                <MiniStat label="MCP" value={`${connectionCatalog?.stats.mcp ?? 0}`} />
+                <MiniStat label="REST" value={`${connectionCatalog?.stats.openapi ?? 0}`} />
+              </div>
+              <div className="flex flex-col gap-3">
+                {connectionTemplates.length ? (
+                  connectionTemplates.slice(0, 8).map((template) => (
+                    <ConnectionTemplateRow
+                      key={template.id}
+                      template={template}
+                      onApply={applyConnectionTemplate}
+                    />
+                  ))
+                ) : (
+                  <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+                    Connection catalog is loading.
+                  </p>
+                )}
               </div>
             </section>
 
@@ -2190,7 +2416,98 @@ function ToolAuditRow({ record }: { record: ToolExecutionRecord }) {
         <span>{record.dryRun ? "dry" : "live"}</span>
         <span>{new Date(record.createdAt).toLocaleTimeString()}</span>
       </div>
+      {record.approvalDecision ? (
+        <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[11px] text-muted">
+          <span>{record.approvalDecision}</span>
+          <span className="truncate">{record.approvedBy || "operator"}</span>
+        </div>
+      ) : null}
       {record.reason ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">{record.reason}</p> : null}
+    </div>
+  );
+}
+
+function ApprovalQueueRow({
+  item,
+  onDecide,
+}: {
+  item: ApprovalQueueItem;
+  onDecide: (item: ApprovalQueueItem, decision: "approve" | "reject") => void;
+}) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", statusTone(item.status === "waiting_approval" ? "approval_required" : item.status))}>
+          {item.kind}
+        </span>
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", riskTone(item.riskLevel as RiskLevel))}>
+          R{item.riskLevel}
+        </span>
+      </div>
+      <p className="line-clamp-2 text-sm font-medium leading-5">{item.title}</p>
+      <div className="mt-2 flex min-w-0 items-center justify-between gap-3 font-mono text-[11px] text-muted">
+        <span className="truncate">{item.requestedBy || item.tenantId || "operator"}</span>
+        <span className="shrink-0">{new Date(item.createdAt).toLocaleTimeString()}</span>
+      </div>
+      {item.reason ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">{item.reason}</p> : null}
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onDecide(item, "approve")}
+          className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-primary/60 px-2 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+        >
+          <CheckCircle2 size={13} />
+          Approve
+        </button>
+        <button
+          type="button"
+          onClick={() => onDecide(item, "reject")}
+          className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-danger hover:text-danger"
+        >
+          <XCircle size={13} />
+          Reject
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ConnectionTemplateRow({
+  template,
+  onApply,
+}: {
+  template: ConnectionCatalogItem;
+  onApply: (template: ConnectionCatalogItem) => void;
+}) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="rounded bg-primary/16 px-2 py-1 font-mono text-[11px] text-primary">
+          {template.adapter}
+        </span>
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", riskTone(template.riskLevel))}>
+          R{template.riskLevel}
+        </span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{template.name}</p>
+      <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">
+        {template.capabilities.slice(0, 4).join(", ")}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-1">
+        {template.authEnvVars.slice(0, 2).map((envName) => (
+          <span key={envName} className="rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-muted">
+            {envName}
+          </span>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => onApply(template)}
+        className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+      >
+        <CheckCircle2 size={13} />
+        Apply template
+      </button>
     </div>
   );
 }
@@ -2546,7 +2863,7 @@ function statusTone(status: ToolExecutionStatus) {
     return "bg-primary/16 text-primary";
   }
 
-  if (status === "failed" || status === "blocked") {
+  if (status === "failed" || status === "blocked" || status === "rejected") {
     return "bg-danger/14 text-danger";
   }
 

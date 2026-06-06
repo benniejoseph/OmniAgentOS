@@ -22,14 +22,34 @@ export async function saveToolExecution(record: ToolExecutionRecord) {
     await getSql()`
       INSERT INTO omni_tool_executions (
         id, tool_id, tool_name, risk_level, status, dry_run, approval_required,
-        input, output, reason, created_at, completed_at
+        tenant_id, actor_id, input, output, reason, approval_decision, approved_by,
+        approved_at, approval_reason, created_at, completed_at
       )
       VALUES (
         ${record.id}, ${record.toolId}, ${record.toolName}, ${record.riskLevel}, ${record.status},
-        ${record.dryRun}, ${record.approvalRequired}, ${JSON.stringify(record.input)}::jsonb,
-        ${JSON.stringify(record.output ?? null)}::jsonb, ${record.reason || null},
-        ${record.createdAt}, ${record.completedAt || null}
+        ${record.dryRun}, ${record.approvalRequired}, ${record.tenantId || null}, ${record.actorId || null},
+        ${JSON.stringify(record.input)}::jsonb, ${JSON.stringify(record.output ?? null)}::jsonb,
+        ${record.reason || null}, ${record.approvalDecision || null}, ${record.approvedBy || null},
+        ${record.approvedAt || null}, ${record.approvalReason || null}, ${record.createdAt},
+        ${record.completedAt || null}
       )
+      ON CONFLICT (id) DO UPDATE SET
+        tool_id = EXCLUDED.tool_id,
+        tool_name = EXCLUDED.tool_name,
+        risk_level = EXCLUDED.risk_level,
+        status = EXCLUDED.status,
+        dry_run = EXCLUDED.dry_run,
+        approval_required = EXCLUDED.approval_required,
+        tenant_id = EXCLUDED.tenant_id,
+        actor_id = EXCLUDED.actor_id,
+        input = EXCLUDED.input,
+        output = EXCLUDED.output,
+        reason = EXCLUDED.reason,
+        approval_decision = EXCLUDED.approval_decision,
+        approved_by = EXCLUDED.approved_by,
+        approved_at = EXCLUDED.approved_at,
+        approval_reason = EXCLUDED.approval_reason,
+        completed_at = EXCLUDED.completed_at
     `;
     return record;
   }
@@ -64,6 +84,41 @@ export async function listToolExecutions(limit = 20) {
 
   const ledger = await readToolLedger();
   return ledger.records.slice(0, limit);
+}
+
+export async function getToolExecution(id: string) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_tool_executions
+      WHERE id = ${id}
+      LIMIT 1
+    `;
+    return rows[0] ? recordFromRow(rows[0]) : undefined;
+  }
+
+  const ledger = await readToolLedger();
+  return ledger.records.find((record) => record.id === id);
+}
+
+export async function listPendingToolApprovals(limit = 25) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_tool_executions
+      WHERE status = 'approval_required'
+      ORDER BY created_at DESC
+      LIMIT ${limit}
+    `;
+    return rows.map(recordFromRow);
+  }
+
+  const ledger = await readToolLedger();
+  return ledger.records
+    .filter((record) => record.status === "approval_required")
+    .slice(0, limit);
 }
 
 export async function getToolExecutionStats() {
@@ -128,6 +183,8 @@ function getToolLedgerFile() {
 function recordFromRow(row: Record<string, unknown>): ToolExecutionRecord {
   return {
     id: String(row.id),
+    tenantId: row.tenant_id ? String(row.tenant_id) : undefined,
+    actorId: row.actor_id ? String(row.actor_id) : undefined,
     toolId: String(row.tool_id),
     toolName: String(row.tool_name),
     riskLevel: Number(row.risk_level) as ToolExecutionRecord["riskLevel"],
@@ -137,6 +194,10 @@ function recordFromRow(row: Record<string, unknown>): ToolExecutionRecord {
     input: parseObject(row.input),
     output: row.output,
     reason: row.reason ? String(row.reason) : undefined,
+    approvalDecision: row.approval_decision ? String(row.approval_decision) as ToolExecutionRecord["approvalDecision"] : undefined,
+    approvedBy: row.approved_by ? String(row.approved_by) : undefined,
+    approvedAt: row.approved_at ? normalizeDate(row.approved_at) : undefined,
+    approvalReason: row.approval_reason ? String(row.approval_reason) : undefined,
     createdAt: normalizeDate(row.created_at),
     completedAt: row.completed_at ? normalizeDate(row.completed_at) : undefined,
   };
