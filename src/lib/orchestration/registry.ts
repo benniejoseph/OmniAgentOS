@@ -100,6 +100,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "workflow.webhook_trigger",
+    name: "Webhook Workflow Trigger",
+    description: "Accepts signed external events, persists trigger audits, creates workflow runs, and enqueues durable execution.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",
@@ -148,7 +154,7 @@ export const connectorTypes: Capability[] = [
     id: "webhook",
     name: "Webhooks",
     description: "Trigger agent workflows from external events.",
-    status: "planned",
+    status: "active",
   },
 ];
 

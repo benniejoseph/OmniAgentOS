@@ -486,6 +486,49 @@ export async function ensureDatabaseSchema() {
       `;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS omni_workflow_triggers (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          source TEXT NOT NULL,
+          status TEXT NOT NULL,
+          auth_mode TEXT NOT NULL DEFAULT 'hmac_sha256',
+          secret_env_var TEXT,
+          goal_template TEXT NOT NULL,
+          workflow_mode TEXT NOT NULL DEFAULT 'orchestrate',
+          require_approval BOOLEAN NOT NULL DEFAULT TRUE,
+          metadata JSONB NOT NULL DEFAULT '{}',
+          trigger_count INTEGER NOT NULL DEFAULT 0,
+          failure_count INTEGER NOT NULL DEFAULT 0,
+          last_triggered_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_triggers_status_idx ON omni_workflow_triggers (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_triggers_source_idx ON omni_workflow_triggers (source)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_triggers_updated_idx ON omni_workflow_triggers (updated_at DESC)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_workflow_trigger_events (
+          id TEXT PRIMARY KEY,
+          trigger_id TEXT NOT NULL REFERENCES omni_workflow_triggers(id) ON DELETE CASCADE,
+          status TEXT NOT NULL,
+          source TEXT NOT NULL,
+          event_type TEXT,
+          signature_verified BOOLEAN NOT NULL DEFAULT FALSE,
+          workflow_run_id TEXT REFERENCES omni_workflow_runs(id) ON DELETE SET NULL,
+          queue_job_id TEXT REFERENCES omni_operation_jobs(id) ON DELETE SET NULL,
+          payload JSONB NOT NULL DEFAULT '{}',
+          headers JSONB NOT NULL DEFAULT '{}',
+          error TEXT,
+          received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_trigger_events_trigger_idx ON omni_workflow_trigger_events (trigger_id, received_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_trigger_events_status_idx ON omni_workflow_trigger_events (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_trigger_events_received_idx ON omni_workflow_trigger_events (received_at DESC)`;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS omni_workflow_steps (
           id TEXT PRIMARY KEY,
           workflow_run_id TEXT NOT NULL REFERENCES omni_workflow_runs(id) ON DELETE CASCADE,

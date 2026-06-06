@@ -16,6 +16,7 @@ import { getToolExecutionStats } from "@/lib/tools/audit-store";
 import { getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { getWorkflowPlanStats } from "@/lib/workflows/planner";
 import { getWorkflowStats } from "@/lib/workflows/store";
+import { getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 
 export const runtime = "nodejs";
 
@@ -44,6 +45,7 @@ export async function GET(request: Request) {
     workflows: await getWorkflowStats(),
     workflowPlans: await getWorkflowPlanStats(),
     workflowPlanExecutions: await getWorkflowPlanNodeExecutionStats(),
+    workflowTriggers: await getWorkflowTriggerStats(),
     operationJobs: await getOperationJobStats(),
     evaluations: await getEvalStats(),
     security: {

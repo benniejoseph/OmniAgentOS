@@ -15,6 +15,7 @@ import { enqueueWorkflowRunTick, processWorkflowQueue } from "@/lib/workflows/qu
 import { executeDynamicWorkflowPlan, getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats } from "@/lib/workflows/planner";
 import { createWorkflowRun, getWorkflowRunDetail, updateWorkflowStep } from "@/lib/workflows/store";
+import { createWorkflowTrigger, dispatchWorkflowTrigger, getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 import {
   completeEvalRun,
   createEvalRun,
@@ -44,7 +45,7 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
     type: "system",
     input: {},
     expected: {
-      activeTools: ["tool.executor", "connector.openapi", "workflow.temporal", "workflow.plan_executor"],
+      activeTools: ["tool.executor", "connector.openapi", "workflow.temporal", "workflow.plan_executor", "workflow.webhook_trigger"],
       storage: "configured",
     },
   },
@@ -153,6 +154,22 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       minToolExecutions: 2,
       persisted: true,
       noFailedNodes: true,
+    },
+  },
+  {
+    id: "workflow.webhook_triggers",
+    name: "Webhook workflow triggers",
+    description: "Creates a workflow trigger, dispatches an external event, persists trigger audit data, and enqueues a workflow run.",
+    type: "workflow",
+    input: {
+      eventType: "issue.created",
+      source: "evaluation-webhook",
+      summary: "Evaluate signed-event workflow trigger path.",
+    },
+    expected: {
+      workflowEnqueued: true,
+      eventPersisted: true,
+      triggerCountIncremented: true,
     },
   },
   {
@@ -295,6 +312,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "workflow.plan_executor") {
     return evaluatePlanExecutor(evalCase);
+  }
+
+  if (evalCase.id === "workflow.webhook_triggers") {
+    return evaluateWebhookTriggers(evalCase);
   }
 
   if (evalCase.id === "security.rbac_controls") {
@@ -692,6 +713,72 @@ async function evaluatePlanExecutor(evalCase: EvalCaseDefinition): Promise<CaseR
       },
     },
     estimatedCostUsd: estimateTextCost(goal),
+  };
+}
+
+async function evaluateWebhookTriggers(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const eventType = String(evalCase.input.eventType || "workflow.event");
+  const source = String(evalCase.input.source || "evaluation-webhook");
+  const summary = String(evalCase.input.summary || "Evaluate webhook trigger dispatch.");
+  const trigger = await createWorkflowTrigger({
+    name: "Evaluation webhook trigger",
+    source,
+    authMode: "none",
+    goalTemplate: "Handle {{event.type}} from {{event.source}}: {{payload.summary}}",
+    workflowMode: "orchestrate",
+    requireApproval: false,
+    metadata: {
+      source: "evaluation",
+      caseId: evalCase.id,
+    },
+  });
+  const bodyText = JSON.stringify({
+    type: eventType,
+    summary,
+    payloadId: `eval-${Date.now()}`,
+  });
+  const dispatch = await dispatchWorkflowTrigger({
+    triggerId: trigger.id,
+    bodyText,
+    headers: {
+      "x-event-type": eventType,
+    },
+  });
+  const stats = await getWorkflowTriggerStats();
+  const checks = {
+    workflowEnqueued: Boolean(dispatch.workflow?.run.id && dispatch.queueJob?.id),
+    eventPersisted: stats.events > 0 && dispatch.event.status === "enqueued",
+    triggerCountIncremented: stats.latestTriggers.some((item) => item.id === trigger.id && item.triggerCount >= 1),
+    signatureAccepted: dispatch.event.signatureVerified,
+    goalRendered: dispatch.workflow?.run.goal.includes(eventType) && dispatch.workflow?.run.goal.includes(summary),
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      triggerId: trigger.id,
+      eventId: dispatch.event.id,
+      workflowRunId: dispatch.workflow?.run.id,
+      queueJobId: dispatch.queueJob?.id,
+      checks,
+      event: {
+        status: dispatch.event.status,
+        source: dispatch.event.source,
+        eventType: dispatch.event.eventType,
+        signatureVerified: dispatch.event.signatureVerified,
+      },
+      stats: {
+        total: stats.total,
+        active: stats.active,
+        events: stats.events,
+        enqueuedEvents: stats.enqueuedEvents,
+        rejectedEvents: stats.rejectedEvents,
+      },
+    },
+    estimatedCostUsd: estimateTextCost(bodyText),
   };
 }
 

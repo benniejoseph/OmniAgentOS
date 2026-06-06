@@ -142,4 +142,15 @@ export const connectionCatalog: ConnectionCatalogItem[] = [
     riskLevel: 2,
     approvalRequired: true,
   },
+  {
+    id: "webhook-trigger",
+    name: "Webhook Trigger",
+    category: "automation",
+    adapter: "native",
+    status: "ready",
+    authEnvVars: ["OMNIAGENT_WEBHOOK_SECRET"],
+    capabilities: ["signed event intake", "workflow run creation", "queue enqueue", "trigger audit"],
+    riskLevel: 1,
+    approvalRequired: false,
+  },
 ];

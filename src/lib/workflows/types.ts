@@ -240,3 +240,55 @@ export type WorkflowPlanNodeExecutionStats = {
   executedTools: number;
   latest: WorkflowPlanNodeExecutionRecord[];
 };
+
+export type WorkflowTriggerStatus = "active" | "paused";
+
+export type WorkflowTriggerAuthMode = "none" | "hmac_sha256";
+
+export type WorkflowTriggerRecord = {
+  id: string;
+  name: string;
+  source: string;
+  status: WorkflowTriggerStatus;
+  authMode: WorkflowTriggerAuthMode;
+  secretEnvVar?: string;
+  goalTemplate: string;
+  workflowMode: WorkflowRunInput["mode"];
+  requireApproval: boolean;
+  metadata: Record<string, unknown>;
+  triggerCount: number;
+  failureCount: number;
+  lastTriggeredAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WorkflowTriggerEventStatus = "accepted" | "rejected" | "enqueued" | "failed";
+
+export type WorkflowTriggerEventRecord = {
+  id: string;
+  triggerId: string;
+  status: WorkflowTriggerEventStatus;
+  source: string;
+  eventType?: string;
+  signatureVerified: boolean;
+  workflowRunId?: string;
+  queueJobId?: string;
+  payload: Record<string, unknown>;
+  headers: Record<string, unknown>;
+  error?: string;
+  receivedAt: string;
+};
+
+export type WorkflowTriggerStats = {
+  total: number;
+  active: number;
+  byStatus: Record<string, number>;
+  events: number;
+  acceptedEvents: number;
+  rejectedEvents: number;
+  enqueuedEvents: number;
+  failedEvents: number;
+  latestTriggers: WorkflowTriggerRecord[];
+  latestEvents: WorkflowTriggerEventRecord[];
+};

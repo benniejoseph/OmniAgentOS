@@ -371,6 +371,39 @@ type WorkflowPlanExecutionStats = {
   }>;
 };
 
+type WorkflowTriggerStats = {
+  total: number;
+  active: number;
+  byStatus: Record<string, number>;
+  events: number;
+  acceptedEvents: number;
+  rejectedEvents: number;
+  enqueuedEvents: number;
+  failedEvents: number;
+  latestTriggers: Array<{
+    id: string;
+    name: string;
+    source: string;
+    status: "active" | "paused";
+    authMode: "none" | "hmac_sha256";
+    workflowMode: string;
+    requireApproval: boolean;
+    triggerCount: number;
+    failureCount: number;
+    updatedAt: string;
+  }>;
+  latestEvents: Array<{
+    id: string;
+    triggerId: string;
+    status: "accepted" | "rejected" | "enqueued" | "failed";
+    source: string;
+    eventType?: string;
+    signatureVerified: boolean;
+    workflowRunId?: string;
+    receivedAt: string;
+  }>;
+};
+
 type OperationJobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
 
 type OperationJobRecord = {
@@ -678,6 +711,7 @@ type CapabilityResponse = {
   workflows: WorkflowStats;
   workflowPlans: WorkflowPlanStats;
   workflowPlanExecutions: WorkflowPlanExecutionStats;
+  workflowTriggers: WorkflowTriggerStats;
   operationJobs: OperationJobStats;
   evaluations: EvalStats;
   security: {
@@ -866,6 +900,7 @@ export function CommandCenter() {
   const workflowStats = workflowState?.stats || capabilities?.workflows;
   const plannerStats = capabilities?.workflowPlans;
   const planExecutionStats = capabilities?.workflowPlanExecutions;
+  const triggerStats = capabilities?.workflowTriggers;
   const queueStats = workflowState?.queue || capabilities?.operationJobs;
   const contextStats = capabilities?.contextEngine;
   const graphStats = capabilities?.memoryGraph;
@@ -1559,6 +1594,7 @@ export function CommandCenter() {
             <StatusPill icon={<Activity size={15} />} label="Flows" value={`${workflowStats?.active ?? 0}`} />
             <StatusPill icon={<Layers3 size={15} />} label="Plans" value={`${plannerStats?.total ?? 0}`} />
             <StatusPill icon={<CheckCircle2 size={15} />} label="Nodes" value={`${planExecutionStats?.total ?? 0}`} />
+            <StatusPill icon={<Cable size={15} />} label="Triggers" value={`${triggerStats?.active ?? 0}`} />
             <StatusPill
               icon={<BarChart3 size={15} />}
               label="Evals"
@@ -1740,6 +1776,11 @@ export function CommandCenter() {
                 <MiniStat label="Nodes" value={`${planExecutionStats?.total ?? 0}`} />
                 <MiniStat label="Dry-runs" value={`${planExecutionStats?.dryRunTools ?? 0}`} />
                 <MiniStat label="Live tools" value={`${planExecutionStats?.executedTools ?? 0}`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Triggers" value={`${triggerStats?.total ?? 0}`} />
+                <MiniStat label="Events" value={`${triggerStats?.events ?? 0}`} />
+                <MiniStat label="Enqueued" value={`${triggerStats?.enqueuedEvents ?? 0}`} />
               </div>
               <div className="flex flex-col gap-3">
                 <textarea
