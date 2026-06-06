@@ -1715,12 +1715,14 @@ function StatusPill({
   value: string;
 }) {
   return (
-    <div className="rounded-md border border-line bg-background/70 px-3 py-2">
-      <div className="flex items-center gap-2 text-muted">
+    <div className="min-w-0 rounded-md border border-line bg-background/70 px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2 text-muted">
         {icon}
-        <span>{label}</span>
+        <span className="truncate">{label}</span>
       </div>
-      <p className="mt-1 font-mono text-base text-foreground">{value}</p>
+      <p className="mt-1 truncate font-mono text-sm text-foreground sm:text-base" title={value}>
+        {value}
+      </p>
     </div>
   );
 }
