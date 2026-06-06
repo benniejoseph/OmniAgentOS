@@ -4,7 +4,9 @@ import {
   enqueueAlertDeliveriesForActiveIncidents,
   getAlertDeliveryPolicies,
   getAlertDeliveryStats,
+  getAlertTargetHealth,
   listAlertDeliveries,
+  retryFailedAlertDeliveries,
   type AlertDeliveryStatus,
 } from "@/lib/diagnostics/alerts";
 import { getIncidentAlertTargets } from "@/lib/diagnostics/incidents";
@@ -13,8 +15,9 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 export const runtime = "nodejs";
 
 const alertActionSchema = z.object({
-  action: z.enum(["enqueue_active", "dispatch", "enqueue_and_dispatch"]),
+  action: z.enum(["enqueue_active", "dispatch", "enqueue_and_dispatch", "probe_targets", "retry_failed"]),
   limit: z.number().int().min(1).max(50).optional(),
+  includeSkipped: z.boolean().optional(),
 });
 
 export async function GET(request: Request) {
@@ -71,6 +74,7 @@ export async function GET(request: Request) {
       stats,
       policies: getAlertDeliveryPolicies(),
       targets: getIncidentAlertTargets("critical"),
+      targetHealth: stats.targetHealth,
     });
   } catch (error) {
     console.error(JSON.stringify({
@@ -132,6 +136,12 @@ export async function POST(request: Request) {
     const dispatch = parsed.data.action === "dispatch" || parsed.data.action === "enqueue_and_dispatch"
       ? await dispatchAlertDeliveries(limit)
       : undefined;
+    const retried = parsed.data.action === "retry_failed"
+      ? await retryFailedAlertDeliveries({ limit, includeSkipped: parsed.data.includeSkipped ?? true })
+      : [];
+    const targetHealth = parsed.data.action === "probe_targets"
+      ? getAlertTargetHealth()
+      : undefined;
     console.log(JSON.stringify({
       level: "info",
       msg: "done",
@@ -140,11 +150,15 @@ export async function POST(request: Request) {
       action: parsed.data.action,
       enqueued: enqueued.length,
       processed: dispatch?.processed.length || 0,
+      retried: retried.length,
+      probed: targetHealth?.length || 0,
       ms: Date.now() - startedAt,
     }));
     return Response.json({
       enqueued,
       dispatch,
+      retried,
+      targetHealth,
       stats: await getAlertDeliveryStats(),
     });
   } catch (error) {

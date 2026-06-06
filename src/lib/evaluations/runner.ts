@@ -9,6 +9,8 @@ import {
   getAlertDeliveryPolicies,
   getAlertSchedulerState,
   getAlertDeliveryStats,
+  getAlertTargetHealth,
+  retryFailedAlertDeliveries,
   runScheduledAlertDispatch,
 } from "@/lib/diagnostics/alerts";
 import { getHealthStats, runSystemDiagnostics } from "@/lib/diagnostics/health";
@@ -295,6 +297,21 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       deliveryProgress: true,
     },
   },
+  {
+    id: "operations.alert_target_health",
+    name: "Alert target health",
+    description: "Validates non-secret target readiness probes, blocked external target accounting, and failed-delivery retry controls.",
+    type: "operations",
+    input: {
+      retryLimit: 5,
+    },
+    expected: {
+      internalTargetsHealthy: true,
+      secretSafe: true,
+      retryControl: true,
+      registryTool: "ops.alert_target_health",
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -424,6 +441,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.alert_scheduler") {
     return evaluateAlertScheduler(evalCase);
+  }
+
+  if (evalCase.id === "operations.alert_target_health") {
+    return evaluateAlertTargetHealth(evalCase);
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -1259,6 +1280,70 @@ async function evaluateAlertScheduler(evalCase: EvalCaseDefinition): Promise<Cas
         failed: scheduled.stats.failed,
         readyTargets: scheduled.stats.readyTargets,
       },
+    },
+  };
+}
+
+async function evaluateAlertTargetHealth(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const retryLimit = Number(evalCase.input.retryLimit || 5);
+  const targetHealth = getAlertTargetHealth();
+  const statsBefore = await getAlertDeliveryStats();
+  const retried = await retryFailedAlertDeliveries({ limit: retryLimit, includeSkipped: true });
+  const statsAfter = await getAlertDeliveryStats();
+  const registry = getCapabilityRegistry();
+  const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
+  const targetSnapshot = targetHealth.map((target) => ({
+    id: target.id,
+    channel: target.channel,
+    probeStatus: target.probeStatus,
+    ready: target.ready,
+    requiredEnv: target.requiredEnv,
+    optionalEnv: target.optionalEnv,
+    blockingReasons: target.blockingReasons,
+    security: target.security,
+  }));
+  const serializedSnapshot = JSON.stringify(targetSnapshot);
+  const checks = {
+    targetHealthAvailable: targetHealth.length >= 5,
+    internalTargetsHealthy: Boolean(evalCase.expected.internalTargetsHealthy)
+      ? targetHealth.some((target) => target.channel === "dashboard" && target.probeStatus === "healthy") &&
+        targetHealth.some((target) => target.channel === "ops" && target.probeStatus === "healthy")
+      : true,
+    blockedExternalCount: statsBefore.blockedExternalTargets === targetHealth.filter((target) =>
+      !["dashboard", "ops"].includes(target.channel) && target.probeStatus !== "healthy",
+    ).length,
+    retryControl: Boolean(evalCase.expected.retryControl)
+      ? retried.every((delivery) => delivery.status === "queued" && delivery.attempt === 0) &&
+        statsAfter.retryableFailed <= statsBefore.retryableFailed
+      : true,
+    registryToolAvailable: activeToolIds.has(String(evalCase.expected.registryTool || "ops.alert_target_health")),
+    secretSafe: Boolean(evalCase.expected.secretSafe)
+      ? targetHealth.every((target) => target.security.secretValuesExposed === false) &&
+        !/Bearer\s|npg_|sk-|xoxb-|whsec_|https:\/\/hooks\.slack\.com\/services\//i.test(serializedSnapshot)
+      : true,
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      retried: retried.length,
+      statsBefore: {
+        failed: statsBefore.failed,
+        skipped: statsBefore.skipped,
+        retryableFailed: statsBefore.retryableFailed,
+        blockedExternalTargets: statsBefore.blockedExternalTargets,
+      },
+      statsAfter: {
+        queued: statsAfter.queued,
+        failed: statsAfter.failed,
+        skipped: statsAfter.skipped,
+        retryableFailed: statsAfter.retryableFailed,
+      },
+      targetHealth: targetSnapshot,
     },
   };
 }

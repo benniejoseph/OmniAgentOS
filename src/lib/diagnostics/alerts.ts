@@ -52,6 +52,26 @@ export type AlertDeliveryPolicy = {
   escalationAfterMinutes: number;
 };
 
+export type AlertTargetProbeStatus = "healthy" | "missing_config" | "misconfigured";
+
+export type AlertTargetHealth = {
+  id: string;
+  name: string;
+  channel: AlertDeliveryChannel;
+  targetStatus: IncidentAlertTarget["status"];
+  probeStatus: AlertTargetProbeStatus;
+  ready: boolean;
+  configured: boolean;
+  requiredEnv: string[];
+  optionalEnv: string[];
+  blockingReasons: string[];
+  checkedAt: string;
+  security: {
+    secretValuesExposed: false;
+    webhookSigned?: boolean;
+  };
+};
+
 export type AlertSchedulerState = {
   enabled: boolean;
   path: string;
@@ -71,12 +91,15 @@ export type AlertDeliveryStats = {
   failed: number;
   skipped: number;
   runnable: number;
+  retryableFailed: number;
   readyTargets: number;
   configuredExternalTargets: number;
+  blockedExternalTargets: number;
   byChannel: Record<string, number>;
   latest: AlertDeliveryRecord[];
   policies: AlertDeliveryPolicy[];
   targets: IncidentAlertTarget[];
+  targetHealth: AlertTargetHealth[];
   scheduler: AlertSchedulerState;
 };
 
@@ -146,6 +169,11 @@ export function getAlertSchedulerState(targets = getIncidentAlertTargets("critic
     readyTargets: readyTargets.length,
     configuredExternalTargets: readyTargets.filter((target) => !["dashboard", "ops"].includes(target.channel)).length,
   };
+}
+
+export function getAlertTargetHealth(targets = getIncidentAlertTargets("critical")): AlertTargetHealth[] {
+  const checkedAt = new Date().toISOString();
+  return targets.map((target) => createTargetHealth(target, checkedAt));
 }
 
 export async function enqueueAlertDeliveriesForIncident(
@@ -238,6 +266,88 @@ export async function dispatchAlertDeliveries(limit = 10): Promise<DispatchResul
   return { processed, delivered, skipped, failed };
 }
 
+export async function retryFailedAlertDeliveries({
+  limit = 25,
+  includeSkipped = true,
+}: {
+  limit?: number;
+  includeSkipped?: boolean;
+} = {}) {
+  const boundedLimit = Math.min(Math.max(limit, 1), 50);
+  const readyTargetIds = getAlertTargetHealth()
+    .filter((target) => target.ready)
+    .map((target) => target.id);
+  const retryStatuses: AlertDeliveryStatus[] = includeSkipped ? ["failed", "skipped"] : ["failed"];
+
+  if (!readyTargetIds.length) {
+    return [];
+  }
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql().query(
+      `
+      WITH retryable AS (
+        SELECT id
+        FROM omni_alert_deliveries
+        WHERE status ${includeSkipped ? "IN ('failed', 'skipped')" : "= 'failed'"}
+          AND target_id = ANY($1)
+        ORDER BY updated_at ASC, created_at ASC
+        LIMIT $2
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE omni_alert_deliveries deliveries
+      SET status = 'queued',
+          attempt = 0,
+          run_at = NOW(),
+          locked_at = NULL,
+          lease_owner = NULL,
+          lease_expires_at = NULL,
+          last_error = NULL,
+          delivered_at = NULL,
+          updated_at = NOW()
+      FROM retryable
+      WHERE deliveries.id = retryable.id
+      RETURNING deliveries.*
+    `,
+      [readyTargetIds, boundedLimit],
+    );
+    return rows.map(alertDeliveryFromRow);
+  }
+
+  const retried: AlertDeliveryRecord[] = [];
+  const now = new Date().toISOString();
+  await mutateAlertLedger((ledger) => {
+    const candidates = ledger.deliveries
+      .filter((delivery) => retryStatuses.includes(delivery.status))
+      .filter((delivery) => readyTargetIds.includes(delivery.targetId))
+      .sort((left, right) => Date.parse(left.updatedAt) - Date.parse(right.updatedAt))
+      .slice(0, boundedLimit);
+    const ids = new Set(candidates.map((delivery) => delivery.id));
+    ledger.deliveries = ledger.deliveries.map((delivery) => {
+      if (!ids.has(delivery.id)) {
+        return delivery;
+      }
+      const updated: AlertDeliveryRecord = {
+        ...delivery,
+        status: "queued",
+        attempt: 0,
+        runAt: now,
+        lockedAt: undefined,
+        leaseOwner: undefined,
+        leaseExpiresAt: undefined,
+        lastError: undefined,
+        deliveredAt: undefined,
+        updatedAt: now,
+      };
+      retried.push(updated);
+      return updated;
+    });
+    return trimAlertLedger(ledger);
+  });
+  return retried;
+}
+
 export async function runScheduledAlertDispatch({
   trigger = "operator.scheduler",
   queueLimit = ALERT_SCHEDULER_QUEUE_LIMIT,
@@ -326,7 +436,9 @@ export async function getAlertDeliveryStats(): Promise<AlertDeliveryStats> {
   const deliveries = await listAlertDeliveries({ limit: 500 });
   const now = Date.now();
   const targets = getIncidentAlertTargets("critical");
+  const targetHealth = getAlertTargetHealth(targets);
   const scheduler = getAlertSchedulerState(targets);
+  const readyTargetIds = new Set(targetHealth.filter((target) => target.ready).map((target) => target.id));
 
   return {
     total: deliveries.length,
@@ -336,8 +448,12 @@ export async function getAlertDeliveryStats(): Promise<AlertDeliveryStats> {
     failed: deliveries.filter((delivery) => delivery.status === "failed").length,
     skipped: deliveries.filter((delivery) => delivery.status === "skipped").length,
     runnable: deliveries.filter((delivery) => delivery.status === "queued" && Date.parse(delivery.runAt) <= now).length,
+    retryableFailed: deliveries.filter((delivery) =>
+      (delivery.status === "failed" || delivery.status === "skipped") && readyTargetIds.has(delivery.targetId),
+    ).length,
     readyTargets: targets.filter((target) => target.status === "ready").length,
     configuredExternalTargets: targets.filter((target) => target.status === "ready" && !["dashboard", "ops"].includes(target.channel)).length,
+    blockedExternalTargets: targetHealth.filter((target) => !["dashboard", "ops"].includes(target.channel) && target.probeStatus !== "healthy").length,
     byChannel: deliveries.reduce<Record<string, number>>((acc, delivery) => {
       acc[delivery.channel] = (acc[delivery.channel] || 0) + 1;
       return acc;
@@ -345,6 +461,7 @@ export async function getAlertDeliveryStats(): Promise<AlertDeliveryStats> {
     latest: deliveries.slice(0, 8),
     policies: alertPolicies,
     targets,
+    targetHealth,
     scheduler,
   };
 }
@@ -413,6 +530,134 @@ function createAlertPayload(incident: IncidentRecord, reason?: string): Record<s
     },
     emittedAt: new Date().toISOString(),
   };
+}
+
+function createTargetHealth(target: IncidentAlertTarget, checkedAt: string): AlertTargetHealth {
+  if (target.channel === "dashboard" || target.channel === "ops") {
+    return {
+      id: target.id,
+      name: target.name,
+      channel: target.channel,
+      targetStatus: target.status,
+      probeStatus: "healthy",
+      ready: true,
+      configured: true,
+      requiredEnv: [],
+      optionalEnv: [],
+      blockingReasons: [],
+      checkedAt,
+      security: {
+        secretValuesExposed: false,
+      },
+    };
+  }
+
+  if (target.channel === "webhook") {
+    const url = process.env.OMNIAGENT_ALERT_WEBHOOK_URL?.trim();
+    const blockingReasons = [];
+    if (!url) {
+      blockingReasons.push("OMNIAGENT_ALERT_WEBHOOK_URL is not configured.");
+    } else if (!isHttpsOrLocalUrl(url)) {
+      blockingReasons.push("OMNIAGENT_ALERT_WEBHOOK_URL must be an absolute HTTPS URL, or localhost for development.");
+    }
+    return {
+      id: target.id,
+      name: target.name,
+      channel: target.channel,
+      targetStatus: target.status,
+      probeStatus: blockingReasons.length ? (url ? "misconfigured" : "missing_config") : "healthy",
+      ready: !blockingReasons.length,
+      configured: Boolean(url && !blockingReasons.length),
+      requiredEnv: ["OMNIAGENT_ALERT_WEBHOOK_URL"],
+      optionalEnv: ["OMNIAGENT_ALERT_WEBHOOK_SECRET"],
+      blockingReasons,
+      checkedAt,
+      security: {
+        secretValuesExposed: false,
+        webhookSigned: Boolean(process.env.OMNIAGENT_ALERT_WEBHOOK_SECRET?.trim()),
+      },
+    };
+  }
+
+  if (target.channel === "slack") {
+    const url = process.env.SLACK_WEBHOOK_URL?.trim();
+    const blockingReasons = [];
+    if (!url) {
+      blockingReasons.push("SLACK_WEBHOOK_URL is not configured.");
+    } else if (!isHttpsUrl(url)) {
+      blockingReasons.push("SLACK_WEBHOOK_URL must be an absolute HTTPS URL.");
+    }
+    return {
+      id: target.id,
+      name: target.name,
+      channel: target.channel,
+      targetStatus: target.status,
+      probeStatus: blockingReasons.length ? (url ? "misconfigured" : "missing_config") : "healthy",
+      ready: !blockingReasons.length,
+      configured: Boolean(url && !blockingReasons.length),
+      requiredEnv: ["SLACK_WEBHOOK_URL"],
+      optionalEnv: [],
+      blockingReasons,
+      checkedAt,
+      security: {
+        secretValuesExposed: false,
+      },
+    };
+  }
+
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  const to = process.env.OMNIAGENT_ALERT_EMAIL_TO?.trim();
+  const from = process.env.OMNIAGENT_ALERT_EMAIL_FROM?.trim();
+  const blockingReasons = [];
+  if (!apiKey) {
+    blockingReasons.push("RESEND_API_KEY is not configured.");
+  }
+  if (!to) {
+    blockingReasons.push("OMNIAGENT_ALERT_EMAIL_TO is not configured.");
+  } else if (!isEmailish(to)) {
+    blockingReasons.push("OMNIAGENT_ALERT_EMAIL_TO must look like an email address.");
+  }
+  if (from && !from.includes("@")) {
+    blockingReasons.push("OMNIAGENT_ALERT_EMAIL_FROM must include an email address.");
+  }
+
+  return {
+    id: target.id,
+    name: target.name,
+    channel: target.channel,
+    targetStatus: target.status,
+    probeStatus: blockingReasons.length ? (apiKey || to || from ? "misconfigured" : "missing_config") : "healthy",
+    ready: !blockingReasons.length,
+    configured: Boolean(apiKey && to && !blockingReasons.length),
+    requiredEnv: ["RESEND_API_KEY", "OMNIAGENT_ALERT_EMAIL_TO"],
+    optionalEnv: ["OMNIAGENT_ALERT_EMAIL_FROM"],
+    blockingReasons,
+    checkedAt,
+    security: {
+      secretValuesExposed: false,
+    },
+  };
+}
+
+function isHttpsUrl(value: string) {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isHttpsOrLocalUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isEmailish(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 async function deliverAlert(delivery: AlertDeliveryRecord): Promise<{

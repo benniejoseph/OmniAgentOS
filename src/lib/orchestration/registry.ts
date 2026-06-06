@@ -136,6 +136,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "ops.alert_target_health",
+    name: "Alert Target Health",
+    description: "Probes alert target readiness without exposing secrets and requeues failed deliveries after configuration recovery.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

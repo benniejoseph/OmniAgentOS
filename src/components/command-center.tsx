@@ -573,6 +573,26 @@ type AlertSchedulerState = {
   configuredExternalTargets: number;
 };
 
+type AlertTargetProbeStatus = "healthy" | "missing_config" | "misconfigured";
+
+type AlertTargetHealth = {
+  id: string;
+  name: string;
+  channel: IncidentAlertTarget["channel"];
+  targetStatus: IncidentAlertTarget["status"];
+  probeStatus: AlertTargetProbeStatus;
+  ready: boolean;
+  configured: boolean;
+  requiredEnv: string[];
+  optionalEnv: string[];
+  blockingReasons: string[];
+  checkedAt: string;
+  security: {
+    secretValuesExposed: false;
+    webhookSigned?: boolean;
+  };
+};
+
 type AlertDeliveryStats = {
   total: number;
   queued: number;
@@ -581,12 +601,15 @@ type AlertDeliveryStats = {
   failed: number;
   skipped: number;
   runnable: number;
+  retryableFailed: number;
   readyTargets: number;
   configuredExternalTargets: number;
+  blockedExternalTargets: number;
   byChannel: Record<string, number>;
   latest: AlertDeliveryRecord[];
   policies: AlertDeliveryPolicy[];
   targets: IncidentAlertTarget[];
+  targetHealth: AlertTargetHealth[];
   scheduler: AlertSchedulerState;
 };
 
@@ -595,6 +618,7 @@ type AlertsResponse = {
   stats: AlertDeliveryStats;
   policies: AlertDeliveryPolicy[];
   targets: IncidentAlertTarget[];
+  targetHealth: AlertTargetHealth[];
 };
 
 type RetrievalTraceRecord = {
@@ -1082,6 +1106,7 @@ export function CommandCenter() {
   const alertStats = alertState?.stats || capabilities?.alerts;
   const alertScheduler = alertStats?.scheduler;
   const latestAlertDeliveries = alertState?.deliveries || alertStats?.latest || [];
+  const alertTargetHealth = alertState?.targetHealth || alertStats?.targetHealth || [];
   const contextStats = capabilities?.contextEngine;
   const graphStats = capabilities?.memoryGraph;
   const latestWorkflows = workflowState?.runs.slice(0, 5) || capabilities?.workflows.latest || [];
@@ -1553,15 +1578,23 @@ export function CommandCenter() {
     }
   }
 
-  async function runAlertAction(action: "enqueue_active" | "dispatch" | "enqueue_and_dispatch") {
-    setStatus(action === "dispatch" ? "dispatching alerts" : "queueing alerts");
+  async function runAlertAction(action: "enqueue_active" | "dispatch" | "enqueue_and_dispatch" | "probe_targets" | "retry_failed") {
+    setStatus(
+      action === "dispatch"
+        ? "dispatching alerts"
+        : action === "probe_targets"
+          ? "probing alert targets"
+          : action === "retry_failed"
+            ? "retrying failed alerts"
+            : "queueing alerts",
+    );
     setAlertResult("");
 
     try {
       const response = await fetch("/api/alerts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, limit: 10 }),
+        body: JSON.stringify({ action, limit: 10, includeSkipped: true }),
       });
       const data = await response.json();
       setAlertResult(formatToolResult(data));
@@ -2040,6 +2073,11 @@ export function CommandCenter() {
                 <MiniStat label="Schedule" value={alertScheduler?.schedule || "0 0 * * *"} />
                 <MiniStat label="Limits" value={`${alertScheduler?.queueLimit ?? 10}/${alertScheduler?.dispatchLimit ?? 10}`} />
               </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Targets" value={`${alertStats?.readyTargets ?? 0} ready`} />
+                <MiniStat label="Blocked" value={`${alertStats?.blockedExternalTargets ?? 0}`} />
+                <MiniStat label="Retryable" value={`${alertStats?.retryableFailed ?? 0}`} />
+              </div>
               <div className="mb-3 grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -2084,6 +2122,24 @@ export function CommandCenter() {
                 <Activity size={14} />
                 Scheduler tick
               </button>
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => runAlertAction("probe_targets")}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-primary"
+                >
+                  <Search size={14} />
+                  Probe targets
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runAlertAction("retry_failed")}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                >
+                  <History size={14} />
+                  Retry failed
+                </button>
+              </div>
               {diagnosticsResult ? (
                 <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                   {diagnosticsResult}
@@ -2121,6 +2177,11 @@ export function CommandCenter() {
                 {latestAlertDeliveries.length ? (
                   latestAlertDeliveries.slice(0, 4).map((delivery) => (
                     <AlertDeliveryRow key={delivery.id} delivery={delivery} />
+                  ))
+                ) : null}
+                {alertTargetHealth.length ? (
+                  alertTargetHealth.slice(0, 5).map((target) => (
+                    <AlertTargetHealthRow key={target.id} target={target} />
                   ))
                 ) : null}
                 {approvalQueue.length ? (
@@ -3116,6 +3177,34 @@ function AlertDeliveryRow({ delivery }: { delivery: AlertDeliveryRecord }) {
   );
 }
 
+function AlertTargetHealthRow({ target }: { target: AlertTargetHealth }) {
+  const requirements = target.requiredEnv.concat(target.optionalEnv.map((env) => `${env}?`));
+
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", alertTargetHealthTone(target.probeStatus))}>
+          {target.probeStatus}
+        </span>
+        <span className="shrink-0 rounded border border-line px-2 py-1 font-mono text-[11px] text-muted">
+          {target.channel}
+        </span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{target.name}</p>
+      <p className="mt-1 line-clamp-1 font-mono text-[11px] text-muted">{requirements.join(" / ") || "internal"}</p>
+      {target.blockingReasons.length ? (
+        <p className="mt-2 line-clamp-2 text-xs leading-5 text-danger">
+          {target.blockingReasons.join(" ")}
+        </p>
+      ) : (
+        <p className="mt-2 text-xs leading-5 text-muted">
+          {target.security.webhookSigned === undefined ? "Ready" : target.security.webhookSigned ? "Signed webhook ready" : "Webhook unsigned"}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ApprovalQueueRow({
   item,
   onDecide,
@@ -3621,6 +3710,16 @@ function alertDeliveryTone(status: AlertDeliveryStatus) {
   }
 
   return "bg-background text-muted";
+}
+
+function alertTargetHealthTone(status: AlertTargetProbeStatus) {
+  if (status === "healthy") {
+    return "bg-primary/16 text-primary";
+  }
+  if (status === "misconfigured") {
+    return "bg-danger/14 text-danger";
+  }
+  return "bg-accent/16 text-accent";
 }
 
 function workflowTone(status: WorkflowRunStatus) {
