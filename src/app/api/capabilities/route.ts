@@ -13,6 +13,7 @@ import { getRunStats } from "@/lib/runs/store";
 import { getSecurityStats } from "@/lib/security/audit-store";
 import { canPerform, resolveSecurityContext, rbacRules, secretVaultPolicy, securityErrorResponse } from "@/lib/security/context";
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
+import { getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { getWorkflowPlanStats } from "@/lib/workflows/planner";
 import { getWorkflowStats } from "@/lib/workflows/store";
 
@@ -42,6 +43,7 @@ export async function GET(request: Request) {
     openApiConnectors: await getOpenApiConnectorStats(),
     workflows: await getWorkflowStats(),
     workflowPlans: await getWorkflowPlanStats(),
+    workflowPlanExecutions: await getWorkflowPlanNodeExecutionStats(),
     operationJobs: await getOperationJobStats(),
     evaluations: await getEvalStats(),
     security: {

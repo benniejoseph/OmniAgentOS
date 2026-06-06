@@ -28,6 +28,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - OpenAPI connector registry for JSON/YAML specs, base URLs, token env-var references, imported operations, request schemas, and connector health
 - Durable workflow runtime with persisted runs, steps, events, Postgres-backed operation jobs, leases, retry backoff, approval waits, operator signals, and report persistence
 - Dynamic workflow planner with typed DAG generation, tool/connector selection, execution policy, verification criteria, and persisted planner ledger
+- Plan-driven workflow executor with persisted DAG node executions, governed tool decisions, dry-run side-effect controls, verification summaries, and report integration
 - Vercel Cron-secured production workflow queue ticks through `/api/workflows/tick`, with opportunistic post-response draining through Next.js `after()`
 - Operations center with approval queue, failed work summary, active workflow summary, connector error summary, and durable approval actions
 - External connection catalog for MCP/OpenAPI adapter setup across common production apps
@@ -61,9 +62,13 @@ flowchart TD
   GOV --> AUDIT["Tool Audit Ledger"]
   API --> WF["Durable Workflow Runtime"]
   WF --> WPLAN["Dynamic Workflow Planner"]
+  WF --> WEXEC["Plan-Driven Workflow Executor"]
   WPLAN --> CTX
   WPLAN --> GOV
   WPLAN --> DB
+  WEXEC --> GOV
+  WEXEC --> DB
+  WEXEC --> MEM
   API --> OQ["Operation Job Queue"]
   WF --> WSTEPS["Persisted Steps and Signals"]
   OQ --> WF
@@ -122,3 +127,4 @@ flowchart TD
 15. Adaptive context engine: add retrieval policy routing, evidence grading, diversity-aware packing, retrieval trace observability, and queue/workflow integration. Done.
 16. Graph memory engine: add concept/entity extraction, memory graph nodes/edges/builds, graph search, graph-context packing, and graph regression checks. Done.
 17. Dynamic workflow planner: add structured goal decomposition, typed DAG planner, governed tool/connector selection, execution policy, verification criteria, planner ledger, and workflow integration. Done.
+18. Plan-driven workflow executor: persist every dynamic DAG node execution, run read-only governed tools, dry-run side-effecting or approval-gated tools, summarize execution for verification, expose execution stats, and add regression coverage. Done.

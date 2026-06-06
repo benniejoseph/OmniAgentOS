@@ -94,6 +94,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "workflow.plan_executor",
+    name: "Plan-Driven Workflow Executor",
+    description: "Executes dynamic workflow DAG nodes through governed tool decisions, node ledgers, verification signals, and memory-ready artifacts.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

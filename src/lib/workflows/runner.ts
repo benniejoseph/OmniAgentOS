@@ -1,8 +1,9 @@
-import { AGENT_MODEL, hasOpenAIKey } from "@/lib/config";
+import { AGENT_MODEL, WORKFLOW_EXECUTOR_TIMEOUT_MS, hasOpenAIKey } from "@/lib/config";
 import { saveMemory } from "@/lib/memory/store";
 import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { executeDynamicWorkflowPlan, parseWorkflowPlanOutput } from "@/lib/workflows/executor";
 import { buildDynamicWorkflowPlan } from "@/lib/workflows/planner";
 import {
   appendWorkflowEvent,
@@ -261,17 +262,29 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
   if (stepKey === "verify") {
     const executeOutput = stepOutput(detail, "execute");
     const planOutput = stepOutput(detail, "plan");
-    const plan = parsePlanOutput(planOutput);
+    const plan = parseWorkflowPlanOutput(planOutput);
+    const planExecution = parsePlanExecutionOutput(executeOutput);
     const criteria = plan?.plan.acceptanceCriteria || [
       "workflow state persisted",
       "execution output captured",
       "report step can persist durable summary",
     ];
     return {
-      passed: Boolean(executeOutput?.response || executeOutput?.deliverable),
+      passed: Boolean(executeOutput?.response || executeOutput?.deliverable) &&
+        (!planExecution || planExecution.failedNodes === 0),
       checks: criteria,
       plannerValidation: plan?.validation,
       dynamicPlanId: plan?.id,
+      planExecution: planExecution
+        ? {
+            status: planExecution.status,
+            completedNodes: planExecution.completedNodes,
+            totalNodes: planExecution.totalNodes,
+            toolExecutions: planExecution.toolExecutions,
+            dryRunTools: planExecution.dryRunTools,
+            executedTools: planExecution.executedTools,
+          }
+        : undefined,
     };
   }
 
@@ -320,6 +333,8 @@ async function buildPlan(detail: WorkflowRunDetail) {
 async function executeGoal(detail: WorkflowRunDetail) {
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const planOutput = stepOutput(detail, "plan");
+  const planExecution = await executeDynamicWorkflowPlan(detail);
+  const fallback = buildExecutionFallback(detail, planExecution);
   const instructions = buildAgentInstructions({
     mode: detail.run.input.mode || "orchestrate",
     memoryContext: String(retrieveOutput?.contextBlock || "No context available."),
@@ -327,41 +342,56 @@ async function executeGoal(detail: WorkflowRunDetail) {
   const input = [
     `Goal: ${detail.run.goal}`,
     `Plan: ${JSON.stringify(planOutput || {}, null, 2)}`,
+    `Plan execution: ${JSON.stringify(planExecution || {}, null, 2)}`,
     "Return a concise execution result and next best action.",
   ].join("\n\n");
 
   if (!hasOpenAIKey()) {
-    return {
-      deliverable: `Workflow executed in fallback mode for: ${detail.run.goal}`,
-      response:
-        "OpenAI is not configured locally, so this durable workflow completed with a deterministic fallback output.",
-    };
+    return fallback;
   }
 
-  const response = await createStructuredResponse({
-    instructions,
-    input,
-    name: "workflow_execution_result",
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        deliverable: { type: "string" },
-        response: { type: "string" },
-        nextAction: { type: "string" },
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error("Workflow executor synthesis timed out.")),
+      WORKFLOW_EXECUTOR_TIMEOUT_MS,
+    );
+    const response = await createStructuredResponse({
+      instructions,
+      input,
+      name: "workflow_execution_result",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          deliverable: { type: "string" },
+          response: { type: "string" },
+          nextAction: { type: "string" },
+        },
+        required: ["deliverable", "response", "nextAction"],
       },
-      required: ["deliverable", "response", "nextAction"],
-    },
-  });
+      abortSignal: controller.signal,
+    }).finally(() => clearTimeout(timer));
 
-  return JSON.parse(response) as Record<string, unknown>;
+    return {
+      ...JSON.parse(response) as Record<string, unknown>,
+      planExecution,
+    };
+  } catch (error) {
+    return {
+      ...fallback,
+      synthesisModel: "fallback-after-openai-error",
+      synthesisError: error instanceof Error ? error.message : "Workflow executor synthesis failed.",
+    };
+  }
 }
 
 async function persistWorkflowReport(detail: WorkflowRunDetail) {
   const executeOutput = stepOutput(detail, "execute");
   const verifyOutput = stepOutput(detail, "verify");
   const planOutput = stepOutput(detail, "plan");
-  const plan = parsePlanOutput(planOutput);
+  const plan = parseWorkflowPlanOutput(planOutput);
+  const planExecution = parsePlanExecutionOutput(executeOutput);
   const content = [
     `Workflow: ${detail.run.workflowType}`,
     `Goal: ${detail.run.goal}`,
@@ -369,6 +399,9 @@ async function persistWorkflowReport(detail: WorkflowRunDetail) {
     plan ? `Dynamic plan: ${plan.id} (${plan.planner}, confidence ${plan.confidence.toFixed(2)})` : "",
     plan ? `Plan nodes: ${plan.plan.nodes.map((node) => node.label).join(" -> ")}` : "",
     plan ? `Selected tools: ${plan.plan.selectedToolIds.join(", ") || "none"}` : "",
+    planExecution
+      ? `Plan execution: ${planExecution.completedNodes}/${planExecution.totalNodes} nodes completed, ${planExecution.toolExecutions} governed tool decisions, ${planExecution.dryRunTools} dry-runs.`
+      : "",
     `Execution: ${String(executeOutput?.response || executeOutput?.deliverable || "No execution output.")}`,
     `Verification: ${JSON.stringify(verifyOutput || {})}`,
   ].filter(Boolean).join("\n\n");
@@ -387,6 +420,7 @@ async function persistWorkflowReport(detail: WorkflowRunDetail) {
     report: content,
     memoryId: memory.id,
     dynamicPlanId: plan?.id,
+    planExecutionStatus: planExecution?.status,
   };
 }
 
@@ -399,6 +433,8 @@ async function completeWorkflow(runId: string) {
     result: {
       report: reportOutput?.report || "Workflow completed.",
       memoryId: reportOutput?.memoryId,
+      dynamicPlanId: reportOutput?.dynamicPlanId,
+      planExecutionStatus: reportOutput?.planExecutionStatus,
     },
   });
   await appendWorkflowEvent(runId, "workflow.completed", {});
@@ -408,22 +444,38 @@ function stepOutput(detail: WorkflowRunDetail, stepKey: WorkflowStepKey) {
   return detail.steps.find((step) => step.stepKey === stepKey)?.output;
 }
 
-function parsePlanOutput(output: Record<string, unknown> | undefined) {
-  if (!output || typeof output !== "object") {
+function buildExecutionFallback(detail: WorkflowRunDetail, planExecution: Awaited<ReturnType<typeof executeDynamicWorkflowPlan>>) {
+  return {
+    deliverable: `Workflow executed ${planExecution ? `${planExecution.completedNodes}/${planExecution.totalNodes} planned nodes` : "with no dynamic plan"} for: ${detail.run.goal}`,
+    response: planExecution
+      ? [
+          `Executed dynamic plan ${planExecution.planId} with status ${planExecution.status}.`,
+          `${planExecution.completedNodes}/${planExecution.totalNodes} nodes completed.`,
+          `${planExecution.toolExecutions} governed tool decisions were recorded (${planExecution.dryRunTools} dry-runs, ${planExecution.executedTools} live executions).`,
+        ].join(" ")
+      : "No dynamic plan execution was available, so the durable workflow produced a deterministic fallback output.",
+    nextAction: planExecution?.status === "completed"
+      ? "Review verification output and persisted report."
+      : "Review blocked, failed, or approval-required plan nodes before retrying.",
+    planExecution,
+  };
+}
+
+function parsePlanExecutionOutput(output: Record<string, unknown> | undefined) {
+  if (!output || typeof output !== "object" || !output.planExecution || typeof output.planExecution !== "object") {
     return undefined;
   }
-  if (typeof output.id !== "string" || !output.plan || typeof output.plan !== "object") {
-    return undefined;
-  }
-  return output as {
-    id: string;
-    planner: string;
-    confidence: number;
-    validation: Record<string, unknown>;
-    plan: {
-      acceptanceCriteria: string[];
-      selectedToolIds: string[];
-      nodes: Array<{ label: string }>;
-    };
+
+  return output.planExecution as {
+    status: string;
+    totalNodes: number;
+    completedNodes: number;
+    blockedNodes: number;
+    failedNodes: number;
+    skippedNodes: number;
+    waitingApprovalNodes: number;
+    toolExecutions: number;
+    dryRunTools: number;
+    executedTools: number;
   };
 }

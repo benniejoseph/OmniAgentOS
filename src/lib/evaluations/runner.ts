@@ -12,8 +12,9 @@ import { buildContextPack, getContextEngineStats } from "@/lib/rag/context-engin
 import { retrieveContext } from "@/lib/rag/retriever";
 import { canPerform, redactSensitive } from "@/lib/security/context";
 import { enqueueWorkflowRunTick, processWorkflowQueue } from "@/lib/workflows/queue";
+import { executeDynamicWorkflowPlan, getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats } from "@/lib/workflows/planner";
-import { createWorkflowRun, getWorkflowRunDetail } from "@/lib/workflows/store";
+import { createWorkflowRun, getWorkflowRunDetail, updateWorkflowStep } from "@/lib/workflows/store";
 import {
   completeEvalRun,
   createEvalRun,
@@ -43,7 +44,7 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
     type: "system",
     input: {},
     expected: {
-      activeTools: ["tool.executor", "connector.openapi", "workflow.temporal"],
+      activeTools: ["tool.executor", "connector.openapi", "workflow.temporal", "workflow.plan_executor"],
       storage: "configured",
     },
   },
@@ -136,6 +137,22 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       minSelectedTools: 2,
       validDag: true,
       persisted: true,
+    },
+  },
+  {
+    id: "workflow.plan_executor",
+    name: "Plan-driven workflow executor",
+    description: "Executes dynamic workflow DAG nodes through governed tool decisions, node persistence, and verification-ready summaries.",
+    type: "workflow",
+    input: {
+      goal: "Execute a production-safe dynamic plan with retrieval, tool decisions, verification, and memory-ready outputs.",
+      mode: "orchestrate",
+    },
+    expected: {
+      minCompletedNodes: 3,
+      minToolExecutions: 2,
+      persisted: true,
+      noFailedNodes: true,
     },
   },
   {
@@ -274,6 +291,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "workflow.dynamic_planner") {
     return evaluateDynamicPlanner(evalCase);
+  }
+
+  if (evalCase.id === "workflow.plan_executor") {
+    return evaluatePlanExecutor(evalCase);
   }
 
   if (evalCase.id === "security.rbac_controls") {
@@ -563,6 +584,111 @@ async function evaluateDynamicPlanner(evalCase: EvalCaseDefinition): Promise<Cas
       stats: {
         total: stats.total,
         averageConfidence: stats.averageConfidence,
+      },
+    },
+    estimatedCostUsd: estimateTextCost(goal),
+  };
+}
+
+async function evaluatePlanExecutor(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const goal = String(evalCase.input.goal || "");
+  const mode = String(evalCase.input.mode || "orchestrate") as "orchestrate" | "research" | "execute" | "learn";
+  const detail = await createWorkflowRun({
+    goal,
+    mode,
+    requireApproval: false,
+    maxAttempts: 2,
+    metadata: {
+      source: "evaluation",
+      caseId: evalCase.id,
+    },
+  });
+  const plan = await buildDynamicWorkflowPlan({
+    goal,
+    mode,
+    workflowRunId: detail.run.id,
+    requireApproval: false,
+  });
+  await updateWorkflowStep(detail.run.id, "retrieve_context", {
+    status: "completed",
+    output: {
+      contextCount: 0,
+      contextBlock: "Plan executor evaluation uses direct DAG execution.",
+    },
+    completedAt: new Date().toISOString(),
+  });
+  await updateWorkflowStep(detail.run.id, "plan", {
+    status: "completed",
+    output: {
+      id: plan.id,
+      planner: plan.planner,
+      model: plan.model,
+      status: plan.status,
+      contextTraceId: plan.contextTraceId,
+      validation: plan.validation,
+      highestRiskLevel: plan.highestRiskLevel,
+      approvalRequired: plan.approvalRequired,
+      confidence: plan.confidence,
+      plan: plan.plan,
+      objective: goal,
+      tasks: plan.plan.nodes.map((node) => node.label),
+      acceptanceCriteria: plan.plan.acceptanceCriteria,
+      selectedToolIds: plan.plan.selectedToolIds,
+      connectorTargets: plan.plan.connectorTargets,
+      contextCount: 0,
+    },
+    completedAt: new Date().toISOString(),
+  });
+
+  const executionDetail = await getWorkflowRunDetail(detail.run.id);
+  if (!executionDetail) {
+    throw new Error("Workflow detail disappeared before plan execution.");
+  }
+
+  const summary = await executeDynamicWorkflowPlan(executionDetail);
+  if (!summary) {
+    throw new Error("Dynamic plan execution summary was not produced.");
+  }
+
+  const stats = await getWorkflowPlanNodeExecutionStats();
+  const checks = {
+    completedNodes: summary.completedNodes >= Number(evalCase.expected.minCompletedNodes || 1),
+    toolExecutions: summary.toolExecutions >= Number(evalCase.expected.minToolExecutions || 1),
+    persisted: Boolean(evalCase.expected.persisted) ? stats.total > 0 : true,
+    noFailedNodes: Boolean(evalCase.expected.noFailedNodes) ? summary.failedNodes === 0 : true,
+    linkedToRun: summary.workflowRunId === detail.run.id && summary.planId === plan.id,
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      workflowRunId: detail.run.id,
+      planId: plan.id,
+      checks,
+      summary: {
+        status: summary.status,
+        totalNodes: summary.totalNodes,
+        completedNodes: summary.completedNodes,
+        blockedNodes: summary.blockedNodes,
+        failedNodes: summary.failedNodes,
+        skippedNodes: summary.skippedNodes,
+        toolExecutions: summary.toolExecutions,
+        dryRunTools: summary.dryRunTools,
+        executedTools: summary.executedTools,
+      },
+      nodeExecutions: summary.nodeExecutions.map((record) => ({
+        nodeId: record.nodeId,
+        nodeKind: record.nodeKind,
+        status: record.status,
+        toolExecutionIds: record.toolExecutionIds,
+      })),
+      stats: {
+        total: stats.total,
+        dryRunTools: stats.dryRunTools,
+        executedTools: stats.executedTools,
       },
     },
     estimatedCostUsd: estimateTextCost(goal),

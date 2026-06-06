@@ -56,6 +56,7 @@ Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue
 - `/api/openapi-connectors/:id/import` OpenAPI operation re-import endpoint
 - `/api/workflows` durable workflow start/list endpoint
 - `/api/workflows/plan` dynamic workflow DAG planner endpoint
+- `/api/workflows/executions` dynamic plan-node execution ledger endpoint
 - `/api/workflows/:id` durable workflow detail endpoint
 - `/api/workflows/:id/tick` enqueue and lease one persisted workflow step
 - `/api/workflows/:id/signal` pause, resume, approve, retry, or cancel a workflow
@@ -89,6 +90,7 @@ Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue
 - OpenAPI connector importer for JSON/YAML specs; imported REST operations flow into the governed tool registry with env-var based auth, dry-runs, approval gates, and audit policy
 - Durable workflow runtime for persisted step execution with Postgres queue leases, retries, approval waits, operator signals, event history, and final report persistence
 - Dynamic workflow planner that decomposes goals into typed DAGs with tool selection, connector targets, risk policy, verification criteria, and memory feedback
+- Plan-driven workflow executor that persists each dynamic DAG node, runs read-only governed tools, dry-runs side-effecting or approval-gated actions, and feeds execution summaries into verification and reports
 - Vercel Cron integration for secured production workflow queue ticks with `CRON_SECRET`
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
 - Operations regression case for approval queue, operations overview, and connection catalog readiness

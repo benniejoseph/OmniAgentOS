@@ -19,6 +19,10 @@ export const WORKFLOW_PLANNER_TIMEOUT_MS = normalizePositiveInteger(
   process.env.OMNIAGENT_WORKFLOW_PLANNER_TIMEOUT_MS,
   8000,
 );
+export const WORKFLOW_EXECUTOR_TIMEOUT_MS = normalizePositiveInteger(
+  process.env.OMNIAGENT_WORKFLOW_EXECUTOR_TIMEOUT_MS,
+  10000,
+);
 
 export function hasOpenAIKey() {
   return Boolean(process.env.OPENAI_API_KEY?.trim());

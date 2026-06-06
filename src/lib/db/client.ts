@@ -455,6 +455,37 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_plans_risk_idx ON omni_workflow_plans (highest_risk_level DESC)`;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS omni_workflow_node_executions (
+          id TEXT PRIMARY KEY,
+          workflow_run_id TEXT NOT NULL REFERENCES omni_workflow_runs(id) ON DELETE CASCADE,
+          plan_id TEXT NOT NULL REFERENCES omni_workflow_plans(id) ON DELETE CASCADE,
+          node_id TEXT NOT NULL,
+          node_label TEXT NOT NULL,
+          node_kind TEXT NOT NULL,
+          status TEXT NOT NULL,
+          policy TEXT NOT NULL,
+          risk_level INTEGER NOT NULL DEFAULT 0,
+          approval_required BOOLEAN NOT NULL DEFAULT FALSE,
+          tool_execution_ids TEXT[] NOT NULL DEFAULT '{}',
+          input JSONB NOT NULL DEFAULT '{}',
+          output JSONB,
+          error TEXT,
+          started_at TIMESTAMPTZ,
+          completed_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_node_exec_run_idx ON omni_workflow_node_executions (workflow_run_id, created_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_node_exec_plan_idx ON omni_workflow_node_executions (plan_id, created_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_node_exec_status_idx ON omni_workflow_node_executions (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_node_exec_updated_idx ON omni_workflow_node_executions (updated_at DESC)`;
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS omni_workflow_node_exec_plan_node_idx
+        ON omni_workflow_node_executions (plan_id, node_id)
+      `;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS omni_workflow_steps (
           id TEXT PRIMARY KEY,
           workflow_run_id TEXT NOT NULL REFERENCES omni_workflow_runs(id) ON DELETE CASCADE,

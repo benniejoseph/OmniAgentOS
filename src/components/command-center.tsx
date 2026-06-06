@@ -349,6 +349,28 @@ type WorkflowPlanStats = {
   }>;
 };
 
+type WorkflowPlanExecutionStats = {
+  total: number;
+  byStatus: Record<string, number>;
+  approvalRequired: number;
+  blocked: number;
+  failed: number;
+  dryRunTools: number;
+  executedTools: number;
+  latest: Array<{
+    id: string;
+    workflowRunId: string;
+    planId: string;
+    nodeId: string;
+    nodeLabel: string;
+    status: string;
+    policy: string;
+    riskLevel: number;
+    approvalRequired: boolean;
+    updatedAt: string;
+  }>;
+};
+
 type OperationJobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
 
 type OperationJobRecord = {
@@ -655,6 +677,7 @@ type CapabilityResponse = {
   openApiConnectors: OpenApiConnectorStats;
   workflows: WorkflowStats;
   workflowPlans: WorkflowPlanStats;
+  workflowPlanExecutions: WorkflowPlanExecutionStats;
   operationJobs: OperationJobStats;
   evaluations: EvalStats;
   security: {
@@ -842,6 +865,7 @@ export function CommandCenter() {
   const latestOpenApiOperations = openApiState?.operations.slice(0, 5) || [];
   const workflowStats = workflowState?.stats || capabilities?.workflows;
   const plannerStats = capabilities?.workflowPlans;
+  const planExecutionStats = capabilities?.workflowPlanExecutions;
   const queueStats = workflowState?.queue || capabilities?.operationJobs;
   const contextStats = capabilities?.contextEngine;
   const graphStats = capabilities?.memoryGraph;
@@ -1534,6 +1558,7 @@ export function CommandCenter() {
             <StatusPill icon={<History size={15} />} label="Runs" value={`${capabilities?.runs.total ?? 0}`} />
             <StatusPill icon={<Activity size={15} />} label="Flows" value={`${workflowStats?.active ?? 0}`} />
             <StatusPill icon={<Layers3 size={15} />} label="Plans" value={`${plannerStats?.total ?? 0}`} />
+            <StatusPill icon={<CheckCircle2 size={15} />} label="Nodes" value={`${planExecutionStats?.total ?? 0}`} />
             <StatusPill
               icon={<BarChart3 size={15} />}
               label="Evals"
@@ -1710,6 +1735,11 @@ export function CommandCenter() {
                 <MiniStat label="Plans" value={`${plannerStats?.total ?? 0}`} />
                 <MiniStat label="Risk" value={`${plannerStats?.highRisk ?? 0}`} />
                 <MiniStat label="Conf" value={`${Math.round((plannerStats?.averageConfidence ?? 0) * 100)}%`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Nodes" value={`${planExecutionStats?.total ?? 0}`} />
+                <MiniStat label="Dry-runs" value={`${planExecutionStats?.dryRunTools ?? 0}`} />
+                <MiniStat label="Live tools" value={`${planExecutionStats?.executedTools ?? 0}`} />
               </div>
               <div className="flex flex-col gap-3">
                 <textarea

@@ -100,6 +100,54 @@ export type WorkflowPlanRecord = {
   updatedAt: string;
 };
 
+export type WorkflowPlanNodeExecutionStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "waiting_approval"
+  | "blocked"
+  | "failed"
+  | "skipped";
+
+export type WorkflowPlanNodeExecutionRecord = {
+  id: string;
+  workflowRunId: string;
+  planId: string;
+  nodeId: string;
+  nodeLabel: string;
+  nodeKind: WorkflowPlanNodeKind;
+  status: WorkflowPlanNodeExecutionStatus;
+  policy: WorkflowPlanPolicy;
+  riskLevel: 0 | 1 | 2 | 3;
+  approvalRequired: boolean;
+  toolExecutionIds: string[];
+  input: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WorkflowPlanExecutionSummary = {
+  workflowRunId: string;
+  planId: string;
+  status: "completed" | "waiting_approval" | "blocked" | "failed";
+  totalNodes: number;
+  completedNodes: number;
+  blockedNodes: number;
+  failedNodes: number;
+  skippedNodes: number;
+  waitingApprovalNodes: number;
+  toolExecutions: number;
+  dryRunTools: number;
+  executedTools: number;
+  approvalRequiredTools: number;
+  highestRiskLevel: 0 | 1 | 2 | 3;
+  nodeExecutions: WorkflowPlanNodeExecutionRecord[];
+};
+
 export type WorkflowRunInput = {
   goal: string;
   mode?: "orchestrate" | "research" | "execute" | "learn";
@@ -180,4 +228,15 @@ export type WorkflowPlanStats = {
   highRisk: number;
   averageConfidence: number;
   latest: WorkflowPlanRecord[];
+};
+
+export type WorkflowPlanNodeExecutionStats = {
+  total: number;
+  byStatus: Record<string, number>;
+  approvalRequired: number;
+  blocked: number;
+  failed: number;
+  dryRunTools: number;
+  executedTools: number;
+  latest: WorkflowPlanNodeExecutionRecord[];
 };
