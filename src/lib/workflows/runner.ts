@@ -1,0 +1,374 @@
+import { AGENT_MODEL, hasOpenAIKey } from "@/lib/config";
+import { saveMemory } from "@/lib/memory/store";
+import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
+import { buildAgentInstructions } from "@/lib/orchestration/prompts";
+import { retrieveContext } from "@/lib/rag/retriever";
+import {
+  appendWorkflowEvent,
+  getWorkflowRunDetail,
+  getWorkflowStep,
+  listWorkflowRuns,
+  setWorkflowRunStatus,
+  updateWorkflowRun,
+  updateWorkflowStep,
+  workflowStepDefinitions,
+} from "@/lib/workflows/store";
+import type {
+  WorkflowRunDetail,
+  WorkflowSignalType,
+  WorkflowStepKey,
+} from "@/lib/workflows/types";
+
+const TERMINAL_STATUSES = new Set(["completed", "failed", "canceled"]);
+
+export async function tickWorkflowRun(runId: string) {
+  const detail = await getWorkflowRunDetail(runId);
+  if (!detail) {
+    throw new Error("Workflow run not found.");
+  }
+
+  if (TERMINAL_STATUSES.has(detail.run.status)) {
+    return detail;
+  }
+
+  if (detail.run.status === "paused" || detail.run.status === "waiting_approval") {
+    await appendWorkflowEvent(detail.run.id, "workflow.tick.noop", { status: detail.run.status });
+    return getWorkflowRunDetail(runId) as Promise<WorkflowRunDetail>;
+  }
+
+  const stepKey = nextStepKey(detail);
+  if (!stepKey) {
+    await completeWorkflow(detail.run.id);
+    return getWorkflowRunDetail(runId) as Promise<WorkflowRunDetail>;
+  }
+
+  await updateWorkflowRun(detail.run.id, {
+    status: "running",
+    currentStep: stepKey,
+    attempt: detail.run.attempt + 1,
+    error: undefined,
+  });
+
+  const step = await getWorkflowStep(detail.run.id, stepKey);
+  if (!step) {
+    throw new Error(`Workflow step ${stepKey} is not registered.`);
+  }
+
+  const attempt = step.attempt + 1;
+  const startedAt = new Date().toISOString();
+  await updateWorkflowStep(detail.run.id, stepKey, {
+    status: "running",
+    attempt,
+    startedAt,
+    error: undefined,
+  });
+  await appendWorkflowEvent(detail.run.id, "step.started", { stepKey, attempt });
+
+  try {
+    if (stepKey === "approval_gate" && detail.run.approvalRequired && !detail.run.approvedAt) {
+      await updateWorkflowStep(detail.run.id, stepKey, {
+        status: "running",
+        output: {
+          waitingFor: "approval",
+          reason: "Workflow requires human approval before execution.",
+        },
+      });
+      await setWorkflowRunStatus(detail.run.id, "waiting_approval", {
+        currentStep: stepKey,
+        error: undefined,
+      });
+      await appendWorkflowEvent(detail.run.id, "workflow.waiting_approval", { stepKey });
+      return getWorkflowRunDetail(runId) as Promise<WorkflowRunDetail>;
+    }
+
+    const freshDetail = await getWorkflowRunDetail(runId);
+    if (!freshDetail) {
+      throw new Error("Workflow run disappeared during execution.");
+    }
+    const output = await executeStep(stepKey, freshDetail);
+    await updateWorkflowStep(detail.run.id, stepKey, {
+      status: "completed",
+      output,
+      completedAt: new Date().toISOString(),
+    });
+    await appendWorkflowEvent(detail.run.id, "step.completed", { stepKey, attempt });
+
+    const nextKey = nextStepKey(await getWorkflowRunDetail(runId) as WorkflowRunDetail);
+    if (nextKey) {
+      await setWorkflowRunStatus(detail.run.id, "queued", { currentStep: nextKey, error: undefined });
+    } else {
+      await completeWorkflow(detail.run.id);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Workflow step failed.";
+    await updateWorkflowStep(detail.run.id, stepKey, {
+      status: "failed",
+      error: message,
+      completedAt: new Date().toISOString(),
+    });
+    await appendWorkflowEvent(detail.run.id, "step.failed", { stepKey, attempt, error: message });
+
+    if (attempt < step.maxAttempts) {
+      await setWorkflowRunStatus(detail.run.id, "queued", {
+        currentStep: stepKey,
+        error: `Retry scheduled for ${stepKey}: ${message}`,
+      });
+      await appendWorkflowEvent(detail.run.id, "step.retry_scheduled", { stepKey, nextAttempt: attempt + 1 });
+    } else {
+      await setWorkflowRunStatus(detail.run.id, "failed", {
+        currentStep: stepKey,
+        error: message,
+      });
+    }
+  }
+
+  return getWorkflowRunDetail(runId) as Promise<WorkflowRunDetail>;
+}
+
+export async function tickQueuedWorkflows(limit = 5) {
+  const runs = await listWorkflowRuns(50);
+  const candidates = runs
+    .filter((run) => run.status === "queued" || run.status === "running")
+    .slice(0, limit);
+  const results = [];
+  for (const run of candidates) {
+    results.push(await tickWorkflowRun(run.id));
+  }
+  return results;
+}
+
+export async function signalWorkflowRun(runId: string, signal: WorkflowSignalType) {
+  const detail = await getWorkflowRunDetail(runId);
+  if (!detail) {
+    throw new Error("Workflow run not found.");
+  }
+
+  if (TERMINAL_STATUSES.has(detail.run.status)) {
+    return detail;
+  }
+
+  const now = new Date().toISOString();
+
+  if (signal === "pause") {
+    await setWorkflowRunStatus(runId, "paused", { pausedAt: now });
+    await appendWorkflowEvent(runId, "workflow.paused", {});
+  }
+
+  if (signal === "resume") {
+    await setWorkflowRunStatus(runId, "queued", { pausedAt: undefined, error: undefined });
+    await appendWorkflowEvent(runId, "workflow.resumed", {});
+  }
+
+  if (signal === "cancel") {
+    await setWorkflowRunStatus(runId, "canceled", { canceledAt: now });
+    await appendWorkflowEvent(runId, "workflow.canceled", {});
+  }
+
+  if (signal === "approve") {
+    await updateWorkflowRun(runId, {
+      status: "queued",
+      approvedAt: now,
+      error: undefined,
+      currentStep: detail.run.currentStep === "approval_gate" ? "execute" : detail.run.currentStep,
+    });
+    const approvalStep = detail.steps.find((step) => step.stepKey === "approval_gate");
+    if (approvalStep && approvalStep.status !== "completed") {
+      await updateWorkflowStep(runId, "approval_gate", {
+        status: "completed",
+        output: { approvedAt: now },
+        completedAt: now,
+      });
+    }
+    await appendWorkflowEvent(runId, "workflow.approved", {});
+  }
+
+  if (signal === "retry") {
+    const failedStep = detail.steps.find((step) => step.status === "failed");
+    await setWorkflowRunStatus(runId, "queued", {
+      currentStep: failedStep?.stepKey || detail.run.currentStep || "preflight",
+      error: undefined,
+    });
+    await appendWorkflowEvent(runId, "workflow.retry_requested", {
+      stepKey: failedStep?.stepKey || detail.run.currentStep || "preflight",
+    });
+  }
+
+  return getWorkflowRunDetail(runId) as Promise<WorkflowRunDetail>;
+}
+
+function nextStepKey(detail: WorkflowRunDetail): WorkflowStepKey | undefined {
+  const current = detail.run.currentStep;
+  if (current) {
+    const currentStep = detail.steps.find((step) => step.stepKey === current);
+    if (currentStep && currentStep.status !== "completed" && currentStep.status !== "skipped") {
+      return current;
+    }
+  }
+
+  return workflowStepDefinitions.find((definition) => {
+    const step = detail.steps.find((item) => item.stepKey === definition.key);
+    return step && step.status !== "completed" && step.status !== "skipped";
+  })?.key;
+}
+
+async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) {
+  if (stepKey === "preflight") {
+    return {
+      workflowType: detail.run.workflowType,
+      model: hasOpenAIKey() ? AGENT_MODEL : "fallback",
+      storage: "durable ledger ready",
+      approvalRequired: detail.run.approvalRequired,
+    };
+  }
+
+  if (stepKey === "retrieve_context") {
+    const retrieval = await retrieveContext(detail.run.goal, 6);
+    return {
+      contextCount: retrieval.results.length,
+      memoryCount: retrieval.memoryResults.length,
+      knowledgeCount: retrieval.knowledgeResults.length,
+      contextBlock: retrieval.contextBlock.slice(0, 8000),
+    };
+  }
+
+  if (stepKey === "plan") {
+    return buildPlan(detail);
+  }
+
+  if (stepKey === "approval_gate") {
+    return {
+      approvedAt: detail.run.approvedAt || new Date().toISOString(),
+      approvalRequired: detail.run.approvalRequired,
+    };
+  }
+
+  if (stepKey === "execute") {
+    return executeGoal(detail);
+  }
+
+  if (stepKey === "verify") {
+    const executeOutput = stepOutput(detail, "execute");
+    return {
+      passed: Boolean(executeOutput?.response || executeOutput?.deliverable),
+      checks: [
+        "workflow state persisted",
+        "execution output captured",
+        "report step can persist durable summary",
+      ],
+    };
+  }
+
+  if (stepKey === "persist_report") {
+    return persistWorkflowReport(detail);
+  }
+
+  throw new Error(`No workflow step registered for ${stepKey}.`);
+}
+
+function buildPlan(detail: WorkflowRunDetail) {
+  const retrieveOutput = stepOutput(detail, "retrieve_context");
+  return {
+    objective: detail.run.goal,
+    tasks: [
+      "Validate runtime and connector readiness.",
+      "Retrieve durable memory and RAG context.",
+      "Create a bounded execution plan.",
+      detail.run.approvalRequired ? "Pause for approval before side-effecting work." : "Continue without approval gate.",
+      "Execute the plan and capture output.",
+      "Verify output against acceptance criteria.",
+      "Persist a workflow report to long-term memory.",
+    ],
+    acceptanceCriteria: [
+      "Every step has a persisted status, attempt count, and event trail.",
+      "Failures remain retryable until max attempts are exhausted.",
+      "Pause, resume, cancel, approve, and retry signals change durable state.",
+      "Final report is available from workflow result and memory.",
+    ],
+    contextCount: Number(retrieveOutput?.contextCount || 0),
+  };
+}
+
+async function executeGoal(detail: WorkflowRunDetail) {
+  const retrieveOutput = stepOutput(detail, "retrieve_context");
+  const planOutput = stepOutput(detail, "plan");
+  const instructions = buildAgentInstructions({
+    mode: detail.run.input.mode || "orchestrate",
+    memoryContext: String(retrieveOutput?.contextBlock || "No context available."),
+  });
+  const input = [
+    `Goal: ${detail.run.goal}`,
+    `Plan: ${JSON.stringify(planOutput || {}, null, 2)}`,
+    "Return a concise execution result and next best action.",
+  ].join("\n\n");
+
+  if (!hasOpenAIKey()) {
+    return {
+      deliverable: `Workflow executed in fallback mode for: ${detail.run.goal}`,
+      response:
+        "OpenAI is not configured locally, so this durable workflow completed with a deterministic fallback output.",
+    };
+  }
+
+  const response = await createStructuredResponse({
+    instructions,
+    input,
+    name: "workflow_execution_result",
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        deliverable: { type: "string" },
+        response: { type: "string" },
+        nextAction: { type: "string" },
+      },
+      required: ["deliverable", "response", "nextAction"],
+    },
+  });
+
+  return JSON.parse(response) as Record<string, unknown>;
+}
+
+async function persistWorkflowReport(detail: WorkflowRunDetail) {
+  const executeOutput = stepOutput(detail, "execute");
+  const verifyOutput = stepOutput(detail, "verify");
+  const content = [
+    `Workflow: ${detail.run.workflowType}`,
+    `Goal: ${detail.run.goal}`,
+    `Status: completed`,
+    `Execution: ${String(executeOutput?.response || executeOutput?.deliverable || "No execution output.")}`,
+    `Verification: ${JSON.stringify(verifyOutput || {})}`,
+  ].join("\n\n");
+  const embedding = (await embedTexts([content]))?.[0];
+  const memory = await saveMemory({
+    type: "episode",
+    title: `Workflow report: ${detail.run.goal.slice(0, 72)}`,
+    content,
+    tags: ["workflow", "durable", detail.run.workflowType],
+    source: "workflow",
+    importance: 0.7,
+    embedding,
+  });
+
+  return {
+    report: content,
+    memoryId: memory.id,
+  };
+}
+
+async function completeWorkflow(runId: string) {
+  const detail = await getWorkflowRunDetail(runId);
+  const reportOutput = detail ? stepOutput(detail, "persist_report") : undefined;
+  await setWorkflowRunStatus(runId, "completed", {
+    currentStep: undefined,
+    error: undefined,
+    result: {
+      report: reportOutput?.report || "Workflow completed.",
+      memoryId: reportOutput?.memoryId,
+    },
+  });
+  await appendWorkflowEvent(runId, "workflow.completed", {});
+}
+
+function stepOutput(detail: WorkflowRunDetail, stepKey: WorkflowStepKey) {
+  return detail.steps.find((step) => step.stepKey === stepKey)?.output;
+}

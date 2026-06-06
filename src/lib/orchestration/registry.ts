@@ -78,8 +78,8 @@ export const tools: Capability[] = [
   {
     id: "workflow.temporal",
     name: "Durable Workflow Runtime",
-    description: "Move long-running multi-agent jobs onto a durable queue with retries and resumes.",
-    status: "planned",
+    description: "Run long jobs through persisted steps with retries, approvals, signals, and resumes.",
+    status: "active",
   },
 ];
 

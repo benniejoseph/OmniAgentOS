@@ -7,6 +7,7 @@ import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import { getKnowledgeStats } from "@/lib/rag/store";
 import { getRunStats } from "@/lib/runs/store";
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
+import { getWorkflowStats } from "@/lib/workflows/store";
 
 export const runtime = "nodejs";
 
@@ -21,6 +22,7 @@ export async function GET() {
     toolExecutions: await getToolExecutionStats(),
     mcpConnectors: await getMcpConnectorStats(),
     openApiConnectors: await getOpenApiConnectorStats(),
+    workflows: await getWorkflowStats(),
     registry: getCapabilityRegistry(),
   });
 }

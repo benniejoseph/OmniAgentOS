@@ -23,6 +23,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - Tool ledger for tool id, risk level, status, dry-run flag, approval requirement, inputs, outputs, and reasons
 - MCP connector registry for Streamable HTTP endpoints, token env-var references, server capabilities, discovered tool schemas, and connector health
 - OpenAPI connector registry for JSON/YAML specs, base URLs, token env-var references, imported operations, request schemas, and connector health
+- Durable workflow runtime with persisted runs, steps, events, retries, approval waits, operator signals, and report persistence
 
 ## Architecture
 
@@ -41,6 +42,11 @@ flowchart TD
   API --> GOV["Governed Tool Executor"]
   GOV --> POLICY["Risk Policy and Approval Gates"]
   GOV --> AUDIT["Tool Audit Ledger"]
+  API --> WF["Durable Workflow Runtime"]
+  WF --> WSTEPS["Persisted Steps and Signals"]
+  WSTEPS --> DB
+  WF --> RAG
+  WF --> MEM
   API --> MCP["MCP Connector Host"]
   MCP --> MTOOLS["Discovered MCP Tools"]
   MTOOLS --> GOV
@@ -62,6 +68,6 @@ flowchart TD
 4. Tool execution engine: implement governed tool calls with schemas, risk levels, approval gates, dry-runs, and audit records. Done.
 5. MCP connector host: register remote Streamable HTTP MCP servers, discover tools, and expose selected tools through the governed executor. Done.
 6. OpenAPI connector importer: transform API specs into typed tool adapters. Done.
-7. Workflow runtime: add durable queues for long-running jobs, retries, signals, and resumes.
+7. Workflow runtime: add durable queues for long-running jobs, retries, signals, and resumes. Done.
 8. Evaluation harness: add regression tasks, retrieval quality checks, and cost/latency metrics.
 9. Security controls: add tenant boundaries, RBAC, secret vaulting, and audit trails.

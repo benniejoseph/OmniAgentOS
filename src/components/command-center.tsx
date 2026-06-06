@@ -174,6 +174,64 @@ type OpenApiConnectorsResponse = {
   stats: OpenApiConnectorStats;
 };
 
+type WorkflowRunStatus =
+  | "queued"
+  | "running"
+  | "waiting_approval"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "canceled";
+
+type WorkflowStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+
+type WorkflowRunRecord = {
+  id: string;
+  workflowType: string;
+  status: WorkflowRunStatus;
+  goal: string;
+  currentStep?: string;
+  attempt: number;
+  maxAttempts: number;
+  approvalRequired: boolean;
+  approvedAt?: string;
+  error?: string;
+  result?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+};
+
+type WorkflowStepRecord = {
+  id: string;
+  workflowRunId: string;
+  stepKey: string;
+  label: string;
+  status: WorkflowStepStatus;
+  attempt: number;
+  maxAttempts: number;
+  error?: string;
+  updatedAt: string;
+};
+
+type WorkflowRunDetail = {
+  run: WorkflowRunRecord;
+  steps: WorkflowStepRecord[];
+};
+
+type WorkflowStats = {
+  total: number;
+  byStatus: Record<string, number>;
+  active: number;
+  waitingApproval: number;
+  latest: WorkflowRunRecord[];
+};
+
+type WorkflowsResponse = {
+  runs: WorkflowRunRecord[];
+  stats: WorkflowStats;
+};
+
 type CapabilityResponse = {
   openaiConfigured: boolean;
   databaseConfigured: boolean;
@@ -201,6 +259,7 @@ type CapabilityResponse = {
   toolExecutions: ToolAuditSummary;
   mcpConnectors: ConnectorStats;
   openApiConnectors: OpenApiConnectorStats;
+  workflows: WorkflowStats;
   registry: {
     agents: Capability[];
     tools: Capability[];
@@ -339,6 +398,9 @@ export function CommandCenter() {
   const [openApiAuthEnv, setOpenApiAuthEnv] = useState("");
   const [openApiAuthHeader, setOpenApiAuthHeader] = useState("x-api-key");
   const [openApiResult, setOpenApiResult] = useState("");
+  const [workflowState, setWorkflowState] = useState<WorkflowsResponse | null>(null);
+  const [workflowGoal, setWorkflowGoal] = useState("Run a durable Plan-Execute-Verify workflow for this agent OS.");
+  const [workflowResult, setWorkflowResult] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -369,6 +431,10 @@ export function CommandCenter() {
       .then((response) => response.json())
       .then(setOpenApiState)
       .catch(() => undefined);
+    fetch("/api/workflows?limit=5")
+      .then((response) => response.json())
+      .then(setWorkflowState)
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -396,6 +462,8 @@ export function CommandCenter() {
   const openApiStats = openApiState?.stats || capabilities?.openApiConnectors;
   const latestOpenApiConnectors = openApiState?.connectors.slice(0, 5) || [];
   const latestOpenApiOperations = openApiState?.operations.slice(0, 5) || [];
+  const workflowStats = workflowState?.stats || capabilities?.workflows;
+  const latestWorkflows = workflowState?.runs.slice(0, 5) || capabilities?.workflows.latest || [];
   const storageLabel =
     capabilities?.storageBackend === "postgres"
       ? "Postgres"
@@ -663,6 +731,73 @@ export function CommandCenter() {
     }
   }
 
+  async function startWorkflow() {
+    const goal = workflowGoal.trim();
+    if (!goal) {
+      return;
+    }
+
+    setStatus("starting workflow");
+    setWorkflowResult("");
+
+    try {
+      const response = await fetch("/api/workflows", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          goal,
+          mode,
+          requireApproval: true,
+          maxAttempts: 3,
+        }),
+      });
+      const data = (await response.json()) as WorkflowRunDetail;
+      setWorkflowResult(formatToolResult(data));
+      setStatus(response.ok ? "workflow queued" : "workflow failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "workflow start failed");
+    }
+  }
+
+  async function tickWorkflow(workflowId?: string) {
+    setStatus(workflowId ? "ticking workflow" : "ticking queued workflows");
+    setWorkflowResult("");
+
+    try {
+      const response = await fetch(workflowId ? `/api/workflows/${workflowId}/tick` : "/api/workflows/tick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: workflowId ? undefined : JSON.stringify({ limit: 3 }),
+      });
+      const data = await response.json();
+      setWorkflowResult(formatToolResult(data));
+      setStatus(response.ok ? "workflow tick complete" : "workflow tick failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "workflow tick failed");
+    }
+  }
+
+  async function signalWorkflow(workflowId: string, signal: "pause" | "resume" | "cancel" | "approve" | "retry") {
+    setStatus(`workflow ${signal}`);
+    setWorkflowResult("");
+
+    try {
+      const response = await fetch(`/api/workflows/${workflowId}/signal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signal }),
+      });
+      const data = await response.json();
+      setWorkflowResult(formatToolResult(data));
+      setStatus(response.ok ? "workflow signal applied" : `workflow ${signal} failed`);
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : `workflow ${signal} failed`);
+    }
+  }
+
   function refreshCapabilities() {
     fetch("/api/capabilities")
       .then((response) => response.json())
@@ -691,6 +826,13 @@ export function CommandCenter() {
       .catch(() => undefined);
   }
 
+  function refreshWorkflows() {
+    fetch("/api/workflows?limit=5")
+      .then((response) => response.json())
+      .then(setWorkflowState)
+      .catch(() => undefined);
+  }
+
   function refreshWorkspace() {
     refreshCapabilities();
     fetch("/api/memory?limit=5")
@@ -707,6 +849,7 @@ export function CommandCenter() {
     refreshTools();
     refreshConnectors();
     refreshOpenApiConnectors();
+    refreshWorkflows();
   }
 
   return (
@@ -722,7 +865,7 @@ export function CommandCenter() {
               <h1 className="text-2xl font-semibold">Agentic orchestration command center</h1>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-10">
+          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-11">
             <StatusPill icon={<Brain size={15} />} label="Memory" value={`${capabilities?.memory.total ?? 0}`} />
             <StatusPill
               icon={<Database size={15} />}
@@ -731,6 +874,7 @@ export function CommandCenter() {
             />
             <StatusPill icon={<BookOpen size={15} />} label="Docs" value={`${capabilities?.knowledge.documents ?? 0}`} />
             <StatusPill icon={<History size={15} />} label="Runs" value={`${capabilities?.runs.total ?? 0}`} />
+            <StatusPill icon={<Activity size={15} />} label="Flows" value={`${workflowStats?.active ?? 0}`} />
             <StatusPill icon={<Cable size={15} />} label="Tools" value={`${governedActiveTools.length || activeTools.length}`} />
             <StatusPill icon={<Cable size={15} />} label="MCP" value={`${connectorStats?.toolCount ?? 0}`} />
             <StatusPill icon={<Globe2 size={15} />} label="REST" value={`${openApiStats?.operationCount ?? 0}`} />
@@ -832,6 +976,65 @@ export function CommandCenter() {
                     No runs recorded yet.
                   </p>
                 )}
+              </div>
+            </section>
+
+            <section className="panel rounded-lg p-4">
+              <div className="mb-4 flex items-center gap-2">
+                <Activity className="text-primary" size={18} />
+                <h2 className="font-semibold">Workflow runtime</h2>
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Total" value={`${workflowStats?.total ?? 0}`} />
+                <MiniStat label="Active" value={`${workflowStats?.active ?? 0}`} />
+                <MiniStat label="Approval" value={`${workflowStats?.waitingApproval ?? 0}`} />
+              </div>
+              <div className="flex flex-col gap-3">
+                <textarea
+                  value={workflowGoal}
+                  onChange={(event) => setWorkflowGoal(event.target.value)}
+                  className="min-h-24 resize-none rounded-md border border-line bg-background px-3 py-2 text-sm leading-6 outline-none focus:border-primary"
+                  aria-label="Workflow goal"
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={startWorkflow}
+                    className="flex h-10 items-center justify-center gap-2 rounded-md border border-primary/60 text-sm font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                  >
+                    <Play size={15} />
+                    Start
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => tickWorkflow()}
+                    className="flex h-10 items-center justify-center gap-2 rounded-md border border-line text-sm font-medium text-foreground transition hover:border-primary"
+                  >
+                    <Activity size={15} />
+                    Tick queued
+                  </button>
+                </div>
+                {workflowResult ? (
+                  <pre className="max-h-48 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
+                    {workflowResult}
+                  </pre>
+                ) : null}
+                <div className="flex flex-col gap-3">
+                  {latestWorkflows.length ? (
+                    latestWorkflows.map((workflow) => (
+                      <WorkflowRow
+                        key={workflow.id}
+                        workflow={workflow}
+                        onTick={tickWorkflow}
+                        onSignal={signalWorkflow}
+                      />
+                    ))
+                  ) : (
+                    <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+                      No durable workflows recorded yet.
+                    </p>
+                  )}
+                </div>
               </div>
             </section>
 
@@ -1490,6 +1693,92 @@ function RunRow({ run }: { run: AgentRun }) {
   );
 }
 
+function WorkflowRow({
+  workflow,
+  onTick,
+  onSignal,
+}: {
+  workflow: WorkflowRunRecord;
+  onTick: (workflowId: string) => void;
+  onSignal: (workflowId: string, signal: "pause" | "resume" | "cancel" | "approve" | "retry") => void;
+}) {
+  const canTick = workflow.status === "queued" || workflow.status === "running";
+  const canApprove = workflow.status === "waiting_approval";
+  const canPause = workflow.status === "queued" || workflow.status === "running";
+  const canResume = workflow.status === "paused";
+  const canRetry = workflow.status === "failed";
+  const isTerminal = ["completed", "canceled"].includes(workflow.status);
+
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", workflowTone(workflow.status))}>
+          {workflow.status}
+        </span>
+        <span className="font-mono text-[11px] text-muted">
+          {workflow.currentStep || "done"}
+        </span>
+      </div>
+      <p className="line-clamp-2 text-sm leading-5">{workflow.goal}</p>
+      <div className="mt-3 grid grid-cols-3 gap-1.5">
+        <button
+          type="button"
+          disabled={!canTick}
+          onClick={() => onTick(workflow.id)}
+          className="h-8 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Tick
+        </button>
+        <button
+          type="button"
+          disabled={!canApprove}
+          onClick={() => onSignal(workflow.id, "approve")}
+          className="h-8 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Approve
+        </button>
+        <button
+          type="button"
+          disabled={!canRetry}
+          onClick={() => onSignal(workflow.id, "retry")}
+          className="h-8 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Retry
+        </button>
+        <button
+          type="button"
+          disabled={!canPause}
+          onClick={() => onSignal(workflow.id, "pause")}
+          className="h-8 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Pause
+        </button>
+        <button
+          type="button"
+          disabled={!canResume}
+          onClick={() => onSignal(workflow.id, "resume")}
+          className="h-8 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Resume
+        </button>
+        <button
+          type="button"
+          disabled={isTerminal}
+          onClick={() => onSignal(workflow.id, "cancel")}
+          className="h-8 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-danger disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Cancel
+        </button>
+      </div>
+      <div className="mt-3 flex items-center justify-between gap-3 font-mono text-[11px] text-muted">
+        <span>{workflow.workflowType}</span>
+        <span>{workflow.attempt}/{workflow.maxAttempts}</span>
+      </div>
+      {workflow.error ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-danger">{workflow.error}</p> : null}
+    </div>
+  );
+}
+
 function statusTone(status: ToolExecutionStatus) {
   if (status === "executed") {
     return "bg-primary/16 text-primary";
@@ -1500,6 +1789,22 @@ function statusTone(status: ToolExecutionStatus) {
   }
 
   if (status === "approval_required") {
+    return "bg-accent/14 text-accent";
+  }
+
+  return "bg-background text-muted";
+}
+
+function workflowTone(status: WorkflowRunStatus) {
+  if (status === "completed") {
+    return "bg-primary/16 text-primary";
+  }
+
+  if (status === "failed" || status === "canceled") {
+    return "bg-danger/14 text-danger";
+  }
+
+  if (status === "waiting_approval" || status === "paused") {
     return "bg-accent/14 text-accent";
   }
 

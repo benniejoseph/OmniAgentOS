@@ -263,6 +263,64 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_openapi_operations_connector_id_idx ON omni_openapi_operations (connector_id)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_openapi_operations_status_idx ON omni_openapi_operations (status)`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_openapi_operations_connector_operation_idx ON omni_openapi_operations (connector_id, operation_id)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_workflow_runs (
+          id TEXT PRIMARY KEY,
+          workflow_type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          goal TEXT NOT NULL,
+          input JSONB NOT NULL DEFAULT '{}',
+          current_step TEXT,
+          attempt INTEGER NOT NULL DEFAULT 0,
+          max_attempts INTEGER NOT NULL DEFAULT 3,
+          approval_required BOOLEAN NOT NULL DEFAULT FALSE,
+          approved_at TIMESTAMPTZ,
+          paused_at TIMESTAMPTZ,
+          canceled_at TIMESTAMPTZ,
+          error TEXT,
+          result JSONB,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          completed_at TIMESTAMPTZ
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_runs_status_idx ON omni_workflow_runs (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_runs_updated_at_idx ON omni_workflow_runs (updated_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_runs_workflow_type_idx ON omni_workflow_runs (workflow_type)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_workflow_steps (
+          id TEXT PRIMARY KEY,
+          workflow_run_id TEXT NOT NULL REFERENCES omni_workflow_runs(id) ON DELETE CASCADE,
+          step_key TEXT NOT NULL,
+          label TEXT NOT NULL,
+          status TEXT NOT NULL,
+          attempt INTEGER NOT NULL DEFAULT 0,
+          max_attempts INTEGER NOT NULL DEFAULT 3,
+          input JSONB NOT NULL DEFAULT '{}',
+          output JSONB,
+          error TEXT,
+          started_at TIMESTAMPTZ,
+          completed_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_steps_run_id_idx ON omni_workflow_steps (workflow_run_id, created_at ASC)`;
+      await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_workflow_steps_run_step_idx ON omni_workflow_steps (workflow_run_id, step_key)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_workflow_events (
+          id TEXT PRIMARY KEY,
+          workflow_run_id TEXT NOT NULL REFERENCES omni_workflow_runs(id) ON DELETE CASCADE,
+          type TEXT NOT NULL,
+          payload JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_events_run_id_idx ON omni_workflow_events (workflow_run_id, created_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_events_type_idx ON omni_workflow_events (type)`;
       await ensureVectorSchema(sql);
       } finally {
         await sql`SELECT pg_advisory_unlock(271828182)`;
