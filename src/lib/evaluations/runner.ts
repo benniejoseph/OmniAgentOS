@@ -6,6 +6,7 @@ import { executeGovernedTool } from "@/lib/tools/executor";
 import { connectionCatalog } from "@/lib/connectors/catalog";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import { getApprovalQueue, getOperationsOverview } from "@/lib/operations/queue";
+import { buildContextPack, getContextEngineStats } from "@/lib/rag/context-engine";
 import { retrieveContext } from "@/lib/rag/retriever";
 import { canPerform, redactSensitive } from "@/lib/security/context";
 import { enqueueWorkflowRunTick, processWorkflowQueue } from "@/lib/workflows/queue";
@@ -55,6 +56,21 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
     expected: {
       minContextCount: 1,
       maxLatencyMs: 6000,
+    },
+  },
+  {
+    id: "retrieval.context_engine",
+    name: "Context engine",
+    description: "Builds an adaptive evidence pack with mode routing, diversity, confidence, and trace persistence.",
+    type: "retrieval",
+    input: {
+      query: "review the agentic workflow architecture across RAG, memory, approvals, operations, and security",
+      limit: 6,
+    },
+    expected: {
+      minSelectedEvidence: 1,
+      tracePersisted: true,
+      allowedModes: ["global", "hybrid"],
     },
   },
   {
@@ -205,6 +221,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
     return evaluateRetrieval(evalCase);
   }
 
+  if (evalCase.id === "retrieval.context_engine") {
+    return evaluateContextEngine(evalCase);
+  }
+
   if (evalCase.id === "tool.policy_dry_run") {
     return evaluateToolPolicy(evalCase);
   }
@@ -264,6 +284,50 @@ async function evaluateRetrieval(evalCase: EvalCaseDefinition): Promise<CaseResu
       memoryCount: retrieval.memoryResults.length,
       knowledgeCount: retrieval.knowledgeResults.length,
       topReasons: retrieval.results.slice(0, 3).flatMap((item) => item.result.reasons).slice(0, 6),
+    },
+    estimatedCostUsd: estimateTextCost(query),
+  };
+}
+
+async function evaluateContextEngine(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const query = String(evalCase.input.query || "");
+  const limit = Number(evalCase.input.limit || 6);
+  const pack = await buildContextPack(query, { limit });
+  const stats = await getContextEngineStats();
+  const allowedModes = Array.isArray(evalCase.expected.allowedModes)
+    ? evalCase.expected.allowedModes.map(String)
+    : ["hybrid", "global", "memory_first", "local"];
+  const checks = {
+    selectedEvidence: pack.results.length >= Number(evalCase.expected.minSelectedEvidence || 1),
+    tracePersisted: Boolean(pack.trace?.id),
+    modeAllowed: allowedModes.includes(pack.profile.mode),
+    confidenceAvailable: pack.results.every((item) => item.confidence >= 0 && item.confidence <= 1),
+    contextPacked: pack.contextBlock.includes("Context Engine Profile") && pack.contextBlock.includes("Critical Evidence Recap"),
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      query,
+      checks,
+      profile: pack.profile,
+      traceId: pack.trace?.id,
+      selectedCount: pack.results.length,
+      topEvidence: pack.results.slice(0, 3).map((item) => ({
+        kind: item.kind,
+        title: item.title,
+        confidence: item.confidence,
+        utilityScore: item.utilityScore,
+        reasons: item.reasons.slice(0, 5),
+      })),
+      traceStats: {
+        traces: stats.traces,
+        averageLatencyMs: stats.averageLatencyMs,
+        byMode: stats.byMode,
+      },
     },
     estimatedCostUsd: estimateTextCost(query),
   };

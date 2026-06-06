@@ -158,6 +158,24 @@ export async function ensureDatabaseSchema() {
       `;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS omni_retrieval_traces (
+          id TEXT PRIMARY KEY,
+          query TEXT NOT NULL,
+          profile JSONB NOT NULL DEFAULT '{}',
+          result_count INTEGER NOT NULL DEFAULT 0,
+          selected_count INTEGER NOT NULL DEFAULT 0,
+          latency_ms INTEGER NOT NULL DEFAULT 0,
+          results JSONB NOT NULL DEFAULT '[]',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_retrieval_traces_created_at_idx ON omni_retrieval_traces (created_at DESC)`;
+      await sql`
+        CREATE INDEX IF NOT EXISTS omni_retrieval_traces_mode_idx
+        ON omni_retrieval_traces ((profile->>'mode'))
+      `;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS omni_agent_runs (
           id TEXT PRIMARY KEY,
           mode TEXT NOT NULL,

@@ -4,7 +4,7 @@ import { saveMemory } from "@/lib/memory/store";
 import { embedTexts, streamOpenAIResponse } from "@/lib/openai/client";
 import { buildAgentInstructions, transcriptFromMessages } from "@/lib/orchestration/prompts";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
-import { retrieveContext } from "@/lib/rag/retriever";
+import { buildContextPack } from "@/lib/rag/context-engine";
 import {
   appendRunEvent,
   completeAgentRun,
@@ -34,12 +34,12 @@ export async function* runAgent(
   }
 
   try {
-    yield await emit({ type: "status", label: "retrieving memory", detail: "Building a context pack from long-term memory and RAG." });
-    const retrieval = await retrieveContext(query);
+    yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory and RAG." });
+    const retrieval = await buildContextPack(query, { limit: 8 });
     await updateRunContextCount(run.id, retrieval.results.length);
     yield await emit({
       type: "memory",
-      title: "context pack ready",
+      title: `context pack ready (${retrieval.profile.mode})`,
       count: retrieval.results.length,
     });
 

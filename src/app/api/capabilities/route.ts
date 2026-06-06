@@ -6,6 +6,7 @@ import { getEvalStats } from "@/lib/evaluations/store";
 import { getMemoryStats } from "@/lib/memory/store";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import { getOperationJobStats } from "@/lib/operations/job-queue";
+import { getContextEngineStats } from "@/lib/rag/context-engine";
 import { getKnowledgeStats } from "@/lib/rag/store";
 import { getRunStats } from "@/lib/runs/store";
 import { getSecurityStats } from "@/lib/security/audit-store";
@@ -31,6 +32,7 @@ export async function GET(request: Request) {
     vectorStore: await getVectorStoreStatus(),
     memory: await getMemoryStats(),
     knowledge: await getKnowledgeStats(),
+    contextEngine: await getContextEngineStats(),
     runs: await getRunStats(),
     toolExecutions: await getToolExecutionStats(),
     mcpConnectors: await getMcpConnectorStats(),

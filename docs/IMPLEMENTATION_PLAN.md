@@ -13,6 +13,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - RAG v2 knowledge layer with `omni_knowledge_documents` and `omni_knowledge_chunks`
 - pgvector columns and HNSW indexes for semantic retrieval, using a pgvector-safe embedding dimension
 - Hybrid retrieval with semantic, keyword, recency, and memory-importance signals
+- Adaptive context engine with query profiling, retrieve/no-retrieve routing, evidence confidence, source diversification, positional context packing, and persisted retrieval traces
 - Manual memory writes and manual knowledge ingestion
 - Automatic memory consolidation after successful runs into facts, preferences, procedures, decisions, and unresolved tasks
 - Memory browser and knowledge library panels in the command center
@@ -40,8 +41,11 @@ flowchart TD
   API --> RUNNER["Agent Runner"]
   RUNNER --> OAI["OpenAI Responses API"]
   RUNNER --> RAG["RAG Retriever"]
+  RAG --> CTX["Adaptive Context Engine"]
   RAG --> MEM["Long-Term Memory Store"]
   RAG --> DOCS["Knowledge Documents and Chunks"]
+  CTX --> RTRACE["Retrieval Traces"]
+  RTRACE --> DB
   MEM --> DB["Neon Postgres / pgvector"]
   DOCS --> DB
   API --> REG["Capability Registry"]
@@ -104,3 +108,4 @@ flowchart TD
 12. Approval and operations center: add durable tool approvals, workflow/tool approval queue, operations overview, and external connection catalog. Done.
 13. pgvector production hardening: align OpenAI embedding dimensions with pgvector HNSW limits, migrate vector columns, backfill vector indexes, and remove noisy fallback warnings. Done.
 14. Durable runtime hardening: add Postgres operation jobs, queue leases, expired-lease repair, retry backoff, workflow dedupe keys, queue health reporting, and post-response drains. Done.
+15. Adaptive context engine: add retrieval policy routing, evidence grading, diversity-aware packing, retrieval trace observability, and queue/workflow integration. Done.

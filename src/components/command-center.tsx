@@ -357,6 +357,28 @@ type OperationJobStats = {
   latest: OperationJobRecord[];
 };
 
+type RetrievalTraceRecord = {
+  id: string;
+  query: string;
+  profile: {
+    mode: string;
+    intent: string;
+    complexity: number;
+  };
+  resultCount: number;
+  selectedCount: number;
+  latencyMs: number;
+  createdAt: string;
+};
+
+type ContextEngineStats = {
+  traces: number;
+  averageLatencyMs: number;
+  averageSelectedCount: number;
+  byMode: Record<string, number>;
+  latest: RetrievalTraceRecord[];
+};
+
 type WorkflowsResponse = {
   runs: WorkflowRunRecord[];
   stats: WorkflowStats;
@@ -575,6 +597,7 @@ type CapabilityResponse = {
     characters: number;
     embedded: number;
   };
+  contextEngine: ContextEngineStats;
   runs: {
     total: number;
     byStatus: Record<string, number>;
@@ -775,6 +798,7 @@ export function CommandCenter() {
   const latestOpenApiOperations = openApiState?.operations.slice(0, 5) || [];
   const workflowStats = workflowState?.stats || capabilities?.workflows;
   const queueStats = workflowState?.queue || capabilities?.operationJobs;
+  const contextStats = capabilities?.contextEngine;
   const latestWorkflows = workflowState?.runs.slice(0, 5) || capabilities?.workflows.latest || [];
   const approvalQueue = approvalState?.items || operationState?.approvals.items || [];
   const approvalStats = approvalState?.stats || operationState?.approvals.stats;
@@ -1459,6 +1483,7 @@ export function CommandCenter() {
               value={`${capabilities?.runs.consolidated.memories ?? 0}`}
             />
             <StatusPill icon={<BookOpen size={15} />} label="Docs" value={`${capabilities?.knowledge.documents ?? 0}`} />
+            <StatusPill icon={<Search size={15} />} label="Context" value={`${contextStats?.traces ?? 0}`} />
             <StatusPill icon={<History size={15} />} label="Runs" value={`${capabilities?.runs.total ?? 0}`} />
             <StatusPill icon={<Activity size={15} />} label="Flows" value={`${workflowStats?.active ?? 0}`} />
             <StatusPill
@@ -2203,6 +2228,11 @@ export function CommandCenter() {
                 <MiniStat label="Docs" value={`${capabilities?.knowledge.documents ?? 0}`} />
                 <MiniStat label="Chunks" value={`${capabilities?.knowledge.chunks ?? 0}`} />
                 <MiniStat label="Vectors" value={`${capabilities?.knowledge.embedded ?? 0}`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Traces" value={`${contextStats?.traces ?? 0}`} />
+                <MiniStat label="Ctx avg" value={`${contextStats?.averageSelectedCount ?? 0}`} />
+                <MiniStat label="Latency" value={`${contextStats?.averageLatencyMs ?? 0}ms`} />
               </div>
               <div className="flex flex-col gap-3">
                 {documents.map((document) => (

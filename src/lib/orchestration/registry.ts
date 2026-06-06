@@ -82,6 +82,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "retrieval.context_engine",
+    name: "Adaptive Context Engine",
+    description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",
+    status: "active",
+  },
+  {
     id: "eval.harness",
     name: "Evaluation Harness",
     description: "Run regression suites for readiness, retrieval, governed tools, workflows, latency, and cost.",

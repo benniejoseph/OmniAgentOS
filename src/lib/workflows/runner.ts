@@ -2,7 +2,7 @@ import { AGENT_MODEL, hasOpenAIKey } from "@/lib/config";
 import { saveMemory } from "@/lib/memory/store";
 import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
-import { retrieveContext } from "@/lib/rag/retriever";
+import { buildContextPack } from "@/lib/rag/context-engine";
 import {
   appendWorkflowEvent,
   getWorkflowRunDetail,
@@ -222,11 +222,21 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
   }
 
   if (stepKey === "retrieve_context") {
-    const retrieval = await retrieveContext(detail.run.goal, 6);
+    const retrieval = await buildContextPack(detail.run.goal, { limit: 6 });
     return {
       contextCount: retrieval.results.length,
       memoryCount: retrieval.memoryResults.length,
       knowledgeCount: retrieval.knowledgeResults.length,
+      mode: retrieval.profile.mode,
+      intent: retrieval.profile.intent,
+      traceId: retrieval.trace?.id,
+      evidence: retrieval.results.map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        title: item.title,
+        confidence: item.confidence,
+        utilityScore: item.utilityScore,
+      })),
       contextBlock: retrieval.contextBlock.slice(0, 8000),
     };
   }
