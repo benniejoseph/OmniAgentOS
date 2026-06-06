@@ -62,6 +62,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - `/api/approvals` pending workflow/tool approval queue endpoint
 - `/api/approvals/:id` durable approve/reject endpoint for workflows and tool execution records
 - `/api/operations` production operations overview endpoint
+- `/api/observability` durable runtime event timeline, SLO summary, route failure, and correlation-id endpoint
 - `/api/health` public production health endpoint with component status and SLO metrics
 - `/api/diagnostics` authenticated diagnostics and self-healing repair endpoint
 - `/api/incidents` authenticated incident lifecycle, stats, playbook, and alert-routing endpoint
@@ -96,6 +97,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Command center panel for OpenAPI connector import, operation review, and governed REST execution
 - Command center panel for durable workflow start, tick, approval, pause/resume, retry, and cancel controls
 - Command center panel for regression suite runs, pass rate, latency, and cost estimates
+- Command center panel for runtime observability, SLO health, route failures, recent errors, and correlated event timelines
 - Command center panel for tenant context, RBAC rules, secret policy, and security audit trails
 - Command center panel for auth mode, current identity, tenant users, and admin user creation
 - Command center panel for pending approvals, failed work, active workflows, and connector errors
@@ -121,6 +123,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Incident management with normalized incident records, status lifecycle, event history, alert target metadata, and operator playbooks
 - Alert delivery with dashboard/ops persistence, signed outbound webhooks, Slack/email adapters, retry/backoff, target health probes, failed-delivery requeue, and escalation policy metadata
 - Vercel Cron integration for secured production workflow queue ticks and scheduled alert dispatch with `CRON_SECRET`
+- Durable observability ledger for workflow ticks, alert actions, diagnostics, evaluations, route failures, and correlation IDs
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
 - Operations regression case for approval queue, operations overview, and connection catalog readiness
 - Operations regression case for persisted health diagnostics, SLO metrics, incident consistency, and repair ledgers
@@ -128,6 +131,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Operations regression case for alert delivery queueing, dispatch lifecycle, delivery policies, target readiness, and signed webhook support
 - Operations regression case for secured scheduled alert dispatch metadata, queue/dispatch limits, and delivery progress
 - Operations regression case for alert target health probes, secret-safe readiness reporting, and failed-delivery retry controls
+- Operations regression case for durable observability events, SLO summaries, correlation IDs, redaction, and registry exposure
 - Tenant-aware security controls with viewer/operator/admin/system roles, server-only secret env-var references, redacted audit metadata, and persisted RBAC allow/deny records
 - First-party identity control plane with scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
 

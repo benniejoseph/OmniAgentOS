@@ -10,6 +10,7 @@ import {
   type AlertDeliveryStatus,
 } from "@/lib/diagnostics/alerts";
 import { getIncidentAlertTargets } from "@/lib/diagnostics/incidents";
+import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -22,6 +23,7 @@ const alertActionSchema = z.object({
 
 export async function GET(request: Request) {
   const startedAt = Date.now();
+  const telemetry = createRequestTelemetry(request, "alerts");
   const url = new URL(request.url);
   const status = normalizeStatus(url.searchParams.get("status"));
   const incidentId = url.searchParams.get("incidentId") || undefined;
@@ -69,6 +71,27 @@ export async function GET(request: Request) {
       deliveries: deliveries.length,
       ms: Date.now() - startedAt,
     }));
+    await recordRuntimeEventSafely({
+      category: "alert",
+      action: "alerts.list",
+      route: "/api/alerts",
+      method: "GET",
+      statusCode: 200,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      resourceType: "alert_delivery",
+      message: "Listed alert deliveries and target health.",
+      metadata: {
+        deliveries: deliveries.length,
+        status,
+        incidentId,
+        limit,
+        queued: stats.queued,
+        failed: stats.failed,
+        blockedExternalTargets: stats.blockedExternalTargets,
+      },
+    });
     return Response.json({
       deliveries,
       stats,
@@ -77,6 +100,20 @@ export async function GET(request: Request) {
       targetHealth: stats.targetHealth,
     });
   } catch (error) {
+    await recordRuntimeEventSafely({
+      level: "error",
+      category: "alert",
+      action: "alerts.list_failed",
+      route: "/api/alerts",
+      method: "GET",
+      statusCode: 500,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      resourceType: "alert_delivery",
+      message: "Alert delivery list failed.",
+      metadata: { error: error instanceof Error ? error.message : "Alert delivery list failed." },
+    });
     console.error(JSON.stringify({
       level: "error",
       msg: "failed",
@@ -91,6 +128,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
+  const telemetry = createRequestTelemetry(request, "alerts");
   const parsed = alertActionSchema.safeParse(await request.json().catch(() => ({})));
   console.log(JSON.stringify({
     level: "info",
@@ -108,8 +146,9 @@ export async function POST(request: Request) {
     );
   }
 
+  let context: Awaited<ReturnType<typeof authorizeRequest>>;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "manage.workflow",
       resourceType: "alert_delivery",
@@ -142,6 +181,7 @@ export async function POST(request: Request) {
     const targetHealth = parsed.data.action === "probe_targets"
       ? getAlertTargetHealth()
       : undefined;
+    const stats = await getAlertDeliveryStats();
     console.log(JSON.stringify({
       level: "info",
       msg: "done",
@@ -154,14 +194,52 @@ export async function POST(request: Request) {
       probed: targetHealth?.length || 0,
       ms: Date.now() - startedAt,
     }));
+    await recordRuntimeEventSafely({
+      category: "alert",
+      action: `alerts.${parsed.data.action}`,
+      route: "/api/alerts",
+      method: "POST",
+      statusCode: 200,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      resourceType: "alert_delivery",
+      message: `Alert action ${parsed.data.action} completed.`,
+      metadata: {
+        enqueued: enqueued.length,
+        processed: dispatch?.processed.length || 0,
+        delivered: dispatch?.delivered || 0,
+        failed: dispatch?.failed || 0,
+        retried: retried.length,
+        probed: targetHealth?.length || 0,
+        queued: stats.queued,
+        retryableFailed: stats.retryableFailed,
+      },
+    });
     return Response.json({
       enqueued,
       dispatch,
       retried,
       targetHealth,
-      stats: await getAlertDeliveryStats(),
+      stats,
     });
   } catch (error) {
+    await recordRuntimeEventSafely({
+      level: "error",
+      category: "alert",
+      action: parsed.success ? `alerts.${parsed.data.action}.failed` : "alerts.invalid_failed",
+      route: "/api/alerts",
+      method: "POST",
+      statusCode: 500,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      resourceType: "alert_delivery",
+      message: "Alert action failed.",
+      metadata: { error: error instanceof Error ? error.message : "Alert action failed." },
+    });
     console.error(JSON.stringify({
       level: "error",
       msg: "failed",

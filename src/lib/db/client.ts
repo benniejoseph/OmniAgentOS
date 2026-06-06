@@ -796,6 +796,32 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_security_audits_tenant_created_idx ON omni_security_audits (tenant_id, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_security_audits_action_idx ON omni_security_audits (action)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_security_audits_decision_idx ON omni_security_audits (decision)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_observability_events (
+          id TEXT PRIMARY KEY,
+          level TEXT NOT NULL,
+          category TEXT NOT NULL,
+          action TEXT NOT NULL,
+          route TEXT,
+          method TEXT,
+          status_code INTEGER,
+          duration_ms INTEGER,
+          request_id TEXT,
+          correlation_id TEXT NOT NULL,
+          tenant_id TEXT,
+          actor_id TEXT,
+          resource_type TEXT,
+          resource_id TEXT,
+          message TEXT NOT NULL,
+          metadata JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_level_created_idx ON omni_observability_events (level, created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_category_created_idx ON omni_observability_events (category, created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_correlation_idx ON omni_observability_events (correlation_id, created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_route_created_idx ON omni_observability_events (route, created_at DESC)`;
       await ensureVectorSchema(sql);
     } finally {
       await sql`SELECT pg_advisory_unlock(271828182)`;

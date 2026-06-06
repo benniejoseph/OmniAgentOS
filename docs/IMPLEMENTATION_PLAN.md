@@ -35,6 +35,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - Alert delivery with signed outbound webhooks, Slack/email adapters, delivery retry/backoff, target readiness probes, failed-delivery recovery, escalation policy metadata, and scheduled production dispatch
 - Vercel Cron-secured production workflow queue and scheduled alert delivery ticks through `/api/workflows/tick`, with opportunistic post-response draining through Next.js `after()`
 - Operations center with approval queue, failed work summary, active workflow summary, connector error summary, and durable approval actions
+- Observability console with durable runtime events, correlation IDs, SLO summaries, route failure counts, and secret-safe metadata
 - External connection catalog for MCP/OpenAPI adapter setup across common production apps
 - Evaluation harness with persisted suites, case results, pass/warn/fail status, retrieval checks, workflow lifecycle checks, latency, and cost estimates
 - Security controls with tenant-scoped context headers, RBAC roles, server-only secret env-var references, sensitive metadata redaction, and persisted allow/deny audit trails
@@ -111,6 +112,12 @@ flowchart TD
   CRON --> WF
   CRON --> ALERTS
   CRON --> SAUDIT
+  API --> OBS["Observability Console"]
+  WF --> OBS
+  ALERTS --> OBS
+  EVAL --> OBS
+  DIAG --> OBS
+  OBS --> DB
   API --> SEC["Security Controls"]
   SEC --> RBAC["RBAC Policy"]
   SEC --> SAUDIT["Security Audit Ledger"]
@@ -163,3 +170,4 @@ flowchart TD
 22. Alert delivery: add persisted alert deliveries, signed outbound webhooks, Slack/email adapters, retry/backoff, escalation policy metadata, command-center controls, and regression coverage. Done.
 23. Scheduled alert operations: extend the secured Vercel cron tick to queue and dispatch incident alerts, expose scheduler readiness and limits in the command center, and add scheduler regression coverage. Done.
 24. Alert operations hardening: add secret-safe target health probes, blocked external target accounting, failed-delivery retry controls, command-center target health rows, and regression coverage. Done.
+25. Observability console: add durable runtime events, correlation IDs, SLO/error summaries, observability API, command-center timeline, and regression coverage. Done.

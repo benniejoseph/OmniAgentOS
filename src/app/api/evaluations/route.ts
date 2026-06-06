@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { defaultEvalCases, runEvaluationSuite } from "@/lib/evaluations/runner";
 import { getEvalStats, listEvalRuns } from "@/lib/evaluations/store";
+import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
+import { SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -21,6 +23,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
+  const telemetry = createRequestTelemetry(request, "evaluation");
   const body = await request.json().catch(() => ({}));
   const parsed = evalRunSchema.safeParse(body);
 
@@ -32,20 +36,63 @@ export async function POST(request: Request) {
   }
 
   try {
-    await authorizeRequest({
+    const context = await authorizeRequest({
       request,
       action: "run.evaluation",
       resourceType: "evaluation",
       metadata: parsed.data,
     });
+    const detail = await runEvaluationSuite({
+      suite: parsed.data.suite || "core",
+      caseIds: parsed.data.caseIds,
+    });
+    const status = detail?.run.status === "failed" ? 202 : 201;
+    await recordRuntimeEventSafely({
+      category: "evaluation",
+      action: "evaluation.run",
+      route: "/api/evaluations",
+      method: "POST",
+      statusCode: status,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      resourceType: "evaluation",
+      resourceId: detail?.run.id,
+      message: "Evaluation suite completed.",
+      metadata: {
+        suite: detail?.run.suite,
+        status: detail?.run.status,
+        total: detail?.run.summary.total,
+        passed: detail?.run.summary.passed,
+        failed: detail?.run.summary.failed,
+        warnings: detail?.run.summary.warnings,
+        caseIds: parsed.data.caseIds || [],
+      },
+    });
+    return Response.json(detail, { status });
   } catch (error) {
+    if (!(error instanceof SecurityPolicyError)) {
+      await recordRuntimeEventSafely({
+        level: "error",
+        category: "evaluation",
+        action: "evaluation.run_failed",
+        route: "/api/evaluations",
+        method: "POST",
+        statusCode: 500,
+        durationMs: Date.now() - startedAt,
+        requestId: telemetry.requestId,
+        correlationId: telemetry.correlationId,
+        resourceType: "evaluation",
+        message: "Evaluation suite failed.",
+        metadata: { error: error instanceof Error ? error.message : "Evaluation failed." },
+      });
+      return Response.json(
+        { error: error instanceof Error ? error.message : "Evaluation failed." },
+        { status: 500 },
+      );
+    }
     return forbiddenResponse(error);
   }
-
-  const detail = await runEvaluationSuite({
-    suite: parsed.data.suite || "core",
-    caseIds: parsed.data.caseIds,
-  });
-
-  return Response.json(detail, { status: detail?.run.status === "failed" ? 202 : 201 });
 }

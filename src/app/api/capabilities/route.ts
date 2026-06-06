@@ -8,6 +8,7 @@ import { getIncidentStats } from "@/lib/diagnostics/incidents";
 import { getEvalStats } from "@/lib/evaluations/store";
 import { getMemoryGraphStats } from "@/lib/memory/graph";
 import { getMemoryStats } from "@/lib/memory/store";
+import { getObservabilityStats } from "@/lib/observability/store";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import { getOperationJobStats } from "@/lib/operations/job-queue";
 import { getContextEngineStats } from "@/lib/rag/context-engine";
@@ -53,6 +54,7 @@ export async function GET(request: Request) {
     health: await getHealthStats(),
     incidents: await getIncidentStats(),
     alerts: await getAlertDeliveryStats(),
+    observability: await getObservabilityStats(),
     evaluations: await getEvalStats(),
     security: {
       context: securityContext,

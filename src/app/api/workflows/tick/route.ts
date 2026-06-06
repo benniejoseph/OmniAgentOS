@@ -4,7 +4,9 @@ import {
   ALERT_SCHEDULER_QUEUE_LIMIT,
 } from "@/lib/config";
 import { getAlertDeliveryStats, runScheduledAlertDispatch } from "@/lib/diagnostics/alerts";
+import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
+import { SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import type { SecurityContext } from "@/lib/security/types";
 import { getOperationJobStats } from "@/lib/operations/job-queue";
@@ -22,6 +24,8 @@ const tickSchema = z.object({
 const cronTickLimit = 5;
 
 export async function GET(request: Request) {
+  const startedAt = Date.now();
+  const telemetry = createRequestTelemetry(request, "cron-tick");
   const cronSecret = process.env.CRON_SECRET?.trim();
   const context = getCronSecurityContext();
 
@@ -81,6 +85,28 @@ export async function GET(request: Request) {
         alertFailed: alerts.dispatch.failed,
       },
     });
+    await recordRuntimeEventSafely({
+      category: "workflow",
+      action: "workflow_tick.cron",
+      route: "/api/workflows/tick",
+      method: "GET",
+      statusCode: 200,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      resourceType: "workflow_queue",
+      message: "Vercel Cron workflow and alert tick completed.",
+      metadata: {
+        workflowLeased: queue.leased,
+        workflowCompleted: queue.completed,
+        alertEnqueued: alerts.enqueued.length,
+        alertProcessed: alerts.dispatch.processed.length,
+        alertDelivered: alerts.dispatch.delivered,
+        alertFailed: alerts.dispatch.failed,
+      },
+    });
 
     return Response.json({
       queue,
@@ -109,12 +135,30 @@ export async function GET(request: Request) {
       reason: "Vercel Cron tick failed after authorization.",
       metadata: { trigger: "vercel_cron", error: message },
     }).catch(() => undefined);
+    await recordRuntimeEventSafely({
+      level: "error",
+      category: "workflow",
+      action: "workflow_tick.cron_failed",
+      route: "/api/workflows/tick",
+      method: "GET",
+      statusCode: 500,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      resourceType: "workflow_queue",
+      message: "Vercel Cron workflow and alert tick failed.",
+      metadata: { error: message },
+    });
 
     return Response.json({ error: message, trigger: "vercel_cron" }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
+  const telemetry = createRequestTelemetry(request, "workflow-tick");
   const body = await request.json().catch(() => ({}));
   const parsed = tickSchema.safeParse(body);
 
@@ -126,33 +170,74 @@ export async function POST(request: Request) {
   }
 
   try {
-    await authorizeRequest({
+    const context = await authorizeRequest({
       request,
       action: "manage.workflow",
       resourceType: "workflow_queue",
       metadata: parsed.data,
     });
-  } catch (error) {
-    return forbiddenResponse(error);
-  }
-
-  const queue = await processWorkflowQueue({ limit: parsed.data.limit || 5 });
-  const alerts = parsed.data.alerts
-    ? await runScheduledAlertDispatch({
-        trigger: "operator.workflow_tick",
-        queueLimit: parsed.data.alertQueueLimit || ALERT_SCHEDULER_QUEUE_LIMIT,
-        dispatchLimit: parsed.data.alertDispatchLimit || ALERT_SCHEDULER_DISPATCH_LIMIT,
-      })
-    : undefined;
-  return Response.json({
-    queue,
-    alerts,
-    stats: {
+    const queue = await processWorkflowQueue({ limit: parsed.data.limit || 5 });
+    const alerts = parsed.data.alerts
+      ? await runScheduledAlertDispatch({
+          trigger: "operator.workflow_tick",
+          queueLimit: parsed.data.alertQueueLimit || ALERT_SCHEDULER_QUEUE_LIMIT,
+          dispatchLimit: parsed.data.alertDispatchLimit || ALERT_SCHEDULER_DISPATCH_LIMIT,
+        })
+      : undefined;
+    const stats = {
       operationJobs: await getOperationJobStats(),
       alerts: alerts?.stats || await getAlertDeliveryStats(),
-    },
-    count: queue.leased,
-  });
+    };
+    await recordRuntimeEventSafely({
+      category: "workflow",
+      action: "workflow_tick.operator",
+      route: "/api/workflows/tick",
+      method: "POST",
+      statusCode: 200,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      resourceType: "workflow_queue",
+      message: "Operator workflow queue tick completed.",
+      metadata: {
+        workflowLeased: queue.leased,
+        workflowCompleted: queue.completed,
+        alertsEnabled: Boolean(parsed.data.alerts),
+        alertEnqueued: alerts?.enqueued.length || 0,
+        alertProcessed: alerts?.dispatch.processed.length || 0,
+      },
+    });
+    return Response.json({
+      queue,
+      alerts,
+      stats,
+      count: queue.leased,
+    });
+  } catch (error) {
+    if (error instanceof SecurityPolicyError) {
+      return forbiddenResponse(error);
+    }
+    await recordRuntimeEventSafely({
+      level: "error",
+      category: "workflow",
+      action: "workflow_tick.operator_failed",
+      route: "/api/workflows/tick",
+      method: "POST",
+      statusCode: 500,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      resourceType: "workflow_queue",
+      message: "Operator workflow queue tick failed.",
+      metadata: { error: error instanceof Error ? error.message : "Workflow tick failed." },
+    });
+    return Response.json(
+      { error: error instanceof Error ? error.message : "Workflow tick failed." },
+      { status: 500 },
+    );
+  }
 }
 
 function getCronSecurityContext(): SecurityContext {

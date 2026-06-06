@@ -142,6 +142,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "ops.observability_console",
+    name: "Observability Console",
+    description: "Persists runtime events with correlation IDs, SLO summaries, route failures, and operator audit timelines.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

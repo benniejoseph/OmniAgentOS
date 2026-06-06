@@ -25,6 +25,7 @@ import { runIncidentPlaybook } from "@/lib/diagnostics/playbooks";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { connectionCatalog } from "@/lib/connectors/catalog";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
+import { getObservabilityStats, listObservabilityEvents, recordRuntimeEvent } from "@/lib/observability/store";
 import { getMemoryGraphStats, rebuildMemoryGraph, searchMemoryGraph } from "@/lib/memory/graph";
 import { listMemories, saveMemory } from "@/lib/memory/store";
 import { getApprovalQueue, getOperationsOverview } from "@/lib/operations/queue";
@@ -312,6 +313,22 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       registryTool: "ops.alert_target_health",
     },
   },
+  {
+    id: "operations.observability_console",
+    name: "Observability console",
+    description: "Validates durable runtime event persistence, correlation IDs, SLO summaries, redaction, and observability registry exposure.",
+    type: "operations",
+    input: {
+      markerCategory: "system",
+    },
+    expected: {
+      eventPersisted: true,
+      correlationId: true,
+      sloSummary: true,
+      registryTool: "ops.observability_console",
+      secretSafe: true,
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -445,6 +462,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.alert_target_health") {
     return evaluateAlertTargetHealth(evalCase);
+  }
+
+  if (evalCase.id === "operations.observability_console") {
+    return evaluateObservabilityConsole(evalCase);
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -1344,6 +1365,78 @@ async function evaluateAlertTargetHealth(evalCase: EvalCaseDefinition): Promise<
         retryableFailed: statsAfter.retryableFailed,
       },
       targetHealth: targetSnapshot,
+    },
+  };
+}
+
+async function evaluateObservabilityConsole(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const correlationId = `eval:observability:${Date.now()}`;
+  const marker = await recordRuntimeEvent({
+    category: "system",
+    action: "observability.eval_marker",
+    route: "/api/evaluations",
+    method: "POST",
+    statusCode: 200,
+    durationMs: 12,
+    correlationId,
+    resourceType: "evaluation",
+    message: "Observability evaluation marker.",
+    metadata: {
+      fixtureToken: "sk-example-secret-value-that-must-redact",
+      markerCategory: String(evalCase.input.markerCategory || "system"),
+    },
+  });
+  const [events, stats] = await Promise.all([
+    listObservabilityEvents({ correlationId, limit: 5 }),
+    getObservabilityStats(),
+  ]);
+  const registry = getCapabilityRegistry();
+  const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
+  const serializedEvents = JSON.stringify(events);
+  const checks = {
+    eventPersisted: Boolean(evalCase.expected.eventPersisted) ? events.some((event) => event.id === marker.id) : true,
+    correlationIdAvailable: Boolean(evalCase.expected.correlationId)
+      ? events.every((event) => event.correlationId === correlationId)
+      : true,
+    statsAvailable: stats.total >= events.length && typeof stats.byLevel.info === "number",
+    sloSummary: Boolean(evalCase.expected.sloSummary)
+      ? typeof stats.slo.availability === "number" &&
+        typeof stats.slo.errorRate === "number" &&
+        typeof stats.slo.latencyP95Ms === "number"
+      : true,
+    registryToolAvailable: activeToolIds.has(String(evalCase.expected.registryTool || "ops.observability_console")),
+    secretSafe: Boolean(evalCase.expected.secretSafe)
+      ? !serializedEvents.includes("sk-example-secret-value-that-must-redact") &&
+        serializedEvents.includes("[redacted]")
+      : true,
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      markerId: marker.id,
+      correlationId,
+      stats: {
+        total: stats.total,
+        byLevel: stats.byLevel,
+        byCategory: stats.byCategory,
+        routeFailures: stats.routeFailures,
+        averageDurationMs: stats.averageDurationMs,
+        p95DurationMs: stats.p95DurationMs,
+        slo: stats.slo,
+      },
+      eventSample: events.map((event) => ({
+        id: event.id,
+        level: event.level,
+        category: event.category,
+        action: event.action,
+        correlationId: event.correlationId,
+        metadata: event.metadata,
+      })),
     },
   };
 }

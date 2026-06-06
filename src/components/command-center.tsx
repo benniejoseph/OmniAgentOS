@@ -736,6 +736,52 @@ type EvalRunDetail = {
   results: EvalResultRecord[];
 };
 
+type ObservabilityLevel = "info" | "warn" | "error";
+type ObservabilityCategory = "api" | "workflow" | "alert" | "diagnostics" | "evaluation" | "security" | "system";
+
+type ObservabilityEventRecord = {
+  id: string;
+  level: ObservabilityLevel;
+  category: ObservabilityCategory;
+  action: string;
+  route?: string;
+  method?: string;
+  statusCode?: number;
+  durationMs?: number;
+  requestId?: string;
+  correlationId: string;
+  tenantId?: string;
+  actorId?: string;
+  resourceType?: string;
+  resourceId?: string;
+  message: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+type ObservabilityStats = {
+  total: number;
+  byLevel: Record<string, number>;
+  byCategory: Record<string, number>;
+  routeFailures: number;
+  averageDurationMs: number;
+  p95DurationMs: number;
+  latest: ObservabilityEventRecord[];
+  recentErrors: ObservabilityEventRecord[];
+  slo: {
+    healthy: boolean;
+    availability: number;
+    errorRate: number;
+    errorBudgetRemaining: number;
+    latencyP95Ms: number;
+  };
+};
+
+type ObservabilityResponse = {
+  events: ObservabilityEventRecord[];
+  stats: ObservabilityStats;
+};
+
 type SecurityRole = "viewer" | "operator" | "admin" | "system";
 type SecurityDecision = "allow" | "deny";
 
@@ -906,6 +952,7 @@ type CapabilityResponse = {
   health: HealthStats;
   incidents: IncidentStats;
   alerts: AlertDeliveryStats;
+  observability: ObservabilityStats;
   evaluations: EvalStats;
   security: {
     context: SecurityContext;
@@ -1064,6 +1111,7 @@ export function CommandCenter() {
   const [connectionCatalog, setConnectionCatalog] = useState<ConnectionCatalogResponse | null>(null);
   const [evaluationState, setEvaluationState] = useState<EvaluationsResponse | null>(null);
   const [evaluationResult, setEvaluationResult] = useState("");
+  const [observabilityState, setObservabilityState] = useState<ObservabilityResponse | null>(null);
   const [securityState, setSecurityState] = useState<SecurityState | null>(null);
   const [authState, setAuthState] = useState<AuthSessionResponse | null>(null);
   const [authControlPlane, setAuthControlPlane] = useState<AuthControlPlane | null>(null);
@@ -1117,6 +1165,8 @@ export function CommandCenter() {
   const evaluationStats = evaluationState?.stats || capabilities?.evaluations;
   const latestEvaluations = evaluationState?.runs.slice(0, 5) || (capabilities?.evaluations.latest ? [capabilities.evaluations.latest] : []);
   const latestEvaluationCases = evaluationState?.cases.slice(0, 4) || [];
+  const observabilityStats = observabilityState?.stats || capabilities?.observability;
+  const latestObservabilityEvents = observabilityState?.events || observabilityStats?.latest || [];
   const securityContext = securityState?.context || capabilities?.security.context;
   const securityStats = securityState?.stats || capabilities?.security.stats;
   const securityPolicy = securityState?.policy || capabilities?.security.policy;
@@ -1807,6 +1857,13 @@ export function CommandCenter() {
       .catch(() => undefined);
   }
 
+  function refreshObservability() {
+    fetch("/api/observability?limit=8")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => data && setObservabilityState(data))
+      .catch(() => undefined);
+  }
+
   function refreshSecurity() {
     Promise.all([
       fetch("/api/security/context")
@@ -1850,6 +1907,7 @@ export function CommandCenter() {
     refreshAlerts();
     refreshConnectionCatalog();
     refreshEvaluations();
+    refreshObservability();
     refreshSecurity();
   }
 
@@ -2029,6 +2087,39 @@ export function CommandCenter() {
                 ) : (
                   <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
                     No runs recorded yet.
+                  </p>
+                )}
+              </div>
+            </section>
+
+            <section className="panel rounded-lg p-4">
+              <div className="mb-4 flex items-center gap-2">
+                <BarChart3 className="text-primary" size={18} />
+                <h2 className="font-semibold">Observability console</h2>
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Events" value={`${observabilityStats?.total ?? 0}`} />
+                <MiniStat label="Errors" value={`${observabilityStats?.byLevel.error ?? 0}`} />
+                <MiniStat label="Failures" value={`${observabilityStats?.routeFailures ?? 0}`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="SLO" value={observabilityStats?.slo.healthy ? "healthy" : "watch"} />
+                <MiniStat label="Avail" value={`${Math.round((observabilityStats?.slo.availability ?? 1) * 1000) / 10}%`} />
+                <MiniStat label="P95" value={`${observabilityStats?.p95DurationMs ?? 0}ms`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="API" value={`${observabilityStats?.byCategory.api ?? 0}`} />
+                <MiniStat label="Workflow" value={`${observabilityStats?.byCategory.workflow ?? 0}`} />
+                <MiniStat label="Alerts" value={`${observabilityStats?.byCategory.alert ?? 0}`} />
+              </div>
+              <div className="flex flex-col gap-3">
+                {latestObservabilityEvents.length ? (
+                  latestObservabilityEvents.slice(0, 8).map((event) => (
+                    <ObservabilityEventRow key={event.id} event={event} />
+                  ))
+                ) : (
+                  <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+                    No runtime events recorded yet.
                   </p>
                 )}
               </div>
@@ -3029,6 +3120,31 @@ function AuthUserRow({ user, membership }: { user: AuthUser; membership?: AuthMe
   );
 }
 
+function ObservabilityEventRow({ event }: { event: ObservabilityEventRecord }) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", observabilityTone(event.level))}>
+          {event.level}
+        </span>
+        <span className="shrink-0 rounded border border-line px-2 py-1 font-mono text-[11px] text-muted">
+          {event.category}
+        </span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{event.action}</p>
+      <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">{event.message}</p>
+      <div className="mt-3 grid grid-cols-3 gap-1.5 font-mono text-[11px] text-muted">
+        <span className="truncate">{event.route || event.resourceType || "system"}</span>
+        <span>{event.durationMs ?? 0}ms</span>
+        <span>{new Date(event.createdAt).toLocaleTimeString()}</span>
+      </div>
+      <p className="mt-2 truncate font-mono text-[10px] text-muted" title={event.correlationId}>
+        {event.correlationId}
+      </p>
+    </div>
+  );
+}
+
 function SecurityAuditRow({ record }: { record: SecurityAuditRecord }) {
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
@@ -3720,6 +3836,16 @@ function alertTargetHealthTone(status: AlertTargetProbeStatus) {
     return "bg-danger/14 text-danger";
   }
   return "bg-accent/16 text-accent";
+}
+
+function observabilityTone(level: ObservabilityLevel) {
+  if (level === "error") {
+    return "bg-danger/14 text-danger";
+  }
+  if (level === "warn") {
+    return "bg-accent/16 text-accent";
+  }
+  return "bg-primary/16 text-primary";
 }
 
 function workflowTone(status: WorkflowRunStatus) {
