@@ -846,6 +846,32 @@ export async function ensureDatabaseSchema() {
       `;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policies_enabled_idx ON omni_observability_slo_policies (enabled, updated_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policies_metric_idx ON omni_observability_slo_policies (metric)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_observability_slo_policy_changes (
+          id TEXT PRIMARY KEY,
+          policy_id TEXT NOT NULL,
+          action TEXT NOT NULL,
+          status TEXT NOT NULL,
+          risk_level INTEGER NOT NULL DEFAULT 2,
+          tenant_id TEXT,
+          requested_by TEXT,
+          reviewed_by TEXT,
+          reason TEXT,
+          review_reason TEXT,
+          before_policy JSONB,
+          after_policy JSONB,
+          rollback_change_id TEXT,
+          metadata JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          reviewed_at TIMESTAMPTZ,
+          applied_at TIMESTAMPTZ
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_policy_idx ON omni_observability_slo_policy_changes (policy_id, created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_status_idx ON omni_observability_slo_policy_changes (status, created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_action_idx ON omni_observability_slo_policy_changes (action)`;
       await ensureVectorSchema(sql);
     } finally {
       await sql`SELECT pg_advisory_unlock(271828182)`;

@@ -115,7 +115,10 @@ flowchart TD
   API --> OBS["Observability Console"]
   OBS --> SLO["SLO Monitor"]
   SLO --> SLOPOL["SLO Policy Store"]
+  SLOPOL --> SLOCHG["SLO Change Ledger"]
   SLOPOL --> DB
+  SLOCHG --> DB
+  SLOCHG --> APPROVALS
   SLO --> INCIDENTS
   SLO --> ALERTS
   WF --> OBS
@@ -178,3 +181,4 @@ flowchart TD
 25. Observability console: add durable runtime events, correlation IDs, SLO/error summaries, observability API, command-center timeline, and regression coverage. Done.
 26. Observability SLO alerting: add SLO policy evaluation, breach-to-incident sync, alert queue integration, cron/operator monitor execution, command-center controls, and regression coverage. Done.
 27. SLO policy management: add durable SLO policies, threshold/severity/routing/suppression configuration, default reset, command-center editor controls, and regression coverage. Done.
+28. SLO policy change control: add durable policy change requests, approval queue integration, immutable before/after snapshots, rollback requests, command-center history, and regression coverage. Done.

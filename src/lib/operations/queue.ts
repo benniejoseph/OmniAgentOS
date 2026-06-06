@@ -1,5 +1,9 @@
 import { listMcpConnectors } from "@/lib/connectors/store";
 import { listOpenApiConnectors } from "@/lib/connectors/openapi-store";
+import {
+  listObservabilitySloPolicyChanges,
+  type ObservabilitySloPolicyChange,
+} from "@/lib/observability/slo-policy-store";
 import { getOperationJobStats, listOperationJobs } from "@/lib/operations/job-queue";
 import { listAgentRuns } from "@/lib/runs/store";
 import { redactSensitive } from "@/lib/security/context";
@@ -34,12 +38,26 @@ export type ApprovalQueueItem =
       createdAt: string;
       input: Record<string, unknown>;
       record: WorkflowRunRecord;
+    }
+  | {
+      kind: "slo_policy";
+      id: string;
+      title: string;
+      status: "pending";
+      riskLevel: number;
+      requestedBy?: string;
+      tenantId?: string;
+      reason?: string;
+      createdAt: string;
+      input: Record<string, unknown>;
+      record: ObservabilitySloPolicyChange;
     };
 
 export async function getApprovalQueue(limit = 25) {
-  const [toolApprovals, workflowRuns] = await Promise.all([
+  const [toolApprovals, workflowRuns, sloPolicyChanges] = await Promise.all([
     listPendingToolApprovals(limit),
     listWorkflowRuns(100),
+    listObservabilitySloPolicyChanges({ status: "pending", limit }),
   ]);
   const workflowApprovals = workflowRuns
     .filter((run) => run.status === "waiting_approval")
@@ -47,6 +65,7 @@ export async function getApprovalQueue(limit = 25) {
   const items = [
     ...toolApprovals.map(toolApprovalToQueueItem),
     ...workflowApprovals.map(workflowApprovalToQueueItem),
+    ...sloPolicyChanges.map(sloPolicyChangeToQueueItem),
   ].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
 
   return {
@@ -55,6 +74,7 @@ export async function getApprovalQueue(limit = 25) {
       total: items.length,
       tools: toolApprovals.length,
       workflows: workflowApprovals.length,
+      sloPolicies: sloPolicyChanges.length,
     },
   };
 }
@@ -145,5 +165,33 @@ function workflowApprovalToQueueItem(record: WorkflowRunRecord): ApprovalQueueIt
     createdAt: record.updatedAt,
     input: redactSensitive(record.input || {}) as Record<string, unknown>,
     record,
+  };
+}
+
+function sloPolicyChangeToQueueItem(record: ObservabilitySloPolicyChange): ApprovalQueueItem {
+  const title = record.afterPolicy?.name || record.beforePolicy?.name || record.policyId;
+  return {
+    kind: "slo_policy",
+    id: record.id,
+    title: `SLO ${record.action.replace(/_/g, " ")}: ${title}`,
+    status: "pending",
+    riskLevel: record.riskLevel,
+    requestedBy: record.requestedBy,
+    tenantId: record.tenantId,
+    reason: record.reason || "SLO policy change requires approval.",
+    createdAt: record.createdAt,
+    input: redactSensitive({
+      policyId: record.policyId,
+      action: record.action,
+      beforePolicy: record.beforePolicy,
+      afterPolicy: record.afterPolicy,
+      rollbackChangeId: record.rollbackChangeId,
+    }) as Record<string, unknown>,
+    record: {
+      ...record,
+      beforePolicy: redactSensitive(record.beforePolicy) as ObservabilitySloPolicyChange["beforePolicy"],
+      afterPolicy: redactSensitive(record.afterPolicy) as ObservabilitySloPolicyChange["afterPolicy"],
+      metadata: redactSensitive(record.metadata) as Record<string, unknown>,
+    },
   };
 }

@@ -213,6 +213,19 @@ type ApprovalQueueItem =
       createdAt: string;
       input: Record<string, unknown>;
       record: WorkflowRunRecord;
+    }
+  | {
+      kind: "slo_policy";
+      id: string;
+      title: string;
+      status: "pending";
+      riskLevel: number;
+      requestedBy?: string;
+      tenantId?: string;
+      reason?: string;
+      createdAt: string;
+      input: Record<string, unknown>;
+      record: ObservabilitySloPolicyChange;
     };
 
 type ApprovalQueueResponse = {
@@ -221,6 +234,7 @@ type ApprovalQueueResponse = {
     total: number;
     tools: number;
     workflows: number;
+    sloPolicies?: number;
   };
 };
 
@@ -805,6 +819,36 @@ type ObservabilitySloPolicy = {
   updatedAt?: string;
 };
 
+type SloPolicyChangeAction =
+  | "upsert_policy"
+  | "toggle_policy"
+  | "delete_policy"
+  | "reset_defaults"
+  | "rollback_policy";
+
+type SloPolicyChangeStatus = "pending" | "applied" | "rejected";
+
+type ObservabilitySloPolicyChange = {
+  id: string;
+  policyId: string;
+  action: SloPolicyChangeAction;
+  status: SloPolicyChangeStatus;
+  riskLevel: number;
+  tenantId?: string;
+  requestedBy?: string;
+  reviewedBy?: string;
+  reason?: string;
+  reviewReason?: string;
+  beforePolicy?: ObservabilitySloPolicy | null;
+  afterPolicy?: ObservabilitySloPolicy | null;
+  rollbackChangeId?: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  reviewedAt?: string;
+  appliedAt?: string;
+};
+
 type ObservabilitySloEvaluation = {
   policy: ObservabilitySloPolicy;
   value: number;
@@ -828,6 +872,8 @@ type ObservabilitySloPolicyResponse = {
   policies: ObservabilitySloPolicy[];
   defaults: ObservabilitySloPolicy[];
   alertTargets: IncidentAlertTarget[];
+  changes: ObservabilitySloPolicyChange[];
+  pendingChanges: ObservabilitySloPolicyChange[];
   snapshot: ObservabilitySloSnapshot;
 };
 
@@ -1230,6 +1276,8 @@ export function CommandCenter() {
   const latestObservabilityEvents = observabilityState?.events || observabilityStats?.latest || [];
   const observabilitySlo = observabilitySloState || capabilities?.observabilitySlo;
   const sloPolicies = sloPolicyState?.policies || observabilitySlo?.policies || [];
+  const sloPolicyChanges = sloPolicyState?.changes || [];
+  const pendingSloPolicyChanges = sloPolicyState?.pendingChanges || sloPolicyChanges.filter((change) => change.status === "pending");
   const selectedSloPolicy = sloPolicies.find((policy) => policy.id === selectedSloPolicyId) || sloPolicies[0];
   const sloAlertTargets = sloPolicyState?.alertTargets || alertTargetHealth.map((target) => ({
     id: target.id,
@@ -1789,7 +1837,7 @@ export function CommandCenter() {
     if (!selectedSloPolicy) {
       return;
     }
-    setStatus("saving SLO policy");
+    setStatus("requesting SLO policy change");
     setObservabilityResult("");
 
     try {
@@ -1808,6 +1856,8 @@ export function CommandCenter() {
             enabled: sloPolicyEnabled,
             alertTargetIds: sloTargetIds,
           },
+          requireApproval: true,
+          reason: "Command Center SLO policy update request.",
         }),
       });
       const data = await response.json();
@@ -1820,22 +1870,26 @@ export function CommandCenter() {
           loadSloPolicyForm(savedPolicy);
         }
       }
-      setStatus(response.ok ? "SLO policy saved" : "SLO policy save failed");
+      setStatus(response.ok ? "SLO policy change requested" : "SLO policy request failed");
       refreshWorkspace();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "SLO policy save failed");
+      setStatus(error instanceof Error ? error.message : "SLO policy request failed");
     }
   }
 
   async function resetSloPolicies() {
-    setStatus("resetting SLO policies");
+    setStatus("requesting SLO policy reset");
     setObservabilityResult("");
 
     try {
       const response = await fetch("/api/observability/slo/policies", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "reset_defaults" }),
+        body: JSON.stringify({
+          action: "reset_defaults",
+          requireApproval: true,
+          reason: "Command Center default SLO policy reset request.",
+        }),
       });
       const data = await response.json();
       setObservabilityResult(formatToolResult(data));
@@ -1846,10 +1900,10 @@ export function CommandCenter() {
           loadSloPolicyForm(data.policies[0]);
         }
       }
-      setStatus(response.ok ? "SLO policies reset" : "SLO policy reset failed");
+      setStatus(response.ok ? "SLO policy reset requested" : "SLO policy reset request failed");
       refreshWorkspace();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "SLO policy reset failed");
+      setStatus(error instanceof Error ? error.message : "SLO policy reset request failed");
     }
   }
 
@@ -2325,6 +2379,11 @@ export function CommandCenter() {
                 <MiniStat label="Checked" value={observabilitySlo?.checkedAt ? new Date(observabilitySlo.checkedAt).toLocaleTimeString() : "never"} />
               </div>
               <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Pending" value={`${pendingSloPolicyChanges.length}`} />
+                <MiniStat label="Changes" value={`${sloPolicyChanges.length}`} />
+                <MiniStat label="Governed" value={`${approvalStats?.sloPolicies ?? pendingSloPolicyChanges.length}`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
                 <MiniStat label="API" value={`${observabilityStats?.byCategory.api ?? 0}`} />
                 <MiniStat label="Workflow" value={`${observabilityStats?.byCategory.workflow ?? 0}`} />
                 <MiniStat label="Alerts" value={`${observabilityStats?.byCategory.alert ?? 0}`} />
@@ -2440,7 +2499,7 @@ export function CommandCenter() {
                       className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
                     >
                       <CheckCircle2 size={14} />
-                      Save
+                      Request
                     </button>
                     <button
                       type="button"
@@ -2448,9 +2507,16 @@ export function CommandCenter() {
                       className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-danger"
                     >
                       <History size={14} />
-                      Reset
+                      Defaults
                     </button>
                   </div>
+                </div>
+              ) : null}
+              {sloPolicyChanges.length ? (
+                <div className="mb-3 flex flex-col gap-2">
+                  {sloPolicyChanges.slice(0, 3).map((change) => (
+                    <SloPolicyChangeRow key={change.id} change={change} />
+                  ))}
                 </div>
               ) : null}
               {observabilityResult ? (
@@ -3522,6 +3588,30 @@ function SloPolicyRow({ evaluation }: { evaluation: ObservabilitySloEvaluation }
   );
 }
 
+function SloPolicyChangeRow({ change }: { change: ObservabilitySloPolicyChange }) {
+  const label = change.afterPolicy?.name || change.beforePolicy?.name || change.policyId;
+
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", sloPolicyChangeTone(change.status))}>
+          {change.status}
+        </span>
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", riskTone(change.riskLevel as RiskLevel))}>
+          R{change.riskLevel}
+        </span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{label}</p>
+      <div className="mt-2 grid grid-cols-3 gap-1.5 font-mono text-[11px] text-muted">
+        <span className="truncate">{change.action.replace(/_/g, " ")}</span>
+        <span className="truncate">{change.requestedBy || "operator"}</span>
+        <span>{new Date(change.createdAt).toLocaleTimeString()}</span>
+      </div>
+      {change.reason ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">{change.reason}</p> : null}
+    </div>
+  );
+}
+
 function SecurityAuditRow({ record }: { record: SecurityAuditRecord }) {
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
@@ -3708,7 +3798,7 @@ function ApprovalQueueRow({
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", statusTone(item.status === "waiting_approval" ? "approval_required" : item.status))}>
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", approvalQueueTone(item.status))}>
           {item.kind}
         </span>
         <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", riskTone(item.riskLevel as RiskLevel))}>
@@ -4143,6 +4233,26 @@ function statusTone(status: ToolExecutionStatus) {
   }
 
   return "bg-background text-muted";
+}
+
+function approvalQueueTone(status: ApprovalQueueItem["status"]) {
+  if (status === "approval_required" || status === "waiting_approval" || status === "pending") {
+    return "bg-accent/14 text-accent";
+  }
+
+  return "bg-background text-muted";
+}
+
+function sloPolicyChangeTone(status: SloPolicyChangeStatus) {
+  if (status === "applied") {
+    return "bg-primary/16 text-primary";
+  }
+
+  if (status === "rejected") {
+    return "bg-danger/14 text-danger";
+  }
+
+  return "bg-accent/14 text-accent";
 }
 
 function evaluationRunTone(status: EvalRunRecord["status"]) {

@@ -59,12 +59,12 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - `/api/runs` run ledger endpoint
 - `/api/tools` governed tool registry, policy, and audit endpoint
 - `/api/tools/execute` schema-validated tool execution endpoint with dry-run defaults
-- `/api/approvals` pending workflow/tool approval queue endpoint
-- `/api/approvals/:id` durable approve/reject endpoint for workflows and tool execution records
+- `/api/approvals` pending workflow/tool/SLO policy approval queue endpoint
+- `/api/approvals/:id` durable approve/reject endpoint for workflows, tool execution records, and SLO policy changes
 - `/api/operations` production operations overview endpoint
 - `/api/observability` durable runtime event timeline, SLO summary, route failure, and correlation-id endpoint
 - `/api/observability/slo` observability SLO snapshot and monitor endpoint that opens/resolves incidents and queues alerts
-- `/api/observability/slo/policies` durable SLO policy configuration endpoint for thresholds, severity, routing, suppression, enablement, and defaults
+- `/api/observability/slo/policies` durable SLO policy configuration endpoint for thresholds, severity, routing, suppression, enablement, defaults, approval requests, history, and rollback
 - `/api/health` public production health endpoint with component status and SLO metrics
 - `/api/diagnostics` authenticated diagnostics and self-healing repair endpoint
 - `/api/incidents` authenticated incident lifecycle, stats, playbook, and alert-routing endpoint
@@ -99,7 +99,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Command center panel for OpenAPI connector import, operation review, and governed REST execution
 - Command center panel for durable workflow start, tick, approval, pause/resume, retry, and cancel controls
 - Command center panel for regression suite runs, pass rate, latency, and cost estimates
-- Command center panel for runtime observability, SLO health, route failures, SLO breach policies, threshold/severity/routing/suppression controls, monitor execution, recent errors, and correlated event timelines
+- Command center panel for runtime observability, SLO health, route failures, SLO breach policies, threshold/severity/routing/suppression controls, approval-backed policy changes, monitor execution, recent errors, and correlated event timelines
 - Command center panel for tenant context, RBAC rules, secret policy, and security audit trails
 - Command center panel for auth mode, current identity, tenant users, and admin user creation
 - Command center panel for pending approvals, failed work, active workflows, and connector errors
@@ -125,7 +125,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Incident management with normalized incident records, status lifecycle, event history, alert target metadata, and operator playbooks
 - Alert delivery with dashboard/ops persistence, signed outbound webhooks, Slack/email adapters, retry/backoff, target health probes, failed-delivery requeue, and escalation policy metadata
 - Observability SLO alerting that evaluates error budget, availability, route failure, and P95 latency policies, then opens/resolves incidents and queues alert deliveries
-- Durable SLO policy management backed by `omni_observability_slo_policies`, with configurable thresholds, severities, alert target routing, suppression windows, and default reset
+- Durable SLO policy management backed by `omni_observability_slo_policies` and `omni_observability_slo_policy_changes`, with configurable thresholds, severities, alert target routing, suppression windows, approval requests, rollback snapshots, and default reset
 - Vercel Cron integration for secured production workflow queue ticks, observability SLO monitoring, and scheduled alert dispatch with `CRON_SECRET`
 - Durable observability ledger for workflow ticks, alert actions, diagnostics, evaluations, route failures, and correlation IDs
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
@@ -138,6 +138,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Operations regression case for durable observability events, SLO summaries, correlation IDs, redaction, and registry exposure
 - Operations regression case for observability SLO breach detection, incident creation, alert queueing, policy evidence, and registry exposure
 - Operations regression case for durable SLO policy configuration, cleanup, threshold/severity/routing/suppression persistence, and registry exposure
+- Operations regression case for governed SLO policy change requests, approval application, immutable history, rollback, and registry exposure
 - Tenant-aware security controls with viewer/operator/admin/system roles, server-only secret env-var references, redacted audit metadata, and persisted RBAC allow/deny records
 - First-party identity control plane with scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
 

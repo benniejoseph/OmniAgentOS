@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  applyObservabilitySloPolicyChange,
+  getObservabilitySloPolicyChange,
+  rejectObservabilitySloPolicyChange,
+} from "@/lib/observability/slo-policy-store";
 import { getToolExecution, saveToolExecution } from "@/lib/tools/audit-store";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -8,7 +13,7 @@ import { signalWorkflowRun } from "@/lib/workflows/runner";
 export const runtime = "nodejs";
 
 const approvalDecisionSchema = z.object({
-  kind: z.enum(["tool", "workflow"]),
+  kind: z.enum(["tool", "workflow", "slo_policy"]),
   decision: z.enum(["approve", "reject"]),
   reason: z.string().max(1000).optional(),
 });
@@ -56,6 +61,48 @@ export async function POST(
         );
       }
     }
+  }
+
+  if (parsed.data.kind === "slo_policy") {
+    const change = await getObservabilitySloPolicyChange(id);
+    if (!change) {
+      return Response.json({ error: "SLO policy change approval record not found." }, { status: 404 });
+    }
+    if (change.status !== "pending") {
+      return Response.json(
+        { error: "SLO policy change is not pending.", status: change.status },
+        { status: 409 },
+      );
+    }
+
+    let securityContext;
+    try {
+      securityContext = await authorizeRequest({
+        request,
+        action: "manage.workflow",
+        resourceType: "observability_slo_policy_change",
+        resourceId: id,
+        riskLevel: change.riskLevel,
+        metadata: { policyId: change.policyId, action: change.action, decision: parsed.data.decision },
+      });
+    } catch (error) {
+      return forbiddenResponse(error);
+    }
+
+    const result = parsed.data.decision === "approve"
+      ? await applyObservabilitySloPolicyChange(id, {
+          reviewedBy: securityContext.actorId,
+          reviewReason: parsed.data.reason,
+        })
+      : {
+          change: await rejectObservabilitySloPolicyChange(id, {
+            reviewedBy: securityContext.actorId,
+            reviewReason: parsed.data.reason,
+          }),
+          policies: [],
+        };
+
+    return Response.json(result);
   }
 
   const record = await getToolExecution(id);

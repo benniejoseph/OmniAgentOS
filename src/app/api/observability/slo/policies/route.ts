@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { getIncidentAlertTargets } from "@/lib/diagnostics/incidents";
 import {
+  listObservabilitySloPolicyChanges,
+  recordAppliedObservabilitySloPolicyChange,
+  requestObservabilitySloPolicyChange,
+  rollbackObservabilitySloPolicyChange,
   deleteObservabilitySloPolicy,
   getDefaultObservabilitySloPolicies,
   getObservabilitySloPolicy,
@@ -18,6 +22,7 @@ const metrics = ["errorRate", "availability", "latencyP95Ms", "routeFailures"] a
 const comparators = ["greater_than", "greater_than_or_equal", "less_than", "less_than_or_equal"] as const;
 const severities = ["info", "warning", "critical"] as const;
 const units = ["ratio", "ms", "count"] as const;
+const changeReason = z.string().max(1000).optional();
 
 const policySchema = z.object({
   id: z.string().min(2).max(80).regex(/^[a-z0-9_.:-]+$/),
@@ -41,20 +46,36 @@ const actionSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("upsert_policy"),
     policy: policySchema,
+    requireApproval: z.boolean().optional().default(false),
+    reason: changeReason,
   }),
   z.object({
     action: z.literal("toggle_policy"),
     id: z.string().min(2).max(80),
     enabled: z.boolean(),
+    requireApproval: z.boolean().optional().default(false),
+    reason: changeReason,
   }),
   z.object({
     action: z.literal("reset_defaults"),
+    requireApproval: z.boolean().optional().default(false),
+    reason: changeReason,
   }),
   z.object({
     action: z.literal("delete_policy"),
     id: z.string().min(2).max(80),
+    requireApproval: z.boolean().optional().default(false),
+    reason: changeReason,
+  }),
+  z.object({
+    action: z.literal("rollback_policy"),
+    changeId: z.string().min(2).max(120),
+    requireApproval: z.boolean().optional().default(true),
+    reason: changeReason,
   }),
 ]);
+
+type SloPolicyAction = z.infer<typeof actionSchema>;
 
 export async function GET(request: Request) {
   const startedAt = Date.now();
@@ -76,6 +97,7 @@ export async function GET(request: Request) {
       listObservabilitySloPolicies({ includeDisabled: true }),
       getObservabilitySloSnapshot(),
     ]);
+    const changes = await listObservabilitySloPolicyChanges({ limit: 20 });
     await recordRuntimeEventSafely({
       category: "api",
       action: "observability.slo_policies.read",
@@ -93,6 +115,8 @@ export async function GET(request: Request) {
       policies,
       defaults: getDefaultObservabilitySloPolicies(),
       alertTargets: getIncidentAlertTargets("critical"),
+      changes,
+      pendingChanges: changes.filter((change) => change.status === "pending"),
       snapshot,
     });
   } catch (error) {
@@ -139,17 +163,12 @@ export async function POST(request: Request) {
   }
 
   try {
-    const policies = parsed.data.action === "reset_defaults"
-      ? await resetObservabilitySloPolicies()
-      : parsed.data.action === "toggle_policy"
-        ? [await saveObservabilitySloPolicy({
-            ...(await requirePolicy(parsed.data.id)),
-            enabled: parsed.data.enabled,
-          })]
-        : parsed.data.action === "delete_policy"
-          ? (await deleteObservabilitySloPolicy(parsed.data.id), [])
-        : [await saveObservabilitySloPolicy(parsed.data.policy)];
+    const result = await handleSloPolicyAction(parsed.data, context);
     const snapshot = await getObservabilitySloSnapshot();
+    const [policies, changes] = await Promise.all([
+      listObservabilitySloPolicies({ includeDisabled: true }),
+      listObservabilitySloPolicyChanges({ limit: 20 }),
+    ]);
     await recordRuntimeEventSafely({
       category: "api",
       action: `observability.slo_policies.${parsed.data.action}`,
@@ -165,13 +184,18 @@ export async function POST(request: Request) {
       message: "Updated observability SLO policy configuration.",
       metadata: {
         action: parsed.data.action,
-        policyIds: policies.map((policy) => policy.id),
-        enabled: policies.filter((policy) => policy.enabled).length,
+        policyIds: result.policies.map((policy) => policy.id),
+        changeId: result.change?.id,
+        changeStatus: result.change?.status,
+        enabled: result.policies.filter((policy) => policy.enabled).length,
       },
     });
     return Response.json({
-      policies: await listObservabilitySloPolicies({ includeDisabled: true }),
-      changed: policies,
+      policies,
+      changed: result.policies,
+      change: result.change,
+      changes,
+      pendingChanges: changes.filter((change) => change.status === "pending"),
       alertTargets: getIncidentAlertTargets("critical"),
       snapshot,
     });
@@ -205,4 +229,137 @@ async function requirePolicy(policyId: string) {
     throw new Error(`SLO policy ${policyId} was not found.`);
   }
   return policy;
+}
+
+async function handleSloPolicyAction(
+  action: SloPolicyAction,
+  context: Awaited<ReturnType<typeof authorizeRequest>>,
+) {
+  if (action.action === "upsert_policy") {
+    const beforePolicy = await getObservabilitySloPolicy(action.policy.id);
+    if (action.requireApproval) {
+      const change = await requestObservabilitySloPolicyChange({
+        policyId: action.policy.id,
+        action: "upsert_policy",
+        tenantId: context.tenantId,
+        requestedBy: context.actorId,
+        reason: action.reason || "Operator requested SLO policy update.",
+        beforePolicy,
+        afterPolicy: action.policy,
+      });
+      return { policies: [], change };
+    }
+
+    const saved = await saveObservabilitySloPolicy(action.policy);
+    const change = await recordAppliedObservabilitySloPolicyChange({
+      policyId: saved.id,
+      action: "upsert_policy",
+      tenantId: context.tenantId,
+      requestedBy: context.actorId,
+      reason: action.reason,
+      beforePolicy,
+      afterPolicy: saved,
+    });
+    return { policies: [saved], change };
+  }
+
+  if (action.action === "toggle_policy") {
+    const beforePolicy = await requirePolicy(action.id);
+    const afterPolicy = { ...beforePolicy, enabled: action.enabled };
+    if (action.requireApproval) {
+      const change = await requestObservabilitySloPolicyChange({
+        policyId: action.id,
+        action: "toggle_policy",
+        tenantId: context.tenantId,
+        requestedBy: context.actorId,
+        reason: action.reason || "Operator requested SLO policy enablement change.",
+        beforePolicy,
+        afterPolicy,
+      });
+      return { policies: [], change };
+    }
+
+    const saved = await saveObservabilitySloPolicy(afterPolicy);
+    const change = await recordAppliedObservabilitySloPolicyChange({
+      policyId: action.id,
+      action: "toggle_policy",
+      tenantId: context.tenantId,
+      requestedBy: context.actorId,
+      reason: action.reason,
+      beforePolicy,
+      afterPolicy: saved,
+    });
+    return { policies: [saved], change };
+  }
+
+  if (action.action === "delete_policy") {
+    const beforePolicy = await requirePolicy(action.id);
+    if (action.requireApproval) {
+      const change = await requestObservabilitySloPolicyChange({
+        policyId: action.id,
+        action: "delete_policy",
+        tenantId: context.tenantId,
+        requestedBy: context.actorId,
+        reason: action.reason || "Operator requested SLO policy deletion.",
+        beforePolicy,
+        afterPolicy: null,
+      });
+      return { policies: [], change };
+    }
+
+    await deleteObservabilitySloPolicy(action.id);
+    const change = await recordAppliedObservabilitySloPolicyChange({
+      policyId: action.id,
+      action: "delete_policy",
+      tenantId: context.tenantId,
+      requestedBy: context.actorId,
+      reason: action.reason,
+      beforePolicy,
+      afterPolicy: null,
+    });
+    return { policies: [], change };
+  }
+
+  if (action.action === "reset_defaults") {
+    const beforePolicies = await listObservabilitySloPolicies({ includeDisabled: true });
+    if (action.requireApproval) {
+      const change = await requestObservabilitySloPolicyChange({
+        policyId: "defaults",
+        action: "reset_defaults",
+        tenantId: context.tenantId,
+        requestedBy: context.actorId,
+        reason: action.reason || "Operator requested default SLO policy reset.",
+        beforePolicy: null,
+        afterPolicy: null,
+        metadata: {
+          beforePolicies,
+          defaultPolicyIds: getDefaultObservabilitySloPolicies().map((policy) => policy.id),
+        },
+      });
+      return { policies: [], change };
+    }
+
+    const policies = await resetObservabilitySloPolicies();
+    const change = await recordAppliedObservabilitySloPolicyChange({
+      policyId: "defaults",
+      action: "reset_defaults",
+      tenantId: context.tenantId,
+      requestedBy: context.actorId,
+      reason: action.reason,
+      beforePolicy: null,
+      afterPolicy: null,
+      metadata: {
+        beforePolicies,
+        defaultPolicyIds: policies.map((policy) => policy.id),
+      },
+    });
+    return { policies, change };
+  }
+
+  return rollbackObservabilitySloPolicyChange(action.changeId, {
+    tenantId: context.tenantId,
+    requestedBy: context.actorId,
+    reason: action.reason,
+    autoApply: !action.requireApproval,
+  });
 }

@@ -28,9 +28,14 @@ import { connectionCatalog } from "@/lib/connectors/catalog";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import { createSloIncidentFingerprint, runObservabilitySloMonitor, type ObservabilitySloPolicy } from "@/lib/observability/slo-monitor";
 import {
+  applyObservabilitySloPolicyChange,
   deleteObservabilitySloPolicy,
+  getObservabilitySloPolicyChange,
   getObservabilitySloPolicy,
+  listObservabilitySloPolicyChanges,
   listObservabilitySloPolicies,
+  requestObservabilitySloPolicyChange,
+  rollbackObservabilitySloPolicyChange,
   saveObservabilitySloPolicy,
 } from "@/lib/observability/slo-policy-store";
 import { getObservabilityStats, listObservabilityEvents, recordRuntimeEvent } from "@/lib/observability/store";
@@ -371,6 +376,24 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       registryTool: "ops.slo_policy_management",
     },
   },
+  {
+    id: "operations.slo_policy_change_control",
+    name: "SLO policy change control",
+    description: "Validates governed SLO policy change requests, approval application, immutable history, rollback, and registry exposure.",
+    type: "operations",
+    input: {
+      policyPrefix: "eval_governed_policy",
+    },
+    expected: {
+      approvalRequest: true,
+      approvalApply: true,
+      history: true,
+      rollbackRequest: true,
+      rollbackApply: true,
+      cleanup: true,
+      registryTool: "ops.slo_policy_change_control",
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -516,6 +539,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.slo_policy_management") {
     return evaluateSloPolicyManagement(evalCase);
+  }
+
+  if (evalCase.id === "operations.slo_policy_change_control") {
+    return evaluateSloPolicyChangeControl(evalCase);
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -1659,6 +1686,125 @@ async function evaluateSloPolicyManagement(evalCase: EvalCaseDefinition): Promis
         suppressionMinutes: saved.suppressionMinutes,
       },
       policyCount: allPolicies.length,
+      cleanup,
+    },
+  };
+}
+
+async function evaluateSloPolicyChangeControl(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const policyId = `${String(evalCase.input.policyPrefix || "eval_governed_policy")}_${Date.now()}`;
+  const baselinePolicy: ObservabilitySloPolicy = {
+    id: policyId,
+    name: "Evaluation governed SLO policy",
+    description: "Temporary evaluation policy for governed SLO change control.",
+    metric: "latencyP95Ms",
+    comparator: "greater_than",
+    warningThreshold: 9000,
+    criticalThreshold: 18000,
+    warningSeverity: "warning",
+    criticalSeverity: "critical",
+    unit: "ms",
+    componentId: "observability",
+    enabled: true,
+    alertTargetIds: ["dashboard"],
+    suppressionMinutes: 31,
+    metadata: { source: "evaluation", governance: "baseline" },
+  };
+  const savedBaseline = await saveObservabilitySloPolicy(baselinePolicy);
+  const requestedPolicy: ObservabilitySloPolicy = {
+    ...savedBaseline,
+    warningThreshold: 7000,
+    criticalThreshold: 12000,
+    warningSeverity: "info",
+    criticalSeverity: "warning",
+    alertTargetIds: ["dashboard", "ops"],
+    suppressionMinutes: 13,
+    metadata: { ...savedBaseline.metadata, governance: "requested" },
+  };
+  const requestedChange = await requestObservabilitySloPolicyChange({
+    policyId,
+    action: "upsert_policy",
+    tenantId: "evaluation",
+    requestedBy: "evaluation",
+    reason: "Evaluation SLO policy governance request.",
+    beforePolicy: savedBaseline,
+    afterPolicy: requestedPolicy,
+  });
+  const fetchedPending = await getObservabilitySloPolicyChange(requestedChange.id);
+  const pendingChanges = await listObservabilitySloPolicyChanges({ policyId, status: "pending", limit: 20 });
+  const approval = await applyObservabilitySloPolicyChange(requestedChange.id, {
+    reviewedBy: "evaluation",
+    reviewReason: "Evaluation approval.",
+  });
+  const approvedPolicy = await getObservabilitySloPolicy(policyId);
+  const historyAfterApproval = await listObservabilitySloPolicyChanges({ policyId, limit: 20 });
+  const rollbackRequest = await rollbackObservabilitySloPolicyChange(requestedChange.id, {
+    tenantId: "evaluation",
+    requestedBy: "evaluation",
+    reason: "Evaluation rollback request.",
+  });
+  const fetchedRollback = await getObservabilitySloPolicyChange(rollbackRequest.change.id);
+  const rollbackApproval = await applyObservabilitySloPolicyChange(rollbackRequest.change.id, {
+    reviewedBy: "evaluation",
+    reviewReason: "Evaluation rollback approval.",
+  });
+  const restoredPolicy = await getObservabilitySloPolicy(policyId);
+  const cleanup = await deleteObservabilitySloPolicy(policyId).catch(() => false);
+  const afterCleanup = await getObservabilitySloPolicy(policyId);
+  const registry = getCapabilityRegistry();
+  const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
+  const checks = {
+    approvalRequest: Boolean(evalCase.expected.approvalRequest)
+      ? fetchedPending?.status === "pending" && pendingChanges.some((change) => change.id === requestedChange.id)
+      : true,
+    approvalApply: Boolean(evalCase.expected.approvalApply)
+      ? approval.change.status === "applied" &&
+        approvedPolicy?.warningThreshold === requestedPolicy.warningThreshold &&
+        approvedPolicy?.criticalSeverity === requestedPolicy.criticalSeverity
+      : true,
+    history: Boolean(evalCase.expected.history)
+      ? historyAfterApproval.some((change) =>
+          change.id === requestedChange.id &&
+          change.beforePolicy?.warningThreshold === baselinePolicy.warningThreshold &&
+          change.afterPolicy?.warningThreshold === requestedPolicy.warningThreshold
+        )
+      : true,
+    rollbackRequest: Boolean(evalCase.expected.rollbackRequest)
+      ? fetchedRollback?.status === "pending" && fetchedRollback.rollbackChangeId === requestedChange.id
+      : true,
+    rollbackApply: Boolean(evalCase.expected.rollbackApply)
+      ? rollbackApproval.change.status === "applied" &&
+        restoredPolicy?.warningThreshold === baselinePolicy.warningThreshold &&
+        restoredPolicy?.criticalThreshold === baselinePolicy.criticalThreshold
+      : true,
+    cleanup: Boolean(evalCase.expected.cleanup)
+      ? cleanup === true && afterCleanup === null
+      : true,
+    registryToolAvailable: activeToolIds.has(String(evalCase.expected.registryTool || "ops.slo_policy_change_control")),
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      policyId,
+      requestedChange: {
+        id: requestedChange.id,
+        status: requestedChange.status,
+        riskLevel: requestedChange.riskLevel,
+      },
+      approval: {
+        status: approval.change.status,
+        policies: approval.policies.length,
+      },
+      rollback: {
+        id: rollbackRequest.change.id,
+        status: rollbackApproval.change.status,
+        policies: rollbackApproval.policies.length,
+      },
       cleanup,
     },
   };

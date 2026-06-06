@@ -160,6 +160,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "ops.slo_policy_change_control",
+    name: "SLO Policy Change Control",
+    description: "Tracks SLO policy change requests, approvals, immutable history, and rollback snapshots.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

@@ -27,11 +27,45 @@ export type ObservabilitySloPolicy = {
   updatedAt?: string;
 };
 
+export type SloPolicyChangeAction =
+  | "upsert_policy"
+  | "toggle_policy"
+  | "delete_policy"
+  | "reset_defaults"
+  | "rollback_policy";
+export type SloPolicyChangeStatus = "pending" | "applied" | "rejected";
+
+export type ObservabilitySloPolicyChange = {
+  id: string;
+  policyId: string;
+  action: SloPolicyChangeAction;
+  status: SloPolicyChangeStatus;
+  riskLevel: number;
+  tenantId?: string;
+  requestedBy?: string;
+  reviewedBy?: string;
+  reason?: string;
+  reviewReason?: string;
+  beforePolicy?: ObservabilitySloPolicy | null;
+  afterPolicy?: ObservabilitySloPolicy | null;
+  rollbackChangeId?: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  reviewedAt?: string;
+  appliedAt?: string;
+};
+
 type SloPolicyLedger = {
   policies: ObservabilitySloPolicy[];
 };
 
+type SloPolicyChangeLedger = {
+  changes: ObservabilitySloPolicyChange[];
+};
+
 let policyFileWriteQueue: Promise<void> = Promise.resolve();
+let policyChangeFileWriteQueue: Promise<void> = Promise.resolve();
 
 export function getDefaultObservabilitySloPolicies(): ObservabilitySloPolicy[] {
   return [
@@ -238,6 +272,226 @@ export async function deleteObservabilitySloPolicy(policyId: string) {
   return true;
 }
 
+export async function listObservabilitySloPolicyChanges({
+  policyId,
+  status,
+  limit = 50,
+}: {
+  policyId?: string;
+  status?: SloPolicyChangeStatus;
+  limit?: number;
+} = {}) {
+  const cappedLimit = Math.min(Math.max(Math.round(limit), 1), 200);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_observability_slo_policy_changes
+      ORDER BY created_at DESC
+      LIMIT ${Math.max(cappedLimit, 100)}
+    `;
+    return rows
+      .map(sloPolicyChangeFromRow)
+      .filter((change) => !policyId || change.policyId === policyId)
+      .filter((change) => !status || change.status === status)
+      .slice(0, cappedLimit);
+  }
+
+  const ledger = await readSloPolicyChangeLedger();
+  return ledger.changes
+    .filter((change) => !policyId || change.policyId === policyId)
+    .filter((change) => !status || change.status === status)
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    .slice(0, cappedLimit);
+}
+
+export async function getObservabilitySloPolicyChange(changeId: string) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_observability_slo_policy_changes
+      WHERE id = ${changeId}
+      LIMIT 1
+    `;
+    return rows[0] ? sloPolicyChangeFromRow(rows[0]) : null;
+  }
+
+  const ledger = await readSloPolicyChangeLedger();
+  return ledger.changes.find((change) => change.id === changeId) || null;
+}
+
+export async function requestObservabilitySloPolicyChange(input: {
+  policyId: string;
+  action: SloPolicyChangeAction;
+  tenantId?: string;
+  requestedBy?: string;
+  reason?: string;
+  beforePolicy?: ObservabilitySloPolicy | null;
+  afterPolicy?: ObservabilitySloPolicy | null;
+  rollbackChangeId?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  const now = new Date().toISOString();
+  const change = normalizePolicyChange({
+    id: createSloPolicyChangeId(),
+    policyId: input.policyId,
+    action: input.action,
+    status: "pending",
+    riskLevel: changeRiskLevel(input.action),
+    tenantId: input.tenantId,
+    requestedBy: input.requestedBy,
+    reason: input.reason,
+    beforePolicy: input.beforePolicy,
+    afterPolicy: input.afterPolicy,
+    rollbackChangeId: input.rollbackChangeId,
+    metadata: input.metadata || {},
+    createdAt: now,
+    updatedAt: now,
+  });
+  await saveObservabilitySloPolicyChange(change);
+  return change;
+}
+
+export async function recordAppliedObservabilitySloPolicyChange(input: {
+  policyId: string;
+  action: SloPolicyChangeAction;
+  tenantId?: string;
+  requestedBy?: string;
+  reason?: string;
+  beforePolicy?: ObservabilitySloPolicy | null;
+  afterPolicy?: ObservabilitySloPolicy | null;
+  rollbackChangeId?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  const now = new Date().toISOString();
+  const change = normalizePolicyChange({
+    id: createSloPolicyChangeId(),
+    policyId: input.policyId,
+    action: input.action,
+    status: "applied",
+    riskLevel: changeRiskLevel(input.action),
+    tenantId: input.tenantId,
+    requestedBy: input.requestedBy,
+    reviewedBy: input.requestedBy,
+    reason: input.reason,
+    reviewReason: input.reason,
+    beforePolicy: input.beforePolicy,
+    afterPolicy: input.afterPolicy,
+    rollbackChangeId: input.rollbackChangeId,
+    metadata: input.metadata || {},
+    createdAt: now,
+    updatedAt: now,
+    reviewedAt: now,
+    appliedAt: now,
+  });
+  await saveObservabilitySloPolicyChange(change);
+  return change;
+}
+
+export async function applyObservabilitySloPolicyChange(
+  changeId: string,
+  review: {
+    reviewedBy?: string;
+    reviewReason?: string;
+  } = {},
+) {
+  const pending = await getObservabilitySloPolicyChange(changeId);
+  if (!pending) {
+    throw new Error(`SLO policy change ${changeId} was not found.`);
+  }
+  if (pending.status !== "pending") {
+    throw new Error(`SLO policy change ${changeId} is ${pending.status}.`);
+  }
+
+  const policies = await applySloPolicyChangePayload(pending);
+  const now = new Date().toISOString();
+  const change = normalizePolicyChange({
+    ...pending,
+    status: "applied",
+    reviewedBy: review.reviewedBy || pending.reviewedBy,
+    reviewReason: review.reviewReason || pending.reviewReason,
+    reviewedAt: now,
+    appliedAt: now,
+    updatedAt: now,
+  });
+  await saveObservabilitySloPolicyChange(change);
+  return { change, policies };
+}
+
+export async function rejectObservabilitySloPolicyChange(
+  changeId: string,
+  review: {
+    reviewedBy?: string;
+    reviewReason?: string;
+  } = {},
+) {
+  const pending = await getObservabilitySloPolicyChange(changeId);
+  if (!pending) {
+    throw new Error(`SLO policy change ${changeId} was not found.`);
+  }
+  if (pending.status !== "pending") {
+    throw new Error(`SLO policy change ${changeId} is ${pending.status}.`);
+  }
+
+  const now = new Date().toISOString();
+  const change = normalizePolicyChange({
+    ...pending,
+    status: "rejected",
+    reviewedBy: review.reviewedBy || pending.reviewedBy,
+    reviewReason: review.reviewReason || pending.reviewReason,
+    reviewedAt: now,
+    updatedAt: now,
+  });
+  await saveObservabilitySloPolicyChange(change);
+  return change;
+}
+
+export async function rollbackObservabilitySloPolicyChange(
+  changeId: string,
+  input: {
+    tenantId?: string;
+    requestedBy?: string;
+    reason?: string;
+    autoApply?: boolean;
+  } = {},
+) {
+  const source = await getObservabilitySloPolicyChange(changeId);
+  if (!source) {
+    throw new Error(`SLO policy change ${changeId} was not found.`);
+  }
+
+  const restorePolicies = parsePolicyArray(source.metadata.beforePolicies);
+  const currentPolicy = source.policyId !== "defaults"
+    ? await getObservabilitySloPolicy(source.policyId)
+    : null;
+  const change = await requestObservabilitySloPolicyChange({
+    policyId: source.policyId,
+    action: "rollback_policy",
+    tenantId: input.tenantId,
+    requestedBy: input.requestedBy,
+    reason: input.reason || `Rollback SLO policy change ${source.id}.`,
+    beforePolicy: currentPolicy,
+    afterPolicy: restorePolicies.length ? null : source.beforePolicy || null,
+    rollbackChangeId: source.id,
+    metadata: {
+      sourceAction: source.action,
+      restorePolicies,
+      deleteOnApply: !source.beforePolicy && !restorePolicies.length,
+    },
+  });
+
+  if (!input.autoApply) {
+    return { change, policies: [] };
+  }
+
+  return applyObservabilitySloPolicyChange(change.id, {
+    reviewedBy: input.requestedBy,
+    reviewReason: input.reason,
+  });
+}
+
 async function ensureDefaultSloPolicies() {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -302,6 +556,112 @@ async function writeSloPolicyLedger(ledger: SloPolicyLedger) {
   await writeJsonFile(getSloPolicyFile(), { policies: ledger.policies.slice(0, 100) });
 }
 
+async function readSloPolicyChangeLedger() {
+  return readJsonFile<SloPolicyChangeLedger>(getSloPolicyChangeFile(), { changes: [] });
+}
+
+async function mutateSloPolicyChangeLedger(mutator: (ledger: SloPolicyChangeLedger) => SloPolicyChangeLedger) {
+  policyChangeFileWriteQueue = policyChangeFileWriteQueue.then(
+    async () => {
+      await writeSloPolicyChangeLedger(mutator(await readSloPolicyChangeLedger()));
+    },
+    async () => {
+      await writeSloPolicyChangeLedger(mutator(await readSloPolicyChangeLedger()));
+    },
+  );
+  await policyChangeFileWriteQueue;
+}
+
+async function writeSloPolicyChangeLedger(ledger: SloPolicyChangeLedger) {
+  await writeJsonFile(getSloPolicyChangeFile(), { changes: ledger.changes.slice(0, 500) });
+}
+
+async function saveObservabilitySloPolicyChange(change: ObservabilitySloPolicyChange) {
+  const record = normalizePolicyChange(change);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    await getSql()`
+      INSERT INTO omni_observability_slo_policy_changes (
+        id, policy_id, action, status, risk_level, tenant_id,
+        requested_by, reviewed_by, reason, review_reason,
+        before_policy, after_policy, rollback_change_id, metadata,
+        created_at, updated_at, reviewed_at, applied_at
+      )
+      VALUES (
+        ${record.id}, ${record.policyId}, ${record.action}, ${record.status},
+        ${record.riskLevel}, ${record.tenantId || null}, ${record.requestedBy || null},
+        ${record.reviewedBy || null}, ${record.reason || null}, ${record.reviewReason || null},
+        ${JSON.stringify(record.beforePolicy || null)}::jsonb,
+        ${JSON.stringify(record.afterPolicy || null)}::jsonb,
+        ${record.rollbackChangeId || null}, ${JSON.stringify(record.metadata)}::jsonb,
+        ${record.createdAt}, ${record.updatedAt}, ${record.reviewedAt || null},
+        ${record.appliedAt || null}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        policy_id = EXCLUDED.policy_id,
+        action = EXCLUDED.action,
+        status = EXCLUDED.status,
+        risk_level = EXCLUDED.risk_level,
+        tenant_id = EXCLUDED.tenant_id,
+        requested_by = EXCLUDED.requested_by,
+        reviewed_by = EXCLUDED.reviewed_by,
+        reason = EXCLUDED.reason,
+        review_reason = EXCLUDED.review_reason,
+        before_policy = EXCLUDED.before_policy,
+        after_policy = EXCLUDED.after_policy,
+        rollback_change_id = EXCLUDED.rollback_change_id,
+        metadata = EXCLUDED.metadata,
+        updated_at = EXCLUDED.updated_at,
+        reviewed_at = EXCLUDED.reviewed_at,
+        applied_at = EXCLUDED.applied_at
+    `;
+    return record;
+  }
+
+  await mutateSloPolicyChangeLedger((ledger) => ({
+    changes: [record, ...ledger.changes.filter((item) => item.id !== record.id)],
+  }));
+  return record;
+}
+
+async function applySloPolicyChangePayload(change: ObservabilitySloPolicyChange) {
+  if (change.action === "reset_defaults") {
+    return resetObservabilitySloPolicies();
+  }
+
+  if (change.action === "delete_policy") {
+    await deleteObservabilitySloPolicy(change.policyId);
+    return [];
+  }
+
+  if (change.action === "rollback_policy") {
+    const restorePolicies = parsePolicyArray(change.metadata.restorePolicies);
+    if (restorePolicies.length) {
+      const saved: ObservabilitySloPolicy[] = [];
+      for (const policy of restorePolicies) {
+        saved.push(await saveObservabilitySloPolicy(policy));
+      }
+      return saved;
+    }
+
+    if (change.afterPolicy) {
+      return [await saveObservabilitySloPolicy(change.afterPolicy)];
+    }
+
+    if (change.metadata.deleteOnApply) {
+      await deleteObservabilitySloPolicy(change.policyId);
+      return [];
+    }
+  }
+
+  if (change.afterPolicy) {
+    return [await saveObservabilitySloPolicy(change.afterPolicy)];
+  }
+
+  throw new Error(`SLO policy change ${change.id} cannot be applied without an after snapshot.`);
+}
+
 function normalizePolicy(policy: ObservabilitySloPolicy): ObservabilitySloPolicy {
   const now = new Date().toISOString();
   return {
@@ -325,6 +685,32 @@ function normalizePolicy(policy: ObservabilitySloPolicy): ObservabilitySloPolicy
   };
 }
 
+function normalizePolicyChange(change: ObservabilitySloPolicyChange): ObservabilitySloPolicyChange {
+  const now = new Date().toISOString();
+  const beforePolicy = parsePolicySnapshot(change.beforePolicy);
+  const afterPolicy = parsePolicySnapshot(change.afterPolicy);
+  return {
+    id: change.id.trim() || createSloPolicyChangeId(),
+    policyId: change.policyId.trim() || afterPolicy?.id || beforePolicy?.id || "unknown",
+    action: normalizeChangeAction(change.action),
+    status: normalizeChangeStatus(change.status),
+    riskLevel: Math.min(Math.max(Math.round(Number(change.riskLevel || 2)), 0), 3),
+    tenantId: change.tenantId?.trim() || undefined,
+    requestedBy: change.requestedBy?.trim() || undefined,
+    reviewedBy: change.reviewedBy?.trim() || undefined,
+    reason: change.reason?.trim() || undefined,
+    reviewReason: change.reviewReason?.trim() || undefined,
+    beforePolicy,
+    afterPolicy,
+    rollbackChangeId: change.rollbackChangeId?.trim() || undefined,
+    metadata: (redactSensitive(change.metadata || {}) || {}) as Record<string, unknown>,
+    createdAt: change.createdAt || now,
+    updatedAt: change.updatedAt || now,
+    reviewedAt: change.reviewedAt,
+    appliedAt: change.appliedAt,
+  };
+}
+
 function sloPolicyFromRow(row: Record<string, unknown>): ObservabilitySloPolicy {
   return normalizePolicy({
     id: String(row.id),
@@ -344,6 +730,29 @@ function sloPolicyFromRow(row: Record<string, unknown>): ObservabilitySloPolicy 
     metadata: parseObject(row.metadata) || {},
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
+  });
+}
+
+function sloPolicyChangeFromRow(row: Record<string, unknown>): ObservabilitySloPolicyChange {
+  return normalizePolicyChange({
+    id: String(row.id),
+    policyId: String(row.policy_id || ""),
+    action: normalizeChangeAction(row.action),
+    status: normalizeChangeStatus(row.status),
+    riskLevel: Number(row.risk_level || 2),
+    tenantId: row.tenant_id ? String(row.tenant_id) : undefined,
+    requestedBy: row.requested_by ? String(row.requested_by) : undefined,
+    reviewedBy: row.reviewed_by ? String(row.reviewed_by) : undefined,
+    reason: row.reason ? String(row.reason) : undefined,
+    reviewReason: row.review_reason ? String(row.review_reason) : undefined,
+    beforePolicy: parsePolicySnapshot(row.before_policy),
+    afterPolicy: parsePolicySnapshot(row.after_policy),
+    rollbackChangeId: row.rollback_change_id ? String(row.rollback_change_id) : undefined,
+    metadata: parseObject(row.metadata) || {},
+    createdAt: normalizeDate(row.created_at),
+    updatedAt: normalizeDate(row.updated_at),
+    reviewedAt: row.reviewed_at ? normalizeDate(row.reviewed_at) : undefined,
+    appliedAt: row.applied_at ? normalizeDate(row.applied_at) : undefined,
   });
 }
 
@@ -375,6 +784,31 @@ function normalizeSeverity(value: unknown, fallback: IncidentSeverity): Incident
   return fallback;
 }
 
+function normalizeChangeAction(value: unknown): SloPolicyChangeAction {
+  const action = String(value || "upsert_policy");
+  if (
+    action === "toggle_policy" ||
+    action === "delete_policy" ||
+    action === "reset_defaults" ||
+    action === "rollback_policy"
+  ) {
+    return action;
+  }
+  return "upsert_policy";
+}
+
+function normalizeChangeStatus(value: unknown): SloPolicyChangeStatus {
+  const status = String(value || "pending");
+  if (status === "applied" || status === "rejected") {
+    return status;
+  }
+  return "pending";
+}
+
+function changeRiskLevel(action: SloPolicyChangeAction) {
+  return action === "delete_policy" || action === "reset_defaults" || action === "rollback_policy" ? 3 : 2;
+}
+
 function parseStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String) : [];
 }
@@ -386,10 +820,34 @@ function parseObject(value: unknown): Record<string, unknown> | undefined {
   return undefined;
 }
 
+function parsePolicySnapshot(value: unknown): ObservabilitySloPolicy | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return normalizePolicy(value as ObservabilitySloPolicy);
+}
+
+function parsePolicyArray(value: unknown): ObservabilitySloPolicy[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map(parsePolicySnapshot)
+    .filter((policy): policy is ObservabilitySloPolicy => Boolean(policy));
+}
+
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
 }
 
+function createSloPolicyChangeId() {
+  return `slochg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function getSloPolicyFile() {
   return getDataPath("observability-slo-policies.json");
+}
+
+function getSloPolicyChangeFile() {
+  return getDataPath("observability-slo-policy-changes.json");
 }
