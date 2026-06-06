@@ -43,11 +43,14 @@ When Postgres supports pgvector, the app adds vector columns and indexes for sem
 - `/api/workflows/:id/tick` advance one persisted workflow step
 - `/api/workflows/:id/signal` pause, resume, approve, retry, or cancel a workflow
 - `/api/workflows/tick` advance queued workflows for cron or operator control
+- `/api/evaluations` regression suite start/list endpoint
+- `/api/evaluations/:id` evaluation run detail endpoint
 - Command center panels for knowledge ingest, memory browser, and knowledge library
 - Command center panel for governed tool dry-runs, executions, and audit review
 - Command center panel for MCP connector registration, discovery, and discovered tool review
 - Command center panel for OpenAPI connector import, operation review, and governed REST execution
 - Command center panel for durable workflow start, tick, approval, pause/resume, retry, and cancel controls
+- Command center panel for regression suite runs, pass rate, latency, and cost estimates
 - Local memory and knowledge persisted under `.omniagent/`
 - Postgres-backed memory, RAG documents/chunks, run history, tool audit history, MCP connectors, OpenAPI connectors, and discovered tool schemas when `DATABASE_URL` is configured
 - Hybrid retrieval across durable memories and source chunks with semantic, keyword, recency, and importance signals
@@ -56,6 +59,7 @@ When Postgres supports pgvector, the app adds vector columns and indexes for sem
 - MCP connector host for Streamable HTTP servers; discovered tools flow into the governed tool registry and inherit risk/audit policy
 - OpenAPI connector importer for JSON/YAML specs; imported REST operations flow into the governed tool registry with env-var based auth, dry-runs, approval gates, and audit policy
 - Durable workflow runtime for persisted step execution with retries, approval waits, operator signals, event history, and final report persistence
+- Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
 
 ## Connector Secrets
 

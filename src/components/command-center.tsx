@@ -2,6 +2,7 @@
 
 import {
   Activity,
+  BarChart3,
   BookOpen,
   Brain,
   Cable,
@@ -232,6 +233,70 @@ type WorkflowsResponse = {
   stats: WorkflowStats;
 };
 
+type EvalResultStatus = "pass" | "fail" | "warn";
+
+type EvalCaseDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  type: "system" | "retrieval" | "tool" | "workflow";
+  input: Record<string, unknown>;
+  expected: Record<string, unknown>;
+};
+
+type EvalRunRecord = {
+  id: string;
+  suite: string;
+  status: "running" | "completed" | "failed";
+  summary: {
+    total: number;
+    passed: number;
+    failed: number;
+    warnings: number;
+    averageLatencyMs: number;
+    estimatedCostUsd: number;
+  };
+  error?: string;
+  startedAt: string;
+  completedAt?: string;
+  updatedAt: string;
+};
+
+type EvalResultRecord = {
+  id: string;
+  evalRunId: string;
+  caseId: string;
+  caseName: string;
+  caseType: string;
+  status: EvalResultStatus;
+  score: number;
+  latencyMs: number;
+  estimatedCostUsd: number;
+  output?: Record<string, unknown>;
+  error?: string;
+  createdAt: string;
+};
+
+type EvalStats = {
+  total: number;
+  byStatus: Record<string, number>;
+  latest?: EvalRunRecord;
+  latestPassRate: number;
+  averageLatencyMs: number;
+  estimatedCostUsd: number;
+};
+
+type EvaluationsResponse = {
+  cases: EvalCaseDefinition[];
+  runs: EvalRunRecord[];
+  stats: EvalStats;
+};
+
+type EvalRunDetail = {
+  run: EvalRunRecord;
+  results: EvalResultRecord[];
+};
+
 type CapabilityResponse = {
   openaiConfigured: boolean;
   databaseConfigured: boolean;
@@ -260,6 +325,7 @@ type CapabilityResponse = {
   mcpConnectors: ConnectorStats;
   openApiConnectors: OpenApiConnectorStats;
   workflows: WorkflowStats;
+  evaluations: EvalStats;
   registry: {
     agents: Capability[];
     tools: Capability[];
@@ -401,6 +467,8 @@ export function CommandCenter() {
   const [workflowState, setWorkflowState] = useState<WorkflowsResponse | null>(null);
   const [workflowGoal, setWorkflowGoal] = useState("Run a durable Plan-Execute-Verify workflow for this agent OS.");
   const [workflowResult, setWorkflowResult] = useState("");
+  const [evaluationState, setEvaluationState] = useState<EvaluationsResponse | null>(null);
+  const [evaluationResult, setEvaluationResult] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -435,6 +503,10 @@ export function CommandCenter() {
       .then((response) => response.json())
       .then(setWorkflowState)
       .catch(() => undefined);
+    fetch("/api/evaluations?limit=5")
+      .then((response) => response.json())
+      .then(setEvaluationState)
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -464,6 +536,9 @@ export function CommandCenter() {
   const latestOpenApiOperations = openApiState?.operations.slice(0, 5) || [];
   const workflowStats = workflowState?.stats || capabilities?.workflows;
   const latestWorkflows = workflowState?.runs.slice(0, 5) || capabilities?.workflows.latest || [];
+  const evaluationStats = evaluationState?.stats || capabilities?.evaluations;
+  const latestEvaluations = evaluationState?.runs.slice(0, 5) || (capabilities?.evaluations.latest ? [capabilities.evaluations.latest] : []);
+  const latestEvaluationCases = evaluationState?.cases.slice(0, 4) || [];
   const storageLabel =
     capabilities?.storageBackend === "postgres"
       ? "Postgres"
@@ -798,6 +873,25 @@ export function CommandCenter() {
     }
   }
 
+  async function runEvaluations() {
+    setStatus("running evaluations");
+    setEvaluationResult("");
+
+    try {
+      const response = await fetch("/api/evaluations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ suite: "core" }),
+      });
+      const data = (await response.json()) as EvalRunDetail;
+      setEvaluationResult(formatToolResult(data));
+      setStatus(data.run?.status ? `evaluations ${data.run.status}` : response.ok ? "evaluations complete" : "evaluations failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "evaluation run failed");
+    }
+  }
+
   function refreshCapabilities() {
     fetch("/api/capabilities")
       .then((response) => response.json())
@@ -833,6 +927,13 @@ export function CommandCenter() {
       .catch(() => undefined);
   }
 
+  function refreshEvaluations() {
+    fetch("/api/evaluations?limit=5")
+      .then((response) => response.json())
+      .then(setEvaluationState)
+      .catch(() => undefined);
+  }
+
   function refreshWorkspace() {
     refreshCapabilities();
     fetch("/api/memory?limit=5")
@@ -850,6 +951,7 @@ export function CommandCenter() {
     refreshConnectors();
     refreshOpenApiConnectors();
     refreshWorkflows();
+    refreshEvaluations();
   }
 
   return (
@@ -865,7 +967,7 @@ export function CommandCenter() {
               <h1 className="text-2xl font-semibold">Agentic orchestration command center</h1>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-11">
+          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-12">
             <StatusPill icon={<Brain size={15} />} label="Memory" value={`${capabilities?.memory.total ?? 0}`} />
             <StatusPill
               icon={<Database size={15} />}
@@ -875,6 +977,11 @@ export function CommandCenter() {
             <StatusPill icon={<BookOpen size={15} />} label="Docs" value={`${capabilities?.knowledge.documents ?? 0}`} />
             <StatusPill icon={<History size={15} />} label="Runs" value={`${capabilities?.runs.total ?? 0}`} />
             <StatusPill icon={<Activity size={15} />} label="Flows" value={`${workflowStats?.active ?? 0}`} />
+            <StatusPill
+              icon={<BarChart3 size={15} />}
+              label="Evals"
+              value={`${Math.round((evaluationStats?.latestPassRate ?? 0) * 100)}%`}
+            />
             <StatusPill icon={<Cable size={15} />} label="Tools" value={`${governedActiveTools.length || activeTools.length}`} />
             <StatusPill icon={<Cable size={15} />} label="MCP" value={`${connectorStats?.toolCount ?? 0}`} />
             <StatusPill icon={<Globe2 size={15} />} label="REST" value={`${openApiStats?.operationCount ?? 0}`} />
@@ -1034,6 +1141,45 @@ export function CommandCenter() {
                       No durable workflows recorded yet.
                     </p>
                   )}
+                </div>
+              </div>
+            </section>
+
+            <section className="panel rounded-lg p-4">
+              <div className="mb-4 flex items-center gap-2">
+                <BarChart3 className="text-primary" size={18} />
+                <h2 className="font-semibold">Evaluation harness</h2>
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Pass" value={`${Math.round((evaluationStats?.latestPassRate ?? 0) * 100)}%`} />
+                <MiniStat label="Latency" value={`${evaluationStats?.averageLatencyMs ?? 0}ms`} />
+                <MiniStat label="Cost" value={`$${(evaluationStats?.estimatedCostUsd ?? 0).toFixed(4)}`} />
+              </div>
+              <div className="flex flex-col gap-3">
+                <button
+                  type="button"
+                  onClick={runEvaluations}
+                  className="flex h-10 items-center justify-center gap-2 rounded-md border border-primary/60 text-sm font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                >
+                  <Play size={15} />
+                  Run suite
+                </button>
+                {evaluationResult ? (
+                  <pre className="max-h-48 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
+                    {evaluationResult}
+                  </pre>
+                ) : null}
+                <div className="flex flex-col gap-3">
+                  {latestEvaluations.length ? (
+                    latestEvaluations.map((run) => <EvaluationRunRow key={run.id} run={run} />)
+                  ) : (
+                    <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+                      No evaluation runs recorded yet.
+                    </p>
+                  )}
+                  {latestEvaluationCases.map((evalCase) => (
+                    <EvaluationCaseRow key={evalCase.id} evalCase={evalCase} />
+                  ))}
                 </div>
               </div>
             </section>
@@ -1779,6 +1925,47 @@ function WorkflowRow({
   );
 }
 
+function EvaluationRunRow({ run }: { run: EvalRunRecord }) {
+  const passRate = run.summary.total ? Math.round((run.summary.passed / run.summary.total) * 100) : 0;
+
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", evaluationRunTone(run.status))}>
+          {run.status}
+        </span>
+        <span className="font-mono text-[11px] text-muted">{passRate}%</span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{run.suite}</p>
+      <div className="mt-3 grid grid-cols-3 gap-1.5 font-mono text-[11px] text-muted">
+        <span>{run.summary.passed} pass</span>
+        <span>{run.summary.warnings} warn</span>
+        <span>{run.summary.failed} fail</span>
+      </div>
+      <div className="mt-3 flex items-center justify-between gap-3 font-mono text-[11px] text-muted">
+        <span>{run.summary.averageLatencyMs}ms avg</span>
+        <span>${run.summary.estimatedCostUsd.toFixed(4)}</span>
+      </div>
+      {run.error ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-danger">{run.error}</p> : null}
+    </div>
+  );
+}
+
+function EvaluationCaseRow({ evalCase }: { evalCase: EvalCaseDefinition }) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="rounded bg-primary/16 px-2 py-1 font-mono text-[11px] text-primary">
+          {evalCase.type}
+        </span>
+        <span className="font-mono text-[11px] text-muted">{evalCase.id}</span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{evalCase.name}</p>
+      <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">{evalCase.description}</p>
+    </div>
+  );
+}
+
 function statusTone(status: ToolExecutionStatus) {
   if (status === "executed") {
     return "bg-primary/16 text-primary";
@@ -1793,6 +1980,18 @@ function statusTone(status: ToolExecutionStatus) {
   }
 
   return "bg-background text-muted";
+}
+
+function evaluationRunTone(status: EvalRunRecord["status"]) {
+  if (status === "completed") {
+    return "bg-primary/16 text-primary";
+  }
+
+  if (status === "failed") {
+    return "bg-danger/14 text-danger";
+  }
+
+  return "bg-accent/14 text-accent";
 }
 
 function workflowTone(status: WorkflowRunStatus) {

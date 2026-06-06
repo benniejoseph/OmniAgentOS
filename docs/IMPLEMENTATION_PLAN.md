@@ -24,6 +24,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - MCP connector registry for Streamable HTTP endpoints, token env-var references, server capabilities, discovered tool schemas, and connector health
 - OpenAPI connector registry for JSON/YAML specs, base URLs, token env-var references, imported operations, request schemas, and connector health
 - Durable workflow runtime with persisted runs, steps, events, retries, approval waits, operator signals, and report persistence
+- Evaluation harness with persisted suites, case results, pass/warn/fail status, retrieval checks, workflow lifecycle checks, latency, and cost estimates
 
 ## Architecture
 
@@ -47,6 +48,11 @@ flowchart TD
   WSTEPS --> DB
   WF --> RAG
   WF --> MEM
+  API --> EVAL["Evaluation Harness"]
+  EVAL --> GOV
+  EVAL --> WF
+  EVAL --> RAG
+  EVAL --> DB
   API --> MCP["MCP Connector Host"]
   MCP --> MTOOLS["Discovered MCP Tools"]
   MTOOLS --> GOV
@@ -69,5 +75,5 @@ flowchart TD
 5. MCP connector host: register remote Streamable HTTP MCP servers, discover tools, and expose selected tools through the governed executor. Done.
 6. OpenAPI connector importer: transform API specs into typed tool adapters. Done.
 7. Workflow runtime: add durable queues for long-running jobs, retries, signals, and resumes. Done.
-8. Evaluation harness: add regression tasks, retrieval quality checks, and cost/latency metrics.
+8. Evaluation harness: add regression tasks, retrieval quality checks, and cost/latency metrics. Done.
 9. Security controls: add tenant boundaries, RBAC, secret vaulting, and audit trails.

@@ -2,6 +2,7 @@ import { hasOpenAIKey } from "@/lib/config";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
 import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
+import { getEvalStats } from "@/lib/evaluations/store";
 import { getMemoryStats } from "@/lib/memory/store";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import { getKnowledgeStats } from "@/lib/rag/store";
@@ -23,6 +24,7 @@ export async function GET() {
     mcpConnectors: await getMcpConnectorStats(),
     openApiConnectors: await getOpenApiConnectorStats(),
     workflows: await getWorkflowStats(),
+    evaluations: await getEvalStats(),
     registry: getCapabilityRegistry(),
   });
 }

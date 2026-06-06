@@ -81,6 +81,12 @@ export const tools: Capability[] = [
     description: "Run long jobs through persisted steps with retries, approvals, signals, and resumes.",
     status: "active",
   },
+  {
+    id: "eval.harness",
+    name: "Evaluation Harness",
+    description: "Run regression suites for readiness, retrieval, governed tools, workflows, latency, and cost.",
+    status: "active",
+  },
 ];
 
 export const connectorTypes: Capability[] = [

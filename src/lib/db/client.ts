@@ -321,6 +321,47 @@ export async function ensureDatabaseSchema() {
       `;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_events_run_id_idx ON omni_workflow_events (workflow_run_id, created_at ASC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_events_type_idx ON omni_workflow_events (type)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_eval_runs (
+          id TEXT PRIMARY KEY,
+          suite TEXT NOT NULL,
+          status TEXT NOT NULL,
+          total INTEGER NOT NULL DEFAULT 0,
+          passed INTEGER NOT NULL DEFAULT 0,
+          failed INTEGER NOT NULL DEFAULT 0,
+          warnings INTEGER NOT NULL DEFAULT 0,
+          average_latency_ms INTEGER NOT NULL DEFAULT 0,
+          estimated_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+          error TEXT,
+          started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          completed_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_eval_runs_status_idx ON omni_eval_runs (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_eval_runs_created_at_idx ON omni_eval_runs (created_at DESC)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_eval_results (
+          id TEXT PRIMARY KEY,
+          eval_run_id TEXT NOT NULL REFERENCES omni_eval_runs(id) ON DELETE CASCADE,
+          case_id TEXT NOT NULL,
+          case_name TEXT NOT NULL,
+          case_type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          score DOUBLE PRECISION NOT NULL DEFAULT 0,
+          latency_ms INTEGER NOT NULL DEFAULT 0,
+          estimated_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+          input JSONB NOT NULL DEFAULT '{}',
+          output JSONB,
+          error TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_eval_results_run_id_idx ON omni_eval_results (eval_run_id, created_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_eval_results_case_id_idx ON omni_eval_results (case_id)`;
       await ensureVectorSchema(sql);
       } finally {
         await sql`SELECT pg_advisory_unlock(271828182)`;
