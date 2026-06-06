@@ -1056,7 +1056,7 @@ export function CommandCenter() {
               <h1 className="text-2xl font-semibold">Agentic orchestration command center</h1>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-12">
+          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-6">
             <StatusPill icon={<Brain size={15} />} label="Memory" value={`${capabilities?.memory.total ?? 0}`} />
             <StatusPill
               icon={<Database size={15} />}
@@ -1718,9 +1718,9 @@ function StatusPill({
     <div className="min-w-0 rounded-md border border-line bg-background/70 px-3 py-2">
       <div className="flex min-w-0 items-center gap-2 text-muted">
         {icon}
-        <span className="truncate">{label}</span>
+        <span className="whitespace-nowrap">{label}</span>
       </div>
-      <p className="mt-1 truncate font-mono text-sm text-foreground sm:text-base" title={value}>
+      <p className="mt-1 whitespace-nowrap font-mono text-sm text-foreground sm:text-base" title={value}>
         {value}
       </p>
     </div>
