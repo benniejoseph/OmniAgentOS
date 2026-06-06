@@ -239,7 +239,7 @@ type EvalCaseDefinition = {
   id: string;
   name: string;
   description: string;
-  type: "system" | "retrieval" | "tool" | "workflow";
+  type: "system" | "retrieval" | "tool" | "workflow" | "security";
   input: Record<string, unknown>;
   expected: Record<string, unknown>;
 };
@@ -297,6 +297,61 @@ type EvalRunDetail = {
   results: EvalResultRecord[];
 };
 
+type SecurityRole = "viewer" | "operator" | "admin" | "system";
+type SecurityDecision = "allow" | "deny";
+
+type SecurityContext = {
+  tenantId: string;
+  actorId: string;
+  role: SecurityRole;
+  source: "headers" | "default";
+};
+
+type SecurityAuditRecord = {
+  id: string;
+  tenantId: string;
+  actorId: string;
+  actorRole: SecurityRole;
+  action: string;
+  resourceType: string;
+  resourceId?: string;
+  decision: SecurityDecision;
+  reason?: string;
+  riskLevel?: number;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+type SecurityStats = {
+  total: number;
+  byDecision: Record<string, number>;
+  byRole: Record<string, number>;
+  latest: SecurityAuditRecord[];
+};
+
+type RbacRule = {
+  action: string;
+  description: string;
+  roles: SecurityRole[];
+};
+
+type SecurityPolicy = {
+  rbacRules: RbacRule[];
+  secretVault: {
+    storage: string;
+    allowedEnvNamePattern: string;
+    disallowedPrefixes: string[];
+    redactedFields: string[];
+  };
+};
+
+type SecurityState = {
+  context?: SecurityContext;
+  stats?: SecurityStats;
+  records: SecurityAuditRecord[];
+  policy?: SecurityPolicy;
+};
+
 type CapabilityResponse = {
   openaiConfigured: boolean;
   databaseConfigured: boolean;
@@ -326,6 +381,11 @@ type CapabilityResponse = {
   openApiConnectors: OpenApiConnectorStats;
   workflows: WorkflowStats;
   evaluations: EvalStats;
+  security: {
+    context: SecurityContext;
+    stats?: SecurityStats;
+    policy: SecurityPolicy;
+  };
   registry: {
     agents: Capability[];
     tools: Capability[];
@@ -469,6 +529,7 @@ export function CommandCenter() {
   const [workflowResult, setWorkflowResult] = useState("");
   const [evaluationState, setEvaluationState] = useState<EvaluationsResponse | null>(null);
   const [evaluationResult, setEvaluationResult] = useState("");
+  const [securityState, setSecurityState] = useState<SecurityState | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -507,6 +568,7 @@ export function CommandCenter() {
       .then((response) => response.json())
       .then(setEvaluationState)
       .catch(() => undefined);
+    refreshSecurity();
   }, []);
 
   useEffect(() => {
@@ -539,6 +601,12 @@ export function CommandCenter() {
   const evaluationStats = evaluationState?.stats || capabilities?.evaluations;
   const latestEvaluations = evaluationState?.runs.slice(0, 5) || (capabilities?.evaluations.latest ? [capabilities.evaluations.latest] : []);
   const latestEvaluationCases = evaluationState?.cases.slice(0, 4) || [];
+  const securityContext = securityState?.context || capabilities?.security.context;
+  const securityStats = securityState?.stats || capabilities?.security.stats;
+  const securityPolicy = securityState?.policy || capabilities?.security.policy;
+  const latestSecurityAudits =
+    securityState?.records.length ? securityState.records : securityStats?.latest || [];
+  const securityRules = securityPolicy?.rbacRules.slice(0, 5) || [];
   const storageLabel =
     capabilities?.storageBackend === "postgres"
       ? "Postgres"
@@ -934,6 +1002,26 @@ export function CommandCenter() {
       .catch(() => undefined);
   }
 
+  function refreshSecurity() {
+    Promise.all([
+      fetch("/api/security/context")
+        .then((response) => response.json())
+        .catch(() => null),
+      fetch("/api/security/audits?limit=5")
+        .then((response) => response.json())
+        .catch(() => null),
+    ])
+      .then(([contextData, auditData]) => {
+        setSecurityState({
+          context: contextData?.context,
+          stats: auditData?.stats || contextData?.stats,
+          records: auditData?.records || contextData?.stats?.latest || [],
+          policy: contextData?.policy,
+        });
+      })
+      .catch(() => undefined);
+  }
+
   function refreshWorkspace() {
     refreshCapabilities();
     fetch("/api/memory?limit=5")
@@ -952,6 +1040,7 @@ export function CommandCenter() {
     refreshOpenApiConnectors();
     refreshWorkflows();
     refreshEvaluations();
+    refreshSecurity();
   }
 
   return (
@@ -1181,6 +1270,52 @@ export function CommandCenter() {
                     <EvaluationCaseRow key={evalCase.id} evalCase={evalCase} />
                   ))}
                 </div>
+              </div>
+            </section>
+
+            <section className="panel rounded-lg p-4">
+              <div className="mb-4 flex items-center gap-2">
+                <ShieldCheck className="text-primary" size={18} />
+                <h2 className="font-semibold">Security controls</h2>
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Role" value={securityContext?.role || "unknown"} />
+                <MiniStat label="Allow" value={`${securityStats?.byDecision.allow ?? 0}`} />
+                <MiniStat label="Deny" value={`${securityStats?.byDecision.deny ?? 0}`} />
+              </div>
+              <div className="mb-3 rounded-md border border-line bg-background/54 p-3">
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div className="min-w-0">
+                    <p className="text-muted">Tenant</p>
+                    <p className="mt-1 truncate font-mono text-foreground">{securityContext?.tenantId || "default"}</p>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-muted">Actor</p>
+                    <p className="mt-1 truncate font-mono text-foreground">{securityContext?.actorId || "anonymous"}</p>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {(securityPolicy?.secretVault.disallowedPrefixes || []).map((prefix) => (
+                    <span key={prefix} className="rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                      block {prefix}
+                    </span>
+                  ))}
+                  <span className="rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                    env refs only
+                  </span>
+                </div>
+              </div>
+              <div className="flex flex-col gap-3">
+                {securityRules.map((rule) => (
+                  <RbacRuleRow key={rule.action} rule={rule} />
+                ))}
+                {latestSecurityAudits.length ? (
+                  latestSecurityAudits.map((record) => <SecurityAuditRow key={record.id} record={record} />)
+                ) : (
+                  <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+                    No security audits recorded yet.
+                  </p>
+                )}
               </div>
             </section>
 
@@ -1599,6 +1734,46 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   );
 }
 
+function SecurityAuditRow({ record }: { record: SecurityAuditRecord }) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", decisionTone(record.decision))}>
+          {record.decision}
+        </span>
+        <span className="truncate font-mono text-[11px] text-muted">{record.actorRole}</span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{record.action}</p>
+      <div className="mt-2 flex min-w-0 items-center justify-between gap-3 font-mono text-[11px] text-muted">
+        <span className="truncate">{record.resourceType}</span>
+        <span className="shrink-0">{new Date(record.createdAt).toLocaleTimeString()}</span>
+      </div>
+      {record.reason ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-danger">{record.reason}</p> : null}
+    </div>
+  );
+}
+
+function RbacRuleRow({ rule }: { rule: RbacRule }) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="truncate font-mono text-xs text-foreground">{rule.action}</p>
+        <span className="shrink-0 rounded bg-primary/16 px-2 py-1 font-mono text-[11px] text-primary">
+          {rule.roles.length} roles
+        </span>
+      </div>
+      <p className="line-clamp-2 text-xs leading-5 text-muted">{rule.description}</p>
+      <div className="mt-3 flex flex-wrap gap-1">
+        {rule.roles.map((role) => (
+          <span key={role} className="rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-muted">
+            {role}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ToolAuditRow({ record }: { record: ToolExecutionRecord }) {
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
@@ -1992,6 +2167,14 @@ function evaluationRunTone(status: EvalRunRecord["status"]) {
   }
 
   return "bg-accent/14 text-accent";
+}
+
+function decisionTone(decision: SecurityDecision) {
+  if (decision === "allow") {
+    return "bg-primary/16 text-primary";
+  }
+
+  return "bg-danger/14 text-danger";
 }
 
 function workflowTone(status: WorkflowRunStatus) {

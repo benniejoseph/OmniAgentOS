@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { executeGovernedTool } from "@/lib/tools/executor";
 
 export const runtime = "nodejs";
@@ -11,13 +12,28 @@ const executeSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const parsed = executeSchema.safeParse(await request.json());
+  const body = await request.json();
+  const parsed = executeSchema.safeParse(body);
 
   if (!parsed.success) {
     return Response.json(
       { error: "Invalid tool execution request", details: parsed.error.flatten() },
       { status: 400 },
     );
+  }
+
+  if (parsed.data.dryRun === false) {
+    try {
+      await authorizeRequest({
+        request,
+        action: "execute.tool",
+        resourceType: "tool",
+        resourceId: parsed.data.toolId,
+        metadata: { toolId: parsed.data.toolId, input: parsed.data.input },
+      });
+    } catch (error) {
+      return forbiddenResponse(error);
+    }
   }
 
   const result = await executeGovernedTool({

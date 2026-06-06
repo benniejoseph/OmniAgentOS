@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
 
 export const runtime = "nodejs";
@@ -22,8 +23,20 @@ export async function POST(
   }
 
   try {
+    await authorizeRequest({
+      request,
+      action: "manage.workflow",
+      resourceType: "workflow",
+      resourceId: id,
+      metadata: parsed.data,
+    });
     return Response.json(await signalWorkflowRun(id, parsed.data.signal));
   } catch (error) {
+    try {
+      return forbiddenResponse(error);
+    } catch {
+      // fall through to not-found style workflow error
+    }
     return Response.json(
       { error: error instanceof Error ? error.message : "Workflow signal failed." },
       { status: 404 },

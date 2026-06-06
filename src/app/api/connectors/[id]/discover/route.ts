@@ -4,11 +4,12 @@ import {
   recordMcpConnectorError,
   saveMcpDiscovery,
 } from "@/lib/connectors/store";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
@@ -16,6 +17,18 @@ export async function POST(
 
   if (!connector) {
     return Response.json({ error: "MCP connector not found." }, { status: 404 });
+  }
+
+  try {
+    await authorizeRequest({
+      request,
+      action: "manage.connector",
+      resourceType: "mcp_connector",
+      resourceId: id,
+      metadata: { connectorName: connector.name },
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   try {

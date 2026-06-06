@@ -25,6 +25,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - OpenAPI connector registry for JSON/YAML specs, base URLs, token env-var references, imported operations, request schemas, and connector health
 - Durable workflow runtime with persisted runs, steps, events, retries, approval waits, operator signals, and report persistence
 - Evaluation harness with persisted suites, case results, pass/warn/fail status, retrieval checks, workflow lifecycle checks, latency, and cost estimates
+- Security controls with tenant-scoped context headers, RBAC roles, server-only secret env-var references, sensitive metadata redaction, and persisted allow/deny audit trails
 
 ## Architecture
 
@@ -53,6 +54,13 @@ flowchart TD
   EVAL --> WF
   EVAL --> RAG
   EVAL --> DB
+  API --> SEC["Security Controls"]
+  SEC --> RBAC["RBAC Policy"]
+  SEC --> SAUDIT["Security Audit Ledger"]
+  SAUDIT --> DB
+  GOV --> SEC
+  WF --> SEC
+  EVAL --> SEC
   API --> MCP["MCP Connector Host"]
   MCP --> MTOOLS["Discovered MCP Tools"]
   MTOOLS --> GOV
@@ -76,4 +84,4 @@ flowchart TD
 6. OpenAPI connector importer: transform API specs into typed tool adapters. Done.
 7. Workflow runtime: add durable queues for long-running jobs, retries, signals, and resumes. Done.
 8. Evaluation harness: add regression tasks, retrieval quality checks, and cost/latency metrics. Done.
-9. Security controls: add tenant boundaries, RBAC, secret vaulting, and audit trails.
+9. Security controls: add tenant boundaries, RBAC, secret vaulting, and audit trails. Done.

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defaultEvalCases, runEvaluationSuite } from "@/lib/evaluations/runner";
 import { getEvalStats, listEvalRuns } from "@/lib/evaluations/store";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 
@@ -28,6 +29,17 @@ export async function POST(request: Request) {
       { error: "Invalid evaluation run request", details: parsed.error.flatten() },
       { status: 400 },
     );
+  }
+
+  try {
+    await authorizeRequest({
+      request,
+      action: "run.evaluation",
+      resourceType: "evaluation",
+      metadata: parsed.data,
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   const detail = await runEvaluationSuite({

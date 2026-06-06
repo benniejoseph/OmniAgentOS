@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { encodeSse, sseResponse } from "@/lib/http/sse";
 import { runAgent } from "@/lib/orchestration/agent-runner";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 
@@ -15,13 +16,28 @@ const requestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const parsed = requestSchema.safeParse(await request.json());
+  const body = await request.json();
+  const parsed = requestSchema.safeParse(body);
 
   if (!parsed.success) {
     return Response.json(
       { error: "Invalid request", details: parsed.error.flatten() },
       { status: 400 },
     );
+  }
+
+  try {
+    await authorizeRequest({
+      request,
+      action: "manage.workflow",
+      resourceType: "agent_run",
+      metadata: {
+        mode: parsed.data.mode || "orchestrate",
+        messageCount: parsed.data.messages.length,
+      },
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   const encoder = new TextEncoder();

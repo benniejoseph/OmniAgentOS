@@ -87,6 +87,12 @@ export const tools: Capability[] = [
     description: "Run regression suites for readiness, retrieval, governed tools, workflows, latency, and cost.",
     status: "active",
   },
+  {
+    id: "security.rbac",
+    name: "RBAC Security Controls",
+    description: "Tenant-aware roles, server-only secret references, sensitive metadata redaction, and audit trails.",
+    status: "active",
+  },
 ];
 
 export const connectorTypes: Capability[] = [

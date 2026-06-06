@@ -5,6 +5,7 @@ import {
   recordOpenApiConnectorError,
   saveOpenApiImport,
 } from "@/lib/connectors/openapi-store";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 
@@ -33,6 +34,18 @@ export async function POST(
       { error: "Invalid OpenAPI import request", details: parsed.error.flatten() },
       { status: 400 },
     );
+  }
+
+  try {
+    await authorizeRequest({
+      request,
+      action: "manage.connector",
+      resourceType: "openapi_connector",
+      resourceId: id,
+      metadata: { connectorName: connector.name, ...requestBody },
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   try {

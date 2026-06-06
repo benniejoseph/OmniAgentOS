@@ -362,10 +362,30 @@ export async function ensureDatabaseSchema() {
       `;
       await sql`CREATE INDEX IF NOT EXISTS omni_eval_results_run_id_idx ON omni_eval_results (eval_run_id, created_at ASC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_eval_results_case_id_idx ON omni_eval_results (case_id)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_security_audits (
+          id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL,
+          actor_id TEXT NOT NULL,
+          actor_role TEXT NOT NULL,
+          action TEXT NOT NULL,
+          resource_type TEXT NOT NULL,
+          resource_id TEXT,
+          decision TEXT NOT NULL,
+          reason TEXT,
+          risk_level INTEGER,
+          metadata JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_security_audits_tenant_created_idx ON omni_security_audits (tenant_id, created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_security_audits_action_idx ON omni_security_audits (action)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_security_audits_decision_idx ON omni_security_audits (decision)`;
       await ensureVectorSchema(sql);
-      } finally {
-        await sql`SELECT pg_advisory_unlock(271828182)`;
-      }
+    } finally {
+      await sql`SELECT pg_advisory_unlock(271828182)`;
+    }
     })();
   }
 

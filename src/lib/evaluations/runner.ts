@@ -3,6 +3,7 @@ import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import { retrieveContext } from "@/lib/rag/retriever";
+import { canPerform, redactSensitive } from "@/lib/security/context";
 import { createWorkflowRun } from "@/lib/workflows/store";
 import { tickWorkflowRun } from "@/lib/workflows/runner";
 import {
@@ -80,6 +81,23 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
     expected: {
       finalStatus: "completed",
       maxTicks: 8,
+    },
+  },
+  {
+    id: "security.rbac_controls",
+    name: "RBAC security controls",
+    description: "Verifies role permissions and sensitive metadata redaction.",
+    type: "security",
+    input: {
+      deniedRole: "viewer",
+      deniedAction: "manage.connector",
+      allowedRole: "admin",
+      allowedAction: "read.security",
+    },
+    expected: {
+      viewerDenied: true,
+      adminAllowed: true,
+      secretRedacted: true,
     },
   },
 ];
@@ -163,6 +181,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "workflow.lifecycle") {
     return evaluateWorkflowLifecycle(evalCase);
+  }
+
+  if (evalCase.id === "security.rbac_controls") {
+    return evaluateSecurityControls();
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -263,6 +285,42 @@ async function evaluateWorkflowLifecycle(evalCase: EvalCaseDefinition): Promise<
       reportPreview: typeof report === "string" ? report.slice(0, 600) : undefined,
     },
     estimatedCostUsd: estimateCost(evalCase, { goal: evalCase.input.goal, report }),
+  };
+}
+
+function evaluateSecurityControls(): CaseResult {
+  const redacted = redactSensitive({
+    apiKey: "example-secret-value-that-should-not-leak",
+    nested: {
+      authorization: "Bearer eyJexampleheader.examplepayload.examplesignature",
+      harmless: "visible",
+    },
+  }) as {
+    apiKey?: unknown;
+    nested?: {
+      authorization?: unknown;
+      harmless?: unknown;
+    };
+  };
+
+  const checks = {
+    viewerDeniedConnectorManagement: !canPerform("viewer", "manage.connector"),
+    operatorCanExecuteTools: canPerform("operator", "execute.tool"),
+    adminCanReadSecurity: canPerform("admin", "read.security"),
+    secretRedacted: redacted.apiKey === "[redacted]" && redacted.nested?.authorization === "[redacted]",
+    harmlessMetadataPreserved: redacted.nested?.harmless === "visible",
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+  const pass = passed === total;
+
+  return {
+    status: pass ? "pass" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      redacted,
+    },
   };
 }
 

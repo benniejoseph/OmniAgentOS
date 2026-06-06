@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ingestTextDocument } from "@/lib/rag/retriever";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 
@@ -12,13 +13,25 @@ const ingestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const parsed = ingestSchema.safeParse(await request.json());
+  const body = await request.json();
+  const parsed = ingestSchema.safeParse(body);
 
   if (!parsed.success) {
     return Response.json(
       { error: "Invalid document", details: parsed.error.flatten() },
       { status: 400 },
     );
+  }
+
+  try {
+    await authorizeRequest({
+      request,
+      action: "write.memory",
+      resourceType: "knowledge",
+      metadata: body,
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   const result = await ingestTextDocument(parsed.data);

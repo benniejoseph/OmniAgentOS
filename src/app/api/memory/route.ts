@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { listMemories, saveMemory, searchMemories } from "@/lib/memory/store";
 import { embedTexts } from "@/lib/openai/client";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 
@@ -31,7 +32,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const parsed = memorySchema.safeParse(await request.json());
+  const body = await request.json();
+  const parsed = memorySchema.safeParse(body);
 
   if (!parsed.success) {
     return Response.json(
@@ -41,6 +43,12 @@ export async function POST(request: Request) {
   }
 
   try {
+    await authorizeRequest({
+      request,
+      action: "write.memory",
+      resourceType: "memory",
+      metadata: body,
+    });
     const embedding = (await embedTexts([`${parsed.data.title}\n\n${parsed.data.content}`]))?.[0];
     const record = await saveMemory({
       ...parsed.data,
@@ -51,6 +59,11 @@ export async function POST(request: Request) {
 
     return Response.json({ record }, { status: 201 });
   } catch (error) {
+    try {
+      return forbiddenResponse(error);
+    } catch {
+      // fall through to ordinary error handling
+    }
     return Response.json(
       {
         error: "Memory write failed",

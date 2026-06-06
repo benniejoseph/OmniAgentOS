@@ -9,6 +9,8 @@ import {
   saveMcpConnector,
   saveMcpDiscovery,
 } from "@/lib/connectors/store";
+import { validateSecretEnvName } from "@/lib/security/context";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 
@@ -31,13 +33,32 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const parsed = registerConnectorSchema.safeParse(await request.json());
+  const body = await request.json();
+  const parsed = registerConnectorSchema.safeParse(body);
 
   if (!parsed.success) {
     return Response.json(
       { error: "Invalid MCP connector request", details: parsed.error.flatten() },
       { status: 400 },
     );
+  }
+
+  if (!validateSecretEnvName(parsed.data.authTokenEnv)) {
+    return Response.json(
+      { error: "Invalid secret env var", message: "Secret env vars must be uppercase server-only names and cannot use NEXT_PUBLIC_." },
+      { status: 400 },
+    );
+  }
+
+  try {
+    await authorizeRequest({
+      request,
+      action: "manage.connector",
+      resourceType: "mcp_connector",
+      metadata: body,
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   const connector = await saveMcpConnector(

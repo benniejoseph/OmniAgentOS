@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { createWorkflowRun, getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
 
 export const runtime = "nodejs";
@@ -21,13 +22,25 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const parsed = workflowStartSchema.safeParse(await request.json());
+  const body = await request.json();
+  const parsed = workflowStartSchema.safeParse(body);
 
   if (!parsed.success) {
     return Response.json(
       { error: "Invalid workflow start request", details: parsed.error.flatten() },
       { status: 400 },
     );
+  }
+
+  try {
+    await authorizeRequest({
+      request,
+      action: "manage.workflow",
+      resourceType: "workflow",
+      metadata: body,
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   const detail = await createWorkflowRun(parsed.data);
