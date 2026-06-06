@@ -591,6 +591,22 @@ export async function ensureDatabaseSchema() {
       `;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS omni_system_health_checks (
+          id TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          scope TEXT NOT NULL,
+          components JSONB NOT NULL DEFAULT '[]',
+          metrics JSONB NOT NULL DEFAULT '{}',
+          incidents JSONB NOT NULL DEFAULT '[]',
+          recovery_actions JSONB NOT NULL DEFAULT '[]',
+          latency_ms INTEGER NOT NULL DEFAULT 0,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_system_health_checks_status_idx ON omni_system_health_checks (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_system_health_checks_created_idx ON omni_system_health_checks (created_at DESC)`;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS omni_eval_runs (
           id TEXT PRIMARY KEY,
           suite TEXT NOT NULL,

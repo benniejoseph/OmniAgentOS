@@ -30,6 +30,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - Dynamic workflow planner with typed DAG generation, tool/connector selection, execution policy, verification criteria, and persisted planner ledger
 - Plan-driven workflow executor with persisted DAG node executions, governed tool decisions, dry-run side-effect controls, verification summaries, and report integration
 - Native webhook trigger layer with signed event intake, trigger/event audit ledgers, workflow run creation, and durable queue enqueue
+- Production health diagnostics with component status, SLO metrics, incident ledgers, and self-healing repair actions
 - Vercel Cron-secured production workflow queue ticks through `/api/workflows/tick`, with opportunistic post-response draining through Next.js `after()`
 - Operations center with approval queue, failed work summary, active workflow summary, connector error summary, and durable approval actions
 - External connection catalog for MCP/OpenAPI adapter setup across common production apps
@@ -87,6 +88,14 @@ flowchart TD
   TRIG --> WF
   TRIG --> OQ
   TRIG --> DB
+  API --> DIAG["Health Diagnostics / Self-Healing"]
+  DIAG --> OQ
+  DIAG --> WF
+  DIAG --> EVAL
+  DIAG --> GOV
+  DIAG --> MCP
+  DIAG --> OPENAPI
+  DIAG --> DB
   API --> SEC["Security Controls"]
   SEC --> RBAC["RBAC Policy"]
   SEC --> SAUDIT["Security Audit Ledger"]
@@ -134,3 +143,4 @@ flowchart TD
 17. Dynamic workflow planner: add structured goal decomposition, typed DAG planner, governed tool/connector selection, execution policy, verification criteria, planner ledger, and workflow integration. Done.
 18. Plan-driven workflow executor: persist every dynamic DAG node execution, run read-only governed tools, dry-run side-effecting or approval-gated tools, summarize execution for verification, expose execution stats, and add regression coverage. Done.
 19. Webhook workflow triggers: add signed event intake, trigger and event ledgers, workflow run creation, durable queue enqueue, command-center stats, and regression coverage. Done.
+20. Production health diagnostics: add health and diagnostics APIs, persisted component/SLO ledgers, self-healing repair actions, command-center health counters, and regression coverage. Done.

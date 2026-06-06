@@ -431,6 +431,23 @@ type OperationJobStats = {
   latest: OperationJobRecord[];
 };
 
+type HealthStatus = "healthy" | "degraded" | "unhealthy";
+
+type HealthStats = {
+  total: number;
+  byStatus: Record<string, number>;
+  latestStatus: HealthStatus;
+  incidents: number;
+  recoveryActions: number;
+  latest?: {
+    id: string;
+    status: HealthStatus;
+    scope: "health" | "diagnostics" | "repair";
+    latencyMs: number;
+    createdAt: string;
+  };
+};
+
 type RetrievalTraceRecord = {
   id: string;
   query: string;
@@ -713,6 +730,7 @@ type CapabilityResponse = {
   workflowPlanExecutions: WorkflowPlanExecutionStats;
   workflowTriggers: WorkflowTriggerStats;
   operationJobs: OperationJobStats;
+  health: HealthStats;
   evaluations: EvalStats;
   security: {
     context: SecurityContext;
@@ -863,6 +881,7 @@ export function CommandCenter() {
   const [approvalState, setApprovalState] = useState<ApprovalQueueResponse | null>(null);
   const [operationState, setOperationState] = useState<OperationsResponse | null>(null);
   const [approvalResult, setApprovalResult] = useState("");
+  const [diagnosticsResult, setDiagnosticsResult] = useState("");
   const [connectionCatalog, setConnectionCatalog] = useState<ConnectionCatalogResponse | null>(null);
   const [evaluationState, setEvaluationState] = useState<EvaluationsResponse | null>(null);
   const [evaluationResult, setEvaluationResult] = useState("");
@@ -902,6 +921,7 @@ export function CommandCenter() {
   const planExecutionStats = capabilities?.workflowPlanExecutions;
   const triggerStats = capabilities?.workflowTriggers;
   const queueStats = workflowState?.queue || capabilities?.operationJobs;
+  const healthStats = capabilities?.health;
   const contextStats = capabilities?.contextEngine;
   const graphStats = capabilities?.memoryGraph;
   const latestWorkflows = workflowState?.runs.slice(0, 5) || capabilities?.workflows.latest || [];
@@ -1320,6 +1340,23 @@ export function CommandCenter() {
     }
   }
 
+  async function runDiagnostics(repair = false) {
+    setStatus(repair ? "repairing diagnostics" : "running diagnostics");
+    setDiagnosticsResult("");
+
+    try {
+      const response = await fetch("/api/diagnostics", {
+        method: repair ? "POST" : "GET",
+      });
+      const data = await response.json();
+      setDiagnosticsResult(formatToolResult(data));
+      setStatus(data.check?.status ? `health ${data.check.status}` : response.ok ? "diagnostics complete" : "diagnostics failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "diagnostics failed");
+    }
+  }
+
   function applyConnectionTemplate(template: ConnectionCatalogItem) {
     const authEnv = template.authEnvVars[0] || "";
 
@@ -1595,6 +1632,7 @@ export function CommandCenter() {
             <StatusPill icon={<Layers3 size={15} />} label="Plans" value={`${plannerStats?.total ?? 0}`} />
             <StatusPill icon={<CheckCircle2 size={15} />} label="Nodes" value={`${planExecutionStats?.total ?? 0}`} />
             <StatusPill icon={<Cable size={15} />} label="Triggers" value={`${triggerStats?.active ?? 0}`} />
+            <StatusPill icon={<Activity size={15} />} label="Health" value={healthStats?.latestStatus || "unknown"} />
             <StatusPill
               icon={<BarChart3 size={15} />}
               label="Evals"
@@ -1730,6 +1768,34 @@ export function CommandCenter() {
                 <MiniStat label="Runnable" value={`${operationSummary?.runnableJobs ?? queueStats?.runnable ?? 0}`} />
                 <MiniStat label="Leases" value={`${operationSummary?.expiredLeases ?? queueStats?.expiredLeases ?? 0} stale`} />
               </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Health" value={healthStats?.latestStatus || "unknown"} />
+                <MiniStat label="Incidents" value={`${healthStats?.incidents ?? 0}`} />
+                <MiniStat label="Recoveries" value={`${healthStats?.recoveryActions ?? 0}`} />
+              </div>
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => runDiagnostics(false)}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-primary"
+                >
+                  <Activity size={14} />
+                  Diagnostics
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runDiagnostics(true)}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                >
+                  <CheckCircle2 size={14} />
+                  Repair
+                </button>
+              </div>
+              {diagnosticsResult ? (
+                <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
+                  {diagnosticsResult}
+                </pre>
+              ) : null}
               {approvalResult ? (
                 <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                   {approvalResult}

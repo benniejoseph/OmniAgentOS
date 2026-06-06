@@ -106,6 +106,18 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "ops.self_healing",
+    name: "Self-Healing Diagnostics",
+    description: "Checks production health, records component incidents, repairs stale queue leases, and requeues stale workflow work.",
+    status: "active",
+  },
+  {
+    id: "observability.health",
+    name: "Health Observability",
+    description: "Publishes health, diagnostics, incident, recovery, and SLO metrics for operator and deployment checks.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

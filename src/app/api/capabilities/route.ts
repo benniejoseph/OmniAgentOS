@@ -2,6 +2,7 @@ import { hasOpenAIKey } from "@/lib/config";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
 import { getStorageBackend, getVectorStoreStatus, hasDatabaseUrl } from "@/lib/db/client";
+import { getHealthStats } from "@/lib/diagnostics/health";
 import { getEvalStats } from "@/lib/evaluations/store";
 import { getMemoryGraphStats } from "@/lib/memory/graph";
 import { getMemoryStats } from "@/lib/memory/store";
@@ -47,6 +48,7 @@ export async function GET(request: Request) {
     workflowPlanExecutions: await getWorkflowPlanNodeExecutionStats(),
     workflowTriggers: await getWorkflowTriggerStats(),
     operationJobs: await getOperationJobStats(),
+    health: await getHealthStats(),
     evaluations: await getEvalStats(),
     security: {
       context: securityContext,

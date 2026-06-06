@@ -2,6 +2,7 @@ import { hasOpenAIKey } from "@/lib/config";
 import { hashPassword, verifyPassword } from "@/lib/auth/crypto";
 import { isAuthEnforced } from "@/lib/auth/store";
 import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
+import { getHealthStats, runSystemDiagnostics } from "@/lib/diagnostics/health";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { connectionCatalog } from "@/lib/connectors/catalog";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
@@ -215,6 +216,21 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       approvalStats: true,
     },
   },
+  {
+    id: "operations.self_healing",
+    name: "Self-healing diagnostics",
+    description: "Runs production diagnostics with repair enabled, persists health evidence, and validates component/SLO metrics.",
+    type: "operations",
+    input: {
+      repair: true,
+    },
+    expected: {
+      minComponents: 10,
+      healthPersisted: true,
+      metricsAvailable: true,
+      recoveryLedger: true,
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -328,6 +344,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.approval_center") {
     return evaluateOperationsCenter();
+  }
+
+  if (evalCase.id === "operations.self_healing") {
+    return evaluateSelfHealingDiagnostics(evalCase);
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -870,6 +890,73 @@ async function evaluateOperationsCenter(): Promise<CaseResult> {
         adapter: connector.adapter,
         riskLevel: connector.riskLevel,
       })),
+    },
+  };
+}
+
+async function evaluateSelfHealingDiagnostics(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const check = await runSystemDiagnostics({
+    scope: "repair",
+    repair: Boolean(evalCase.input.repair),
+  });
+  const stats = await getHealthStats();
+  const expectedComponents = Number(evalCase.expected.minComponents || 8);
+  const metricKeys = [
+    "queueMaxAgeMs",
+    "workflowCompletionRate",
+    "evalPassRate",
+    "plannerFallbackRate",
+    "toolFailureRate",
+    "triggerFailureRate",
+    "staleWorkflowCount",
+    "connectorErrors",
+    "recoveryActions",
+  ];
+  const checks = {
+    componentsAvailable: check.components.length >= expectedComponents,
+    healthPersisted: Boolean(evalCase.expected.healthPersisted) ? stats.total > 0 && stats.latest?.id === check.id : true,
+    metricsAvailable: Boolean(evalCase.expected.metricsAvailable)
+      ? metricKeys.every((key) => typeof check.metrics[key] === "number")
+      : true,
+    recoveryLedger: Boolean(evalCase.expected.recoveryLedger) ? Array.isArray(check.recoveryActions) : true,
+    statusValid: ["healthy", "degraded", "unhealthy"].includes(check.status),
+    incidentConsistency: check.incidents.every((incident) =>
+      check.components.some((component) => component.id === incident.componentId),
+    ),
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checkId: check.id,
+      status: check.status,
+      scope: check.scope,
+      checks,
+      latencyMs: check.latencyMs,
+      components: check.components.map((component) => ({
+        id: component.id,
+        status: component.status,
+        metrics: component.metrics,
+      })),
+      incidents: check.incidents.map((incident) => ({
+        componentId: incident.componentId,
+        severity: incident.severity,
+        message: incident.message,
+      })),
+      recoveryActions: check.recoveryActions.map((action) => ({
+        id: action.id,
+        status: action.status,
+        message: action.message,
+      })),
+      stats: {
+        total: stats.total,
+        latestStatus: stats.latestStatus,
+        incidents: stats.incidents,
+        recoveryActions: stats.recoveryActions,
+      },
     },
   };
 }

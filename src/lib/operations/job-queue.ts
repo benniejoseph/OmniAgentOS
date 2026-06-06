@@ -434,7 +434,7 @@ export async function repairExpiredOperationJobs() {
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`
+    const rows = await getSql()`
       UPDATE omni_operation_jobs
       SET status = CASE WHEN attempt < max_attempts THEN 'queued' ELSE 'failed' END,
           run_at = CASE WHEN attempt < max_attempts THEN NOW() ELSE run_at END,
@@ -447,15 +447,18 @@ export async function repairExpiredOperationJobs() {
       WHERE status = 'running'
         AND lease_expires_at IS NOT NULL
         AND lease_expires_at <= NOW()
+      RETURNING id
     `;
-    return;
+    return rows.length;
   }
 
+  let repaired = 0;
   await mutateJobLedger((ledger) => {
     ledger.jobs = ledger.jobs.map((job) => {
       if (job.status !== "running" || !job.leaseExpiresAt || Date.parse(job.leaseExpiresAt) > Date.now()) {
         return job;
       }
+      repaired += 1;
       const willRetry = job.attempt < job.maxAttempts;
       return {
         ...job,
@@ -471,6 +474,7 @@ export async function repairExpiredOperationJobs() {
     });
     return trimJobLedger(ledger);
   });
+  return repaired;
 }
 
 export async function listOperationJobs(limit = 20) {
