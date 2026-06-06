@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { embedTexts } from "@/lib/openai/client";
-import { getMcpGovernedTool } from "@/lib/connectors/governed-tools";
+import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import { callMcpTool } from "@/lib/connectors/mcp-client";
+import { callOpenApiOperation } from "@/lib/connectors/openapi-client";
+import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/openapi-store";
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { saveMemory, searchMemories } from "@/lib/memory/store";
 import type { MemoryType } from "@/lib/memory/types";
@@ -48,7 +50,10 @@ export async function executeGovernedTool({
   dryRun?: boolean;
   approved?: boolean;
 }) {
-  const tool = getGovernedTool(toolId) || (await getMcpGovernedTool(toolId));
+  const tool =
+    getGovernedTool(toolId) ||
+    (await getMcpGovernedTool(toolId)) ||
+    (await getOpenApiGovernedTool(toolId));
   if (!tool) {
     const record = createToolExecutionRecord({
       toolId,
@@ -251,6 +256,42 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>) {
     };
   }
 
+  if (tool.category === "openapi") {
+    const operation = await getOpenApiOperationById(tool.id);
+    if (!operation) {
+      throw new Error(`OpenAPI operation ${tool.id} is not registered.`);
+    }
+
+    const connector = await getOpenApiConnector(operation.connectorId);
+    if (!connector) {
+      throw new Error(`OpenAPI connector ${operation.connectorId} is not registered.`);
+    }
+
+    if (connector.status !== "active" || operation.status !== "active") {
+      throw new Error("OpenAPI connector or operation is not active.");
+    }
+
+    return {
+      connector: {
+        id: connector.id,
+        name: connector.name,
+        baseUrl: connector.baseUrl,
+      },
+      operation: {
+        id: operation.id,
+        operationId: operation.operationId,
+        method: operation.method,
+        path: operation.path,
+        riskLevel: operation.riskLevel,
+      },
+      result: await callOpenApiOperation({
+        connector,
+        operation,
+        input: parsed,
+      }),
+    };
+  }
+
   throw new Error(`No handler is registered for ${tool.id}.`);
 }
 
@@ -278,7 +319,7 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return runsListSchema.parse(input);
   }
 
-  if (tool.category === "mcp") {
+  if (tool.category === "mcp" || tool.category === "openapi") {
     return input;
   }
 
@@ -296,6 +337,10 @@ function describeSideEffects(toolId: string) {
 
   if (toolId.startsWith("mcp:")) {
     return ["remote MCP tool call", "side effects depend on discovered tool annotations and connector policy"];
+  }
+
+  if (toolId.startsWith("openapi:")) {
+    return ["remote REST API call", "side effects depend on HTTP method, endpoint, and connector policy"];
   }
 
   return ["read-only"];

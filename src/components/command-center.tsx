@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Database,
   FileText,
+  Globe2,
   HardDrive,
   History,
   Layers3,
@@ -127,6 +128,52 @@ type ConnectorsResponse = {
   stats: ConnectorStats;
 };
 
+type OpenApiConnectorRecord = {
+  id: string;
+  name: string;
+  specUrl?: string;
+  baseUrl: string;
+  authType: "none" | "bearer_env" | "api_key_header_env";
+  authTokenEnv?: string;
+  authHeaderName?: string;
+  status: "active" | "error" | "disabled";
+  defaultRiskLevel: RiskLevel;
+  approvalRequired: boolean;
+  operationCount: number;
+  lastImportedAt?: string;
+  lastError?: string;
+  updatedAt: string;
+};
+
+type OpenApiOperationRecord = {
+  id: string;
+  connectorId: string;
+  connectorName: string;
+  operationId: string;
+  method: string;
+  path: string;
+  summary?: string;
+  description?: string;
+  riskLevel: RiskLevel;
+  approvalRequired: boolean;
+  status: "active" | "disabled";
+  updatedAt: string;
+};
+
+type OpenApiConnectorStats = {
+  total: number;
+  active: number;
+  error: number;
+  operationCount: number;
+  latest: OpenApiConnectorRecord[];
+};
+
+type OpenApiConnectorsResponse = {
+  connectors: OpenApiConnectorRecord[];
+  operations: OpenApiOperationRecord[];
+  stats: OpenApiConnectorStats;
+};
+
 type CapabilityResponse = {
   openaiConfigured: boolean;
   databaseConfigured: boolean;
@@ -153,6 +200,7 @@ type CapabilityResponse = {
   };
   toolExecutions: ToolAuditSummary;
   mcpConnectors: ConnectorStats;
+  openApiConnectors: OpenApiConnectorStats;
   registry: {
     agents: Capability[];
     tools: Capability[];
@@ -284,6 +332,13 @@ export function CommandCenter() {
   const [connectorEndpoint, setConnectorEndpoint] = useState("https://example.com/mcp");
   const [connectorAuthEnv, setConnectorAuthEnv] = useState("");
   const [connectorResult, setConnectorResult] = useState("");
+  const [openApiState, setOpenApiState] = useState<OpenApiConnectorsResponse | null>(null);
+  const [openApiName, setOpenApiName] = useState("Public API connector");
+  const [openApiSpecUrl, setOpenApiSpecUrl] = useState("https://petstore3.swagger.io/api/v3/openapi.json");
+  const [openApiBaseUrl, setOpenApiBaseUrl] = useState("");
+  const [openApiAuthEnv, setOpenApiAuthEnv] = useState("");
+  const [openApiAuthHeader, setOpenApiAuthHeader] = useState("x-api-key");
+  const [openApiResult, setOpenApiResult] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -310,6 +365,10 @@ export function CommandCenter() {
       .then((response) => response.json())
       .then(setConnectorState)
       .catch(() => undefined);
+    fetch("/api/openapi-connectors")
+      .then((response) => response.json())
+      .then(setOpenApiState)
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -334,6 +393,9 @@ export function CommandCenter() {
   const connectorStats = connectorState?.stats || capabilities?.mcpConnectors;
   const latestConnectors = connectorState?.connectors.slice(0, 5) || [];
   const latestMcpTools = connectorState?.tools.slice(0, 5) || [];
+  const openApiStats = openApiState?.stats || capabilities?.openApiConnectors;
+  const latestOpenApiConnectors = openApiState?.connectors.slice(0, 5) || [];
+  const latestOpenApiOperations = openApiState?.operations.slice(0, 5) || [];
   const storageLabel =
     capabilities?.storageBackend === "postgres"
       ? "Postgres"
@@ -550,6 +612,57 @@ export function CommandCenter() {
     }
   }
 
+  async function registerOpenApiConnector(importSpec: boolean) {
+    if (!openApiName.trim() || (!openApiSpecUrl.trim() && importSpec === true)) {
+      return;
+    }
+
+    setStatus(importSpec ? "registering and importing OpenAPI" : "registering OpenAPI");
+    setOpenApiResult("");
+
+    try {
+      const authType = openApiAuthEnv.trim() ? "api_key_header_env" : "none";
+      const response = await fetch("/api/openapi-connectors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: openApiName,
+          specUrl: openApiSpecUrl.trim() || undefined,
+          baseUrl: openApiBaseUrl.trim() || undefined,
+          authType,
+          authTokenEnv: openApiAuthEnv.trim() || undefined,
+          authHeaderName: authType === "api_key_header_env" ? openApiAuthHeader.trim() || "x-api-key" : undefined,
+          defaultRiskLevel: 2,
+          approvalRequired: true,
+          importSpec,
+        }),
+      });
+      const data = await response.json();
+      setOpenApiResult(formatToolResult(data));
+      setStatus(data.error ? "OpenAPI import held" : importSpec ? "OpenAPI imported" : "OpenAPI registered");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "OpenAPI registration failed");
+    }
+  }
+
+  async function importOpenApiConnector(connectorId: string) {
+    setStatus("importing OpenAPI");
+    setOpenApiResult("");
+
+    try {
+      const response = await fetch(`/api/openapi-connectors/${connectorId}/import`, {
+        method: "POST",
+      });
+      const data = await response.json();
+      setOpenApiResult(formatToolResult(data));
+      setStatus(data.error ? "OpenAPI import held" : "OpenAPI imported");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "OpenAPI import failed");
+    }
+  }
+
   function refreshCapabilities() {
     fetch("/api/capabilities")
       .then((response) => response.json())
@@ -571,6 +684,13 @@ export function CommandCenter() {
       .catch(() => undefined);
   }
 
+  function refreshOpenApiConnectors() {
+    fetch("/api/openapi-connectors")
+      .then((response) => response.json())
+      .then(setOpenApiState)
+      .catch(() => undefined);
+  }
+
   function refreshWorkspace() {
     refreshCapabilities();
     fetch("/api/memory?limit=5")
@@ -586,6 +706,7 @@ export function CommandCenter() {
       .catch(() => undefined);
     refreshTools();
     refreshConnectors();
+    refreshOpenApiConnectors();
   }
 
   return (
@@ -601,7 +722,7 @@ export function CommandCenter() {
               <h1 className="text-2xl font-semibold">Agentic orchestration command center</h1>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-9">
+          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-10">
             <StatusPill icon={<Brain size={15} />} label="Memory" value={`${capabilities?.memory.total ?? 0}`} />
             <StatusPill
               icon={<Database size={15} />}
@@ -612,6 +733,7 @@ export function CommandCenter() {
             <StatusPill icon={<History size={15} />} label="Runs" value={`${capabilities?.runs.total ?? 0}`} />
             <StatusPill icon={<Cable size={15} />} label="Tools" value={`${governedActiveTools.length || activeTools.length}`} />
             <StatusPill icon={<Cable size={15} />} label="MCP" value={`${connectorStats?.toolCount ?? 0}`} />
+            <StatusPill icon={<Globe2 size={15} />} label="REST" value={`${openApiStats?.operationCount ?? 0}`} />
             <StatusPill icon={<ShieldCheck size={15} />} label="Audits" value={`${toolAuditStats?.total ?? 0}`} />
             <StatusPill icon={<HardDrive size={15} />} label="Store" value={storageLabel} />
             <StatusPill
@@ -866,6 +988,95 @@ export function CommandCenter() {
 
             <section className="panel rounded-lg p-4">
               <div className="mb-4 flex items-center gap-2">
+                <Globe2 className="text-primary" size={18} />
+                <h2 className="font-semibold">OpenAPI connectors</h2>
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="APIs" value={`${openApiStats?.total ?? 0}`} />
+                <MiniStat label="Active" value={`${openApiStats?.active ?? 0}`} />
+                <MiniStat label="Ops" value={`${openApiStats?.operationCount ?? 0}`} />
+              </div>
+              <div className="flex flex-col gap-3">
+                <input
+                  value={openApiName}
+                  onChange={(event) => setOpenApiName(event.target.value)}
+                  className="h-10 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
+                  aria-label="OpenAPI connector name"
+                />
+                <input
+                  value={openApiSpecUrl}
+                  onChange={(event) => setOpenApiSpecUrl(event.target.value)}
+                  className="h-10 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
+                  aria-label="OpenAPI spec URL"
+                />
+                <input
+                  value={openApiBaseUrl}
+                  onChange={(event) => setOpenApiBaseUrl(event.target.value)}
+                  className="h-10 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
+                  placeholder="Base URL override"
+                  aria-label="OpenAPI base URL override"
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    value={openApiAuthEnv}
+                    onChange={(event) => setOpenApiAuthEnv(event.target.value.toUpperCase())}
+                    className="h-10 min-w-0 rounded-md border border-line bg-background px-3 font-mono text-sm outline-none focus:border-primary"
+                    placeholder="API_KEY_ENV"
+                    aria-label="OpenAPI API key environment variable"
+                  />
+                  <input
+                    value={openApiAuthHeader}
+                    onChange={(event) => setOpenApiAuthHeader(event.target.value)}
+                    className="h-10 min-w-0 rounded-md border border-line bg-background px-3 font-mono text-sm outline-none focus:border-primary"
+                    aria-label="OpenAPI API key header"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => registerOpenApiConnector(false)}
+                    className="flex h-10 items-center justify-center gap-2 rounded-md border border-line text-sm font-medium text-foreground transition hover:border-primary"
+                  >
+                    <CheckCircle2 size={15} />
+                    Register
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => registerOpenApiConnector(true)}
+                    className="flex h-10 items-center justify-center gap-2 rounded-md border border-primary/60 text-sm font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                  >
+                    <Search size={15} />
+                    Import
+                  </button>
+                </div>
+                {openApiResult ? (
+                  <pre className="max-h-48 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
+                    {openApiResult}
+                  </pre>
+                ) : null}
+                <div className="flex flex-col gap-3">
+                  {latestOpenApiConnectors.length ? (
+                    latestOpenApiConnectors.map((connector) => (
+                      <OpenApiConnectorRow
+                        key={connector.id}
+                        connector={connector}
+                        onImport={importOpenApiConnector}
+                      />
+                    ))
+                  ) : (
+                    <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+                      No OpenAPI connectors registered.
+                    </p>
+                  )}
+                  {latestOpenApiOperations.map((operation) => (
+                    <OpenApiOperationRow key={operation.id} operation={operation} />
+                  ))}
+                </div>
+              </div>
+            </section>
+
+            <section className="panel rounded-lg p-4">
+              <div className="mb-4 flex items-center gap-2">
                 <UploadCloud className="text-primary" size={18} />
                 <h2 className="font-semibold">Knowledge ingest</h2>
               </div>
@@ -1109,6 +1320,59 @@ function McpToolRow({ tool }: { tool: McpToolRecord }) {
       <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">
         {tool.description || tool.connectorName}
       </p>
+    </div>
+  );
+}
+
+function OpenApiConnectorRow({
+  connector,
+  onImport,
+}: {
+  connector: OpenApiConnectorRecord;
+  onImport: (connectorId: string) => void;
+}) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", connectorTone(connector.status))}>
+          {connector.status}
+        </span>
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", riskTone(connector.defaultRiskLevel))}>
+          R{connector.defaultRiskLevel}
+        </span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{connector.name}</p>
+      <p className="mt-2 truncate font-mono text-[11px] text-muted">{connector.baseUrl}</p>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <span className="font-mono text-[11px] text-muted">{connector.operationCount} ops</span>
+        <button
+          type="button"
+          onClick={() => onImport(connector.id)}
+          className="h-8 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+        >
+          Refresh
+        </button>
+      </div>
+      {connector.lastError ? (
+        <p className="mt-2 line-clamp-2 text-xs leading-5 text-danger">{connector.lastError}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function OpenApiOperationRow({ operation }: { operation: OpenApiOperationRecord }) {
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="rounded bg-accent/14 px-2 py-1 font-mono text-[11px] text-accent">
+          {operation.method}
+        </span>
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", riskTone(operation.riskLevel))}>
+          R{operation.riskLevel}
+        </span>
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{operation.summary || operation.operationId}</p>
+      <p className="mt-2 truncate font-mono text-[11px] text-muted">{operation.path}</p>
     </div>
   );
 }

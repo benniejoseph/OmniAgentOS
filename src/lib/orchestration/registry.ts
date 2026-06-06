@@ -73,7 +73,7 @@ export const tools: Capability[] = [
     id: "connector.openapi",
     name: "OpenAPI Importer",
     description: "Generate typed tools from OpenAPI schemas with approval policies.",
-    status: "planned",
+    status: "active",
   },
   {
     id: "workflow.temporal",
@@ -94,7 +94,7 @@ export const connectorTypes: Capability[] = [
     id: "rest",
     name: "REST/OpenAPI",
     description: "Import SaaS and internal APIs as approval-gated tools.",
-    status: "planned",
+    status: "active",
   },
   {
     id: "sql",

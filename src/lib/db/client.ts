@@ -215,6 +215,54 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_mcp_tools_connector_id_idx ON omni_mcp_tools (connector_id)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_mcp_tools_status_idx ON omni_mcp_tools (status)`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_mcp_tools_connector_name_idx ON omni_mcp_tools (connector_id, name)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_openapi_connectors (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          spec_url TEXT,
+          spec_hash TEXT,
+          base_url TEXT NOT NULL,
+          auth_type TEXT NOT NULL DEFAULT 'none',
+          auth_token_env TEXT,
+          auth_header_name TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          default_risk_level INTEGER NOT NULL DEFAULT 2,
+          approval_required BOOLEAN NOT NULL DEFAULT TRUE,
+          operation_count INTEGER NOT NULL DEFAULT 0,
+          info JSONB NOT NULL DEFAULT '{}',
+          last_imported_at TIMESTAMPTZ,
+          last_error TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_openapi_connectors_status_idx ON omni_openapi_connectors (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_openapi_connectors_updated_at_idx ON omni_openapi_connectors (updated_at DESC)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_openapi_operations (
+          id TEXT PRIMARY KEY,
+          connector_id TEXT NOT NULL REFERENCES omni_openapi_connectors(id) ON DELETE CASCADE,
+          connector_name TEXT NOT NULL,
+          operation_id TEXT NOT NULL,
+          method TEXT NOT NULL,
+          path TEXT NOT NULL,
+          summary TEXT,
+          description TEXT,
+          input_schema JSONB NOT NULL DEFAULT '{}',
+          request_content_type TEXT,
+          response_content_types TEXT[] NOT NULL DEFAULT '{}',
+          risk_level INTEGER NOT NULL DEFAULT 2,
+          approval_required BOOLEAN NOT NULL DEFAULT TRUE,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_openapi_operations_connector_id_idx ON omni_openapi_operations (connector_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_openapi_operations_status_idx ON omni_openapi_operations (status)`;
+      await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_openapi_operations_connector_operation_idx ON omni_openapi_operations (connector_id, operation_id)`;
       await ensureVectorSchema(sql);
       } finally {
         await sql`SELECT pg_advisory_unlock(271828182)`;

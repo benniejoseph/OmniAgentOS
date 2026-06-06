@@ -1,14 +1,15 @@
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
 import { getGovernedTools } from "@/lib/tools/registry";
-import { listMcpGovernedTools } from "@/lib/connectors/governed-tools";
+import { listMcpGovernedTools, listOpenApiGovernedTools } from "@/lib/connectors/governed-tools";
 
 export const runtime = "nodejs";
 
 export async function GET() {
   const mcpTools = await listMcpGovernedTools();
+  const openApiTools = await listOpenApiGovernedTools();
 
   return Response.json({
-    tools: [...getGovernedTools(), ...mcpTools],
+    tools: [...getGovernedTools(), ...mcpTools, ...openApiTools],
     audits: await getToolExecutionStats(),
     policy: {
       riskLevels: [

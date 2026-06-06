@@ -22,6 +22,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - Run ledger for runs, events, status, prompt, model, context count, response, and errors
 - Tool ledger for tool id, risk level, status, dry-run flag, approval requirement, inputs, outputs, and reasons
 - MCP connector registry for Streamable HTTP endpoints, token env-var references, server capabilities, discovered tool schemas, and connector health
+- OpenAPI connector registry for JSON/YAML specs, base URLs, token env-var references, imported operations, request schemas, and connector health
 
 ## Architecture
 
@@ -43,10 +44,14 @@ flowchart TD
   API --> MCP["MCP Connector Host"]
   MCP --> MTOOLS["Discovered MCP Tools"]
   MTOOLS --> GOV
+  API --> OPENAPI["OpenAPI Connector Importer"]
+  OPENAPI --> RTOOLS["Imported REST Operations"]
+  RTOOLS --> GOV
   GOV --> MEM
   GOV --> DOCS
   AUDIT --> DB
   MCP --> DB
+  OPENAPI --> DB
 ```
 
 ## Milestones
@@ -56,7 +61,7 @@ flowchart TD
 3. Add memory consolidation: extract facts, preferences, procedures, decisions, and unresolved tasks after every run. Done.
 4. Tool execution engine: implement governed tool calls with schemas, risk levels, approval gates, dry-runs, and audit records. Done.
 5. MCP connector host: register remote Streamable HTTP MCP servers, discover tools, and expose selected tools through the governed executor. Done.
-6. OpenAPI connector importer: transform API specs into typed tool adapters.
+6. OpenAPI connector importer: transform API specs into typed tool adapters. Done.
 7. Workflow runtime: add durable queues for long-running jobs, retries, signals, and resumes.
 8. Evaluation harness: add regression tasks, retrieval quality checks, and cost/latency metrics.
 9. Security controls: add tenant boundaries, RBAC, secret vaulting, and audit trails.

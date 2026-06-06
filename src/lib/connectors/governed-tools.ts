@@ -1,3 +1,5 @@
+import { getOpenApiOperationById, listOpenApiOperations } from "@/lib/connectors/openapi-store";
+import type { OpenApiOperationRecord } from "@/lib/connectors/openapi-types";
 import { getMcpToolById, listMcpTools } from "@/lib/connectors/store";
 import type { McpToolRecord } from "@/lib/connectors/types";
 import type { ToolDefinition } from "@/lib/tools/types";
@@ -23,5 +25,31 @@ export function toGovernedTool(tool: McpToolRecord): ToolDefinition {
     dryRunSupported: true,
     approvalRequired: tool.approvalRequired,
     inputSchema: tool.inputSchema,
+  };
+}
+
+export async function listOpenApiGovernedTools() {
+  const operations = await listOpenApiOperations();
+  return operations.map(openApiOperationToGovernedTool);
+}
+
+export async function getOpenApiGovernedTool(toolId: string) {
+  const operation = await getOpenApiOperationById(toolId);
+  return operation ? openApiOperationToGovernedTool(operation) : null;
+}
+
+export function openApiOperationToGovernedTool(operation: OpenApiOperationRecord): ToolDefinition {
+  return {
+    id: operation.id,
+    name: `${operation.connectorName}: ${operation.summary || operation.operationId}`,
+    description:
+      operation.description ||
+      `${operation.method} ${operation.path} from ${operation.connectorName}.`,
+    category: "openapi",
+    status: operation.status === "active" ? "active" : "planned",
+    riskLevel: operation.riskLevel,
+    dryRunSupported: true,
+    approvalRequired: operation.approvalRequired,
+    inputSchema: operation.inputSchema,
   };
 }

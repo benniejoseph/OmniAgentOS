@@ -36,15 +36,23 @@ When Postgres supports pgvector, the app adds vector columns and indexes for sem
 - `/api/tools/execute` schema-validated tool execution endpoint with dry-run defaults
 - `/api/connectors` MCP connector registration and discovery endpoint
 - `/api/connectors/:id/discover` MCP tool rediscovery endpoint
+- `/api/openapi-connectors` OpenAPI connector registration and import endpoint
+- `/api/openapi-connectors/:id/import` OpenAPI operation re-import endpoint
 - Command center panels for knowledge ingest, memory browser, and knowledge library
 - Command center panel for governed tool dry-runs, executions, and audit review
 - Command center panel for MCP connector registration, discovery, and discovered tool review
+- Command center panel for OpenAPI connector import, operation review, and governed REST execution
 - Local memory and knowledge persisted under `.omniagent/`
-- Postgres-backed memory, RAG documents/chunks, run history, tool audit history, MCP connectors, and discovered MCP tool schemas when `DATABASE_URL` is configured
+- Postgres-backed memory, RAG documents/chunks, run history, tool audit history, MCP connectors, OpenAPI connectors, and discovered tool schemas when `DATABASE_URL` is configured
 - Hybrid retrieval across durable memories and source chunks with semantic, keyword, recency, and importance signals
 - Memory consolidation after completed runs into durable facts, preferences, procedures, decisions, and tasks
 - Governed tool execution with risk levels, approval gates, planned connector blocking, and immutable audit records
 - MCP connector host for Streamable HTTP servers; discovered tools flow into the governed tool registry and inherit risk/audit policy
+- OpenAPI connector importer for JSON/YAML specs; imported REST operations flow into the governed tool registry with env-var based auth, dry-runs, approval gates, and audit policy
+
+## Connector Secrets
+
+Connector records store environment variable names only. Put bearer tokens or API keys in local `.env.local` or Vercel environment variables, then reference the env var name from the connector form.
 
 ## Implementation Roadmap
 
