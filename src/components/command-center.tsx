@@ -849,6 +849,8 @@ type EvalRunDetail = {
   results: EvalResultRecord[];
   governance?: EvalGovernanceSummary;
   override?: EvalOverrideEvidence;
+  caseEvidence?: EvalCaseEvidence[];
+  events?: ObservabilityEventRecord[];
 };
 
 type EvalOverrideEvidence = {
@@ -860,6 +862,14 @@ type EvalOverrideEvidence = {
   actorId: string;
   tenantId: string;
 };
+
+type EvalCaseEvidence = {
+  result: EvalResultRecord;
+  definition?: EvalCaseDefinition;
+  governance?: EvalCaseGovernance;
+};
+
+type EvalDetailFilter = "all" | "failed" | "warn" | "gated";
 
 type ObservabilityLevel = "info" | "warn" | "error";
 type ObservabilityCategory = "api" | "workflow" | "alert" | "diagnostics" | "evaluation" | "security" | "system";
@@ -1310,6 +1320,12 @@ const modes: { id: Mode; label: string }[] = [
 
 const evaluationSafeSafetyMode: EvalSafetyMode = "synthetic";
 const evaluationOverrideReasonMinLength = 12;
+const evaluationDetailFilters: Array<{ id: EvalDetailFilter; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "failed", label: "Failed" },
+  { id: "warn", label: "Warned" },
+  { id: "gated", label: "Gated" },
+];
 
 const defaultToolInputs: Record<string, string> = {
   "memory.search": JSON.stringify({ query: "structured memory consolidation", limit: 3 }, null, 2),
@@ -1398,6 +1414,9 @@ export function CommandCenter() {
   const [connectionCatalog, setConnectionCatalog] = useState<ConnectionCatalogResponse | null>(null);
   const [evaluationState, setEvaluationState] = useState<EvaluationsResponse | null>(null);
   const [evaluationResult, setEvaluationResult] = useState("");
+  const [selectedEvaluationRunId, setSelectedEvaluationRunId] = useState("");
+  const [selectedEvaluationDetail, setSelectedEvaluationDetail] = useState<EvalRunDetail | null>(null);
+  const [evaluationDetailFilter, setEvaluationDetailFilter] = useState<EvalDetailFilter>("all");
   const [evaluationAllowMutation, setEvaluationAllowMutation] = useState(false);
   const [evaluationOverrideReason, setEvaluationOverrideReason] = useState("");
   const [observabilityState, setObservabilityState] = useState<ObservabilityResponse | null>(null);
@@ -1504,6 +1523,32 @@ export function CommandCenter() {
         : evaluationOverrideReasonText.length < evaluationOverrideReasonMinLength
           ? `${evaluationOverrideReasonMinLength}+ chars`
           : "ready";
+  const selectedEvaluationCaseEvidence = selectedEvaluationDetail
+    ? selectedEvaluationDetail.caseEvidence || selectedEvaluationDetail.results.map((result) => {
+        const definition = evaluationCases.find((evalCase) => evalCase.id === result.caseId);
+        return {
+          result,
+          definition,
+          governance: definition?.governance,
+        };
+      })
+    : [];
+  const filteredEvaluationCaseEvidence = selectedEvaluationCaseEvidence.filter((evidence) => {
+    if (evaluationDetailFilter === "failed") {
+      return evidence.result.status === "fail";
+    }
+
+    if (evaluationDetailFilter === "warn") {
+      return evidence.result.status === "warn";
+    }
+
+    if (evaluationDetailFilter === "gated") {
+      return evidence.governance?.safetyMode === "mutation_allowed" ||
+        Boolean(evidence.governance?.production.requiresMutationApproval);
+    }
+
+    return true;
+  });
   const latestEvaluations = evaluationState?.runs.slice(0, 5) || (capabilities?.evaluations.latest ? [capabilities.evaluations.latest] : []);
   const latestEvaluationCases = evaluationCases.slice(0, 3);
   const observabilityStats = observabilityState?.stats || capabilities?.observability;
@@ -2335,6 +2380,35 @@ export function CommandCenter() {
     setOpenApiResult(`Applied ${template.name} OpenAPI template`);
   }
 
+  async function loadEvaluationRunDetail(runId: string, quiet = false) {
+    setSelectedEvaluationRunId(runId);
+    if (!quiet) {
+      setStatus("loading evaluation detail");
+    }
+
+    try {
+      const response = await fetch(`/api/evaluations/${runId}`);
+      const data = (await response.json()) as EvalRunDetail & { error?: string };
+      if (!response.ok) {
+        setEvaluationResult(formatToolResult(data));
+        if (!quiet) {
+          setStatus(data.error || "evaluation detail failed");
+        }
+        return;
+      }
+
+      setSelectedEvaluationDetail(data);
+      setEvaluationDetailFilter("all");
+      if (!quiet) {
+        setStatus("evaluation detail loaded");
+      }
+    } catch (error) {
+      if (!quiet) {
+        setStatus(error instanceof Error ? error.message : "evaluation detail failed");
+      }
+    }
+  }
+
   async function runEvaluations(mode: "safe" | "gated") {
     const gated = mode === "gated";
     if (gated && !canRunGatedEvaluations) {
@@ -2369,6 +2443,9 @@ export function CommandCenter() {
       const data = (await response.json()) as EvalRunDetail;
       setEvaluationResult(formatToolResult(data));
       setStatus(data.run?.status ? `evaluations ${data.run.status}` : response.ok ? "evaluations complete" : "evaluations failed");
+      if (data.run?.id) {
+        await loadEvaluationRunDetail(data.run.id, true);
+      }
       if (gated && response.ok) {
         setEvaluationAllowMutation(false);
       }
@@ -3436,9 +3513,24 @@ export function CommandCenter() {
                     {evaluationResult}
                   </pre>
                 ) : null}
+                {selectedEvaluationDetail ? (
+                  <EvaluationRunDetailPanel
+                    detail={selectedEvaluationDetail}
+                    caseEvidence={filteredEvaluationCaseEvidence}
+                    filter={evaluationDetailFilter}
+                    onFilterChange={setEvaluationDetailFilter}
+                  />
+                ) : null}
                 <div className="flex flex-col gap-3">
                   {latestEvaluations.length ? (
-                    latestEvaluations.map((run) => <EvaluationRunRow key={run.id} run={run} />)
+                    latestEvaluations.map((run) => (
+                      <EvaluationRunRow
+                        key={run.id}
+                        run={run}
+                        selected={selectedEvaluationRunId === run.id}
+                        onSelect={loadEvaluationRunDetail}
+                      />
+                    ))
                   ) : (
                     <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
                       No evaluation runs recorded yet.
@@ -4844,11 +4936,159 @@ function WorkflowRecoveryEventRow({ event }: { event: WorkflowRecoveryEventRecor
   );
 }
 
-function EvaluationRunRow({ run }: { run: EvalRunRecord }) {
-  const passRate = run.summary.total ? Math.round((run.summary.passed / run.summary.total) * 100) : 0;
+function EvaluationRunDetailPanel({
+  detail,
+  caseEvidence,
+  filter,
+  onFilterChange,
+}: {
+  detail: EvalRunDetail;
+  caseEvidence: EvalCaseEvidence[];
+  filter: EvalDetailFilter;
+  onFilterChange: (filter: EvalDetailFilter) => void;
+}) {
+  const passRate = detail.run.summary.total ? Math.round((detail.run.summary.passed / detail.run.summary.total) * 100) : 0;
+  const override = detail.override;
+  const governance = detail.governance;
+  const event = detail.events?.[0];
+
+  return (
+    <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium leading-5">{detail.run.suite}</p>
+          <p className="mt-1 truncate font-mono text-[11px] text-muted">{detail.run.id}</p>
+        </div>
+        <span className={clsx("shrink-0 rounded px-2 py-1 font-mono text-[11px]", evaluationRunTone(detail.run.status))}>
+          {passRate}%
+        </span>
+      </div>
+      <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+        <MiniStat label="Cases" value={`${detail.run.summary.total}`} />
+        <MiniStat label="Risk" value={`R${governance?.maxRiskLevel ?? 0}`} />
+        <MiniStat label="Mutating" value={`${governance?.mutatingCases ?? 0}`} />
+      </div>
+      <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+        <MiniStat label="Override" value={override?.requested ? "yes" : "no"} />
+        <MiniStat label="Role" value={override?.role || "unknown"} />
+        <MiniStat label="Event" value={event?.statusCode ? `${event.statusCode}` : "none"} />
+      </div>
+      <div className="mb-3 grid grid-cols-4 gap-1.5">
+        {evaluationDetailFilters.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onFilterChange(item.id)}
+            className={clsx(
+              "h-8 rounded-md border px-1.5 text-xs font-medium transition",
+              filter === item.id
+                ? "border-primary bg-primary text-primary-ink"
+                : "border-line text-muted hover:border-primary hover:text-foreground",
+            )}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      {override?.reason ? (
+        <p className="mb-3 rounded-md border border-line bg-background/70 p-2 text-xs leading-5 text-muted">
+          {override.reason}
+        </p>
+      ) : null}
+      <div className="flex max-h-96 flex-col gap-2 overflow-auto pr-1">
+        {caseEvidence.length ? (
+          caseEvidence.map((evidence) => (
+            <EvaluationCaseEvidenceRow key={evidence.result.id} evidence={evidence} />
+          ))
+        ) : (
+          <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+            No cases match this filter.
+          </p>
+        )}
+      </div>
+      {event ? (
+        <div className="mt-3 rounded-md border border-line bg-background/54 p-2 font-mono text-[10px] leading-5 text-muted">
+          <div className="flex items-center justify-between gap-3">
+            <span className="truncate">{event.correlationId}</span>
+            <span>{event.durationMs ?? 0}ms</span>
+          </div>
+          <div className="mt-1 flex items-center justify-between gap-3">
+            <span className="truncate">{event.actorId || "unknown"}</span>
+            <span>{new Date(event.createdAt).toLocaleTimeString()}</span>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function EvaluationCaseEvidenceRow({ evidence }: { evidence: EvalCaseEvidence }) {
+  const { result, definition, governance } = evidence;
+  const output = formatCompactJson(result.output);
 
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", resultTone(result.status))}>
+          {result.status}
+        </span>
+        {governance ? (
+          <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", evalSafetyTone(governance.safetyMode))}>
+            {governance.safetyMode}
+          </span>
+        ) : null}
+        {governance ? (
+          <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", riskTone(governance.riskLevel))}>
+            R{governance.riskLevel}
+          </span>
+        ) : null}
+      </div>
+      <p className="line-clamp-1 text-sm font-medium leading-5">{result.caseName}</p>
+      {definition?.description ? (
+        <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">{definition.description}</p>
+      ) : null}
+      <div className="mt-3 grid grid-cols-3 gap-1.5 font-mono text-[11px] text-muted">
+        <span>{Math.round(result.score * 100)}%</span>
+        <span>{result.latencyMs}ms</span>
+        <span>${result.estimatedCostUsd.toFixed(4)}</span>
+      </div>
+      {governance ? (
+        <div className="mt-2 flex min-w-0 items-center justify-between gap-3 font-mono text-[10px] text-muted">
+          <span>{governance.cleanup}</span>
+          <span>{governance.writesToDatabase ? "writes" : "read"}</span>
+          <span>{governance.production.requiresMutationApproval ? "gated" : "safe"}</span>
+        </div>
+      ) : null}
+      {result.error ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-danger">{result.error}</p> : null}
+      {output ? (
+        <pre className="mt-2 max-h-28 overflow-auto rounded-md border border-line bg-background/70 p-2 font-mono text-[10px] leading-4 text-muted">
+          {output}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
+function EvaluationRunRow({
+  run,
+  selected,
+  onSelect,
+}: {
+  run: EvalRunRecord;
+  selected: boolean;
+  onSelect: (runId: string) => void;
+}) {
+  const passRate = run.summary.total ? Math.round((run.summary.passed / run.summary.total) * 100) : 0;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(run.id)}
+      className={clsx(
+        "rounded-md border p-3 text-left transition hover:border-primary",
+        selected ? "border-primary/60 bg-primary/8" : "border-line bg-background/54",
+      )}
+    >
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", evaluationRunTone(run.status))}>
           {run.status}
@@ -4866,7 +5106,7 @@ function EvaluationRunRow({ run }: { run: EvalRunRecord }) {
         <span>${run.summary.estimatedCostUsd.toFixed(4)}</span>
       </div>
       {run.error ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-danger">{run.error}</p> : null}
-    </div>
+    </button>
   );
 }
 
@@ -4934,6 +5174,18 @@ function evaluationRunTone(status: EvalRunRecord["status"]) {
   }
 
   if (status === "failed") {
+    return "bg-danger/14 text-danger";
+  }
+
+  return "bg-accent/14 text-accent";
+}
+
+function resultTone(status: EvalResultStatus) {
+  if (status === "pass") {
+    return "bg-primary/16 text-primary";
+  }
+
+  if (status === "fail") {
     return "bg-danger/14 text-danger";
   }
 
@@ -5151,6 +5403,14 @@ function normalizeApprovalRoles(roles: SecurityRole[] | undefined, fallback: Sec
 function formatToolResult(value: unknown) {
   const formatted = JSON.stringify(value, null, 2) || "";
   return formatted.length > 2600 ? `${formatted.slice(0, 2600)}\n...` : formatted;
+}
+
+function formatCompactJson(value: unknown) {
+  if (!value) {
+    return "";
+  }
+  const formatted = JSON.stringify(value, null, 2) || "";
+  return formatted.length > 900 ? `${formatted.slice(0, 900)}\n...` : formatted;
 }
 
 async function readEventStream(

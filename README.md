@@ -86,7 +86,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - `/api/triggers` webhook workflow trigger management and audit endpoint
 - `/api/triggers/:id/dispatch` signed webhook dispatch endpoint that creates and enqueues workflow runs
 - `/api/evaluations` governed regression suite start/list endpoint with case safety metadata, safe default selection, and production mutation gating
-- `/api/evaluations/:id` evaluation run detail endpoint
+- `/api/evaluations/:id` evaluation run detail endpoint with case evidence, governance metadata, override evidence, and correlated runtime events
 - `/api/security/context` tenant, actor, role, RBAC, and secret-vault policy endpoint
 - `/api/security/audits` RBAC allow/deny audit endpoint
 - `/api/auth/session` current auth/session state endpoint
@@ -134,6 +134,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
 - Evaluation governance with read-only, synthetic, and mutation-allowed safety modes, production admin override requirements, cleanup policy metadata, and Command Center risk labels
 - Command Center evaluation override operations with separate safe/gated execution lanes, mutation consent, operator reason capture, and override evidence in runtime events
+- Command Center evaluation run drill-down with case-level result inspection, failed/warned/gated filters, governance evidence, override reason, and correlated runtime event details
 - Operations regression case for approval queue, operations overview, workflow liveness summary, recovery history, and connection catalog readiness
 - Operations regression case for persisted health diagnostics, SLO metrics, incident consistency, and repair ledgers
 - Operations regression case for stale workflow queue recovery, safe requeue/fail reconciliation, bounded drain reporting, cleanup, and registry exposure

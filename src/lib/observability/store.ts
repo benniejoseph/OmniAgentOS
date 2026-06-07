@@ -144,13 +144,19 @@ export async function recordRuntimeEventSafely(input: Parameters<typeof recordRu
 export async function listObservabilityEvents({
   level,
   category,
+  action,
   correlationId,
+  resourceType,
+  resourceId,
   route,
   limit = 50,
 }: {
   level?: ObservabilityLevel | "all";
   category?: ObservabilityCategory | "all";
+  action?: string;
   correlationId?: string;
+  resourceType?: string;
+  resourceId?: string;
   route?: string;
   limit?: number;
 } = {}) {
@@ -168,9 +174,21 @@ export async function listObservabilityEvents({
       params.push(category);
       filters.push(`category = $${params.length}`);
     }
+    if (action) {
+      params.push(action);
+      filters.push(`action = $${params.length}`);
+    }
     if (correlationId) {
       params.push(correlationId);
       filters.push(`correlation_id = $${params.length}`);
+    }
+    if (resourceType) {
+      params.push(resourceType);
+      filters.push(`resource_type = $${params.length}`);
+    }
+    if (resourceId) {
+      params.push(resourceId);
+      filters.push(`resource_id = $${params.length}`);
     }
     if (route) {
       params.push(route);
@@ -194,7 +212,10 @@ export async function listObservabilityEvents({
   return ledger.events
     .filter((event) => !level || level === "all" || event.level === level)
     .filter((event) => !category || category === "all" || event.category === category)
+    .filter((event) => !action || event.action === action)
     .filter((event) => !correlationId || event.correlationId === correlationId)
+    .filter((event) => !resourceType || event.resourceType === resourceType)
+    .filter((event) => !resourceId || event.resourceId === resourceId)
     .filter((event) => !route || event.route === route)
     .slice(0, boundedLimit);
 }
