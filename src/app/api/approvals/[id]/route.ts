@@ -92,11 +92,15 @@ export async function POST(
     const result = parsed.data.decision === "approve"
       ? await applyObservabilitySloPolicyChange(id, {
           reviewedBy: securityContext.actorId,
+          reviewedRole: securityContext.role,
+          tenantId: securityContext.tenantId,
           reviewReason: parsed.data.reason,
         })
       : {
           change: await rejectObservabilitySloPolicyChange(id, {
             reviewedBy: securityContext.actorId,
+            reviewedRole: securityContext.role,
+            tenantId: securityContext.tenantId,
             reviewReason: parsed.data.reason,
           }),
           policies: [],

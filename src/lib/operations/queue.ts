@@ -1,6 +1,7 @@
 import { listMcpConnectors } from "@/lib/connectors/store";
 import { listOpenApiConnectors } from "@/lib/connectors/openapi-store";
 import {
+  getSloPolicyApprovalProgress,
   listObservabilitySloPolicyChanges,
   type ObservabilitySloPolicyChange,
 } from "@/lib/observability/slo-policy-store";
@@ -170,6 +171,7 @@ function workflowApprovalToQueueItem(record: WorkflowRunRecord): ApprovalQueueIt
 
 function sloPolicyChangeToQueueItem(record: ObservabilitySloPolicyChange): ApprovalQueueItem {
   const title = record.afterPolicy?.name || record.beforePolicy?.name || record.policyId;
+  const progress = getSloPolicyApprovalProgress(record);
   return {
     kind: "slo_policy",
     id: record.id,
@@ -178,7 +180,11 @@ function sloPolicyChangeToQueueItem(record: ObservabilitySloPolicyChange): Appro
     riskLevel: record.riskLevel,
     requestedBy: record.requestedBy,
     tenantId: record.tenantId,
-    reason: record.reason || "SLO policy change requires approval.",
+    reason: [
+      record.reason || "SLO policy change requires approval.",
+      `${progress.approvals}/${progress.required} approvals recorded.`,
+      `Required roles: ${record.approvalPolicy.requiredRoles.join(", ")}.`,
+    ].join(" "),
     createdAt: record.createdAt,
     input: redactSensitive({
       policyId: record.policyId,
@@ -186,6 +192,8 @@ function sloPolicyChangeToQueueItem(record: ObservabilitySloPolicyChange): Appro
       beforePolicy: record.beforePolicy,
       afterPolicy: record.afterPolicy,
       rollbackChangeId: record.rollbackChangeId,
+      approvalPolicy: record.approvalPolicy,
+      approvalProgress: progress,
     }) as Record<string, unknown>,
     record: {
       ...record,

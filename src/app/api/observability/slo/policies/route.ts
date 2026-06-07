@@ -5,11 +5,9 @@ import {
   recordAppliedObservabilitySloPolicyChange,
   requestObservabilitySloPolicyChange,
   rollbackObservabilitySloPolicyChange,
-  deleteObservabilitySloPolicy,
   getDefaultObservabilitySloPolicies,
   getObservabilitySloPolicy,
   listObservabilitySloPolicies,
-  resetObservabilitySloPolicies,
   saveObservabilitySloPolicy,
 } from "@/lib/observability/slo-policy-store";
 import { getObservabilitySloSnapshot } from "@/lib/observability/slo-monitor";
@@ -294,26 +292,12 @@ async function handleSloPolicyAction(
 
   if (action.action === "delete_policy") {
     const beforePolicy = await requirePolicy(action.id);
-    if (action.requireApproval) {
-      const change = await requestObservabilitySloPolicyChange({
-        policyId: action.id,
-        action: "delete_policy",
-        tenantId: context.tenantId,
-        requestedBy: context.actorId,
-        reason: action.reason || "Operator requested SLO policy deletion.",
-        beforePolicy,
-        afterPolicy: null,
-      });
-      return { policies: [], change };
-    }
-
-    await deleteObservabilitySloPolicy(action.id);
-    const change = await recordAppliedObservabilitySloPolicyChange({
+    const change = await requestObservabilitySloPolicyChange({
       policyId: action.id,
       action: "delete_policy",
       tenantId: context.tenantId,
       requestedBy: context.actorId,
-      reason: action.reason,
+      reason: action.reason || "Operator requested SLO policy deletion.",
       beforePolicy,
       afterPolicy: null,
     });
@@ -322,44 +306,26 @@ async function handleSloPolicyAction(
 
   if (action.action === "reset_defaults") {
     const beforePolicies = await listObservabilitySloPolicies({ includeDisabled: true });
-    if (action.requireApproval) {
-      const change = await requestObservabilitySloPolicyChange({
-        policyId: "defaults",
-        action: "reset_defaults",
-        tenantId: context.tenantId,
-        requestedBy: context.actorId,
-        reason: action.reason || "Operator requested default SLO policy reset.",
-        beforePolicy: null,
-        afterPolicy: null,
-        metadata: {
-          beforePolicies,
-          defaultPolicyIds: getDefaultObservabilitySloPolicies().map((policy) => policy.id),
-        },
-      });
-      return { policies: [], change };
-    }
-
-    const policies = await resetObservabilitySloPolicies();
-    const change = await recordAppliedObservabilitySloPolicyChange({
+    const change = await requestObservabilitySloPolicyChange({
       policyId: "defaults",
       action: "reset_defaults",
       tenantId: context.tenantId,
       requestedBy: context.actorId,
-      reason: action.reason,
+      reason: action.reason || "Operator requested default SLO policy reset.",
       beforePolicy: null,
       afterPolicy: null,
       metadata: {
         beforePolicies,
-        defaultPolicyIds: policies.map((policy) => policy.id),
+        defaultPolicyIds: getDefaultObservabilitySloPolicies().map((policy) => policy.id),
       },
     });
-    return { policies, change };
+    return { policies: [], change };
   }
 
   return rollbackObservabilitySloPolicyChange(action.changeId, {
     tenantId: context.tenantId,
     requestedBy: context.actorId,
     reason: action.reason,
-    autoApply: !action.requireApproval,
+    autoApply: false,
   });
 }

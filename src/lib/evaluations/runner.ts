@@ -379,7 +379,7 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
   {
     id: "operations.slo_policy_change_control",
     name: "SLO policy change control",
-    description: "Validates governed SLO policy change requests, approval application, immutable history, rollback, and registry exposure.",
+    description: "Validates governed SLO policy change requests, approval application, immutable history, quorum-backed rollback, and registry exposure.",
     type: "operations",
     input: {
       policyPrefix: "eval_governed_policy",
@@ -392,6 +392,24 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       rollbackApply: true,
       cleanup: true,
       registryTool: "ops.slo_policy_change_control",
+    },
+  },
+  {
+    id: "operations.slo_multi_party_approval",
+    name: "SLO multi-party approval",
+    description: "Validates high-risk SLO policy quorum, required approver roles, requester separation, signed evidence, and final application.",
+    type: "operations",
+    input: {
+      policyPrefix: "eval_quorum_policy",
+    },
+    expected: {
+      highRiskPolicy: true,
+      requesterBlocked: true,
+      firstApprovalPending: true,
+      quorumApply: true,
+      signedEvidence: true,
+      cleanup: true,
+      registryTool: "ops.slo_multi_party_approval",
     },
   },
 ];
@@ -543,6 +561,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.slo_policy_change_control") {
     return evaluateSloPolicyChangeControl(evalCase);
+  }
+
+  if (evalCase.id === "operations.slo_multi_party_approval") {
+    return evaluateSloMultiPartyApproval(evalCase);
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -1744,9 +1766,15 @@ async function evaluateSloPolicyChangeControl(evalCase: EvalCaseDefinition): Pro
     reason: "Evaluation rollback request.",
   });
   const fetchedRollback = await getObservabilitySloPolicyChange(rollbackRequest.change.id);
+  const rollbackFirstApproval = await applyObservabilitySloPolicyChange(rollbackRequest.change.id, {
+    reviewedBy: "eval-admin-a",
+    reviewedRole: "admin",
+    reviewReason: "Evaluation rollback attestation from first admin.",
+  });
   const rollbackApproval = await applyObservabilitySloPolicyChange(rollbackRequest.change.id, {
-    reviewedBy: "evaluation",
-    reviewReason: "Evaluation rollback approval.",
+    reviewedBy: "eval-admin-b",
+    reviewedRole: "admin",
+    reviewReason: "Evaluation rollback attestation from second admin.",
   });
   const restoredPolicy = await getObservabilitySloPolicy(policyId);
   const cleanup = await deleteObservabilitySloPolicy(policyId).catch(() => false);
@@ -1774,6 +1802,7 @@ async function evaluateSloPolicyChangeControl(evalCase: EvalCaseDefinition): Pro
       : true,
     rollbackApply: Boolean(evalCase.expected.rollbackApply)
       ? rollbackApproval.change.status === "applied" &&
+        rollbackFirstApproval.change.status === "pending" &&
         restoredPolicy?.warningThreshold === baselinePolicy.warningThreshold &&
         restoredPolicy?.criticalThreshold === baselinePolicy.criticalThreshold
       : true,
@@ -1802,8 +1831,119 @@ async function evaluateSloPolicyChangeControl(evalCase: EvalCaseDefinition): Pro
       },
       rollback: {
         id: rollbackRequest.change.id,
+        firstApprovalStatus: rollbackFirstApproval.change.status,
         status: rollbackApproval.change.status,
         policies: rollbackApproval.policies.length,
+        approvals: rollbackApproval.change.approvals.length,
+      },
+      cleanup,
+    },
+  };
+}
+
+async function evaluateSloMultiPartyApproval(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const policyId = `${String(evalCase.input.policyPrefix || "eval_quorum_policy")}_${Date.now()}`;
+  const policy: ObservabilitySloPolicy = {
+    id: policyId,
+    name: "Evaluation quorum SLO policy",
+    description: "Temporary evaluation policy for high-risk multi-party approval.",
+    metric: "routeFailures",
+    comparator: "greater_than_or_equal",
+    warningThreshold: 8888,
+    criticalThreshold: 18888,
+    warningSeverity: "warning",
+    criticalSeverity: "critical",
+    unit: "count",
+    componentId: "observability",
+    enabled: true,
+    alertTargetIds: ["dashboard"],
+    suppressionMinutes: 29,
+    metadata: { source: "evaluation", governance: "quorum" },
+  };
+  const saved = await saveObservabilitySloPolicy(policy);
+  const change = await requestObservabilitySloPolicyChange({
+    policyId,
+    action: "delete_policy",
+    tenantId: "evaluation",
+    requestedBy: "eval-requester",
+    reason: "Evaluation high-risk delete request.",
+    beforePolicy: saved,
+    afterPolicy: null,
+  });
+  const requesterBlocked = await applyObservabilitySloPolicyChange(change.id, {
+    reviewedBy: "eval-requester",
+    reviewedRole: "admin",
+    reviewReason: "Requester self-approval should be rejected.",
+  })
+    .then(() => false)
+    .catch(() => true);
+  const firstApproval = await applyObservabilitySloPolicyChange(change.id, {
+    reviewedBy: "eval-admin-a",
+    reviewedRole: "admin",
+    reviewReason: "First high-risk approval.",
+  });
+  const stillPresentAfterFirstApproval = await getObservabilitySloPolicy(policyId);
+  const secondApproval = await applyObservabilitySloPolicyChange(change.id, {
+    reviewedBy: "eval-system-b",
+    reviewedRole: "system",
+    reviewReason: "Second high-risk approval.",
+  });
+  const afterDelete = await getObservabilitySloPolicy(policyId);
+  const history = await listObservabilitySloPolicyChanges({ policyId, limit: 10 });
+  const cleanup = afterDelete === null ? true : await deleteObservabilitySloPolicy(policyId).catch(() => false);
+  const registry = getCapabilityRegistry();
+  const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
+  const appliedChange = history.find((item) => item.id === change.id) || secondApproval.change;
+  const checks = {
+    highRiskPolicy: Boolean(evalCase.expected.highRiskPolicy)
+      ? change.riskLevel === 3 &&
+        change.approvalPolicy.quorum === 2 &&
+        change.approvalPolicy.requiredRoles.includes("admin") &&
+        change.approvalPolicy.requiredRoles.includes("system") &&
+        change.approvalPolicy.allowRequesterApproval === false
+      : true,
+    requesterBlocked: Boolean(evalCase.expected.requesterBlocked) ? requesterBlocked : true,
+    firstApprovalPending: Boolean(evalCase.expected.firstApprovalPending)
+      ? firstApproval.change.status === "pending" &&
+        firstApproval.approvalProgress.remaining === 1 &&
+        Boolean(stillPresentAfterFirstApproval)
+      : true,
+    quorumApply: Boolean(evalCase.expected.quorumApply)
+      ? secondApproval.change.status === "applied" &&
+        secondApproval.approvalProgress.canApply === true &&
+        afterDelete === null
+      : true,
+    signedEvidence: Boolean(evalCase.expected.signedEvidence)
+      ? appliedChange.approvals.length === 2 &&
+        appliedChange.approvals.every((approval) => approval.evidenceHash.length === 64 && approval.signature.length === 64) &&
+        appliedChange.evidenceHash.length === 64
+      : true,
+    cleanup: Boolean(evalCase.expected.cleanup) ? cleanup === true : true,
+    registryToolAvailable: activeToolIds.has(String(evalCase.expected.registryTool || "ops.slo_multi_party_approval")),
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      policyId,
+      change: {
+        id: change.id,
+        riskLevel: change.riskLevel,
+        quorum: change.approvalPolicy.quorum,
+        requiredRoles: change.approvalPolicy.requiredRoles,
+      },
+      firstApproval: {
+        status: firstApproval.change.status,
+        remaining: firstApproval.approvalProgress.remaining,
+      },
+      secondApproval: {
+        status: secondApproval.change.status,
+        approvals: secondApproval.change.approvals.length,
+        evidenceHash: secondApproval.change.evidenceHash,
       },
       cleanup,
     },

@@ -862,6 +862,9 @@ export async function ensureDatabaseSchema() {
           before_policy JSONB,
           after_policy JSONB,
           rollback_change_id TEXT,
+          approval_policy JSONB NOT NULL DEFAULT '{}',
+          approvals JSONB NOT NULL DEFAULT '[]',
+          evidence_hash TEXT NOT NULL DEFAULT '',
           metadata JSONB NOT NULL DEFAULT '{}',
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -869,6 +872,9 @@ export async function ensureDatabaseSchema() {
           applied_at TIMESTAMPTZ
         )
       `;
+      await sql`ALTER TABLE omni_observability_slo_policy_changes ADD COLUMN IF NOT EXISTS approval_policy JSONB NOT NULL DEFAULT '{}'`;
+      await sql`ALTER TABLE omni_observability_slo_policy_changes ADD COLUMN IF NOT EXISTS approvals JSONB NOT NULL DEFAULT '[]'`;
+      await sql`ALTER TABLE omni_observability_slo_policy_changes ADD COLUMN IF NOT EXISTS evidence_hash TEXT NOT NULL DEFAULT ''`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_policy_idx ON omni_observability_slo_policy_changes (policy_id, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_status_idx ON omni_observability_slo_policy_changes (status, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_action_idx ON omni_observability_slo_policy_changes (action)`;

@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import type { IncidentSeverity } from "@/lib/diagnostics/incidents";
 import { redactSensitive } from "@/lib/security/context";
+import type { SecurityRole } from "@/lib/security/types";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
@@ -34,6 +36,37 @@ export type SloPolicyChangeAction =
   | "reset_defaults"
   | "rollback_policy";
 export type SloPolicyChangeStatus = "pending" | "applied" | "rejected";
+export type SloPolicyApprovalDecision = "approved" | "rejected";
+
+export type SloPolicyApprovalPolicy = {
+  quorum: number;
+  requiredRoles: SecurityRole[];
+  allowRequesterApproval: boolean;
+  attestationRequired: boolean;
+  description: string;
+};
+
+export type SloPolicyApprovalEvidence = {
+  id: string;
+  decision: SloPolicyApprovalDecision;
+  actorId: string;
+  actorRole: SecurityRole;
+  tenantId?: string;
+  reason?: string;
+  createdAt: string;
+  previousHash?: string;
+  evidenceHash: string;
+  signature: string;
+};
+
+export type SloPolicyApprovalProgress = {
+  approvals: number;
+  required: number;
+  remaining: number;
+  approvedBy: string[];
+  rejected: number;
+  canApply: boolean;
+};
 
 export type ObservabilitySloPolicyChange = {
   id: string;
@@ -49,6 +82,9 @@ export type ObservabilitySloPolicyChange = {
   beforePolicy?: ObservabilitySloPolicy | null;
   afterPolicy?: ObservabilitySloPolicy | null;
   rollbackChangeId?: string;
+  approvalPolicy: SloPolicyApprovalPolicy;
+  approvals: SloPolicyApprovalEvidence[];
+  evidenceHash: string;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -334,18 +370,22 @@ export async function requestObservabilitySloPolicyChange(input: {
   metadata?: Record<string, unknown>;
 }) {
   const now = new Date().toISOString();
+  const riskLevel = changeRiskLevel(input.action);
   const change = normalizePolicyChange({
     id: createSloPolicyChangeId(),
     policyId: input.policyId,
     action: input.action,
     status: "pending",
-    riskLevel: changeRiskLevel(input.action),
+    riskLevel,
     tenantId: input.tenantId,
     requestedBy: input.requestedBy,
     reason: input.reason,
     beforePolicy: input.beforePolicy,
     afterPolicy: input.afterPolicy,
     rollbackChangeId: input.rollbackChangeId,
+    approvalPolicy: defaultSloApprovalPolicy(input.action, riskLevel),
+    approvals: [],
+    evidenceHash: "",
     metadata: input.metadata || {},
     createdAt: now,
     updatedAt: now,
@@ -366,12 +406,13 @@ export async function recordAppliedObservabilitySloPolicyChange(input: {
   metadata?: Record<string, unknown>;
 }) {
   const now = new Date().toISOString();
+  const riskLevel = changeRiskLevel(input.action);
   const change = normalizePolicyChange({
     id: createSloPolicyChangeId(),
     policyId: input.policyId,
     action: input.action,
     status: "applied",
-    riskLevel: changeRiskLevel(input.action),
+    riskLevel,
     tenantId: input.tenantId,
     requestedBy: input.requestedBy,
     reviewedBy: input.requestedBy,
@@ -380,6 +421,9 @@ export async function recordAppliedObservabilitySloPolicyChange(input: {
     beforePolicy: input.beforePolicy,
     afterPolicy: input.afterPolicy,
     rollbackChangeId: input.rollbackChangeId,
+    approvalPolicy: defaultSloApprovalPolicy(input.action, riskLevel),
+    approvals: [],
+    evidenceHash: "",
     metadata: input.metadata || {},
     createdAt: now,
     updatedAt: now,
@@ -394,6 +438,8 @@ export async function applyObservabilitySloPolicyChange(
   changeId: string,
   review: {
     reviewedBy?: string;
+    reviewedRole?: SecurityRole;
+    tenantId?: string;
     reviewReason?: string;
   } = {},
 ) {
@@ -405,25 +451,46 @@ export async function applyObservabilitySloPolicyChange(
     throw new Error(`SLO policy change ${changeId} is ${pending.status}.`);
   }
 
-  const policies = await applySloPolicyChangePayload(pending);
+  const approval = createApprovalEvidence(pending, {
+    decision: "approved",
+    actorId: review.reviewedBy || "system",
+    actorRole: review.reviewedRole || "admin",
+    tenantId: review.tenantId,
+    reason: review.reviewReason,
+  });
   const now = new Date().toISOString();
-  const change = normalizePolicyChange({
+  const approved = normalizePolicyChange({
     ...pending,
+    approvals: [...pending.approvals, approval],
+    reviewedBy: approval.actorId,
+    reviewReason: approval.reason || pending.reviewReason,
+    updatedAt: now,
+  });
+
+  const progress = getSloPolicyApprovalProgress(approved);
+  if (!progress.canApply) {
+    await saveObservabilitySloPolicyChange(approved);
+    return { change: approved, policies: [], approvalProgress: progress };
+  }
+
+  const policies = await applySloPolicyChangePayload(approved);
+  const change = normalizePolicyChange({
+    ...approved,
     status: "applied",
-    reviewedBy: review.reviewedBy || pending.reviewedBy,
-    reviewReason: review.reviewReason || pending.reviewReason,
     reviewedAt: now,
     appliedAt: now,
     updatedAt: now,
   });
   await saveObservabilitySloPolicyChange(change);
-  return { change, policies };
+  return { change, policies, approvalProgress: getSloPolicyApprovalProgress(change) };
 }
 
 export async function rejectObservabilitySloPolicyChange(
   changeId: string,
   review: {
     reviewedBy?: string;
+    reviewedRole?: SecurityRole;
+    tenantId?: string;
     reviewReason?: string;
   } = {},
 ) {
@@ -436,11 +503,19 @@ export async function rejectObservabilitySloPolicyChange(
   }
 
   const now = new Date().toISOString();
+  const rejection = createApprovalEvidence(pending, {
+    decision: "rejected",
+    actorId: review.reviewedBy || "system",
+    actorRole: review.reviewedRole || "admin",
+    tenantId: review.tenantId,
+    reason: review.reviewReason,
+  });
   const change = normalizePolicyChange({
     ...pending,
     status: "rejected",
-    reviewedBy: review.reviewedBy || pending.reviewedBy,
-    reviewReason: review.reviewReason || pending.reviewReason,
+    approvals: [...pending.approvals, rejection],
+    reviewedBy: rejection.actorId,
+    reviewReason: rejection.reason || pending.reviewReason,
     reviewedAt: now,
     updatedAt: now,
   });
@@ -488,8 +563,26 @@ export async function rollbackObservabilitySloPolicyChange(
 
   return applyObservabilitySloPolicyChange(change.id, {
     reviewedBy: input.requestedBy,
+    reviewedRole: "system",
     reviewReason: input.reason,
   });
+}
+
+export function getSloPolicyApprovalProgress(change: ObservabilitySloPolicyChange): SloPolicyApprovalProgress {
+  const approvedEvidence = change.approvals.filter((approval) => approval.decision === "approved");
+  const approvedBy = [...new Set(approvedEvidence.map((approval) => approval.actorId))];
+  const approvals = approvedBy.length;
+  const required = change.approvalPolicy.quorum;
+  const rejected = change.approvals.filter((approval) => approval.decision === "rejected").length;
+
+  return {
+    approvals,
+    required,
+    remaining: Math.max(required - approvals, 0),
+    approvedBy,
+    rejected,
+    canApply: rejected === 0 && approvals >= required,
+  };
 }
 
 async function ensureDefaultSloPolicies() {
@@ -585,7 +678,8 @@ async function saveObservabilitySloPolicyChange(change: ObservabilitySloPolicyCh
       INSERT INTO omni_observability_slo_policy_changes (
         id, policy_id, action, status, risk_level, tenant_id,
         requested_by, reviewed_by, reason, review_reason,
-        before_policy, after_policy, rollback_change_id, metadata,
+        before_policy, after_policy, rollback_change_id, approval_policy,
+        approvals, evidence_hash, metadata,
         created_at, updated_at, reviewed_at, applied_at
       )
       VALUES (
@@ -594,7 +688,11 @@ async function saveObservabilitySloPolicyChange(change: ObservabilitySloPolicyCh
         ${record.reviewedBy || null}, ${record.reason || null}, ${record.reviewReason || null},
         ${JSON.stringify(record.beforePolicy || null)}::jsonb,
         ${JSON.stringify(record.afterPolicy || null)}::jsonb,
-        ${record.rollbackChangeId || null}, ${JSON.stringify(record.metadata)}::jsonb,
+        ${record.rollbackChangeId || null},
+        ${JSON.stringify(record.approvalPolicy)}::jsonb,
+        ${JSON.stringify(record.approvals)}::jsonb,
+        ${record.evidenceHash},
+        ${JSON.stringify(record.metadata)}::jsonb,
         ${record.createdAt}, ${record.updatedAt}, ${record.reviewedAt || null},
         ${record.appliedAt || null}
       )
@@ -611,6 +709,9 @@ async function saveObservabilitySloPolicyChange(change: ObservabilitySloPolicyCh
         before_policy = EXCLUDED.before_policy,
         after_policy = EXCLUDED.after_policy,
         rollback_change_id = EXCLUDED.rollback_change_id,
+        approval_policy = EXCLUDED.approval_policy,
+        approvals = EXCLUDED.approvals,
+        evidence_hash = EXCLUDED.evidence_hash,
         metadata = EXCLUDED.metadata,
         updated_at = EXCLUDED.updated_at,
         reviewed_at = EXCLUDED.reviewed_at,
@@ -685,16 +786,23 @@ function normalizePolicy(policy: ObservabilitySloPolicy): ObservabilitySloPolicy
   };
 }
 
-function normalizePolicyChange(change: ObservabilitySloPolicyChange): ObservabilitySloPolicyChange {
+function normalizePolicyChange(
+  change: Omit<ObservabilitySloPolicyChange, "approvalPolicy" | "approvals" | "evidenceHash"> &
+    Partial<Pick<ObservabilitySloPolicyChange, "approvalPolicy" | "approvals" | "evidenceHash">>,
+): ObservabilitySloPolicyChange {
   const now = new Date().toISOString();
   const beforePolicy = parsePolicySnapshot(change.beforePolicy);
   const afterPolicy = parsePolicySnapshot(change.afterPolicy);
-  return {
+  const action = normalizeChangeAction(change.action);
+  const riskLevel = Math.min(Math.max(Math.round(Number(change.riskLevel || changeRiskLevel(action))), 0), 3);
+  const approvalPolicy = normalizeApprovalPolicy(change.approvalPolicy, action, riskLevel);
+  const approvals = parseApprovalEvidenceList(change.approvals);
+  const normalized = {
     id: change.id.trim() || createSloPolicyChangeId(),
     policyId: change.policyId.trim() || afterPolicy?.id || beforePolicy?.id || "unknown",
-    action: normalizeChangeAction(change.action),
+    action,
     status: normalizeChangeStatus(change.status),
-    riskLevel: Math.min(Math.max(Math.round(Number(change.riskLevel || 2)), 0), 3),
+    riskLevel,
     tenantId: change.tenantId?.trim() || undefined,
     requestedBy: change.requestedBy?.trim() || undefined,
     reviewedBy: change.reviewedBy?.trim() || undefined,
@@ -703,11 +811,18 @@ function normalizePolicyChange(change: ObservabilitySloPolicyChange): Observabil
     beforePolicy,
     afterPolicy,
     rollbackChangeId: change.rollbackChangeId?.trim() || undefined,
+    approvalPolicy,
+    approvals,
+    evidenceHash: change.evidenceHash || "",
     metadata: (redactSensitive(change.metadata || {}) || {}) as Record<string, unknown>,
     createdAt: change.createdAt || now,
     updatedAt: change.updatedAt || now,
     reviewedAt: change.reviewedAt,
     appliedAt: change.appliedAt,
+  };
+  return {
+    ...normalized,
+    evidenceHash: hashSloPolicyChange(normalized),
   };
 }
 
@@ -748,6 +863,9 @@ function sloPolicyChangeFromRow(row: Record<string, unknown>): ObservabilitySloP
     beforePolicy: parsePolicySnapshot(row.before_policy),
     afterPolicy: parsePolicySnapshot(row.after_policy),
     rollbackChangeId: row.rollback_change_id ? String(row.rollback_change_id) : undefined,
+    approvalPolicy: parseApprovalPolicy(row.approval_policy),
+    approvals: parseApprovalEvidenceList(row.approvals),
+    evidenceHash: row.evidence_hash ? String(row.evidence_hash) : "",
     metadata: parseObject(row.metadata) || {},
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
@@ -784,6 +902,88 @@ function normalizeSeverity(value: unknown, fallback: IncidentSeverity): Incident
   return fallback;
 }
 
+function createApprovalEvidence(
+  change: ObservabilitySloPolicyChange,
+  input: {
+    decision: SloPolicyApprovalDecision;
+    actorId: string;
+    actorRole: SecurityRole;
+    tenantId?: string;
+    reason?: string;
+  },
+): SloPolicyApprovalEvidence {
+  const actorId = input.actorId.trim() || "system";
+  const actorRole = normalizeSecurityRole(input.actorRole);
+  const reason = input.reason?.trim();
+
+  assertApprovalAllowed(change, {
+    decision: input.decision,
+    actorId,
+    actorRole,
+    reason,
+  });
+
+  const createdAt = new Date().toISOString();
+  const previousHash = change.approvals.at(-1)?.signature || change.evidenceHash;
+  const evidenceCore = {
+    changeId: change.id,
+    policyId: change.policyId,
+    action: change.action,
+    decision: input.decision,
+    actorId,
+    actorRole,
+    tenantId: input.tenantId,
+    reason,
+    previousHash,
+    createdAt,
+  };
+  const evidenceHash = hashValue(evidenceCore);
+  return {
+    id: `sloapproval_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+    decision: input.decision,
+    actorId,
+    actorRole,
+    tenantId: input.tenantId?.trim() || undefined,
+    reason,
+    createdAt,
+    previousHash,
+    evidenceHash,
+    signature: hashValue({ ...evidenceCore, evidenceHash }),
+  };
+}
+
+function assertApprovalAllowed(
+  change: ObservabilitySloPolicyChange,
+  input: {
+    decision: SloPolicyApprovalDecision;
+    actorId: string;
+    actorRole: SecurityRole;
+    reason?: string;
+  },
+) {
+  if (!change.approvalPolicy.requiredRoles.includes(input.actorRole)) {
+    throw new Error(
+      `SLO policy change ${change.id} requires approver role ${change.approvalPolicy.requiredRoles.join(" or ")}.`,
+    );
+  }
+
+  if (!change.approvalPolicy.allowRequesterApproval && change.requestedBy === input.actorId) {
+    throw new Error(`Requester ${input.actorId} cannot approve SLO policy change ${change.id}.`);
+  }
+
+  if (change.approvals.some((approval) => approval.actorId === input.actorId)) {
+    throw new Error(`Approver ${input.actorId} already recorded a decision for SLO policy change ${change.id}.`);
+  }
+
+  if (
+    input.decision === "approved" &&
+    change.approvalPolicy.attestationRequired &&
+    (!input.reason || input.reason.length < 12)
+  ) {
+    throw new Error(`SLO policy change ${change.id} requires an approval attestation.`);
+  }
+}
+
 function normalizeChangeAction(value: unknown): SloPolicyChangeAction {
   const action = String(value || "upsert_policy");
   if (
@@ -807,6 +1007,103 @@ function normalizeChangeStatus(value: unknown): SloPolicyChangeStatus {
 
 function changeRiskLevel(action: SloPolicyChangeAction) {
   return action === "delete_policy" || action === "reset_defaults" || action === "rollback_policy" ? 3 : 2;
+}
+
+function defaultSloApprovalPolicy(action: SloPolicyChangeAction, riskLevel: number): SloPolicyApprovalPolicy {
+  if (riskLevel >= 3) {
+    return {
+      quorum: 2,
+      requiredRoles: ["admin", "system"],
+      allowRequesterApproval: false,
+      attestationRequired: action === "rollback_policy",
+      description: action === "rollback_policy"
+        ? "High-risk rollback requires two distinct admin/system approvers and an explicit rollback attestation."
+        : "High-risk SLO policy changes require two distinct admin/system approvers.",
+    };
+  }
+
+  return {
+    quorum: 1,
+    requiredRoles: ["operator", "admin", "system"],
+    allowRequesterApproval: true,
+    attestationRequired: false,
+    description: "SLO policy changes require one operator, admin, or system approval.",
+  };
+}
+
+function normalizeApprovalPolicy(
+  value: unknown,
+  action: SloPolicyChangeAction,
+  riskLevel: number,
+): SloPolicyApprovalPolicy {
+  const fallback = defaultSloApprovalPolicy(action, riskLevel);
+  const raw = parseObject(value) || {};
+  const quorum = Number(raw.quorum || fallback.quorum);
+  const requiredRoles = Array.isArray(raw.requiredRoles)
+    ? raw.requiredRoles.map(normalizeSecurityRole).filter((role) => role !== "viewer")
+    : fallback.requiredRoles;
+
+  return {
+    quorum: Math.min(Math.max(Math.round(quorum), 1), 5),
+    requiredRoles: requiredRoles.length ? [...new Set(requiredRoles)] : fallback.requiredRoles,
+    allowRequesterApproval: typeof raw.allowRequesterApproval === "boolean"
+      ? raw.allowRequesterApproval
+      : fallback.allowRequesterApproval,
+    attestationRequired: typeof raw.attestationRequired === "boolean"
+      ? raw.attestationRequired
+      : fallback.attestationRequired,
+    description: typeof raw.description === "string" && raw.description.trim()
+      ? raw.description.trim().slice(0, 500)
+      : fallback.description,
+  };
+}
+
+function parseApprovalPolicy(value: unknown): SloPolicyApprovalPolicy | undefined {
+  const raw = parseObject(value);
+  if (!raw) {
+    return undefined;
+  }
+
+  return {
+    quorum: Number(raw.quorum || 1),
+    requiredRoles: Array.isArray(raw.requiredRoles) ? raw.requiredRoles.map(normalizeSecurityRole) : ["admin"],
+    allowRequesterApproval: Boolean(raw.allowRequesterApproval),
+    attestationRequired: Boolean(raw.attestationRequired),
+    description: String(raw.description || ""),
+  };
+}
+
+function parseApprovalEvidenceList(value: unknown): SloPolicyApprovalEvidence[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => {
+      const raw = item as Record<string, unknown>;
+      const decision = String(raw.decision || "approved") === "rejected" ? "rejected" : "approved";
+      return {
+        id: String(raw.id || `sloapproval_${Date.now()}`),
+        decision,
+        actorId: String(raw.actorId || raw.actor_id || "system"),
+        actorRole: normalizeSecurityRole(raw.actorRole || raw.actor_role),
+        tenantId: raw.tenantId || raw.tenant_id ? String(raw.tenantId || raw.tenant_id) : undefined,
+        reason: raw.reason ? String(raw.reason) : undefined,
+        createdAt: raw.createdAt || raw.created_at ? normalizeDate(raw.createdAt || raw.created_at) : new Date().toISOString(),
+        previousHash: raw.previousHash || raw.previous_hash ? String(raw.previousHash || raw.previous_hash) : undefined,
+        evidenceHash: String(raw.evidenceHash || raw.evidence_hash || ""),
+        signature: String(raw.signature || ""),
+      };
+    });
+}
+
+function normalizeSecurityRole(value: unknown): SecurityRole {
+  const role = String(value || "admin").toLowerCase();
+  if (role === "viewer" || role === "operator" || role === "admin" || role === "system") {
+    return role;
+  }
+  return "admin";
 }
 
 function parseStringArray(value: unknown): string[] {
@@ -842,6 +1139,58 @@ function normalizeDate(value: unknown) {
 
 function createSloPolicyChangeId() {
   return `slochg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function hashSloPolicyChange(change: ObservabilitySloPolicyChange) {
+  return hashValue({
+    id: change.id,
+    policyId: change.policyId,
+    action: change.action,
+    status: change.status,
+    riskLevel: change.riskLevel,
+    requestedBy: change.requestedBy,
+    beforePolicy: change.beforePolicy,
+    afterPolicy: change.afterPolicy,
+    rollbackChangeId: change.rollbackChangeId,
+    approvalPolicy: change.approvalPolicy,
+    approvals: change.approvals.map((approval) => ({
+      id: approval.id,
+      decision: approval.decision,
+      actorId: approval.actorId,
+      actorRole: approval.actorRole,
+      tenantId: approval.tenantId,
+      reason: approval.reason,
+      createdAt: approval.createdAt,
+      previousHash: approval.previousHash,
+      evidenceHash: approval.evidenceHash,
+      signature: approval.signature,
+    })),
+    metadata: change.metadata,
+    createdAt: change.createdAt,
+    updatedAt: change.updatedAt,
+    reviewedAt: change.reviewedAt,
+    appliedAt: change.appliedAt,
+  });
+}
+
+function hashValue(value: unknown) {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .join(",")}}`;
+  }
+
+  return value === undefined ? "null" : JSON.stringify(value);
 }
 
 function getSloPolicyFile() {

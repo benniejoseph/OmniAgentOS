@@ -116,8 +116,10 @@ flowchart TD
   OBS --> SLO["SLO Monitor"]
   SLO --> SLOPOL["SLO Policy Store"]
   SLOPOL --> SLOCHG["SLO Change Ledger"]
+  SLOCHG --> SLOQUORUM["SLO Quorum Evidence"]
   SLOPOL --> DB
   SLOCHG --> DB
+  SLOQUORUM --> DB
   SLOCHG --> APPROVALS
   SLO --> INCIDENTS
   SLO --> ALERTS
@@ -182,3 +184,4 @@ flowchart TD
 26. Observability SLO alerting: add SLO policy evaluation, breach-to-incident sync, alert queue integration, cron/operator monitor execution, command-center controls, and regression coverage. Done.
 27. SLO policy management: add durable SLO policies, threshold/severity/routing/suppression configuration, default reset, command-center editor controls, and regression coverage. Done.
 28. SLO policy change control: add durable policy change requests, approval queue integration, immutable before/after snapshots, rollback requests, command-center history, and regression coverage. Done.
+29. SLO multi-party approval: add quorum policy, role-gated approver rules, requester separation, signed evidence hashes, rollback attestations, command-center progress, and regression coverage. Done.

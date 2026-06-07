@@ -827,6 +827,28 @@ type SloPolicyChangeAction =
   | "rollback_policy";
 
 type SloPolicyChangeStatus = "pending" | "applied" | "rejected";
+type SloPolicyApprovalDecision = "approved" | "rejected";
+
+type SloPolicyApprovalPolicy = {
+  quorum: number;
+  requiredRoles: SecurityRole[];
+  allowRequesterApproval: boolean;
+  attestationRequired: boolean;
+  description: string;
+};
+
+type SloPolicyApprovalEvidence = {
+  id: string;
+  decision: SloPolicyApprovalDecision;
+  actorId: string;
+  actorRole: SecurityRole;
+  tenantId?: string;
+  reason?: string;
+  createdAt: string;
+  previousHash?: string;
+  evidenceHash: string;
+  signature: string;
+};
 
 type ObservabilitySloPolicyChange = {
   id: string;
@@ -842,6 +864,9 @@ type ObservabilitySloPolicyChange = {
   beforePolicy?: ObservabilitySloPolicy | null;
   afterPolicy?: ObservabilitySloPolicy | null;
   rollbackChangeId?: string;
+  approvalPolicy: SloPolicyApprovalPolicy;
+  approvals: SloPolicyApprovalEvidence[];
+  evidenceHash: string;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -1695,7 +1720,13 @@ export function CommandCenter() {
       const response = await fetch(`/api/approvals/${item.id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: item.kind, decision }),
+        body: JSON.stringify({
+          kind: item.kind,
+          decision,
+          reason: item.kind === "slo_policy" && item.record.approvalPolicy.attestationRequired
+            ? "Command Center rollback approval attestation."
+            : undefined,
+        }),
       });
       const data = await response.json();
       setApprovalResult(formatToolResult(data));
@@ -2213,8 +2244,8 @@ export function CommandCenter() {
 
   return (
     <main className="min-h-screen subtle-grid px-4 py-4 text-foreground sm:px-6 lg:px-8">
-      <div className="mx-auto flex max-w-7xl flex-col gap-4">
-        <header className="panel flex flex-col gap-4 rounded-lg px-5 py-4 md:flex-row md:items-center md:justify-between">
+      <div className="mx-auto flex w-full min-w-0 max-w-7xl flex-col gap-4">
+        <header className="panel flex min-w-0 flex-col gap-4 rounded-lg px-5 py-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-4">
             <div className="flex size-12 items-center justify-center rounded-md bg-primary text-primary-ink">
               <Layers3 size={24} strokeWidth={2.4} />
@@ -2267,8 +2298,8 @@ export function CommandCenter() {
           </div>
         </header>
 
-        <section className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="panel flex min-h-[680px] flex-col rounded-lg">
+        <section className="grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="panel flex min-h-[680px] min-w-0 flex-col rounded-lg">
             <div className="flex flex-col gap-3 border-b border-line px-5 py-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <p className="text-sm text-muted">Run state</p>
@@ -2341,7 +2372,7 @@ export function CommandCenter() {
             </form>
           </div>
 
-          <aside className="flex flex-col gap-4">
+          <aside className="flex min-w-0 flex-col gap-4">
             <section className="panel rounded-lg p-4">
               <div className="mb-4 flex items-center gap-2">
                 <History className="text-primary" size={18} />
@@ -3590,6 +3621,8 @@ function SloPolicyRow({ evaluation }: { evaluation: ObservabilitySloEvaluation }
 
 function SloPolicyChangeRow({ change }: { change: ObservabilitySloPolicyChange }) {
   const label = change.afterPolicy?.name || change.beforePolicy?.name || change.policyId;
+  const approvals = new Set(change.approvals.filter((approval) => approval.decision === "approved").map((approval) => approval.actorId)).size;
+  const required = change.approvalPolicy.quorum;
 
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
@@ -3604,8 +3637,12 @@ function SloPolicyChangeRow({ change }: { change: ObservabilitySloPolicyChange }
       <p className="line-clamp-1 text-sm font-medium leading-5">{label}</p>
       <div className="mt-2 grid grid-cols-3 gap-1.5 font-mono text-[11px] text-muted">
         <span className="truncate">{change.action.replace(/_/g, " ")}</span>
-        <span className="truncate">{change.requestedBy || "operator"}</span>
+        <span className="truncate">{approvals}/{required} approvals</span>
         <span>{new Date(change.createdAt).toLocaleTimeString()}</span>
+      </div>
+      <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[10px] text-muted">
+        <span className="truncate">{change.approvalPolicy.requiredRoles.join(",")}</span>
+        <span className="shrink-0">{change.evidenceHash.slice(0, 10)}</span>
       </div>
       {change.reason ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">{change.reason}</p> : null}
     </div>
