@@ -201,6 +201,19 @@ export type WorkflowEventRecord = {
   createdAt: string;
 };
 
+export type WorkflowRecoveryEventRecord = WorkflowEventRecord & {
+  disposition: "requeued" | "failed";
+  workflow: {
+    id: string;
+    goal: string;
+    status: WorkflowRunStatus;
+    currentStep?: WorkflowStepKey;
+    attempt: number;
+    maxAttempts: number;
+    error?: string;
+  };
+};
+
 export type WorkflowRunDetail = {
   run: WorkflowRunRecord;
   steps: WorkflowStepRecord[];

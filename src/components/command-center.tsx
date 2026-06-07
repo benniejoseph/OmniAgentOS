@@ -265,6 +265,7 @@ type OperationsResponse = {
     toolExecutions: ToolExecutionRecord[];
     agentRuns: AgentRun[];
     operationJobs: OperationJobRecord[];
+    recoveryEvents: WorkflowRecoveryEventRecord[];
     connectors: Array<{
       id: string;
       name: string;
@@ -360,6 +361,32 @@ type WorkflowRunRecord = {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+};
+
+type WorkflowRecoveryEventRecord = {
+  id: string;
+  workflowRunId: string;
+  type: "workflow.recovery.requeued" | "workflow.recovery.failed";
+  disposition: "requeued" | "failed";
+  payload: {
+    actorId?: string;
+    staleMs?: number;
+    ageMs?: number;
+    reason?: string;
+    previousStatus?: WorkflowRunStatus;
+    jobIds?: string[];
+    canceledJobIds?: string[];
+  };
+  workflow: {
+    id: string;
+    goal: string;
+    status: WorkflowRunStatus;
+    currentStep?: string;
+    attempt: number;
+    maxAttempts: number;
+    error?: string;
+  };
+  createdAt: string;
 };
 
 type WorkflowStepRecord = {
@@ -1393,6 +1420,7 @@ export function CommandCenter() {
   const approvalStats = approvalState?.stats || operationState?.approvals.stats;
   const operationSummary = operationState?.summary;
   const operationRecovery = operationState?.recovery;
+  const latestRecoveryEvents = operationState?.latest.recoveryEvents || [];
   const historicalFailedWorkflows = operationSummary?.historicalFailedWorkflows ??
     operationSummary?.failedWorkflows ??
     workflowStats?.byStatus.failed ??
@@ -3081,6 +3109,25 @@ export function CommandCenter() {
                   {operationResult}
                 </pre>
               ) : null}
+              <div className="mb-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">Recovery history</p>
+                  <span className="shrink-0 rounded border border-line px-2 py-1 font-mono text-[11px] text-muted">
+                    {latestRecoveryEvents.length}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {latestRecoveryEvents.length ? (
+                    latestRecoveryEvents.slice(0, 5).map((event) => (
+                      <WorkflowRecoveryEventRow key={event.id} event={event} />
+                    ))
+                  ) : (
+                    <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
+                      No recovery history.
+                    </p>
+                  )}
+                </div>
+              </div>
               {incidentResult ? (
                 <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                   {incidentResult}
@@ -4618,6 +4665,40 @@ function WorkflowRow({
   );
 }
 
+function WorkflowRecoveryEventRow({ event }: { event: WorkflowRecoveryEventRecord }) {
+  const jobIds = event.payload.jobIds || event.payload.canceledJobIds || [];
+  const reason = event.payload.reason || event.workflow.error || "Recovery action completed.";
+
+  return (
+    <div className="rounded-md border border-line bg-background/54 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", workflowRecoveryTone(event.disposition))}>
+          {event.disposition}
+        </span>
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", workflowTone(event.workflow.status))}>
+          {event.workflow.status}
+        </span>
+      </div>
+      <p className="line-clamp-2 text-sm leading-5">{event.workflow.goal}</p>
+      <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">{reason}</p>
+      <div className="mt-3 grid grid-cols-3 gap-1.5 font-mono text-[11px] text-muted">
+        <span>{formatDurationMs(event.payload.staleMs)} stale</span>
+        <span>{event.workflow.attempt}/{event.workflow.maxAttempts} tries</span>
+        <span>{new Date(event.createdAt).toLocaleTimeString()}</span>
+      </div>
+      <div className="mt-2 flex min-w-0 items-center justify-between gap-3 font-mono text-[10px] text-muted">
+        <span className="truncate" title={event.workflow.id}>{event.workflow.id}</span>
+        <span className="shrink-0">{event.payload.actorId || "system"}</span>
+      </div>
+      {jobIds.length ? (
+        <p className="mt-2 truncate font-mono text-[10px] text-muted" title={jobIds.join(", ")}>
+          jobs {jobIds.length}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function EvaluationRunRow({ run }: { run: EvalRunRecord }) {
   const passRate = run.summary.total ? Math.round((run.summary.passed / run.summary.total) * 100) : 0;
 
@@ -4799,6 +4880,32 @@ function workflowTone(status: WorkflowRunStatus) {
   }
 
   return "bg-background text-muted";
+}
+
+function workflowRecoveryTone(disposition: WorkflowRecoveryEventRecord["disposition"]) {
+  return disposition === "requeued"
+    ? "bg-primary/16 text-primary"
+    : "bg-danger/14 text-danger";
+}
+
+function formatDurationMs(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "0ms";
+  }
+
+  if (value < 1000) {
+    return `${Math.round(value)}ms`;
+  }
+
+  if (value < 60_000) {
+    return `${Math.round(value / 1000)}s`;
+  }
+
+  if (value < 3_600_000) {
+    return `${Math.round(value / 60_000)}m`;
+  }
+
+  return `${Math.round(value / 3_600_000)}h`;
 }
 
 function riskTone(riskLevel: RiskLevel) {

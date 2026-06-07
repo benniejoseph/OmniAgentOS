@@ -180,7 +180,7 @@ export const tools: Capability[] = [
   {
     id: "ops.queue_recovery",
     name: "Queue Recovery",
-    description: "Inspects, reconciles, requeues, drains, and safely fails stale workflow queue work with audit events.",
+    description: "Inspects, reconciles, requeues, drains, safely fails stale workflow queue work, and exposes recovery history details.",
     status: "active",
   },
   {

@@ -255,6 +255,7 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       operationsSummary: true,
       approvalStats: true,
       workflowRiskSummary: true,
+      recoveryHistory: true,
     },
   },
   {
@@ -1163,6 +1164,9 @@ async function evaluateOperationsCenter(evalCase: EvalCaseDefinition): Promise<C
         typeof operations.summary.recentUnhandledWorkflowFailures === "number" &&
         typeof operations.summary.recoveredWorkflowFailures === "number"
       : true,
+    recoveryHistoryAvailable: Boolean(evalCase.expected.recoveryHistory)
+      ? Array.isArray(operations.latest.recoveryEvents)
+      : true,
     latestLedgersAvailable: Array.isArray(operations.latest.toolExecutions) && Array.isArray(operations.latest.workflows),
   };
   const passed = Object.values(checks).filter(Boolean).length;
@@ -1175,6 +1179,12 @@ async function evaluateOperationsCenter(evalCase: EvalCaseDefinition): Promise<C
       checks,
       approvalStats: approvals.stats,
       operationSummary: operations.summary,
+      recoveryEvents: operations.latest.recoveryEvents.map((event) => ({
+        id: event.id,
+        disposition: event.disposition,
+        workflowRunId: event.workflowRunId,
+        status: event.workflow.status,
+      })),
       catalogTargets: connectionCatalog.map((connector) => ({
         id: connector.id,
         adapter: connector.adapter,

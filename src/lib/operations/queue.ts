@@ -12,7 +12,7 @@ import { listAgentRuns } from "@/lib/runs/store";
 import { redactSensitive } from "@/lib/security/context";
 import { getToolExecutionStats, listPendingToolApprovals, listToolExecutions } from "@/lib/tools/audit-store";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
-import { getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
+import { getWorkflowStats, listWorkflowRecoveryEvents, listWorkflowRuns } from "@/lib/workflows/store";
 import type { WorkflowRunRecord } from "@/lib/workflows/types";
 
 export type ApprovalQueueItem =
@@ -95,6 +95,7 @@ export async function getOperationsOverview() {
     operationJobStats,
     operationJobs,
     recovery,
+    recoveryEvents,
   ] = await Promise.all([
     getApprovalQueue(25),
     listWorkflowRuns(20),
@@ -107,6 +108,7 @@ export async function getOperationsOverview() {
     getOperationJobStats(),
     listOperationJobs(20),
     inspectOperationsRecovery({ limit: 10 }),
+    listWorkflowRecoveryEvents(10),
   ]);
   const connectorErrors =
     mcpConnectors.filter((connector) => connector.status === "error").length +
@@ -141,6 +143,7 @@ export async function getOperationsOverview() {
       toolExecutions,
       agentRuns,
       operationJobs,
+      recoveryEvents,
       connectors: [...mcpConnectors, ...openApiConnectors]
         .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
         .slice(0, 10),

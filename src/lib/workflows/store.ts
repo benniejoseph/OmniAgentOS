@@ -5,6 +5,7 @@ import { getDataPath } from "@/lib/storage/paths";
 import type {
   WorkflowEventRecord,
   WorkflowLedger,
+  WorkflowRecoveryEventRecord,
   WorkflowRunDetail,
   WorkflowRunInput,
   WorkflowRunRecord,
@@ -299,6 +300,43 @@ export async function appendWorkflowEvent(
   return record;
 }
 
+export async function listWorkflowRecoveryEvents(limit = 20): Promise<WorkflowRecoveryEventRecord[]> {
+  const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 100);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT
+        event.id,
+        event.workflow_run_id,
+        event.type,
+        event.payload,
+        event.created_at,
+        run.goal,
+        run.status AS workflow_status,
+        run.current_step,
+        run.attempt,
+        run.max_attempts,
+        run.error AS workflow_error
+      FROM omni_workflow_events event
+      INNER JOIN omni_workflow_runs run ON run.id = event.workflow_run_id
+      WHERE event.type IN ('workflow.recovery.requeued', 'workflow.recovery.failed')
+      ORDER BY event.created_at DESC
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map(workflowRecoveryEventFromRow);
+  }
+
+  const ledger = await readWorkflowLedger();
+  return ledger.events
+    .filter((event) => isWorkflowRecoveryEventType(event.type))
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    .slice(0, boundedLimit)
+    .map((event) => {
+      const run = ledger.runs.find((item) => item.id === event.workflowRunId);
+      return workflowRecoveryEventFromRecord(event, run);
+    });
+}
+
 export async function getWorkflowStats(): Promise<WorkflowStats> {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -429,6 +467,49 @@ function workflowEventFromRow(row: Record<string, unknown>): WorkflowEventRecord
     payload: parseObject(row.payload) || {},
     createdAt: normalizeDate(row.created_at),
   };
+}
+
+function workflowRecoveryEventFromRow(row: Record<string, unknown>): WorkflowRecoveryEventRecord {
+  return workflowRecoveryEventFromRecord(
+    workflowEventFromRow(row),
+    {
+      id: String(row.workflow_run_id),
+      workflowType: AGENT_WORKFLOW_TYPE,
+      status: String(row.workflow_status) as WorkflowRunStatus,
+      goal: String(row.goal || ""),
+      input: { goal: String(row.goal || "") },
+      currentStep: row.current_step ? (String(row.current_step) as WorkflowStepKey) : undefined,
+      attempt: Number(row.attempt || 0),
+      maxAttempts: Number(row.max_attempts || 3),
+      approvalRequired: false,
+      error: row.workflow_error ? String(row.workflow_error) : undefined,
+      createdAt: normalizeDate(row.created_at),
+      updatedAt: normalizeDate(row.created_at),
+    },
+  );
+}
+
+function workflowRecoveryEventFromRecord(
+  event: WorkflowEventRecord,
+  run?: WorkflowRunRecord,
+): WorkflowRecoveryEventRecord {
+  return {
+    ...event,
+    disposition: event.type === "workflow.recovery.requeued" ? "requeued" : "failed",
+    workflow: {
+      id: run?.id || event.workflowRunId,
+      goal: run?.goal || "Unknown workflow",
+      status: run?.status || "failed",
+      currentStep: run?.currentStep,
+      attempt: run?.attempt || 0,
+      maxAttempts: run?.maxAttempts || 0,
+      error: run?.error,
+    },
+  };
+}
+
+function isWorkflowRecoveryEventType(type: string) {
+  return type === "workflow.recovery.requeued" || type === "workflow.recovery.failed";
 }
 
 function parseObject(value: unknown): Record<string, unknown> | undefined {

@@ -193,3 +193,4 @@ flowchart TD
 31. Production queue recovery: add stale workflow inspection, safe requeue/fail reconciliation, bounded queue drain actions, diagnostics integration, command-center controls, and regression coverage. Done.
 32. Workflow health semantics: separate live workflow liveness risk from recovered terminal failure history, resolve stale recovery incidents cleanly, and add pure regression coverage. Done.
 33. Command Center liveness semantics: expose live workflow risk, recent unhandled failures, recovered failures, and historical terminal failures as distinct operations counters with regression coverage. Done.
+34. Recovery history details: expose workflow recovery event history through operations overview and render operator-facing Command Center rows with disposition, stale age, attempt counts, actor, reason, and affected queue jobs. Done.
