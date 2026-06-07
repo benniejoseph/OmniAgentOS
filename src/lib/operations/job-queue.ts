@@ -290,30 +290,46 @@ export async function leaseOperationJobs(input: LeaseOperationJobInput = {}) {
   return leased;
 }
 
-export async function completeOperationJob(jobId: string) {
+export async function completeOperationJob(jobId: string, leaseOwner?: string) {
   const completedAt = new Date().toISOString();
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_operation_jobs
-      SET status = 'completed',
-          locked_at = NULL,
-          lease_owner = NULL,
-          lease_expires_at = NULL,
-          last_error = NULL,
-          completed_at = ${completedAt},
-          updated_at = ${completedAt}
-      WHERE id = ${jobId}
-      RETURNING *
-    `;
+    const rows = leaseOwner
+      ? await getSql()`
+          UPDATE omni_operation_jobs
+          SET status = 'completed',
+              locked_at = NULL,
+              lease_owner = NULL,
+              lease_expires_at = NULL,
+              last_error = NULL,
+              completed_at = ${completedAt},
+              updated_at = ${completedAt}
+          WHERE id = ${jobId}
+            AND status = 'running'
+            AND lease_owner = ${leaseOwner}
+          RETURNING *
+        `
+      : await getSql()`
+          UPDATE omni_operation_jobs
+          SET status = 'completed',
+              locked_at = NULL,
+              lease_owner = NULL,
+              lease_expires_at = NULL,
+              last_error = NULL,
+              completed_at = ${completedAt},
+              updated_at = ${completedAt}
+          WHERE id = ${jobId}
+            AND status = 'running'
+          RETURNING *
+        `;
     return rows[0] ? operationJobFromRow(rows[0]) : null;
   }
 
   let saved: OperationJobRecord | null = null;
   await mutateJobLedger((ledger) => {
     ledger.jobs = ledger.jobs.map((job) => {
-      if (job.id !== jobId) {
+      if (job.id !== jobId || job.status !== "running" || (leaseOwner && job.leaseOwner !== leaseOwner)) {
         return job;
       }
       saved = {
@@ -333,35 +349,56 @@ export async function completeOperationJob(jobId: string) {
   return saved;
 }
 
-export async function failOperationJob(jobId: string, error: string) {
+export async function failOperationJob(jobId: string, error: string, leaseOwner?: string) {
   const now = new Date().toISOString();
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_operation_jobs
-      SET status = CASE WHEN attempt < max_attempts THEN 'queued' ELSE 'failed' END,
-          run_at = CASE
-            WHEN attempt < max_attempts
-            THEN NOW() + (LEAST(300, POWER(2, GREATEST(attempt - 1, 0))::int * 15) * INTERVAL '1 second')
-            ELSE run_at
-          END,
-          locked_at = NULL,
-          lease_owner = NULL,
-          lease_expires_at = NULL,
-          last_error = ${error},
-          completed_at = CASE WHEN attempt < max_attempts THEN NULL ELSE ${now}::timestamptz END,
-          updated_at = ${now}
-      WHERE id = ${jobId}
-      RETURNING *
-    `;
+    const rows = leaseOwner
+      ? await getSql()`
+          UPDATE omni_operation_jobs
+          SET status = CASE WHEN attempt < max_attempts THEN 'queued' ELSE 'failed' END,
+              run_at = CASE
+                WHEN attempt < max_attempts
+                THEN NOW() + (LEAST(300, POWER(2, GREATEST(attempt - 1, 0))::int * 15) * INTERVAL '1 second')
+                ELSE run_at
+              END,
+              locked_at = NULL,
+              lease_owner = NULL,
+              lease_expires_at = NULL,
+              last_error = ${error},
+              completed_at = CASE WHEN attempt < max_attempts THEN NULL ELSE ${now}::timestamptz END,
+              updated_at = ${now}
+          WHERE id = ${jobId}
+            AND status = 'running'
+            AND lease_owner = ${leaseOwner}
+          RETURNING *
+        `
+      : await getSql()`
+          UPDATE omni_operation_jobs
+          SET status = CASE WHEN attempt < max_attempts THEN 'queued' ELSE 'failed' END,
+              run_at = CASE
+                WHEN attempt < max_attempts
+                THEN NOW() + (LEAST(300, POWER(2, GREATEST(attempt - 1, 0))::int * 15) * INTERVAL '1 second')
+                ELSE run_at
+              END,
+              locked_at = NULL,
+              lease_owner = NULL,
+              lease_expires_at = NULL,
+              last_error = ${error},
+              completed_at = CASE WHEN attempt < max_attempts THEN NULL ELSE ${now}::timestamptz END,
+              updated_at = ${now}
+          WHERE id = ${jobId}
+            AND status = 'running'
+          RETURNING *
+        `;
     return rows[0] ? operationJobFromRow(rows[0]) : null;
   }
 
   let saved: OperationJobRecord | null = null;
   await mutateJobLedger((ledger) => {
     ledger.jobs = ledger.jobs.map((job) => {
-      if (job.id !== jobId) {
+      if (job.id !== jobId || job.status !== "running" || (leaseOwner && job.leaseOwner !== leaseOwner)) {
         return job;
       }
       const willRetry = job.attempt < job.maxAttempts;
@@ -445,7 +482,13 @@ export async function requeueOperationJobByDedupeKey(dedupeKey: string, reason =
           completed_at = NULL,
           updated_at = NOW()
       WHERE dedupe_key = ${dedupeKey}
-        AND status IN ('queued', 'running', 'failed')
+        AND (
+          status IN ('queued', 'failed')
+          OR (
+            status = 'running'
+            AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+          )
+        )
       RETURNING *
     `;
     return rows.map(operationJobFromRow);
@@ -454,7 +497,11 @@ export async function requeueOperationJobByDedupeKey(dedupeKey: string, reason =
   const requeued: OperationJobRecord[] = [];
   await mutateJobLedger((ledger) => {
     ledger.jobs = ledger.jobs.map((job) => {
-      if (job.dedupeKey !== dedupeKey || !["queued", "running", "failed"].includes(job.status)) {
+      const expiredOrMissingLease = !job.leaseExpiresAt || Date.parse(job.leaseExpiresAt) <= Date.now();
+      if (
+        job.dedupeKey !== dedupeKey ||
+        (job.status !== "queued" && job.status !== "failed" && !(job.status === "running" && expiredOrMissingLease))
+      ) {
         return job;
       }
       const nextJob: OperationJobRecord = {

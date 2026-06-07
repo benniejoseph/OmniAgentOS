@@ -158,6 +158,7 @@ export type WorkflowRunInput = {
 
 export type WorkflowRunRecord = {
   id: string;
+  tenantId?: string;
   workflowType: string;
   status: WorkflowRunStatus;
   goal: string;

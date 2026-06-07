@@ -9,8 +9,9 @@ import {
   saveOpenApiConnector,
   saveOpenApiImport,
 } from "@/lib/connectors/openapi-store";
-import { validateSecretEnvName } from "@/lib/security/context";
+import { validateConnectorSecretEnvName } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { assertPublicHttpUrl } from "@/lib/security/network";
 
 export const runtime = "nodejs";
 
@@ -46,11 +47,30 @@ const registerOpenApiConnectorSchema = z
     path: ["authTokenEnv"],
   });
 
-export async function GET() {
+export async function GET(request: Request) {
+  try {
+    await authorizeRequest({
+      request,
+      action: "read",
+      resourceType: "openapi_connector",
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
+  const [connectors, operations, stats] = await Promise.all([
+    listOpenApiConnectors(),
+    listOpenApiOperations(),
+    getOpenApiConnectorStats(),
+  ]);
+
   return Response.json({
-    connectors: await listOpenApiConnectors(),
-    operations: await listOpenApiOperations(),
-    stats: await getOpenApiConnectorStats(),
+    connectors: connectors.map(redactOpenApiConnector),
+    operations,
+    stats: {
+      ...stats,
+      latest: stats.latest.map(redactOpenApiConnector),
+    },
   });
 }
 
@@ -65,9 +85,26 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!validateSecretEnvName(parsed.data.authTokenEnv)) {
+  if (!validateConnectorSecretEnvName(parsed.data.authTokenEnv)) {
     return Response.json(
-      { error: "Invalid secret env var", message: "Secret env vars must be uppercase server-only names and cannot use NEXT_PUBLIC_." },
+      {
+        error: "Invalid connector secret env var",
+        message: "Connector secrets must use OMNIAGENT_CONNECTOR_* or OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST and cannot reference platform secrets.",
+      },
+      { status: 400 },
+    );
+  }
+
+  try {
+    if (parsed.data.specUrl) {
+      await assertPublicHttpUrl(parsed.data.specUrl, "OpenAPI spec URL");
+    }
+    if (parsed.data.baseUrl) {
+      await assertPublicHttpUrl(parsed.data.baseUrl, "OpenAPI base URL");
+    }
+  } catch (error) {
+    return Response.json(
+      { error: "Invalid OpenAPI connector URL", message: error instanceof Error ? error.message : "URL is not allowed." },
       { status: 400 },
     );
   }
@@ -107,6 +144,7 @@ export async function POST(request: Request) {
       specText,
       baseUrlOverride: parsed.data.baseUrl,
     });
+    await assertPublicHttpUrl(imported.baseUrl, "OpenAPI base URL");
     return Response.json(
       await saveOpenApiImport({
         connector,
@@ -128,4 +166,12 @@ export async function POST(request: Request) {
       { status: 202 },
     );
   }
+}
+
+function redactOpenApiConnector<T extends { authTokenEnv?: string; lastError?: string }>(connector: T) {
+  return {
+    ...connector,
+    authTokenEnv: connector.authTokenEnv ? "[configured]" : undefined,
+    lastError: connector.lastError ? "[redacted]" : undefined,
+  };
 }

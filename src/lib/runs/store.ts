@@ -6,6 +6,7 @@ import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
 
 export async function createAgentRun(input: {
+  tenantId?: string;
   mode: AgentMode;
   prompt: string;
   messages: ChatMessage[];
@@ -14,6 +15,7 @@ export async function createAgentRun(input: {
   const now = new Date().toISOString();
   const run: AgentRunRecord = {
     id: randomUUID(),
+    tenantId: normalizeTenantId(input.tenantId),
     mode: input.mode,
     status: "running",
     prompt: input.prompt,
@@ -28,10 +30,10 @@ export async function createAgentRun(input: {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_agent_runs (
-        id, mode, status, prompt, messages, model, memory_context_count, started_at
+        id, tenant_id, mode, status, prompt, messages, model, memory_context_count, started_at
       )
       VALUES (
-        ${run.id}, ${run.mode}, ${run.status}, ${run.prompt}, ${JSON.stringify(run.messages)}::jsonb,
+        ${run.id}, ${run.tenantId}, ${run.mode}, ${run.status}, ${run.prompt}, ${JSON.stringify(run.messages)}::jsonb,
         ${run.model || null}, ${run.memoryContextCount}, ${run.startedAt}
       )
     `;
@@ -117,12 +119,15 @@ export async function failAgentRun(runId: string, error: string) {
   await setRunStatus(runId, "failed", { error });
 }
 
-export async function listAgentRuns(limit = 20) {
+export async function listAgentRuns(limit = 20, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_agent_runs
+      WHERE tenant_id = ${tenantId}
       ORDER BY started_at DESC
       LIMIT ${limit}
     `;
@@ -130,15 +135,18 @@ export async function listAgentRuns(limit = 20) {
   }
 
   const ledger = await readRunLedger();
-  return ledger.runs.slice(0, limit);
+  return ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId).slice(0, limit);
 }
 
-export async function getRunStats() {
+export async function getRunStats(options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const totals = await getSql()`
       SELECT status, COUNT(*)::int AS count
       FROM omni_agent_runs
+      WHERE tenant_id = ${tenantId}
       GROUP BY status
     `;
     const byStatus = totals.reduce<Record<string, number>>((acc, row) => {
@@ -151,6 +159,7 @@ export async function getRunStats() {
              COALESCE(SUM(consolidation_count), 0)::int AS memories
       FROM omni_agent_runs
       WHERE consolidated_at IS NOT NULL
+        AND tenant_id = ${tenantId}
     `;
 
     return {
@@ -160,24 +169,25 @@ export async function getRunStats() {
         runs: Number(consolidatedRows[0]?.runs || 0),
         memories: Number(consolidatedRows[0]?.memories || 0),
       },
-      latest: await listAgentRuns(5),
+      latest: await listAgentRuns(5, { tenantId }),
     };
   }
 
   const ledger = await readRunLedger();
-  const byStatus = ledger.runs.reduce<Record<string, number>>((acc, run) => {
+  const runs = ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId);
+  const byStatus = runs.reduce<Record<string, number>>((acc, run) => {
     acc[run.status] = (acc[run.status] || 0) + 1;
     return acc;
   }, {});
 
   return {
-    total: ledger.runs.length,
+    total: runs.length,
     byStatus,
     consolidated: {
-      runs: ledger.runs.filter((run) => run.consolidatedAt).length,
-      memories: ledger.runs.reduce((sum, run) => sum + (run.consolidationCount || 0), 0),
+      runs: runs.filter((run) => run.consolidatedAt).length,
+      memories: runs.reduce((sum, run) => sum + (run.consolidationCount || 0), 0),
     },
-    latest: ledger.runs.slice(0, 5),
+    latest: runs.slice(0, 5),
   };
 }
 
@@ -237,6 +247,7 @@ function trimLedger(ledger: RunLedger): RunLedger {
 function runFromRow(row: Record<string, unknown>): AgentRunRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     mode: String(row.mode) as AgentMode,
     status: String(row.status) as RunStatus,
     prompt: String(row.prompt || ""),
@@ -259,4 +270,8 @@ function getRunsFile() {
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default";
 }

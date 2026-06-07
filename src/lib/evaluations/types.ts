@@ -96,6 +96,20 @@ export type EvalReportSignature = {
   keyNotAfter?: string;
 };
 
+export type EvalReportReleaseGate = {
+  approved: boolean;
+  status: "passed" | "blocked";
+  checks: {
+    completedRun: boolean;
+    nonEmptySuite: boolean;
+    noFailedCases: boolean;
+    activeSigningKey: boolean;
+    productionSigningKey: boolean;
+  };
+  warnings: string[];
+  reasons: string[];
+};
+
 export type EvalReportSnapshot = {
   id: string;
   evalRunId: string;
@@ -110,6 +124,7 @@ export type EvalReportSnapshot = {
 
 export type EvalReportVerificationResult = {
   valid: boolean;
+  releaseGate?: EvalReportReleaseGate;
   reportId?: string;
   evalRunId?: string;
   reportVersion?: string;

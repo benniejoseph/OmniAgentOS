@@ -12,6 +12,7 @@ import type {
 } from "@/lib/rag/types";
 
 type CreateKnowledgeDocumentInput = {
+  tenantId?: string;
   title: string;
   content: string;
   source?: string;
@@ -29,14 +30,17 @@ type SearchKnowledgeOptions = {
   limit?: number;
   queryEmbedding?: number[];
   tags?: string[];
+  tenantId?: string;
 };
 
 export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInput) {
   const now = new Date().toISOString();
   const tags = normalizeTags(["rag", ...(input.tags || [])]);
   const source = input.source?.trim() || "manual";
+  const tenantId = normalizeTenantId(input.tenantId);
   const document: KnowledgeDocument = {
     id: randomUUID(),
+    tenantId,
     title: input.title.trim(),
     source,
     sourceType: input.sourceType || inferSourceType(source),
@@ -50,6 +54,7 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
   };
   const chunks: KnowledgeChunk[] = input.chunks.map((chunk) => ({
     id: randomUUID(),
+    tenantId,
     documentId: document.id,
     chunkIndex: chunk.index,
     title: input.chunks.length > 1 ? `${document.title} (${chunk.index + 1}/${input.chunks.length})` : document.title,
@@ -76,12 +81,15 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
   return { document, chunks };
 }
 
-export async function listKnowledgeDocuments(limit = 20) {
+export async function listKnowledgeDocuments(limit = 20, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_knowledge_documents
+      WHERE tenant_id = ${tenantId}
       ORDER BY updated_at DESC
       LIMIT ${limit}
     `;
@@ -89,15 +97,18 @@ export async function listKnowledgeDocuments(limit = 20) {
   }
 
   const ledger = await readKnowledgeLedger();
-  return ledger.documents.slice(0, limit);
+  return ledger.documents.filter((document) => normalizeTenantId(document.tenantId) === tenantId).slice(0, limit);
 }
 
-export async function listKnowledgeChunks(limit = 20) {
+export async function listKnowledgeChunks(limit = 20, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_knowledge_chunks
+      WHERE tenant_id = ${tenantId}
       ORDER BY updated_at DESC
       LIMIT ${limit}
     `;
@@ -105,7 +116,7 @@ export async function listKnowledgeChunks(limit = 20) {
   }
 
   const ledger = await readKnowledgeLedger();
-  return ledger.chunks.slice(0, limit);
+  return ledger.chunks.filter((chunk) => normalizeTenantId(chunk.tenantId) === tenantId).slice(0, limit);
 }
 
 export async function searchKnowledge(
@@ -115,18 +126,20 @@ export async function searchKnowledge(
   const limit = options.limit || 8;
 
   if (hasDatabaseUrl()) {
-    const dbResults = await searchKnowledgeDb(query, options);
-    if (dbResults.length) {
-      return dbResults.slice(0, limit);
-    }
+    return (await searchKnowledgeDb(query, options)).slice(0, limit);
   }
 
   const ledger = await readKnowledgeLedger();
-  const documentsById = new Map(ledger.documents.map((document) => [document.id, document]));
-  return rankChunksInMemory(ledger.chunks, documentsById, query, options).slice(0, limit);
+  const tenantId = normalizeTenantId(options.tenantId);
+  const documents = ledger.documents.filter((document) => normalizeTenantId(document.tenantId) === tenantId);
+  const chunks = ledger.chunks.filter((chunk) => normalizeTenantId(chunk.tenantId) === tenantId);
+  const documentsById = new Map(documents.map((document) => [document.id, document]));
+  return rankChunksInMemory(chunks, documentsById, query, options).slice(0, limit);
 }
 
-export async function getKnowledgeStats() {
+export async function getKnowledgeStats(options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
@@ -134,11 +147,13 @@ export async function getKnowledgeStats() {
              COALESCE(SUM(chunk_count), 0)::int AS chunks,
              COALESCE(SUM(total_characters), 0)::int AS characters
       FROM omni_knowledge_documents
+      WHERE tenant_id = ${tenantId}
     `;
     const embeddedRows = await getSql()`
       SELECT COUNT(*)::int AS count
       FROM omni_knowledge_chunks
       WHERE jsonb_typeof(embedding) = 'array'
+        AND tenant_id = ${tenantId}
     `;
 
     return {
@@ -150,11 +165,13 @@ export async function getKnowledgeStats() {
   }
 
   const ledger = await readKnowledgeLedger();
+  const documents = ledger.documents.filter((document) => normalizeTenantId(document.tenantId) === tenantId);
+  const chunks = ledger.chunks.filter((chunk) => normalizeTenantId(chunk.tenantId) === tenantId);
   return {
-    documents: ledger.documents.length,
-    chunks: ledger.chunks.length,
-    characters: ledger.documents.reduce((sum, document) => sum + document.totalCharacters, 0),
-    embedded: ledger.chunks.filter((chunk) => chunk.embedding?.length).length,
+    documents: documents.length,
+    chunks: chunks.length,
+    characters: documents.reduce((sum, document) => sum + document.totalCharacters, 0),
+    embedded: chunks.filter((chunk) => chunk.embedding?.length).length,
   };
 }
 
@@ -164,10 +181,10 @@ async function insertKnowledgeDocumentDb(document: KnowledgeDocument, chunks: Kn
 
   await sql`
     INSERT INTO omni_knowledge_documents (
-      id, title, source, source_type, tags, content_hash, chunk_count, total_characters, metadata, created_at, updated_at
+      id, tenant_id, title, source, source_type, tags, content_hash, chunk_count, total_characters, metadata, created_at, updated_at
     )
     VALUES (
-      ${document.id}, ${document.title}, ${document.source}, ${document.sourceType}, ${document.tags},
+      ${document.id}, ${document.tenantId}, ${document.title}, ${document.source}, ${document.sourceType}, ${document.tags},
       ${document.contentHash}, ${document.chunkCount}, ${document.totalCharacters}, ${JSON.stringify(document.metadata)}::jsonb,
       ${document.createdAt}, ${document.updatedAt}
     )
@@ -177,11 +194,11 @@ async function insertKnowledgeDocumentDb(document: KnowledgeDocument, chunks: Kn
     const embeddingJson = chunk.embedding ? JSON.stringify(chunk.embedding) : null;
     await sql`
       INSERT INTO omni_knowledge_chunks (
-        id, document_id, chunk_index, title, content, tags, source, token_estimate,
+        id, tenant_id, document_id, chunk_index, title, content, tags, source, token_estimate,
         character_count, embedding, metadata, created_at, updated_at
       )
       VALUES (
-        ${chunk.id}, ${chunk.documentId}, ${chunk.chunkIndex}, ${chunk.title}, ${chunk.content}, ${chunk.tags},
+        ${chunk.id}, ${chunk.tenantId}, ${chunk.documentId}, ${chunk.chunkIndex}, ${chunk.title}, ${chunk.content}, ${chunk.tags},
         ${chunk.source}, ${chunk.tokenEstimate}, ${chunk.characterCount}, ${embeddingJson}::jsonb,
         ${JSON.stringify(chunk.metadata)}::jsonb, ${chunk.createdAt}, ${chunk.updatedAt}
       )
@@ -213,7 +230,9 @@ async function searchKnowledgeDb(
 ): Promise<KnowledgeSearchResult[]> {
   await ensureDatabaseSchema();
   const limit = options.limit || 8;
+  const candidateLimit = hasTagFilter(options) ? Math.min(limit * 5, 200) : limit;
   const queryText = query.trim();
+  const tenantId = normalizeTenantId(options.tenantId);
   const vector = toVectorLiteral(options.queryEmbedding);
 
   if (vector) {
@@ -239,7 +258,9 @@ async function searchKnowledgeDb(
                1 / (1 + EXTRACT(EPOCH FROM (NOW() - c.updated_at)) / 604800) AS recency_score
         FROM omni_knowledge_chunks c
         JOIN omni_knowledge_documents d ON d.id = c.document_id
-        WHERE c.embedding_vector IS NOT NULL
+        WHERE c.tenant_id = ${tenantId}
+          AND d.tenant_id = ${tenantId}
+          AND c.embedding_vector IS NOT NULL
         ORDER BY (
           (0.68 * GREATEST(0, 1 - (c.embedding_vector <=> ${vector}::vector))) +
           (0.24 * CASE
@@ -251,18 +272,26 @@ async function searchKnowledgeDb(
           END) +
           (0.08 * (1 / (1 + EXTRACT(EPOCH FROM (NOW() - c.updated_at)) / 604800)))
         ) DESC
-        LIMIT ${limit}
+        LIMIT ${candidateLimit}
       `;
-      return rows.map(knowledgeResultFromRow);
+      const results = filterKnowledgeResultsByTags(rows.map(knowledgeResultFromRow), options.tags);
+      if (results.length || !options.queryEmbedding) {
+        return results.slice(0, limit);
+      }
+      return searchKnowledgeJsonEmbeddingDb(query, options, limit, tenantId);
     } catch {
-      return searchKnowledgeLexicalDb(queryText, limit);
+      const lexicalResults = await searchKnowledgeLexicalDb(queryText, candidateLimit, tenantId, options.tags);
+      if (lexicalResults.length || !options.queryEmbedding) {
+        return lexicalResults.slice(0, limit);
+      }
+      return searchKnowledgeJsonEmbeddingDb(query, options, limit, tenantId);
     }
   }
 
-  return searchKnowledgeLexicalDb(queryText, limit);
+  return (await searchKnowledgeLexicalDb(queryText, candidateLimit, tenantId, options.tags)).slice(0, limit);
 }
 
-async function searchKnowledgeLexicalDb(query: string, limit: number) {
+async function searchKnowledgeLexicalDb(query: string, limit: number, tenantId: string, tags?: string[]) {
   const rows = await getSql()`
     SELECT c.*,
            d.title AS document_title,
@@ -283,12 +312,63 @@ async function searchKnowledgeLexicalDb(query: string, limit: number) {
            1 / (1 + EXTRACT(EPOCH FROM (NOW() - c.updated_at)) / 604800) AS recency_score
     FROM omni_knowledge_chunks c
     JOIN omni_knowledge_documents d ON d.id = c.document_id
-    WHERE ${query} = ''
-       OR to_tsvector('english', c.title || ' ' || c.content) @@ plainto_tsquery('english', ${query})
+    WHERE c.tenant_id = ${tenantId}
+      AND d.tenant_id = ${tenantId}
+      AND (
+        ${query} = ''
+        OR to_tsvector('english', c.title || ' ' || c.content) @@ plainto_tsquery('english', ${query})
+      )
     ORDER BY lexical_score DESC, c.updated_at DESC
     LIMIT ${limit}
   `;
-  return rows.map(knowledgeResultFromRow);
+  return filterKnowledgeResultsByTags(rows.map(knowledgeResultFromRow), tags);
+}
+
+async function searchKnowledgeJsonEmbeddingDb(
+  query: string,
+  options: SearchKnowledgeOptions,
+  limit: number,
+  tenantId: string,
+) {
+  const rows = await getSql()`
+    SELECT c.*,
+           d.title AS document_title,
+           d.source_type AS document_source_type,
+           d.content_hash AS document_content_hash,
+           d.chunk_count AS document_chunk_count,
+           d.total_characters AS document_total_characters,
+           d.metadata AS document_metadata,
+           d.created_at AS document_created_at,
+           d.updated_at AS document_updated_at
+    FROM omni_knowledge_chunks c
+    JOIN omni_knowledge_documents d ON d.id = c.document_id
+    WHERE c.tenant_id = ${tenantId}
+      AND d.tenant_id = ${tenantId}
+      AND jsonb_typeof(c.embedding) = 'array'
+    ORDER BY c.updated_at DESC
+    LIMIT 500
+  `;
+  const chunks = rows.map(chunkFromRow);
+  const documentsById = new Map<string, KnowledgeDocument>();
+  for (const row of rows) {
+    const chunk = chunkFromRow(row);
+    documentsById.set(chunk.documentId, {
+      id: chunk.documentId,
+      tenantId,
+      title: String(row.document_title || ""),
+      source: chunk.source,
+      sourceType: String(row.document_source_type || "text") as KnowledgeSourceType,
+      tags: chunk.tags,
+      contentHash: String(row.document_content_hash || ""),
+      chunkCount: Number(row.document_chunk_count || 0),
+      totalCharacters: Number(row.document_total_characters || 0),
+      metadata: parseMetadata(row.document_metadata),
+      createdAt: normalizeDate(row.document_created_at),
+      updatedAt: normalizeDate(row.document_updated_at),
+    });
+  }
+
+  return rankChunksInMemory(chunks, documentsById, query, options).slice(0, limit);
 }
 
 function rankChunksInMemory(
@@ -299,8 +379,10 @@ function rankChunksInMemory(
 ) {
   const terms = tokenize(query);
   const now = Date.now();
+  const requiredTags = normalizeTags(options.tags || []);
 
   return chunks
+    .filter((chunk) => requiredTags.length === 0 || requiredTags.every((tag) => chunk.tags.includes(tag)))
     .map((chunk) => {
       const text = `${chunk.title} ${chunk.content} ${chunk.tags.join(" ")}`;
       const chunkTerms = tokenize(text);
@@ -339,6 +421,7 @@ function knowledgeResultFromRow(row: Record<string, unknown>): KnowledgeSearchRe
     chunk,
     document: {
       id: chunk.documentId,
+      tenantId: String(row.tenant_id || row.document_tenant_id || "default"),
       title: String(row.document_title || ""),
       source: chunk.source,
       sourceType: String(row.document_source_type || "text") as KnowledgeSourceType,
@@ -361,6 +444,7 @@ function knowledgeResultFromRow(row: Record<string, unknown>): KnowledgeSearchRe
 function documentFromRow(row: Record<string, unknown>): KnowledgeDocument {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     title: String(row.title || ""),
     source: String(row.source || ""),
     sourceType: String(row.source_type || "text") as KnowledgeSourceType,
@@ -377,6 +461,7 @@ function documentFromRow(row: Record<string, unknown>): KnowledgeDocument {
 function chunkFromRow(row: Record<string, unknown>): KnowledgeChunk {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     documentId: String(row.document_id),
     chunkIndex: Number(row.chunk_index || 0),
     title: String(row.title || ""),
@@ -451,6 +536,23 @@ function normalizeTags(tags: string[]) {
         .slice(0, 16),
     ),
   );
+}
+
+function hasTagFilter(options: SearchKnowledgeOptions) {
+  return normalizeTags(options.tags || []).length > 0;
+}
+
+function filterKnowledgeResultsByTags(results: KnowledgeSearchResult[], tags?: string[]) {
+  const requiredTags = normalizeTags(tags || []);
+  if (!requiredTags.length) {
+    return results;
+  }
+
+  return results.filter((result) => requiredTags.every((tag) => result.chunk.tags.includes(tag)));
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default";
 }
 
 function tokenize(value: string) {

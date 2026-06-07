@@ -3,6 +3,7 @@ import { getEvaluationEvidenceBundle } from "@/lib/evaluations/evidence";
 import { listEvalReportSnapshots, saveEvalReportSnapshot } from "@/lib/evaluations/store";
 import type {
   EvalReportSignature,
+  EvalReportReleaseGate,
   EvalReportSigningKeyMetadata,
   EvalReportSnapshot,
   EvalReportVerificationResult,
@@ -32,6 +33,25 @@ export async function createEvalReportSnapshot({
   }
 
   const generatedAt = new Date().toISOString();
+  const summary = {
+    totalCases: evidence.run.summary.total,
+    passed: evidence.run.summary.passed,
+    failed: evidence.run.summary.failed,
+    warnings: evidence.run.summary.warnings,
+    passRate: evidence.run.summary.total
+      ? evidence.run.summary.passed / evidence.run.summary.total
+      : 0,
+    averageLatencyMs: evidence.run.summary.averageLatencyMs,
+    estimatedCostUsd: evidence.run.summary.estimatedCostUsd,
+  };
+  const auditFilters = {
+    failed: evidence.caseEvidence.filter((item) => item.result.status === "fail").map((item) => item.result.caseId),
+    warned: evidence.caseEvidence.filter((item) => item.result.status === "warn").map((item) => item.result.caseId),
+    gated: evidence.caseEvidence
+      .filter((item) => item.governance?.production.requiresMutationApproval)
+      .map((item) => item.result.caseId),
+  };
+  const signingKey = getActiveReportSigningKey();
   const report = {
     schema: "omniagent.eval_report",
     reportVersion,
@@ -39,17 +59,7 @@ export async function createEvalReportSnapshot({
     generatedBy: actorId || "system",
     tenantId: tenantId || "default",
     run: evidence.run,
-    summary: {
-      totalCases: evidence.run.summary.total,
-      passed: evidence.run.summary.passed,
-      failed: evidence.run.summary.failed,
-      warnings: evidence.run.summary.warnings,
-      passRate: evidence.run.summary.total
-        ? evidence.run.summary.passed / evidence.run.summary.total
-        : 0,
-      averageLatencyMs: evidence.run.summary.averageLatencyMs,
-      estimatedCostUsd: evidence.run.summary.estimatedCostUsd,
-    },
+    summary,
     governance: evidence.governance,
     override: evidence.override || null,
     cases: evidence.caseEvidence.map((item) => ({
@@ -83,20 +93,20 @@ export async function createEvalReportSnapshot({
     })),
     auditBundle: {
       regressionReady: evidence.run.status === "completed",
-      filters: {
-        failed: evidence.caseEvidence.filter((item) => item.result.status === "fail").map((item) => item.result.caseId),
-        warned: evidence.caseEvidence.filter((item) => item.result.status === "warn").map((item) => item.result.caseId),
-        gated: evidence.caseEvidence
-          .filter((item) => item.governance?.production.requiresMutationApproval)
-          .map((item) => item.result.caseId),
-      },
+      releaseGate: evaluateReportReleaseGate({
+        runStatus: evidence.run.status,
+        totalCases: summary.totalCases,
+        failedCases: summary.failed,
+        signingKey,
+      }),
+      filters: auditFilters,
       evidenceCounts: {
         cases: evidence.caseEvidence.length,
         runtimeEvents: evidence.events.length,
       },
     },
   };
-  const signature = signReport(report, generatedAt);
+  const signature = signReport(report, generatedAt, signingKey);
 
   return saveEvalReportSnapshot({
     evalRunId: runId,
@@ -179,6 +189,7 @@ export function verifyEvalReportSnapshot(candidate: unknown): EvalReportVerifica
 
   return {
     valid: digestValid && signatureValid && errors.length === 0,
+    releaseGate: evaluateSnapshotReleaseGate(report, matchedKey),
     reportId: report.id,
     evalRunId: report.evalRunId,
     reportVersion: report.reportVersion,
@@ -198,10 +209,9 @@ export function verifyEvalReportSnapshot(candidate: unknown): EvalReportVerifica
   };
 }
 
-function signReport(report: Record<string, unknown>, signedAt: string): EvalReportSignature {
+function signReport(report: Record<string, unknown>, signedAt: string, key = getActiveReportSigningKey()): EvalReportSignature {
   const canonical = canonicalStringify(report);
   const digest = createHash("sha256").update(canonical).digest("base64url");
-  const key = getActiveReportSigningKey();
   const signature = createHmac("sha256", key.secret).update(canonical).digest("base64url");
 
   return {
@@ -216,6 +226,60 @@ function signReport(report: Record<string, unknown>, signedAt: string): EvalRepo
     keySource: key.source,
     keyNotBefore: key.notBefore,
     keyNotAfter: key.notAfter,
+  };
+}
+
+function evaluateSnapshotReleaseGate(
+  snapshot: EvalReportSnapshot,
+  signingKey?: EvalReportSigningKeyMetadata,
+): EvalReportReleaseGate {
+  const run = readRecord(snapshot.report.run);
+  const summary = readRecord(snapshot.report.summary);
+
+  return evaluateReportReleaseGate({
+    runStatus: typeof run?.status === "string" ? run.status : "unknown",
+    totalCases: Number(summary?.totalCases || 0),
+    failedCases: Number(summary?.failed || 0),
+    signingKey,
+  });
+}
+
+function evaluateReportReleaseGate({
+  runStatus,
+  totalCases,
+  failedCases,
+  signingKey,
+}: {
+  runStatus: string;
+  totalCases: number;
+  failedCases: number;
+  signingKey?: EvalReportSigningKeyMetadata;
+}): EvalReportReleaseGate {
+  const productionRuntime = isProductionRuntime();
+  const checks = {
+    completedRun: runStatus === "completed",
+    nonEmptySuite: totalCases > 0,
+    noFailedCases: failedCases === 0,
+    activeSigningKey: signingKey?.status === "active",
+    productionSigningKey: !productionRuntime || Boolean(signingKey && signingKey.source !== "local_development"),
+  };
+  const reasons = [
+    checks.completedRun ? "" : "Evaluation run is not completed.",
+    checks.nonEmptySuite ? "" : "Evaluation suite did not execute any cases.",
+    checks.noFailedCases ? "" : "Evaluation suite has failed cases.",
+    checks.activeSigningKey ? "" : "Report was not signed with an active key.",
+    checks.productionSigningKey ? "" : "Production release gate requires a non-local signing key.",
+  ].filter(Boolean);
+  const warnings = [
+    signingKey?.source === "cron_fallback" ? "Report is signed with CRON_SECRET fallback; configure OMNIAGENT_REPORT_SIGNING_SECRET for release gates." : "",
+  ].filter(Boolean);
+
+  return {
+    approved: reasons.length === 0,
+    status: reasons.length === 0 ? "passed" : "blocked",
+    checks,
+    warnings,
+    reasons,
   };
 }
 
@@ -384,6 +448,10 @@ function safeCompare(left: string | undefined, right: string | undefined) {
 
 function canonicalStringify(value: unknown): string {
   return JSON.stringify(sortForCanonicalJson(value));
+}
+
+function isProductionRuntime() {
+  return Boolean(process.env.NODE_ENV === "production" || process.env.VERCEL || process.env.VERCEL_ENV === "production");
 }
 
 function sortForCanonicalJson(value: unknown): unknown {

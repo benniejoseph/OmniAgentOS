@@ -1439,6 +1439,7 @@ export function CommandCenter() {
   const [mode, setMode] = useState<Mode>("orchestrate");
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState("idle");
+  const [riskActionInFlight, setRiskActionInFlight] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<CapabilityResponse | null>(null);
   const [memoryTitle, setMemoryTitle] = useState("Project operating principles");
   const [memoryContent, setMemoryContent] = useState(
@@ -1519,6 +1520,26 @@ export function CommandCenter() {
   const [identityRole, setIdentityRole] = useState<SecurityRole>("viewer");
   const [identityResult, setIdentityResult] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
+
+  function beginRiskyAction(key: string, title: string, impact: string) {
+    if (riskActionInFlight) {
+      setStatus("another high-risk action is already running");
+      return false;
+    }
+
+    const confirmed = window.confirm(`${title}\n\n${impact}\n\nProceed?`);
+    if (!confirmed) {
+      setStatus("high-risk action canceled");
+      return false;
+    }
+
+    setRiskActionInFlight(key);
+    return true;
+  }
+
+  function endRiskyAction(key: string) {
+    setRiskActionInFlight((current) => (current === key ? null : current));
+  }
 
   const activeTools = useMemo(
     () => capabilities?.registry.tools.filter((tool) => tool.status === "active") || [],
@@ -2077,6 +2098,11 @@ export function CommandCenter() {
   }
 
   async function runDiagnostics(repair = false) {
+    const riskKey = repair ? "diagnostics-repair" : undefined;
+    if (riskKey && !beginRiskyAction(riskKey, "Repair diagnostics", "This can execute configured recovery actions and mutate operational state.")) {
+      return;
+    }
+
     setStatus(repair ? "repairing diagnostics" : "running diagnostics");
     setDiagnosticsResult("");
 
@@ -2090,10 +2116,28 @@ export function CommandCenter() {
       refreshWorkspace();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "diagnostics failed");
+    } finally {
+      if (riskKey) {
+        endRiskyAction(riskKey);
+      }
     }
   }
 
   async function runOperationsRecovery(action: "inspect_recovery" | "repair_recovery" | "drain_recovery") {
+    const riskKey = action === "inspect_recovery" ? undefined : action;
+    if (
+      riskKey &&
+      !beginRiskyAction(
+        riskKey,
+        action === "drain_recovery" ? "Drain workflow queue" : "Repair operations",
+        action === "drain_recovery"
+          ? "This can lease and execute queued workflow jobs."
+          : "This can requeue stale jobs and repair expired operational leases.",
+      )
+    ) {
+      return;
+    }
+
     setStatus(action === "drain_recovery" ? "draining recovery" : action === "repair_recovery" ? "repairing operations" : "inspecting recovery");
     setOperationResult("");
 
@@ -2116,6 +2160,10 @@ export function CommandCenter() {
       refreshWorkspace();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "operations recovery failed");
+    } finally {
+      if (riskKey) {
+        endRiskyAction(riskKey);
+      }
     }
   }
 
@@ -2156,6 +2204,18 @@ export function CommandCenter() {
   }
 
   async function runAlertAction(action: "enqueue_active" | "dispatch" | "enqueue_and_dispatch" | "probe_targets" | "retry_failed") {
+    const riskKey = ["dispatch", "enqueue_and_dispatch", "retry_failed"].includes(action) ? `alerts-${action}` : undefined;
+    if (
+      riskKey &&
+      !beginRiskyAction(
+        riskKey,
+        "Run alert delivery",
+        "This can send notifications through configured alert targets.",
+      )
+    ) {
+      return;
+    }
+
     setStatus(
       action === "dispatch"
         ? "dispatching alerts"
@@ -2179,10 +2239,19 @@ export function CommandCenter() {
       refreshWorkspace();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "alert action failed");
+    } finally {
+      if (riskKey) {
+        endRiskyAction(riskKey);
+      }
     }
   }
 
   async function runAlertScheduler() {
+    const riskKey = "alert-scheduler";
+    if (!beginRiskyAction(riskKey, "Run alert scheduler", "This can queue and dispatch SLO and incident alerts.")) {
+      return;
+    }
+
     setStatus("running alert scheduler");
     setAlertResult("");
 
@@ -2198,10 +2267,17 @@ export function CommandCenter() {
       refreshWorkspace();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "alert scheduler failed");
+    } finally {
+      endRiskyAction(riskKey);
     }
   }
 
   async function runSloMonitor() {
+    const riskKey = "slo-monitor";
+    if (!beginRiskyAction(riskKey, "Run SLO monitor", "This can open incidents, resolve recovered incidents, queue alerts, and dispatch notifications.")) {
+      return;
+    }
+
     setStatus("running SLO monitor");
     setObservabilityResult("");
 
@@ -2226,6 +2302,8 @@ export function CommandCenter() {
       refreshWorkspace();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "SLO monitor failed");
+    } finally {
+      endRiskyAction(riskKey);
     }
   }
 
@@ -2274,6 +2352,11 @@ export function CommandCenter() {
   }
 
   async function resetSloPolicies() {
+    const riskKey = "slo-policy-reset";
+    if (!beginRiskyAction(riskKey, "Reset SLO policies", "This requests replacement of configured SLO policies with defaults.")) {
+      return;
+    }
+
     setStatus("requesting SLO policy reset");
     setObservabilityResult("");
 
@@ -2300,6 +2383,8 @@ export function CommandCenter() {
       refreshWorkspace();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "SLO policy reset request failed");
+    } finally {
+      endRiskyAction(riskKey);
     }
   }
 
@@ -2399,6 +2484,11 @@ export function CommandCenter() {
   }
 
   async function resetSloApprovalPolicy() {
+    const riskKey = "slo-approval-policy-reset";
+    if (!beginRiskyAction(riskKey, "Reset SLO approval policy", "This resets approval quorum, attestation, and break-glass administration rules.")) {
+      return;
+    }
+
     setStatus("resetting SLO approval policy");
     setObservabilityResult("");
 
@@ -2422,6 +2512,8 @@ export function CommandCenter() {
       refreshWorkspace();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "SLO approval policy reset failed");
+    } finally {
+      endRiskyAction(riskKey);
     }
   }
 
@@ -2991,7 +3083,9 @@ export function CommandCenter() {
             <div className="flex flex-col gap-3 border-b border-line px-5 py-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <p className="text-sm text-muted">Run state</p>
-                <p className="font-mono text-sm text-accent">{status}</p>
+                <p className="font-mono text-sm text-accent" role="status" aria-live="polite" aria-atomic="true">
+                  {riskActionInFlight ? `${status} (${riskActionInFlight})` : status}
+                </p>
               </div>
               <div className="flex flex-wrap gap-2">
                 {modes.map((item) => (
@@ -3012,7 +3106,13 @@ export function CommandCenter() {
               </div>
             </div>
 
-            <div ref={viewportRef} className="flex-1 overflow-y-auto px-5 py-5">
+            <div
+              ref={viewportRef}
+              className="flex-1 overflow-y-auto px-5 py-5"
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions text"
+            >
               <div className="flex flex-col gap-4">
                 {messages.map((message, index) => (
                   <article
@@ -3110,7 +3210,8 @@ export function CommandCenter() {
               <button
                 type="button"
                 onClick={runSloMonitor}
-                className="mb-3 flex h-9 w-full items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                disabled={Boolean(riskActionInFlight)}
+                className="mb-3 flex h-9 w-full items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Activity size={14} />
                 Run SLO monitor
@@ -3223,7 +3324,8 @@ export function CommandCenter() {
                     <button
                       type="button"
                       onClick={resetSloPolicies}
-                      className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-danger"
+                      disabled={Boolean(riskActionInFlight)}
+                      className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-danger disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <History size={14} />
                       Defaults
@@ -3293,7 +3395,8 @@ export function CommandCenter() {
                     <button
                       type="button"
                       onClick={resetSloApprovalPolicy}
-                      className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-danger"
+                      disabled={Boolean(riskActionInFlight)}
+                      className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-danger disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <History size={14} />
                       Reset policy
@@ -3409,7 +3512,8 @@ export function CommandCenter() {
                 <button
                   type="button"
                   onClick={() => runDiagnostics(true)}
-                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                  disabled={Boolean(riskActionInFlight)}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <CheckCircle2 size={14} />
                   Repair
@@ -3427,7 +3531,8 @@ export function CommandCenter() {
                 <button
                   type="button"
                   onClick={() => runOperationsRecovery("repair_recovery")}
-                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-primary"
+                  disabled={Boolean(riskActionInFlight)}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <CheckCircle2 size={14} />
                   Recover
@@ -3435,7 +3540,8 @@ export function CommandCenter() {
                 <button
                   type="button"
                   onClick={() => runOperationsRecovery("drain_recovery")}
-                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                  disabled={Boolean(riskActionInFlight)}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Activity size={14} />
                   Drain
@@ -3453,7 +3559,8 @@ export function CommandCenter() {
                 <button
                   type="button"
                   onClick={() => runAlertAction("dispatch")}
-                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                  disabled={Boolean(riskActionInFlight)}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Activity size={14} />
                   Dispatch
@@ -3462,7 +3569,8 @@ export function CommandCenter() {
               <button
                 type="button"
                 onClick={runAlertScheduler}
-                className="mb-3 flex h-9 w-full items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-primary"
+                disabled={Boolean(riskActionInFlight)}
+                className="mb-3 flex h-9 w-full items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-primary disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Activity size={14} />
                 Scheduler tick
@@ -3479,7 +3587,8 @@ export function CommandCenter() {
                 <button
                   type="button"
                   onClick={() => runAlertAction("retry_failed")}
-                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                  disabled={Boolean(riskActionInFlight)}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <History size={14} />
                   Retry failed

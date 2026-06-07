@@ -22,6 +22,7 @@ export async function* runAgent(
   const lastUserMessage = [...request.messages].reverse().find((message) => message.role === "user");
   const query = lastUserMessage?.content || "";
   const run = await createAgentRun({
+    tenantId: request.tenantId,
     mode,
     prompt: query,
     messages: request.messages,
@@ -35,7 +36,7 @@ export async function* runAgent(
 
   try {
     yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
-    const retrieval = await buildContextPack(query, { limit: 8 });
+    const retrieval = await buildContextPack(query, { limit: 8, tenantId: request.tenantId });
     await updateRunContextCount(run.id, retrieval.results.length);
     yield await emit({
       type: "memory",
@@ -74,6 +75,7 @@ export async function* runAgent(
       const episodeContent = [`User request: ${query}`, `Assistant response: ${response}`].join("\n\n");
       const embedding = (await embedTexts([episodeContent]))?.[0];
       await saveMemory({
+        tenantId: request.tenantId,
         type: "episode",
         title: `Agent run: ${query.slice(0, 72)}`,
         content: episodeContent,
@@ -89,6 +91,7 @@ export async function* runAgent(
         detail: "Extracting durable facts, decisions, procedures, preferences, and tasks.",
       });
       const consolidation = await consolidateRunMemory({
+        tenantId: request.tenantId,
         runId: run.id,
         mode,
         prompt: query,

@@ -18,7 +18,20 @@ import { getDataPath } from "@/lib/storage/paths";
 let authFileWriteQueue: Promise<void> = Promise.resolve();
 
 export function isAuthEnforced() {
-  return ["1", "true", "enforced"].includes((process.env.OMNIAGENT_AUTH_ENABLED || "").trim().toLowerCase());
+  const configured = (process.env.OMNIAGENT_AUTH_ENABLED || "").trim().toLowerCase();
+  const explicitEnable = ["1", "true", "enforced"].includes(configured);
+  const explicitDisable = ["0", "false", "disabled"].includes(configured);
+  const isProductionRuntime = Boolean(
+    process.env.NODE_ENV === "production" ||
+      process.env.VERCEL ||
+      process.env.VERCEL_ENV === "production",
+  );
+
+  if (isProductionRuntime) {
+    return true;
+  }
+
+  return explicitEnable && !explicitDisable;
 }
 
 export function isBootstrapConfigured() {
@@ -290,16 +303,31 @@ export async function createUserWithMembership({
   return (await findUserByEmail(normalizedEmail))!;
 }
 
-export async function getAuthControlPlane(): Promise<AuthControlPlane> {
+export async function getAuthControlPlane(options: { tenantId?: string } = {}): Promise<AuthControlPlane> {
   await ensureBootstrapIdentity();
+  const tenantId = normalizeTenantId(options.tenantId || process.env.OMNIAGENT_DEFAULT_TENANT || "default");
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const [tenants, users, memberships, sessions] = await Promise.all([
-      getSql()`SELECT * FROM omni_auth_tenants ORDER BY created_at DESC LIMIT 50`,
-      getSql()`SELECT * FROM omni_auth_users ORDER BY created_at DESC LIMIT 100`,
-      getSql()`SELECT * FROM omni_auth_memberships ORDER BY created_at DESC LIMIT 100`,
-      getSql()`SELECT * FROM omni_auth_sessions WHERE expires_at > NOW() ORDER BY last_seen_at DESC LIMIT 100`,
+      getSql()`SELECT * FROM omni_auth_tenants WHERE id = ${tenantId} ORDER BY created_at DESC LIMIT 50`,
+      getSql()`
+        SELECT users.*
+        FROM omni_auth_users users
+        JOIN omni_auth_memberships memberships ON memberships.user_id = users.id
+        WHERE memberships.tenant_id = ${tenantId}
+        ORDER BY users.created_at DESC
+        LIMIT 100
+      `,
+      getSql()`SELECT * FROM omni_auth_memberships WHERE tenant_id = ${tenantId} ORDER BY created_at DESC LIMIT 100`,
+      getSql()`
+        SELECT *
+        FROM omni_auth_sessions
+        WHERE expires_at > NOW()
+          AND tenant_id = ${tenantId}
+        ORDER BY last_seen_at DESC
+        LIMIT 100
+      `,
     ]);
     const safeUsers = users.map(userFromRow);
     const activeSessions = sessions.map(sessionFromRow);
@@ -320,19 +348,25 @@ export async function getAuthControlPlane(): Promise<AuthControlPlane> {
   }
 
   const ledger = await readAuthLedger();
-  const sessions = ledger.sessions.filter((session) => new Date(session.expiresAt).getTime() > Date.now());
+  const memberships = ledger.memberships.filter((membership) => membership.tenantId === tenantId);
+  const userIds = new Set(memberships.map((membership) => membership.userId));
+  const users = ledger.users.filter((user) => userIds.has(user.id));
+  const sessions = ledger.sessions.filter(
+    (session) => session.tenantId === tenantId && new Date(session.expiresAt).getTime() > Date.now(),
+  );
+  const tenants = ledger.tenants.filter((tenant) => tenant.id === tenantId);
   return {
     authEnabled: isAuthEnforced(),
     bootstrapConfigured: isBootstrapConfigured(),
     stats: {
-      tenants: ledger.tenants.length,
-      users: ledger.users.length,
-      activeUsers: ledger.users.filter((user) => user.status === "active").length,
+      tenants: tenants.length,
+      users: users.length,
+      activeUsers: users.filter((user) => user.status === "active").length,
       sessions: sessions.length,
     },
-    tenants: ledger.tenants,
-    users: ledger.users.map(stripPassword),
-    memberships: ledger.memberships,
+    tenants,
+    users: users.map(stripPassword),
+    memberships,
     sessions: sessions.map(stripTokenHash),
   };
 }

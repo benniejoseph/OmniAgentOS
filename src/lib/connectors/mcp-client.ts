@@ -3,6 +3,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
 import { createMcpToolId } from "@/lib/connectors/store";
+import { validateConnectorSecretEnvName } from "@/lib/security/context";
+import { assertPublicHttpUrl } from "@/lib/security/network";
 import type { ToolRiskLevel } from "@/lib/tools/types";
 
 const CLIENT_INFO = {
@@ -58,6 +60,7 @@ async function connectMcp(connector: McpConnectorRecord) {
     throw new Error(`Unsupported MCP transport: ${connector.transport}`);
   }
 
+  await assertPublicHttpUrl(connector.endpoint, "MCP endpoint");
   const endpoint = new URL(connector.endpoint);
   if (endpoint.protocol !== "https:" && endpoint.protocol !== "http:") {
     throw new Error("MCP endpoint must use http or https.");
@@ -106,11 +109,15 @@ function createRequestInit(connector: McpConnectorRecord): RequestInit | undefin
   }
 
   const token = process.env[envName];
+  if (!validateConnectorSecretEnvName(envName)) {
+    throw new Error(`MCP auth token environment variable ${envName} is not allowed for connectors.`);
+  }
   if (!token) {
     throw new Error(`MCP auth token environment variable ${envName} is not configured.`);
   }
 
   return {
+    redirect: "manual",
     headers: {
       Authorization: `Bearer ${token}`,
     },

@@ -2,6 +2,7 @@ export type KnowledgeSourceType = "text" | "url" | "file" | "api" | "manual";
 
 export type KnowledgeDocument = {
   id: string;
+  tenantId?: string;
   title: string;
   source: string;
   sourceType: KnowledgeSourceType;
@@ -16,6 +17,7 @@ export type KnowledgeDocument = {
 
 export type KnowledgeChunk = {
   id: string;
+  tenantId?: string;
   documentId: string;
   chunkIndex: number;
   title: string;

@@ -38,11 +38,13 @@ export type ConsolidationResult = {
 };
 
 export async function consolidateRunMemory({
+  tenantId,
   runId,
   mode,
   prompt,
   response,
 }: {
+  tenantId?: string;
   runId: string;
   mode: AgentMode;
   prompt: string;
@@ -73,7 +75,7 @@ export async function consolidateRunMemory({
       .map(cleanItem)
       .filter((item) => item.title && item.content)
       .slice(0, 8);
-    const saved = await persistConsolidatedItems({ runId, mode, prompt, items });
+    const saved = await persistConsolidatedItems({ tenantId, runId, mode, prompt, items });
 
     return {
       summary: parsed.summary,
@@ -91,11 +93,13 @@ export async function consolidateRunMemory({
 }
 
 async function persistConsolidatedItems({
+  tenantId,
   runId,
   mode,
   prompt,
   items,
 }: {
+  tenantId?: string;
   runId: string;
   mode: AgentMode;
   prompt: string;
@@ -129,6 +133,7 @@ async function persistConsolidatedItems({
     saved.push(
       await saveMemory({
         ...memoryInputs[index],
+        tenantId,
         embedding: embeddings?.[index],
       }),
     );

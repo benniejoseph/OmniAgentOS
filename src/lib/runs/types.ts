@@ -4,6 +4,7 @@ export type RunStatus = "running" | "completed" | "failed";
 
 export type AgentRunRecord = {
   id: string;
+  tenantId?: string;
   mode: AgentMode;
   status: RunStatus;
   prompt: string;

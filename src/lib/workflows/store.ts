@@ -30,14 +30,17 @@ export const workflowStepDefinitions: Array<{ key: WorkflowStepKey; label: strin
 
 let workflowFileWriteQueue: Promise<void> = Promise.resolve();
 
-export async function createWorkflowRun(input: WorkflowRunInput) {
+export async function createWorkflowRun(input: WorkflowRunInput & { tenantId?: string }) {
   const now = new Date().toISOString();
+  const { tenantId: rawTenantId, ...workflowInput } = input;
+  const tenantId = normalizeTenantId(rawTenantId);
   const run: WorkflowRunRecord = {
     id: randomUUID(),
+    tenantId,
     workflowType: AGENT_WORKFLOW_TYPE,
     status: "queued",
-    goal: input.goal.trim(),
-    input,
+    goal: workflowInput.goal.trim(),
+    input: workflowInput,
     currentStep: "preflight",
     attempt: 0,
     maxAttempts: input.maxAttempts ?? 3,
@@ -62,11 +65,11 @@ export async function createWorkflowRun(input: WorkflowRunInput) {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_workflow_runs (
-        id, workflow_type, status, goal, input, current_step, attempt,
+        id, tenant_id, workflow_type, status, goal, input, current_step, attempt,
         max_attempts, approval_required, created_at, updated_at
       )
       VALUES (
-        ${run.id}, ${run.workflowType}, ${run.status}, ${run.goal},
+        ${run.id}, ${run.tenantId}, ${run.workflowType}, ${run.status}, ${run.goal},
         ${JSON.stringify(run.input)}::jsonb, ${run.currentStep || null}, ${run.attempt},
         ${run.maxAttempts}, ${run.approvalRequired}, ${run.createdAt}, ${run.updatedAt}
       )
@@ -88,12 +91,15 @@ export async function createWorkflowRun(input: WorkflowRunInput) {
   return getWorkflowRunDetail(run.id) as Promise<WorkflowRunDetail>;
 }
 
-export async function listWorkflowRuns(limit = 20) {
+export async function listWorkflowRuns(limit = 20, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_workflow_runs
+      WHERE tenant_id = ${tenantId}
       ORDER BY updated_at DESC
       LIMIT ${limit}
     `;
@@ -101,18 +107,27 @@ export async function listWorkflowRuns(limit = 20) {
   }
 
   const ledger = await readWorkflowLedger();
-  return ledger.runs.slice(0, limit);
+  return ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId).slice(0, limit);
 }
 
-export async function getWorkflowRunDetail(runId: string): Promise<WorkflowRunDetail | null> {
+export async function getWorkflowRunDetail(runId: string, options: { tenantId?: string } = {}): Promise<WorkflowRunDetail | null> {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const runRows = await getSql()`
-      SELECT *
-      FROM omni_workflow_runs
-      WHERE id = ${runId}
-      LIMIT 1
-    `;
+    const tenantId = options.tenantId ? normalizeTenantId(options.tenantId) : undefined;
+    const runRows = tenantId
+      ? await getSql()`
+          SELECT *
+          FROM omni_workflow_runs
+          WHERE id = ${runId}
+            AND tenant_id = ${tenantId}
+          LIMIT 1
+        `
+      : await getSql()`
+          SELECT *
+          FROM omni_workflow_runs
+          WHERE id = ${runId}
+          LIMIT 1
+        `;
     if (!runRows[0]) {
       return null;
     }
@@ -141,7 +156,7 @@ export async function getWorkflowRunDetail(runId: string): Promise<WorkflowRunDe
 
   const ledger = await readWorkflowLedger();
   const run = ledger.runs.find((item) => item.id === runId);
-  if (!run) {
+  if (!run || (options.tenantId && normalizeTenantId(run.tenantId) !== normalizeTenantId(options.tenantId))) {
     return null;
   }
 
@@ -337,12 +352,15 @@ export async function listWorkflowRecoveryEvents(limit = 20): Promise<WorkflowRe
     });
 }
 
-export async function getWorkflowStats(): Promise<WorkflowStats> {
+export async function getWorkflowStats(options: { tenantId?: string } = {}): Promise<WorkflowStats> {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT status, COUNT(*)::int AS count
       FROM omni_workflow_runs
+      WHERE tenant_id = ${tenantId}
       GROUP BY status
     `;
     const byStatus = rows.reduce<Record<string, number>>((acc, row) => {
@@ -355,21 +373,22 @@ export async function getWorkflowStats(): Promise<WorkflowStats> {
       byStatus,
       active: ["queued", "running", "paused"].reduce((sum, status) => sum + (byStatus[status] || 0), 0),
       waitingApproval: byStatus.waiting_approval || 0,
-      latest: await listWorkflowRuns(5),
+      latest: await listWorkflowRuns(5, { tenantId }),
     };
   }
 
   const ledger = await readWorkflowLedger();
-  const byStatus = ledger.runs.reduce<Record<string, number>>((acc, run) => {
+  const runs = ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId);
+  const byStatus = runs.reduce<Record<string, number>>((acc, run) => {
     acc[run.status] = (acc[run.status] || 0) + 1;
     return acc;
   }, {});
   return {
-    total: ledger.runs.length,
+    total: runs.length,
     byStatus,
     active: ["queued", "running", "paused"].reduce((sum, status) => sum + (byStatus[status] || 0), 0),
     waitingApproval: byStatus.waiting_approval || 0,
-    latest: ledger.runs.slice(0, 5),
+    latest: runs.slice(0, 5),
   };
 }
 
@@ -421,6 +440,7 @@ function trimWorkflowLedger(ledger: WorkflowLedger): WorkflowLedger {
 function workflowRunFromRow(row: Record<string, unknown>): WorkflowRunRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     workflowType: String(row.workflow_type),
     status: String(row.status) as WorkflowRunStatus,
     goal: String(row.goal || ""),
@@ -522,6 +542,10 @@ function parseObject(value: unknown): Record<string, unknown> | undefined {
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default";
 }
 
 function getWorkflowFile() {

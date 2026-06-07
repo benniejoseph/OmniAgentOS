@@ -9,6 +9,7 @@ export type MemoryType =
 
 export type MemoryRecord = {
   id: string;
+  tenantId?: string;
   type: MemoryType;
   title: string;
   content: string;

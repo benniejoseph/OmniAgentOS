@@ -21,7 +21,7 @@ type ProcessWorkflowQueueInput = {
 type WorkflowQueueJobResult = {
   job: OperationJobRecord;
   workflowRunId?: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "stale";
   detail?: WorkflowRunDetail;
   error?: string;
   requeued?: OperationJobRecord;
@@ -32,6 +32,7 @@ export type WorkflowQueueResult = {
   leased: number;
   completed: number;
   failed: number;
+  stale: number;
   requeued: number;
   jobs: WorkflowQueueJobResult[];
 };
@@ -108,10 +109,10 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
     const workflowRunId = String(job.payload.workflowRunId || "");
     if (!workflowRunId) {
       const error = "Workflow queue job is missing workflowRunId.";
-      const failedJob = await failOperationJob(job.id, error);
+      const failedJob = await failOperationJob(job.id, error, job.leaseOwner);
       results.push({
         job: failedJob || job,
-        status: "failed",
+        status: failedJob ? "failed" : "stale",
         error,
       });
       continue;
@@ -124,7 +125,17 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
         leaseExpiresAt: job.leaseExpiresAt,
       }).catch(() => undefined);
       const detail = await tickWorkflowRun(workflowRunId);
-      const completedJob = await completeOperationJob(job.id);
+      const completedJob = await completeOperationJob(job.id, job.leaseOwner);
+      if (!completedJob) {
+        results.push({
+          job,
+          workflowRunId,
+          status: "stale",
+          detail,
+          error: "Workflow queue job lease was stale before completion was recorded.",
+        });
+        continue;
+      }
       let requeued: OperationJobRecord | undefined;
 
       if (runnableWorkflowStatuses.has(detail.run.status)) {
@@ -132,7 +143,7 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
       }
 
       results.push({
-        job: completedJob || job,
+        job: completedJob,
         workflowRunId,
         status: "completed",
         detail,
@@ -140,7 +151,7 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Workflow queue job failed.";
-      const failedJob = await failOperationJob(job.id, message);
+      const failedJob = await failOperationJob(job.id, message, job.leaseOwner);
       await appendWorkflowEvent(workflowRunId, "workflow.queue.failed", {
         jobId: job.id,
         error: message,
@@ -148,7 +159,7 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
       results.push({
         job: failedJob || job,
         workflowRunId,
-        status: "failed",
+        status: failedJob ? "failed" : "stale",
         error: message,
       });
     }
@@ -159,6 +170,7 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
     leased: jobs.length,
     completed: results.filter((result) => result.status === "completed").length,
     failed: results.filter((result) => result.status === "failed").length,
+    stale: results.filter((result) => result.status === "stale").length,
     requeued: results.filter((result) => result.requeued).length,
     jobs: results,
   };

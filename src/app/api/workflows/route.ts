@@ -15,11 +15,22 @@ const workflowStartSchema = z.object({
 });
 
 export async function GET(request: Request) {
+  let context;
+  try {
+    context = await authorizeRequest({
+      request,
+      action: "read",
+      resourceType: "workflow",
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
   const url = new URL(request.url);
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
   return Response.json({
-    runs: await listWorkflowRuns(limit),
-    stats: await getWorkflowStats(),
+    runs: await listWorkflowRuns(limit, { tenantId: context.tenantId }),
+    stats: await getWorkflowStats({ tenantId: context.tenantId }),
     queue: await getOperationJobStats(),
   });
 }
@@ -36,18 +47,17 @@ export async function POST(request: Request) {
   }
 
   try {
-    await authorizeRequest({
+    const context = await authorizeRequest({
       request,
       action: "manage.workflow",
       resourceType: "workflow",
       metadata: body,
     });
+    const detail = await createWorkflowRun({ ...parsed.data, tenantId: context.tenantId });
+    const queueJob = await enqueueWorkflowRunTick(detail.run.id, "workflow_created");
+    scheduleWorkflowQueueDrain();
+    return Response.json({ ...detail, queueJob }, { status: 201 });
   } catch (error) {
     return forbiddenResponse(error);
   }
-
-  const detail = await createWorkflowRun(parsed.data);
-  const queueJob = await enqueueWorkflowRunTick(detail.run.id, "workflow_created");
-  scheduleWorkflowQueueDrain();
-  return Response.json({ ...detail, queueJob }, { status: 201 });
 }

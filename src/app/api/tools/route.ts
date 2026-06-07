@@ -1,16 +1,28 @@
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
 import { getGovernedTools } from "@/lib/tools/registry";
 import { listMcpGovernedTools, listOpenApiGovernedTools } from "@/lib/connectors/governed-tools";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
+  let context;
+  try {
+    context = await authorizeRequest({
+      request,
+      action: "read",
+      resourceType: "tool",
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
   const mcpTools = await listMcpGovernedTools();
   const openApiTools = await listOpenApiGovernedTools();
 
   return Response.json({
     tools: [...getGovernedTools(), ...mcpTools, ...openApiTools],
-    audits: await getToolExecutionStats(),
+    audits: await getToolExecutionStats({ tenantId: context.tenantId }),
     policy: {
       riskLevels: [
         { level: 0, label: "Read-only", approvalRequired: false },

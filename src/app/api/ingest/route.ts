@@ -23,8 +23,9 @@ export async function POST(request: Request) {
     );
   }
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "write.memory",
       resourceType: "knowledge",
@@ -34,7 +35,10 @@ export async function POST(request: Request) {
     return forbiddenResponse(error);
   }
 
-  const result = await ingestTextDocument(parsed.data);
+  const result = await ingestTextDocument({
+    ...parsed.data,
+    tenantId: context.tenantId,
+  });
   return Response.json(
     {
       document: result.document,

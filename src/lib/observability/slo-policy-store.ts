@@ -315,8 +315,15 @@ export async function getObservabilitySloApprovalPolicyConfig() {
     changedBy: "system",
     changeReason: "Seeded default SLO approval policy.",
   });
-  await writeSloApprovalPolicyLedger({ policy: seeded, versions: [version] });
-  return seeded;
+  await mutateSloApprovalPolicyLedger((current) => {
+    if (current.policy) {
+      return current;
+    }
+
+    return { policy: seeded, versions: [version] };
+  });
+  const saved = await readSloApprovalPolicyLedger();
+  return normalizeSloApprovalPolicyConfig(saved.policy || seeded);
 }
 
 export async function listObservabilitySloApprovalPolicyVersions({

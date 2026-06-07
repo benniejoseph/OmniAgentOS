@@ -19,6 +19,7 @@ import type {
 } from "@/lib/rag/types";
 
 type BuildContextPackOptions = {
+  tenantId?: string;
   limit?: number;
   candidateLimit?: number;
   persistTrace?: boolean;
@@ -94,9 +95,11 @@ export async function buildContextPack(
   const retrievalQuery = profile.expandedQueries.join("\n");
   const queryEmbedding = (await embedTexts([retrievalQuery || normalizedQuery]))?.[0];
   const [memoryResults, knowledgeResults, graphResults] = await Promise.all([
-    searchMemories(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding }),
-    searchKnowledge(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding }),
-    searchMemoryGraph(normalizedQuery, { limit: Math.min(candidateLimit, 24) }),
+    searchMemories(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId: options.tenantId }),
+    searchKnowledge(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId: options.tenantId }),
+    options.tenantId
+      ? Promise.resolve([])
+      : searchMemoryGraph(normalizedQuery, { limit: Math.min(candidateLimit, 24) }),
   ]);
   const evidence = scoreEvidenceItems({
     profile,

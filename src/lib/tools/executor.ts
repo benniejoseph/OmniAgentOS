@@ -135,7 +135,7 @@ export async function executeGovernedTool({
       return { record: await saveToolExecution(record), result: preview };
     }
 
-    const result = await runTool(tool, input);
+    const result = await runTool(tool, input, context);
     const record = createRecord({
       ...baseRecord,
       status: "executed" as const,
@@ -172,13 +172,13 @@ function dryRunTool(tool: ToolDefinition, input: Record<string, unknown>) {
   };
 }
 
-async function runTool(tool: ToolDefinition, input: Record<string, unknown>) {
+async function runTool(tool: ToolDefinition, input: Record<string, unknown>, context?: SecurityContext) {
   const parsed = parseInput(tool, input);
 
   if (tool.id === "memory.search") {
     const { query, limit } = searchSchema.parse(parsed);
     const queryEmbedding = (await embedTexts([query]))?.[0];
-    const results = await searchMemories(query, { limit: limit || 5, queryEmbedding });
+    const results = await searchMemories(query, { limit: limit || 5, queryEmbedding, tenantId: context?.tenantId });
     return {
       results: results.map((result) => ({
         score: result.score,
@@ -194,7 +194,7 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>) {
   if (tool.id === "knowledge.search") {
     const { query, limit } = searchSchema.parse(parsed);
     const queryEmbedding = (await embedTexts([query]))?.[0];
-    const results = await searchKnowledge(query, { limit: limit || 5, queryEmbedding });
+    const results = await searchKnowledge(query, { limit: limit || 5, queryEmbedding, tenantId: context?.tenantId });
     return {
       results: results.map((result) => ({
         score: result.score,
@@ -216,6 +216,7 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>) {
     const embedding = (await embedTexts([contentForEmbedding]))?.[0];
     return {
       record: stripEmbedding(await saveMemory({
+        tenantId: context?.tenantId,
         title: value.title,
         content: value.content,
         type: value.type as MemoryType | undefined,
@@ -231,6 +232,7 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>) {
   if (tool.id === "knowledge.ingest") {
     const value = knowledgeIngestSchema.parse(parsed);
     const result = await ingestTextDocument({
+      tenantId: context?.tenantId,
       title: value.title,
       content: value.content,
       source: value.source || "tool-executor",

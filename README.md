@@ -171,13 +171,21 @@ OMNIAGENT_REPORT_SIGNING_KEYS=
 
 ## Connector Secrets
 
-Connector records store environment variable names only. Put bearer tokens or API keys in local `.env.local` or Vercel environment variables, then reference the env var name from the connector form. Names must be uppercase server-only variables and cannot use `NEXT_PUBLIC_`.
+Connector records store environment variable names only. Put bearer tokens or API keys in local `.env.local` or Vercel environment variables, then reference the env var name from the connector form. Connector secrets must use the `OMNIAGENT_CONNECTOR_` prefix or be listed in `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST`; platform secrets such as `OPENAI_API_KEY`, `DATABASE_URL`, bootstrap passwords, and public env vars are blocked.
+
+Connector URLs are validated before registration, import, discovery, and execution. Hosted deployments require public HTTP(S) targets, block private/loopback/metadata hosts, reject embedded URL credentials, and execute connector fetches without following unvalidated redirects.
 
 ## Security Context
 
-Requests can pass `x-omni-tenant-id`, `x-omni-user-id`, and `x-omni-user-role` headers. Without headers, the app uses `OMNIAGENT_DEFAULT_TENANT`, `OMNIAGENT_DEFAULT_ACTOR`, and `OMNIAGENT_DEFAULT_ROLE`; the template keeps the dashboard operator-friendly with `admin`.
+Authenticated sessions are enforced automatically in Vercel and any `NODE_ENV=production` runtime. Non-production can opt into sessions with `OMNIAGENT_AUTH_ENABLED=true`; production cannot be disabled by accident.
 
-Set `OMNIAGENT_AUTH_ENABLED=true` to enforce authenticated sessions instead of trusting headers/defaults. Configure `OMNIAGENT_BOOTSTRAP_EMAIL` and `OMNIAGENT_BOOTSTRAP_PASSWORD` before enabling auth so the first admin can sign in and manage users.
+Unsigned `x-omni-tenant-id`, `x-omni-user-id`, and `x-omni-user-role` identity headers are not trusted by default. Internal callers must send `x-omni-internal-auth` matching `OMNIAGENT_INTERNAL_AUTH_SECRET`; local development can explicitly opt into unsigned headers with `OMNIAGENT_TRUST_UNSIGNED_IDENTITY_HEADERS=true`. Without a trusted session/header, the default role is `viewer`.
+
+Configure `OMNIAGENT_BOOTSTRAP_EMAIL` and `OMNIAGENT_BOOTSTRAP_PASSWORD` before deployment so the first admin can sign in and manage users.
+
+## Release Gates
+
+Run `npm run lint`, `npm run build`, and `BASE_URL=<deployment-url> npm run test:security` before promoting a release. The security smoke verifies anonymous API lockdown, session cookie flags, authenticated memory access, connector secret allowlisting, and private-endpoint rejection.
 
 ## Implementation Roadmap
 

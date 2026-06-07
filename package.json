@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "smoke:security": "node scripts/smoke-security.mjs",
+    "test:security": "npm run smoke:security",
+    "test": "npm run lint"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

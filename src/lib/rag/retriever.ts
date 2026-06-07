@@ -7,12 +7,14 @@ import { createKnowledgeDocument, searchKnowledge } from "@/lib/rag/store";
 import type { KnowledgeSearchResult, KnowledgeSourceType } from "@/lib/rag/types";
 
 export async function ingestTextDocument({
+  tenantId,
   title,
   content,
   source = "ingest",
   sourceType = "text",
   tags = [],
 }: {
+  tenantId?: string;
   title: string;
   content: string;
   source?: string;
@@ -22,6 +24,7 @@ export async function ingestTextDocument({
   const chunks = chunkText(content);
   const embeddings = await embedTexts(chunks.map((chunk) => chunk.content));
   const knowledge = await createKnowledgeDocument({
+    tenantId,
     title,
     content,
     source,
@@ -37,6 +40,7 @@ export async function ingestTextDocument({
   for (const chunk of chunks) {
     records.push(
       await saveMemory({
+        tenantId,
         type: "knowledge",
         title: chunks.length > 1 ? `${title} (${chunk.index + 1}/${chunks.length})` : title,
         content: chunk.content,
@@ -57,11 +61,11 @@ export async function ingestTextDocument({
   };
 }
 
-export async function retrieveContext(query: string, limit = 8) {
+export async function retrieveContext(query: string, limit = 8, options: { tenantId?: string } = {}) {
   const queryEmbedding = (await embedTexts([query]))?.[0];
   const [memoryResults, knowledgeResults] = await Promise.all([
-    searchMemories(query, { limit, queryEmbedding }),
-    searchKnowledge(query, { limit, queryEmbedding }),
+    searchMemories(query, { limit, queryEmbedding, tenantId: options.tenantId }),
+    searchKnowledge(query, { limit, queryEmbedding, tenantId: options.tenantId }),
   ]);
   const contextItems = [
     ...memoryResults.map((result) => ({ kind: "memory" as const, result })),

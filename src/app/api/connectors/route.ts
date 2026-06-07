@@ -9,8 +9,9 @@ import {
   saveMcpConnector,
   saveMcpDiscovery,
 } from "@/lib/connectors/store";
-import { validateSecretEnvName } from "@/lib/security/context";
+import { validateConnectorSecretEnvName } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { assertPublicHttpUrl } from "@/lib/security/network";
 
 export const runtime = "nodejs";
 
@@ -24,11 +25,30 @@ const registerConnectorSchema = z.object({
   discover: z.boolean().optional(),
 });
 
-export async function GET() {
+export async function GET(request: Request) {
+  try {
+    await authorizeRequest({
+      request,
+      action: "read",
+      resourceType: "mcp_connector",
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
+  const [connectors, tools, stats] = await Promise.all([
+    listMcpConnectors(),
+    listMcpTools(),
+    getMcpConnectorStats(),
+  ]);
+
   return Response.json({
-    connectors: await listMcpConnectors(),
-    tools: await listMcpTools(),
-    stats: await getMcpConnectorStats(),
+    connectors: connectors.map(redactMcpConnector),
+    tools,
+    stats: {
+      ...stats,
+      latest: stats.latest.map(redactMcpConnector),
+    },
   });
 }
 
@@ -43,9 +63,21 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!validateSecretEnvName(parsed.data.authTokenEnv)) {
+  if (!validateConnectorSecretEnvName(parsed.data.authTokenEnv)) {
     return Response.json(
-      { error: "Invalid secret env var", message: "Secret env vars must be uppercase server-only names and cannot use NEXT_PUBLIC_." },
+      {
+        error: "Invalid connector secret env var",
+        message: "Connector secrets must use OMNIAGENT_CONNECTOR_* or OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST and cannot reference platform secrets.",
+      },
+      { status: 400 },
+    );
+  }
+
+  try {
+    await assertPublicHttpUrl(parsed.data.endpoint, "MCP endpoint");
+  } catch (error) {
+    return Response.json(
+      { error: "Invalid MCP endpoint", message: error instanceof Error ? error.message : "Endpoint is not allowed." },
       { status: 400 },
     );
   }
@@ -97,4 +129,12 @@ export async function POST(request: Request) {
       { status: 202 },
     );
   }
+}
+
+function redactMcpConnector<T extends { authTokenEnv?: string; lastError?: string }>(connector: T) {
+  return {
+    ...connector,
+    authTokenEnv: connector.authTokenEnv ? "[configured]" : undefined,
+    lastError: connector.lastError ? "[redacted]" : undefined,
+  };
 }

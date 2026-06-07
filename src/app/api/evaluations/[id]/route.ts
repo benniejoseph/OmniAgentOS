@@ -1,12 +1,24 @@
 import { getEvaluationEvidenceBundle } from "@/lib/evaluations/evidence";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
+  try {
+    await authorizeRequest({
+      request,
+      action: "read",
+      resourceType: "evaluation",
+      resourceId: id,
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
   const detail = await getEvaluationEvidenceBundle(id);
 
   if (!detail) {

@@ -17,4 +17,5 @@ export type AgentEvent =
 export type AgentRunRequest = {
   messages: ChatMessage[];
   mode?: AgentMode;
+  tenantId?: string;
 };

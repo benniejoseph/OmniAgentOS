@@ -15,6 +15,17 @@ const memorySchema = z.object({
 });
 
 export async function GET(request: Request) {
+  let context;
+  try {
+    context = await authorizeRequest({
+      request,
+      action: "read",
+      resourceType: "memory",
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
   const url = new URL(request.url);
   const query = url.searchParams.get("q");
   const limit = Number(url.searchParams.get("limit") || 20);
@@ -25,11 +36,17 @@ export async function GET(request: Request) {
       results: await searchMemories(query, {
         limit: Math.min(Math.max(limit, 1), 100),
         queryEmbedding,
+        tenantId: context.tenantId,
       }),
     });
   }
 
-  return Response.json({ memories: (await listMemories()).slice(0, Math.min(Math.max(limit, 1), 100)) });
+  return Response.json({
+    memories: await listMemories({
+      tenantId: context.tenantId,
+      limit: Math.min(Math.max(limit, 1), 100),
+    }),
+  });
 }
 
 export async function POST(request: Request) {
@@ -44,7 +61,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    await authorizeRequest({
+    const context = await authorizeRequest({
       request,
       action: "write.memory",
       resourceType: "memory",
@@ -53,6 +70,7 @@ export async function POST(request: Request) {
     const embedding = (await embedTexts([`${parsed.data.title}\n\n${parsed.data.content}`]))?.[0];
     const record = await saveMemory({
       ...parsed.data,
+      tenantId: context.tenantId,
       source: "manual",
       scope: "workspace",
       embedding,

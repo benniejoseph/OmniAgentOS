@@ -6,6 +6,7 @@ import type { MemoryRecord, MemorySearchResult, MemoryType } from "@/lib/memory/
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
 
 type CreateMemoryInput = {
+  tenantId?: string;
   type?: MemoryType;
   title: string;
   content: string;
@@ -16,25 +17,36 @@ type CreateMemoryInput = {
   embedding?: number[];
 };
 
-export async function listMemories() {
+type TenantScopedOptions = {
+  tenantId?: string;
+  limit?: number;
+};
+
+export async function listMemories(options: TenantScopedOptions = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const limit = options.limit || 500;
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_memories
+      WHERE tenant_id = ${tenantId}
       ORDER BY updated_at DESC
-      LIMIT 500
+      LIMIT ${limit}
     `;
     return rows.map(memoryFromRow);
   }
 
-  return readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
+  const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
+  return memories.filter((memory) => normalizeTenantId(memory.tenantId) === tenantId).slice(0, limit);
 }
 
 export async function saveMemory(input: CreateMemoryInput) {
   const now = new Date().toISOString();
   const record: MemoryRecord = {
     id: randomUUID(),
+    tenantId: normalizeTenantId(input.tenantId),
     type: input.type || "fact",
     title: input.title,
     content: input.content,
@@ -52,10 +64,10 @@ export async function saveMemory(input: CreateMemoryInput) {
     const embeddingJson = record.embedding ? JSON.stringify(record.embedding) : null;
     await getSql()`
       INSERT INTO omni_memories (
-        id, type, title, content, tags, scope, source, importance, embedding, created_at, updated_at
+        id, tenant_id, type, title, content, tags, scope, source, importance, embedding, created_at, updated_at
       )
       VALUES (
-        ${record.id}, ${record.type}, ${record.title}, ${record.content}, ${record.tags},
+        ${record.id}, ${record.tenantId}, ${record.type}, ${record.title}, ${record.content}, ${record.tags},
         ${record.scope}, ${record.source}, ${record.importance}, ${embeddingJson}::jsonb,
         ${record.createdAt}, ${record.updatedAt}
       )
@@ -64,7 +76,7 @@ export async function saveMemory(input: CreateMemoryInput) {
     return record;
   }
 
-  const memories = await listMemories();
+  const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
   memories.unshift(record);
   await writeJsonFile(getMemoryFile(), memories);
   return record;
@@ -72,7 +84,7 @@ export async function saveMemory(input: CreateMemoryInput) {
 
 export async function searchMemories(
   query: string,
-  options: { limit?: number; queryEmbedding?: number[] } = {},
+  options: { limit?: number; queryEmbedding?: number[]; tenantId?: string } = {},
 ): Promise<MemorySearchResult[]> {
   if (hasDatabaseUrl()) {
     const results = await searchMemoriesDb(query, options);
@@ -81,7 +93,7 @@ export async function searchMemories(
     }
   }
 
-  const memories = await listMemories();
+  const memories = await listMemories({ tenantId: options.tenantId });
   const terms = tokenize(query);
   const limit = options.limit || 8;
 
@@ -111,12 +123,15 @@ export async function searchMemories(
     .slice(0, limit);
 }
 
-export async function getMemoryStats() {
+export async function getMemoryStats(options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT type, COUNT(*)::int AS count
       FROM omni_memories
+      WHERE tenant_id = ${tenantId}
       GROUP BY type
     `;
     const byType = rows.reduce<Record<string, number>>((acc, row) => {
@@ -128,6 +143,7 @@ export async function getMemoryStats() {
       SELECT COUNT(*)::int AS count
       FROM omni_memories
       WHERE jsonb_typeof(embedding) = 'array'
+        AND tenant_id = ${tenantId}
     `;
 
     return {
@@ -137,7 +153,7 @@ export async function getMemoryStats() {
     };
   }
 
-  const memories = await listMemories();
+  const memories = await listMemories({ tenantId });
   const byType = memories.reduce<Record<string, number>>((acc, memory) => {
     acc[memory.type] = (acc[memory.type] || 0) + 1;
     return acc;
@@ -169,11 +185,12 @@ async function updateMemoryVector(memoryId: string, embedding?: number[]) {
 
 async function searchMemoriesDb(
   query: string,
-  options: { limit?: number; queryEmbedding?: number[] },
+  options: { limit?: number; queryEmbedding?: number[]; tenantId?: string },
 ): Promise<MemorySearchResult[]> {
   await ensureDatabaseSchema();
   const limit = options.limit || 8;
   const queryText = query.trim();
+  const tenantId = normalizeTenantId(options.tenantId);
   const vector = toVectorLiteral(options.queryEmbedding);
 
   if (vector) {
@@ -190,7 +207,8 @@ async function searchMemoriesDb(
                END AS lexical_score,
                1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800) AS recency_score
         FROM omni_memories
-        WHERE embedding_vector IS NOT NULL
+        WHERE tenant_id = ${tenantId}
+          AND embedding_vector IS NOT NULL
         ORDER BY (
           (0.58 * GREATEST(0, 1 - (embedding_vector <=> ${vector}::vector))) +
           (0.24 * CASE
@@ -207,14 +225,14 @@ async function searchMemoriesDb(
       `;
       return rows.map(memorySearchResultFromRow);
     } catch {
-      return searchMemoriesLexicalDb(queryText, limit);
+      return searchMemoriesLexicalDb(queryText, limit, tenantId);
     }
   }
 
-  return searchMemoriesLexicalDb(queryText, limit);
+  return searchMemoriesLexicalDb(queryText, limit, tenantId);
 }
 
-async function searchMemoriesLexicalDb(query: string, limit: number) {
+async function searchMemoriesLexicalDb(query: string, limit: number, tenantId: string) {
   const rows = await getSql()`
     SELECT *,
            CASE
@@ -226,8 +244,11 @@ async function searchMemoriesLexicalDb(query: string, limit: number) {
            END AS lexical_score,
            1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800) AS recency_score
     FROM omni_memories
-    WHERE ${query} = ''
-       OR to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', ${query})
+    WHERE tenant_id = ${tenantId}
+      AND (
+        ${query} = ''
+        OR to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', ${query})
+      )
     ORDER BY lexical_score DESC, importance DESC, updated_at DESC
     LIMIT ${limit}
   `;
@@ -238,6 +259,7 @@ async function searchMemoriesLexicalDb(query: string, limit: number) {
 function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     type: String(row.type) as MemoryType,
     title: String(row.title || ""),
     content: String(row.content || ""),
@@ -249,6 +271,10 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
     updatedAt: normalizeDate(row.updated_at),
     embedding: parseEmbedding(row.embedding),
   };
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default";
 }
 
 function memorySearchResultFromRow(row: Record<string, unknown>): MemorySearchResult {

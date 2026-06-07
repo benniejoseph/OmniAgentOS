@@ -15,8 +15,9 @@ export async function GET(request: Request) {
   const query = url.searchParams.get("q")?.trim();
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read",
       resourceType: "retrieval",
@@ -29,6 +30,7 @@ export async function GET(request: Request) {
   if (query) {
     return Response.json({
       pack: await buildContextPack(query, {
+        tenantId: context.tenantId,
         limit: Math.min(limit, 24),
         persistTrace: url.searchParams.get("persistTrace") !== "false",
       }),
@@ -53,8 +55,9 @@ export async function POST(request: Request) {
     );
   }
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read",
       resourceType: "retrieval",
@@ -69,6 +72,7 @@ export async function POST(request: Request) {
 
   return Response.json({
     pack: await buildContextPack(parsed.data.query, {
+      tenantId: context.tenantId,
       limit: parsed.data.limit,
       persistTrace: parsed.data.persistTrace,
     }),

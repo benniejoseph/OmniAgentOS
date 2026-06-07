@@ -3,7 +3,8 @@ export type TextChunk = {
   content: string;
 };
 
-export function chunkText(input: string, maxChars = 1200): TextChunk[] {
+export function chunkText(input: string, maxChars = 1200, overlapChars = 160): TextChunk[] {
+  const boundedOverlap = Math.min(Math.max(overlapChars, 0), Math.floor(maxChars / 3));
   const paragraphs = input
     .split(/\n{2,}/)
     .map((part) => part.trim())
@@ -20,15 +21,21 @@ export function chunkText(input: string, maxChars = 1200): TextChunk[] {
 
     if (current) {
       chunks.push({ index: chunks.length, content: current });
-      current = "";
+      current = overlapTail(current, boundedOverlap);
     }
 
     if (paragraph.length <= maxChars) {
-      current = paragraph;
+      const next = current ? `${current}\n\n${paragraph}` : paragraph;
+      if (next.length <= maxChars) {
+        current = next;
+      } else {
+        current = paragraph;
+      }
       continue;
     }
 
-    for (let i = 0; i < paragraph.length; i += maxChars) {
+    const step = Math.max(1, maxChars - boundedOverlap);
+    for (let i = 0; i < paragraph.length; i += step) {
       chunks.push({
         index: chunks.length,
         content: paragraph.slice(i, i + maxChars),
@@ -41,4 +48,12 @@ export function chunkText(input: string, maxChars = 1200): TextChunk[] {
   }
 
   return chunks;
+}
+
+function overlapTail(value: string, chars: number) {
+  if (chars <= 0 || value.length <= chars) {
+    return "";
+  }
+
+  return value.slice(-chars).trimStart();
 }

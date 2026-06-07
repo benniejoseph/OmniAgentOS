@@ -91,6 +91,7 @@ export async function ensureDatabaseSchema() {
         await sql`
           CREATE TABLE IF NOT EXISTS omni_memories (
             id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
             type TEXT NOT NULL,
             title TEXT NOT NULL,
             content TEXT NOT NULL,
@@ -103,6 +104,8 @@ export async function ensureDatabaseSchema() {
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
           )
         `;
+        await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
+        await sql`CREATE INDEX IF NOT EXISTS omni_memories_tenant_updated_at_idx ON omni_memories (tenant_id, updated_at DESC)`;
         await sql`CREATE INDEX IF NOT EXISTS omni_memories_type_idx ON omni_memories (type)`;
         await sql`CREATE INDEX IF NOT EXISTS omni_memories_updated_at_idx ON omni_memories (updated_at DESC)`;
         await sql`CREATE INDEX IF NOT EXISTS omni_memories_tags_idx ON omni_memories USING GIN (tags)`;
@@ -115,6 +118,7 @@ export async function ensureDatabaseSchema() {
       await sql`
         CREATE TABLE IF NOT EXISTS omni_knowledge_documents (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           title TEXT NOT NULL,
           source TEXT NOT NULL,
           source_type TEXT NOT NULL DEFAULT 'text',
@@ -127,6 +131,8 @@ export async function ensureDatabaseSchema() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_knowledge_documents ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_documents_tenant_updated_at_idx ON omni_knowledge_documents (tenant_id, updated_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_documents_updated_at_idx ON omni_knowledge_documents (updated_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_documents_source_idx ON omni_knowledge_documents (source)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_documents_tags_idx ON omni_knowledge_documents USING GIN (tags)`;
@@ -134,6 +140,7 @@ export async function ensureDatabaseSchema() {
       await sql`
         CREATE TABLE IF NOT EXISTS omni_knowledge_chunks (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           document_id TEXT NOT NULL REFERENCES omni_knowledge_documents(id) ON DELETE CASCADE,
           chunk_index INTEGER NOT NULL,
           title TEXT NOT NULL,
@@ -148,6 +155,8 @@ export async function ensureDatabaseSchema() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_knowledge_chunks ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_tenant_updated_at_idx ON omni_knowledge_chunks (tenant_id, updated_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_document_id_idx ON omni_knowledge_chunks (document_id, chunk_index ASC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_updated_at_idx ON omni_knowledge_chunks (updated_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_tags_idx ON omni_knowledge_chunks USING GIN (tags)`;
@@ -244,6 +253,7 @@ export async function ensureDatabaseSchema() {
       await sql`
         CREATE TABLE IF NOT EXISTS omni_agent_runs (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           mode TEXT NOT NULL,
           status TEXT NOT NULL,
           prompt TEXT NOT NULL,
@@ -259,10 +269,12 @@ export async function ensureDatabaseSchema() {
           consolidation_error TEXT
         )
       `;
+      await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
       await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS consolidation_count INTEGER NOT NULL DEFAULT 0`;
       await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS consolidated_at TIMESTAMPTZ`;
       await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS consolidation_error TEXT`;
       await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_started_at_idx ON omni_agent_runs (started_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_tenant_started_at_idx ON omni_agent_runs (tenant_id, started_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_status_idx ON omni_agent_runs (status)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_consolidated_at_idx ON omni_agent_runs (consolidated_at DESC)`;
 
@@ -408,6 +420,7 @@ export async function ensureDatabaseSchema() {
       await sql`
         CREATE TABLE IF NOT EXISTS omni_workflow_runs (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           workflow_type TEXT NOT NULL,
           status TEXT NOT NULL,
           goal TEXT NOT NULL,
@@ -426,8 +439,10 @@ export async function ensureDatabaseSchema() {
           completed_at TIMESTAMPTZ
         )
       `;
+      await sql`ALTER TABLE omni_workflow_runs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_runs_status_idx ON omni_workflow_runs (status)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_runs_updated_at_idx ON omni_workflow_runs (updated_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_runs_tenant_updated_at_idx ON omni_workflow_runs (tenant_id, updated_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_runs_workflow_type_idx ON omni_workflow_runs (workflow_type)`;
 
       await sql`
@@ -509,6 +524,35 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_triggers_updated_idx ON omni_workflow_triggers (updated_at DESC)`;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS omni_operation_jobs (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          payload JSONB NOT NULL DEFAULT '{}',
+          dedupe_key TEXT,
+          priority INTEGER NOT NULL DEFAULT 0,
+          attempt INTEGER NOT NULL DEFAULT 0,
+          max_attempts INTEGER NOT NULL DEFAULT 3,
+          run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          locked_at TIMESTAMPTZ,
+          lease_owner TEXT,
+          lease_expires_at TIMESTAMPTZ,
+          last_error TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          completed_at TIMESTAMPTZ
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_operation_jobs_status_run_at_idx ON omni_operation_jobs (status, run_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_operation_jobs_type_status_idx ON omni_operation_jobs (type, status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_operation_jobs_updated_at_idx ON omni_operation_jobs (updated_at DESC)`;
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS omni_operation_jobs_dedupe_key_idx
+        ON omni_operation_jobs (dedupe_key)
+        WHERE dedupe_key IS NOT NULL
+      `;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS omni_workflow_trigger_events (
           id TEXT PRIMARY KEY,
           trigger_id TEXT NOT NULL REFERENCES omni_workflow_triggers(id) ON DELETE CASCADE,
@@ -560,35 +604,6 @@ export async function ensureDatabaseSchema() {
       `;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_events_run_id_idx ON omni_workflow_events (workflow_run_id, created_at ASC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_events_type_idx ON omni_workflow_events (type)`;
-
-      await sql`
-        CREATE TABLE IF NOT EXISTS omni_operation_jobs (
-          id TEXT PRIMARY KEY,
-          type TEXT NOT NULL,
-          status TEXT NOT NULL,
-          payload JSONB NOT NULL DEFAULT '{}',
-          dedupe_key TEXT,
-          priority INTEGER NOT NULL DEFAULT 0,
-          attempt INTEGER NOT NULL DEFAULT 0,
-          max_attempts INTEGER NOT NULL DEFAULT 3,
-          run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          locked_at TIMESTAMPTZ,
-          lease_owner TEXT,
-          lease_expires_at TIMESTAMPTZ,
-          last_error TEXT,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          completed_at TIMESTAMPTZ
-        )
-      `;
-      await sql`CREATE INDEX IF NOT EXISTS omni_operation_jobs_status_run_at_idx ON omni_operation_jobs (status, run_at ASC)`;
-      await sql`CREATE INDEX IF NOT EXISTS omni_operation_jobs_type_status_idx ON omni_operation_jobs (type, status)`;
-      await sql`CREATE INDEX IF NOT EXISTS omni_operation_jobs_updated_at_idx ON omni_operation_jobs (updated_at DESC)`;
-      await sql`
-        CREATE UNIQUE INDEX IF NOT EXISTS omni_operation_jobs_dedupe_key_idx
-        ON omni_operation_jobs (dedupe_key)
-        WHERE dedupe_key IS NOT NULL
-      `;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_system_health_checks (

@@ -1,4 +1,6 @@
 import type { OpenApiConnectorRecord, OpenApiOperationRecord } from "@/lib/connectors/openapi-types";
+import { validateConnectorSecretEnvName } from "@/lib/security/context";
+import { assertPublicHttpUrl } from "@/lib/security/network";
 
 type OpenApiToolInput = {
   path?: Record<string, unknown>;
@@ -21,6 +23,7 @@ export async function callOpenApiOperation({
 }) {
   const normalizedInput = normalizeInput(input);
   const url = buildOperationUrl(connector.baseUrl, operation.path, normalizedInput);
+  await assertPublicHttpUrl(url, "OpenAPI operation URL");
   const headers = buildHeaders({ connector, operation, input: normalizedInput });
   const body = buildBody(operation, normalizedInput);
 
@@ -28,6 +31,7 @@ export async function callOpenApiOperation({
     method: operation.method,
     headers,
     body,
+    redirect: "manual",
     signal: AbortSignal.timeout(30_000),
   });
 
@@ -102,6 +106,9 @@ function buildHeaders({
   }
 
   if (connector.authType === "bearer_env") {
+    if (!validateConnectorSecretEnvName(connector.authTokenEnv)) {
+      throw new Error(`Connector auth token env var is not allowed: ${connector.authTokenEnv || "unknown"}`);
+    }
     const token = connector.authTokenEnv ? process.env[connector.authTokenEnv] : undefined;
     if (!token) {
       throw new Error(`Missing bearer token env var: ${connector.authTokenEnv || "unknown"}`);
@@ -110,6 +117,9 @@ function buildHeaders({
   }
 
   if (connector.authType === "api_key_header_env") {
+    if (!validateConnectorSecretEnvName(connector.authTokenEnv)) {
+      throw new Error(`Connector API key env var is not allowed: ${connector.authTokenEnv || "unknown"}`);
+    }
     const token = connector.authTokenEnv ? process.env[connector.authTokenEnv] : undefined;
     if (!token) {
       throw new Error(`Missing API key env var: ${connector.authTokenEnv || "unknown"}`);

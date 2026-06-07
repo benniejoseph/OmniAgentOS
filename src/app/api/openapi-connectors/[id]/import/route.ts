@@ -6,6 +6,7 @@ import {
   saveOpenApiImport,
 } from "@/lib/connectors/openapi-store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { assertPublicHttpUrl } from "@/lib/security/network";
 
 export const runtime = "nodejs";
 
@@ -50,6 +51,13 @@ export async function POST(
 
   try {
     const specUrl = parsed.data.specUrl || connector.specUrl;
+    if (specUrl) {
+      await assertPublicHttpUrl(specUrl, "OpenAPI spec URL");
+    }
+    if (parsed.data.baseUrl) {
+      await assertPublicHttpUrl(parsed.data.baseUrl, "OpenAPI base URL");
+    }
+
     const specText = parsed.data.specText || (specUrl ? await loadOpenApiSpec(specUrl) : undefined);
 
     if (!specText) {
@@ -64,6 +72,7 @@ export async function POST(
       specText,
       baseUrlOverride: parsed.data.baseUrl,
     });
+    await assertPublicHttpUrl(imported.baseUrl, "OpenAPI base URL");
 
     return Response.json(
       await saveOpenApiImport({

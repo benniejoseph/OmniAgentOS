@@ -23,6 +23,16 @@ const evalRunSchema = z.object({
 });
 
 export async function GET(request: Request) {
+  try {
+    await authorizeRequest({
+      request,
+      action: "read",
+      resourceType: "evaluation",
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
   const url = new URL(request.url);
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
   return Response.json({

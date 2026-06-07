@@ -26,8 +26,9 @@ export async function POST(request: Request) {
     );
   }
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "manage.workflow",
       resourceType: "agent_run",
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        for await (const event of runAgent(parsed.data, request.signal)) {
+        for await (const event of runAgent({ ...parsed.data, tenantId: context.tenantId }, request.signal)) {
           controller.enqueue(encoder.encode(encodeSse(event)));
         }
       } catch (error) {

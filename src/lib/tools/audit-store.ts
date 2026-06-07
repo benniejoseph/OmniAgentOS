@@ -70,12 +70,15 @@ export async function saveToolExecution(record: ToolExecutionRecord) {
   return record;
 }
 
-export async function listToolExecutions(limit = 20) {
+export async function listToolExecutions(limit = 20, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_tool_executions
+      WHERE COALESCE(tenant_id, 'default') = ${tenantId}
       ORDER BY created_at DESC
       LIMIT ${limit}
     `;
@@ -83,32 +86,46 @@ export async function listToolExecutions(limit = 20) {
   }
 
   const ledger = await readToolLedger();
-  return ledger.records.slice(0, limit);
+  return ledger.records.filter((record) => normalizeTenantId(record.tenantId) === tenantId).slice(0, limit);
 }
 
-export async function getToolExecution(id: string) {
+export async function getToolExecution(id: string, options: { tenantId?: string } = {}) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      SELECT *
-      FROM omni_tool_executions
-      WHERE id = ${id}
-      LIMIT 1
-    `;
+    const tenantId = options.tenantId ? normalizeTenantId(options.tenantId) : undefined;
+    const rows = tenantId
+      ? await getSql()`
+          SELECT *
+          FROM omni_tool_executions
+          WHERE id = ${id}
+            AND COALESCE(tenant_id, 'default') = ${tenantId}
+          LIMIT 1
+        `
+      : await getSql()`
+          SELECT *
+          FROM omni_tool_executions
+          WHERE id = ${id}
+          LIMIT 1
+        `;
     return rows[0] ? recordFromRow(rows[0]) : undefined;
   }
 
   const ledger = await readToolLedger();
-  return ledger.records.find((record) => record.id === id);
+  return ledger.records.find(
+    (record) => record.id === id && (!options.tenantId || normalizeTenantId(record.tenantId) === normalizeTenantId(options.tenantId)),
+  );
 }
 
-export async function listPendingToolApprovals(limit = 25) {
+export async function listPendingToolApprovals(limit = 25, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_tool_executions
       WHERE status = 'approval_required'
+        AND COALESCE(tenant_id, 'default') = ${tenantId}
       ORDER BY created_at DESC
       LIMIT ${limit}
     `;
@@ -117,16 +134,19 @@ export async function listPendingToolApprovals(limit = 25) {
 
   const ledger = await readToolLedger();
   return ledger.records
-    .filter((record) => record.status === "approval_required")
+    .filter((record) => record.status === "approval_required" && normalizeTenantId(record.tenantId) === tenantId)
     .slice(0, limit);
 }
 
-export async function getToolExecutionStats() {
+export async function getToolExecutionStats(options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT status, COUNT(*)::int AS count
       FROM omni_tool_executions
+      WHERE COALESCE(tenant_id, 'default') = ${tenantId}
       GROUP BY status
     `;
     const byStatus = rows.reduce<Record<string, number>>((acc, row) => {
@@ -136,6 +156,7 @@ export async function getToolExecutionStats() {
     const riskRows = await getSql()`
       SELECT risk_level, COUNT(*)::int AS count
       FROM omni_tool_executions
+      WHERE COALESCE(tenant_id, 'default') = ${tenantId}
       GROUP BY risk_level
     `;
     const byRisk = riskRows.reduce<Record<string, number>>((acc, row) => {
@@ -147,22 +168,23 @@ export async function getToolExecutionStats() {
       total: Object.values(byStatus).reduce((sum, count) => sum + count, 0),
       byStatus,
       byRisk,
-      latest: await listToolExecutions(5),
+      latest: await listToolExecutions(5, { tenantId }),
     };
   }
 
   const ledger = await readToolLedger();
+  const records = ledger.records.filter((record) => normalizeTenantId(record.tenantId) === tenantId);
   return {
-    total: ledger.records.length,
-    byStatus: ledger.records.reduce<Record<string, number>>((acc, record) => {
+    total: records.length,
+    byStatus: records.reduce<Record<string, number>>((acc, record) => {
       acc[record.status] = (acc[record.status] || 0) + 1;
       return acc;
     }, {}),
-    byRisk: ledger.records.reduce<Record<string, number>>((acc, record) => {
+    byRisk: records.reduce<Record<string, number>>((acc, record) => {
       acc[String(record.riskLevel)] = (acc[String(record.riskLevel)] || 0) + 1;
       return acc;
     }, {}),
-    latest: ledger.records.slice(0, 5),
+    latest: records.slice(0, 5),
   };
 }
 
@@ -213,4 +235,8 @@ function parseObject(value: unknown): Record<string, unknown> {
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default";
 }

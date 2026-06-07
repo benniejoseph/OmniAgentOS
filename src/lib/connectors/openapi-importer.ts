@@ -5,6 +5,7 @@ import type {
   OpenApiOperationRecord,
 } from "@/lib/connectors/openapi-types";
 import { createOpenApiToolId, hashOpenApiSpec } from "@/lib/connectors/openapi-store";
+import { assertPublicHttpUrl } from "@/lib/security/network";
 import type { ToolRiskLevel } from "@/lib/tools/types";
 
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete", "head", "options"] as const;
@@ -22,8 +23,11 @@ type OpenApiImportResult = {
 };
 
 export async function loadOpenApiSpec(specUrl: string) {
+  await assertPublicHttpUrl(specUrl, "OpenAPI spec URL");
+
   const response = await fetch(specUrl, {
     headers: { accept: "application/json, application/yaml, text/yaml, text/plain" },
+    redirect: "manual",
     signal: AbortSignal.timeout(30_000),
   });
 
