@@ -15,8 +15,9 @@ const operationsActionSchema = z.object({
 });
 
 export async function GET(request: Request) {
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "manage.workflow",
       resourceType: "operations",
@@ -25,7 +26,7 @@ export async function GET(request: Request) {
     return forbiddenResponse(error);
   }
 
-  return Response.json(await getOperationsOverview());
+  return Response.json(await getOperationsOverview({ tenantId: context.tenantId }));
 }
 
 export async function POST(request: Request) {
@@ -66,7 +67,7 @@ export async function POST(request: Request) {
       failAfterMs: parsed.data.failAfterMs,
       actorId: context.actorId,
     });
-    const overview = await getOperationsOverview();
+    const overview = await getOperationsOverview({ tenantId: context.tenantId });
     await recordRuntimeEventSafely({
       category: "workflow",
       action: `operations.${parsed.data.action}`,

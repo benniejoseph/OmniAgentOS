@@ -26,7 +26,7 @@ export async function createEvalReportSnapshot({
   actorId?: string;
   tenantId?: string;
 }) {
-  const evidence = await getEvaluationEvidenceBundle(runId);
+  const evidence = await getEvaluationEvidenceBundle(runId, { tenantId });
 
   if (!evidence) {
     return null;
@@ -119,8 +119,8 @@ export async function createEvalReportSnapshot({
   });
 }
 
-export async function getLatestEvalReportSnapshot(runId: string) {
-  const reports = await listEvalReportSnapshots(runId, 1);
+export async function getLatestEvalReportSnapshot(runId: string, options: { tenantId?: string } = {}) {
+  const reports = await listEvalReportSnapshots(runId, 1, options);
   return reports[0] || null;
 }
 

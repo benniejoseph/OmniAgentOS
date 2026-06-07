@@ -15,6 +15,7 @@ import type { ToolRiskLevel } from "@/lib/tools/types";
 let connectorFileWriteQueue: Promise<void> = Promise.resolve();
 
 export type RegisterMcpConnectorInput = {
+  tenantId?: string;
   name: string;
   endpoint: string;
   transport?: McpConnectorTransport;
@@ -24,10 +25,15 @@ export type RegisterMcpConnectorInput = {
   approvalRequired?: boolean;
 };
 
+type TenantScopedOptions = {
+  tenantId?: string;
+};
+
 export function createMcpConnectorRecord(input: RegisterMcpConnectorInput): McpConnectorRecord {
   const now = new Date().toISOString();
   return {
     id: randomUUID(),
+    tenantId: normalizeTenantId(input.tenantId),
     name: input.name.trim(),
     endpoint: input.endpoint.trim(),
     transport: input.transport || "streamable_http",
@@ -60,25 +66,31 @@ export function parseMcpToolId(toolId: string) {
 }
 
 export async function saveMcpConnector(connector: McpConnectorRecord) {
+  const record = {
+    ...connector,
+    tenantId: normalizeTenantId(connector.tenantId),
+  };
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_mcp_connectors (
-        id, name, endpoint, transport, auth_type, auth_token_env, status,
+        id, tenant_id, name, endpoint, transport, auth_type, auth_token_env, status,
         default_risk_level, approval_required, tool_count, capabilities,
         instructions, server_version, last_discovered_at, last_error,
         created_at, updated_at
       )
       VALUES (
-        ${connector.id}, ${connector.name}, ${connector.endpoint}, ${connector.transport},
-        ${connector.authType}, ${connector.authTokenEnv || null}, ${connector.status},
-        ${connector.defaultRiskLevel}, ${connector.approvalRequired}, ${connector.toolCount},
-        ${JSON.stringify(connector.capabilities || {})}::jsonb, ${connector.instructions || null},
-        ${JSON.stringify(connector.serverVersion || null)}::jsonb,
-        ${connector.lastDiscoveredAt || null}, ${connector.lastError || null},
-        ${connector.createdAt}, ${connector.updatedAt}
+        ${record.id}, ${record.tenantId}, ${record.name}, ${record.endpoint}, ${record.transport},
+        ${record.authType}, ${record.authTokenEnv || null}, ${record.status},
+        ${record.defaultRiskLevel}, ${record.approvalRequired}, ${record.toolCount},
+        ${JSON.stringify(record.capabilities || {})}::jsonb, ${record.instructions || null},
+        ${JSON.stringify(record.serverVersion || null)}::jsonb,
+        ${record.lastDiscoveredAt || null}, ${record.lastError || null},
+        ${record.createdAt}, ${record.updatedAt}
       )
       ON CONFLICT (id) DO UPDATE SET
+        tenant_id = EXCLUDED.tenant_id,
         name = EXCLUDED.name,
         endpoint = EXCLUDED.endpoint,
         transport = EXCLUDED.transport,
@@ -95,22 +107,25 @@ export async function saveMcpConnector(connector: McpConnectorRecord) {
         last_error = EXCLUDED.last_error,
         updated_at = EXCLUDED.updated_at
     `;
-    return connector;
+    return record;
   }
 
   await mutateConnectorLedger((ledger) => {
-    ledger.connectors = [connector, ...ledger.connectors.filter((item) => item.id !== connector.id)];
+    ledger.connectors = [record, ...ledger.connectors.filter((item) => item.id !== record.id)];
     return ledger;
   });
-  return connector;
+  return record;
 }
 
-export async function listMcpConnectors(limit = 20) {
+export async function listMcpConnectors(limit = 20, options: TenantScopedOptions = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_mcp_connectors
+      WHERE tenant_id = ${tenantId}
       ORDER BY updated_at DESC
       LIMIT ${limit}
     `;
@@ -118,23 +133,30 @@ export async function listMcpConnectors(limit = 20) {
   }
 
   const ledger = await readConnectorLedger();
-  return ledger.connectors.slice(0, limit);
+  return ledger.connectors
+    .filter((connector) => normalizeTenantId(connector.tenantId) === tenantId)
+    .slice(0, limit);
 }
 
-export async function getMcpConnector(connectorId: string) {
+export async function getMcpConnector(connectorId: string, options: TenantScopedOptions = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_mcp_connectors
       WHERE id = ${connectorId}
+        AND tenant_id = ${tenantId}
       LIMIT 1
     `;
     return rows[0] ? connectorFromRow(rows[0]) : null;
   }
 
   const ledger = await readConnectorLedger();
-  return ledger.connectors.find((connector) => connector.id === connectorId) || null;
+  return ledger.connectors.find(
+    (connector) => connector.id === connectorId && normalizeTenantId(connector.tenantId) === tenantId,
+  ) || null;
 }
 
 export async function saveMcpDiscovery({
@@ -153,6 +175,7 @@ export async function saveMcpDiscovery({
   const discoveredAt = new Date().toISOString();
   const nextConnector: McpConnectorRecord = {
     ...connector,
+    tenantId: normalizeTenantId(connector.tenantId),
     status: "active",
     toolCount: tools.length,
     capabilities: capabilities || {},
@@ -166,43 +189,61 @@ export async function saveMcpDiscovery({
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await saveMcpConnector(nextConnector);
-    await getSql()`DELETE FROM omni_mcp_tools WHERE connector_id = ${connector.id}`;
+    await getSql()`
+      DELETE FROM omni_mcp_tools
+      WHERE connector_id = ${connector.id}
+        AND tenant_id = ${nextConnector.tenantId}
+    `;
+    const nextTools = tools.map((tool) => ({
+      ...tool,
+      tenantId: nextConnector.tenantId,
+      connectorName: nextConnector.name,
+    }));
     for (const tool of tools) {
-      await saveMcpTool({ ...tool, connectorName: nextConnector.name });
+      await saveMcpTool({ ...tool, tenantId: nextConnector.tenantId, connectorName: nextConnector.name });
     }
-    return { connector: nextConnector, tools };
+    return { connector: nextConnector, tools: nextTools };
   }
 
+  const nextTools = tools.map((tool) => ({ ...tool, tenantId: nextConnector.tenantId, connectorName: nextConnector.name }));
   await mutateConnectorLedger((ledger) => {
     ledger.connectors = [nextConnector, ...ledger.connectors.filter((item) => item.id !== connector.id)];
     ledger.tools = [
-      ...tools.map((tool) => ({ ...tool, connectorName: nextConnector.name })),
-      ...ledger.tools.filter((tool) => tool.connectorId !== connector.id),
+      ...nextTools,
+      ...ledger.tools.filter((tool) =>
+        tool.connectorId !== connector.id || normalizeTenantId(tool.tenantId) !== nextConnector.tenantId,
+      ),
     ];
     return ledger;
   });
-  return { connector: nextConnector, tools };
+  return { connector: nextConnector, tools: nextTools };
 }
 
 export async function saveMcpTool(tool: McpToolRecord) {
+  const record = {
+    ...tool,
+    tenantId: normalizeTenantId(tool.tenantId),
+  };
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_mcp_tools (
-        id, connector_id, connector_name, name, title, description,
+        id, tenant_id, connector_id, connector_name, name, title, description,
         input_schema, output_schema, annotations, risk_level,
         approval_required, status, created_at, updated_at
       )
       VALUES (
-        ${tool.id}, ${tool.connectorId}, ${tool.connectorName}, ${tool.name},
-        ${tool.title || null}, ${tool.description || null},
-        ${JSON.stringify(tool.inputSchema || {})}::jsonb,
-        ${JSON.stringify(tool.outputSchema || null)}::jsonb,
-        ${JSON.stringify(tool.annotations || null)}::jsonb,
-        ${tool.riskLevel}, ${tool.approvalRequired}, ${tool.status},
-        ${tool.createdAt}, ${tool.updatedAt}
+        ${record.id}, ${record.tenantId}, ${record.connectorId}, ${record.connectorName}, ${record.name},
+        ${record.title || null}, ${record.description || null},
+        ${JSON.stringify(record.inputSchema || {})}::jsonb,
+        ${JSON.stringify(record.outputSchema || null)}::jsonb,
+        ${JSON.stringify(record.annotations || null)}::jsonb,
+        ${record.riskLevel}, ${record.approvalRequired}, ${record.status},
+        ${record.createdAt}, ${record.updatedAt}
       )
       ON CONFLICT (id) DO UPDATE SET
+        tenant_id = EXCLUDED.tenant_id,
         connector_name = EXCLUDED.connector_name,
         title = EXCLUDED.title,
         description = EXCLUDED.description,
@@ -214,17 +255,19 @@ export async function saveMcpTool(tool: McpToolRecord) {
         status = EXCLUDED.status,
         updated_at = EXCLUDED.updated_at
     `;
-    return tool;
+    return record;
   }
 
   await mutateConnectorLedger((ledger) => {
-    ledger.tools = [tool, ...ledger.tools.filter((item) => item.id !== tool.id)];
+    ledger.tools = [record, ...ledger.tools.filter((item) => item.id !== record.id)];
     return ledger;
   });
-  return tool;
+  return record;
 }
 
-export async function listMcpTools(connectorId?: string) {
+export async function listMcpTools(connectorId?: string, options: TenantScopedOptions = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = connectorId
@@ -232,27 +275,31 @@ export async function listMcpTools(connectorId?: string) {
           SELECT *
           FROM omni_mcp_tools
           WHERE connector_id = ${connectorId}
+            AND tenant_id = ${tenantId}
           ORDER BY updated_at DESC
         `
       : await getSql()`
           SELECT *
           FROM omni_mcp_tools
+          WHERE tenant_id = ${tenantId}
           ORDER BY updated_at DESC
         `;
     return rows.map(toolFromRow);
   }
 
   const ledger = await readConnectorLedger();
-  return ledger.tools.filter((tool) => !connectorId || tool.connectorId === connectorId);
+  return ledger.tools.filter(
+    (tool) => (!connectorId || tool.connectorId === connectorId) && normalizeTenantId(tool.tenantId) === tenantId,
+  );
 }
 
-export async function getMcpToolById(toolId: string) {
+export async function getMcpToolById(toolId: string, options: TenantScopedOptions = {}) {
   const parsed = parseMcpToolId(toolId);
   if (!parsed) {
     return null;
   }
 
-  const tools = await listMcpTools(parsed.connectorId);
+  const tools = await listMcpTools(parsed.connectorId, options);
   return tools.find((tool) => tool.name === parsed.toolName) || null;
 }
 
@@ -266,9 +313,9 @@ export async function recordMcpConnectorError(connector: McpConnectorRecord, err
   });
 }
 
-export async function getMcpConnectorStats(): Promise<McpConnectorStats> {
-  const connectors = await listMcpConnectors(100);
-  const tools = await listMcpTools();
+export async function getMcpConnectorStats(options: TenantScopedOptions = {}): Promise<McpConnectorStats> {
+  const connectors = await listMcpConnectors(100, options);
+  const tools = await listMcpTools(undefined, options);
   return {
     total: connectors.length,
     active: connectors.filter((connector) => connector.status === "active").length,
@@ -310,6 +357,7 @@ function getConnectorLedgerFile() {
 function connectorFromRow(row: Record<string, unknown>): McpConnectorRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     name: String(row.name),
     endpoint: String(row.endpoint),
     transport: String(row.transport) as McpConnectorTransport,
@@ -332,6 +380,7 @@ function connectorFromRow(row: Record<string, unknown>): McpConnectorRecord {
 function toolFromRow(row: Record<string, unknown>): McpToolRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     connectorId: String(row.connector_id),
     connectorName: String(row.connector_name),
     name: String(row.name),
@@ -358,4 +407,11 @@ function parseObject(value: unknown): Record<string, unknown> | undefined {
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }

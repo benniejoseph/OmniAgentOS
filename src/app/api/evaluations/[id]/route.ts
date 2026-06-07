@@ -8,8 +8,9 @@ export async function GET(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
+  let securityContext;
   try {
-    await authorizeRequest({
+    securityContext = await authorizeRequest({
       request,
       action: "read",
       resourceType: "evaluation",
@@ -19,7 +20,7 @@ export async function GET(
     return forbiddenResponse(error);
   }
 
-  const detail = await getEvaluationEvidenceBundle(id);
+  const detail = await getEvaluationEvidenceBundle(id, { tenantId: securityContext.tenantId });
 
   if (!detail) {
     return Response.json({ error: "Evaluation run not found." }, { status: 404 });

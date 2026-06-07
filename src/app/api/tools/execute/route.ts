@@ -25,23 +25,21 @@ export async function POST(request: Request) {
     );
   }
 
-  let context: SecurityContext | undefined;
-  if (parsed.data.dryRun === false) {
-    try {
-      context = await authorizeRequest({
-        request,
-        action: "execute.tool",
-        resourceType: "tool",
-        resourceId: parsed.data.toolId,
-        metadata: { toolId: parsed.data.toolId, input: parsed.data.input },
-      });
-    } catch (error) {
-      return forbiddenResponse(error);
-    }
+  let context: SecurityContext;
+  try {
+    context = await authorizeRequest({
+      request,
+      action: parsed.data.dryRun === false ? "execute.tool" : "read",
+      resourceType: "tool",
+      resourceId: parsed.data.toolId,
+      metadata: { toolId: parsed.data.toolId, input: parsed.data.input, dryRun: parsed.data.dryRun ?? true },
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   const approvalRecord = parsed.data.approvalExecutionId
-    ? await getToolExecution(parsed.data.approvalExecutionId)
+    ? await getToolExecution(parsed.data.approvalExecutionId, { tenantId: context.tenantId })
     : undefined;
 
   if (parsed.data.approvalExecutionId && !approvalRecord) {

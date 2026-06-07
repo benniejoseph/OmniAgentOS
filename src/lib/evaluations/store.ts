@@ -15,6 +15,10 @@ import type {
 
 let evalFileWriteQueue: Promise<void> = Promise.resolve();
 
+type TenantScopedOptions = {
+  tenantId?: string;
+};
+
 const emptySummary: EvalRunSummary = {
   total: 0,
   passed: 0,
@@ -27,13 +31,17 @@ const emptySummary: EvalRunSummary = {
 export async function createEvalRun({
   suite,
   total,
+  tenantId: rawTenantId,
 }: {
   suite: string;
   total: number;
+  tenantId?: string;
 }) {
   const now = new Date().toISOString();
+  const tenantId = normalizeTenantId(rawTenantId);
   const run: EvalRunRecord = {
     id: randomUUID(),
+    tenantId,
     suite,
     status: "running",
     summary: {
@@ -49,11 +57,11 @@ export async function createEvalRun({
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_eval_runs (
-        id, suite, status, total, passed, failed, warnings,
+        id, tenant_id, suite, status, total, passed, failed, warnings,
         average_latency_ms, estimated_cost_usd, started_at, created_at, updated_at
       )
       VALUES (
-        ${run.id}, ${run.suite}, ${run.status}, ${run.summary.total},
+        ${run.id}, ${run.tenantId}, ${run.suite}, ${run.status}, ${run.summary.total},
         ${run.summary.passed}, ${run.summary.failed}, ${run.summary.warnings},
         ${run.summary.averageLatencyMs}, ${run.summary.estimatedCostUsd},
         ${run.startedAt}, ${run.createdAt}, ${run.updatedAt}
@@ -72,6 +80,7 @@ export async function createEvalRun({
 export async function saveEvalResult(result: Omit<EvalResultRecord, "id" | "createdAt">) {
   const record: EvalResultRecord = {
     ...result,
+    tenantId: normalizeTenantId(result.tenantId),
     id: randomUUID(),
     createdAt: new Date().toISOString(),
   };
@@ -80,11 +89,11 @@ export async function saveEvalResult(result: Omit<EvalResultRecord, "id" | "crea
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_eval_results (
-        id, eval_run_id, case_id, case_name, case_type, status, score,
+        id, tenant_id, eval_run_id, case_id, case_name, case_type, status, score,
         latency_ms, estimated_cost_usd, input, output, error, created_at
       )
       VALUES (
-        ${record.id}, ${record.evalRunId}, ${record.caseId}, ${record.caseName},
+        ${record.id}, ${record.tenantId}, ${record.evalRunId}, ${record.caseId}, ${record.caseName},
         ${record.caseType}, ${record.status}, ${record.score}, ${record.latencyMs},
         ${record.estimatedCostUsd}, ${JSON.stringify(record.input || {})}::jsonb,
         ${JSON.stringify(record.output || null)}::jsonb, ${record.error || null},
@@ -112,12 +121,15 @@ export async function failEvalRun(runId: string, summary: EvalRunSummary, error:
   return updateEvalRun(runId, "failed", summary, error);
 }
 
-export async function listEvalRuns(limit = 20) {
+export async function listEvalRuns(limit = 20, options: TenantScopedOptions = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_eval_runs
+      WHERE tenant_id = ${tenantId}
       ORDER BY created_at DESC
       LIMIT ${limit}
     `;
@@ -125,49 +137,68 @@ export async function listEvalRuns(limit = 20) {
   }
 
   const ledger = await readEvalLedger();
-  return ledger.runs.slice(0, limit);
+  return ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId).slice(0, limit);
 }
 
-export async function getEvalRunDetail(runId: string): Promise<EvalRunDetail | null> {
+export async function getEvalRunDetail(
+  runId: string,
+  options: TenantScopedOptions = {},
+): Promise<EvalRunDetail | null> {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const runRows = await getSql()`
-      SELECT *
-      FROM omni_eval_runs
-      WHERE id = ${runId}
-      LIMIT 1
-    `;
+    const tenantId = options.tenantId ? normalizeTenantId(options.tenantId) : undefined;
+    const runRows = tenantId
+      ? await getSql()`
+          SELECT *
+          FROM omni_eval_runs
+          WHERE id = ${runId}
+            AND tenant_id = ${tenantId}
+          LIMIT 1
+        `
+      : await getSql()`
+          SELECT *
+          FROM omni_eval_runs
+          WHERE id = ${runId}
+          LIMIT 1
+        `;
     if (!runRows[0]) {
       return null;
     }
 
+    const run = evalRunFromRow(runRows[0]);
     const resultRows = await getSql()`
       SELECT *
       FROM omni_eval_results
       WHERE eval_run_id = ${runId}
+        AND tenant_id = ${run.tenantId}
       ORDER BY created_at ASC
     `;
     return {
-      run: evalRunFromRow(runRows[0]),
+      run,
       results: resultRows.map(evalResultFromRow),
     };
   }
 
   const ledger = await readEvalLedger();
   const run = ledger.runs.find((item) => item.id === runId);
-  if (!run) {
+  if (!run || (options.tenantId && normalizeTenantId(run.tenantId) !== normalizeTenantId(options.tenantId))) {
     return null;
   }
 
   return {
     run,
-    results: ledger.results.filter((result) => result.evalRunId === runId),
+    results: ledger.results.filter(
+      (result) =>
+        result.evalRunId === runId &&
+        normalizeTenantId(result.tenantId) === normalizeTenantId(run.tenantId),
+    ),
   };
 }
 
 export async function saveEvalReportSnapshot(snapshot: Omit<EvalReportSnapshot, "id" | "createdAt">) {
   const record: EvalReportSnapshot = {
     ...snapshot,
+    tenantId: normalizeTenantId(snapshot.tenantId),
     id: randomUUID(),
     createdAt: new Date().toISOString(),
   };
@@ -196,45 +227,67 @@ export async function saveEvalReportSnapshot(snapshot: Omit<EvalReportSnapshot, 
   return record;
 }
 
-export async function listEvalReportSnapshots(runId: string, limit = 5) {
+export async function listEvalReportSnapshots(runId: string, limit = 5, options: TenantScopedOptions = {}) {
   const boundedLimit = Math.min(Math.max(limit, 1), 25);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      SELECT *
-      FROM omni_eval_reports
-      WHERE eval_run_id = ${runId}
-      ORDER BY created_at DESC
-      LIMIT ${boundedLimit}
-    `;
+    const tenantId = options.tenantId ? normalizeTenantId(options.tenantId) : undefined;
+    const rows = tenantId
+      ? await getSql()`
+          SELECT *
+          FROM omni_eval_reports
+          WHERE eval_run_id = ${runId}
+            AND COALESCE(tenant_id, 'default') = ${tenantId}
+          ORDER BY created_at DESC
+          LIMIT ${boundedLimit}
+        `
+      : await getSql()`
+          SELECT *
+          FROM omni_eval_reports
+          WHERE eval_run_id = ${runId}
+          ORDER BY created_at DESC
+          LIMIT ${boundedLimit}
+        `;
     return rows.map(evalReportFromRow);
   }
 
   const ledger = await readEvalLedger();
   return (ledger.reports || [])
     .filter((report) => report.evalRunId === runId)
+    .filter((report) => !options.tenantId || normalizeTenantId(report.tenantId) === normalizeTenantId(options.tenantId))
     .slice(0, boundedLimit);
 }
 
-export async function getEvalReportSnapshot(reportId: string) {
+export async function getEvalReportSnapshot(reportId: string, options: TenantScopedOptions = {}) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      SELECT *
-      FROM omni_eval_reports
-      WHERE id = ${reportId}
-      LIMIT 1
-    `;
+    const tenantId = options.tenantId ? normalizeTenantId(options.tenantId) : undefined;
+    const rows = tenantId
+      ? await getSql()`
+          SELECT *
+          FROM omni_eval_reports
+          WHERE id = ${reportId}
+            AND COALESCE(tenant_id, 'default') = ${tenantId}
+          LIMIT 1
+        `
+      : await getSql()`
+          SELECT *
+          FROM omni_eval_reports
+          WHERE id = ${reportId}
+          LIMIT 1
+        `;
     return rows[0] ? evalReportFromRow(rows[0]) : null;
   }
 
   const ledger = await readEvalLedger();
-  return (ledger.reports || []).find((report) => report.id === reportId) || null;
+  return (ledger.reports || []).find(
+    (report) => report.id === reportId && (!options.tenantId || normalizeTenantId(report.tenantId) === normalizeTenantId(options.tenantId)),
+  ) || null;
 }
 
-export async function getEvalStats(): Promise<EvalStats> {
-  const runs = await listEvalRuns(100);
+export async function getEvalStats(options: TenantScopedOptions = {}): Promise<EvalStats> {
+  const runs = await listEvalRuns(100, options);
   const byStatus = runs.reduce<Record<string, number>>((acc, run) => {
     acc[run.status] = (acc[run.status] || 0) + 1;
     return acc;
@@ -340,6 +393,7 @@ function trimEvalLedger(ledger: EvalLedger): EvalLedger {
 function evalRunFromRow(row: Record<string, unknown>): EvalRunRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     suite: String(row.suite),
     status: String(row.status) as EvalRunStatus,
     summary: {
@@ -361,6 +415,7 @@ function evalRunFromRow(row: Record<string, unknown>): EvalRunRecord {
 function evalResultFromRow(row: Record<string, unknown>): EvalResultRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     evalRunId: String(row.eval_run_id),
     caseId: String(row.case_id),
     caseName: String(row.case_name),
@@ -400,6 +455,13 @@ function parseObject(value: unknown): Record<string, unknown> | undefined {
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }
 
 function getEvalFile() {

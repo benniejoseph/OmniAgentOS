@@ -96,7 +96,7 @@ export async function recordRuntimeEvent(input: {
     durationMs: input.durationMs,
     requestId: input.requestId,
     correlationId: input.correlationId || `${input.category}:${randomUUID()}`,
-    tenantId: input.tenantId,
+    tenantId: input.tenantId ? normalizeTenantId(input.tenantId) : undefined,
     actorId: input.actorId,
     resourceType: input.resourceType,
     resourceId: input.resourceId,
@@ -149,6 +149,7 @@ export async function listObservabilityEvents({
   resourceType,
   resourceId,
   route,
+  tenantId,
   limit = 50,
 }: {
   level?: ObservabilityLevel | "all";
@@ -158,6 +159,7 @@ export async function listObservabilityEvents({
   resourceType?: string;
   resourceId?: string;
   route?: string;
+  tenantId?: string;
   limit?: number;
 } = {}) {
   const boundedLimit = Math.min(Math.max(limit, 1), 200);
@@ -194,6 +196,10 @@ export async function listObservabilityEvents({
       params.push(route);
       filters.push(`route = $${params.length}`);
     }
+    if (tenantId) {
+      params.push(normalizeTenantId(tenantId));
+      filters.push(`COALESCE(tenant_id, 'default') = $${params.length}`);
+    }
     params.push(boundedLimit);
     const rows = await getSql().query(
       `
@@ -217,11 +223,12 @@ export async function listObservabilityEvents({
     .filter((event) => !resourceType || event.resourceType === resourceType)
     .filter((event) => !resourceId || event.resourceId === resourceId)
     .filter((event) => !route || event.route === route)
+    .filter((event) => !tenantId || normalizeTenantId(event.tenantId) === normalizeTenantId(tenantId))
     .slice(0, boundedLimit);
 }
 
-export async function getObservabilityStats(): Promise<ObservabilityStats> {
-  const events = await listObservabilityEvents({ limit: 500 });
+export async function getObservabilityStats(options: { tenantId?: string } = {}): Promise<ObservabilityStats> {
+  const events = await listObservabilityEvents({ limit: 500, tenantId: options.tenantId });
   const durations = events
     .map((event) => event.durationMs)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
@@ -328,6 +335,13 @@ function parseObject(value: unknown): Record<string, unknown> | undefined {
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }
 
 function getObservabilityFile() {

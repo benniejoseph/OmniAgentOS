@@ -48,8 +48,9 @@ const registerOpenApiConnectorSchema = z
   });
 
 export async function GET(request: Request) {
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read",
       resourceType: "openapi_connector",
@@ -59,9 +60,9 @@ export async function GET(request: Request) {
   }
 
   const [connectors, operations, stats] = await Promise.all([
-    listOpenApiConnectors(),
-    listOpenApiOperations(),
-    getOpenApiConnectorStats(),
+    listOpenApiConnectors(20, { tenantId: context.tenantId }),
+    listOpenApiOperations(undefined, { tenantId: context.tenantId }),
+    getOpenApiConnectorStats({ tenantId: context.tenantId }),
   ]);
 
   return Response.json({
@@ -109,8 +110,9 @@ export async function POST(request: Request) {
     );
   }
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "manage.connector",
       resourceType: "openapi_connector",
@@ -123,6 +125,7 @@ export async function POST(request: Request) {
   const connector = await saveOpenApiConnector(
     createOpenApiConnectorRecord({
       name: parsed.data.name,
+      tenantId: context.tenantId,
       specUrl: parsed.data.specUrl,
       baseUrl: parsed.data.baseUrl || "",
       authType: parsed.data.authType || "none",
@@ -134,7 +137,7 @@ export async function POST(request: Request) {
   );
 
   if (!parsed.data.importSpec) {
-    return Response.json({ connector, operations: [] }, { status: 201 });
+    return Response.json({ connector: redactOpenApiConnector(connector), operations: [] }, { status: 201 });
   }
 
   try {
@@ -145,21 +148,19 @@ export async function POST(request: Request) {
       baseUrlOverride: parsed.data.baseUrl,
     });
     await assertPublicHttpUrl(imported.baseUrl, "OpenAPI base URL");
-    return Response.json(
-      await saveOpenApiImport({
-        connector,
-        operations: imported.operations,
-        specHash: imported.specHash,
-        baseUrl: imported.baseUrl,
-        info: imported.info,
-      }),
-      { status: 201 },
-    );
+    const saved = await saveOpenApiImport({
+      connector,
+      operations: imported.operations,
+      specHash: imported.specHash,
+      baseUrl: imported.baseUrl,
+      info: imported.info,
+    });
+    return Response.json({ ...saved, connector: redactOpenApiConnector(saved.connector) }, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "OpenAPI import failed.";
     return Response.json(
       {
-        connector: await recordOpenApiConnectorError(connector, message),
+        connector: redactOpenApiConnector(await recordOpenApiConnectorError(connector, message)),
         operations: [],
         error: message,
       },

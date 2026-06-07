@@ -291,13 +291,19 @@ async function executePlanNode({
   }
 
   for (const toolId of node.toolIds.slice(0, 6)) {
-    const tool = await getToolDefinition(toolId);
+    const tool = await getToolDefinition(toolId, { tenantId: detail.run.tenantId });
     const dryRun = shouldDryRunTool({ toolId, tool, node });
     const execution = await executeGovernedTool({
       toolId,
       input: buildToolInput({ detail, plan, planId, node, toolId, dependencyRecords }),
       dryRun,
       approved: Boolean(detail.run.approvedAt && !dryRun),
+      context: {
+        tenantId: normalizeTenantId(detail.run.tenantId),
+        actorId: "workflow",
+        role: "system",
+        source: "default",
+      },
       approvalReason: detail.run.approvedAt
         ? `Workflow ${detail.run.id} was approved before plan-node execution.`
         : undefined,
@@ -341,10 +347,13 @@ async function executePlanNode({
   };
 }
 
-async function getToolDefinition(toolId: string): Promise<ToolDefinition | undefined> {
+async function getToolDefinition(
+  toolId: string,
+  options: { tenantId?: string } = {},
+): Promise<ToolDefinition | undefined> {
   return getGovernedTool(toolId) ||
-    await getMcpGovernedTool(toolId) ||
-    await getOpenApiGovernedTool(toolId) ||
+    await getMcpGovernedTool(toolId, options) ||
+    await getOpenApiGovernedTool(toolId, options) ||
     undefined;
 }
 
@@ -737,6 +746,13 @@ function parseObject(value: unknown): Record<string, unknown> | undefined {
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }
 
 function toRiskLevel(value: number): WorkflowPlanExecutionSummary["highestRiskLevel"] {

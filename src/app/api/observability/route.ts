@@ -34,8 +34,9 @@ export async function GET(request: Request) {
   const route = url.searchParams.get("route") || undefined;
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), 200);
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read.security",
       resourceType: "observability",
@@ -46,8 +47,8 @@ export async function GET(request: Request) {
   }
 
   const [events, stats] = await Promise.all([
-    listObservabilityEvents({ level, category, correlationId, route, limit }),
-    getObservabilityStats(),
+    listObservabilityEvents({ level, category, correlationId, route, limit, tenantId: context.tenantId }),
+    getObservabilityStats({ tenantId: context.tenantId }),
   ]);
 
   await recordRuntimeEventSafely({
@@ -59,6 +60,8 @@ export async function GET(request: Request) {
     durationMs: Date.now() - startedAt,
     requestId: telemetry.requestId,
     correlationId: telemetry.correlationId,
+    tenantId: context.tenantId,
+    actorId: context.actorId,
     resourceType: "observability",
     message: "Read observability timeline.",
     metadata: { count: events.length, filters: { level, category, correlationId, route, limit } },
@@ -108,7 +111,7 @@ export async function POST(request: Request) {
     metadata: parsed.data.metadata || {},
   });
 
-  return Response.json({ event, stats: await getObservabilityStats() }, { status: 201 });
+  return Response.json({ event, stats: await getObservabilityStats({ tenantId: context.tenantId }) }, { status: 201 });
 }
 
 function normalizeLevel(value: string | null): ObservabilityLevel | "all" {

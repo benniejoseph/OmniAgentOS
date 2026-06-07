@@ -84,6 +84,7 @@ export type WorkflowPlanValidation = {
 
 export type WorkflowPlanRecord = {
   id: string;
+  tenantId?: string;
   workflowRunId?: string;
   goal: string;
   status: "planned" | "failed";

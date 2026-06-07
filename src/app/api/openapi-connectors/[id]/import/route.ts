@@ -21,12 +21,6 @@ export async function POST(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  const connector = await getOpenApiConnector(id);
-
-  if (!connector) {
-    return Response.json({ error: "OpenAPI connector not found." }, { status: 404 });
-  }
-
   const requestBody = await request.json().catch(() => ({}));
   const parsed = importOpenApiSchema.safeParse(requestBody);
 
@@ -37,16 +31,23 @@ export async function POST(
     );
   }
 
+  let securityContext;
   try {
-    await authorizeRequest({
+    securityContext = await authorizeRequest({
       request,
       action: "manage.connector",
       resourceType: "openapi_connector",
       resourceId: id,
-      metadata: { connectorName: connector.name, ...requestBody },
+      metadata: requestBody,
     });
   } catch (error) {
     return forbiddenResponse(error);
+  }
+
+  const connector = await getOpenApiConnector(id, { tenantId: securityContext.tenantId });
+
+  if (!connector) {
+    return Response.json({ error: "OpenAPI connector not found." }, { status: 404 });
   }
 
   try {
@@ -74,27 +75,34 @@ export async function POST(
     });
     await assertPublicHttpUrl(imported.baseUrl, "OpenAPI base URL");
 
-    return Response.json(
-      await saveOpenApiImport({
-        connector: {
-          ...connector,
-          specUrl,
-        },
-        operations: imported.operations,
-        specHash: imported.specHash,
-        baseUrl: imported.baseUrl,
-        info: imported.info,
-      }),
-    );
+    const saved = await saveOpenApiImport({
+      connector: {
+        ...connector,
+        specUrl,
+      },
+      operations: imported.operations,
+      specHash: imported.specHash,
+      baseUrl: imported.baseUrl,
+      info: imported.info,
+    });
+    return Response.json({ ...saved, connector: redactOpenApiConnector(saved.connector) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "OpenAPI import failed.";
     return Response.json(
       {
-        connector: await recordOpenApiConnectorError(connector, message),
+        connector: redactOpenApiConnector(await recordOpenApiConnectorError(connector, message)),
         operations: [],
         error: message,
       },
       { status: 202 },
     );
   }
+}
+
+function redactOpenApiConnector<T extends { authTokenEnv?: string; lastError?: string }>(connector: T) {
+  return {
+    ...connector,
+    authTokenEnv: connector.authTokenEnv ? "[configured]" : undefined,
+    lastError: connector.lastError ? "[redacted]" : undefined,
+  };
 }

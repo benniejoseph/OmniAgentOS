@@ -13,44 +13,51 @@ export async function POST(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  const connector = await getMcpConnector(id);
+  let securityContext;
+  try {
+    securityContext = await authorizeRequest({
+      request,
+      action: "manage.connector",
+      resourceType: "mcp_connector",
+      resourceId: id,
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
+  const connector = await getMcpConnector(id, { tenantId: securityContext.tenantId });
 
   if (!connector) {
     return Response.json({ error: "MCP connector not found." }, { status: 404 });
   }
 
   try {
-    await authorizeRequest({
-      request,
-      action: "manage.connector",
-      resourceType: "mcp_connector",
-      resourceId: id,
-      metadata: { connectorName: connector.name },
-    });
-  } catch (error) {
-    return forbiddenResponse(error);
-  }
-
-  try {
     const discovery = await discoverMcpTools(connector);
-    return Response.json(
-      await saveMcpDiscovery({
-        connector,
-        tools: discovery.tools,
-        capabilities: discovery.capabilities,
-        instructions: discovery.instructions,
-        serverVersion: discovery.serverVersion,
-      }),
-    );
+    const saved = await saveMcpDiscovery({
+      connector,
+      tools: discovery.tools,
+      capabilities: discovery.capabilities,
+      instructions: discovery.instructions,
+      serverVersion: discovery.serverVersion,
+    });
+    return Response.json({ ...saved, connector: redactMcpConnector(saved.connector) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "MCP discovery failed.";
     return Response.json(
       {
-        connector: await recordMcpConnectorError(connector, message),
+        connector: redactMcpConnector(await recordMcpConnectorError(connector, message)),
         tools: [],
         error: message,
       },
       { status: 202 },
     );
   }
+}
+
+function redactMcpConnector<T extends { authTokenEnv?: string; lastError?: string }>(connector: T) {
+  return {
+    ...connector,
+    authTokenEnv: connector.authTokenEnv ? "[configured]" : undefined,
+    lastError: connector.lastError ? "[redacted]" : undefined,
+  };
 }

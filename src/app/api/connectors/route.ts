@@ -26,8 +26,9 @@ const registerConnectorSchema = z.object({
 });
 
 export async function GET(request: Request) {
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read",
       resourceType: "mcp_connector",
@@ -37,9 +38,9 @@ export async function GET(request: Request) {
   }
 
   const [connectors, tools, stats] = await Promise.all([
-    listMcpConnectors(),
-    listMcpTools(),
-    getMcpConnectorStats(),
+    listMcpConnectors(20, { tenantId: context.tenantId }),
+    listMcpTools(undefined, { tenantId: context.tenantId }),
+    getMcpConnectorStats({ tenantId: context.tenantId }),
   ]);
 
   return Response.json({
@@ -82,8 +83,9 @@ export async function POST(request: Request) {
     );
   }
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "manage.connector",
       resourceType: "mcp_connector",
@@ -96,6 +98,7 @@ export async function POST(request: Request) {
   const connector = await saveMcpConnector(
     createMcpConnectorRecord({
       name: parsed.data.name,
+      tenantId: context.tenantId,
       endpoint: parsed.data.endpoint,
       authType: parsed.data.authType || "none",
       authTokenEnv: parsed.data.authTokenEnv,
@@ -105,7 +108,7 @@ export async function POST(request: Request) {
   );
 
   if (!parsed.data.discover) {
-    return Response.json({ connector, tools: [] }, { status: 201 });
+    return Response.json({ connector: redactMcpConnector(connector), tools: [] }, { status: 201 });
   }
 
   try {
@@ -117,12 +120,12 @@ export async function POST(request: Request) {
       instructions: discovery.instructions,
       serverVersion: discovery.serverVersion,
     });
-    return Response.json(saved, { status: 201 });
+    return Response.json({ ...saved, connector: redactMcpConnector(saved.connector) }, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "MCP discovery failed.";
     return Response.json(
       {
-        connector: await recordMcpConnectorError(connector, message),
+        connector: redactMcpConnector(await recordMcpConnectorError(connector, message)),
         tools: [],
         error: message,
       },

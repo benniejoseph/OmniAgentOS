@@ -127,9 +127,10 @@ type SloPolicyAction = z.infer<typeof actionSchema>;
 export async function GET(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "slo-policies");
+  let context;
 
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read.security",
       resourceType: "observability_slo_policy",
@@ -146,7 +147,7 @@ export async function GET(request: Request) {
       getObservabilitySloApprovalPolicyConfig(),
       listObservabilitySloApprovalPolicyVersions({ limit: 10 }),
     ]);
-    const changes = await listObservabilitySloPolicyChanges({ limit: 20 });
+    const changes = await listObservabilitySloPolicyChanges({ limit: 20, tenantId: context.tenantId });
     await recordRuntimeEventSafely({
       category: "api",
       action: "observability.slo_policies.read",
@@ -156,6 +157,8 @@ export async function GET(request: Request) {
       durationMs: Date.now() - startedAt,
       requestId: telemetry.requestId,
       correlationId: telemetry.correlationId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
       resourceType: "observability_slo_policy",
       message: "Read observability SLO policies.",
       metadata: { policies: policies.length, enabled: policies.filter((policy) => policy.enabled).length },
@@ -181,6 +184,8 @@ export async function GET(request: Request) {
       durationMs: Date.now() - startedAt,
       requestId: telemetry.requestId,
       correlationId: telemetry.correlationId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
       resourceType: "observability_slo_policy",
       message: "Observability SLO policy read failed.",
       metadata: { error: error instanceof Error ? error.message : "SLO policy read failed." },
@@ -218,7 +223,7 @@ export async function POST(request: Request) {
     const snapshot = await getObservabilitySloSnapshot();
     const [policies, changes, approvalPolicy, approvalPolicyVersions] = await Promise.all([
       listObservabilitySloPolicies({ includeDisabled: true }),
-      listObservabilitySloPolicyChanges({ limit: 20 }),
+      listObservabilitySloPolicyChanges({ limit: 20, tenantId: context.tenantId }),
       getObservabilitySloApprovalPolicyConfig(),
       listObservabilitySloApprovalPolicyVersions({ limit: 10 }),
     ]);

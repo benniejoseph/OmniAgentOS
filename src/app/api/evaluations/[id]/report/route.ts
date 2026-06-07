@@ -27,7 +27,7 @@ export async function GET(
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 5), 1), 25);
 
   try {
-    await authorizeRequest({
+    const securityContext = await authorizeRequest({
       request,
       action: "read",
       resourceType: "evaluation_report",
@@ -36,7 +36,9 @@ export async function GET(
     });
 
     if (reportId || download) {
-      const report = reportId ? await getEvalReportSnapshot(reportId) : await getLatestEvalReportSnapshot(id);
+      const report = reportId
+        ? await getEvalReportSnapshot(reportId, { tenantId: securityContext.tenantId })
+        : await getLatestEvalReportSnapshot(id, { tenantId: securityContext.tenantId });
       if (!report || report.evalRunId !== id) {
         return Response.json({ error: "Evaluation report not found." }, { status: 404 });
       }
@@ -56,7 +58,7 @@ export async function GET(
       return Response.json({ report, keyring: getReportSigningKeyMetadata() });
     }
 
-    const reports = await listEvalReportSnapshots(id, limit);
+    const reports = await listEvalReportSnapshots(id, limit, { tenantId: securityContext.tenantId });
     return Response.json({
       reports,
       latest: reports[0],

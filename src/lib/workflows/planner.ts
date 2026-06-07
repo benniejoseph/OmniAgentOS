@@ -21,6 +21,7 @@ import type {
 } from "@/lib/workflows/types";
 
 type BuildWorkflowPlanInput = {
+  tenantId?: string;
   goal: string;
   mode?: WorkflowDynamicPlan["mode"];
   workflowRunId?: string;
@@ -31,6 +32,10 @@ type BuildWorkflowPlanInput = {
 
 type WorkflowPlanLedger = {
   plans: WorkflowPlanRecord[];
+};
+
+type TenantScopedOptions = {
+  tenantId?: string;
 };
 
 type PlannerToolCandidate = {
@@ -89,21 +94,22 @@ const dynamicPlanSchema = z.object({
 let workflowPlanFileWriteQueue: Promise<void> = Promise.resolve();
 
 export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
+  const tenantId = normalizeTenantId(input.tenantId);
   const goal = input.goal.trim();
   if (!goal) {
     throw new Error("Workflow goal is required.");
   }
 
   if (input.workflowRunId && input.reuseExisting !== false) {
-    const existing = await getWorkflowPlanForRun(input.workflowRunId);
+    const existing = await getWorkflowPlanForRun(input.workflowRunId, { tenantId });
     if (existing) {
       return existing;
     }
   }
 
   const mode = input.mode || "orchestrate";
-  const context = await buildContextPack(goal, { limit: 8 });
-  const toolCandidates = await getPlannerToolCandidates(goal, context.contextBlock);
+  const context = await buildContextPack(goal, { limit: 8, tenantId });
+  const toolCandidates = await getPlannerToolCandidates(goal, context.contextBlock, { tenantId });
   const generated = await generatePlan({
     goal,
     mode,
@@ -115,6 +121,7 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
   const validation = validateWorkflowPlan(generated.plan);
   const record: WorkflowPlanRecord = {
     id: randomUUID(),
+    tenantId,
     workflowRunId: input.workflowRunId,
     goal,
     status: validation.isDag && validation.missingDependencies.length === 0 ? "planned" : "failed",
@@ -134,12 +141,15 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
   return saveWorkflowPlan(record);
 }
 
-export async function listWorkflowPlans(limit = 20) {
+export async function listWorkflowPlans(limit = 20, options: TenantScopedOptions = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_workflow_plans
+      WHERE tenant_id = ${tenantId}
       ORDER BY created_at DESC
       LIMIT ${Math.min(Math.max(limit, 1), 100)}
     `;
@@ -147,16 +157,21 @@ export async function listWorkflowPlans(limit = 20) {
   }
 
   const ledger = await readWorkflowPlanLedger();
-  return ledger.plans.slice(0, limit);
+  return ledger.plans
+    .filter((plan) => normalizeTenantId(plan.tenantId) === tenantId)
+    .slice(0, limit);
 }
 
-export async function getWorkflowPlanForRun(workflowRunId: string) {
+export async function getWorkflowPlanForRun(workflowRunId: string, options: TenantScopedOptions = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_workflow_plans
       WHERE workflow_run_id = ${workflowRunId}
+        AND tenant_id = ${tenantId}
       ORDER BY created_at DESC
       LIMIT 1
     `;
@@ -164,11 +179,13 @@ export async function getWorkflowPlanForRun(workflowRunId: string) {
   }
 
   const ledger = await readWorkflowPlanLedger();
-  return ledger.plans.find((plan) => plan.workflowRunId === workflowRunId) || null;
+  return ledger.plans.find(
+    (plan) => plan.workflowRunId === workflowRunId && normalizeTenantId(plan.tenantId) === tenantId,
+  ) || null;
 }
 
-export async function getWorkflowPlanStats(): Promise<WorkflowPlanStats> {
-  const plans = await listWorkflowPlans(500);
+export async function getWorkflowPlanStats(options: TenantScopedOptions = {}): Promise<WorkflowPlanStats> {
+  const plans = await listWorkflowPlans(500, options);
   const byStatus = plans.reduce<Record<string, number>>((acc, plan) => {
     acc[plan.status] = (acc[plan.status] || 0) + 1;
     return acc;
@@ -251,10 +268,14 @@ async function generatePlan({
   }
 }
 
-async function getPlannerToolCandidates(goal: string, contextBlock: string): Promise<PlannerToolCandidate[]> {
+async function getPlannerToolCandidates(
+  goal: string,
+  contextBlock: string,
+  options: TenantScopedOptions = {},
+): Promise<PlannerToolCandidate[]> {
   const [mcpTools, openApiTools] = await Promise.all([
-    listMcpGovernedTools().catch(() => []),
-    listOpenApiGovernedTools().catch(() => []),
+    listMcpGovernedTools({ tenantId: options.tenantId }).catch(() => []),
+    listOpenApiGovernedTools({ tenantId: options.tenantId }).catch(() => []),
   ]);
   const tools = [...getGovernedTools(), ...mcpTools, ...openApiTools];
   const terms = tokenize(`${goal}\n${contextBlock}`);
@@ -582,36 +603,42 @@ function validateWorkflowPlan(plan: WorkflowDynamicPlan): WorkflowPlanValidation
 }
 
 async function saveWorkflowPlan(record: WorkflowPlanRecord) {
+  const planRecord = {
+    ...record,
+    tenantId: normalizeTenantId(record.tenantId),
+  };
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_workflow_plans (
-        id, workflow_run_id, goal, status, planner, model, plan, validation,
+        id, tenant_id, workflow_run_id, goal, status, planner, model, plan, validation,
         context_trace_id, highest_risk_level, approval_required, confidence,
         error, created_at, updated_at
       )
       VALUES (
-        ${record.id}, ${record.workflowRunId || null}, ${record.goal},
-        ${record.status}, ${record.planner}, ${record.model},
-        ${JSON.stringify(record.plan)}::jsonb, ${JSON.stringify(record.validation)}::jsonb,
-        ${record.contextTraceId || null}, ${record.highestRiskLevel},
-        ${record.approvalRequired}, ${record.confidence}, ${record.error || null},
-        ${record.createdAt}, ${record.updatedAt}
+        ${planRecord.id}, ${planRecord.tenantId}, ${planRecord.workflowRunId || null}, ${planRecord.goal},
+        ${planRecord.status}, ${planRecord.planner}, ${planRecord.model},
+        ${JSON.stringify(planRecord.plan)}::jsonb, ${JSON.stringify(planRecord.validation)}::jsonb,
+        ${planRecord.contextTraceId || null}, ${planRecord.highestRiskLevel},
+        ${planRecord.approvalRequired}, ${planRecord.confidence}, ${planRecord.error || null},
+        ${planRecord.createdAt}, ${planRecord.updatedAt}
       )
     `;
-    return record;
+    return planRecord;
   }
 
   await mutateWorkflowPlanLedger((ledger) => ({
-    plans: [record, ...ledger.plans.filter((plan) => plan.id !== record.id)].slice(0, 500),
+    plans: [planRecord, ...ledger.plans.filter((plan) => plan.id !== planRecord.id)].slice(0, 500),
   }));
-  return record;
+  return planRecord;
 }
 
 function workflowPlanFromRow(row: Record<string, unknown>): WorkflowPlanRecord {
   const plan = dynamicPlanSchema.safeParse(parseObject(row.plan));
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     workflowRunId: row.workflow_run_id ? String(row.workflow_run_id) : undefined,
     goal: String(row.goal || ""),
     status: row.status === "failed" ? "failed" : "planned",
@@ -842,6 +869,13 @@ function slugify(value: string) {
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value || new Date().toISOString());
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }
 
 function getWorkflowPlanFile() {

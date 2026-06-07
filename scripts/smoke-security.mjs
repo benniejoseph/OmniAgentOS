@@ -12,6 +12,10 @@ const protectedReads = [
   "/api/connectors",
   "/api/openapi-connectors",
   "/api/capabilities",
+  "/api/observability",
+  "/api/operations",
+  "/api/approvals",
+  "/api/workflows/plan",
 ];
 
 const checks = [];
@@ -46,6 +50,24 @@ if (email && password) {
   const authHeaders = { "content-type": "application/json", cookie };
   const authenticatedRead = await request("/api/memory?limit=1", { headers: { cookie } });
   checks.push(assert(authenticatedRead.status === 200, "authenticated memory read succeeds", `expected 200, got ${authenticatedRead.status}`));
+
+  for (const path of ["/api/connectors", "/api/openapi-connectors"]) {
+    const catalogue = await request(path, { headers: { cookie } });
+    const text = await catalogue.text();
+    checks.push(assert(catalogue.status === 200, `authenticated ${path} read succeeds`, `expected 200, got ${catalogue.status}`));
+    checks.push(assert(
+      !/(OPENAI_API_KEY|DATABASE_URL|OMNIAGENT_CONNECTOR_[A-Z0-9_]+)/.test(text),
+      `${path} redacts connector secret env names`,
+      "raw connector secret env name leaked",
+    ));
+  }
+
+  const observabilityRead = await request("/api/observability?limit=5", { headers: { cookie } });
+  checks.push(assert(
+    observabilityRead.status === 200 || observabilityRead.status === 403,
+    "authenticated observability read is protected",
+    `expected 200 or 403, got ${observabilityRead.status}`,
+  ));
 
   const forbiddenSecret = await request("/api/connectors", {
     method: "POST",

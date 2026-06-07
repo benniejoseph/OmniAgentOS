@@ -7,6 +7,7 @@ export type McpToolStatus = "active" | "disabled";
 
 export type McpConnectorRecord = {
   id: string;
+  tenantId?: string;
   name: string;
   endpoint: string;
   transport: McpConnectorTransport;
@@ -27,6 +28,7 @@ export type McpConnectorRecord = {
 
 export type McpToolRecord = {
   id: string;
+  tenantId?: string;
   connectorId: string;
   connectorName: string;
   name: string;

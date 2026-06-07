@@ -721,12 +721,14 @@ function evalGovernance(
 export async function runEvaluationSuite({
   suite = "core",
   caseIds,
+  tenantId,
 }: {
   suite?: string;
   caseIds?: string[];
+  tenantId?: string;
 } = {}) {
   const cases = defaultEvalCases.filter((item) => !caseIds?.length || caseIds.includes(item.id));
-  const run = await createEvalRun({ suite, total: cases.length });
+  const run = await createEvalRun({ suite, total: cases.length, tenantId });
   const savedResults: EvalResultRecord[] = [];
 
   try {
@@ -737,6 +739,7 @@ export async function runEvaluationSuite({
         const latencyMs = Date.now() - startedAt;
         savedResults.push(
           await saveEvalResult({
+            tenantId: run.tenantId,
             evalRunId: run.id,
             caseId: evalCase.id,
             caseName: evalCase.name,
@@ -753,6 +756,7 @@ export async function runEvaluationSuite({
         const latencyMs = Date.now() - startedAt;
         savedResults.push(
           await saveEvalResult({
+            tenantId: run.tenantId,
             evalRunId: run.id,
             caseId: evalCase.id,
             caseName: evalCase.name,
@@ -779,7 +783,7 @@ export async function runEvaluationSuite({
     await failEvalRun(run.id, summary, error instanceof Error ? error.message : "Evaluation suite failed.");
   }
 
-  return getEvalRunDetail(run.id);
+  return getEvalRunDetail(run.id, { tenantId: run.tenantId });
 }
 
 async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {

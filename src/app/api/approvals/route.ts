@@ -7,8 +7,9 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 25), 1), 100);
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "manage.workflow",
       resourceType: "approval_queue",
@@ -18,5 +19,5 @@ export async function GET(request: Request) {
     return forbiddenResponse(error);
   }
 
-  return Response.json(await getApprovalQueue(limit));
+  return Response.json(await getApprovalQueue(limit, { tenantId: context.tenantId }));
 }

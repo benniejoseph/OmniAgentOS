@@ -7,6 +7,7 @@ export type OpenApiHttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "H
 
 export type OpenApiConnectorRecord = {
   id: string;
+  tenantId?: string;
   name: string;
   specUrl?: string;
   specHash?: string;
@@ -27,6 +28,7 @@ export type OpenApiConnectorRecord = {
 
 export type OpenApiOperationRecord = {
   id: string;
+  tenantId?: string;
   connectorId: string;
   connectorName: string;
   operationId: string;

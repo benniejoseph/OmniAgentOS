@@ -4,13 +4,17 @@ import { getMcpToolById, listMcpTools } from "@/lib/connectors/store";
 import type { McpToolRecord } from "@/lib/connectors/types";
 import type { ToolDefinition } from "@/lib/tools/types";
 
-export async function listMcpGovernedTools() {
-  const tools = await listMcpTools();
+type TenantScopedOptions = {
+  tenantId?: string;
+};
+
+export async function listMcpGovernedTools(options: TenantScopedOptions = {}) {
+  const tools = await listMcpTools(undefined, options);
   return tools.map(toGovernedTool);
 }
 
-export async function getMcpGovernedTool(toolId: string) {
-  const tool = await getMcpToolById(toolId);
+export async function getMcpGovernedTool(toolId: string, options: TenantScopedOptions = {}) {
+  const tool = await getMcpToolById(toolId, options);
   return tool ? toGovernedTool(tool) : null;
 }
 
@@ -28,13 +32,13 @@ export function toGovernedTool(tool: McpToolRecord): ToolDefinition {
   };
 }
 
-export async function listOpenApiGovernedTools() {
-  const operations = await listOpenApiOperations();
+export async function listOpenApiGovernedTools(options: TenantScopedOptions = {}) {
+  const operations = await listOpenApiOperations(undefined, options);
   return operations.map(openApiOperationToGovernedTool);
 }
 
-export async function getOpenApiGovernedTool(toolId: string) {
-  const operation = await getOpenApiOperationById(toolId);
+export async function getOpenApiGovernedTool(toolId: string, options: TenantScopedOptions = {}) {
+  const operation = await getOpenApiOperationById(toolId, options);
   return operation ? openApiOperationToGovernedTool(operation) : null;
 }
 

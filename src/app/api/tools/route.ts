@@ -17,8 +17,8 @@ export async function GET(request: Request) {
     return forbiddenResponse(error);
   }
 
-  const mcpTools = await listMcpGovernedTools();
-  const openApiTools = await listOpenApiGovernedTools();
+  const mcpTools = await listMcpGovernedTools({ tenantId: context.tenantId });
+  const openApiTools = await listOpenApiGovernedTools({ tenantId: context.tenantId });
 
   return Response.json({
     tools: [...getGovernedTools(), ...mcpTools, ...openApiTools],

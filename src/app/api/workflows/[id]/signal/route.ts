@@ -24,14 +24,14 @@ export async function POST(
   }
 
   try {
-    await authorizeRequest({
+    const securityContext = await authorizeRequest({
       request,
       action: "manage.workflow",
       resourceType: "workflow",
       resourceId: id,
       metadata: parsed.data,
     });
-    const detail = await signalWorkflowRun(id, parsed.data.signal);
+    const detail = await signalWorkflowRun(id, parsed.data.signal, { tenantId: securityContext.tenantId });
     let queueJob;
     let canceledJobs;
 

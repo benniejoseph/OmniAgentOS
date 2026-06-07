@@ -16,8 +16,11 @@ export type EvalRunEvidenceBundle = EvalRunDetail & {
   events: ObservabilityEventRecord[];
 };
 
-export async function getEvaluationEvidenceBundle(runId: string): Promise<EvalRunEvidenceBundle | null> {
-  const detail = await getEvalRunDetail(runId);
+export async function getEvaluationEvidenceBundle(
+  runId: string,
+  options: { tenantId?: string } = {},
+): Promise<EvalRunEvidenceBundle | null> {
+  const detail = await getEvalRunDetail(runId, options);
 
   if (!detail) {
     return null;
@@ -32,6 +35,7 @@ export async function getEvaluationEvidenceBundle(runId: string): Promise<EvalRu
     action: "evaluation.run",
     resourceType: "evaluation",
     resourceId: runId,
+    tenantId: options.tenantId,
     limit: 5,
   });
   const metadata = events[0]?.metadata || {};

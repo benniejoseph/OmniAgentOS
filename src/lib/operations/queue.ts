@@ -56,11 +56,11 @@ export type ApprovalQueueItem =
       record: ObservabilitySloPolicyChange;
     };
 
-export async function getApprovalQueue(limit = 25) {
+export async function getApprovalQueue(limit = 25, options: { tenantId?: string } = {}) {
   const [toolApprovals, workflowRuns, sloPolicyChanges] = await Promise.all([
-    listPendingToolApprovals(limit),
-    listWorkflowRuns(100),
-    listObservabilitySloPolicyChanges({ status: "pending", limit }),
+    listPendingToolApprovals(limit, { tenantId: options.tenantId }),
+    listWorkflowRuns(100, { tenantId: options.tenantId }),
+    listObservabilitySloPolicyChanges({ status: "pending", limit, tenantId: options.tenantId }),
   ]);
   const workflowApprovals = workflowRuns
     .filter((run) => run.status === "waiting_approval")
@@ -82,7 +82,7 @@ export async function getApprovalQueue(limit = 25) {
   };
 }
 
-export async function getOperationsOverview() {
+export async function getOperationsOverview(options: { tenantId?: string } = {}) {
   const [
     approvals,
     workflowRuns,
@@ -97,14 +97,14 @@ export async function getOperationsOverview() {
     recovery,
     recoveryEvents,
   ] = await Promise.all([
-    getApprovalQueue(25),
-    listWorkflowRuns(20),
-    getWorkflowStats(),
-    listToolExecutions(20),
-    getToolExecutionStats(),
-    listAgentRuns(20),
-    listMcpConnectors(),
-    listOpenApiConnectors(),
+    getApprovalQueue(25, { tenantId: options.tenantId }),
+    listWorkflowRuns(20, { tenantId: options.tenantId }),
+    getWorkflowStats({ tenantId: options.tenantId }),
+    listToolExecutions(20, { tenantId: options.tenantId }),
+    getToolExecutionStats({ tenantId: options.tenantId }),
+    listAgentRuns(20, { tenantId: options.tenantId }),
+    listMcpConnectors(20, { tenantId: options.tenantId }),
+    listOpenApiConnectors(20, { tenantId: options.tenantId }),
     getOperationJobStats(),
     listOperationJobs(20),
     inspectOperationsRecovery({ limit: 10 }),

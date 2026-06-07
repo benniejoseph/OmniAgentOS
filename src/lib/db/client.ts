@@ -326,6 +326,7 @@ export async function ensureDatabaseSchema() {
       await sql`
         CREATE TABLE IF NOT EXISTS omni_mcp_connectors (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           name TEXT NOT NULL,
           endpoint TEXT NOT NULL,
           transport TEXT NOT NULL DEFAULT 'streamable_http',
@@ -344,12 +345,15 @@ export async function ensureDatabaseSchema() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_mcp_connectors ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
       await sql`CREATE INDEX IF NOT EXISTS omni_mcp_connectors_status_idx ON omni_mcp_connectors (status)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_mcp_connectors_updated_at_idx ON omni_mcp_connectors (updated_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_mcp_connectors_tenant_updated_at_idx ON omni_mcp_connectors (tenant_id, updated_at DESC)`;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_mcp_tools (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           connector_id TEXT NOT NULL REFERENCES omni_mcp_connectors(id) ON DELETE CASCADE,
           connector_name TEXT NOT NULL,
           name TEXT NOT NULL,
@@ -365,13 +369,16 @@ export async function ensureDatabaseSchema() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_mcp_tools ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
       await sql`CREATE INDEX IF NOT EXISTS omni_mcp_tools_connector_id_idx ON omni_mcp_tools (connector_id)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_mcp_tools_status_idx ON omni_mcp_tools (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_mcp_tools_tenant_connector_idx ON omni_mcp_tools (tenant_id, connector_id)`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_mcp_tools_connector_name_idx ON omni_mcp_tools (connector_id, name)`;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_openapi_connectors (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           name TEXT NOT NULL,
           spec_url TEXT,
           spec_hash TEXT,
@@ -390,12 +397,15 @@ export async function ensureDatabaseSchema() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_openapi_connectors ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
       await sql`CREATE INDEX IF NOT EXISTS omni_openapi_connectors_status_idx ON omni_openapi_connectors (status)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_openapi_connectors_updated_at_idx ON omni_openapi_connectors (updated_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_openapi_connectors_tenant_updated_at_idx ON omni_openapi_connectors (tenant_id, updated_at DESC)`;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_openapi_operations (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           connector_id TEXT NOT NULL REFERENCES omni_openapi_connectors(id) ON DELETE CASCADE,
           connector_name TEXT NOT NULL,
           operation_id TEXT NOT NULL,
@@ -413,8 +423,10 @@ export async function ensureDatabaseSchema() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_openapi_operations ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
       await sql`CREATE INDEX IF NOT EXISTS omni_openapi_operations_connector_id_idx ON omni_openapi_operations (connector_id)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_openapi_operations_status_idx ON omni_openapi_operations (status)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_openapi_operations_tenant_connector_idx ON omni_openapi_operations (tenant_id, connector_id)`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_openapi_operations_connector_operation_idx ON omni_openapi_operations (connector_id, operation_id)`;
 
       await sql`
@@ -448,6 +460,7 @@ export async function ensureDatabaseSchema() {
       await sql`
         CREATE TABLE IF NOT EXISTS omni_workflow_plans (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           workflow_run_id TEXT REFERENCES omni_workflow_runs(id) ON DELETE SET NULL,
           goal TEXT NOT NULL,
           status TEXT NOT NULL,
@@ -464,9 +477,11 @@ export async function ensureDatabaseSchema() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_workflow_plans ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_plans_run_id_idx ON omni_workflow_plans (workflow_run_id)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_plans_status_idx ON omni_workflow_plans (status)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_plans_created_at_idx ON omni_workflow_plans (created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_plans_tenant_created_at_idx ON omni_workflow_plans (tenant_id, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_plans_risk_idx ON omni_workflow_plans (highest_risk_level DESC)`;
 
       await sql`
@@ -698,6 +713,7 @@ export async function ensureDatabaseSchema() {
       await sql`
         CREATE TABLE IF NOT EXISTS omni_eval_runs (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           suite TEXT NOT NULL,
           status TEXT NOT NULL,
           total INTEGER NOT NULL DEFAULT 0,
@@ -713,12 +729,15 @@ export async function ensureDatabaseSchema() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_eval_runs ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
       await sql`CREATE INDEX IF NOT EXISTS omni_eval_runs_status_idx ON omni_eval_runs (status)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_eval_runs_created_at_idx ON omni_eval_runs (created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_eval_runs_tenant_created_at_idx ON omni_eval_runs (tenant_id, created_at DESC)`;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_eval_results (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           eval_run_id TEXT NOT NULL REFERENCES omni_eval_runs(id) ON DELETE CASCADE,
           case_id TEXT NOT NULL,
           case_name TEXT NOT NULL,
@@ -733,8 +752,10 @@ export async function ensureDatabaseSchema() {
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_eval_results ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
       await sql`CREATE INDEX IF NOT EXISTS omni_eval_results_run_id_idx ON omni_eval_results (eval_run_id, created_at ASC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_eval_results_case_id_idx ON omni_eval_results (case_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_eval_results_tenant_run_idx ON omni_eval_results (tenant_id, eval_run_id, created_at ASC)`;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_eval_reports (
@@ -751,6 +772,7 @@ export async function ensureDatabaseSchema() {
       `;
       await sql`CREATE INDEX IF NOT EXISTS omni_eval_reports_run_created_idx ON omni_eval_reports (eval_run_id, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_eval_reports_created_idx ON omni_eval_reports (created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_eval_reports_tenant_run_created_idx ON omni_eval_reports (tenant_id, eval_run_id, created_at DESC)`;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_auth_tenants (
@@ -854,6 +876,7 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_correlation_idx ON omni_observability_events (correlation_id, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_route_created_idx ON omni_observability_events (route, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_resource_created_idx ON omni_observability_events (resource_type, resource_id, created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_tenant_created_idx ON omni_observability_events (tenant_id, created_at DESC)`;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_observability_slo_policies (
@@ -910,6 +933,7 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_policy_idx ON omni_observability_slo_policy_changes (policy_id, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_status_idx ON omni_observability_slo_policy_changes (status, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_action_idx ON omni_observability_slo_policy_changes (action)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_tenant_status_idx ON omni_observability_slo_policy_changes (tenant_id, status, created_at DESC)`;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_observability_slo_approval_policies (

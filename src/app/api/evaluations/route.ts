@@ -23,8 +23,9 @@ const evalRunSchema = z.object({
 });
 
 export async function GET(request: Request) {
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read",
       resourceType: "evaluation",
@@ -41,8 +42,8 @@ export async function GET(request: Request) {
     defaults: {
       maxSafetyMode: defaultEvaluationMaxSafetyMode(),
     },
-    runs: await listEvalRuns(limit),
-    stats: await getEvalStats(),
+    runs: await listEvalRuns(limit, { tenantId: context.tenantId }),
+    stats: await getEvalStats({ tenantId: context.tenantId }),
   });
 }
 
@@ -137,6 +138,7 @@ export async function POST(request: Request) {
     const detail = await runEvaluationSuite({
       suite: parsed.data.suite || "core",
       caseIds: selection.cases.map((evalCase) => evalCase.id),
+      tenantId: context.tenantId,
     });
     if (!detail) {
       throw new Error("Evaluation run detail unavailable.");

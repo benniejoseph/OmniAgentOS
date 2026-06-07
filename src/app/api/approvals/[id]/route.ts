@@ -37,7 +37,7 @@ export async function POST(
 
   if (parsed.data.kind === "workflow") {
     try {
-      await authorizeRequest({
+      const securityContext = await authorizeRequest({
         request,
         action: "manage.workflow",
         resourceType: "workflow",
@@ -45,7 +45,7 @@ export async function POST(
         metadata: parsed.data,
       });
       const signal = parsed.data.decision === "approve" ? "approve" : "cancel";
-      const detail = await signalWorkflowRun(id, signal);
+      const detail = await signalWorkflowRun(id, signal, { tenantId: securityContext.tenantId });
       if (signal === "approve") {
         const queueJob = await enqueueWorkflowRunTick(id, "workflow_approval");
         scheduleWorkflowQueueDrain();
@@ -66,7 +66,20 @@ export async function POST(
   }
 
   if (parsed.data.kind === "slo_policy") {
-    const change = await getObservabilitySloPolicyChange(id);
+    let securityContext;
+    try {
+      securityContext = await authorizeRequest({
+        request,
+        action: "manage.workflow",
+        resourceType: "observability_slo_policy_change",
+        resourceId: id,
+        metadata: { decision: parsed.data.decision },
+      });
+    } catch (error) {
+      return forbiddenResponse(error);
+    }
+
+    const change = await getObservabilitySloPolicyChange(id, { tenantId: securityContext.tenantId });
     if (!change) {
       return Response.json({ error: "SLO policy change approval record not found." }, { status: 404 });
     }
@@ -75,20 +88,6 @@ export async function POST(
         { error: "SLO policy change is not pending.", status: change.status },
         { status: 409 },
       );
-    }
-
-    let securityContext;
-    try {
-      securityContext = await authorizeRequest({
-        request,
-        action: "manage.workflow",
-        resourceType: "observability_slo_policy_change",
-        resourceId: id,
-        riskLevel: change.riskLevel,
-        metadata: { policyId: change.policyId, action: change.action, decision: parsed.data.decision },
-      });
-    } catch (error) {
-      return forbiddenResponse(error);
     }
 
     const result = parsed.data.decision === "approve"
@@ -113,7 +112,20 @@ export async function POST(
     return Response.json(result);
   }
 
-  const record = await getToolExecution(id);
+  let securityContext;
+  try {
+    securityContext = await authorizeRequest({
+      request,
+      action: "execute.tool",
+      resourceType: "tool_execution",
+      resourceId: id,
+      metadata: { decision: parsed.data.decision },
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
+  const record = await getToolExecution(id, { tenantId: securityContext.tenantId });
   if (!record) {
     return Response.json({ error: "Tool approval record not found." }, { status: 404 });
   }
@@ -123,19 +135,6 @@ export async function POST(
       { error: "Tool approval record is not pending.", status: record.status },
       { status: 409 },
     );
-  }
-
-  let securityContext;
-  try {
-    securityContext = await authorizeRequest({
-      request,
-      action: "execute.tool",
-      resourceType: "tool_execution",
-      resourceId: id,
-      metadata: { toolId: record.toolId, decision: parsed.data.decision },
-    });
-  } catch (error) {
-    return forbiddenResponse(error);
   }
 
   if (parsed.data.decision === "reject") {

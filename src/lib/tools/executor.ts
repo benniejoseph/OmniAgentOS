@@ -59,8 +59,8 @@ export async function executeGovernedTool({
 }) {
   const tool =
     getGovernedTool(toolId) ||
-    (await getMcpGovernedTool(toolId)) ||
-    (await getOpenApiGovernedTool(toolId));
+    (await getMcpGovernedTool(toolId, { tenantId: context?.tenantId })) ||
+    (await getOpenApiGovernedTool(toolId, { tenantId: context?.tenantId }));
   if (!tool) {
     const record = createToolExecutionRecord({
       tenantId: context?.tenantId,
@@ -249,17 +249,17 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>, con
   if (tool.id === "runs.list") {
     const { limit } = runsListSchema.parse(parsed);
     return {
-      runs: await listAgentRuns(limit || 5),
+      runs: await listAgentRuns(limit || 5, { tenantId: context?.tenantId }),
     };
   }
 
   if (tool.category === "mcp") {
-    const mcpTool = await getMcpToolById(tool.id);
+    const mcpTool = await getMcpToolById(tool.id, { tenantId: context?.tenantId });
     if (!mcpTool) {
       throw new Error(`MCP tool ${tool.id} is not registered.`);
     }
 
-    const connector = await getMcpConnector(mcpTool.connectorId);
+    const connector = await getMcpConnector(mcpTool.connectorId, { tenantId: context?.tenantId });
     if (!connector) {
       throw new Error(`MCP connector ${mcpTool.connectorId} is not registered.`);
     }
@@ -288,12 +288,12 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>, con
   }
 
   if (tool.category === "openapi") {
-    const operation = await getOpenApiOperationById(tool.id);
+    const operation = await getOpenApiOperationById(tool.id, { tenantId: context?.tenantId });
     if (!operation) {
       throw new Error(`OpenAPI operation ${tool.id} is not registered.`);
     }
 
-    const connector = await getOpenApiConnector(operation.connectorId);
+    const connector = await getOpenApiConnector(operation.connectorId, { tenantId: context?.tenantId });
     if (!connector) {
       throw new Error(`OpenAPI connector ${operation.connectorId} is not registered.`);
     }

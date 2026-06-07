@@ -139,8 +139,12 @@ export async function tickQueuedWorkflows(limit = 5) {
   return results;
 }
 
-export async function signalWorkflowRun(runId: string, signal: WorkflowSignalType) {
-  const detail = await getWorkflowRunDetail(runId);
+export async function signalWorkflowRun(
+  runId: string,
+  signal: WorkflowSignalType,
+  options: { tenantId?: string } = {},
+) {
+  const detail = await getWorkflowRunDetail(runId, options);
   if (!detail) {
     throw new Error("Workflow run not found.");
   }
@@ -195,7 +199,7 @@ export async function signalWorkflowRun(runId: string, signal: WorkflowSignalTyp
     });
   }
 
-  return getWorkflowRunDetail(runId) as Promise<WorkflowRunDetail>;
+  return getWorkflowRunDetail(runId, options) as Promise<WorkflowRunDetail>;
 }
 
 function nextStepKey(detail: WorkflowRunDetail): WorkflowStepKey | undefined {
@@ -224,7 +228,7 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
   }
 
   if (stepKey === "retrieve_context") {
-    const retrieval = await buildContextPack(detail.run.goal, { limit: 6 });
+    const retrieval = await buildContextPack(detail.run.goal, { limit: 6, tenantId: detail.run.tenantId });
     return {
       contextCount: retrieval.results.length,
       memoryCount: retrieval.memoryResults.length,
@@ -298,6 +302,7 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
 async function buildPlan(detail: WorkflowRunDetail) {
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const record = await buildDynamicWorkflowPlan({
+    tenantId: detail.run.tenantId,
     goal: detail.run.goal,
     mode: detail.run.input.mode || "orchestrate",
     workflowRunId: detail.run.id,
@@ -407,6 +412,7 @@ async function persistWorkflowReport(detail: WorkflowRunDetail) {
   ].filter(Boolean).join("\n\n");
   const embedding = (await embedTexts([content]))?.[0];
   const memory = await saveMemory({
+    tenantId: detail.run.tenantId,
     type: "episode",
     title: `Workflow report: ${detail.run.goal.slice(0, 72)}`,
     content,

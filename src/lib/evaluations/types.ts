@@ -38,6 +38,7 @@ export type EvalRunSummary = {
 
 export type EvalRunRecord = {
   id: string;
+  tenantId?: string;
   suite: string;
   status: EvalRunStatus;
   summary: EvalRunSummary;
@@ -50,6 +51,7 @@ export type EvalRunRecord = {
 
 export type EvalResultRecord = {
   id: string;
+  tenantId?: string;
   evalRunId: string;
   caseId: string;
   caseName: string;

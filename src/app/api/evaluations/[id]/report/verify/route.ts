@@ -34,7 +34,9 @@ export async function GET(
       resourceId: reportId || id,
       metadata: { evalRunId: id, reportId, verifier: true },
     });
-    const report = reportId ? await getEvalReportSnapshot(reportId) : await getLatestEvalReportSnapshot(id);
+    const report = reportId
+      ? await getEvalReportSnapshot(reportId, { tenantId: securityContext.tenantId })
+      : await getLatestEvalReportSnapshot(id, { tenantId: securityContext.tenantId });
 
     if (!report || report.evalRunId !== id) {
       return Response.json({ error: "Evaluation report not found." }, { status: 404 });
@@ -95,8 +97,8 @@ export async function POST(
     const report = parsed.data.report
       ? parsed.data.report
       : parsed.data.reportId
-        ? await getEvalReportSnapshot(parsed.data.reportId)
-        : await getLatestEvalReportSnapshot(id);
+        ? await getEvalReportSnapshot(parsed.data.reportId, { tenantId: securityContext.tenantId })
+        : await getLatestEvalReportSnapshot(id, { tenantId: securityContext.tenantId });
     const verification = verifyEvalReportSnapshot(report);
 
     if (!verification.reportId && !parsed.data.report) {

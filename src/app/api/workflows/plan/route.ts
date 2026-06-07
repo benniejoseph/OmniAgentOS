@@ -16,8 +16,9 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read",
       resourceType: "workflow_plan",
@@ -28,8 +29,8 @@ export async function GET(request: Request) {
   }
 
   return Response.json({
-    plans: await listWorkflowPlans(limit),
-    stats: await getWorkflowPlanStats(),
+    plans: await listWorkflowPlans(limit, { tenantId: context.tenantId }),
+    stats: await getWorkflowPlanStats({ tenantId: context.tenantId }),
   });
 }
 
@@ -44,8 +45,9 @@ export async function POST(request: Request) {
     );
   }
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "manage.workflow",
       resourceType: "workflow_plan",
@@ -60,6 +62,7 @@ export async function POST(request: Request) {
   }
 
   const plan = await buildDynamicWorkflowPlan({
+    tenantId: context.tenantId,
     goal: parsed.data.goal,
     mode: parsed.data.mode,
     workflowRunId: parsed.data.workflowRunId,
@@ -68,5 +71,5 @@ export async function POST(request: Request) {
     reuseExisting: parsed.data.reuseExisting,
   });
 
-  return Response.json({ plan, stats: await getWorkflowPlanStats() }, { status: 201 });
+  return Response.json({ plan, stats: await getWorkflowPlanStats({ tenantId: context.tenantId }) }, { status: 201 });
 }

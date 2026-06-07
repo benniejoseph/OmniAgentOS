@@ -581,51 +581,71 @@ export async function deleteObservabilitySloPolicy(policyId: string) {
 export async function listObservabilitySloPolicyChanges({
   policyId,
   status,
+  tenantId: rawTenantId,
   limit = 50,
 }: {
   policyId?: string;
   status?: SloPolicyChangeStatus;
+  tenantId?: string;
   limit?: number;
 } = {}) {
   const cappedLimit = Math.min(Math.max(Math.round(limit), 1), 200);
+  const tenantId = normalizeTenantId(rawTenantId);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      SELECT *
-      FROM omni_observability_slo_policy_changes
-      ORDER BY created_at DESC
-      LIMIT ${Math.max(cappedLimit, 100)}
-    `;
-    return rows
-      .map(sloPolicyChangeFromRow)
-      .filter((change) => !policyId || change.policyId === policyId)
-      .filter((change) => !status || change.status === status)
-      .slice(0, cappedLimit);
+    const filters = ["COALESCE(tenant_id, 'default') = $1"];
+    const params: Array<string | number> = [tenantId];
+    if (policyId) {
+      params.push(policyId);
+      filters.push(`policy_id = $${params.length}`);
+    }
+    if (status) {
+      params.push(status);
+      filters.push(`status = $${params.length}`);
+    }
+    params.push(cappedLimit);
+    const rows = await getSql().query(
+      `
+        SELECT *
+        FROM omni_observability_slo_policy_changes
+        WHERE ${filters.join(" AND ")}
+        ORDER BY created_at DESC
+        LIMIT $${params.length}
+      `,
+      params,
+    );
+    return rows.map(sloPolicyChangeFromRow);
   }
 
   const ledger = await readSloPolicyChangeLedger();
   return ledger.changes
+    .filter((change) => normalizeTenantId(change.tenantId) === tenantId)
     .filter((change) => !policyId || change.policyId === policyId)
     .filter((change) => !status || change.status === status)
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
     .slice(0, cappedLimit);
 }
 
-export async function getObservabilitySloPolicyChange(changeId: string) {
+export async function getObservabilitySloPolicyChange(changeId: string, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_observability_slo_policy_changes
       WHERE id = ${changeId}
+        AND COALESCE(tenant_id, 'default') = ${tenantId}
       LIMIT 1
     `;
     return rows[0] ? sloPolicyChangeFromRow(rows[0]) : null;
   }
 
   const ledger = await readSloPolicyChangeLedger();
-  return ledger.changes.find((change) => change.id === changeId) || null;
+  return ledger.changes.find(
+    (change) => change.id === changeId && normalizeTenantId(change.tenantId) === tenantId,
+  ) || null;
 }
 
 export async function requestObservabilitySloPolicyChange(input: {
@@ -717,7 +737,7 @@ export async function applyObservabilitySloPolicyChange(
     ticket?: string;
   } = {},
 ) {
-  const pending = await getObservabilitySloPolicyChange(changeId);
+  const pending = await getObservabilitySloPolicyChange(changeId, { tenantId: review.tenantId });
   if (!pending) {
     throw new Error(`SLO policy change ${changeId} was not found.`);
   }
@@ -772,7 +792,7 @@ export async function rejectObservabilitySloPolicyChange(
     reviewReason?: string;
   } = {},
 ) {
-  const pending = await getObservabilitySloPolicyChange(changeId);
+  const pending = await getObservabilitySloPolicyChange(changeId, { tenantId: review.tenantId });
   if (!pending) {
     throw new Error(`SLO policy change ${changeId} was not found.`);
   }
@@ -810,7 +830,7 @@ export async function rollbackObservabilitySloPolicyChange(
     autoApply?: boolean;
   } = {},
 ) {
-  const source = await getObservabilitySloPolicyChange(changeId);
+  const source = await getObservabilitySloPolicyChange(changeId, { tenantId: input.tenantId });
   if (!source) {
     throw new Error(`SLO policy change ${changeId} was not found.`);
   }
@@ -1316,7 +1336,7 @@ function normalizePolicyChange(
     action,
     status: normalizeChangeStatus(change.status),
     riskLevel,
-    tenantId: change.tenantId?.trim() || undefined,
+    tenantId: normalizeTenantId(change.tenantId),
     requestedBy: change.requestedBy?.trim() || undefined,
     reviewedBy: change.reviewedBy?.trim() || undefined,
     reason: change.reason?.trim() || undefined,
@@ -1755,6 +1775,7 @@ function hashSloPolicyChange(change: ObservabilitySloPolicyChange) {
     action: change.action,
     status: change.status,
     riskLevel: change.riskLevel,
+    tenantId: change.tenantId,
     requestedBy: change.requestedBy,
     beforePolicy: change.beforePolicy,
     afterPolicy: change.afterPolicy,
@@ -1814,6 +1835,13 @@ function stableStringify(value: unknown): string {
   }
 
   return value === undefined ? "null" : JSON.stringify(value);
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }
 
 function getSloPolicyFile() {
