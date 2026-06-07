@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type {
@@ -25,6 +26,20 @@ export type RegisterOpenApiConnectorInput = {
   defaultRiskLevel?: ToolRiskLevel;
   approvalRequired?: boolean;
   info?: Record<string, unknown>;
+};
+
+export type UpdateOpenApiConnectorInput = Partial<Pick<
+  RegisterOpenApiConnectorInput,
+  | "name"
+  | "specUrl"
+  | "baseUrl"
+  | "authType"
+  | "authTokenEnv"
+  | "authHeaderName"
+  | "defaultRiskLevel"
+  | "approvalRequired"
+>> & {
+  status?: OpenApiConnectorRecord["status"];
 };
 
 type TenantScopedOptions = {
@@ -166,6 +181,71 @@ export async function getOpenApiConnector(connectorId: string, options: TenantSc
   ) || null;
 }
 
+export async function updateOpenApiConnector(
+  connectorId: string,
+  input: UpdateOpenApiConnectorInput,
+  options: TenantScopedOptions = {},
+) {
+  const connector = await getOpenApiConnector(connectorId, options);
+  if (!connector) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const nextConnector: OpenApiConnectorRecord = {
+    ...connector,
+    name: input.name?.trim() || connector.name,
+    specUrl: input.specUrl === undefined ? connector.specUrl : input.specUrl?.trim() || undefined,
+    baseUrl: input.baseUrl?.trim() || connector.baseUrl,
+    authType: input.authType || connector.authType,
+    authTokenEnv: input.authTokenEnv === undefined ? connector.authTokenEnv : input.authTokenEnv?.trim() || undefined,
+    authHeaderName:
+      input.authHeaderName === undefined ? connector.authHeaderName : input.authHeaderName?.trim() || undefined,
+    status: input.status || connector.status,
+    defaultRiskLevel: input.defaultRiskLevel ?? connector.defaultRiskLevel,
+    approvalRequired: input.approvalRequired ?? connector.approvalRequired,
+    lastError: input.status === "active" ? undefined : connector.lastError,
+    updatedAt: now,
+  };
+  const saved = await saveOpenApiConnector(nextConnector);
+  await syncOpenApiOperationsForConnector(saved);
+  return saved;
+}
+
+export async function deleteOpenApiConnector(connectorId: string, options: TenantScopedOptions = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const connector = await getOpenApiConnector(connectorId, { tenantId });
+  if (!connector) {
+    return null;
+  }
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    await getSql()`
+      DELETE FROM omni_openapi_operations
+      WHERE connector_id = ${connectorId}
+        AND tenant_id = ${tenantId}
+    `;
+    await getSql()`
+      DELETE FROM omni_openapi_connectors
+      WHERE id = ${connectorId}
+        AND tenant_id = ${tenantId}
+    `;
+    return connector;
+  }
+
+  await mutateOpenApiLedger((ledger) => {
+    ledger.connectors = ledger.connectors.filter(
+      (item) => item.id !== connectorId || normalizeTenantId(item.tenantId) !== tenantId,
+    );
+    ledger.operations = ledger.operations.filter(
+      (operation) => operation.connectorId !== connectorId || normalizeTenantId(operation.tenantId) !== tenantId,
+    );
+    return ledger;
+  });
+  return connector;
+}
+
 export async function saveOpenApiImport({
   connector,
   operations,
@@ -278,6 +358,38 @@ export async function saveOpenApiOperation(operation: OpenApiOperationRecord) {
   return record;
 }
 
+async function syncOpenApiOperationsForConnector(connector: OpenApiConnectorRecord) {
+  const tenantId = normalizeTenantId(connector.tenantId);
+  const nextOperationStatus = connector.status === "disabled" ? "disabled" : "active";
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    await getSql()`
+      UPDATE omni_openapi_operations
+      SET connector_name = ${connector.name},
+          status = ${nextOperationStatus},
+          updated_at = ${connector.updatedAt}
+      WHERE connector_id = ${connector.id}
+        AND tenant_id = ${tenantId}
+    `;
+    return;
+  }
+
+  await mutateOpenApiLedger((ledger) => {
+    ledger.operations = ledger.operations.map((operation) =>
+      operation.connectorId === connector.id && normalizeTenantId(operation.tenantId) === tenantId
+        ? {
+            ...operation,
+            connectorName: connector.name,
+            status: nextOperationStatus,
+            updatedAt: connector.updatedAt,
+          }
+        : operation,
+    );
+    return ledger;
+  });
+}
+
 export async function listOpenApiOperations(connectorId?: string, options: TenantScopedOptions = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
 
@@ -320,12 +432,27 @@ export async function getOpenApiOperationById(toolId: string, options: TenantSco
 
 export async function recordOpenApiConnectorError(connector: OpenApiConnectorRecord, error: string) {
   const now = new Date().toISOString();
-  return saveOpenApiConnector({
+  const saved = await saveOpenApiConnector({
     ...connector,
     status: "error",
     lastError: error,
     updatedAt: now,
   });
+  await recordRuntimeEventSafely({
+    level: "error",
+    category: "connector",
+    action: "connector.openapi.import_failed",
+    tenantId: saved.tenantId,
+    resourceType: "openapi_connector",
+    resourceId: saved.id,
+    message: error,
+    metadata: {
+      failureType: "connector_failure",
+      connectorName: saved.name,
+      connectorStatus: saved.status,
+    },
+  });
+  return saved;
 }
 
 export async function getOpenApiConnectorStats(options: TenantScopedOptions = {}): Promise<OpenApiConnectorStats> {

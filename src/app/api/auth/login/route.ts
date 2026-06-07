@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { sessionCookie } from "@/lib/auth/session";
 import { authenticatePassword } from "@/lib/auth/store";
+import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 
 export const runtime = "nodejs";
 
@@ -10,6 +11,8 @@ const loginSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
+  const telemetry = createRequestTelemetry(request, "auth");
   const parsed = loginSchema.safeParse(await request.json().catch(() => ({})));
 
   if (!parsed.success) {
@@ -22,6 +25,24 @@ export async function POST(request: Request) {
   const result = await authenticatePassword(parsed.data);
 
   if (!result) {
+    await recordRuntimeEventSafely({
+      level: "warn",
+      category: "security",
+      action: "security.auth_failed",
+      route: "/api/auth/login",
+      method: "POST",
+      statusCode: 401,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      resourceType: "auth_session",
+      message: "Password authentication failed.",
+      metadata: {
+        failureType: "auth_failure",
+        authMethod: "password",
+        emailDomain: parsed.data.email.split("@")[1]?.toLowerCase(),
+      },
+    });
     return Response.json(
       { error: "Unauthorized", message: "Email or password is incorrect, or the user is not active." },
       { status: 401 },

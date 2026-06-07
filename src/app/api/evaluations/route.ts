@@ -117,6 +117,7 @@ export async function POST(request: Request) {
         resourceType: "evaluation",
         message: "Evaluation run blocked by governance policy.",
         metadata: {
+          failureType: "policy_block",
           suite: parsed.data.suite || "core",
           caseIds: selection.cases.map((evalCase) => evalCase.id),
           violations: governance.violations,

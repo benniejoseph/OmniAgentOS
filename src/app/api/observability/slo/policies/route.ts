@@ -143,7 +143,7 @@ export async function GET(request: Request) {
   try {
     const [policies, snapshot, approvalPolicy, approvalPolicyVersions] = await Promise.all([
       listObservabilitySloPolicies({ includeDisabled: true }),
-      getObservabilitySloSnapshot(),
+      getObservabilitySloSnapshot({ tenantId: context.tenantId }),
       getObservabilitySloApprovalPolicyConfig(),
       listObservabilitySloApprovalPolicyVersions({ limit: 10 }),
     ]);
@@ -220,7 +220,7 @@ export async function POST(request: Request) {
 
   try {
     const result = await handleSloPolicyAction(parsed.data, context);
-    const snapshot = await getObservabilitySloSnapshot();
+    const snapshot = await getObservabilitySloSnapshot({ tenantId: context.tenantId });
     const [policies, changes, approvalPolicy, approvalPolicyVersions] = await Promise.all([
       listObservabilitySloPolicies({ includeDisabled: true }),
       listObservabilitySloPolicyChanges({ limit: 20, tenantId: context.tenantId }),

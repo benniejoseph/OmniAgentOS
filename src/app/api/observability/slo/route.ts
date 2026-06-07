@@ -22,8 +22,9 @@ export async function GET(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "observability-slo");
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read.security",
       resourceType: "observability_slo",
@@ -34,7 +35,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const snapshot = await getObservabilitySloSnapshot();
+    const snapshot = await getObservabilitySloSnapshot({ tenantId: context.tenantId });
     await recordRuntimeEventSafely({
       category: "api",
       action: "observability.slo_snapshot",
@@ -44,6 +45,8 @@ export async function GET(request: Request) {
       durationMs: Date.now() - startedAt,
       requestId: telemetry.requestId,
       correlationId: telemetry.correlationId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
       resourceType: "observability_slo",
       message: "Read observability SLO snapshot.",
       metadata: {
@@ -64,6 +67,8 @@ export async function GET(request: Request) {
       durationMs: Date.now() - startedAt,
       requestId: telemetry.requestId,
       correlationId: telemetry.correlationId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
       resourceType: "observability_slo",
       message: "Observability SLO snapshot failed.",
       metadata: { error: error instanceof Error ? error.message : "SLO snapshot failed." },
@@ -103,6 +108,7 @@ export async function POST(request: Request) {
       correlationId: telemetry.correlationId,
       queueAlerts: parsed.data.queueAlerts ?? true,
       resolveRecovered: parsed.data.resolveRecovered ?? true,
+      tenantId: context.tenantId,
     });
     const dispatch = parsed.data.dispatchAlerts
       ? await dispatchAlertDeliveries(parsed.data.dispatchLimit || 10)

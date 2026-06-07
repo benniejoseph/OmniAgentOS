@@ -13,7 +13,7 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 export const runtime = "nodejs";
 
 const levels = ["info", "warn", "error"] as const;
-const categories = ["api", "workflow", "alert", "diagnostics", "evaluation", "security", "system"] as const;
+const categories = ["api", "workflow", "alert", "diagnostics", "evaluation", "connector", "security", "system"] as const;
 
 const markerSchema = z.object({
   action: z.enum(["record_marker"]),

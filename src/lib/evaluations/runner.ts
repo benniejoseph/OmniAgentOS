@@ -1,7 +1,7 @@
 import { hasOpenAIKey } from "@/lib/config";
 import { hashPassword, verifyPassword } from "@/lib/auth/crypto";
 import { isAuthEnforced } from "@/lib/auth/store";
-import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
+import { enterDatabaseTenantContext, getDatabaseTenantContext, getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
 import {
   createAlertWebhookSignature,
   dispatchAlertDeliveries,
@@ -25,6 +25,16 @@ import {
 import { runIncidentPlaybook } from "@/lib/diagnostics/playbooks";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { connectionCatalog } from "@/lib/connectors/catalog";
+import {
+  createMcpConnectorRecord,
+  listMcpConnectors,
+  saveMcpConnector,
+} from "@/lib/connectors/store";
+import {
+  createOpenApiConnectorRecord,
+  listOpenApiConnectors,
+  saveOpenApiConnector,
+} from "@/lib/connectors/openapi-store";
 import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import { createSloIncidentFingerprint, runObservabilitySloMonitor, type ObservabilitySloPolicy } from "@/lib/observability/slo-monitor";
 import {
@@ -44,7 +54,7 @@ import {
 } from "@/lib/observability/slo-policy-store";
 import { getObservabilityStats, listObservabilityEvents, recordRuntimeEvent } from "@/lib/observability/store";
 import { getMemoryGraphStats, rebuildMemoryGraph, searchMemoryGraph } from "@/lib/memory/graph";
-import { listMemories, saveMemory } from "@/lib/memory/store";
+import { listMemories, saveMemory, searchMemories } from "@/lib/memory/store";
 import { getApprovalQueue, getOperationsOverview } from "@/lib/operations/queue";
 import { reconcileOperationsRecovery } from "@/lib/operations/recovery";
 import { buildContextPack, getContextEngineStats } from "@/lib/rag/context-engine";
@@ -54,7 +64,7 @@ import { cancelWorkflowRunTick, enqueueWorkflowRunTick, processWorkflowQueue } f
 import { executeDynamicWorkflowPlan, getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats } from "@/lib/workflows/planner";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
-import { createWorkflowRun, getWorkflowRunDetail, updateWorkflowRun, updateWorkflowStep } from "@/lib/workflows/store";
+import { createWorkflowRun, getWorkflowRunDetail, listWorkflowRuns, updateWorkflowRun, updateWorkflowStep } from "@/lib/workflows/store";
 import { createWorkflowTrigger, dispatchWorkflowTrigger, getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 import {
   completeEvalRun,
@@ -255,6 +265,21 @@ const rawEvalCases: RawEvalCaseDefinition[] = [
       viewerDenied: true,
       adminAllowed: true,
       secretRedacted: true,
+    },
+  },
+  {
+    id: "security.tenant_isolation",
+    name: "Tenant isolation boundary",
+    description: "Seeds two synthetic tenants and verifies memory, connectors, workflow runs, and observability stay isolated.",
+    type: "security",
+    input: {
+      surfaces: ["memory", "connectors", "workflows", "observability"],
+    },
+    expected: {
+      noCrossTenantMemory: true,
+      noCrossTenantConnectors: true,
+      noCrossTenantWorkflows: true,
+      noCrossTenantObservability: true,
     },
   },
   {
@@ -542,6 +567,9 @@ const evalGovernanceById: Record<string, EvalCaseGovernance> = {
   "security.rbac_controls": evalGovernance("read_only", 0, false, "none", [
     "Pure RBAC and redaction checks.",
   ]),
+  "security.tenant_isolation": evalGovernance("mutation_allowed", 3, true, "audit_retained", [
+    "Seeds two synthetic tenant namespaces across shared ledgers and verifies cross-tenant reads are blocked.",
+  ]),
   "auth.identity_controls": evalGovernance("read_only", 0, false, "none", [
     "Pure password hash and RBAC checks.",
   ]),
@@ -825,6 +853,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "security.rbac_controls") {
     return evaluateSecurityControls();
+  }
+
+  if (evalCase.id === "security.tenant_isolation") {
+    return evaluateTenantIsolation(evalCase);
   }
 
   if (evalCase.id === "auth.identity_controls") {
@@ -1378,6 +1410,199 @@ function evaluateSecurityControls(): CaseResult {
       redacted,
     },
   };
+}
+
+async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const previousTenant = getDatabaseTenantContext();
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const tenantA = `eval_isolation_a_${suffix}`;
+  const tenantB = `eval_isolation_b_${suffix}`;
+  const markerA = `tenant-a-marker-${suffix}`;
+  const markerB = `tenant-b-marker-${suffix}`;
+  const correlationId = `eval-tenant-isolation-${suffix}`;
+
+  try {
+    const memoryA = await withDatabaseTenant(tenantA, () =>
+      saveMemory({
+        tenantId: tenantA,
+        title: `Tenant A isolation ${suffix}`,
+        content: `Only tenant A should see ${markerA}.`,
+        tags: ["eval", "tenant-isolation", markerA],
+        source: "evaluation",
+        importance: 0.8,
+      }),
+    );
+    const memoryB = await withDatabaseTenant(tenantB, () =>
+      saveMemory({
+        tenantId: tenantB,
+        title: `Tenant B isolation ${suffix}`,
+        content: `Only tenant B should see ${markerB}.`,
+        tags: ["eval", "tenant-isolation", markerB],
+        source: "evaluation",
+        importance: 0.8,
+      }),
+    );
+
+    const mcpA = await withDatabaseTenant(tenantA, () =>
+      saveMcpConnector(
+        createMcpConnectorRecord({
+          tenantId: tenantA,
+          name: `Eval MCP A ${suffix}`,
+          endpoint: `https://example.com/mcp/${suffix}`,
+          authType: "none",
+          defaultRiskLevel: 1,
+          approvalRequired: false,
+        }),
+      ),
+    );
+    const mcpB = await withDatabaseTenant(tenantB, () =>
+      saveMcpConnector(
+        createMcpConnectorRecord({
+          tenantId: tenantB,
+          name: `Eval MCP B ${suffix}`,
+          endpoint: `https://example.com/mcp/${suffix}/b`,
+          authType: "none",
+          defaultRiskLevel: 1,
+          approvalRequired: false,
+        }),
+      ),
+    );
+    const openApiA = await withDatabaseTenant(tenantA, () =>
+      saveOpenApiConnector(
+        createOpenApiConnectorRecord({
+          tenantId: tenantA,
+          name: `Eval OpenAPI A ${suffix}`,
+          baseUrl: `https://api.example.com/${suffix}`,
+          authType: "none",
+          defaultRiskLevel: 1,
+          approvalRequired: false,
+        }),
+      ),
+    );
+    const openApiB = await withDatabaseTenant(tenantB, () =>
+      saveOpenApiConnector(
+        createOpenApiConnectorRecord({
+          tenantId: tenantB,
+          name: `Eval OpenAPI B ${suffix}`,
+          baseUrl: `https://api.example.com/${suffix}/b`,
+          authType: "none",
+          defaultRiskLevel: 1,
+          approvalRequired: false,
+        }),
+      ),
+    );
+
+    const workflowA = await withDatabaseTenant(tenantA, () =>
+      createWorkflowRun({
+        tenantId: tenantA,
+        goal: `Tenant A isolation workflow ${markerA}`,
+        mode: "research",
+        requireApproval: true,
+        maxAttempts: 1,
+        metadata: { source: "evaluation", caseId: evalCase.id, marker: markerA },
+      }),
+    );
+    const workflowB = await withDatabaseTenant(tenantB, () =>
+      createWorkflowRun({
+        tenantId: tenantB,
+        goal: `Tenant B isolation workflow ${markerB}`,
+        mode: "research",
+        requireApproval: true,
+        maxAttempts: 1,
+        metadata: { source: "evaluation", caseId: evalCase.id, marker: markerB },
+      }),
+    );
+
+    const eventA = await withDatabaseTenant(tenantA, () =>
+      recordRuntimeEvent({
+        level: "info",
+        category: "security",
+        action: "evaluation.tenant_isolation_marker",
+        correlationId,
+        tenantId: tenantA,
+        resourceType: "evaluation",
+        resourceId: evalCase.id,
+        message: `Tenant A observability marker ${markerA}.`,
+        metadata: { marker: markerA, caseId: evalCase.id },
+      }),
+    );
+
+    const [
+      tenantAMemories,
+      tenantBMemories,
+      tenantASearchForA,
+      tenantASearchForB,
+      tenantBMcpConnectors,
+      tenantBOpenApiConnectors,
+      tenantBWorkflowRuns,
+      tenantBWorkflowDetailForA,
+      tenantBEventsForA,
+    ] = await Promise.all([
+      withDatabaseTenant(tenantA, () => listMemories({ tenantId: tenantA, limit: 50 })),
+      withDatabaseTenant(tenantB, () => listMemories({ tenantId: tenantB, limit: 50 })),
+      withDatabaseTenant(tenantA, () => searchMemories(markerA, { tenantId: tenantA, limit: 10 })),
+      withDatabaseTenant(tenantA, () => searchMemories(markerB, { tenantId: tenantA, limit: 10 })),
+      withDatabaseTenant(tenantB, () => listMcpConnectors(50, { tenantId: tenantB })),
+      withDatabaseTenant(tenantB, () => listOpenApiConnectors(50, { tenantId: tenantB })),
+      withDatabaseTenant(tenantB, () => listWorkflowRuns(50, { tenantId: tenantB })),
+      withDatabaseTenant(tenantB, () => getWorkflowRunDetail(workflowA.run.id, { tenantId: tenantB })),
+      withDatabaseTenant(tenantB, () => listObservabilityEvents({ correlationId, tenantId: tenantB, limit: 20 })),
+    ]);
+
+    const checks = {
+      tenantASeesOwnMemory: tenantAMemories.some((memory) => memory.id === memoryA.id),
+      tenantADoesNotSeeTenantBMemory: !tenantAMemories.some((memory) => memory.id === memoryB.id),
+      tenantBSeesOwnMemory: tenantBMemories.some((memory) => memory.id === memoryB.id),
+      tenantBDoesNotSeeTenantAMemory: !tenantBMemories.some((memory) => memory.id === memoryA.id),
+      tenantASearchFindsOwnMemory: tenantASearchForA.some((result) => result.record.id === memoryA.id),
+      tenantASearchDoesNotFindTenantBMemory: !tenantASearchForB.some((result) => result.record.id === memoryB.id),
+      tenantBSeesOwnMcpConnector: tenantBMcpConnectors.some((connector) => connector.id === mcpB.id),
+      tenantBDoesNotSeeTenantAMcpConnector: !tenantBMcpConnectors.some((connector) => connector.id === mcpA.id),
+      tenantBSeesOwnOpenApiConnector: tenantBOpenApiConnectors.some((connector) => connector.id === openApiB.id),
+      tenantBDoesNotSeeTenantAOpenApiConnector: !tenantBOpenApiConnectors.some((connector) => connector.id === openApiA.id),
+      tenantBSeesOwnWorkflow: tenantBWorkflowRuns.some((run) => run.id === workflowB.run.id),
+      tenantBDoesNotListTenantAWorkflow: !tenantBWorkflowRuns.some((run) => run.id === workflowA.run.id),
+      tenantBCannotGetTenantAWorkflowDetail: tenantBWorkflowDetailForA === null,
+      tenantBDoesNotSeeTenantAObservabilityEvent: tenantBEventsForA.length === 0,
+      tenantAEventPersisted: Boolean(eventA.id),
+    };
+    const passed = Object.values(checks).filter(Boolean).length;
+    const total = Object.keys(checks).length;
+
+    return {
+      status: passed === total ? "pass" : passed >= total - 2 ? "warn" : "fail",
+      score: passed / total,
+      output: {
+        checks,
+        tenants: [tenantA, tenantB],
+        seeded: {
+          memoryA: memoryA.id,
+          memoryB: memoryB.id,
+          mcpA: mcpA.id,
+          mcpB: mcpB.id,
+          openApiA: openApiA.id,
+          openApiB: openApiB.id,
+          workflowA: workflowA.run.id,
+          workflowB: workflowB.run.id,
+          eventA: eventA.id,
+        },
+        storageBackend: getStorageBackend(),
+        databaseConfigured: hasDatabaseUrl(),
+      },
+    };
+  } finally {
+    enterDatabaseTenantContext(previousTenant);
+  }
+}
+
+async function withDatabaseTenant<T>(tenantId: string, operation: () => Promise<T>) {
+  const previousTenant = getDatabaseTenantContext();
+  enterDatabaseTenantContext(tenantId);
+  try {
+    return await operation();
+  } finally {
+    enterDatabaseTenantContext(previousTenant);
+  }
 }
 
 async function evaluateIdentityControls(): Promise<CaseResult> {

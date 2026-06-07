@@ -34,13 +34,13 @@ export async function GET(request: Request) {
         limit: Math.min(limit, 24),
         persistTrace: url.searchParams.get("persistTrace") !== "false",
       }),
-      stats: await getContextEngineStats(),
+      stats: await getContextEngineStats({ tenantId: context.tenantId }),
     });
   }
 
   return Response.json({
-    traces: await listRetrievalTraces(limit),
-    stats: await getContextEngineStats(),
+    traces: await listRetrievalTraces(limit, { tenantId: context.tenantId }),
+    stats: await getContextEngineStats({ tenantId: context.tenantId }),
   });
 }
 
@@ -76,6 +76,6 @@ export async function POST(request: Request) {
       limit: parsed.data.limit,
       persistTrace: parsed.data.persistTrace,
     }),
-    stats: await getContextEngineStats(),
+    stats: await getContextEngineStats({ tenantId: context.tenantId }),
   });
 }

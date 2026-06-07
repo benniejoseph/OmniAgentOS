@@ -81,6 +81,7 @@ export async function buildContextPack(
     };
     if (options.persistTrace !== false) {
       pack.trace = await saveRetrievalTrace({
+        tenantId: options.tenantId,
         query: normalizedQuery,
         profile,
         resultCount: 0,
@@ -122,6 +123,7 @@ export async function buildContextPack(
     options.persistTrace === false
       ? undefined
       : await saveRetrievalTrace({
+          tenantId: options.tenantId,
           query: normalizedQuery,
           profile,
           resultCount: memoryResults.length + knowledgeResults.length + graphResults.length,
@@ -142,12 +144,15 @@ export async function buildContextPack(
   };
 }
 
-export async function listRetrievalTraces(limit = 20) {
+export async function listRetrievalTraces(limit = 20, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_retrieval_traces
+      WHERE tenant_id = ${tenantId}
       ORDER BY created_at DESC
       LIMIT ${limit}
     `;
@@ -155,10 +160,12 @@ export async function listRetrievalTraces(limit = 20) {
   }
 
   const ledger = await readRetrievalTraceLedger();
-  return ledger.traces.slice(0, limit);
+  return ledger.traces.filter((trace) => normalizeTenantId(trace.tenantId) === tenantId).slice(0, limit);
 }
 
-export async function getContextEngineStats(): Promise<ContextEngineStats> {
+export async function getContextEngineStats(options: { tenantId?: string } = {}): Promise<ContextEngineStats> {
+  const tenantId = normalizeTenantId(options.tenantId);
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const [totals, modes] = await Promise.all([
@@ -167,11 +174,13 @@ export async function getContextEngineStats(): Promise<ContextEngineStats> {
                COALESCE(AVG(latency_ms), 0)::int AS average_latency_ms,
                COALESCE(AVG(selected_count), 0)::float AS average_selected_count
         FROM omni_retrieval_traces
+        WHERE tenant_id = ${tenantId}
       `,
       getSql()`
         SELECT COALESCE(profile->>'mode', 'unknown') AS mode,
                COUNT(*)::int AS count
         FROM omni_retrieval_traces
+        WHERE tenant_id = ${tenantId}
         GROUP BY mode
       `,
     ]);
@@ -184,21 +193,22 @@ export async function getContextEngineStats(): Promise<ContextEngineStats> {
       averageLatencyMs: Number(totals[0]?.average_latency_ms || 0),
       averageSelectedCount: Number(totals[0]?.average_selected_count || 0),
       byMode,
-      latest: await listRetrievalTraces(5),
+      latest: await listRetrievalTraces(5, { tenantId }),
     };
   }
 
   const ledger = await readRetrievalTraceLedger();
-  const byMode = ledger.traces.reduce<Record<string, number>>((acc, trace) => {
+  const traces = ledger.traces.filter((trace) => normalizeTenantId(trace.tenantId) === tenantId);
+  const byMode = traces.reduce<Record<string, number>>((acc, trace) => {
     acc[trace.profile.mode] = (acc[trace.profile.mode] || 0) + 1;
     return acc;
   }, {});
   return {
-    traces: ledger.traces.length,
-    averageLatencyMs: average(ledger.traces.map((trace) => trace.latencyMs)),
-    averageSelectedCount: average(ledger.traces.map((trace) => trace.selectedCount)),
+    traces: traces.length,
+    averageLatencyMs: average(traces.map((trace) => trace.latencyMs)),
+    averageSelectedCount: average(traces.map((trace) => trace.selectedCount)),
     byMode,
-    latest: ledger.traces.slice(0, 5),
+    latest: traces.slice(0, 5),
   };
 }
 
@@ -500,16 +510,17 @@ async function saveRetrievalTrace(
     id: randomUUID(),
     createdAt: new Date().toISOString(),
     ...input,
+    tenantId: normalizeTenantId(input.tenantId),
   };
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_retrieval_traces (
-        id, query, profile, result_count, selected_count, latency_ms, results, created_at
+        id, tenant_id, query, profile, result_count, selected_count, latency_ms, results, created_at
       )
       VALUES (
-        ${record.id}, ${record.query}, ${JSON.stringify(record.profile)}::jsonb,
+        ${record.id}, ${record.tenantId}, ${record.query}, ${JSON.stringify(record.profile)}::jsonb,
         ${record.resultCount}, ${record.selectedCount}, ${record.latencyMs},
         ${JSON.stringify(record.results)}::jsonb, ${record.createdAt}
       )
@@ -527,6 +538,7 @@ async function saveRetrievalTrace(
 function retrievalTraceFromRow(row: Record<string, unknown>): RetrievalTraceRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     query: String(row.query || ""),
     profile: parseProfile(row.profile),
     resultCount: Number(row.result_count || 0),
@@ -537,6 +549,10 @@ function retrievalTraceFromRow(row: Record<string, unknown>): RetrievalTraceReco
       : [],
     createdAt: normalizeDate(row.created_at),
   };
+}
+
+function normalizeTenantId(value?: string) {
+  return value?.trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default";
 }
 
 function parseProfile(value: unknown): RetrievalProfile {

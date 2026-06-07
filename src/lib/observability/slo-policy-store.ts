@@ -6,7 +6,14 @@ import type { SecurityRole } from "@/lib/security/types";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
-export type SloMetric = "errorRate" | "availability" | "latencyP95Ms" | "routeFailures";
+export type SloMetric =
+  | "errorRate"
+  | "availability"
+  | "latencyP95Ms"
+  | "routeFailures"
+  | "authFailures"
+  | "policyBlocks"
+  | "connectorFailures";
 export type SloComparator = "greater_than" | "greater_than_or_equal" | "less_than" | "less_than_or_equal";
 
 export type ObservabilitySloPolicy = {
@@ -230,6 +237,57 @@ export function getDefaultObservabilitySloPolicies(): ObservabilitySloPolicy[] {
       alertTargetIds: [],
       suppressionMinutes: 180,
       metadata: { source: "default" },
+    },
+    {
+      id: "auth_failure_pressure",
+      name: "Authentication failure pressure",
+      description: "Authentication failures are tracked as a security control-plane SLO.",
+      metric: "authFailures",
+      comparator: "greater_than_or_equal",
+      warningThreshold: 5,
+      criticalThreshold: 20,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "count",
+      componentId: "security.rbac",
+      enabled: true,
+      alertTargetIds: ["dashboard", "ops"],
+      suppressionMinutes: 60,
+      metadata: { source: "default", failureType: "auth_failure" },
+    },
+    {
+      id: "security_policy_blocks",
+      name: "Security policy blocks",
+      description: "RBAC and policy blocks are tracked for tenant-abuse and access-control regression detection.",
+      metric: "policyBlocks",
+      comparator: "greater_than_or_equal",
+      warningThreshold: 3,
+      criticalThreshold: 12,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "count",
+      componentId: "security.rbac",
+      enabled: true,
+      alertTargetIds: ["dashboard", "ops"],
+      suppressionMinutes: 60,
+      metadata: { source: "default", failureType: "policy_block" },
+    },
+    {
+      id: "connector_failure_pressure",
+      name: "Connector failure pressure",
+      description: "Connector lifecycle, discovery, import, and execution failures are tracked as integration SLO signals.",
+      metric: "connectorFailures",
+      comparator: "greater_than_or_equal",
+      warningThreshold: 3,
+      criticalThreshold: 10,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "count",
+      componentId: "connectors",
+      enabled: true,
+      alertTargetIds: ["dashboard", "ops"],
+      suppressionMinutes: 60,
+      metadata: { source: "default", failureType: "connector_failure" },
     },
   ];
 }
@@ -1438,7 +1496,12 @@ function sloPolicyChangeFromRow(row: Record<string, unknown>): ObservabilitySloP
 
 function normalizeMetric(value: unknown): SloMetric {
   const metric = String(value || "errorRate");
-  return metric === "availability" || metric === "latencyP95Ms" || metric === "routeFailures"
+  return metric === "availability" ||
+    metric === "latencyP95Ms" ||
+    metric === "routeFailures" ||
+    metric === "authFailures" ||
+    metric === "policyBlocks" ||
+    metric === "connectorFailures"
     ? metric
     : "errorRate";
 }

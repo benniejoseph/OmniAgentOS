@@ -42,7 +42,7 @@ export async function GET(request: Request) {
     memory: await getMemoryStats({ tenantId: securityContext.tenantId }),
     memoryGraph: await getMemoryGraphStats(),
     knowledge: await getKnowledgeStats({ tenantId: securityContext.tenantId }),
-    contextEngine: await getContextEngineStats(),
+    contextEngine: await getContextEngineStats({ tenantId: securityContext.tenantId }),
     runs: await getRunStats({ tenantId: securityContext.tenantId }),
     toolExecutions: await getToolExecutionStats({ tenantId: securityContext.tenantId }),
     mcpConnectors: await getMcpConnectorStats({ tenantId: securityContext.tenantId }),
@@ -56,7 +56,7 @@ export async function GET(request: Request) {
     incidents: await getIncidentStats(),
     alerts: await getAlertDeliveryStats(),
     observability: await getObservabilityStats({ tenantId: securityContext.tenantId }),
-    observabilitySlo: await getObservabilitySloSnapshot(),
+    observabilitySlo: await getObservabilitySloSnapshot({ tenantId: securityContext.tenantId }),
     evaluations: await getEvalStats({ tenantId: securityContext.tenantId }),
     security: {
       context: securityContext,

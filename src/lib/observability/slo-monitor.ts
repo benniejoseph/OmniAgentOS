@@ -62,10 +62,12 @@ export const observabilitySloIncidentPrefix = "observability:slo";
 
 export async function getObservabilitySloSnapshot({
   policies,
+  tenantId,
 }: {
   policies?: ObservabilitySloPolicy[];
+  tenantId?: string;
 } = {}): Promise<ObservabilitySloSnapshot> {
-  const stats = await getObservabilityStats();
+  const stats = await getObservabilityStats({ tenantId });
   const enabledPolicies = (policies || await listObservabilitySloPolicies({ includeDisabled: false }))
     .filter((policy) => policy.enabled);
   const evaluations = enabledPolicies.map((policy) => evaluateSloPolicy(policy, stats));
@@ -88,6 +90,7 @@ export async function runObservabilitySloMonitor({
   queueAlerts = true,
   resolveRecovered = true,
   policies,
+  tenantId,
 }: {
   trigger?: string;
   actorId?: string;
@@ -95,8 +98,9 @@ export async function runObservabilitySloMonitor({
   queueAlerts?: boolean;
   resolveRecovered?: boolean;
   policies?: ObservabilitySloPolicy[];
+  tenantId?: string;
 } = {}): Promise<ObservabilitySloMonitorResult> {
-  const snapshot = await getObservabilitySloSnapshot({ policies });
+  const snapshot = await getObservabilitySloSnapshot({ policies, tenantId });
   const incidentActions: ObservabilitySloIncidentAction[] = [];
   let queuedAlerts = 0;
 
@@ -150,6 +154,9 @@ export async function runObservabilitySloMonitor({
         stats: {
           total: snapshot.stats.total,
           routeFailures: snapshot.stats.routeFailures,
+          authFailures: snapshot.stats.authFailures,
+          policyBlocks: snapshot.stats.policyBlocks,
+          connectorFailures: snapshot.stats.connectorFailures,
           errorRate: snapshot.stats.slo.errorRate,
           availability: snapshot.stats.slo.availability,
           latencyP95Ms: snapshot.stats.slo.latencyP95Ms,
@@ -294,6 +301,15 @@ function metricValue(metric: SloMetric, stats: ObservabilityStats) {
   }
   if (metric === "latencyP95Ms") {
     return stats.slo.latencyP95Ms;
+  }
+  if (metric === "authFailures") {
+    return stats.authFailures;
+  }
+  if (metric === "policyBlocks") {
+    return stats.policyBlocks;
+  }
+  if (metric === "connectorFailures") {
+    return stats.connectorFailures;
   }
   return stats.routeFailures;
 }

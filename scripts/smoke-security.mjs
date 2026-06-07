@@ -20,6 +20,29 @@ const protectedReads = [
 
 const checks = [];
 
+const publicHealth = await request("/api/health");
+let publicHealthBody = {};
+try {
+  publicHealthBody = await publicHealth.json();
+} catch {
+  publicHealthBody = {};
+}
+checks.push(assert(
+  publicHealth.status === 200 || publicHealth.status === 503,
+  "public health endpoint returns liveness status",
+  `expected 200 or 503, got ${publicHealth.status}`,
+));
+checks.push(assert(
+  typeof publicHealthBody.status === "string" &&
+    typeof publicHealthBody.checkedAt === "string" &&
+    typeof publicHealthBody.requestId === "string" &&
+    !("components" in publicHealthBody) &&
+    !("metrics" in publicHealthBody) &&
+    !("incidents" in publicHealthBody),
+  "public health endpoint omits detailed diagnostics",
+  "health response exposed components, metrics, incidents, or omitted liveness fields",
+));
+
 for (const path of protectedReads) {
   checks.push(await expectStatus(path, { expected: 401, label: `anonymous ${path}` }));
 }

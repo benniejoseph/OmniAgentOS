@@ -1,5 +1,6 @@
 import { getSessionToken } from "@/lib/auth/session";
 import { getSessionIdentity, isAuthEnforced } from "@/lib/auth/store";
+import { enterDatabaseTenantContext } from "@/lib/db/client";
 import type { RbacRule, SecurityContext, SecurityRole } from "@/lib/security/types";
 
 const roles: SecurityRole[] = ["viewer", "operator", "admin", "system"];
@@ -79,12 +80,14 @@ export function getSecurityContext(request?: Request): SecurityContext {
   const actorId = normalizeActorId(trustedHeaders.actorId || process.env.OMNIAGENT_DEFAULT_ACTOR || "anonymous");
   const role = normalizeRole(trustedHeaders.role || process.env.OMNIAGENT_DEFAULT_ROLE || "viewer");
 
-  return {
+  const context = {
     tenantId,
     actorId,
     role,
     source: trustedHeaders.source,
   };
+  enterDatabaseTenantContext(context.tenantId);
+  return context;
 }
 
 export async function resolveSecurityContext(request?: Request): Promise<SecurityContext> {
@@ -97,6 +100,7 @@ export async function resolveSecurityContext(request?: Request): Promise<Securit
     throw new SecurityPolicyError("Authentication required.", 401);
   }
 
+  enterDatabaseTenantContext(identity.context.tenantId);
   return identity.context;
 }
 

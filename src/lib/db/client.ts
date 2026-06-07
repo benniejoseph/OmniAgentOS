@@ -1,10 +1,34 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import { PGVECTOR_HNSW_MAX_DIMENSIONS, VECTOR_INDEX_DIMENSIONS } from "@/lib/config";
 
 type SqlClient = NeonQueryFunction<false, false>;
 
 let sqlClient: SqlClient | null = null;
+let scopedSqlClient: SqlClient | null = null;
 let schemaReady: Promise<void> | null = null;
+const tenantContext = new AsyncLocalStorage<string | undefined>();
+
+const tenantPolicyTables = [
+  "omni_memories",
+  "omni_knowledge_documents",
+  "omni_knowledge_chunks",
+  "omni_retrieval_traces",
+  "omni_agent_runs",
+  "omni_tool_executions",
+  "omni_mcp_connectors",
+  "omni_mcp_tools",
+  "omni_openapi_connectors",
+  "omni_openapi_operations",
+  "omni_workflow_runs",
+  "omni_workflow_plans",
+  "omni_eval_runs",
+  "omni_eval_results",
+  "omni_eval_reports",
+  "omni_security_audits",
+  "omni_observability_events",
+  "omni_observability_slo_policy_changes",
+] as const;
 
 export function hasDatabaseUrl() {
   return Boolean(process.env.DATABASE_URL?.trim());
@@ -32,9 +56,10 @@ export async function getVectorStoreStatus() {
   }
 
   await ensureDatabaseSchema();
+  const sql = getRawSql();
   const [extensionRows, indexRows] = await Promise.all([
-    getSql()`SELECT extversion FROM pg_extension WHERE extname = 'vector' LIMIT 1`,
-    getSql()`
+    sql`SELECT extversion FROM pg_extension WHERE extname = 'vector' LIMIT 1`,
+    sql`
       SELECT indexname
       FROM pg_indexes
       WHERE schemaname = current_schema()
@@ -45,8 +70,8 @@ export async function getVectorStoreStatus() {
     `,
   ]);
   const indexNames = new Set(indexRows.map((row) => String(row.indexname)));
-  const memoryColumnDimensions = await getVectorColumnDimensions(getSql(), "omni_memories");
-  const knowledgeColumnDimensions = await getVectorColumnDimensions(getSql(), "omni_knowledge_chunks");
+  const memoryColumnDimensions = await getVectorColumnDimensions(sql, "omni_memories");
+  const knowledgeColumnDimensions = await getVectorColumnDimensions(sql, "omni_knowledge_chunks");
 
   return {
     configured:
@@ -67,6 +92,23 @@ export async function getVectorStoreStatus() {
 }
 
 export function getSql() {
+  const base = getRawSql();
+  if (!scopedSqlClient) {
+    scopedSqlClient = createTenantScopedSqlClient(base);
+  }
+
+  return scopedSqlClient;
+}
+
+export function enterDatabaseTenantContext(tenantId?: string) {
+  tenantContext.enterWith(normalizeTenantId(tenantId));
+}
+
+export function getDatabaseTenantContext() {
+  return tenantContext.getStore();
+}
+
+function getRawSql() {
   if (!hasDatabaseUrl()) {
     throw new Error("DATABASE_URL is not configured.");
   }
@@ -78,13 +120,61 @@ export function getSql() {
   return sqlClient;
 }
 
+function createTenantScopedSqlClient(base: SqlClient): SqlClient {
+  const scoped = ((strings: TemplateStringsArray, ...params: unknown[]) => {
+    const query = base(strings, ...params);
+    return runWithTenantSetting(base, query);
+  }) as SqlClient;
+
+  scoped.query = ((queryWithPlaceholders: string, params?: unknown[], queryOpts?: unknown) => {
+    const query = base.query(queryWithPlaceholders, params as never, queryOpts as never);
+    return runWithTenantSetting(base, query);
+  }) as SqlClient["query"];
+
+  scoped.unsafe = base.unsafe.bind(base);
+  scoped.transaction = ((queriesOrFn: unknown, opts?: unknown) => {
+    const tenantId = getDatabaseTenantContext();
+    const transaction = base.transaction as (queriesOrFn: unknown, opts?: unknown) => Promise<unknown[]>;
+    if (!tenantId) {
+      return transaction(queriesOrFn, opts);
+    }
+
+    if (typeof queriesOrFn === "function") {
+      return transaction(
+        (transactionSql: SqlClient) => [
+          transactionSql`SELECT set_config('omni.tenant_id', ${tenantId}, true)`,
+          ...(queriesOrFn as (sql: SqlClient) => unknown[])(transactionSql),
+        ],
+        opts,
+      )
+        .then((rows) => rows.slice(1));
+    }
+
+    return transaction([base`SELECT set_config('omni.tenant_id', ${tenantId}, true)`, ...(queriesOrFn as unknown[])], opts)
+      .then((rows) => rows.slice(1));
+  }) as SqlClient["transaction"];
+
+  return scoped;
+}
+
+function runWithTenantSetting<T>(sql: SqlClient, query: Promise<T>) {
+  const tenantId = getDatabaseTenantContext();
+  if (!tenantId) {
+    return query;
+  }
+
+  return sql
+    .transaction([sql`SELECT set_config('omni.tenant_id', ${tenantId}, true)`, query as never])
+    .then((rows) => rows[1] as T);
+}
+
 export async function ensureDatabaseSchema() {
   if (!hasDatabaseUrl()) {
     return;
   }
 
   if (!schemaReady) {
-    const sql = getSql();
+    const sql = getRawSql();
     schemaReady = (async () => {
       await sql`SELECT pg_advisory_lock(271828182)`;
       try {
@@ -169,6 +259,7 @@ export async function ensureDatabaseSchema() {
       await sql`
         CREATE TABLE IF NOT EXISTS omni_retrieval_traces (
           id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
           query TEXT NOT NULL,
           profile JSONB NOT NULL DEFAULT '{}',
           result_count INTEGER NOT NULL DEFAULT 0,
@@ -178,7 +269,9 @@ export async function ensureDatabaseSchema() {
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_retrieval_traces ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
       await sql`CREATE INDEX IF NOT EXISTS omni_retrieval_traces_created_at_idx ON omni_retrieval_traces (created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_retrieval_traces_tenant_created_at_idx ON omni_retrieval_traces (tenant_id, created_at DESC)`;
       await sql`
         CREATE INDEX IF NOT EXISTS omni_retrieval_traces_mode_idx
         ON omni_retrieval_traces ((profile->>'mode'))
@@ -964,6 +1057,7 @@ export async function ensureDatabaseSchema() {
       `;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_approval_policy_versions_policy_idx ON omni_observability_slo_approval_policy_versions (policy_id, version DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_approval_policy_versions_created_idx ON omni_observability_slo_approval_policy_versions (created_at DESC)`;
+      await ensureTenantIsolationPolicies(sql);
       await ensureVectorSchema(sql);
     } finally {
       await sql`SELECT pg_advisory_unlock(271828182)`;
@@ -977,6 +1071,45 @@ export async function ensureDatabaseSchema() {
     schemaReady = null;
     throw error;
   }
+}
+
+async function ensureTenantIsolationPolicies(sql: SqlClient) {
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_current_tenant()
+    RETURNS TEXT
+    LANGUAGE SQL
+    STABLE
+    AS $$
+      SELECT NULLIF(current_setting('omni.tenant_id', true), '')
+    $$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_tenant_visible(row_tenant TEXT)
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    AS $$
+      SELECT omni_current_tenant() IS NULL
+        OR COALESCE(row_tenant, 'default') = omni_current_tenant()
+    $$
+  `;
+
+  for (const tableName of tenantPolicyTables) {
+    await sql.query(`ALTER TABLE ${tableName} ENABLE ROW LEVEL SECURITY`);
+    await sql.query(`ALTER TABLE ${tableName} FORCE ROW LEVEL SECURITY`);
+    await sql.query(`DROP POLICY IF EXISTS omni_tenant_isolation ON ${tableName}`);
+    await sql.query(`
+      CREATE POLICY omni_tenant_isolation ON ${tableName}
+      FOR ALL
+      USING (omni_tenant_visible(tenant_id))
+      WITH CHECK (omni_tenant_visible(tenant_id))
+    `);
+  }
+}
+
+function normalizeTenantId(value?: string) {
+  return value?.trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || undefined;
 }
 
 async function ensureVectorSchema(sql: SqlClient) {

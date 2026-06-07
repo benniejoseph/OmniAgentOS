@@ -11,6 +11,7 @@ export type ObservabilityCategory =
   | "alert"
   | "diagnostics"
   | "evaluation"
+  | "connector"
   | "security"
   | "system";
 
@@ -38,6 +39,9 @@ export type ObservabilityStats = {
   total: number;
   byLevel: Record<string, number>;
   byCategory: Record<string, number>;
+  authFailures: number;
+  policyBlocks: number;
+  connectorFailures: number;
   routeFailures: number;
   averageDurationMs: number;
   p95DurationMs: number;
@@ -236,6 +240,17 @@ export async function getObservabilityStats(options: { tenantId?: string } = {})
   const failures = events.filter((event) => event.level === "error" || (event.statusCode || 0) >= 500);
   const routeEvents = events.filter((event) => event.route);
   const routeFailures = routeEvents.filter((event) => event.level === "error" || (event.statusCode || 0) >= 500).length;
+  const authFailures = events.filter(
+    (event) => event.metadata.failureType === "auth_failure" || event.action === "security.auth_failed",
+  ).length;
+  const policyBlocks = events.filter(
+    (event) => event.metadata.failureType === "policy_block" || event.action === "security.policy_blocked",
+  ).length;
+  const connectorFailures = events.filter(
+    (event) =>
+      event.metadata.failureType === "connector_failure" ||
+      (event.category === "connector" && (event.level === "error" || event.action.endsWith("_failed"))),
+  ).length;
   const errorRate = events.length ? failures.length / events.length : 0;
   const availability = routeEvents.length ? 1 - routeFailures / routeEvents.length : 1;
   const p95DurationMs = percentile(durations, 0.95);
@@ -250,6 +265,9 @@ export async function getObservabilityStats(options: { tenantId?: string } = {})
       acc[event.category] = (acc[event.category] || 0) + 1;
       return acc;
     }, {}),
+    authFailures,
+    policyBlocks,
+    connectorFailures,
     routeFailures,
     averageDurationMs: durations.length
       ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length)

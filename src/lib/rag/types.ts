@@ -109,6 +109,7 @@ export type ContextEvidenceItem =
 
 export type RetrievalTraceRecord = {
   id: string;
+  tenantId?: string;
   query: string;
   profile: RetrievalProfile;
   resultCount: number;

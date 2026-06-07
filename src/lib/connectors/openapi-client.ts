@@ -1,4 +1,5 @@
 import type { OpenApiConnectorRecord, OpenApiOperationRecord } from "@/lib/connectors/openapi-types";
+import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { validateConnectorSecretEnvName } from "@/lib/security/context";
 import { assertPublicHttpUrl } from "@/lib/security/network";
 
@@ -38,6 +39,26 @@ export async function callOpenApiOperation({
   const contentType = response.headers.get("content-type") || "";
   const text = await response.text();
   const outputBody = parseResponseBody(text, contentType);
+  if (!response.ok) {
+    await recordRuntimeEventSafely({
+      level: "error",
+      category: "connector",
+      action: "connector.openapi.call_failed",
+      statusCode: response.status,
+      tenantId: connector.tenantId,
+      resourceType: "openapi_connector",
+      resourceId: connector.id,
+      message: `OpenAPI operation returned HTTP ${response.status}.`,
+      metadata: {
+        failureType: "connector_failure",
+        connectorName: connector.name,
+        operationId: operation.operationId,
+        method: operation.method,
+        path: operation.path,
+        url: redactUrl(url),
+      },
+    });
+  }
 
   return {
     request: {

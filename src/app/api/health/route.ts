@@ -2,8 +2,9 @@ import { runSystemDiagnostics } from "@/lib/diagnostics/health";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
   const startedAt = Date.now();
+  const requestId = request.headers.get("x-vercel-id") || crypto.randomUUID();
   console.log(JSON.stringify({
     level: "info",
     msg: "start",
@@ -23,25 +24,7 @@ export async function GET() {
       ms: Date.now() - startedAt,
     }));
 
-    return Response.json({
-      status: check.status,
-      checkedAt: check.createdAt,
-      latencyMs: check.latencyMs,
-      incidents: check.incidents.length,
-      components: check.components.map((component) => ({
-        id: component.id,
-        status: component.status,
-        summary: component.summary,
-      })),
-      metrics: {
-        queueMaxAgeMs: check.metrics.queueMaxAgeMs,
-        workflowCompletionRate: check.metrics.workflowCompletionRate,
-        evalPassRate: check.metrics.evalPassRate,
-        plannerFallbackRate: check.metrics.plannerFallbackRate,
-        toolFailureRate: check.metrics.toolFailureRate,
-        triggerFailureRate: check.metrics.triggerFailureRate,
-      },
-    }, { status });
+    return Response.json({ status: check.status, checkedAt: check.createdAt, requestId }, { status });
   } catch (error) {
     console.error(JSON.stringify({
       level: "error",
@@ -51,6 +34,9 @@ export async function GET() {
       ms: Date.now() - startedAt,
       error: error instanceof Error ? error.message : "Health check failed.",
     }));
-    return Response.json({ error: "Health check failed." }, { status: 500 });
+    return Response.json(
+      { status: "unhealthy", checkedAt: new Date().toISOString(), requestId },
+      { status: 503 },
+    );
   }
 }

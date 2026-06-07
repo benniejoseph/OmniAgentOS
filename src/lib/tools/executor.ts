@@ -7,6 +7,7 @@ import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/o
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { saveMemory, searchMemories } from "@/lib/memory/store";
 import type { MemoryType } from "@/lib/memory/types";
+import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { ingestTextDocument } from "@/lib/rag/retriever";
 import { searchKnowledge } from "@/lib/rag/store";
 import { listAgentRuns } from "@/lib/runs/store";
@@ -62,6 +63,7 @@ export async function executeGovernedTool({
     (await getMcpGovernedTool(toolId, { tenantId: context?.tenantId })) ||
     (await getOpenApiGovernedTool(toolId, { tenantId: context?.tenantId }));
   if (!tool) {
+    const reason = "Unknown tools are blocked by default.";
     const record = createToolExecutionRecord({
       tenantId: context?.tenantId,
       actorId: context?.actorId,
@@ -72,7 +74,14 @@ export async function executeGovernedTool({
       dryRun,
       approvalRequired: true,
       input,
-      reason: "Unknown tools are blocked by default.",
+      reason,
+    });
+    await recordToolPolicyBlock({
+      context,
+      toolId,
+      reason,
+      input,
+      riskLevel: 3,
     });
     return {
       record: await saveToolExecution(record),
@@ -112,6 +121,14 @@ export async function executeGovernedTool({
       status: "blocked" as const,
       completedAt: new Date().toISOString(),
     });
+    await recordToolPolicyBlock({
+      context,
+      toolId: tool.id,
+      toolName: tool.name,
+      reason: decision.reason,
+      input,
+      riskLevel: decision.riskLevel,
+    });
     return { record: await saveToolExecution(record), result: null };
   }
 
@@ -149,6 +166,24 @@ export async function executeGovernedTool({
     return { record: await saveToolExecution(record), result };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Tool execution failed.";
+    if (tool.category === "mcp" || tool.category === "openapi") {
+      await recordRuntimeEventSafely({
+        level: "error",
+        category: "connector",
+        action: tool.category === "mcp" ? "connector.mcp.tool_failed" : "connector.openapi.tool_failed",
+        tenantId: context?.tenantId,
+        actorId: context?.actorId,
+        resourceType: "tool",
+        resourceId: tool.id,
+        message,
+        metadata: {
+          failureType: "connector_failure",
+          toolName: tool.name,
+          toolCategory: tool.category,
+          riskLevel: tool.riskLevel,
+        },
+      });
+    }
     const record = createRecord({
       ...baseRecord,
       status: "failed" as const,
@@ -324,6 +359,40 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>, con
   }
 
   throw new Error(`No handler is registered for ${tool.id}.`);
+}
+
+async function recordToolPolicyBlock({
+  context,
+  toolId,
+  toolName,
+  reason,
+  input,
+  riskLevel,
+}: {
+  context?: SecurityContext;
+  toolId: string;
+  toolName?: string;
+  reason: string;
+  input: Record<string, unknown>;
+  riskLevel: number;
+}) {
+  await recordRuntimeEventSafely({
+    level: "warn",
+    category: "security",
+    action: "security.policy_blocked",
+    tenantId: context?.tenantId,
+    actorId: context?.actorId,
+    resourceType: "tool",
+    resourceId: toolId,
+    message: reason,
+    metadata: {
+      failureType: "policy_block",
+      requestedAction: "execute.tool",
+      toolName,
+      riskLevel,
+      input,
+    },
+  });
 }
 
 function stripEmbedding<T extends { embedding?: number[] }>(value: T) {

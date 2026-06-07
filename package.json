@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "smoke:security": "node scripts/smoke-security.mjs",
+    "smoke:tenant": "node scripts/smoke-tenant-isolation.mjs",
     "test:security": "npm run smoke:security",
+    "test:tenant": "npm run smoke:tenant",
     "test": "npm run lint"
   },
   "dependencies": {
