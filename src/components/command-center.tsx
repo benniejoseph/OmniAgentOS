@@ -17,11 +17,14 @@ import {
   Layers3,
   LogIn,
   LogOut,
+  Pencil,
   Play,
+  Power,
   Search,
   Send,
   ShieldCheck,
   Sparkles,
+  Trash2,
   UploadCloud,
   UserPlus,
   Users,
@@ -941,7 +944,7 @@ type EvalCaseEvidence = {
 type EvalDetailFilter = "all" | "failed" | "warn" | "gated";
 
 type ObservabilityLevel = "info" | "warn" | "error";
-type ObservabilityCategory = "api" | "workflow" | "alert" | "diagnostics" | "evaluation" | "security" | "system";
+type ObservabilityCategory = "api" | "workflow" | "alert" | "connector" | "diagnostics" | "evaluation" | "security" | "system";
 
 type ObservabilityEventRecord = {
   id: string;
@@ -968,6 +971,9 @@ type ObservabilityStats = {
   byLevel: Record<string, number>;
   byCategory: Record<string, number>;
   routeFailures: number;
+  authFailures?: number;
+  policyBlocks?: number;
+  connectorFailures?: number;
   averageDurationMs: number;
   p95DurationMs: number;
   latest: ObservabilityEventRecord[];
@@ -986,7 +992,14 @@ type ObservabilityResponse = {
   stats: ObservabilityStats;
 };
 
-type SloMetric = "errorRate" | "availability" | "latencyP95Ms" | "routeFailures";
+type SloMetric =
+  | "errorRate"
+  | "availability"
+  | "latencyP95Ms"
+  | "routeFailures"
+  | "authFailures"
+  | "policyBlocks"
+  | "connectorFailures";
 type SloComparator = "greater_than" | "greater_than_or_equal" | "less_than" | "less_than_or_equal";
 
 type ObservabilitySloPolicy = {
@@ -1202,6 +1215,46 @@ type SecurityState = {
   stats?: SecurityStats;
   records: SecurityAuditRecord[];
   policy?: SecurityPolicy;
+};
+
+type TenantIsolationTableReport = {
+  tableName: string;
+  category: "root" | "child";
+  exists: boolean;
+  tenantColumn: boolean;
+  rlsEnabled: boolean;
+  forceRls: boolean;
+  policyPresent: boolean;
+  status: "pass" | "fail";
+};
+
+type TenantIsolationReport = {
+  tenantId: string;
+  checkedAt: string;
+  storageBackend: string;
+  databaseConfigured: boolean;
+  status: "passing" | "degraded" | "not_configured";
+  summary: {
+    expectedTables: number;
+    protectedTables: number;
+    childTables: number;
+    failingTables: number;
+    missingTables: string[];
+    missingTenantColumns: string[];
+    rlsDisabled: string[];
+    forceRlsDisabled: string[];
+    missingPolicies: string[];
+  };
+  tables: TenantIsolationTableReport[];
+  latestEval?: {
+    runId: string;
+    runStatus: string;
+    resultStatus: string;
+    score: number;
+    createdAt: string;
+    completedAt?: string;
+  };
+  recommendations: string[];
 };
 
 type AuthTenant = {
@@ -1461,6 +1514,7 @@ export function CommandCenter() {
   const [connectorName, setConnectorName] = useState("Primary MCP server");
   const [connectorEndpoint, setConnectorEndpoint] = useState("https://example.com/mcp");
   const [connectorAuthEnv, setConnectorAuthEnv] = useState("");
+  const [editingConnectorId, setEditingConnectorId] = useState("");
   const [connectorResult, setConnectorResult] = useState("");
   const [openApiState, setOpenApiState] = useState<OpenApiConnectorsResponse | null>(null);
   const [openApiName, setOpenApiName] = useState("Public API connector");
@@ -1468,6 +1522,7 @@ export function CommandCenter() {
   const [openApiBaseUrl, setOpenApiBaseUrl] = useState("");
   const [openApiAuthEnv, setOpenApiAuthEnv] = useState("");
   const [openApiAuthHeader, setOpenApiAuthHeader] = useState("x-api-key");
+  const [editingOpenApiConnectorId, setEditingOpenApiConnectorId] = useState("");
   const [openApiResult, setOpenApiResult] = useState("");
   const [workflowState, setWorkflowState] = useState<WorkflowsResponse | null>(null);
   const [workflowGoal, setWorkflowGoal] = useState("Run a durable Plan-Execute-Verify workflow for this agent OS.");
@@ -1509,6 +1564,8 @@ export function CommandCenter() {
   const [sloBreakGlassReasonMin, setSloBreakGlassReasonMin] = useState("24");
   const [observabilityResult, setObservabilityResult] = useState("");
   const [securityState, setSecurityState] = useState<SecurityState | null>(null);
+  const [tenantIsolationReport, setTenantIsolationReport] = useState<TenantIsolationReport | null>(null);
+  const [tenantIsolationResult, setTenantIsolationResult] = useState("");
   const [authState, setAuthState] = useState<AuthSessionResponse | null>(null);
   const [authControlPlane, setAuthControlPlane] = useState<AuthControlPlane | null>(null);
   const [authEmail, setAuthEmail] = useState("");
@@ -1666,6 +1723,8 @@ export function CommandCenter() {
   const latestSecurityAudits =
     securityState?.records.length ? securityState.records : securityStats?.latest || [];
   const securityRules = securityPolicy?.rbacRules.slice(0, 5) || [];
+  const tenantIsolationFailingTables = tenantIsolationReport?.tables.filter((table) => table.status === "fail") || [];
+  const tenantIsolationLatestEval = tenantIsolationReport?.latestEval;
   const authStats = authControlPlane?.stats || authState?.stats;
   const authUsers = authControlPlane?.users.slice(0, 5) || [];
   const currentIdentity = authState?.user?.email || securityContext?.actorId || "anonymous";
@@ -1911,30 +1970,59 @@ export function CommandCenter() {
       return;
     }
 
-    setStatus(discover ? "registering and discovering MCP" : "registering MCP");
+    const isEditing = Boolean(editingConnectorId);
+    setStatus(isEditing ? "updating MCP" : discover ? "registering and discovering MCP" : "registering MCP");
     setConnectorResult("");
 
     try {
-      const response = await fetch("/api/connectors", {
-        method: "POST",
+      const body: Record<string, unknown> = {
+        name: connectorName,
+        endpoint: connectorEndpoint,
+        defaultRiskLevel: 2,
+        approvalRequired: true,
+      };
+      if (!isEditing || connectorAuthEnv.trim()) {
+        body.authType = connectorAuthEnv.trim() ? "bearer_env" : "none";
+        body.authTokenEnv = connectorAuthEnv.trim() || undefined;
+      }
+      if (!isEditing) {
+        body.discover = discover;
+      }
+
+      const response = await fetch(isEditing ? `/api/connectors/${editingConnectorId}` : "/api/connectors", {
+        method: isEditing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: connectorName,
-          endpoint: connectorEndpoint,
-          authType: connectorAuthEnv.trim() ? "bearer_env" : "none",
-          authTokenEnv: connectorAuthEnv.trim() || undefined,
-          defaultRiskLevel: 2,
-          approvalRequired: true,
-          discover,
-        }),
+        body: JSON.stringify(body),
       });
       const data = await response.json();
-      setConnectorResult(formatToolResult(data));
-      setStatus(data.error ? "MCP discovery held" : discover ? "MCP discovered" : "MCP registered");
+      let result = data;
+      if (response.ok && isEditing && discover) {
+        const discoveryResponse = await fetch(`/api/connectors/${editingConnectorId}/discover`, { method: "POST" });
+        const discoveryData = await discoveryResponse.json();
+        result = { update: data, discovery: discoveryData };
+      }
+      setConnectorResult(formatToolResult(result));
+      setStatus(data.error ? "MCP update held" : isEditing ? "MCP updated" : discover ? "MCP discovered" : "MCP registered");
       refreshWorkspace();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "MCP registration failed");
+      setStatus(error instanceof Error ? error.message : "MCP update failed");
     }
+  }
+
+  function clearConnectorForm() {
+    setEditingConnectorId("");
+    setConnectorName("Primary MCP server");
+    setConnectorEndpoint("https://example.com/mcp");
+    setConnectorAuthEnv("");
+    setConnectorResult("");
+  }
+
+  function loadConnectorForEdit(connector: McpConnectorRecord) {
+    setEditingConnectorId(connector.id);
+    setConnectorName(connector.name);
+    setConnectorEndpoint(connector.endpoint);
+    setConnectorAuthEnv("");
+    setConnectorResult(`Editing ${connector.name}. Leave bearer env blank to keep the existing auth setting.`);
   }
 
   async function discoverConnector(connectorId: string) {
@@ -1954,37 +2042,161 @@ export function CommandCenter() {
     }
   }
 
+  async function updateConnectorStatus(connector: McpConnectorRecord) {
+    const nextStatus = connector.status === "disabled" ? "active" : "disabled";
+    setStatus(`${nextStatus === "active" ? "enabling" : "disabling"} MCP`);
+    setConnectorResult("");
+
+    try {
+      const response = await fetch(`/api/connectors/${connector.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = await response.json();
+      setConnectorResult(formatToolResult(data));
+      setStatus(response.ok ? `MCP ${nextStatus}` : "MCP status update failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "MCP status update failed");
+    }
+  }
+
+  async function deleteConnector(connector: McpConnectorRecord) {
+    const actionKey = `delete-mcp-${connector.id}`;
+    if (!beginRiskyAction(actionKey, "Delete MCP connector", `This removes ${connector.name} and its discovered tools.`)) {
+      return;
+    }
+
+    setConnectorResult("");
+    try {
+      const response = await fetch(`/api/connectors/${connector.id}`, { method: "DELETE" });
+      const data = await response.json();
+      setConnectorResult(formatToolResult(data));
+      setStatus(response.ok ? "MCP connector deleted" : "MCP delete failed");
+      if (editingConnectorId === connector.id) {
+        clearConnectorForm();
+      }
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "MCP delete failed");
+    } finally {
+      endRiskyAction(actionKey);
+    }
+  }
+
   async function registerOpenApiConnector(importSpec: boolean) {
     if (!openApiName.trim() || (!openApiSpecUrl.trim() && importSpec === true)) {
       return;
     }
 
-    setStatus(importSpec ? "registering and importing OpenAPI" : "registering OpenAPI");
+    const isEditing = Boolean(editingOpenApiConnectorId);
+    setStatus(isEditing ? "updating OpenAPI" : importSpec ? "registering and importing OpenAPI" : "registering OpenAPI");
     setOpenApiResult("");
 
     try {
       const authType = openApiAuthEnv.trim() ? "api_key_header_env" : "none";
-      const response = await fetch("/api/openapi-connectors", {
-        method: "POST",
+      const body: Record<string, unknown> = {
+        name: openApiName,
+        specUrl: openApiSpecUrl.trim() || (isEditing ? null : undefined),
+        baseUrl: openApiBaseUrl.trim() || undefined,
+        defaultRiskLevel: 2,
+        approvalRequired: true,
+      };
+      if (!isEditing || openApiAuthEnv.trim()) {
+        body.authType = authType;
+        body.authTokenEnv = openApiAuthEnv.trim() || undefined;
+        body.authHeaderName = authType === "api_key_header_env" ? openApiAuthHeader.trim() || "x-api-key" : undefined;
+      }
+      if (!isEditing) {
+        body.importSpec = importSpec;
+      }
+
+      const response = await fetch(
+        isEditing ? `/api/openapi-connectors/${editingOpenApiConnectorId}` : "/api/openapi-connectors",
+        {
+          method: isEditing ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      const data = await response.json();
+      let result = data;
+      if (response.ok && isEditing && importSpec) {
+        const importResponse = await fetch(`/api/openapi-connectors/${editingOpenApiConnectorId}/import`, {
+          method: "POST",
+        });
+        const importData = await importResponse.json();
+        result = { update: data, import: importData };
+      }
+      setOpenApiResult(formatToolResult(result));
+      setStatus(data.error ? "OpenAPI update held" : isEditing ? "OpenAPI updated" : importSpec ? "OpenAPI imported" : "OpenAPI registered");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "OpenAPI update failed");
+    }
+  }
+
+  function clearOpenApiConnectorForm() {
+    setEditingOpenApiConnectorId("");
+    setOpenApiName("Public API connector");
+    setOpenApiSpecUrl("https://petstore3.swagger.io/api/v3/openapi.json");
+    setOpenApiBaseUrl("");
+    setOpenApiAuthEnv("");
+    setOpenApiAuthHeader("x-api-key");
+    setOpenApiResult("");
+  }
+
+  function loadOpenApiConnectorForEdit(connector: OpenApiConnectorRecord) {
+    setEditingOpenApiConnectorId(connector.id);
+    setOpenApiName(connector.name);
+    setOpenApiSpecUrl(connector.specUrl || "");
+    setOpenApiBaseUrl(connector.baseUrl || "");
+    setOpenApiAuthEnv("");
+    setOpenApiAuthHeader(connector.authHeaderName || "x-api-key");
+    setOpenApiResult(`Editing ${connector.name}. Leave API key env blank to keep the existing auth setting.`);
+  }
+
+  async function updateOpenApiConnectorStatus(connector: OpenApiConnectorRecord) {
+    const nextStatus = connector.status === "disabled" ? "active" : "disabled";
+    setStatus(`${nextStatus === "active" ? "enabling" : "disabling"} OpenAPI`);
+    setOpenApiResult("");
+
+    try {
+      const response = await fetch(`/api/openapi-connectors/${connector.id}`, {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: openApiName,
-          specUrl: openApiSpecUrl.trim() || undefined,
-          baseUrl: openApiBaseUrl.trim() || undefined,
-          authType,
-          authTokenEnv: openApiAuthEnv.trim() || undefined,
-          authHeaderName: authType === "api_key_header_env" ? openApiAuthHeader.trim() || "x-api-key" : undefined,
-          defaultRiskLevel: 2,
-          approvalRequired: true,
-          importSpec,
-        }),
+        body: JSON.stringify({ status: nextStatus }),
       });
       const data = await response.json();
       setOpenApiResult(formatToolResult(data));
-      setStatus(data.error ? "OpenAPI import held" : importSpec ? "OpenAPI imported" : "OpenAPI registered");
+      setStatus(response.ok ? `OpenAPI ${nextStatus}` : "OpenAPI status update failed");
       refreshWorkspace();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "OpenAPI registration failed");
+      setStatus(error instanceof Error ? error.message : "OpenAPI status update failed");
+    }
+  }
+
+  async function deleteOpenApiConnector(connector: OpenApiConnectorRecord) {
+    const actionKey = `delete-openapi-${connector.id}`;
+    if (!beginRiskyAction(actionKey, "Delete OpenAPI connector", `This removes ${connector.name} and its imported operations.`)) {
+      return;
+    }
+
+    setOpenApiResult("");
+    try {
+      const response = await fetch(`/api/openapi-connectors/${connector.id}`, { method: "DELETE" });
+      const data = await response.json();
+      setOpenApiResult(formatToolResult(data));
+      setStatus(response.ok ? "OpenAPI connector deleted" : "OpenAPI delete failed");
+      if (editingOpenApiConnectorId === connector.id) {
+        clearOpenApiConnectorForm();
+      }
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "OpenAPI delete failed");
+    } finally {
+      endRiskyAction(actionKey);
     }
   }
 
@@ -2959,6 +3171,29 @@ export function CommandCenter() {
       .catch(() => undefined);
   }
 
+  async function refreshTenantIsolationReport(showResult = false) {
+    if (showResult) {
+      setTenantIsolationResult("Checking tenant isolation.");
+    }
+
+    try {
+      const response = await fetch("/api/security/isolation-report");
+      const data = response.ok ? await response.json() : null;
+      if (data?.report) {
+        setTenantIsolationReport(data.report);
+        if (showResult) {
+          setTenantIsolationResult(`Tenant isolation ${data.report.status}.`);
+        }
+      } else if (showResult) {
+        setTenantIsolationResult("Tenant isolation report unavailable.");
+      }
+    } catch (error) {
+      if (showResult) {
+        setTenantIsolationResult(error instanceof Error ? error.message : "Tenant isolation report failed.");
+      }
+    }
+  }
+
   function refreshWorkspace() {
     refreshCapabilities();
     fetch("/api/memory?limit=5")
@@ -2986,6 +3221,7 @@ export function CommandCenter() {
     refreshObservabilitySlo();
     refreshSloPolicies();
     refreshSecurity();
+    void refreshTenantIsolationReport();
   }
 
   useEffect(() => {
@@ -3202,11 +3438,16 @@ export function CommandCenter() {
                 <MiniStat label="Changes" value={`${sloPolicyChanges.length}`} />
                 <MiniStat label="Governed" value={`${approvalStats?.sloPolicies ?? pendingSloPolicyChanges.length}`} />
               </div>
-              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
-                <MiniStat label="API" value={`${observabilityStats?.byCategory.api ?? 0}`} />
-                <MiniStat label="Workflow" value={`${observabilityStats?.byCategory.workflow ?? 0}`} />
-                <MiniStat label="Alerts" value={`${observabilityStats?.byCategory.alert ?? 0}`} />
-              </div>
+	              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+	                <MiniStat label="API" value={`${observabilityStats?.byCategory.api ?? 0}`} />
+	                <MiniStat label="Workflow" value={`${observabilityStats?.byCategory.workflow ?? 0}`} />
+	                <MiniStat label="Conn" value={`${observabilityStats?.byCategory.connector ?? 0}`} />
+	              </div>
+	              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+	                <MiniStat label="Auth" value={`${observabilityStats?.authFailures ?? 0}`} />
+	                <MiniStat label="Policy" value={`${observabilityStats?.policyBlocks ?? 0}`} />
+	                <MiniStat label="Conn fail" value={`${observabilityStats?.connectorFailures ?? 0}`} />
+	              </div>
               <button
                 type="button"
                 onClick={runSloMonitor}
@@ -3881,10 +4122,10 @@ export function CommandCenter() {
                 <MiniStat label="Allow" value={`${securityStats?.byDecision.allow ?? 0}`} />
                 <MiniStat label="Deny" value={`${securityStats?.byDecision.deny ?? 0}`} />
               </div>
-              <div className="mb-3 rounded-md border border-line bg-background/54 p-3">
-                <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div className="min-w-0">
-                    <p className="text-muted">Tenant</p>
+	              <div className="mb-3 rounded-md border border-line bg-background/54 p-3">
+	                <div className="grid grid-cols-2 gap-3 text-xs">
+	                  <div className="min-w-0">
+	                    <p className="text-muted">Tenant</p>
                     <p className="mt-1 truncate font-mono text-foreground">{securityContext?.tenantId || "default"}</p>
                   </div>
                   <div className="min-w-0">
@@ -3900,12 +4141,60 @@ export function CommandCenter() {
                   ))}
                   <span className="rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-muted">
                     env refs only
-                  </span>
-                </div>
-              </div>
-              <div className="flex flex-col gap-3">
-                {securityRules.map((rule) => (
-                  <RbacRuleRow key={rule.action} rule={rule} />
+	                  </span>
+	                </div>
+	              </div>
+	              <div className="mb-3 rounded-md border border-line bg-background/54 p-3">
+	                <div className="mb-3 flex items-center justify-between gap-3">
+	                  <div className="min-w-0">
+	                    <p className="text-xs text-muted">Tenant isolation</p>
+	                    <p className="mt-1 truncate text-sm font-medium text-foreground">
+	                      {tenantIsolationReport?.status || "unchecked"}
+	                    </p>
+	                  </div>
+	                  <button
+	                    type="button"
+	                    onClick={() => void refreshTenantIsolationReport(true)}
+	                    className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+	                  >
+	                    <ShieldCheck size={13} />
+	                    Verify
+	                  </button>
+	                </div>
+	                <div className="grid grid-cols-3 gap-2 text-xs">
+	                  <MiniStat label="Tables" value={`${tenantIsolationReport?.summary.protectedTables ?? 0}/${tenantIsolationReport?.summary.expectedTables ?? 0}`} />
+	                  <MiniStat label="Child" value={`${tenantIsolationReport?.summary.childTables ?? 0}`} />
+	                  <MiniStat label="Failing" value={`${tenantIsolationReport?.summary.failingTables ?? 0}`} />
+	                </div>
+	                <div className="mt-3 flex flex-wrap gap-1.5">
+	                  <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", isolationTone(tenantIsolationReport?.status))}>
+	                    {tenantIsolationReport?.databaseConfigured ? "db enforced" : "db missing"}
+	                  </span>
+	                  <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", resultTone(tenantIsolationLatestEval?.resultStatus))}>
+	                    eval {tenantIsolationLatestEval?.resultStatus || "none"}
+	                  </span>
+	                  <span className="rounded border border-line px-2 py-1 font-mono text-[11px] text-muted">
+	                    {tenantIsolationReport?.checkedAt ? new Date(tenantIsolationReport.checkedAt).toLocaleTimeString() : "not checked"}
+	                  </span>
+	                </div>
+	                {tenantIsolationFailingTables.length ? (
+	                  <p className="mt-3 line-clamp-2 text-xs leading-5 text-danger">
+	                    {tenantIsolationFailingTables.slice(0, 4).map((table) => table.tableName).join(", ")}
+	                  </p>
+	                ) : (
+	                  <p className="mt-3 text-xs leading-5 text-muted">
+	                    {tenantIsolationReport?.recommendations[0] || "Awaiting tenant isolation evidence."}
+	                  </p>
+	                )}
+	                {tenantIsolationResult ? (
+	                  <p className="mt-2 rounded border border-line bg-background px-2 py-1.5 text-xs text-muted">
+	                    {tenantIsolationResult}
+	                  </p>
+	                ) : null}
+	              </div>
+	              <div className="flex flex-col gap-3">
+	                {securityRules.map((rule) => (
+	                  <RbacRuleRow key={rule.action} rule={rule} />
                 ))}
                 {latestSecurityAudits.length ? (
                   latestSecurityAudits.map((record) => <SecurityAuditRow key={record.id} record={record} />)
@@ -4146,41 +4435,61 @@ export function CommandCenter() {
                   className="h-10 rounded-md border border-line bg-background px-3 text-sm outline-none focus:border-primary"
                   aria-label="MCP endpoint URL"
                 />
-                <input
-                  value={connectorAuthEnv}
-                  onChange={(event) => setConnectorAuthEnv(event.target.value.toUpperCase())}
-                  className="h-10 rounded-md border border-line bg-background px-3 font-mono text-sm outline-none focus:border-primary"
-                  placeholder="TOKEN_ENV_NAME"
-                  aria-label="MCP bearer token environment variable"
-                />
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => registerConnector(false)}
-                    className="flex h-10 items-center justify-center gap-2 rounded-md border border-line text-sm font-medium text-foreground transition hover:border-primary"
-                  >
-                    <CheckCircle2 size={15} />
-                    Register
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => registerConnector(true)}
+	                <input
+	                  value={connectorAuthEnv}
+	                  onChange={(event) => setConnectorAuthEnv(event.target.value.toUpperCase())}
+	                  className="h-10 rounded-md border border-line bg-background px-3 font-mono text-sm outline-none focus:border-primary"
+	                  placeholder="TOKEN_ENV_NAME"
+	                  aria-label="MCP bearer token environment variable"
+	                />
+	                {editingConnectorId ? (
+	                  <div className="flex items-center justify-between gap-3 rounded-md border border-line bg-background/54 px-3 py-2 text-xs">
+	                    <span className="min-w-0 truncate font-mono text-muted">{editingConnectorId}</span>
+	                    <button
+	                      type="button"
+	                      onClick={clearConnectorForm}
+	                      className="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-line px-2 font-medium text-foreground transition hover:border-primary"
+	                    >
+	                      <XCircle size={13} />
+	                      New
+	                    </button>
+	                  </div>
+	                ) : null}
+	                <div className="grid grid-cols-2 gap-2">
+	                  <button
+	                    type="button"
+	                    onClick={() => registerConnector(false)}
+	                    className="flex h-10 items-center justify-center gap-2 rounded-md border border-line text-sm font-medium text-foreground transition hover:border-primary"
+	                  >
+	                    <CheckCircle2 size={15} />
+	                    {editingConnectorId ? "Save" : "Register"}
+	                  </button>
+	                  <button
+	                    type="button"
+	                    onClick={() => registerConnector(true)}
                     className="flex h-10 items-center justify-center gap-2 rounded-md border border-primary/60 text-sm font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
-                  >
-                    <Search size={15} />
-                    Discover
-                  </button>
-                </div>
+	                  >
+	                    <Search size={15} />
+	                    {editingConnectorId ? "Save + discover" : "Discover"}
+	                  </button>
+	                </div>
                 {connectorResult ? (
                   <pre className="max-h-48 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                     {connectorResult}
                   </pre>
                 ) : null}
                 <div className="flex flex-col gap-3">
-                  {latestConnectors.length ? (
-                    latestConnectors.map((connector) => (
-                      <McpConnectorRow key={connector.id} connector={connector} onDiscover={discoverConnector} />
-                    ))
+	                  {latestConnectors.length ? (
+	                    latestConnectors.map((connector) => (
+	                      <McpConnectorRow
+	                        key={connector.id}
+	                        connector={connector}
+	                        onDiscover={discoverConnector}
+	                        onEdit={loadConnectorForEdit}
+	                        onToggle={updateConnectorStatus}
+	                        onDelete={deleteConnector}
+	                      />
+	                    ))
                   ) : (
                     <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
                       No MCP connectors registered.
@@ -4223,9 +4532,9 @@ export function CommandCenter() {
                   placeholder="Base URL override"
                   aria-label="OpenAPI base URL override"
                 />
-                <div className="grid grid-cols-2 gap-2">
-                  <input
-                    value={openApiAuthEnv}
+	                <div className="grid grid-cols-2 gap-2">
+	                  <input
+	                    value={openApiAuthEnv}
                     onChange={(event) => setOpenApiAuthEnv(event.target.value.toUpperCase())}
                     className="h-10 min-w-0 rounded-md border border-line bg-background px-3 font-mono text-sm outline-none focus:border-primary"
                     placeholder="API_KEY_ENV"
@@ -4236,26 +4545,39 @@ export function CommandCenter() {
                     onChange={(event) => setOpenApiAuthHeader(event.target.value)}
                     className="h-10 min-w-0 rounded-md border border-line bg-background px-3 font-mono text-sm outline-none focus:border-primary"
                     aria-label="OpenAPI API key header"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
+	                  />
+	                </div>
+	                {editingOpenApiConnectorId ? (
+	                  <div className="flex items-center justify-between gap-3 rounded-md border border-line bg-background/54 px-3 py-2 text-xs">
+	                    <span className="min-w-0 truncate font-mono text-muted">{editingOpenApiConnectorId}</span>
+	                    <button
+	                      type="button"
+	                      onClick={clearOpenApiConnectorForm}
+	                      className="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-line px-2 font-medium text-foreground transition hover:border-primary"
+	                    >
+	                      <XCircle size={13} />
+	                      New
+	                    </button>
+	                  </div>
+	                ) : null}
+	                <div className="grid grid-cols-2 gap-2">
+	                  <button
+	                    type="button"
                     onClick={() => registerOpenApiConnector(false)}
                     className="flex h-10 items-center justify-center gap-2 rounded-md border border-line text-sm font-medium text-foreground transition hover:border-primary"
-                  >
-                    <CheckCircle2 size={15} />
-                    Register
-                  </button>
+	                  >
+	                    <CheckCircle2 size={15} />
+	                    {editingOpenApiConnectorId ? "Save" : "Register"}
+	                  </button>
                   <button
                     type="button"
                     onClick={() => registerOpenApiConnector(true)}
                     className="flex h-10 items-center justify-center gap-2 rounded-md border border-primary/60 text-sm font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
-                  >
-                    <Search size={15} />
-                    Import
-                  </button>
-                </div>
+	                  >
+	                    <Search size={15} />
+	                    {editingOpenApiConnectorId ? "Save + import" : "Import"}
+	                  </button>
+	                </div>
                 {openApiResult ? (
                   <pre className="max-h-48 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                     {openApiResult}
@@ -4264,11 +4586,14 @@ export function CommandCenter() {
                 <div className="flex flex-col gap-3">
                   {latestOpenApiConnectors.length ? (
                     latestOpenApiConnectors.map((connector) => (
-                      <OpenApiConnectorRow
-                        key={connector.id}
-                        connector={connector}
-                        onImport={importOpenApiConnector}
-                      />
+	                      <OpenApiConnectorRow
+	                        key={connector.id}
+	                        connector={connector}
+	                        onImport={importOpenApiConnector}
+	                        onEdit={loadOpenApiConnectorForEdit}
+	                        onToggle={updateOpenApiConnectorStatus}
+	                        onDelete={deleteOpenApiConnector}
+	                      />
                     ))
                   ) : (
                     <p className="rounded-md border border-line bg-background/54 p-3 text-sm leading-6 text-muted">
@@ -4928,9 +5253,15 @@ function ConnectionTemplateRow({
 function McpConnectorRow({
   connector,
   onDiscover,
+  onEdit,
+  onToggle,
+  onDelete,
 }: {
   connector: McpConnectorRecord;
   onDiscover: (connectorId: string) => void;
+  onEdit: (connector: McpConnectorRecord) => void;
+  onToggle: (connector: McpConnectorRecord) => void;
+  onDelete: (connector: McpConnectorRecord) => void;
 }) {
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
@@ -4946,12 +5277,39 @@ function McpConnectorRow({
       <p className="mt-2 truncate font-mono text-[11px] text-muted">{connector.endpoint}</p>
       <div className="mt-3 flex items-center justify-between gap-3">
         <span className="font-mono text-[11px] text-muted">{connector.toolCount} tools</span>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onEdit(connector)}
+          className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+        >
+          <Pencil size={13} />
+          Edit
+        </button>
         <button
           type="button"
           onClick={() => onDiscover(connector.id)}
-          className="h-8 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+          className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
         >
+          <Search size={13} />
           Refresh
+        </button>
+        <button
+          type="button"
+          onClick={() => onToggle(connector)}
+          className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+        >
+          <Power size={13} />
+          {connector.status === "disabled" ? "Enable" : "Disable"}
+        </button>
+        <button
+          type="button"
+          onClick={() => onDelete(connector)}
+          className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-danger/50 px-2 text-xs font-medium text-danger transition hover:bg-danger hover:text-white"
+        >
+          <Trash2 size={13} />
+          Delete
         </button>
       </div>
       {connector.lastError ? (
@@ -4981,9 +5339,15 @@ function McpToolRow({ tool }: { tool: McpToolRecord }) {
 function OpenApiConnectorRow({
   connector,
   onImport,
+  onEdit,
+  onToggle,
+  onDelete,
 }: {
   connector: OpenApiConnectorRecord;
   onImport: (connectorId: string) => void;
+  onEdit: (connector: OpenApiConnectorRecord) => void;
+  onToggle: (connector: OpenApiConnectorRecord) => void;
+  onDelete: (connector: OpenApiConnectorRecord) => void;
 }) {
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
@@ -4999,12 +5363,39 @@ function OpenApiConnectorRow({
       <p className="mt-2 truncate font-mono text-[11px] text-muted">{connector.baseUrl}</p>
       <div className="mt-3 flex items-center justify-between gap-3">
         <span className="font-mono text-[11px] text-muted">{connector.operationCount} ops</span>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onEdit(connector)}
+          className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+        >
+          <Pencil size={13} />
+          Edit
+        </button>
         <button
           type="button"
           onClick={() => onImport(connector.id)}
-          className="h-8 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+          className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
         >
+          <Search size={13} />
           Refresh
+        </button>
+        <button
+          type="button"
+          onClick={() => onToggle(connector)}
+          className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+        >
+          <Power size={13} />
+          {connector.status === "disabled" ? "Enable" : "Disable"}
+        </button>
+        <button
+          type="button"
+          onClick={() => onDelete(connector)}
+          className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-danger/50 px-2 text-xs font-medium text-danger transition hover:bg-danger hover:text-white"
+        >
+          <Trash2 size={13} />
+          Delete
         </button>
       </div>
       {connector.lastError ? (
@@ -5569,7 +5960,7 @@ function evaluationRunTone(status: EvalRunRecord["status"]) {
   return "bg-accent/14 text-accent";
 }
 
-function resultTone(status: EvalResultStatus) {
+function resultTone(status?: EvalResultStatus | string) {
   if (status === "pass") {
     return "bg-primary/16 text-primary";
   }
@@ -5579,6 +5970,16 @@ function resultTone(status: EvalResultStatus) {
   }
 
   return "bg-accent/14 text-accent";
+}
+
+function isolationTone(status?: TenantIsolationReport["status"]) {
+  if (status === "passing") {
+    return "bg-primary/16 text-primary";
+  }
+  if (status === "degraded") {
+    return "bg-danger/14 text-danger";
+  }
+  return "bg-background text-muted";
 }
 
 function evalSafetyTone(mode: EvalSafetyMode) {

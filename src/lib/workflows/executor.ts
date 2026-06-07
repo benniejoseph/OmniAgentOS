@@ -492,6 +492,7 @@ function buildNodeArtifact({
 async function saveWorkflowPlanNodeExecution(record: WorkflowPlanNodeExecutionRecord) {
   const nextRecord = {
     ...record,
+    tenantId: normalizeTenantId(record.tenantId),
     toolExecutionIds: record.toolExecutionIds || [],
     updatedAt: new Date().toISOString(),
   };
@@ -500,12 +501,12 @@ async function saveWorkflowPlanNodeExecution(record: WorkflowPlanNodeExecutionRe
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_workflow_node_executions (
-        id, workflow_run_id, plan_id, node_id, node_label, node_kind, status,
+        id, tenant_id, workflow_run_id, plan_id, node_id, node_label, node_kind, status,
         policy, risk_level, approval_required, tool_execution_ids, input, output,
         error, started_at, completed_at, created_at, updated_at
       )
       VALUES (
-        ${nextRecord.id}, ${nextRecord.workflowRunId}, ${nextRecord.planId},
+        ${nextRecord.id}, ${nextRecord.tenantId}, ${nextRecord.workflowRunId}, ${nextRecord.planId},
         ${nextRecord.nodeId}, ${nextRecord.nodeLabel}, ${nextRecord.nodeKind},
         ${nextRecord.status}, ${nextRecord.policy}, ${nextRecord.riskLevel},
         ${nextRecord.approvalRequired}, ${nextRecord.toolExecutionIds},
@@ -515,6 +516,7 @@ async function saveWorkflowPlanNodeExecution(record: WorkflowPlanNodeExecutionRe
         ${nextRecord.completedAt || null}, ${nextRecord.createdAt}, ${nextRecord.updatedAt}
       )
       ON CONFLICT (plan_id, node_id) DO UPDATE SET
+        tenant_id = EXCLUDED.tenant_id,
         node_label = EXCLUDED.node_label,
         node_kind = EXCLUDED.node_kind,
         status = EXCLUDED.status,
@@ -553,6 +555,7 @@ function baseNodeExecutionRecord({
   const now = new Date().toISOString();
   return {
     id: existing?.id || randomUUID(),
+    tenantId: normalizeTenantId(detail.run.tenantId),
     workflowRunId: detail.run.id,
     planId,
     nodeId: node.id,
@@ -712,6 +715,7 @@ function trimNodeExecutionLedger(ledger: WorkflowNodeExecutionLedger): WorkflowN
 function workflowPlanNodeExecutionFromRow(row: Record<string, unknown>): WorkflowPlanNodeExecutionRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     workflowRunId: String(row.workflow_run_id),
     planId: String(row.plan_id),
     nodeId: String(row.node_id),

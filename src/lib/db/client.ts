@@ -9,7 +9,7 @@ let scopedSqlClient: SqlClient | null = null;
 let schemaReady: Promise<void> | null = null;
 const tenantContext = new AsyncLocalStorage<string | undefined>();
 
-const tenantPolicyTables = [
+export const tenantRootPolicyTables = [
   "omni_memories",
   "omni_knowledge_documents",
   "omni_knowledge_chunks",
@@ -28,6 +28,19 @@ const tenantPolicyTables = [
   "omni_security_audits",
   "omni_observability_events",
   "omni_observability_slo_policy_changes",
+] as const;
+
+export const tenantChildPolicyTables = [
+  "omni_agent_events",
+  "omni_workflow_node_executions",
+  "omni_workflow_trigger_events",
+  "omni_workflow_steps",
+  "omni_workflow_events",
+] as const;
+
+export const tenantPolicyTables = [
+  ...tenantRootPolicyTables,
+  ...tenantChildPolicyTables,
 ] as const;
 
 export function hasDatabaseUrl() {
@@ -380,7 +393,16 @@ export async function ensureDatabaseSchema() {
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_agent_events ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
+      await sql`
+        UPDATE omni_agent_events event
+        SET tenant_id = run.tenant_id
+        FROM omni_agent_runs run
+        WHERE event.run_id = run.id
+          AND event.tenant_id <> run.tenant_id
+      `;
       await sql`CREATE INDEX IF NOT EXISTS omni_agent_events_run_id_idx ON omni_agent_events (run_id, created_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_agent_events_tenant_run_idx ON omni_agent_events (tenant_id, run_id, created_at ASC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_agent_events_type_idx ON omni_agent_events (type)`;
 
       await sql`
@@ -599,7 +621,16 @@ export async function ensureDatabaseSchema() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_workflow_node_executions ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
+      await sql`
+        UPDATE omni_workflow_node_executions execution
+        SET tenant_id = run.tenant_id
+        FROM omni_workflow_runs run
+        WHERE execution.workflow_run_id = run.id
+          AND execution.tenant_id <> run.tenant_id
+      `;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_node_exec_run_idx ON omni_workflow_node_executions (workflow_run_id, created_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_node_exec_tenant_run_idx ON omni_workflow_node_executions (tenant_id, workflow_run_id, created_at ASC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_node_exec_plan_idx ON omni_workflow_node_executions (plan_id, created_at ASC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_node_exec_status_idx ON omni_workflow_node_executions (status)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_node_exec_updated_idx ON omni_workflow_node_executions (updated_at DESC)`;
@@ -676,7 +707,16 @@ export async function ensureDatabaseSchema() {
           received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_workflow_trigger_events ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
+      await sql`
+        UPDATE omni_workflow_trigger_events event
+        SET tenant_id = run.tenant_id
+        FROM omni_workflow_runs run
+        WHERE event.workflow_run_id = run.id
+          AND event.tenant_id <> run.tenant_id
+      `;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_trigger_events_trigger_idx ON omni_workflow_trigger_events (trigger_id, received_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_trigger_events_tenant_received_idx ON omni_workflow_trigger_events (tenant_id, received_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_trigger_events_status_idx ON omni_workflow_trigger_events (status)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_trigger_events_received_idx ON omni_workflow_trigger_events (received_at DESC)`;
 
@@ -698,7 +738,16 @@ export async function ensureDatabaseSchema() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_workflow_steps ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
+      await sql`
+        UPDATE omni_workflow_steps step
+        SET tenant_id = run.tenant_id
+        FROM omni_workflow_runs run
+        WHERE step.workflow_run_id = run.id
+          AND step.tenant_id <> run.tenant_id
+      `;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_steps_run_id_idx ON omni_workflow_steps (workflow_run_id, created_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_steps_tenant_run_idx ON omni_workflow_steps (tenant_id, workflow_run_id, created_at ASC)`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_workflow_steps_run_step_idx ON omni_workflow_steps (workflow_run_id, step_key)`;
 
       await sql`
@@ -710,7 +759,16 @@ export async function ensureDatabaseSchema() {
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `;
+      await sql`ALTER TABLE omni_workflow_events ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'`;
+      await sql`
+        UPDATE omni_workflow_events event
+        SET tenant_id = run.tenant_id
+        FROM omni_workflow_runs run
+        WHERE event.workflow_run_id = run.id
+          AND event.tenant_id <> run.tenant_id
+      `;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_events_run_id_idx ON omni_workflow_events (workflow_run_id, created_at ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_workflow_events_tenant_run_idx ON omni_workflow_events (tenant_id, workflow_run_id, created_at ASC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_workflow_events_type_idx ON omni_workflow_events (type)`;
 
       await sql`

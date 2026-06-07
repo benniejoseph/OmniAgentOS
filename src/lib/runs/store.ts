@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { hasDatabaseUrl, ensureDatabaseSchema, getSql } from "@/lib/db/client";
+import { getDatabaseTenantContext, hasDatabaseUrl, ensureDatabaseSchema, getSql } from "@/lib/db/client";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { AgentRunEventRecord, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
@@ -57,14 +57,17 @@ export async function appendRunEvent(runId: string, event: AgentEvent) {
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const tenantId = await resolveAgentRunTenantId(runId);
+    record.tenantId = tenantId;
     await getSql()`
-      INSERT INTO omni_agent_events (id, run_id, type, payload, created_at)
-      VALUES (${record.id}, ${record.runId}, ${record.type}, ${JSON.stringify(record.payload)}::jsonb, ${record.createdAt})
+      INSERT INTO omni_agent_events (id, tenant_id, run_id, type, payload, created_at)
+      VALUES (${record.id}, ${tenantId}, ${record.runId}, ${record.type}, ${JSON.stringify(record.payload)}::jsonb, ${record.createdAt})
     `;
     return record;
   }
 
   const ledger = await readRunLedger();
+  record.tenantId = normalizeTenantId(ledger.runs.find((run) => run.id === runId)?.tenantId);
   ledger.events.push(record);
   await writeRunLedger(trimLedger(ledger));
   return record;
@@ -262,6 +265,16 @@ function runFromRow(row: Record<string, unknown>): AgentRunRecord {
     completedAt: row.completed_at ? normalizeDate(row.completed_at) : undefined,
     consolidatedAt: row.consolidated_at ? normalizeDate(row.consolidated_at) : undefined,
   };
+}
+
+async function resolveAgentRunTenantId(runId: string) {
+  const rows = await getSql()`
+    SELECT tenant_id
+    FROM omni_agent_runs
+    WHERE id = ${runId}
+    LIMIT 1
+  `;
+  return normalizeTenantId(rows[0]?.tenant_id ? String(rows[0].tenant_id) : getDatabaseTenantContext());
 }
 
 function getRunsFile() {

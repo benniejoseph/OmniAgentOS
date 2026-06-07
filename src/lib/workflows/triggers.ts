@@ -1,5 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { redactSensitive, validateSecretEnvName } from "@/lib/security/context";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
@@ -165,6 +165,7 @@ export async function dispatchWorkflowTrigger(input: DispatchWorkflowTriggerInpu
 
   if (trigger.status !== "active") {
     const event = await saveWorkflowTriggerEvent(createTriggerEvent({
+      tenantId: currentTenantId(),
       trigger,
       status: "rejected",
       signatureVerified: verification.verified,
@@ -179,6 +180,7 @@ export async function dispatchWorkflowTrigger(input: DispatchWorkflowTriggerInpu
 
   if (!verification.verified) {
     const event = await saveWorkflowTriggerEvent(createTriggerEvent({
+      tenantId: currentTenantId(),
       trigger,
       status: "rejected",
       signatureVerified: false,
@@ -192,8 +194,10 @@ export async function dispatchWorkflowTrigger(input: DispatchWorkflowTriggerInpu
   }
 
   try {
+    const tenantId = currentTenantId();
     const goal = renderGoalTemplate(trigger, payload, eventType);
     const workflow = await createWorkflowRun({
+      tenantId,
       goal,
       mode: trigger.workflowMode,
       requireApproval: trigger.requireApproval,
@@ -212,6 +216,7 @@ export async function dispatchWorkflowTrigger(input: DispatchWorkflowTriggerInpu
       queueJobId: queueJob.id,
     }).catch(() => undefined);
     const event = await saveWorkflowTriggerEvent(createTriggerEvent({
+      tenantId: workflow.run.tenantId || tenantId,
       trigger,
       status: "enqueued",
       signatureVerified: verification.verified,
@@ -226,6 +231,7 @@ export async function dispatchWorkflowTrigger(input: DispatchWorkflowTriggerInpu
   } catch (error) {
     const message = error instanceof Error ? error.message : "Trigger dispatch failed.";
     const event = await saveWorkflowTriggerEvent(createTriggerEvent({
+      tenantId: currentTenantId(),
       trigger,
       status: "failed",
       signatureVerified: verification.verified,
@@ -304,11 +310,11 @@ async function saveWorkflowTriggerEvent(record: WorkflowTriggerEventRecord) {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_workflow_trigger_events (
-        id, trigger_id, status, source, event_type, signature_verified,
+        id, tenant_id, trigger_id, status, source, event_type, signature_verified,
         workflow_run_id, queue_job_id, payload, headers, error, received_at
       )
       VALUES (
-        ${record.id}, ${record.triggerId}, ${record.status}, ${record.source},
+        ${record.id}, ${normalizeTenantId(record.tenantId)}, ${record.triggerId}, ${record.status}, ${record.source},
         ${record.eventType || null}, ${record.signatureVerified},
         ${record.workflowRunId || null}, ${record.queueJobId || null},
         ${JSON.stringify(record.payload || {})}::jsonb,
@@ -342,6 +348,7 @@ async function incrementTriggerCounters(triggerId: string, input: { triggered?: 
 }
 
 function createTriggerEvent({
+  tenantId,
   trigger,
   status,
   signatureVerified,
@@ -352,6 +359,7 @@ function createTriggerEvent({
   queueJobId,
   error,
 }: {
+  tenantId?: string;
   trigger: WorkflowTriggerRecord;
   status: WorkflowTriggerEventStatus;
   signatureVerified: boolean;
@@ -364,6 +372,7 @@ function createTriggerEvent({
 }): WorkflowTriggerEventRecord {
   return {
     id: randomUUID(),
+    tenantId: normalizeTenantId(tenantId),
     triggerId: trigger.id,
     status,
     source: trigger.source,
@@ -541,6 +550,7 @@ function workflowTriggerFromRow(row: Record<string, unknown>): WorkflowTriggerRe
 function workflowTriggerEventFromRow(row: Record<string, unknown>): WorkflowTriggerEventRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     triggerId: String(row.trigger_id),
     status: normalizeEventStatus(row.status),
     source: String(row.source),
@@ -553,6 +563,17 @@ function workflowTriggerEventFromRow(row: Record<string, unknown>): WorkflowTrig
     error: row.error ? String(row.error) : undefined,
     receivedAt: normalizeDate(row.received_at),
   };
+}
+
+function currentTenantId() {
+  return normalizeTenantId(getDatabaseTenantContext());
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }
 
 function normalizeWorkflowMode(value: unknown): WorkflowTriggerRecord["workflowMode"] {

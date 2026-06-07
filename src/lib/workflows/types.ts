@@ -112,6 +112,7 @@ export type WorkflowPlanNodeExecutionStatus =
 
 export type WorkflowPlanNodeExecutionRecord = {
   id: string;
+  tenantId?: string;
   workflowRunId: string;
   planId: string;
   nodeId: string;
@@ -180,6 +181,7 @@ export type WorkflowRunRecord = {
 
 export type WorkflowStepRecord = {
   id: string;
+  tenantId?: string;
   workflowRunId: string;
   stepKey: WorkflowStepKey;
   label: string;
@@ -197,6 +199,7 @@ export type WorkflowStepRecord = {
 
 export type WorkflowEventRecord = {
   id: string;
+  tenantId?: string;
   workflowRunId: string;
   type: string;
   payload: Record<string, unknown>;
@@ -282,6 +285,7 @@ export type WorkflowTriggerEventStatus = "accepted" | "rejected" | "enqueued" | 
 
 export type WorkflowTriggerEventRecord = {
   id: string;
+  tenantId?: string;
   triggerId: string;
   status: WorkflowTriggerEventStatus;
   source: string;

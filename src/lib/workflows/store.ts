@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type {
@@ -50,6 +50,7 @@ export async function createWorkflowRun(input: WorkflowRunInput & { tenantId?: s
   };
   const steps = workflowStepDefinitions.map<WorkflowStepRecord>((definition) => ({
     id: randomUUID(),
+    tenantId,
     workflowRunId: run.id,
     stepKey: definition.key,
     label: definition.label,
@@ -84,7 +85,7 @@ export async function createWorkflowRun(input: WorkflowRunInput & { tenantId?: s
   await mutateWorkflowLedger((ledger) => {
     ledger.runs.unshift(run);
     ledger.steps.push(...steps);
-    ledger.events.push(createWorkflowEventRecord(run.id, "workflow.created", { goal: run.goal }));
+    ledger.events.push(createWorkflowEventRecord(run.id, "workflow.created", { goal: run.goal }, tenantId));
     return trimWorkflowLedger(ledger);
   });
 
@@ -234,20 +235,23 @@ export async function setWorkflowRunStatus(
 export async function saveWorkflowStep(step: WorkflowStepRecord) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const tenantId = normalizeTenantId(step.tenantId || await resolveWorkflowRunTenantId(step.workflowRunId));
+    const nextStep = { ...step, tenantId };
     await getSql()`
       INSERT INTO omni_workflow_steps (
-        id, workflow_run_id, step_key, label, status, attempt, max_attempts,
+        id, tenant_id, workflow_run_id, step_key, label, status, attempt, max_attempts,
         input, output, error, started_at, completed_at, created_at, updated_at
       )
       VALUES (
-        ${step.id}, ${step.workflowRunId}, ${step.stepKey}, ${step.label},
-        ${step.status}, ${step.attempt}, ${step.maxAttempts},
-        ${JSON.stringify(step.input || {})}::jsonb,
-        ${JSON.stringify(step.output || null)}::jsonb, ${step.error || null},
-        ${step.startedAt || null}, ${step.completedAt || null},
-        ${step.createdAt}, ${step.updatedAt}
+        ${nextStep.id}, ${tenantId}, ${nextStep.workflowRunId}, ${nextStep.stepKey}, ${nextStep.label},
+        ${nextStep.status}, ${nextStep.attempt}, ${nextStep.maxAttempts},
+        ${JSON.stringify(nextStep.input || {})}::jsonb,
+        ${JSON.stringify(nextStep.output || null)}::jsonb, ${nextStep.error || null},
+        ${nextStep.startedAt || null}, ${nextStep.completedAt || null},
+        ${nextStep.createdAt}, ${nextStep.updatedAt}
       )
       ON CONFLICT (workflow_run_id, step_key) DO UPDATE SET
+        tenant_id = EXCLUDED.tenant_id,
         label = EXCLUDED.label,
         status = EXCLUDED.status,
         attempt = EXCLUDED.attempt,
@@ -259,19 +263,23 @@ export async function saveWorkflowStep(step: WorkflowStepRecord) {
         completed_at = EXCLUDED.completed_at,
         updated_at = EXCLUDED.updated_at
     `;
-    return step;
+    return nextStep;
   }
 
+  let savedStep = step;
   await mutateWorkflowLedger((ledger) => {
-    const existingIndex = ledger.steps.findIndex((item) => item.id === step.id);
+    const tenantId = normalizeTenantId(step.tenantId || ledger.runs.find((run) => run.id === step.workflowRunId)?.tenantId);
+    const nextStep = { ...step, tenantId };
+    savedStep = nextStep;
+    const existingIndex = ledger.steps.findIndex((item) => item.id === nextStep.id);
     if (existingIndex >= 0) {
-      ledger.steps[existingIndex] = step;
+      ledger.steps[existingIndex] = nextStep;
     } else {
-      ledger.steps.push(step);
+      ledger.steps.push(nextStep);
     }
     return ledger;
   });
-  return step;
+  return savedStep;
 }
 
 export async function updateWorkflowStep(
@@ -297,22 +305,26 @@ export async function appendWorkflowEvent(
   type: string,
   payload: Record<string, unknown> = {},
 ) {
-  const record = createWorkflowEventRecord(runId, type, payload);
+  let record: WorkflowEventRecord | undefined;
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const tenantId = await resolveWorkflowRunTenantId(runId);
+    record = createWorkflowEventRecord(runId, type, payload, tenantId);
     await getSql()`
-      INSERT INTO omni_workflow_events (id, workflow_run_id, type, payload, created_at)
-      VALUES (${record.id}, ${record.workflowRunId}, ${record.type}, ${JSON.stringify(record.payload)}::jsonb, ${record.createdAt})
+      INSERT INTO omni_workflow_events (id, tenant_id, workflow_run_id, type, payload, created_at)
+      VALUES (${record.id}, ${tenantId}, ${record.workflowRunId}, ${record.type}, ${JSON.stringify(record.payload)}::jsonb, ${record.createdAt})
     `;
     return record;
   }
 
   await mutateWorkflowLedger((ledger) => {
+    const tenantId = normalizeTenantId(ledger.runs.find((run) => run.id === runId)?.tenantId);
+    record = createWorkflowEventRecord(runId, type, payload, tenantId);
     ledger.events.push(record);
     return trimWorkflowLedger(ledger);
   });
-  return record;
+  return record as WorkflowEventRecord;
 }
 
 export async function listWorkflowRecoveryEvents(limit = 20): Promise<WorkflowRecoveryEventRecord[]> {
@@ -322,6 +334,7 @@ export async function listWorkflowRecoveryEvents(limit = 20): Promise<WorkflowRe
     const rows = await getSql()`
       SELECT
         event.id,
+        event.tenant_id,
         event.workflow_run_id,
         event.type,
         event.payload,
@@ -396,9 +409,11 @@ function createWorkflowEventRecord(
   workflowRunId: string,
   type: string,
   payload: Record<string, unknown>,
+  tenantId?: string,
 ): WorkflowEventRecord {
   return {
     id: randomUUID(),
+    tenantId: normalizeTenantId(tenantId),
     workflowRunId,
     type,
     payload,
@@ -463,6 +478,7 @@ function workflowRunFromRow(row: Record<string, unknown>): WorkflowRunRecord {
 function workflowStepFromRow(row: Record<string, unknown>): WorkflowStepRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     workflowRunId: String(row.workflow_run_id),
     stepKey: String(row.step_key) as WorkflowStepKey,
     label: String(row.label),
@@ -482,6 +498,7 @@ function workflowStepFromRow(row: Record<string, unknown>): WorkflowStepRecord {
 function workflowEventFromRow(row: Record<string, unknown>): WorkflowEventRecord {
   return {
     id: String(row.id),
+    tenantId: String(row.tenant_id || "default"),
     workflowRunId: String(row.workflow_run_id),
     type: String(row.type),
     payload: parseObject(row.payload) || {},
@@ -526,6 +543,16 @@ function workflowRecoveryEventFromRecord(
       error: run?.error,
     },
   };
+}
+
+async function resolveWorkflowRunTenantId(runId: string) {
+  const rows = await getSql()`
+    SELECT tenant_id
+    FROM omni_workflow_runs
+    WHERE id = ${runId}
+    LIMIT 1
+  `;
+  return normalizeTenantId(rows[0]?.tenant_id ? String(rows[0].tenant_id) : getDatabaseTenantContext());
 }
 
 function isWorkflowRecoveryEventType(type: string) {

@@ -22,6 +22,7 @@ export type AgentRunRecord = {
 
 export type AgentRunEventRecord = {
   id: string;
+  tenantId?: string;
   runId: string;
   type: string;
   payload: unknown;
