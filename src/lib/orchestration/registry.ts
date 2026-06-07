@@ -178,6 +178,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "ops.queue_recovery",
+    name: "Queue Recovery",
+    description: "Inspects, reconciles, requeues, drains, and safely fails stale workflow queue work with audit events.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

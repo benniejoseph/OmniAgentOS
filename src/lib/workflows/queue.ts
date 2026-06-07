@@ -47,7 +47,7 @@ export async function enqueueWorkflowRunTick(
 ) {
   const job = await enqueueOperationJob({
     type: "workflow.tick",
-    dedupeKey: workflowJobDedupeKey(workflowRunId),
+    dedupeKey: getWorkflowJobDedupeKey(workflowRunId),
     payload: {
       workflowRunId,
       reason,
@@ -65,7 +65,7 @@ export async function enqueueWorkflowRunTick(
 }
 
 export async function cancelWorkflowRunTick(workflowRunId: string, reason = "Workflow job canceled.") {
-  const jobs = await cancelOperationJobByDedupeKey(workflowJobDedupeKey(workflowRunId), reason);
+  const jobs = await cancelOperationJobByDedupeKey(getWorkflowJobDedupeKey(workflowRunId), reason);
   if (jobs.length) {
     await appendWorkflowEvent(workflowRunId, "workflow.queue.canceled", {
       reason,
@@ -98,7 +98,7 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
 
   const jobs = await leaseOperationJobs({
     type: "workflow.tick",
-    dedupeKey: input.workflowRunId ? workflowJobDedupeKey(input.workflowRunId) : undefined,
+    dedupeKey: input.workflowRunId ? getWorkflowJobDedupeKey(input.workflowRunId) : undefined,
     limit,
     leaseSeconds: OPERATION_QUEUE_LEASE_SECONDS,
   });
@@ -177,6 +177,6 @@ export function scheduleWorkflowQueueDrain(limit = WORKFLOW_DRAIN_LIMIT) {
   });
 }
 
-function workflowJobDedupeKey(workflowRunId: string) {
+export function getWorkflowJobDedupeKey(workflowRunId: string) {
   return `workflow:${workflowRunId}`;
 }

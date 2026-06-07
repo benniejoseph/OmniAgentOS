@@ -5,11 +5,11 @@ import { ensureDatabaseSchema, getSql, getStorageBackend, getVectorStoreStatus, 
 import { syncIncidentsFromHealthCheck } from "@/lib/diagnostics/incidents";
 import { getEvalStats } from "@/lib/evaluations/store";
 import { getMemoryStats } from "@/lib/memory/store";
-import { getOperationJobStats, listOperationJobs, repairExpiredOperationJobs } from "@/lib/operations/job-queue";
+import { getOperationJobStats, listOperationJobs } from "@/lib/operations/job-queue";
+import { reconcileOperationsRecovery } from "@/lib/operations/recovery";
 import { getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { listWorkflowPlans } from "@/lib/workflows/planner";
-import { enqueueWorkflowRunTick } from "@/lib/workflows/queue";
-import { appendWorkflowEvent, getWorkflowStats, listWorkflowRuns, updateWorkflowRun } from "@/lib/workflows/store";
+import { getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
 import { getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 import { getRunStats } from "@/lib/runs/store";
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
@@ -72,16 +72,40 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
   const recoveryActions: RecoveryAction[] = [];
 
   if (input.repair) {
-    const repairedJobs = await repairExpiredOperationJobs();
+    const recovery = await reconcileOperationsRecovery({
+      mode: "repair",
+      limit: 10,
+    });
     recoveryActions.push({
       id: "operation_jobs.expired_leases",
-      status: repairedJobs > 0 ? "completed" : "skipped",
-      message: repairedJobs > 0
-        ? `Repaired ${repairedJobs} expired operation job lease(s).`
+      status: recovery.expiredLeasesRepaired > 0 ? "completed" : "skipped",
+      message: recovery.expiredLeasesRepaired > 0
+        ? `Repaired ${recovery.expiredLeasesRepaired} expired operation job lease(s).`
         : "No expired operation job leases required repair.",
-      metadata: { repairedJobs },
+      metadata: { repairedJobs: recovery.expiredLeasesRepaired },
     });
-    recoveryActions.push(...await repairStaleWorkflows());
+    if (recovery.staleWorkflows.length) {
+      for (const workflow of recovery.staleWorkflows) {
+        recoveryActions.push({
+          id: `workflow.${workflow.workflowRunId}`,
+          status: workflow.disposition === "skipped" || workflow.disposition === "inspect" ? "skipped" : "completed",
+          message: `${workflow.disposition} stale workflow ${workflow.workflowRunId}.`,
+          metadata: {
+            workflowRunId: workflow.workflowRunId,
+            disposition: workflow.disposition,
+            staleMs: workflow.staleMs,
+            reason: workflow.reason,
+            jobIds: workflow.jobIds,
+          },
+        });
+      }
+    } else {
+      recoveryActions.push({
+        id: "workflows.stale",
+        status: "skipped",
+        message: "No stale workflows required repair.",
+      });
+    }
   }
 
   const [
@@ -354,57 +378,6 @@ export async function getHealthStats() {
     incidents: latest?.incidents.length || 0,
     recoveryActions: latest?.recoveryActions.filter((action) => action.status === "completed").length || 0,
   };
-}
-
-async function repairStaleWorkflows(): Promise<RecoveryAction[]> {
-  const runs = await listWorkflowRuns(100);
-  const stale = runs.filter(isStaleWorkflow);
-  const actions: RecoveryAction[] = [];
-
-  for (const run of stale.slice(0, 10)) {
-    try {
-      const nextStatus = run.status === "running" ? "queued" : run.status;
-      if (run.status === "running") {
-        await updateWorkflowRun(run.id, {
-          status: nextStatus,
-          error: "Self-healing requeued stale running workflow.",
-        });
-      }
-      const job = await enqueueWorkflowRunTick(run.id, "self_healing_stale_workflow", 25);
-      await appendWorkflowEvent(run.id, "workflow.self_healing.requeued", {
-        jobId: job.id,
-        previousStatus: run.status,
-        staleMs: Date.now() - Date.parse(run.updatedAt),
-      }).catch(() => undefined);
-      actions.push({
-        id: `workflow.${run.id}`,
-        status: "completed",
-        message: `Requeued stale workflow ${run.id}.`,
-        metadata: {
-          workflowRunId: run.id,
-          jobId: job.id,
-          previousStatus: run.status,
-        },
-      });
-    } catch (error) {
-      actions.push({
-        id: `workflow.${run.id}`,
-        status: "failed",
-        message: error instanceof Error ? error.message : "Failed to requeue stale workflow.",
-        metadata: { workflowRunId: run.id },
-      });
-    }
-  }
-
-  if (!actions.length) {
-    actions.push({
-      id: "workflows.stale",
-      status: "skipped",
-      message: "No stale workflows required repair.",
-    });
-  }
-
-  return actions;
 }
 
 async function checkDatabase() {

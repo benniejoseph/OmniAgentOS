@@ -46,13 +46,15 @@ import { getObservabilityStats, listObservabilityEvents, recordRuntimeEvent } fr
 import { getMemoryGraphStats, rebuildMemoryGraph, searchMemoryGraph } from "@/lib/memory/graph";
 import { listMemories, saveMemory } from "@/lib/memory/store";
 import { getApprovalQueue, getOperationsOverview } from "@/lib/operations/queue";
+import { reconcileOperationsRecovery } from "@/lib/operations/recovery";
 import { buildContextPack, getContextEngineStats } from "@/lib/rag/context-engine";
 import { retrieveContext } from "@/lib/rag/retriever";
 import { canPerform, redactSensitive } from "@/lib/security/context";
-import { enqueueWorkflowRunTick, processWorkflowQueue } from "@/lib/workflows/queue";
+import { cancelWorkflowRunTick, enqueueWorkflowRunTick, processWorkflowQueue } from "@/lib/workflows/queue";
 import { executeDynamicWorkflowPlan, getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats } from "@/lib/workflows/planner";
-import { createWorkflowRun, getWorkflowRunDetail, updateWorkflowStep } from "@/lib/workflows/store";
+import { signalWorkflowRun } from "@/lib/workflows/runner";
+import { createWorkflowRun, getWorkflowRunDetail, updateWorkflowRun, updateWorkflowStep } from "@/lib/workflows/store";
 import { createWorkflowTrigger, dispatchWorkflowTrigger, getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 import {
   completeEvalRun,
@@ -266,6 +268,23 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       healthPersisted: true,
       metricsAvailable: true,
       recoveryLedger: true,
+    },
+  },
+  {
+    id: "operations.queue_recovery",
+    name: "Queue recovery",
+    description: "Validates stale workflow inspection, safe requeue/fail reconciliation, bounded drain reporting, cleanup, and registry exposure.",
+    type: "operations",
+    input: {
+      goal: "Evaluation queue recovery stale workflow fixture.",
+    },
+    expected: {
+      inspectFindsStale: true,
+      requeueRecovery: true,
+      failRecovery: true,
+      drainReported: true,
+      cleanup: true,
+      registryTool: "ops.queue_recovery",
     },
   },
   {
@@ -550,6 +569,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.self_healing") {
     return evaluateSelfHealingDiagnostics(evalCase);
+  }
+
+  if (evalCase.id === "operations.queue_recovery") {
+    return evaluateQueueRecovery(evalCase);
   }
 
   if (evalCase.id === "operations.incident_management") {
@@ -1201,6 +1224,120 @@ async function evaluateSelfHealingDiagnostics(evalCase: EvalCaseDefinition): Pro
       },
     },
   };
+}
+
+async function evaluateQueueRecovery(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const requeueRun = await createWorkflowRun({
+    goal: `${String(evalCase.input.goal || "Queue recovery fixture")} requeue`,
+    mode: "orchestrate",
+    requireApproval: false,
+    maxAttempts: 3,
+  });
+  const failRun = await createWorkflowRun({
+    goal: `${String(evalCase.input.goal || "Queue recovery fixture")} fail`,
+    mode: "orchestrate",
+    requireApproval: false,
+    maxAttempts: 1,
+  });
+  await updateWorkflowRun(failRun.run.id, {
+    attempt: failRun.run.maxAttempts,
+    error: "Evaluation exhausted workflow fixture.",
+  });
+
+  let cleanup = false;
+  try {
+    const inspect = await reconcileOperationsRecovery({
+      mode: "inspect",
+      staleWorkflowMs: 0,
+      failAfterMs: 60_000,
+      limit: 10,
+      actorId: "evaluation",
+    });
+    const repair = await reconcileOperationsRecovery({
+      mode: "repair",
+      staleWorkflowMs: 0,
+      failAfterMs: 60_000,
+      limit: 10,
+      actorId: "evaluation",
+    });
+    const drain = await reconcileOperationsRecovery({
+      mode: "drain",
+      staleWorkflowMs: 60_000,
+      failAfterMs: 60_000,
+      limit: 5,
+      drainLimit: 2,
+      actorId: "evaluation",
+    });
+    const requeueDetail = await getWorkflowRunDetail(requeueRun.run.id);
+    const failDetail = await getWorkflowRunDetail(failRun.run.id);
+    const registry = getCapabilityRegistry();
+    const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
+    await signalWorkflowRun(requeueRun.run.id, "cancel").catch(() => undefined);
+    await cancelWorkflowRunTick(requeueRun.run.id, "Evaluation queue recovery cleanup.").catch(() => undefined);
+    await cancelWorkflowRunTick(failRun.run.id, "Evaluation queue recovery cleanup.").catch(() => undefined);
+    cleanup = true;
+
+    const checks = {
+      inspectFindsStale: Boolean(evalCase.expected.inspectFindsStale)
+        ? inspect.staleWorkflows.some((workflow) => workflow.workflowRunId === requeueRun.run.id) &&
+          inspect.staleWorkflows.some((workflow) => workflow.workflowRunId === failRun.run.id)
+        : true,
+      requeueRecovery: Boolean(evalCase.expected.requeueRecovery)
+        ? repair.staleWorkflows.some((workflow) =>
+            workflow.workflowRunId === requeueRun.run.id &&
+            workflow.disposition === "requeued" &&
+            workflow.jobIds.length > 0
+          ) &&
+          requeueDetail?.events.some((event) => event.type === "workflow.recovery.requeued") === true
+        : true,
+      failRecovery: Boolean(evalCase.expected.failRecovery)
+        ? repair.staleWorkflows.some((workflow) =>
+            workflow.workflowRunId === failRun.run.id &&
+            workflow.disposition === "failed"
+          ) &&
+          failDetail?.run.status === "failed" &&
+          failDetail.events.some((event) => event.type === "workflow.recovery.failed")
+        : true,
+      drainReported: Boolean(evalCase.expected.drainReported)
+        ? drain.mode === "drain" &&
+          typeof drain.drain?.requested === "number" &&
+          typeof drain.runnableJobsAfter === "number"
+        : true,
+      cleanup: Boolean(evalCase.expected.cleanup) ? cleanup : true,
+      registryToolAvailable: activeToolIds.has(String(evalCase.expected.registryTool || "ops.queue_recovery")),
+    };
+    const passed = Object.values(checks).filter(Boolean).length;
+    const total = Object.keys(checks).length;
+
+    return {
+      status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+      score: passed / total,
+      output: {
+        checks,
+        workflowRunIds: {
+          requeue: requeueRun.run.id,
+          fail: failRun.run.id,
+        },
+        inspect: {
+          staleWorkflows: inspect.staleWorkflows.length,
+          runnableJobsBefore: inspect.runnableJobsBefore,
+          runnableJobsAfter: inspect.runnableJobsAfter,
+        },
+        repair: {
+          requeuedWorkflows: repair.requeuedWorkflows,
+          failedWorkflows: repair.failedWorkflows,
+          expiredLeasesRepaired: repair.expiredLeasesRepaired,
+        },
+        drain: drain.drain,
+      },
+    };
+  } finally {
+    if (!cleanup) {
+      await signalWorkflowRun(requeueRun.run.id, "cancel").catch(() => undefined);
+      await cancelWorkflowRunTick(requeueRun.run.id, "Evaluation queue recovery cleanup.").catch(() => undefined);
+      await cancelWorkflowRunTick(failRun.run.id, "Evaluation queue recovery cleanup.").catch(() => undefined);
+    }
+  }
 }
 
 async function evaluateIncidentManagement(evalCase: EvalCaseDefinition): Promise<CaseResult> {

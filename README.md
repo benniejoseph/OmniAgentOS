@@ -61,7 +61,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - `/api/tools/execute` schema-validated tool execution endpoint with dry-run defaults
 - `/api/approvals` pending workflow/tool/SLO policy approval queue endpoint
 - `/api/approvals/:id` durable approve/reject endpoint for workflows, tool execution records, quorum-gated SLO policy changes, and break-glass SLO approvals
-- `/api/operations` production operations overview endpoint
+- `/api/operations` production operations overview and queue recovery endpoint for stale workflow inspection, repair, and bounded drain actions
 - `/api/observability` durable runtime event timeline, SLO summary, route failure, and correlation-id endpoint
 - `/api/observability/slo` observability SLO snapshot and monitor endpoint that opens/resolves incidents and queues alerts
 - `/api/observability/slo/policies` durable SLO policy configuration endpoint for thresholds, severity, routing, suppression, enablement, defaults, approval requests, versioned approval-policy administration, break-glass rules, signed evidence, history, and rollback
@@ -121,7 +121,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Plan-driven workflow executor that persists each dynamic DAG node, runs read-only governed tools, dry-runs side-effecting or approval-gated actions, and feeds execution summaries into verification and reports
 - Native webhook workflow triggers with HMAC signature support, trigger/event ledgers, workflow run creation, and durable queue enqueue
 - Production health diagnostics across database, OpenAI configuration, vector store, operation jobs, workflows, planner, triggers, evaluations, tools, memory, and connectors
-- Self-healing repair path for expired operation-job leases and stale workflow execution
+- Self-healing repair path for expired operation-job leases, stale workflow execution, queue recovery inspection, bounded drains, and safe failure of exhausted stale workflows
 - Incident management with normalized incident records, status lifecycle, event history, alert target metadata, and operator playbooks
 - Alert delivery with dashboard/ops persistence, signed outbound webhooks, Slack/email adapters, retry/backoff, target health probes, failed-delivery requeue, and escalation policy metadata
 - Observability SLO alerting that evaluates error budget, availability, route failure, and P95 latency policies, then opens/resolves incidents and queues alert deliveries
@@ -131,6 +131,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
 - Operations regression case for approval queue, operations overview, and connection catalog readiness
 - Operations regression case for persisted health diagnostics, SLO metrics, incident consistency, and repair ledgers
+- Operations regression case for stale workflow queue recovery, safe requeue/fail reconciliation, bounded drain reporting, cleanup, and registry exposure
 - Operations regression case for incident sync, alert routing metadata, acknowledgement actions, and playbook execution
 - Operations regression case for alert delivery queueing, dispatch lifecycle, delivery policies, target readiness, and signed webhook support
 - Operations regression case for secured scheduled alert dispatch metadata, queue/dispatch limits, and delivery progress

@@ -429,6 +429,53 @@ export async function cancelOperationJobByDedupeKey(dedupeKey: string, reason = 
   return canceled;
 }
 
+export async function requeueOperationJobByDedupeKey(dedupeKey: string, reason = "Job requeued.") {
+  const now = new Date().toISOString();
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      UPDATE omni_operation_jobs
+      SET status = 'queued',
+          run_at = NOW(),
+          locked_at = NULL,
+          lease_owner = NULL,
+          lease_expires_at = NULL,
+          last_error = ${reason},
+          completed_at = NULL,
+          updated_at = NOW()
+      WHERE dedupe_key = ${dedupeKey}
+        AND status IN ('queued', 'running', 'failed')
+      RETURNING *
+    `;
+    return rows.map(operationJobFromRow);
+  }
+
+  const requeued: OperationJobRecord[] = [];
+  await mutateJobLedger((ledger) => {
+    ledger.jobs = ledger.jobs.map((job) => {
+      if (job.dedupeKey !== dedupeKey || !["queued", "running", "failed"].includes(job.status)) {
+        return job;
+      }
+      const nextJob: OperationJobRecord = {
+        ...job,
+        status: "queued",
+        runAt: now,
+        lockedAt: undefined,
+        leaseOwner: undefined,
+        leaseExpiresAt: undefined,
+        lastError: reason,
+        completedAt: undefined,
+        updatedAt: now,
+      };
+      requeued.push(nextJob);
+      return nextJob;
+    });
+    return trimJobLedger(ledger);
+  });
+  return requeued;
+}
+
 export async function repairExpiredOperationJobs() {
   const now = new Date().toISOString();
 

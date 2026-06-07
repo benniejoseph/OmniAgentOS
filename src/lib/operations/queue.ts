@@ -6,6 +6,7 @@ import {
   type ObservabilitySloPolicyChange,
 } from "@/lib/observability/slo-policy-store";
 import { getOperationJobStats, listOperationJobs } from "@/lib/operations/job-queue";
+import { inspectOperationsRecovery } from "@/lib/operations/recovery";
 import { listAgentRuns } from "@/lib/runs/store";
 import { redactSensitive } from "@/lib/security/context";
 import { getToolExecutionStats, listPendingToolApprovals, listToolExecutions } from "@/lib/tools/audit-store";
@@ -92,6 +93,7 @@ export async function getOperationsOverview() {
     openApiConnectors,
     operationJobStats,
     operationJobs,
+    recovery,
   ] = await Promise.all([
     getApprovalQueue(25),
     listWorkflowRuns(20),
@@ -103,6 +105,7 @@ export async function getOperationsOverview() {
     listOpenApiConnectors(),
     getOperationJobStats(),
     listOperationJobs(20),
+    inspectOperationsRecovery({ limit: 10 }),
   ]);
   const connectorErrors =
     mcpConnectors.filter((connector) => connector.status === "error").length +
@@ -122,7 +125,10 @@ export async function getOperationsOverview() {
       failedJobs: operationJobStats.byStatus.failed || 0,
       runnableJobs: operationJobStats.runnable,
       expiredLeases: operationJobStats.expiredLeases,
+      staleWorkflows: recovery.staleWorkflows.length,
+      recoverableWorkflows: recovery.staleWorkflows.filter((workflow) => workflow.reason.includes("retryable")).length,
     },
+    recovery,
     latest: {
       workflows: workflowRuns,
       toolExecutions,

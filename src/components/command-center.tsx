@@ -252,7 +252,10 @@ type OperationsResponse = {
     failedJobs: number;
     runnableJobs: number;
     expiredLeases: number;
+    staleWorkflows?: number;
+    recoverableWorkflows?: number;
   };
+  recovery?: OperationsRecoveryReport;
   latest: {
     workflows: WorkflowRunRecord[];
     toolExecutions: ToolExecutionRecord[];
@@ -264,6 +267,41 @@ type OperationsResponse = {
       status: string;
       updatedAt: string;
     }>;
+  };
+};
+
+type OperationsRecoveryReport = {
+  mode: "inspect" | "repair" | "drain";
+  inspectedAt: string;
+  staleWorkflowMs: number;
+  failAfterMs: number;
+  limit: number;
+  expiredLeasesRepaired: number;
+  staleWorkflows: Array<{
+    workflowRunId: string;
+    status: WorkflowRunStatus;
+    currentStep?: string;
+    attempt: number;
+    maxAttempts: number;
+    staleMs: number;
+    ageMs: number;
+    disposition: "inspect" | "requeued" | "failed" | "skipped";
+    reason: string;
+    jobIds: string[];
+  }>;
+  requeuedWorkflows: number;
+  failedWorkflows: number;
+  skippedWorkflows: number;
+  runnableJobsBefore: number;
+  runnableJobsAfter: number;
+  expiredLeasesBefore: number;
+  expiredLeasesAfter: number;
+  drain?: {
+    requested: number;
+    leased: number;
+    completed: number;
+    failed: number;
+    requeued: number;
   };
 };
 
@@ -1275,6 +1313,7 @@ export function CommandCenter() {
   const [approvalState, setApprovalState] = useState<ApprovalQueueResponse | null>(null);
   const [operationState, setOperationState] = useState<OperationsResponse | null>(null);
   const [approvalResult, setApprovalResult] = useState("");
+  const [operationResult, setOperationResult] = useState("");
   const [diagnosticsResult, setDiagnosticsResult] = useState("");
   const [incidentState, setIncidentState] = useState<IncidentsResponse | null>(null);
   const [incidentResult, setIncidentResult] = useState("");
@@ -1349,6 +1388,7 @@ export function CommandCenter() {
   const approvalQueue = approvalState?.items || operationState?.approvals.items || [];
   const approvalStats = approvalState?.stats || operationState?.approvals.stats;
   const operationSummary = operationState?.summary;
+  const operationRecovery = operationState?.recovery;
   const connectionTemplates = connectionCatalog?.connectors || [];
   const evaluationStats = evaluationState?.stats || capabilities?.evaluations;
   const latestEvaluations = evaluationState?.runs.slice(0, 5) || (capabilities?.evaluations.latest ? [capabilities.evaluations.latest] : []);
@@ -1821,6 +1861,32 @@ export function CommandCenter() {
       refreshWorkspace();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "diagnostics failed");
+    }
+  }
+
+  async function runOperationsRecovery(action: "inspect_recovery" | "repair_recovery" | "drain_recovery") {
+    setStatus(action === "drain_recovery" ? "draining recovery" : action === "repair_recovery" ? "repairing operations" : "inspecting recovery");
+    setOperationResult("");
+
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          limit: 10,
+          drainLimit: 5,
+        }),
+      });
+      const data = await response.json();
+      setOperationResult(formatToolResult(data.recovery || data));
+      if (data.overview) {
+        setOperationState(data.overview);
+      }
+      setStatus(response.ok ? "operations recovery complete" : "operations recovery failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "operations recovery failed");
     }
   }
 
@@ -2869,6 +2935,11 @@ export function CommandCenter() {
                 <MiniStat label="Leases" value={`${operationSummary?.expiredLeases ?? queueStats?.expiredLeases ?? 0} stale`} />
               </div>
               <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Stale" value={`${operationSummary?.staleWorkflows ?? operationRecovery?.staleWorkflows.length ?? 0}`} />
+                <MiniStat label="Requeued" value={`${operationRecovery?.requeuedWorkflows ?? 0}`} />
+                <MiniStat label="Failed" value={`${operationRecovery?.failedWorkflows ?? 0}`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
                 <MiniStat label="Health" value={healthStats?.latestStatus || "unknown"} />
                 <MiniStat label="Incidents" value={`${healthStats?.incidents ?? 0}`} />
                 <MiniStat label="Recoveries" value={`${healthStats?.recoveryActions ?? 0}`} />
@@ -2909,6 +2980,32 @@ export function CommandCenter() {
                 >
                   <CheckCircle2 size={14} />
                   Repair
+                </button>
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => runOperationsRecovery("inspect_recovery")}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-primary"
+                >
+                  <Search size={14} />
+                  Inspect
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runOperationsRecovery("repair_recovery")}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-primary"
+                >
+                  <CheckCircle2 size={14} />
+                  Recover
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runOperationsRecovery("drain_recovery")}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                >
+                  <Activity size={14} />
+                  Drain
                 </button>
               </div>
               <div className="mb-3 grid grid-cols-2 gap-2">
@@ -2958,6 +3055,11 @@ export function CommandCenter() {
               {diagnosticsResult ? (
                 <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                   {diagnosticsResult}
+                </pre>
+              ) : null}
+              {operationResult ? (
+                <pre className="mb-3 max-h-44 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
+                  {operationResult}
                 </pre>
               ) : null}
               {incidentResult ? (
