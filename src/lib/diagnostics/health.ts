@@ -11,6 +11,7 @@ import { getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { listWorkflowPlans } from "@/lib/workflows/planner";
 import { getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
 import { getWorkflowTriggerStats } from "@/lib/workflows/triggers";
+import type { WorkflowRunRecord, WorkflowStats } from "@/lib/workflows/types";
 import { getRunStats } from "@/lib/runs/store";
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
@@ -54,6 +55,18 @@ export type SystemHealthRecord = {
   createdAt: string;
 };
 
+export type WorkflowHealthSummary = {
+  status: HealthStatus;
+  staleRunnable: number;
+  recentUnhandledFailures: number;
+  recoveredTerminalFailures: number;
+  sampledFailedWorkflows: number;
+  totalFailedWorkflows: number;
+  staleWorkflowMs: number;
+  failureWarnMs: number;
+  degradedReason?: string;
+};
+
 type HealthLedger = {
   checks: SystemHealthRecord[];
 };
@@ -64,7 +77,12 @@ type DiagnosticsInput = {
 };
 
 const staleWorkflowMs = 10 * 60 * 1000;
+const workflowFailureWarnMs = 30 * 60 * 1000;
 const queueAgeWarnMs = 5 * 60 * 1000;
+const recoveryTerminalFailurePrefixes = [
+  "Recovery failed stale workflow after max attempts were exhausted.",
+  "Recovery failed workflow after stale fail-after threshold was exceeded.",
+];
 let healthFileWriteQueue: Promise<void> = Promise.resolve();
 
 export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
@@ -147,7 +165,7 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
     getOpenApiConnectorStats(),
   ]);
 
-  const staleWorkflows = workflowRows.filter(isStaleWorkflow);
+  const workflowHealth = summarizeWorkflowHealth(workflows, workflowRows);
   const queueMaxAgeMs = maxQueuedAge(operationJobRows);
   const workflowTerminal = (workflows.byStatus.completed || 0) + (workflows.byStatus.failed || 0) + (workflows.byStatus.canceled || 0);
   const workflowCompletionRate = workflowTerminal
@@ -221,18 +239,18 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
     {
       id: "workflows",
       name: "Workflows",
-      status: staleWorkflows.length > 0
-        ? "degraded"
-        : (workflows.byStatus.failed || 0) > 0
-          ? "degraded"
-          : "healthy",
-      summary: `${workflows.active} active workflow(s), ${staleWorkflows.length} stale runnable workflow(s).`,
+      status: workflowHealth.status,
+      summary: `${workflows.active} active workflow(s), ${workflowHealth.staleRunnable} stale runnable workflow(s), ${workflowHealth.recentUnhandledFailures} recent unhandled failed workflow(s).`,
       metrics: {
         total: workflows.total,
         active: workflows.active,
         waitingApproval: workflows.waitingApproval,
-        failed: workflows.byStatus.failed || 0,
-        stale: staleWorkflows.length,
+        failed: workflowHealth.totalFailedWorkflows,
+        stale: workflowHealth.staleRunnable,
+        recentUnhandledFailures: workflowHealth.recentUnhandledFailures,
+        recoveredTerminalFailures: workflowHealth.recoveredTerminalFailures,
+        sampledFailedWorkflows: workflowHealth.sampledFailedWorkflows,
+        failureWarnMs: workflowHealth.failureWarnMs,
         completionRate: round(workflowCompletionRate),
       },
     },
@@ -322,7 +340,10 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
     plannerFallbackRate: round(plannerFallbackRate),
     toolFailureRate: round(toolFailureRate),
     triggerFailureRate: round(triggerFailureRate),
-    staleWorkflowCount: staleWorkflows.length,
+    staleWorkflowCount: workflowHealth.staleRunnable,
+    recentUnhandledWorkflowFailures: workflowHealth.recentUnhandledFailures,
+    recoveredWorkflowFailures: workflowHealth.recoveredTerminalFailures,
+    failedWorkflowCount: workflowHealth.totalFailedWorkflows,
     connectorErrors: mcp.error + openapi.error,
     recoveryActions: recoveryActions.filter((action) => action.status === "completed").length,
   };
@@ -398,8 +419,50 @@ async function checkDatabase() {
   }
 }
 
-function isStaleWorkflow(run: { status: string; updatedAt: string }) {
-  return ["queued", "running"].includes(run.status) && Date.now() - Date.parse(run.updatedAt) > staleWorkflowMs;
+export function summarizeWorkflowHealth(
+  workflows: Pick<WorkflowStats, "byStatus">,
+  workflowRows: WorkflowRunRecord[],
+  now = Date.now(),
+  options: { staleWorkflowMs?: number; failureWarnMs?: number } = {},
+): WorkflowHealthSummary {
+  const staleThresholdMs = options.staleWorkflowMs ?? staleWorkflowMs;
+  const failureWarnThresholdMs = options.failureWarnMs ?? workflowFailureWarnMs;
+  const staleRunnable = workflowRows.filter((run) => isStaleWorkflow(run, now, staleThresholdMs));
+  const sampledFailedWorkflows = workflowRows.filter((run) => run.status === "failed");
+  const recoveredTerminalFailures = sampledFailedWorkflows.filter(isRecoveryTerminalFailure);
+  const recentUnhandledFailures = sampledFailedWorkflows.filter((run) =>
+    !isRecoveryTerminalFailure(run) && timestampAgeMs(run.updatedAt, now) <= failureWarnThresholdMs
+  );
+  const status: HealthStatus = staleRunnable.length > 0 || recentUnhandledFailures.length > 0 ? "degraded" : "healthy";
+
+  return {
+    status,
+    staleRunnable: staleRunnable.length,
+    recentUnhandledFailures: recentUnhandledFailures.length,
+    recoveredTerminalFailures: recoveredTerminalFailures.length,
+    sampledFailedWorkflows: sampledFailedWorkflows.length,
+    totalFailedWorkflows: workflows.byStatus.failed || 0,
+    staleWorkflowMs: staleThresholdMs,
+    failureWarnMs: failureWarnThresholdMs,
+    degradedReason: staleRunnable.length > 0
+      ? "Stale queued or running workflows require recovery."
+      : recentUnhandledFailures.length > 0
+        ? "Recent unrecovered workflow failures require operator review."
+        : undefined,
+  };
+}
+
+function isStaleWorkflow(run: { status: string; updatedAt: string }, now = Date.now(), thresholdMs = staleWorkflowMs) {
+  return ["queued", "running"].includes(run.status) && timestampAgeMs(run.updatedAt, now) > thresholdMs;
+}
+
+function isRecoveryTerminalFailure(run: WorkflowRunRecord) {
+  return run.status === "failed" && recoveryTerminalFailurePrefixes.some((prefix) => run.error?.startsWith(prefix));
+}
+
+function timestampAgeMs(value: string, now = Date.now()) {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.max(0, now - timestamp) : Number.POSITIVE_INFINITY;
 }
 
 function maxQueuedAge(jobs: Array<{ status: string; runAt: string }>) {

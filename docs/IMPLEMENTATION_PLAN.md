@@ -191,3 +191,4 @@ flowchart TD
 29. SLO multi-party approval: add quorum policy, role-gated approver rules, requester separation, signed evidence hashes, rollback attestations, command-center progress, and regression coverage. Done.
 30. SLO approval policy administration: add durable approval policy config, immutable version history, configurable quorums, break-glass rules, command-center controls, and regression coverage. Done.
 31. Production queue recovery: add stale workflow inspection, safe requeue/fail reconciliation, bounded queue drain actions, diagnostics integration, command-center controls, and regression coverage. Done.
+32. Workflow health semantics: separate live workflow liveness risk from recovered terminal failure history, resolve stale recovery incidents cleanly, and add pure regression coverage. Done.

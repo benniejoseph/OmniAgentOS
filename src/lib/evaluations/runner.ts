@@ -13,7 +13,7 @@ import {
   retryFailedAlertDeliveries,
   runScheduledAlertDispatch,
 } from "@/lib/diagnostics/alerts";
-import { getHealthStats, runSystemDiagnostics } from "@/lib/diagnostics/health";
+import { getHealthStats, runSystemDiagnostics, summarizeWorkflowHealth } from "@/lib/diagnostics/health";
 import {
   acknowledgeIncident,
   getIncidentAlertTargets,
@@ -69,6 +69,7 @@ import type {
   EvalResultStatus,
   EvalRunSummary,
 } from "@/lib/evaluations/types";
+import type { WorkflowRunRecord } from "@/lib/workflows/types";
 
 type CaseResult = {
   status: EvalResultStatus;
@@ -285,6 +286,19 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       drainReported: true,
       cleanup: true,
       registryTool: "ops.queue_recovery",
+    },
+  },
+  {
+    id: "operations.health_semantics",
+    name: "Health semantics",
+    description: "Validates live health distinguishes current workflow failure pressure from recovered terminal workflow history.",
+    type: "operations",
+    input: {},
+    expected: {
+      recoveredFailuresDoNotDegrade: true,
+      recentUnhandledFailuresDegrade: true,
+      staleRunnableDegrades: true,
+      oldFailuresDoNotDegrade: true,
     },
   },
   {
@@ -573,6 +587,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.queue_recovery") {
     return evaluateQueueRecovery(evalCase);
+  }
+
+  if (evalCase.id === "operations.health_semantics") {
+    return evaluateHealthSemantics(evalCase);
   }
 
   if (evalCase.id === "operations.incident_management") {
@@ -1338,6 +1356,95 @@ async function evaluateQueueRecovery(evalCase: EvalCaseDefinition): Promise<Case
       await cancelWorkflowRunTick(failRun.run.id, "Evaluation queue recovery cleanup.").catch(() => undefined);
     }
   }
+}
+
+async function evaluateHealthSemantics(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const now = Date.parse("2026-01-01T12:00:00.000Z");
+  const recoveredFailure = createSyntheticWorkflowRun({
+    id: "health-semantics-recovered",
+    status: "failed",
+    error: "Recovery failed stale workflow after max attempts were exhausted.",
+    updatedAt: new Date(now - 60_000).toISOString(),
+    completedAt: new Date(now - 60_000).toISOString(),
+  });
+  const recentUnhandledFailure = createSyntheticWorkflowRun({
+    id: "health-semantics-recent-failure",
+    status: "failed",
+    error: "Unhandled workflow executor failure.",
+    updatedAt: new Date(now - 60_000).toISOString(),
+    completedAt: new Date(now - 60_000).toISOString(),
+  });
+  const oldUnhandledFailure = createSyntheticWorkflowRun({
+    id: "health-semantics-old-failure",
+    status: "failed",
+    error: "Older unhandled workflow executor failure.",
+    updatedAt: new Date(now - 31 * 60_000).toISOString(),
+    completedAt: new Date(now - 31 * 60_000).toISOString(),
+  });
+  const staleQueued = createSyntheticWorkflowRun({
+    id: "health-semantics-stale",
+    status: "queued",
+    updatedAt: new Date(now - 11 * 60_000).toISOString(),
+  });
+
+  const recoveredOnly = summarizeWorkflowHealth({ byStatus: { failed: 1 } }, [recoveredFailure], now);
+  const recentUnhandled = summarizeWorkflowHealth({ byStatus: { failed: 1 } }, [recentUnhandledFailure], now);
+  const staleRunnable = summarizeWorkflowHealth({ byStatus: { queued: 1 } }, [staleQueued], now);
+  const oldFailure = summarizeWorkflowHealth({ byStatus: { failed: 1 } }, [oldUnhandledFailure], now);
+  const checks = {
+    recoveredFailuresDoNotDegrade: Boolean(evalCase.expected.recoveredFailuresDoNotDegrade)
+      ? recoveredOnly.status === "healthy" &&
+        recoveredOnly.recoveredTerminalFailures === 1 &&
+        recoveredOnly.totalFailedWorkflows === 1
+      : true,
+    recentUnhandledFailuresDegrade: Boolean(evalCase.expected.recentUnhandledFailuresDegrade)
+      ? recentUnhandled.status === "degraded" && recentUnhandled.recentUnhandledFailures === 1
+      : true,
+    staleRunnableDegrades: Boolean(evalCase.expected.staleRunnableDegrades)
+      ? staleRunnable.status === "degraded" && staleRunnable.staleRunnable === 1
+      : true,
+    oldFailuresDoNotDegrade: Boolean(evalCase.expected.oldFailuresDoNotDegrade)
+      ? oldFailure.status === "healthy" &&
+        oldFailure.sampledFailedWorkflows === 1 &&
+        oldFailure.recentUnhandledFailures === 0
+      : true,
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      recoveredOnly,
+      recentUnhandled,
+      staleRunnable,
+      oldFailure,
+    },
+  };
+}
+
+function createSyntheticWorkflowRun(patch: Partial<WorkflowRunRecord>): WorkflowRunRecord {
+  const now = new Date().toISOString();
+  return {
+    id: "health-semantics",
+    workflowType: "agent.workflow.v1",
+    status: "queued",
+    goal: "Synthetic health semantics fixture.",
+    input: {
+      goal: "Synthetic health semantics fixture.",
+      mode: "orchestrate",
+      requireApproval: false,
+    },
+    currentStep: "preflight",
+    attempt: 0,
+    maxAttempts: 3,
+    approvalRequired: false,
+    createdAt: now,
+    updatedAt: now,
+    ...patch,
+  };
 }
 
 async function evaluateIncidentManagement(evalCase: EvalCaseDefinition): Promise<CaseResult> {

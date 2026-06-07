@@ -121,6 +121,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Plan-driven workflow executor that persists each dynamic DAG node, runs read-only governed tools, dry-runs side-effecting or approval-gated actions, and feeds execution summaries into verification and reports
 - Native webhook workflow triggers with HMAC signature support, trigger/event ledgers, workflow run creation, and durable queue enqueue
 - Production health diagnostics across database, OpenAI configuration, vector store, operation jobs, workflows, planner, triggers, evaluations, tools, memory, and connectors
+- Workflow health semantics that separate live stale/recent unrecovered failure pressure from recovered terminal workflow history
 - Self-healing repair path for expired operation-job leases, stale workflow execution, queue recovery inspection, bounded drains, and safe failure of exhausted stale workflows
 - Incident management with normalized incident records, status lifecycle, event history, alert target metadata, and operator playbooks
 - Alert delivery with dashboard/ops persistence, signed outbound webhooks, Slack/email adapters, retry/backoff, target health probes, failed-delivery requeue, and escalation policy metadata
@@ -132,6 +133,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Operations regression case for approval queue, operations overview, and connection catalog readiness
 - Operations regression case for persisted health diagnostics, SLO metrics, incident consistency, and repair ledgers
 - Operations regression case for stale workflow queue recovery, safe requeue/fail reconciliation, bounded drain reporting, cleanup, and registry exposure
+- Operations regression case for workflow health liveness semantics and recovered failure history
 - Operations regression case for incident sync, alert routing metadata, acknowledgement actions, and playbook execution
 - Operations regression case for alert delivery queueing, dispatch lifecycle, delivery policies, target readiness, and signed webhook support
 - Operations regression case for secured scheduled alert dispatch metadata, queue/dispatch limits, and delivery progress

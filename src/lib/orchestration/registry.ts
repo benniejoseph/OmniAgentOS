@@ -108,7 +108,7 @@ export const tools: Capability[] = [
   {
     id: "ops.self_healing",
     name: "Self-Healing Diagnostics",
-    description: "Checks production health, records component incidents, repairs stale queue leases, and requeues stale workflow work.",
+    description: "Checks production health, records component incidents, repairs stale queue leases, and separates live workflow pressure from recovered history.",
     status: "active",
   },
   {
