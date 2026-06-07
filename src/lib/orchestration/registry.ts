@@ -172,6 +172,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "ops.slo_approval_policy_admin",
+    name: "SLO Approval Policy Admin",
+    description: "Configures versioned SLO approval quorum rules, break-glass policy, and policy audit history.",
+    status: "active",
+  },
+  {
     id: "retrieval.context_engine",
     name: "Adaptive Context Engine",
     description: "Route queries, grade evidence, diversify retrieval, pack context, and persist retrieval traces.",

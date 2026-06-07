@@ -60,11 +60,11 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - `/api/tools` governed tool registry, policy, and audit endpoint
 - `/api/tools/execute` schema-validated tool execution endpoint with dry-run defaults
 - `/api/approvals` pending workflow/tool/SLO policy approval queue endpoint
-- `/api/approvals/:id` durable approve/reject endpoint for workflows, tool execution records, and quorum-gated SLO policy changes
+- `/api/approvals/:id` durable approve/reject endpoint for workflows, tool execution records, quorum-gated SLO policy changes, and break-glass SLO approvals
 - `/api/operations` production operations overview endpoint
 - `/api/observability` durable runtime event timeline, SLO summary, route failure, and correlation-id endpoint
 - `/api/observability/slo` observability SLO snapshot and monitor endpoint that opens/resolves incidents and queues alerts
-- `/api/observability/slo/policies` durable SLO policy configuration endpoint for thresholds, severity, routing, suppression, enablement, defaults, approval requests, quorum policy, signed evidence, history, and rollback
+- `/api/observability/slo/policies` durable SLO policy configuration endpoint for thresholds, severity, routing, suppression, enablement, defaults, approval requests, versioned approval-policy administration, break-glass rules, signed evidence, history, and rollback
 - `/api/health` public production health endpoint with component status and SLO metrics
 - `/api/diagnostics` authenticated diagnostics and self-healing repair endpoint
 - `/api/incidents` authenticated incident lifecycle, stats, playbook, and alert-routing endpoint
@@ -125,7 +125,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Incident management with normalized incident records, status lifecycle, event history, alert target metadata, and operator playbooks
 - Alert delivery with dashboard/ops persistence, signed outbound webhooks, Slack/email adapters, retry/backoff, target health probes, failed-delivery requeue, and escalation policy metadata
 - Observability SLO alerting that evaluates error budget, availability, route failure, and P95 latency policies, then opens/resolves incidents and queues alert deliveries
-- Durable SLO policy management backed by `omni_observability_slo_policies` and `omni_observability_slo_policy_changes`, with configurable thresholds, severities, alert target routing, suppression windows, quorum approval requests, role-gated evidence, rollback snapshots, and default reset
+- Durable SLO policy management backed by `omni_observability_slo_policies`, `omni_observability_slo_policy_changes`, `omni_observability_slo_approval_policies`, and `omni_observability_slo_approval_policy_versions`, with configurable thresholds, severities, alert target routing, suppression windows, quorum approval requests, versioned approval rules, break-glass policy, role-gated evidence, rollback snapshots, and default reset
 - Vercel Cron integration for secured production workflow queue ticks, observability SLO monitoring, and scheduled alert dispatch with `CRON_SECRET`
 - Durable observability ledger for workflow ticks, alert actions, diagnostics, evaluations, route failures, and correlation IDs
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
@@ -140,6 +140,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Operations regression case for durable SLO policy configuration, cleanup, threshold/severity/routing/suppression persistence, and registry exposure
 - Operations regression case for governed SLO policy change requests, approval application, immutable history, rollback, and registry exposure
 - Operations regression case for high-risk SLO quorum, required approver roles, requester separation, signed evidence, and registry exposure
+- Operations regression case for versioned SLO approval policy administration, custom quorum resolution, emergency break-glass application, restore, and registry exposure
 - Tenant-aware security controls with viewer/operator/admin/system roles, server-only secret env-var references, redacted audit metadata, and persisted RBAC allow/deny records
 - First-party identity control plane with scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
 

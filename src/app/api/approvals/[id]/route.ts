@@ -16,6 +16,8 @@ const approvalDecisionSchema = z.object({
   kind: z.enum(["tool", "workflow", "slo_policy"]),
   decision: z.enum(["approve", "reject"]),
   reason: z.string().max(1000).optional(),
+  breakGlass: z.boolean().optional(),
+  ticket: z.string().max(120).optional(),
 });
 
 export async function POST(
@@ -95,6 +97,8 @@ export async function POST(
           reviewedRole: securityContext.role,
           tenantId: securityContext.tenantId,
           reviewReason: parsed.data.reason,
+          breakGlass: parsed.data.breakGlass,
+          ticket: parsed.data.ticket,
         })
       : {
           change: await rejectObservabilitySloPolicyChange(id, {

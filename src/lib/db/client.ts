@@ -878,6 +878,36 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_policy_idx ON omni_observability_slo_policy_changes (policy_id, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_status_idx ON omni_observability_slo_policy_changes (status, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_policy_changes_action_idx ON omni_observability_slo_policy_changes (action)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_observability_slo_approval_policies (
+          id TEXT PRIMARY KEY,
+          version INTEGER NOT NULL,
+          rules JSONB NOT NULL DEFAULT '[]',
+          break_glass JSONB NOT NULL DEFAULT '{}',
+          metadata JSONB NOT NULL DEFAULT '{}',
+          updated_by TEXT,
+          update_reason TEXT,
+          evidence_hash TEXT NOT NULL DEFAULT '',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_observability_slo_approval_policy_versions (
+          id TEXT PRIMARY KEY,
+          policy_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          policy JSONB NOT NULL DEFAULT '{}',
+          changed_by TEXT,
+          change_reason TEXT,
+          previous_hash TEXT,
+          evidence_hash TEXT NOT NULL DEFAULT '',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_approval_policy_versions_policy_idx ON omni_observability_slo_approval_policy_versions (policy_id, version DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_approval_policy_versions_created_idx ON omni_observability_slo_approval_policy_versions (created_at DESC)`;
       await ensureVectorSchema(sql);
     } finally {
       await sql`SELECT pg_advisory_unlock(271828182)`;

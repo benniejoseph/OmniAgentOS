@@ -30,13 +30,17 @@ import { createSloIncidentFingerprint, runObservabilitySloMonitor, type Observab
 import {
   applyObservabilitySloPolicyChange,
   deleteObservabilitySloPolicy,
+  getObservabilitySloApprovalPolicyConfig,
   getObservabilitySloPolicyChange,
   getObservabilitySloPolicy,
+  listObservabilitySloApprovalPolicyVersions,
   listObservabilitySloPolicyChanges,
   listObservabilitySloPolicies,
   requestObservabilitySloPolicyChange,
   rollbackObservabilitySloPolicyChange,
+  saveObservabilitySloApprovalPolicyConfig,
   saveObservabilitySloPolicy,
+  type ObservabilitySloApprovalPolicyConfig,
 } from "@/lib/observability/slo-policy-store";
 import { getObservabilityStats, listObservabilityEvents, recordRuntimeEvent } from "@/lib/observability/store";
 import { getMemoryGraphStats, rebuildMemoryGraph, searchMemoryGraph } from "@/lib/memory/graph";
@@ -412,6 +416,23 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       registryTool: "ops.slo_multi_party_approval",
     },
   },
+  {
+    id: "operations.slo_approval_policy_admin",
+    name: "SLO approval policy admin",
+    description: "Validates versioned SLO approval policy administration, custom quorums, emergency break-glass application, restore, and registry exposure.",
+    type: "operations",
+    input: {
+      policyPrefix: "eval_approval_policy_admin",
+    },
+    expected: {
+      customPolicySaved: true,
+      versionHistory: true,
+      customQuorumApplied: true,
+      breakGlassApplied: true,
+      restored: true,
+      registryTool: "ops.slo_approval_policy_admin",
+    },
+  },
 ];
 
 export async function runEvaluationSuite({
@@ -565,6 +586,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.slo_multi_party_approval") {
     return evaluateSloMultiPartyApproval(evalCase);
+  }
+
+  if (evalCase.id === "operations.slo_approval_policy_admin") {
+    return evaluateSloApprovalPolicyAdmin(evalCase);
   }
 
   throw new Error(`No evaluator registered for ${evalCase.id}.`);
@@ -1948,6 +1973,271 @@ async function evaluateSloMultiPartyApproval(evalCase: EvalCaseDefinition): Prom
       cleanup,
     },
   };
+}
+
+async function evaluateSloApprovalPolicyAdmin(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const originalPolicy = await getObservabilitySloApprovalPolicyConfig();
+  const policyId = `${String(evalCase.input.policyPrefix || "eval_approval_policy_admin")}_${Date.now()}`;
+  const breakGlassPolicyId = `${policyId}_break_glass`;
+  let restored = false;
+
+  try {
+    const customPolicy = createEvaluationApprovalPolicyConfig(originalPolicy);
+    const savedPolicy = await saveObservabilitySloApprovalPolicyConfig(customPolicy, {
+      changedBy: "evaluation",
+      changeReason: "Evaluation custom SLO approval policy administration update.",
+    });
+    const versionsAfterSave = await listObservabilitySloApprovalPolicyVersions({ limit: 10 });
+    const baselinePolicy: ObservabilitySloPolicy = {
+      id: policyId,
+      name: "Evaluation approval-admin SLO policy",
+      description: "Temporary policy for approval administration quorum verification.",
+      metric: "latencyP95Ms",
+      comparator: "greater_than",
+      warningThreshold: 9100,
+      criticalThreshold: 18100,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "ms",
+      componentId: "observability",
+      enabled: true,
+      alertTargetIds: ["dashboard"],
+      suppressionMinutes: 23,
+      metadata: { source: "evaluation", governance: "approval-admin-baseline" },
+    };
+    const savedBaseline = await saveObservabilitySloPolicy(baselinePolicy);
+    const requestedPolicy: ObservabilitySloPolicy = {
+      ...savedBaseline,
+      warningThreshold: 7100,
+      criticalThreshold: 13100,
+      metadata: { ...savedBaseline.metadata, governance: "approval-admin-requested" },
+    };
+    const quorumChange = await requestObservabilitySloPolicyChange({
+      policyId,
+      action: "upsert_policy",
+      tenantId: "evaluation",
+      requestedBy: "eval-approval-admin-requester",
+      reason: "Evaluation approval policy custom quorum request.",
+      beforePolicy: savedBaseline,
+      afterPolicy: requestedPolicy,
+    });
+    const firstApproval = await applyObservabilitySloPolicyChange(quorumChange.id, {
+      reviewedBy: "eval-approval-admin-a",
+      reviewedRole: "admin",
+      reviewReason: "First approval under custom quorum.",
+    });
+    const secondApproval = await applyObservabilitySloPolicyChange(quorumChange.id, {
+      reviewedBy: "eval-approval-admin-b",
+      reviewedRole: "admin",
+      reviewReason: "Second approval under custom quorum.",
+    });
+    const updatedPolicy = await getObservabilitySloPolicy(policyId);
+
+    const breakGlassBaseline = await saveObservabilitySloPolicy({
+      ...baselinePolicy,
+      id: breakGlassPolicyId,
+      name: "Evaluation break-glass SLO policy",
+      metadata: { source: "evaluation", governance: "approval-admin-break-glass" },
+    });
+    const breakGlassChange = await requestObservabilitySloPolicyChange({
+      policyId: breakGlassPolicyId,
+      action: "delete_policy",
+      tenantId: "evaluation",
+      requestedBy: "eval-breakglass-requester",
+      reason: "Evaluation high-risk break-glass delete request.",
+      beforePolicy: breakGlassBaseline,
+      afterPolicy: null,
+    });
+    const breakGlassApproval = await applyObservabilitySloPolicyChange(breakGlassChange.id, {
+      reviewedBy: "eval-breakglass-system",
+      reviewedRole: "system",
+      reviewReason: "Emergency evaluation break-glass rationale for production recovery path.",
+      breakGlass: true,
+    });
+    const afterBreakGlassDelete = await getObservabilitySloPolicy(breakGlassPolicyId);
+
+    const restoredPolicy = await saveObservabilitySloApprovalPolicyConfig(originalPolicy, {
+      changedBy: "evaluation",
+      changeReason: "Restore original SLO approval policy after evaluation.",
+    });
+    restored = true;
+    const registry = getCapabilityRegistry();
+    const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
+    const cleanupPrimary = await deleteObservabilitySloPolicy(policyId).catch(() => false);
+    const cleanupBreakGlass = afterBreakGlassDelete === null
+      ? true
+      : await deleteObservabilitySloPolicy(breakGlassPolicyId).catch(() => false);
+    const checks = {
+      customPolicySaved: Boolean(evalCase.expected.customPolicySaved)
+        ? savedPolicy.version > originalPolicy.version &&
+          getApprovalRuleQuorum(savedPolicy, "risk_2_standard", 2) === 2 &&
+          savedPolicy.breakGlass.enabled === true &&
+          savedPolicy.breakGlass.reasonMinLength === 16
+        : true,
+      versionHistory: Boolean(evalCase.expected.versionHistory)
+        ? versionsAfterSave.some((version) =>
+            version.version === savedPolicy.version &&
+            version.previousHash === originalPolicy.evidenceHash &&
+            version.evidenceHash.length === 64
+          )
+        : true,
+      customQuorumApplied: Boolean(evalCase.expected.customQuorumApplied)
+        ? quorumChange.approvalPolicy.quorum === 2 &&
+          firstApproval.change.status === "pending" &&
+          firstApproval.approvalProgress.remaining === 1 &&
+          secondApproval.change.status === "applied" &&
+          updatedPolicy?.warningThreshold === requestedPolicy.warningThreshold
+        : true,
+      breakGlassApplied: Boolean(evalCase.expected.breakGlassApplied)
+        ? breakGlassChange.approvalPolicy.breakGlassAllowed === true &&
+          breakGlassApproval.change.status === "applied" &&
+          breakGlassApproval.approvalProgress.breakGlassUsed === true &&
+          afterBreakGlassDelete === null
+        : true,
+      restored: Boolean(evalCase.expected.restored)
+        ? approvalPolicyEquivalent(restoredPolicy, originalPolicy)
+        : true,
+      registryToolAvailable: activeToolIds.has(String(evalCase.expected.registryTool || "ops.slo_approval_policy_admin")),
+    };
+    const passed = Object.values(checks).filter(Boolean).length;
+    const total = Object.keys(checks).length;
+
+    return {
+      status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+      score: passed / total,
+      output: {
+        checks,
+        policyId,
+        approvalPolicy: {
+          previousVersion: originalPolicy.version,
+          savedVersion: savedPolicy.version,
+          restoredVersion: restoredPolicy.version,
+          evidenceHash: savedPolicy.evidenceHash,
+        },
+        quorumChange: {
+          id: quorumChange.id,
+          quorum: quorumChange.approvalPolicy.quorum,
+          firstApprovalStatus: firstApproval.change.status,
+          finalStatus: secondApproval.change.status,
+        },
+        breakGlass: {
+          id: breakGlassChange.id,
+          status: breakGlassApproval.change.status,
+          breakGlassUsed: breakGlassApproval.approvalProgress.breakGlassUsed,
+        },
+        cleanup: {
+          primary: cleanupPrimary,
+          breakGlass: cleanupBreakGlass,
+        },
+      },
+    };
+  } finally {
+    if (!restored) {
+      await saveObservabilitySloApprovalPolicyConfig(originalPolicy, {
+        changedBy: "evaluation",
+        changeReason: "Restore original SLO approval policy after interrupted evaluation.",
+      }).catch(() => undefined);
+    }
+    await deleteObservabilitySloPolicy(policyId).catch(() => undefined);
+    await deleteObservabilitySloPolicy(breakGlassPolicyId).catch(() => undefined);
+  }
+}
+
+function createEvaluationApprovalPolicyConfig(
+  policy: ObservabilitySloApprovalPolicyConfig,
+): ObservabilitySloApprovalPolicyConfig {
+  const rules = policy.rules.filter((rule) =>
+    rule.id !== "risk_2_standard" &&
+    rule.id !== "risk_3_high" &&
+    rule.id !== "rollback_policy" &&
+    rule.action !== "rollback_policy" &&
+    !(rule.action === "any" && (rule.riskLevel === 2 || rule.riskLevel === 3))
+  );
+  const lowRiskRule = policy.rules.find((rule) => rule.id === "risk_2_standard" || (rule.action === "any" && rule.riskLevel === 2));
+  const highRiskRule = policy.rules.find((rule) => rule.id === "risk_3_high" || (rule.action === "any" && rule.riskLevel === 3));
+  const rollbackRule = policy.rules.find((rule) => rule.id === "rollback_policy" || rule.action === "rollback_policy");
+
+  return {
+    ...policy,
+    rules: [
+      {
+        ...(rollbackRule || createEvaluationApprovalRule("rollback_policy", 3)),
+        id: "rollback_policy",
+        action: "rollback_policy",
+        riskLevel: 3,
+        quorum: 2,
+        requiredRoles: ["admin", "system"],
+        allowRequesterApproval: false,
+        attestationRequired: true,
+        breakGlassAllowed: true,
+      },
+      {
+        ...(highRiskRule || createEvaluationApprovalRule("risk_3_high", 3)),
+        id: "risk_3_high",
+        action: "any",
+        riskLevel: 3,
+        quorum: 2,
+        requiredRoles: ["admin", "system"],
+        allowRequesterApproval: false,
+        breakGlassAllowed: true,
+      },
+      {
+        ...(lowRiskRule || createEvaluationApprovalRule("risk_2_standard", 2)),
+        id: "risk_2_standard",
+        action: "any",
+        riskLevel: 2,
+        quorum: 2,
+        requiredRoles: ["operator", "admin", "system"],
+        allowRequesterApproval: true,
+        attestationRequired: false,
+        breakGlassAllowed: false,
+      },
+      ...rules,
+    ],
+    breakGlass: {
+      ...policy.breakGlass,
+      enabled: true,
+      requiredRole: "system",
+      reasonMinLength: 16,
+      maxRiskLevel: 3,
+      requireTicket: false,
+    },
+    metadata: {
+      ...policy.metadata,
+      evaluation: "slo_approval_policy_admin",
+    },
+  };
+}
+
+function createEvaluationApprovalRule(id: string, riskLevel: number) {
+  const highRisk = riskLevel >= 3;
+  return {
+    id,
+    action: "any" as const,
+    riskLevel,
+    quorum: highRisk ? 2 : 1,
+    requiredRoles: highRisk ? (["admin", "system"] as const) : (["operator", "admin", "system"] as const),
+    allowRequesterApproval: !highRisk,
+    attestationRequired: false,
+    breakGlassAllowed: highRisk,
+    description: highRisk
+      ? "High-risk SLO changes require two distinct admin/system approvals."
+      : "Standard SLO changes require one operator, admin, or system approval.",
+  };
+}
+
+function getApprovalRuleQuorum(policy: ObservabilitySloApprovalPolicyConfig, id: string, riskLevel: number) {
+  return policy.rules.find((rule) => rule.id === id)?.quorum ||
+    policy.rules.find((rule) => rule.action === "any" && rule.riskLevel === riskLevel)?.quorum ||
+    0;
+}
+
+function approvalPolicyEquivalent(
+  left: ObservabilitySloApprovalPolicyConfig,
+  right: ObservabilitySloApprovalPolicyConfig,
+) {
+  return JSON.stringify(left.rules) === JSON.stringify(right.rules) &&
+    JSON.stringify(left.breakGlass) === JSON.stringify(right.breakGlass);
 }
 
 function summarizeResults(results: EvalResultRecord[], total: number): EvalRunSummary {

@@ -43,6 +43,7 @@ export type SloPolicyApprovalPolicy = {
   requiredRoles: SecurityRole[];
   allowRequesterApproval: boolean;
   attestationRequired: boolean;
+  breakGlassAllowed: boolean;
   description: string;
 };
 
@@ -53,6 +54,8 @@ export type SloPolicyApprovalEvidence = {
   actorRole: SecurityRole;
   tenantId?: string;
   reason?: string;
+  breakGlass?: boolean;
+  ticket?: string;
   createdAt: string;
   previousHash?: string;
   evidenceHash: string;
@@ -65,6 +68,7 @@ export type SloPolicyApprovalProgress = {
   remaining: number;
   approvedBy: string[];
   rejected: number;
+  breakGlassUsed: boolean;
   canApply: boolean;
 };
 
@@ -92,6 +96,52 @@ export type ObservabilitySloPolicyChange = {
   appliedAt?: string;
 };
 
+export type SloApprovalPolicyRule = {
+  id: string;
+  action?: SloPolicyChangeAction | "any";
+  riskLevel?: number;
+  quorum: number;
+  requiredRoles: SecurityRole[];
+  allowRequesterApproval: boolean;
+  attestationRequired: boolean;
+  breakGlassAllowed: boolean;
+  description: string;
+};
+
+export type SloBreakGlassPolicy = {
+  enabled: boolean;
+  requiredRole: SecurityRole;
+  reasonMinLength: number;
+  maxRiskLevel: number;
+  requireTicket: boolean;
+  description: string;
+};
+
+export type ObservabilitySloApprovalPolicyConfig = {
+  id: string;
+  version: number;
+  rules: SloApprovalPolicyRule[];
+  breakGlass: SloBreakGlassPolicy;
+  metadata: Record<string, unknown>;
+  updatedBy?: string;
+  updateReason?: string;
+  createdAt: string;
+  updatedAt: string;
+  evidenceHash: string;
+};
+
+export type ObservabilitySloApprovalPolicyVersion = {
+  id: string;
+  policyId: string;
+  version: number;
+  policy: ObservabilitySloApprovalPolicyConfig;
+  changedBy?: string;
+  changeReason?: string;
+  previousHash?: string;
+  evidenceHash: string;
+  createdAt: string;
+};
+
 type SloPolicyLedger = {
   policies: ObservabilitySloPolicy[];
 };
@@ -100,8 +150,16 @@ type SloPolicyChangeLedger = {
   changes: ObservabilitySloPolicyChange[];
 };
 
+type SloApprovalPolicyLedger = {
+  policy: ObservabilitySloApprovalPolicyConfig | null;
+  versions: ObservabilitySloApprovalPolicyVersion[];
+};
+
+const SLO_APPROVAL_POLICY_ID = "default";
+
 let policyFileWriteQueue: Promise<void> = Promise.resolve();
 let policyChangeFileWriteQueue: Promise<void> = Promise.resolve();
+let approvalPolicyFileWriteQueue: Promise<void> = Promise.resolve();
 
 export function getDefaultObservabilitySloPolicies(): ObservabilitySloPolicy[] {
   return [
@@ -174,6 +232,213 @@ export function getDefaultObservabilitySloPolicies(): ObservabilitySloPolicy[] {
       metadata: { source: "default" },
     },
   ];
+}
+
+export function getDefaultObservabilitySloApprovalPolicyConfig(): ObservabilitySloApprovalPolicyConfig {
+  const now = new Date().toISOString();
+  return normalizeSloApprovalPolicyConfig({
+    id: SLO_APPROVAL_POLICY_ID,
+    version: 1,
+    rules: [
+      {
+        id: "rollback_policy",
+        action: "rollback_policy",
+        riskLevel: 3,
+        quorum: 2,
+        requiredRoles: ["admin", "system"],
+        allowRequesterApproval: false,
+        attestationRequired: true,
+        breakGlassAllowed: true,
+        description: "Rollback requires two distinct admin/system approvals and an explicit rollback attestation.",
+      },
+      {
+        id: "risk_3_high",
+        action: "any",
+        riskLevel: 3,
+        quorum: 2,
+        requiredRoles: ["admin", "system"],
+        allowRequesterApproval: false,
+        attestationRequired: false,
+        breakGlassAllowed: true,
+        description: "High-risk SLO changes require two distinct admin/system approvals.",
+      },
+      {
+        id: "risk_2_standard",
+        action: "any",
+        riskLevel: 2,
+        quorum: 1,
+        requiredRoles: ["operator", "admin", "system"],
+        allowRequesterApproval: true,
+        attestationRequired: false,
+        breakGlassAllowed: false,
+        description: "Standard SLO changes require one operator, admin, or system approval.",
+      },
+    ],
+    breakGlass: {
+      enabled: true,
+      requiredRole: "system",
+      reasonMinLength: 24,
+      maxRiskLevel: 3,
+      requireTicket: false,
+      description: "Emergency SLO governance override for production recovery by a system actor with explicit rationale.",
+    },
+    metadata: { source: "default" },
+    createdAt: now,
+    updatedAt: now,
+    evidenceHash: "",
+  });
+}
+
+export async function getObservabilitySloApprovalPolicyConfig() {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_observability_slo_approval_policies
+      WHERE id = ${SLO_APPROVAL_POLICY_ID}
+      LIMIT 1
+    `;
+    if (rows[0]) {
+      return sloApprovalPolicyConfigFromRow(rows[0]);
+    }
+
+    return insertDefaultSloApprovalPolicyConfig();
+  }
+
+  const ledger = await readSloApprovalPolicyLedger();
+  if (ledger.policy) {
+    return normalizeSloApprovalPolicyConfig(ledger.policy);
+  }
+
+  const seeded = getDefaultObservabilitySloApprovalPolicyConfig();
+  const version = createSloApprovalPolicyVersion(seeded, {
+    changedBy: "system",
+    changeReason: "Seeded default SLO approval policy.",
+  });
+  await writeSloApprovalPolicyLedger({ policy: seeded, versions: [version] });
+  return seeded;
+}
+
+export async function listObservabilitySloApprovalPolicyVersions({
+  limit = 20,
+}: {
+  limit?: number;
+} = {}) {
+  const cappedLimit = Math.min(Math.max(Math.round(limit), 1), 100);
+  await getObservabilitySloApprovalPolicyConfig();
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_observability_slo_approval_policy_versions
+      WHERE policy_id = ${SLO_APPROVAL_POLICY_ID}
+      ORDER BY version DESC, created_at DESC
+      LIMIT ${cappedLimit}
+    `;
+    return rows.map(sloApprovalPolicyVersionFromRow);
+  }
+
+  const ledger = await readSloApprovalPolicyLedger();
+  return ledger.versions
+    .map(normalizeSloApprovalPolicyVersion)
+    .sort((left, right) => right.version - left.version || Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    .slice(0, cappedLimit);
+}
+
+export async function saveObservabilitySloApprovalPolicyConfig(
+  config: Partial<ObservabilitySloApprovalPolicyConfig> & Pick<ObservabilitySloApprovalPolicyConfig, "rules" | "breakGlass">,
+  {
+    changedBy,
+    changeReason,
+  }: {
+    changedBy?: string;
+    changeReason?: string;
+  } = {},
+) {
+  const current = await getObservabilitySloApprovalPolicyConfig();
+  const now = new Date().toISOString();
+  const record = normalizeSloApprovalPolicyConfig({
+    ...config,
+    id: SLO_APPROVAL_POLICY_ID,
+    version: current.version + 1,
+    createdAt: current.createdAt,
+    updatedAt: now,
+    updatedBy: changedBy?.trim() || config.updatedBy || current.updatedBy,
+    updateReason: changeReason?.trim() || config.updateReason || current.updateReason,
+    evidenceHash: undefined,
+  });
+  const version = createSloApprovalPolicyVersion(record, {
+    changedBy,
+    changeReason,
+    previousHash: current.evidenceHash,
+  });
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    await getSql()`
+      INSERT INTO omni_observability_slo_approval_policies (
+        id, version, rules, break_glass, metadata,
+        updated_by, update_reason, evidence_hash, created_at, updated_at
+      )
+      VALUES (
+        ${record.id}, ${record.version}, ${JSON.stringify(record.rules)}::jsonb,
+        ${JSON.stringify(record.breakGlass)}::jsonb, ${JSON.stringify(record.metadata)}::jsonb,
+        ${record.updatedBy || null}, ${record.updateReason || null}, ${record.evidenceHash},
+        ${record.createdAt}, ${record.updatedAt}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        version = EXCLUDED.version,
+        rules = EXCLUDED.rules,
+        break_glass = EXCLUDED.break_glass,
+        metadata = EXCLUDED.metadata,
+        updated_by = EXCLUDED.updated_by,
+        update_reason = EXCLUDED.update_reason,
+        evidence_hash = EXCLUDED.evidence_hash,
+        updated_at = EXCLUDED.updated_at
+    `;
+    await getSql()`
+      INSERT INTO omni_observability_slo_approval_policy_versions (
+        id, policy_id, version, policy, changed_by,
+        change_reason, previous_hash, evidence_hash, created_at
+      )
+      VALUES (
+        ${version.id}, ${version.policyId}, ${version.version},
+        ${JSON.stringify(version.policy)}::jsonb, ${version.changedBy || null},
+        ${version.changeReason || null}, ${version.previousHash || null},
+        ${version.evidenceHash}, ${version.createdAt}
+      )
+      ON CONFLICT (id) DO NOTHING
+    `;
+    return record;
+  }
+
+  await mutateSloApprovalPolicyLedger((ledger) => ({
+    policy: record,
+    versions: [version, ...ledger.versions].slice(0, 500),
+  }));
+  return record;
+}
+
+export async function resetObservabilitySloApprovalPolicyConfig({
+  changedBy,
+  changeReason,
+}: {
+  changedBy?: string;
+  changeReason?: string;
+} = {}) {
+  const current = await getObservabilitySloApprovalPolicyConfig();
+  return saveObservabilitySloApprovalPolicyConfig(
+    {
+      ...getDefaultObservabilitySloApprovalPolicyConfig(),
+      createdAt: current.createdAt,
+      metadata: { source: "default", resetFromVersion: current.version },
+    },
+    {
+      changedBy,
+      changeReason: changeReason || "Reset SLO approval policy to defaults.",
+    },
+  );
 }
 
 export async function listObservabilitySloPolicies({
@@ -371,6 +636,7 @@ export async function requestObservabilitySloPolicyChange(input: {
 }) {
   const now = new Date().toISOString();
   const riskLevel = changeRiskLevel(input.action);
+  const approvalPolicy = await resolveSloApprovalPolicy(input.action, riskLevel);
   const change = normalizePolicyChange({
     id: createSloPolicyChangeId(),
     policyId: input.policyId,
@@ -383,7 +649,7 @@ export async function requestObservabilitySloPolicyChange(input: {
     beforePolicy: input.beforePolicy,
     afterPolicy: input.afterPolicy,
     rollbackChangeId: input.rollbackChangeId,
-    approvalPolicy: defaultSloApprovalPolicy(input.action, riskLevel),
+    approvalPolicy,
     approvals: [],
     evidenceHash: "",
     metadata: input.metadata || {},
@@ -407,6 +673,7 @@ export async function recordAppliedObservabilitySloPolicyChange(input: {
 }) {
   const now = new Date().toISOString();
   const riskLevel = changeRiskLevel(input.action);
+  const approvalPolicy = await resolveSloApprovalPolicy(input.action, riskLevel);
   const change = normalizePolicyChange({
     id: createSloPolicyChangeId(),
     policyId: input.policyId,
@@ -421,7 +688,7 @@ export async function recordAppliedObservabilitySloPolicyChange(input: {
     beforePolicy: input.beforePolicy,
     afterPolicy: input.afterPolicy,
     rollbackChangeId: input.rollbackChangeId,
-    approvalPolicy: defaultSloApprovalPolicy(input.action, riskLevel),
+    approvalPolicy,
     approvals: [],
     evidenceHash: "",
     metadata: input.metadata || {},
@@ -441,6 +708,8 @@ export async function applyObservabilitySloPolicyChange(
     reviewedRole?: SecurityRole;
     tenantId?: string;
     reviewReason?: string;
+    breakGlass?: boolean;
+    ticket?: string;
   } = {},
 ) {
   const pending = await getObservabilitySloPolicyChange(changeId);
@@ -451,12 +720,16 @@ export async function applyObservabilitySloPolicyChange(
     throw new Error(`SLO policy change ${changeId} is ${pending.status}.`);
   }
 
+  const activeApprovalPolicy = await getObservabilitySloApprovalPolicyConfig();
   const approval = createApprovalEvidence(pending, {
     decision: "approved",
     actorId: review.reviewedBy || "system",
     actorRole: review.reviewedRole || "admin",
     tenantId: review.tenantId,
     reason: review.reviewReason,
+    breakGlass: review.breakGlass,
+    ticket: review.ticket,
+    breakGlassPolicy: activeApprovalPolicy.breakGlass,
   });
   const now = new Date().toISOString();
   const approved = normalizePolicyChange({
@@ -574,14 +847,16 @@ export function getSloPolicyApprovalProgress(change: ObservabilitySloPolicyChang
   const approvals = approvedBy.length;
   const required = change.approvalPolicy.quorum;
   const rejected = change.approvals.filter((approval) => approval.decision === "rejected").length;
+  const breakGlassUsed = approvedEvidence.some((approval) => approval.breakGlass);
 
   return {
     approvals,
     required,
-    remaining: Math.max(required - approvals, 0),
+    remaining: breakGlassUsed ? 0 : Math.max(required - approvals, 0),
     approvedBy,
     rejected,
-    canApply: rejected === 0 && approvals >= required,
+    breakGlassUsed,
+    canApply: rejected === 0 && (breakGlassUsed || approvals >= required),
   };
 }
 
@@ -629,6 +904,42 @@ async function insertDefaultPolicy(policy: ObservabilitySloPolicy) {
   `;
 }
 
+async function insertDefaultSloApprovalPolicyConfig() {
+  const policy = getDefaultObservabilitySloApprovalPolicyConfig();
+  const version = createSloApprovalPolicyVersion(policy, {
+    changedBy: "system",
+    changeReason: "Seeded default SLO approval policy.",
+  });
+
+  await getSql()`
+    INSERT INTO omni_observability_slo_approval_policies (
+      id, version, rules, break_glass, metadata,
+      updated_by, update_reason, evidence_hash, created_at, updated_at
+    )
+    VALUES (
+      ${policy.id}, ${policy.version}, ${JSON.stringify(policy.rules)}::jsonb,
+      ${JSON.stringify(policy.breakGlass)}::jsonb, ${JSON.stringify(policy.metadata)}::jsonb,
+      ${policy.updatedBy || null}, ${policy.updateReason || null}, ${policy.evidenceHash},
+      ${policy.createdAt}, ${policy.updatedAt}
+    )
+    ON CONFLICT (id) DO NOTHING
+  `;
+  await getSql()`
+    INSERT INTO omni_observability_slo_approval_policy_versions (
+      id, policy_id, version, policy, changed_by,
+      change_reason, previous_hash, evidence_hash, created_at
+    )
+    VALUES (
+      ${version.id}, ${version.policyId}, ${version.version},
+      ${JSON.stringify(version.policy)}::jsonb, ${version.changedBy || null},
+      ${version.changeReason || null}, ${version.previousHash || null},
+      ${version.evidenceHash}, ${version.createdAt}
+    )
+    ON CONFLICT (id) DO NOTHING
+  `;
+  return policy;
+}
+
 async function readSloPolicyLedger() {
   return readJsonFile<SloPolicyLedger>(getSloPolicyFile(), { policies: [] });
 }
@@ -667,6 +978,29 @@ async function mutateSloPolicyChangeLedger(mutator: (ledger: SloPolicyChangeLedg
 
 async function writeSloPolicyChangeLedger(ledger: SloPolicyChangeLedger) {
   await writeJsonFile(getSloPolicyChangeFile(), { changes: ledger.changes.slice(0, 500) });
+}
+
+async function readSloApprovalPolicyLedger() {
+  return readJsonFile<SloApprovalPolicyLedger>(getSloApprovalPolicyFile(), { policy: null, versions: [] });
+}
+
+async function mutateSloApprovalPolicyLedger(mutator: (ledger: SloApprovalPolicyLedger) => SloApprovalPolicyLedger) {
+  approvalPolicyFileWriteQueue = approvalPolicyFileWriteQueue.then(
+    async () => {
+      await writeSloApprovalPolicyLedger(mutator(await readSloApprovalPolicyLedger()));
+    },
+    async () => {
+      await writeSloApprovalPolicyLedger(mutator(await readSloApprovalPolicyLedger()));
+    },
+  );
+  await approvalPolicyFileWriteQueue;
+}
+
+async function writeSloApprovalPolicyLedger(ledger: SloApprovalPolicyLedger) {
+  await writeJsonFile(getSloApprovalPolicyFile(), {
+    policy: ledger.policy,
+    versions: ledger.versions.slice(0, 500),
+  });
 }
 
 async function saveObservabilitySloPolicyChange(change: ObservabilitySloPolicyChange) {
@@ -763,6 +1097,164 @@ async function applySloPolicyChangePayload(change: ObservabilitySloPolicyChange)
   throw new Error(`SLO policy change ${change.id} cannot be applied without an after snapshot.`);
 }
 
+async function resolveSloApprovalPolicy(
+  action: SloPolicyChangeAction,
+  riskLevel: number,
+): Promise<SloPolicyApprovalPolicy> {
+  const config = await getObservabilitySloApprovalPolicyConfig();
+  const matchingRules = config.rules
+    .filter((rule) => ruleMatchesRisk(rule, riskLevel))
+    .sort((left, right) => (right.riskLevel ?? -1) - (left.riskLevel ?? -1));
+  const rule =
+    matchingRules.find((item) => item.action === action) ||
+    matchingRules.find((item) => !item.action || item.action === "any") ||
+    null;
+
+  if (!rule) {
+    return defaultSloApprovalPolicy(action, riskLevel);
+  }
+
+  return {
+    quorum: rule.quorum,
+    requiredRoles: rule.requiredRoles,
+    allowRequesterApproval: rule.allowRequesterApproval,
+    attestationRequired: rule.attestationRequired,
+    breakGlassAllowed: rule.breakGlassAllowed,
+    description: rule.description,
+  };
+}
+
+function ruleMatchesRisk(rule: SloApprovalPolicyRule, riskLevel: number) {
+  return rule.riskLevel === undefined || riskLevel >= rule.riskLevel;
+}
+
+function normalizeSloApprovalPolicyConfig(value: Partial<ObservabilitySloApprovalPolicyConfig>): ObservabilitySloApprovalPolicyConfig {
+  const now = new Date().toISOString();
+  const rawRules = Array.isArray(value.rules) ? value.rules : [];
+  const rules = rawRules.map(normalizeSloApprovalPolicyRule).filter((rule): rule is SloApprovalPolicyRule => Boolean(rule));
+  const record = {
+    id: value.id?.trim() || SLO_APPROVAL_POLICY_ID,
+    version: Math.max(Math.round(Number(value.version || 1)), 1),
+    rules: rules.length ? rules : defaultSloApprovalPolicyRules(),
+    breakGlass: normalizeSloBreakGlassPolicy(value.breakGlass),
+    metadata: (redactSensitive(value.metadata || {}) || {}) as Record<string, unknown>,
+    updatedBy: value.updatedBy?.trim() || undefined,
+    updateReason: value.updateReason?.trim() || undefined,
+    createdAt: value.createdAt || now,
+    updatedAt: value.updatedAt || now,
+    evidenceHash: "",
+  };
+  return {
+    ...record,
+    evidenceHash: value.evidenceHash && String(value.evidenceHash).length === 64
+      ? String(value.evidenceHash)
+      : hashSloApprovalPolicyConfig(record),
+  };
+}
+
+function defaultSloApprovalPolicyRules(): SloApprovalPolicyRule[] {
+  return getDefaultObservabilitySloApprovalPolicyConfig().rules;
+}
+
+function normalizeSloApprovalPolicyRule(value: unknown): SloApprovalPolicyRule | null {
+  const raw = parseObject(value);
+  if (!raw) {
+    return null;
+  }
+
+  const action = normalizeApprovalRuleAction(raw.action);
+  const riskLevel = raw.riskLevel === undefined
+    ? undefined
+    : Math.min(Math.max(Math.round(Number(raw.riskLevel)), 0), 3);
+  const requiredRoles = Array.isArray(raw.requiredRoles)
+    ? raw.requiredRoles.map(normalizeSecurityRole).filter((role) => role !== "viewer")
+    : [];
+
+  return {
+    id: String(raw.id || `rule_${Date.now()}`).trim().slice(0, 80) || `rule_${Date.now()}`,
+    action,
+    riskLevel,
+    quorum: Math.min(Math.max(Math.round(Number(raw.quorum || 1)), 1), 5),
+    requiredRoles: requiredRoles.length ? [...new Set(requiredRoles)] : ["admin", "system"],
+    allowRequesterApproval: typeof raw.allowRequesterApproval === "boolean" ? raw.allowRequesterApproval : false,
+    attestationRequired: Boolean(raw.attestationRequired),
+    breakGlassAllowed: Boolean(raw.breakGlassAllowed),
+    description: String(raw.description || "").trim().slice(0, 500),
+  };
+}
+
+function normalizeApprovalRuleAction(value: unknown): SloApprovalPolicyRule["action"] {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  const action = String(value);
+  if (action === "any") {
+    return "any";
+  }
+  return normalizeChangeAction(action);
+}
+
+function normalizeSloBreakGlassPolicy(value: unknown): SloBreakGlassPolicy {
+  const raw = parseObject(value) || {};
+  return {
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : true,
+    requiredRole: normalizeSecurityRole(raw.requiredRole || "system"),
+    reasonMinLength: Math.min(Math.max(Math.round(Number(raw.reasonMinLength || 24)), 12), 1000),
+    maxRiskLevel: Math.min(Math.max(Math.round(Number(raw.maxRiskLevel || 3)), 0), 3),
+    requireTicket: Boolean(raw.requireTicket),
+    description: String(
+      raw.description ||
+        "Emergency SLO governance override for production recovery by a system actor with explicit rationale.",
+    ).trim().slice(0, 500),
+  };
+}
+
+function createSloApprovalPolicyVersion(
+  policy: ObservabilitySloApprovalPolicyConfig,
+  input: {
+    changedBy?: string;
+    changeReason?: string;
+    previousHash?: string;
+  } = {},
+): ObservabilitySloApprovalPolicyVersion {
+  const createdAt = policy.updatedAt || new Date().toISOString();
+  const versionCore = {
+    id: `sloapprpolver_${policy.version}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    policyId: policy.id,
+    version: policy.version,
+    policy,
+    changedBy: input.changedBy?.trim() || undefined,
+    changeReason: input.changeReason?.trim() || undefined,
+    previousHash: input.previousHash,
+    createdAt,
+  };
+  return {
+    ...versionCore,
+    evidenceHash: hashValue(versionCore),
+  };
+}
+
+function normalizeSloApprovalPolicyVersion(value: unknown): ObservabilitySloApprovalPolicyVersion {
+  const raw = parseObject(value) || {};
+  const policy = normalizeSloApprovalPolicyConfig(parseObject(raw.policy) || getDefaultObservabilitySloApprovalPolicyConfig());
+  const record = {
+    id: String(raw.id || `sloapprpolver_${policy.version}_${Date.now()}`),
+    policyId: String(raw.policyId || raw.policy_id || policy.id),
+    version: Math.max(Math.round(Number(raw.version || policy.version)), 1),
+    policy,
+    changedBy: raw.changedBy || raw.changed_by ? String(raw.changedBy || raw.changed_by) : undefined,
+    changeReason: raw.changeReason || raw.change_reason ? String(raw.changeReason || raw.change_reason) : undefined,
+    previousHash: raw.previousHash || raw.previous_hash ? String(raw.previousHash || raw.previous_hash) : undefined,
+    createdAt: raw.createdAt || raw.created_at ? normalizeDate(raw.createdAt || raw.created_at) : new Date().toISOString(),
+  };
+  return {
+    ...record,
+    evidenceHash: raw.evidenceHash || raw.evidence_hash
+      ? String(raw.evidenceHash || raw.evidence_hash)
+      : hashValue(record),
+  };
+}
+
 function normalizePolicy(policy: ObservabilitySloPolicy): ObservabilitySloPolicy {
   const now = new Date().toISOString();
   return {
@@ -848,6 +1340,35 @@ function sloPolicyFromRow(row: Record<string, unknown>): ObservabilitySloPolicy 
   });
 }
 
+function sloApprovalPolicyConfigFromRow(row: Record<string, unknown>): ObservabilitySloApprovalPolicyConfig {
+  return normalizeSloApprovalPolicyConfig({
+    id: String(row.id || SLO_APPROVAL_POLICY_ID),
+    version: Number(row.version || 1),
+    rules: Array.isArray(row.rules) ? (row.rules as SloApprovalPolicyRule[]) : [],
+    breakGlass: parseObject(row.break_glass) as SloBreakGlassPolicy | undefined,
+    metadata: parseObject(row.metadata) || {},
+    updatedBy: row.updated_by ? String(row.updated_by) : undefined,
+    updateReason: row.update_reason ? String(row.update_reason) : undefined,
+    evidenceHash: row.evidence_hash ? String(row.evidence_hash) : "",
+    createdAt: normalizeDate(row.created_at),
+    updatedAt: normalizeDate(row.updated_at),
+  });
+}
+
+function sloApprovalPolicyVersionFromRow(row: Record<string, unknown>): ObservabilitySloApprovalPolicyVersion {
+  return normalizeSloApprovalPolicyVersion({
+    id: row.id,
+    policyId: row.policy_id,
+    version: row.version,
+    policy: row.policy,
+    changedBy: row.changed_by,
+    changeReason: row.change_reason,
+    previousHash: row.previous_hash,
+    evidenceHash: row.evidence_hash,
+    createdAt: row.created_at,
+  });
+}
+
 function sloPolicyChangeFromRow(row: Record<string, unknown>): ObservabilitySloPolicyChange {
   return normalizePolicyChange({
     id: String(row.id),
@@ -910,17 +1431,25 @@ function createApprovalEvidence(
     actorRole: SecurityRole;
     tenantId?: string;
     reason?: string;
+    breakGlass?: boolean;
+    ticket?: string;
+    breakGlassPolicy?: SloBreakGlassPolicy;
   },
 ): SloPolicyApprovalEvidence {
   const actorId = input.actorId.trim() || "system";
   const actorRole = normalizeSecurityRole(input.actorRole);
   const reason = input.reason?.trim();
+  const breakGlass = input.decision === "approved" && Boolean(input.breakGlass);
+  const ticket = input.ticket?.trim();
 
   assertApprovalAllowed(change, {
     decision: input.decision,
     actorId,
     actorRole,
     reason,
+    breakGlass,
+    ticket,
+    breakGlassPolicy: input.breakGlassPolicy,
   });
 
   const createdAt = new Date().toISOString();
@@ -934,6 +1463,8 @@ function createApprovalEvidence(
     actorRole,
     tenantId: input.tenantId,
     reason,
+    breakGlass,
+    ticket,
     previousHash,
     createdAt,
   };
@@ -945,6 +1476,8 @@ function createApprovalEvidence(
     actorRole,
     tenantId: input.tenantId?.trim() || undefined,
     reason,
+    breakGlass: breakGlass || undefined,
+    ticket,
     createdAt,
     previousHash,
     evidenceHash,
@@ -959,9 +1492,14 @@ function assertApprovalAllowed(
     actorId: string;
     actorRole: SecurityRole;
     reason?: string;
+    breakGlass?: boolean;
+    ticket?: string;
+    breakGlassPolicy?: SloBreakGlassPolicy;
   },
 ) {
-  if (!change.approvalPolicy.requiredRoles.includes(input.actorRole)) {
+  if (input.breakGlass) {
+    assertBreakGlassAllowed(change, input);
+  } else if (!change.approvalPolicy.requiredRoles.includes(input.actorRole)) {
     throw new Error(
       `SLO policy change ${change.id} requires approver role ${change.approvalPolicy.requiredRoles.join(" or ")}.`,
     );
@@ -981,6 +1519,36 @@ function assertApprovalAllowed(
     (!input.reason || input.reason.length < 12)
   ) {
     throw new Error(`SLO policy change ${change.id} requires an approval attestation.`);
+  }
+}
+
+function assertBreakGlassAllowed(
+  change: ObservabilitySloPolicyChange,
+  input: {
+    actorRole: SecurityRole;
+    reason?: string;
+    ticket?: string;
+    breakGlassPolicy?: SloBreakGlassPolicy;
+  },
+) {
+  const policy = input.breakGlassPolicy || getDefaultObservabilitySloApprovalPolicyConfig().breakGlass;
+  if (!change.approvalPolicy.breakGlassAllowed) {
+    throw new Error(`SLO policy change ${change.id} does not allow emergency break-glass approval.`);
+  }
+  if (!policy.enabled) {
+    throw new Error("SLO approval break-glass policy is disabled.");
+  }
+  if (change.riskLevel > policy.maxRiskLevel) {
+    throw new Error(`SLO policy change ${change.id} exceeds the break-glass risk limit.`);
+  }
+  if (!roleMeetsRequirement(input.actorRole, policy.requiredRole)) {
+    throw new Error(`SLO break-glass approval requires ${policy.requiredRole} role or higher.`);
+  }
+  if (!input.reason || input.reason.length < policy.reasonMinLength) {
+    throw new Error(`SLO break-glass approval requires at least ${policy.reasonMinLength} characters of rationale.`);
+  }
+  if (policy.requireTicket && !input.ticket) {
+    throw new Error("SLO break-glass approval requires a ticket reference.");
   }
 }
 
@@ -1016,6 +1584,7 @@ function defaultSloApprovalPolicy(action: SloPolicyChangeAction, riskLevel: numb
       requiredRoles: ["admin", "system"],
       allowRequesterApproval: false,
       attestationRequired: action === "rollback_policy",
+      breakGlassAllowed: true,
       description: action === "rollback_policy"
         ? "High-risk rollback requires two distinct admin/system approvers and an explicit rollback attestation."
         : "High-risk SLO policy changes require two distinct admin/system approvers.",
@@ -1027,6 +1596,7 @@ function defaultSloApprovalPolicy(action: SloPolicyChangeAction, riskLevel: numb
     requiredRoles: ["operator", "admin", "system"],
     allowRequesterApproval: true,
     attestationRequired: false,
+    breakGlassAllowed: false,
     description: "SLO policy changes require one operator, admin, or system approval.",
   };
 }
@@ -1052,6 +1622,9 @@ function normalizeApprovalPolicy(
     attestationRequired: typeof raw.attestationRequired === "boolean"
       ? raw.attestationRequired
       : fallback.attestationRequired,
+    breakGlassAllowed: typeof raw.breakGlassAllowed === "boolean"
+      ? raw.breakGlassAllowed
+      : fallback.breakGlassAllowed,
     description: typeof raw.description === "string" && raw.description.trim()
       ? raw.description.trim().slice(0, 500)
       : fallback.description,
@@ -1069,6 +1642,7 @@ function parseApprovalPolicy(value: unknown): SloPolicyApprovalPolicy | undefine
     requiredRoles: Array.isArray(raw.requiredRoles) ? raw.requiredRoles.map(normalizeSecurityRole) : ["admin"],
     allowRequesterApproval: Boolean(raw.allowRequesterApproval),
     attestationRequired: Boolean(raw.attestationRequired),
+    breakGlassAllowed: Boolean(raw.breakGlassAllowed),
     description: String(raw.description || ""),
   };
 }
@@ -1090,6 +1664,8 @@ function parseApprovalEvidenceList(value: unknown): SloPolicyApprovalEvidence[] 
         actorRole: normalizeSecurityRole(raw.actorRole || raw.actor_role),
         tenantId: raw.tenantId || raw.tenant_id ? String(raw.tenantId || raw.tenant_id) : undefined,
         reason: raw.reason ? String(raw.reason) : undefined,
+        breakGlass: Boolean(raw.breakGlass || raw.break_glass),
+        ticket: raw.ticket ? String(raw.ticket) : undefined,
         createdAt: raw.createdAt || raw.created_at ? normalizeDate(raw.createdAt || raw.created_at) : new Date().toISOString(),
         previousHash: raw.previousHash || raw.previous_hash ? String(raw.previousHash || raw.previous_hash) : undefined,
         evidenceHash: String(raw.evidenceHash || raw.evidence_hash || ""),
@@ -1104,6 +1680,16 @@ function normalizeSecurityRole(value: unknown): SecurityRole {
     return role;
   }
   return "admin";
+}
+
+function roleMeetsRequirement(actorRole: SecurityRole, requiredRole: SecurityRole) {
+  const ranks: Record<SecurityRole, number> = {
+    viewer: 0,
+    operator: 1,
+    admin: 2,
+    system: 3,
+  };
+  return ranks[actorRole] >= ranks[requiredRole];
 }
 
 function parseStringArray(value: unknown): string[] {
@@ -1160,6 +1746,8 @@ function hashSloPolicyChange(change: ObservabilitySloPolicyChange) {
       actorRole: approval.actorRole,
       tenantId: approval.tenantId,
       reason: approval.reason,
+      breakGlass: approval.breakGlass,
+      ticket: approval.ticket,
       createdAt: approval.createdAt,
       previousHash: approval.previousHash,
       evidenceHash: approval.evidenceHash,
@@ -1170,6 +1758,20 @@ function hashSloPolicyChange(change: ObservabilitySloPolicyChange) {
     updatedAt: change.updatedAt,
     reviewedAt: change.reviewedAt,
     appliedAt: change.appliedAt,
+  });
+}
+
+function hashSloApprovalPolicyConfig(policy: Omit<ObservabilitySloApprovalPolicyConfig, "evidenceHash">) {
+  return hashValue({
+    id: policy.id,
+    version: policy.version,
+    rules: policy.rules,
+    breakGlass: policy.breakGlass,
+    metadata: policy.metadata,
+    updatedBy: policy.updatedBy,
+    updateReason: policy.updateReason,
+    createdAt: policy.createdAt,
+    updatedAt: policy.updatedAt,
   });
 }
 
@@ -1199,4 +1801,8 @@ function getSloPolicyFile() {
 
 function getSloPolicyChangeFile() {
   return getDataPath("observability-slo-policy-changes.json");
+}
+
+function getSloApprovalPolicyFile() {
+  return getDataPath("observability-slo-approval-policy.json");
 }

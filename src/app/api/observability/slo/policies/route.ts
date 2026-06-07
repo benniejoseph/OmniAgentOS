@@ -7,8 +7,12 @@ import {
   rollbackObservabilitySloPolicyChange,
   getDefaultObservabilitySloPolicies,
   getObservabilitySloPolicy,
+  getObservabilitySloApprovalPolicyConfig,
+  listObservabilitySloApprovalPolicyVersions,
   listObservabilitySloPolicies,
+  resetObservabilitySloApprovalPolicyConfig,
   saveObservabilitySloPolicy,
+  saveObservabilitySloApprovalPolicyConfig,
 } from "@/lib/observability/slo-policy-store";
 import { getObservabilitySloSnapshot } from "@/lib/observability/slo-monitor";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
@@ -20,6 +24,8 @@ const metrics = ["errorRate", "availability", "latencyP95Ms", "routeFailures"] a
 const comparators = ["greater_than", "greater_than_or_equal", "less_than", "less_than_or_equal"] as const;
 const severities = ["info", "warning", "critical"] as const;
 const units = ["ratio", "ms", "count"] as const;
+const approvalActions = ["upsert_policy", "toggle_policy", "delete_policy", "reset_defaults", "rollback_policy", "any"] as const;
+const approvalRoles = ["operator", "admin", "system"] as const;
 const changeReason = z.string().max(1000).optional();
 
 const policySchema = z.object({
@@ -38,6 +44,40 @@ const policySchema = z.object({
   alertTargetIds: z.array(z.string().min(1).max(80)).max(10).optional().default([]),
   suppressionMinutes: z.number().int().min(0).max(10080).optional().default(120),
   metadata: z.record(z.string(), z.unknown()).optional().default({}),
+});
+
+const approvalPolicyRuleSchema = z.object({
+  id: z.string().min(1).max(80),
+  action: z.enum(approvalActions).optional(),
+  riskLevel: z.number().int().min(0).max(3).optional(),
+  quorum: z.number().int().min(1).max(5),
+  requiredRoles: z.array(z.enum(approvalRoles)).min(1).max(3),
+  allowRequesterApproval: z.boolean(),
+  attestationRequired: z.boolean(),
+  breakGlassAllowed: z.boolean(),
+  description: z.string().max(500).optional().default(""),
+});
+
+const breakGlassPolicySchema = z.object({
+  enabled: z.boolean(),
+  requiredRole: z.enum(approvalRoles),
+  reasonMinLength: z.number().int().min(12).max(1000),
+  maxRiskLevel: z.number().int().min(0).max(3),
+  requireTicket: z.boolean(),
+  description: z.string().max(500).optional().default(""),
+});
+
+const approvalPolicyConfigSchema = z.object({
+  id: z.string().min(1).max(80).optional(),
+  version: z.number().int().min(1).optional(),
+  rules: z.array(approvalPolicyRuleSchema).min(1).max(10),
+  breakGlass: breakGlassPolicySchema,
+  metadata: z.record(z.string(), z.unknown()).optional().default({}),
+  updatedBy: z.string().max(120).optional(),
+  updateReason: z.string().max(1000).optional(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+  evidenceHash: z.string().optional(),
 });
 
 const actionSchema = z.discriminatedUnion("action", [
@@ -71,6 +111,15 @@ const actionSchema = z.discriminatedUnion("action", [
     requireApproval: z.boolean().optional().default(true),
     reason: changeReason,
   }),
+  z.object({
+    action: z.literal("update_approval_policy"),
+    policy: approvalPolicyConfigSchema,
+    reason: changeReason,
+  }),
+  z.object({
+    action: z.literal("reset_approval_policy"),
+    reason: changeReason,
+  }),
 ]);
 
 type SloPolicyAction = z.infer<typeof actionSchema>;
@@ -91,9 +140,11 @@ export async function GET(request: Request) {
   }
 
   try {
-    const [policies, snapshot] = await Promise.all([
+    const [policies, snapshot, approvalPolicy, approvalPolicyVersions] = await Promise.all([
       listObservabilitySloPolicies({ includeDisabled: true }),
       getObservabilitySloSnapshot(),
+      getObservabilitySloApprovalPolicyConfig(),
+      listObservabilitySloApprovalPolicyVersions({ limit: 10 }),
     ]);
     const changes = await listObservabilitySloPolicyChanges({ limit: 20 });
     await recordRuntimeEventSafely({
@@ -115,6 +166,8 @@ export async function GET(request: Request) {
       alertTargets: getIncidentAlertTargets("critical"),
       changes,
       pendingChanges: changes.filter((change) => change.status === "pending"),
+      approvalPolicy,
+      approvalPolicyVersions,
       snapshot,
     });
   } catch (error) {
@@ -163,9 +216,11 @@ export async function POST(request: Request) {
   try {
     const result = await handleSloPolicyAction(parsed.data, context);
     const snapshot = await getObservabilitySloSnapshot();
-    const [policies, changes] = await Promise.all([
+    const [policies, changes, approvalPolicy, approvalPolicyVersions] = await Promise.all([
       listObservabilitySloPolicies({ includeDisabled: true }),
       listObservabilitySloPolicyChanges({ limit: 20 }),
+      getObservabilitySloApprovalPolicyConfig(),
+      listObservabilitySloApprovalPolicyVersions({ limit: 10 }),
     ]);
     await recordRuntimeEventSafely({
       category: "api",
@@ -194,6 +249,8 @@ export async function POST(request: Request) {
       change: result.change,
       changes,
       pendingChanges: changes.filter((change) => change.status === "pending"),
+      approvalPolicy,
+      approvalPolicyVersions,
       alertTargets: getIncidentAlertTargets("critical"),
       snapshot,
     });
@@ -320,6 +377,22 @@ async function handleSloPolicyAction(
       },
     });
     return { policies: [], change };
+  }
+
+  if (action.action === "update_approval_policy") {
+    const approvalPolicy = await saveObservabilitySloApprovalPolicyConfig(action.policy, {
+      changedBy: context.actorId,
+      changeReason: action.reason || "Operator updated SLO approval policy administration.",
+    });
+    return { policies: [], change: undefined, approvalPolicy };
+  }
+
+  if (action.action === "reset_approval_policy") {
+    const approvalPolicy = await resetObservabilitySloApprovalPolicyConfig({
+      changedBy: context.actorId,
+      changeReason: action.reason || "Operator reset SLO approval policy administration.",
+    });
+    return { policies: [], change: undefined, approvalPolicy };
   }
 
   return rollbackObservabilitySloPolicyChange(action.changeId, {

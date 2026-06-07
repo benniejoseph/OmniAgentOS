@@ -834,6 +834,7 @@ type SloPolicyApprovalPolicy = {
   requiredRoles: SecurityRole[];
   allowRequesterApproval: boolean;
   attestationRequired: boolean;
+  breakGlassAllowed: boolean;
   description: string;
 };
 
@@ -844,6 +845,8 @@ type SloPolicyApprovalEvidence = {
   actorRole: SecurityRole;
   tenantId?: string;
   reason?: string;
+  breakGlass?: boolean;
+  ticket?: string;
   createdAt: string;
   previousHash?: string;
   evidenceHash: string;
@@ -874,6 +877,52 @@ type ObservabilitySloPolicyChange = {
   appliedAt?: string;
 };
 
+type SloApprovalPolicyRule = {
+  id: string;
+  action?: SloPolicyChangeAction | "any";
+  riskLevel?: number;
+  quorum: number;
+  requiredRoles: SecurityRole[];
+  allowRequesterApproval: boolean;
+  attestationRequired: boolean;
+  breakGlassAllowed: boolean;
+  description: string;
+};
+
+type SloBreakGlassPolicy = {
+  enabled: boolean;
+  requiredRole: SecurityRole;
+  reasonMinLength: number;
+  maxRiskLevel: number;
+  requireTicket: boolean;
+  description: string;
+};
+
+type ObservabilitySloApprovalPolicyConfig = {
+  id: string;
+  version: number;
+  rules: SloApprovalPolicyRule[];
+  breakGlass: SloBreakGlassPolicy;
+  metadata: Record<string, unknown>;
+  updatedBy?: string;
+  updateReason?: string;
+  createdAt: string;
+  updatedAt: string;
+  evidenceHash: string;
+};
+
+type ObservabilitySloApprovalPolicyVersion = {
+  id: string;
+  policyId: string;
+  version: number;
+  policy: ObservabilitySloApprovalPolicyConfig;
+  changedBy?: string;
+  changeReason?: string;
+  previousHash?: string;
+  evidenceHash: string;
+  createdAt: string;
+};
+
 type ObservabilitySloEvaluation = {
   policy: ObservabilitySloPolicy;
   value: number;
@@ -899,6 +948,8 @@ type ObservabilitySloPolicyResponse = {
   alertTargets: IncidentAlertTarget[];
   changes: ObservabilitySloPolicyChange[];
   pendingChanges: ObservabilitySloPolicyChange[];
+  approvalPolicy: ObservabilitySloApprovalPolicyConfig;
+  approvalPolicyVersions: ObservabilitySloApprovalPolicyVersion[];
   snapshot: ObservabilitySloSnapshot;
 };
 
@@ -1243,6 +1294,11 @@ export function CommandCenter() {
   const [sloSuppressionMinutes, setSloSuppressionMinutes] = useState("");
   const [sloPolicyEnabled, setSloPolicyEnabled] = useState(true);
   const [sloTargetIds, setSloTargetIds] = useState<string[]>([]);
+  const [sloLowRiskQuorum, setSloLowRiskQuorum] = useState("1");
+  const [sloHighRiskQuorum, setSloHighRiskQuorum] = useState("2");
+  const [sloRollbackAttestation, setSloRollbackAttestation] = useState(true);
+  const [sloBreakGlassEnabled, setSloBreakGlassEnabled] = useState(true);
+  const [sloBreakGlassReasonMin, setSloBreakGlassReasonMin] = useState("24");
   const [observabilityResult, setObservabilityResult] = useState("");
   const [securityState, setSecurityState] = useState<SecurityState | null>(null);
   const [authState, setAuthState] = useState<AuthSessionResponse | null>(null);
@@ -1303,6 +1359,8 @@ export function CommandCenter() {
   const sloPolicies = sloPolicyState?.policies || observabilitySlo?.policies || [];
   const sloPolicyChanges = sloPolicyState?.changes || [];
   const pendingSloPolicyChanges = sloPolicyState?.pendingChanges || sloPolicyChanges.filter((change) => change.status === "pending");
+  const sloApprovalPolicy = sloPolicyState?.approvalPolicy;
+  const sloApprovalPolicyVersions = sloPolicyState?.approvalPolicyVersions || [];
   const selectedSloPolicy = sloPolicies.find((policy) => policy.id === selectedSloPolicyId) || sloPolicies[0];
   const sloAlertTargets = sloPolicyState?.alertTargets || alertTargetHealth.map((target) => ({
     id: target.id,
@@ -1338,6 +1396,18 @@ export function CommandCenter() {
     setSloSuppressionMinutes(String(policy.suppressionMinutes));
     setSloPolicyEnabled(policy.enabled);
     setSloTargetIds(policy.alertTargetIds || []);
+  }
+
+  function loadSloApprovalPolicyForm(policy: ObservabilitySloApprovalPolicyConfig) {
+    const lowRiskRule = findSloApprovalRule(policy, "risk_2_standard", 2);
+    const highRiskRule = findSloApprovalRule(policy, "risk_3_high", 3);
+    const rollbackRule = policy.rules.find((rule) => rule.id === "rollback_policy" || rule.action === "rollback_policy");
+
+    setSloLowRiskQuorum(String(lowRiskRule?.quorum ?? 1));
+    setSloHighRiskQuorum(String(highRiskRule?.quorum ?? rollbackRule?.quorum ?? 2));
+    setSloRollbackAttestation(Boolean(rollbackRule?.attestationRequired ?? true));
+    setSloBreakGlassEnabled(policy.breakGlass.enabled);
+    setSloBreakGlassReasonMin(String(policy.breakGlass.reasonMinLength));
   }
 
   async function initializeWorkspace() {
@@ -1938,6 +2008,128 @@ export function CommandCenter() {
     }
   }
 
+  async function saveSloApprovalPolicy() {
+    if (!sloApprovalPolicy) {
+      return;
+    }
+
+    setStatus("updating SLO approval policy");
+    setObservabilityResult("");
+
+    const lowQuorum = parseBoundedInt(sloLowRiskQuorum, 1, 1, 5);
+    const highQuorum = parseBoundedInt(sloHighRiskQuorum, 2, 1, 5);
+    const reasonMinLength = parseBoundedInt(sloBreakGlassReasonMin, 24, 12, 1000);
+    const lowTemplate = findSloApprovalRule(sloApprovalPolicy, "risk_2_standard", 2);
+    const highTemplate = findSloApprovalRule(sloApprovalPolicy, "risk_3_high", 3);
+    const rollbackTemplate =
+      sloApprovalPolicy.rules.find((rule) => rule.id === "rollback_policy" || rule.action === "rollback_policy") ||
+      highTemplate;
+    const preservedRules = sloApprovalPolicy.rules.filter((rule) =>
+      rule.id !== "risk_2_standard" &&
+      rule.id !== "risk_3_high" &&
+      rule.id !== "rollback_policy" &&
+      rule.action !== "rollback_policy" &&
+      !(rule.action === "any" && (rule.riskLevel === 2 || rule.riskLevel === 3))
+    );
+    const policy: ObservabilitySloApprovalPolicyConfig = {
+      ...sloApprovalPolicy,
+      rules: [
+        {
+          ...(rollbackTemplate || createDefaultSloApprovalRule("rollback_policy", 3)),
+          id: "rollback_policy",
+          action: "rollback_policy",
+          riskLevel: 3,
+          quorum: highQuorum,
+          requiredRoles: normalizeApprovalRoles(rollbackTemplate?.requiredRoles, ["admin", "system"]),
+          allowRequesterApproval: false,
+          attestationRequired: sloRollbackAttestation,
+          breakGlassAllowed: sloBreakGlassEnabled,
+        },
+        {
+          ...(highTemplate || createDefaultSloApprovalRule("risk_3_high", 3)),
+          id: "risk_3_high",
+          action: "any",
+          riskLevel: 3,
+          quorum: highQuorum,
+          requiredRoles: normalizeApprovalRoles(highTemplate?.requiredRoles, ["admin", "system"]),
+          allowRequesterApproval: false,
+          breakGlassAllowed: sloBreakGlassEnabled,
+        },
+        {
+          ...(lowTemplate || createDefaultSloApprovalRule("risk_2_standard", 2)),
+          id: "risk_2_standard",
+          action: "any",
+          riskLevel: 2,
+          quorum: lowQuorum,
+          requiredRoles: normalizeApprovalRoles(lowTemplate?.requiredRoles, ["operator", "admin", "system"]),
+          allowRequesterApproval: true,
+          attestationRequired: false,
+          breakGlassAllowed: false,
+        },
+        ...preservedRules,
+      ],
+      breakGlass: {
+        ...sloApprovalPolicy.breakGlass,
+        enabled: sloBreakGlassEnabled,
+        reasonMinLength,
+      },
+      metadata: {
+        ...sloApprovalPolicy.metadata,
+        managedBy: "command-center",
+      },
+    };
+
+    try {
+      const response = await fetch("/api/observability/slo/policies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_approval_policy",
+          policy,
+          reason: "Command Center SLO approval policy administration update.",
+        }),
+      });
+      const data = await response.json();
+      setObservabilityResult(formatToolResult(data));
+      if (data.approvalPolicy) {
+        setSloPolicyState(data);
+        setObservabilitySloState(data.snapshot);
+        loadSloApprovalPolicyForm(data.approvalPolicy);
+      }
+      setStatus(response.ok ? "SLO approval policy updated" : "SLO approval policy update failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "SLO approval policy update failed");
+    }
+  }
+
+  async function resetSloApprovalPolicy() {
+    setStatus("resetting SLO approval policy");
+    setObservabilityResult("");
+
+    try {
+      const response = await fetch("/api/observability/slo/policies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reset_approval_policy",
+          reason: "Command Center SLO approval policy administration reset.",
+        }),
+      });
+      const data = await response.json();
+      setObservabilityResult(formatToolResult(data));
+      if (data.approvalPolicy) {
+        setSloPolicyState(data);
+        setObservabilitySloState(data.snapshot);
+        loadSloApprovalPolicyForm(data.approvalPolicy);
+      }
+      setStatus(response.ok ? "SLO approval policy reset" : "SLO approval policy reset failed");
+      refreshWorkspace();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "SLO approval policy reset failed");
+    }
+  }
+
   function toggleSloTarget(targetId: string) {
     setSloTargetIds((current) =>
       current.includes(targetId)
@@ -2153,6 +2345,9 @@ export function CommandCenter() {
           const policy = data.policies.find((item: ObservabilitySloPolicy) => item.id === selectedSloPolicyId) || data.policies[0];
           if (policy) {
             loadSloPolicyForm(policy);
+          }
+          if (data.approvalPolicy) {
+            loadSloApprovalPolicyForm(data.approvalPolicy);
           }
         }
       })
@@ -2541,6 +2736,87 @@ export function CommandCenter() {
                       Defaults
                     </button>
                   </div>
+                </div>
+              ) : null}
+              {sloApprovalPolicy ? (
+                <div className="mb-3 rounded-md border border-line bg-background/54 p-3">
+                  <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                    <MiniStat label="Policy v" value={`${sloApprovalPolicy.version}`} />
+                    <MiniStat label="Low q" value={sloLowRiskQuorum} />
+                    <MiniStat label="High q" value={sloHighRiskQuorum} />
+                  </div>
+                  <div className="mb-2 grid grid-cols-3 gap-2">
+                    <input
+                      value={sloLowRiskQuorum}
+                      onChange={(event) => setSloLowRiskQuorum(event.target.value)}
+                      className="h-9 rounded-md border border-line bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                      aria-label="Low risk approval quorum"
+                      inputMode="numeric"
+                    />
+                    <input
+                      value={sloHighRiskQuorum}
+                      onChange={(event) => setSloHighRiskQuorum(event.target.value)}
+                      className="h-9 rounded-md border border-line bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                      aria-label="High risk approval quorum"
+                      inputMode="numeric"
+                    />
+                    <input
+                      value={sloBreakGlassReasonMin}
+                      onChange={(event) => setSloBreakGlassReasonMin(event.target.value)}
+                      className="h-9 rounded-md border border-line bg-background px-2 font-mono text-xs outline-none focus:border-primary"
+                      aria-label="Break glass rationale minimum"
+                      inputMode="numeric"
+                    />
+                  </div>
+                  <div className="mb-2 grid grid-cols-2 gap-2">
+                    <label className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={sloRollbackAttestation}
+                        onChange={(event) => setSloRollbackAttestation(event.target.checked)}
+                        className="size-3 accent-current"
+                      />
+                      Attest
+                    </label>
+                    <label className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={sloBreakGlassEnabled}
+                        onChange={(event) => setSloBreakGlassEnabled(event.target.checked)}
+                        className="size-3 accent-current"
+                      />
+                      Emergency
+                    </label>
+                  </div>
+                  <div className="mb-3 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={saveSloApprovalPolicy}
+                      className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                    >
+                      <ShieldCheck size={14} />
+                      Save policy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetSloApprovalPolicy}
+                      className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-foreground transition hover:border-danger"
+                    >
+                      <History size={14} />
+                      Reset policy
+                    </button>
+                  </div>
+                  {sloApprovalPolicyVersions.length ? (
+                    <div className="grid grid-cols-1 gap-1.5 font-mono text-[10px] text-muted">
+                      {sloApprovalPolicyVersions.slice(0, 3).map((version) => (
+                        <div key={version.id} className="flex min-w-0 items-center justify-between gap-3 rounded border border-line px-2 py-1.5">
+                          <span className="shrink-0">v{version.version}</span>
+                          <span className="truncate">{version.changedBy || "system"}</span>
+                          <span className="shrink-0">{version.evidenceHash.slice(0, 10)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {sloPolicyChanges.length ? (
@@ -3623,6 +3899,7 @@ function SloPolicyChangeRow({ change }: { change: ObservabilitySloPolicyChange }
   const label = change.afterPolicy?.name || change.beforePolicy?.name || change.policyId;
   const approvals = new Set(change.approvals.filter((approval) => approval.decision === "approved").map((approval) => approval.actorId)).size;
   const required = change.approvalPolicy.quorum;
+  const breakGlassUsed = change.approvals.some((approval) => approval.breakGlass);
 
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
@@ -3638,7 +3915,7 @@ function SloPolicyChangeRow({ change }: { change: ObservabilitySloPolicyChange }
       <div className="mt-2 grid grid-cols-3 gap-1.5 font-mono text-[11px] text-muted">
         <span className="truncate">{change.action.replace(/_/g, " ")}</span>
         <span className="truncate">{approvals}/{required} approvals</span>
-        <span>{new Date(change.createdAt).toLocaleTimeString()}</span>
+        <span>{breakGlassUsed ? "emergency" : new Date(change.createdAt).toLocaleTimeString()}</span>
       </div>
       <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[10px] text-muted">
         <span className="truncate">{change.approvalPolicy.requiredRoles.join(",")}</span>
@@ -4420,6 +4697,46 @@ function connectorTone(status: McpConnectorRecord["status"]) {
   }
 
   return "bg-background text-muted";
+}
+
+function findSloApprovalRule(
+  policy: ObservabilitySloApprovalPolicyConfig,
+  id: string,
+  riskLevel: number,
+) {
+  return policy.rules.find((rule) => rule.id === id) ||
+    policy.rules.find((rule) => rule.action === "any" && rule.riskLevel === riskLevel);
+}
+
+function parseBoundedInt(value: string, fallback: number, min: number, max: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(Math.max(Math.round(parsed), min), max);
+}
+
+function createDefaultSloApprovalRule(id: string, riskLevel: number): SloApprovalPolicyRule {
+  const highRisk = riskLevel >= 3;
+  return {
+    id,
+    action: "any",
+    riskLevel,
+    quorum: highRisk ? 2 : 1,
+    requiredRoles: highRisk ? ["admin", "system"] : ["operator", "admin", "system"],
+    allowRequesterApproval: !highRisk,
+    attestationRequired: false,
+    breakGlassAllowed: highRisk,
+    description: highRisk
+      ? "High-risk SLO changes require two distinct admin/system approvals."
+      : "Standard SLO changes require one operator, admin, or system approval.",
+  };
+}
+
+function normalizeApprovalRoles(roles: SecurityRole[] | undefined, fallback: SecurityRole[]) {
+  const allowed = new Set<SecurityRole>(["operator", "admin", "system"]);
+  const next = [...new Set((roles || []).filter((role) => allowed.has(role)))];
+  return next.length ? next : fallback;
 }
 
 function formatToolResult(value: unknown) {
