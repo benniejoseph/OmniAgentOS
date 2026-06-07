@@ -848,6 +848,17 @@ type EvalRunDetail = {
   run: EvalRunRecord;
   results: EvalResultRecord[];
   governance?: EvalGovernanceSummary;
+  override?: EvalOverrideEvidence;
+};
+
+type EvalOverrideEvidence = {
+  requested: boolean;
+  allowMutation: boolean;
+  reasonProvided: boolean;
+  reason?: string;
+  role: SecurityRole;
+  actorId: string;
+  tenantId: string;
 };
 
 type ObservabilityLevel = "info" | "warn" | "error";
@@ -1297,6 +1308,9 @@ const modes: { id: Mode; label: string }[] = [
   { id: "learn", label: "Learn" },
 ];
 
+const evaluationSafeSafetyMode: EvalSafetyMode = "synthetic";
+const evaluationOverrideReasonMinLength = 12;
+
 const defaultToolInputs: Record<string, string> = {
   "memory.search": JSON.stringify({ query: "structured memory consolidation", limit: 3 }, null, 2),
   "knowledge.search": JSON.stringify({ query: "RAG v2 production smoke", limit: 3 }, null, 2),
@@ -1384,6 +1398,8 @@ export function CommandCenter() {
   const [connectionCatalog, setConnectionCatalog] = useState<ConnectionCatalogResponse | null>(null);
   const [evaluationState, setEvaluationState] = useState<EvaluationsResponse | null>(null);
   const [evaluationResult, setEvaluationResult] = useState("");
+  const [evaluationAllowMutation, setEvaluationAllowMutation] = useState(false);
+  const [evaluationOverrideReason, setEvaluationOverrideReason] = useState("");
   const [observabilityState, setObservabilityState] = useState<ObservabilityResponse | null>(null);
   const [observabilitySloState, setObservabilitySloState] = useState<ObservabilitySloSnapshot | null>(null);
   const [sloPolicyState, setSloPolicyState] = useState<ObservabilitySloPolicyResponse | null>(null);
@@ -1462,11 +1478,34 @@ export function CommandCenter() {
   const recentUnhandledWorkflowFailures = operationSummary?.recentUnhandledWorkflowFailures ?? 0;
   const recoveredWorkflowFailures = operationSummary?.recoveredWorkflowFailures ?? 0;
   const connectionTemplates = connectionCatalog?.connectors || [];
+  const securityContext = securityState?.context || capabilities?.security.context;
   const evaluationStats = evaluationState?.stats || capabilities?.evaluations;
   const evaluationGovernance = evaluationState?.governance;
   const evaluationDefaultSafetyMode = evaluationState?.defaults.maxSafetyMode || "synthetic";
+  const evaluationCases = evaluationState?.cases || [];
+  const safeEvaluationCases = evaluationCases.filter((evalCase) =>
+    evalSafetyOrder(evalCase.governance.safetyMode) <= evalSafetyOrder(evaluationSafeSafetyMode)
+  );
+  const gatedEvaluationCases = evaluationCases.filter((evalCase) =>
+    evalCase.governance.safetyMode === "mutation_allowed" || evalCase.governance.production.requiresMutationApproval
+  );
+  const evaluationRole = authState?.membership?.role || securityContext?.role || "admin";
+  const evaluationOverrideReasonText = evaluationOverrideReason.trim();
+  const canRunGatedEvaluations = ["admin", "system"].includes(evaluationRole) &&
+    evaluationAllowMutation &&
+    evaluationOverrideReasonText.length >= evaluationOverrideReasonMinLength &&
+    gatedEvaluationCases.length > 0;
+  const gatedEvaluationBlocker = gatedEvaluationCases.length === 0
+    ? "no gated cases"
+    : !["admin", "system"].includes(evaluationRole)
+      ? "admin/system role"
+      : !evaluationAllowMutation
+        ? "mutation unchecked"
+        : evaluationOverrideReasonText.length < evaluationOverrideReasonMinLength
+          ? `${evaluationOverrideReasonMinLength}+ chars`
+          : "ready";
   const latestEvaluations = evaluationState?.runs.slice(0, 5) || (capabilities?.evaluations.latest ? [capabilities.evaluations.latest] : []);
-  const latestEvaluationCases = evaluationState?.cases.slice(0, 4) || [];
+  const latestEvaluationCases = evaluationCases.slice(0, 3);
   const observabilityStats = observabilityState?.stats || capabilities?.observability;
   const latestObservabilityEvents = observabilityState?.events || observabilityStats?.latest || [];
   const observabilitySlo = observabilitySloState || capabilities?.observabilitySlo;
@@ -1484,7 +1523,6 @@ export function CommandCenter() {
     description: target.blockingReasons[0] || target.channel,
   }));
   const observabilityBreaches = observabilitySlo?.breaches || [];
-  const securityContext = securityState?.context || capabilities?.security.context;
   const securityStats = securityState?.stats || capabilities?.security.stats;
   const securityPolicy = securityState?.policy || capabilities?.security.policy;
   const latestSecurityAudits =
@@ -2297,22 +2335,43 @@ export function CommandCenter() {
     setOpenApiResult(`Applied ${template.name} OpenAPI template`);
   }
 
-  async function runEvaluations() {
-    setStatus("running evaluations");
+  async function runEvaluations(mode: "safe" | "gated") {
+    const gated = mode === "gated";
+    if (gated && !canRunGatedEvaluations) {
+      setEvaluationResult(formatToolResult({
+        error: "Evaluation override incomplete",
+        requirement: gatedEvaluationBlocker,
+        role: evaluationRole,
+      }));
+      setStatus("evaluation override incomplete");
+      return;
+    }
+
+    setStatus(gated ? "running gated evaluations" : "running safe evaluations");
     setEvaluationResult("");
 
     try {
       const response = await fetch("/api/evaluations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          suite: "command-center-safe",
-          maxSafetyMode: evaluationDefaultSafetyMode,
-        }),
+        body: JSON.stringify(gated
+          ? {
+              suite: "command-center-gated",
+              maxSafetyMode: "mutation_allowed",
+              allowMutation: true,
+              reason: evaluationOverrideReasonText,
+            }
+          : {
+              suite: "command-center-safe",
+              maxSafetyMode: evaluationSafeSafetyMode,
+            }),
       });
       const data = (await response.json()) as EvalRunDetail;
       setEvaluationResult(formatToolResult(data));
       setStatus(data.run?.status ? `evaluations ${data.run.status}` : response.ok ? "evaluations complete" : "evaluations failed");
+      if (gated && response.ok) {
+        setEvaluationAllowMutation(false);
+      }
       refreshWorkspace();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "evaluation run failed");
@@ -3324,14 +3383,54 @@ export function CommandCenter() {
                 <MiniStat label="Gated" value={`${evaluationGovernance?.bySafetyMode.mutation_allowed ?? 0}`} />
               </div>
               <div className="flex flex-col gap-3">
-                <button
-                  type="button"
-                  onClick={runEvaluations}
-                  className="flex h-10 items-center justify-center gap-2 rounded-md border border-primary/60 text-sm font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
-                >
-                  <Play size={15} />
-                  Run safe suite
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => runEvaluations("safe")}
+                    className="flex h-10 items-center justify-center gap-2 rounded-md border border-primary/60 text-sm font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+                  >
+                    <Play size={15} />
+                    Safe suite
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canRunGatedEvaluations}
+                    onClick={() => runEvaluations("gated")}
+                    className="flex h-10 items-center justify-center gap-2 rounded-md border border-danger/60 text-sm font-medium text-danger transition hover:bg-danger hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    <ShieldCheck size={15} />
+                    Gated suite
+                  </button>
+                </div>
+                <div className="rounded-md border border-line bg-background/54 p-3">
+                  <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                    <MiniStat label="Safe" value={`${safeEvaluationCases.length}`} />
+                    <MiniStat label="Gated" value={`${gatedEvaluationCases.length}`} />
+                    <MiniStat label="Role" value={evaluationRole} />
+                  </div>
+                  <label className="mb-3 flex items-center justify-between gap-3 text-xs text-muted">
+                    <span className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={evaluationAllowMutation}
+                        onChange={(event) => setEvaluationAllowMutation(event.target.checked)}
+                        className="size-4 accent-primary"
+                        aria-label="Allow mutation evaluations"
+                      />
+                      Allow mutation
+                    </span>
+                    <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", canRunGatedEvaluations ? "bg-primary/16 text-primary" : "bg-accent/14 text-accent")}>
+                      {gatedEvaluationBlocker}
+                    </span>
+                  </label>
+                  <textarea
+                    value={evaluationOverrideReason}
+                    onChange={(event) => setEvaluationOverrideReason(event.target.value)}
+                    className="min-h-20 w-full resize-none rounded-md border border-line bg-background px-3 py-2 text-sm leading-6 outline-none focus:border-primary"
+                    placeholder="Override reason"
+                    aria-label="Evaluation override reason"
+                  />
+                </div>
                 {evaluationResult ? (
                   <pre className="max-h-48 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
                     {evaluationResult}
@@ -4851,6 +4950,18 @@ function evalSafetyTone(mode: EvalSafetyMode) {
   }
 
   return "bg-accent/14 text-accent";
+}
+
+function evalSafetyOrder(mode: EvalSafetyMode) {
+  if (mode === "read_only") {
+    return 0;
+  }
+
+  if (mode === "synthetic") {
+    return 1;
+  }
+
+  return 2;
 }
 
 function decisionTone(decision: SecurityDecision) {

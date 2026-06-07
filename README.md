@@ -133,6 +133,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Durable observability ledger for workflow ticks, alert actions, diagnostics, evaluations, route failures, and correlation IDs
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
 - Evaluation governance with read-only, synthetic, and mutation-allowed safety modes, production admin override requirements, cleanup policy metadata, and Command Center risk labels
+- Command Center evaluation override operations with separate safe/gated execution lanes, mutation consent, operator reason capture, and override evidence in runtime events
 - Operations regression case for approval queue, operations overview, workflow liveness summary, recovery history, and connection catalog readiness
 - Operations regression case for persisted health diagnostics, SLO metrics, incident consistency, and repair ledgers
 - Operations regression case for stale workflow queue recovery, safe requeue/fail reconciliation, bounded drain reporting, cleanup, and registry exposure

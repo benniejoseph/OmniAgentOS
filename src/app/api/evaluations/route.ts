@@ -56,6 +56,16 @@ export async function POST(request: Request) {
       resourceType: "evaluation",
       metadata: parsed.data,
     });
+    const overrideReason = parsed.data.reason?.trim();
+    const overrideEvidence = {
+      requested: Boolean(parsed.data.allowMutation || overrideReason),
+      allowMutation: Boolean(parsed.data.allowMutation),
+      reasonProvided: Boolean(overrideReason),
+      reason: overrideReason,
+      role: context.role,
+      actorId: context.actorId,
+      tenantId: context.tenantId,
+    };
     const maxSafetyMode = parsed.data.maxSafetyMode ??
       (parsed.data.caseIds?.length ? undefined : defaultEvaluationMaxSafetyMode());
     const selection = selectEvaluationCases({
@@ -77,7 +87,7 @@ export async function POST(request: Request) {
       cases: selection.cases,
       role: context.role,
       allowMutation: parsed.data.allowMutation,
-      reason: parsed.data.reason,
+      reason: overrideReason,
     });
 
     if (!governance.allowed) {
@@ -100,6 +110,7 @@ export async function POST(request: Request) {
           caseIds: selection.cases.map((evalCase) => evalCase.id),
           violations: governance.violations,
           summary: governance.summary,
+          override: overrideEvidence,
         },
       });
       return Response.json(
@@ -107,6 +118,7 @@ export async function POST(request: Request) {
           error: "Evaluation governance blocked run",
           violations: governance.violations,
           governance: governance.summary,
+          override: overrideEvidence,
         },
         { status: 403 },
       );
@@ -145,10 +157,10 @@ export async function POST(request: Request) {
         caseIds: selection.cases.map((evalCase) => evalCase.id),
         governance: governance.summary,
         maxSafetyMode,
-        allowMutation: Boolean(parsed.data.allowMutation),
+        override: overrideEvidence,
       },
     });
-    return Response.json({ ...detail, governance: governance.summary }, { status });
+    return Response.json({ ...detail, governance: governance.summary, override: overrideEvidence }, { status });
   } catch (error) {
     if (!(error instanceof SecurityPolicyError)) {
       await recordRuntimeEventSafely({
