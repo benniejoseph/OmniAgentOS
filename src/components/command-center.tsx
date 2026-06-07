@@ -862,6 +862,23 @@ type EvalReportSignature = {
   canonicalHash: string;
   signedAt: string;
   verifier: "omniagent-eval-report-v1";
+  keyStatus?: EvalReportSigningKeyStatus;
+  keySource?: EvalReportSigningKeySource;
+  keyNotBefore?: string;
+  keyNotAfter?: string;
+};
+
+type EvalReportSigningKeyStatus = "active" | "verify_only" | "fallback" | "local_development";
+type EvalReportSigningKeySource = "primary_env" | "rotation_env" | "cron_fallback" | "local_development";
+
+type EvalReportSigningKeyMetadata = {
+  keyId: string;
+  algorithm: "HMAC-SHA256";
+  status: EvalReportSigningKeyStatus;
+  source: EvalReportSigningKeySource;
+  verifier: "omniagent-eval-report-v1";
+  notBefore?: string;
+  notAfter?: string;
 };
 
 type EvalReportSnapshot = {
@@ -880,7 +897,29 @@ type EvalReportResponse = {
   reports?: EvalReportSnapshot[];
   latest?: EvalReportSnapshot;
   report?: EvalReportSnapshot;
+  keyring?: EvalReportSigningKeyMetadata[];
+  verification?: EvalReportVerificationResult;
   error?: string;
+};
+
+type EvalReportVerificationResult = {
+  valid: boolean;
+  reportId?: string;
+  evalRunId?: string;
+  reportVersion?: string;
+  algorithm?: string;
+  verifier?: string;
+  keyId?: string;
+  matchedKeyId?: string;
+  keyStatus?: EvalReportSigningKeyStatus;
+  digestValid: boolean;
+  signatureValid: boolean;
+  canonicalHash?: string;
+  expectedDigest?: string;
+  actualDigest?: string;
+  signedAt?: string;
+  verifiedAt: string;
+  errors: string[];
 };
 
 type EvalOverrideEvidence = {
@@ -2555,6 +2594,35 @@ export function CommandCenter() {
     }
   }
 
+  async function verifyEvaluationReport(runId: string, reportId?: string) {
+    if (!runId || !reportId) {
+      return;
+    }
+
+    const query = new URLSearchParams({ reportId });
+    setStatus("verifying evaluation report");
+    setEvaluationReportResult("");
+
+    try {
+      const response = await fetch(`/api/evaluations/${runId}/report/verify?${query.toString()}`);
+      const data = (await response.json()) as EvalReportResponse;
+      if (!response.ok || !data.verification) {
+        setEvaluationReportResult(formatToolResult(data));
+        setStatus(data.error || "evaluation report verification failed");
+        return;
+      }
+
+      setEvaluationReportResult(formatToolResult({
+        verification: data.verification,
+        keyring: data.keyring,
+      }));
+      setStatus(data.verification.valid ? "evaluation report verified" : "evaluation report invalid");
+    } catch (error) {
+      setEvaluationReportResult(error instanceof Error ? error.message : "evaluation report verification failed");
+      setStatus(error instanceof Error ? error.message : "evaluation report verification failed");
+    }
+  }
+
   async function runEvaluations(mode: "safe" | "gated") {
     const gated = mode === "gated";
     if (gated && !canRunGatedEvaluations) {
@@ -3669,6 +3737,7 @@ export function CommandCenter() {
                     onFilterChange={setEvaluationDetailFilter}
                     onCreateReport={createEvaluationReport}
                     onDownloadReport={downloadEvaluationReport}
+                    onVerifyReport={verifyEvaluationReport}
                   />
                 ) : null}
                 <div className="flex flex-col gap-3">
@@ -5095,6 +5164,7 @@ function EvaluationRunDetailPanel({
   onFilterChange,
   onCreateReport,
   onDownloadReport,
+  onVerifyReport,
 }: {
   detail: EvalRunDetail;
   caseEvidence: EvalCaseEvidence[];
@@ -5104,6 +5174,7 @@ function EvaluationRunDetailPanel({
   onFilterChange: (filter: EvalDetailFilter) => void;
   onCreateReport: (runId: string) => void;
   onDownloadReport: (runId: string, reportId?: string) => void;
+  onVerifyReport: (runId: string, reportId?: string) => void;
 }) {
   const passRate = detail.run.summary.total ? Math.round((detail.run.summary.passed / detail.run.summary.total) * 100) : 0;
   const override = detail.override;
@@ -5137,7 +5208,7 @@ function EvaluationRunDetailPanel({
         <MiniStat label="Key" value={latestReport?.signature.keyId || "none"} />
         <MiniStat label="Sig" value={latestReport ? latestReport.signature.signature.slice(0, 10) : "none"} />
       </div>
-      <div className="mb-3 grid grid-cols-2 gap-2">
+      <div className="mb-3 grid grid-cols-3 gap-2">
         <button
           type="button"
           onClick={() => onCreateReport(detail.run.id)}
@@ -5145,6 +5216,15 @@ function EvaluationRunDetailPanel({
         >
           <FileText size={14} />
           Create report
+        </button>
+        <button
+          type="button"
+          disabled={!latestReport}
+          onClick={() => onVerifyReport(detail.run.id, latestReport?.id)}
+          className="flex h-9 items-center justify-center gap-2 rounded-md border border-accent/60 text-xs font-medium text-accent transition hover:bg-accent hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <ShieldCheck size={14} />
+          Verify
         </button>
         <button
           type="button"
@@ -5160,7 +5240,7 @@ function EvaluationRunDetailPanel({
         <div className="mb-3 rounded-md border border-line bg-background/70 p-2 font-mono text-[10px] leading-5 text-muted">
           <div className="flex min-w-0 items-center justify-between gap-3">
             <span className="truncate" title={latestReport.id}>{latestReport.id}</span>
-            <span className="shrink-0">{latestReport.reportVersion}</span>
+            <span className="shrink-0">{latestReport.signature.keyStatus || latestReport.reportVersion}</span>
           </div>
           <div className="mt-1 flex min-w-0 items-center justify-between gap-3">
             <span className="truncate" title={latestReport.signature.digest}>{latestReport.signature.digest}</span>

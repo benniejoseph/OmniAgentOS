@@ -51,7 +51,10 @@ For signed evaluation audit report snapshots, set a stable signing secret in pro
 ```bash
 OMNIAGENT_REPORT_SIGNING_SECRET=
 OMNIAGENT_REPORT_SIGNING_KEY_ID=
+OMNIAGENT_REPORT_SIGNING_KEYS=
 ```
+
+`OMNIAGENT_REPORT_SIGNING_KEYS` accepts a JSON array/object of rotated verification keys without exposing them to clients; reports return only key id/status metadata.
 
 ## What Is Included
 
@@ -95,6 +98,7 @@ OMNIAGENT_REPORT_SIGNING_KEY_ID=
 - `/api/evaluations` governed regression suite start/list endpoint with case safety metadata, safe default selection, and production mutation gating
 - `/api/evaluations/:id` evaluation run detail endpoint with case evidence, governance metadata, override evidence, and correlated runtime events
 - `/api/evaluations/:id/report` signed persistent evaluation report snapshot endpoint with JSON audit bundle downloads
+- `/api/evaluations/:id/report/verify` signed evaluation report verifier endpoint for stored reports or submitted JSON audit bundles
 - `/api/security/context` tenant, actor, role, RBAC, and secret-vault policy endpoint
 - `/api/security/audits` RBAC allow/deny audit endpoint
 - `/api/auth/session` current auth/session state endpoint
@@ -144,6 +148,7 @@ OMNIAGENT_REPORT_SIGNING_KEY_ID=
 - Command Center evaluation override operations with separate safe/gated execution lanes, mutation consent, operator reason capture, and override evidence in runtime events
 - Command Center evaluation run drill-down with case-level result inspection, failed/warned/gated filters, governance evidence, override reason, and correlated runtime event details
 - Command Center signed evaluation report snapshots with durable JSON audit bundles, HMAC signatures, and one-click downloads
+- Command Center report verification controls with key status, canonical digest checks, and HMAC validation evidence
 - Operations regression case for approval queue, operations overview, workflow liveness summary, recovery history, and connection catalog readiness
 - Operations regression case for persisted health diagnostics, SLO metrics, incident consistency, and repair ledgers
 - Operations regression case for stale workflow queue recovery, safe requeue/fail reconciliation, bounded drain reporting, cleanup, and registry exposure
@@ -160,6 +165,7 @@ OMNIAGENT_REPORT_SIGNING_KEY_ID=
 - Operations regression case for high-risk SLO quorum, required approver roles, requester separation, signed evidence, and registry exposure
 - Operations regression case for versioned SLO approval policy administration, custom quorum resolution, emergency break-glass application, restore, and registry exposure
 - Operations regression case for persistent signed evaluation report snapshots, downloadable JSON audit bundles, and report signature metadata
+- Operations regression case for evaluation report verification, canonical digest validation, HMAC keyring checks, and signing-key rotation metadata
 - Tenant-aware security controls with viewer/operator/admin/system roles, server-only secret env-var references, redacted audit metadata, and persisted RBAC allow/deny records
 - First-party identity control plane with scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
 

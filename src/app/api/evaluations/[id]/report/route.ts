@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { createEvalReportSnapshot, getLatestEvalReportSnapshot, reportDownloadFilename } from "@/lib/evaluations/reports";
+import {
+  createEvalReportSnapshot,
+  getLatestEvalReportSnapshot,
+  getReportSigningKeyMetadata,
+  reportDownloadFilename,
+} from "@/lib/evaluations/reports";
 import { getEvalReportSnapshot, listEvalReportSnapshots } from "@/lib/evaluations/store";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { SecurityPolicyError } from "@/lib/security/context";
@@ -40,18 +45,22 @@ export async function GET(
         return Response.json(report, {
           headers: {
             "Content-Disposition": `attachment; filename="${reportDownloadFilename(report)}"`,
+            "X-Omni-Report-Digest": report.signature.digest,
+            "X-Omni-Report-Key-Id": report.signature.keyId,
             "X-Omni-Report-Signature": report.signature.signature,
+            "X-Omni-Report-Verifier": report.signature.verifier,
           },
         });
       }
 
-      return Response.json({ report });
+      return Response.json({ report, keyring: getReportSigningKeyMetadata() });
     }
 
     const reports = await listEvalReportSnapshots(id, limit);
     return Response.json({
       reports,
       latest: reports[0],
+      keyring: getReportSigningKeyMetadata(),
     });
   } catch (error) {
     return forbiddenResponse(error);
@@ -120,7 +129,7 @@ export async function POST(
       },
     });
 
-    return Response.json({ report }, { status: 201 });
+    return Response.json({ report, keyring: getReportSigningKeyMetadata() }, { status: 201 });
   } catch (error) {
     if (error instanceof SecurityPolicyError) {
       return forbiddenResponse(error);

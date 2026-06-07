@@ -39,6 +39,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - External connection catalog for MCP/OpenAPI adapter setup across common production apps
 - Evaluation harness with persisted suites, case results, pass/warn/fail status, retrieval checks, workflow lifecycle checks, latency, and cost estimates
 - Signed evaluation report snapshots with persistent JSON audit bundles, HMAC signatures, evidence manifests, and download support
+- Evaluation report verification with canonical digest checks, HMAC keyring validation, rotation-key metadata, and operator-facing verification controls
 - Security controls with tenant-scoped context headers, RBAC roles, server-only secret env-var references, sensitive metadata redaction, and persisted allow/deny audit trails
 - Identity control plane with auth-enabled mode, scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
 
@@ -90,6 +91,7 @@ flowchart TD
   EVAL --> DB
   EVAL --> EREPORT["Signed Report Snapshots"]
   EREPORT --> DB
+  EREPORT --> EVERIFY["Report Verifier / Key Metadata"]
   API --> TRIG["Webhook Trigger Layer"]
   TRIG --> WF
   TRIG --> OQ
@@ -201,3 +203,4 @@ flowchart TD
 36. Evaluation override operations: split Command Center evaluation execution into safe and gated lanes, require admin/system role plus explicit mutation consent and operator reason for gated suites, and attach override evidence to evaluation runtime responses and events. Done.
 37. Evaluation run drill-down: enrich run detail responses with case governance, override evidence, and correlated runtime events, then add Command Center run selection with all/failed/warned/gated case filters and compact case result inspection. Done.
 38. Persistent evaluation report export: persist signed JSON audit bundles for evaluation runs, expose authenticated report list/download APIs, add Command Center create/download controls, and include regression-ready case/event manifests. Done.
+39. Evaluation report verification: add canonical JSON digest validation, HMAC verification against active/rotated/fallback signing keys, authenticated verifier APIs for stored or submitted reports, non-secret keyring metadata, and Command Center verify controls. Done.

@@ -69,6 +69,19 @@ export type EvalRunDetail = {
   results: EvalResultRecord[];
 };
 
+export type EvalReportSigningKeyStatus = "active" | "verify_only" | "fallback" | "local_development";
+export type EvalReportSigningKeySource = "primary_env" | "rotation_env" | "cron_fallback" | "local_development";
+
+export type EvalReportSigningKeyMetadata = {
+  keyId: string;
+  algorithm: "HMAC-SHA256";
+  status: EvalReportSigningKeyStatus;
+  source: EvalReportSigningKeySource;
+  verifier: "omniagent-eval-report-v1";
+  notBefore?: string;
+  notAfter?: string;
+};
+
 export type EvalReportSignature = {
   algorithm: "HMAC-SHA256";
   keyId: string;
@@ -77,6 +90,10 @@ export type EvalReportSignature = {
   canonicalHash: string;
   signedAt: string;
   verifier: "omniagent-eval-report-v1";
+  keyStatus?: EvalReportSigningKeyStatus;
+  keySource?: EvalReportSigningKeySource;
+  keyNotBefore?: string;
+  keyNotAfter?: string;
 };
 
 export type EvalReportSnapshot = {
@@ -89,6 +106,26 @@ export type EvalReportSnapshot = {
   tenantId?: string;
   createdBy?: string;
   createdAt: string;
+};
+
+export type EvalReportVerificationResult = {
+  valid: boolean;
+  reportId?: string;
+  evalRunId?: string;
+  reportVersion?: string;
+  algorithm?: string;
+  verifier?: string;
+  keyId?: string;
+  matchedKeyId?: string;
+  keyStatus?: EvalReportSigningKeyStatus;
+  digestValid: boolean;
+  signatureValid: boolean;
+  canonicalHash?: string;
+  expectedDigest?: string;
+  actualDigest?: string;
+  signedAt?: string;
+  verifiedAt: string;
+  errors: string[];
 };
 
 export type EvalLedger = {

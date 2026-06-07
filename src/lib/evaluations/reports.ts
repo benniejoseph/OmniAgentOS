@@ -1,9 +1,20 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { getEvaluationEvidenceBundle } from "@/lib/evaluations/evidence";
 import { listEvalReportSnapshots, saveEvalReportSnapshot } from "@/lib/evaluations/store";
-import type { EvalReportSignature, EvalReportSnapshot } from "@/lib/evaluations/types";
+import type {
+  EvalReportSignature,
+  EvalReportSigningKeyMetadata,
+  EvalReportSnapshot,
+  EvalReportVerificationResult,
+} from "@/lib/evaluations/types";
 
 const reportVersion = "2026-06-07" as const;
+const reportVerifier = "omniagent-eval-report-v1" as const;
+const reportAlgorithm = "HMAC-SHA256" as const;
+
+type EvalReportSigningKey = EvalReportSigningKeyMetadata & {
+  secret: string;
+};
 
 export async function createEvalReportSnapshot({
   runId,
@@ -107,42 +118,268 @@ export function reportDownloadFilename(report: EvalReportSnapshot) {
   return `omniagent-eval-${report.evalRunId}-${report.id}.json`;
 }
 
+export function getReportSigningKeyMetadata(): EvalReportSigningKeyMetadata[] {
+  return getReportSigningKeys().map((key) => ({
+    keyId: key.keyId,
+    algorithm: key.algorithm,
+    status: key.status,
+    source: key.source,
+    verifier: key.verifier,
+    notBefore: key.notBefore,
+    notAfter: key.notAfter,
+  }));
+}
+
+export function verifyEvalReportSnapshot(candidate: unknown): EvalReportVerificationResult {
+  const verifiedAt = new Date().toISOString();
+  const report = normalizeReportSnapshot(candidate);
+  const errors: string[] = [];
+
+  if (!report) {
+    return {
+      valid: false,
+      digestValid: false,
+      signatureValid: false,
+      verifiedAt,
+      errors: ["Invalid evaluation report snapshot."],
+    };
+  }
+
+  const signature = report.signature;
+  const canonical = canonicalStringify(report.report);
+  const actualDigest = createHash("sha256").update(canonical).digest("base64url");
+  const expectedDigest = signature.digest || signature.canonicalHash;
+  const digestValid = Boolean(expectedDigest && safeCompare(expectedDigest, actualDigest));
+
+  if (signature.algorithm !== reportAlgorithm) {
+    errors.push(`Unsupported signature algorithm: ${signature.algorithm || "unknown"}.`);
+  }
+
+  if (signature.verifier !== reportVerifier) {
+    errors.push(`Unsupported verifier: ${signature.verifier || "unknown"}.`);
+  }
+
+  if (!digestValid) {
+    errors.push("Report digest does not match the canonical report payload.");
+  }
+
+  const candidateKeys = getReportSigningKeys().filter((key) => key.keyId === signature.keyId);
+  if (!candidateKeys.length) {
+    errors.push(`Unknown report signing key: ${signature.keyId || "missing"}.`);
+  }
+
+  const matchedKey = candidateKeys.find((key) =>
+    safeCompare(createHmac("sha256", key.secret).update(canonical).digest("base64url"), signature.signature),
+  );
+  const signatureValid = Boolean(matchedKey);
+
+  if (!signatureValid) {
+    errors.push("Report HMAC signature could not be verified with the configured keyring.");
+  }
+
+  return {
+    valid: digestValid && signatureValid && errors.length === 0,
+    reportId: report.id,
+    evalRunId: report.evalRunId,
+    reportVersion: report.reportVersion,
+    algorithm: signature.algorithm,
+    verifier: signature.verifier,
+    keyId: signature.keyId,
+    matchedKeyId: matchedKey?.keyId,
+    keyStatus: matchedKey?.status,
+    digestValid,
+    signatureValid,
+    canonicalHash: actualDigest,
+    expectedDigest,
+    actualDigest,
+    signedAt: signature.signedAt,
+    verifiedAt,
+    errors,
+  };
+}
+
 function signReport(report: Record<string, unknown>, signedAt: string): EvalReportSignature {
   const canonical = canonicalStringify(report);
   const digest = createHash("sha256").update(canonical).digest("base64url");
-  const { secret, keyId } = getReportSigningKey();
-  const signature = createHmac("sha256", secret).update(canonical).digest("base64url");
+  const key = getActiveReportSigningKey();
+  const signature = createHmac("sha256", key.secret).update(canonical).digest("base64url");
 
   return {
-    algorithm: "HMAC-SHA256",
-    keyId,
+    algorithm: reportAlgorithm,
+    keyId: key.keyId,
     digest,
     signature,
     canonicalHash: digest,
     signedAt,
-    verifier: "omniagent-eval-report-v1",
+    verifier: reportVerifier,
+    keyStatus: key.status,
+    keySource: key.source,
+    keyNotBefore: key.notBefore,
+    keyNotAfter: key.notAfter,
   };
 }
 
-function getReportSigningKey() {
+function getActiveReportSigningKey(): EvalReportSigningKey {
+  const keys = getReportSigningKeys();
+  return keys.find((key) => key.status === "active") || keys[0]!;
+}
+
+function getReportSigningKeys(): EvalReportSigningKey[] {
+  const keys: EvalReportSigningKey[] = [];
+
   if (process.env.OMNIAGENT_REPORT_SIGNING_SECRET) {
-    return {
+    addSigningKey(keys, {
       secret: process.env.OMNIAGENT_REPORT_SIGNING_SECRET,
       keyId: process.env.OMNIAGENT_REPORT_SIGNING_KEY_ID || "omniagent-report-signing-secret",
-    };
+      status: "active",
+      source: "primary_env",
+    });
+  }
+
+  for (const key of readRotationSigningKeys()) {
+    addSigningKey(keys, key);
+  }
+
+  if (!keys.some((key) => key.status === "active")) {
+    const firstRotatedKey = keys.find((key) => key.source === "rotation_env");
+    if (firstRotatedKey) {
+      firstRotatedKey.status = "active";
+    }
   }
 
   if (process.env.CRON_SECRET) {
-    return {
+    addSigningKey(keys, {
       secret: process.env.CRON_SECRET,
       keyId: "cron-secret-fallback",
-    };
+      status: keys.length ? "fallback" : "active",
+      source: "cron_fallback",
+    });
+  }
+
+  if (!keys.length) {
+    addSigningKey(keys, {
+      secret: "omniagent-local-eval-report-signing-secret",
+      keyId: "local-development",
+      status: "local_development",
+      source: "local_development",
+    });
+  }
+
+  return keys;
+}
+
+function addSigningKey(
+  keys: EvalReportSigningKey[],
+  key: Omit<EvalReportSigningKey, "algorithm" | "verifier">,
+) {
+  const keyId = key.keyId.trim();
+  const secret = key.secret.trim();
+  if (!keyId || !secret || keys.some((item) => item.keyId === keyId)) {
+    return;
+  }
+
+  keys.push({
+    ...key,
+    keyId,
+    secret,
+    algorithm: reportAlgorithm,
+    verifier: reportVerifier,
+  });
+}
+
+function readRotationSigningKeys(): Array<Omit<EvalReportSigningKey, "algorithm" | "verifier">> {
+  const raw = process.env.OMNIAGENT_REPORT_SIGNING_KEYS?.trim();
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const entries = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === "object"
+        ? Object.entries(parsed as Record<string, unknown>).map(([keyId, value]) =>
+            value && typeof value === "object" && !Array.isArray(value)
+              ? { keyId, ...(value as Record<string, unknown>) }
+              : { keyId, secret: value }
+          )
+        : [];
+
+    return entries
+      .map((entry) => readRotationSigningKey(entry))
+      .filter((entry): entry is Omit<EvalReportSigningKey, "algorithm" | "verifier"> => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+function readRotationSigningKey(value: unknown): Omit<EvalReportSigningKey, "algorithm" | "verifier"> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const keyId = typeof record.keyId === "string" ? record.keyId : "";
+  const secret = typeof record.secret === "string" ? record.secret : "";
+  if (!keyId || !secret) {
+    return null;
   }
 
   return {
-    secret: "omniagent-local-eval-report-signing-secret",
-    keyId: "local-development",
+    keyId,
+    secret,
+    status: record.status === "active" ? "active" : "verify_only",
+    source: "rotation_env",
+    notBefore: typeof record.notBefore === "string" ? record.notBefore : undefined,
+    notAfter: typeof record.notAfter === "string" ? record.notAfter : undefined,
   };
+}
+
+function normalizeReportSnapshot(value: unknown): EvalReportSnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const signature = readRecord(record.signature) as EvalReportSignature | undefined;
+  const report = readRecord(record.report);
+
+  if (!signature || !report) {
+    return null;
+  }
+
+  return {
+    id: typeof record.id === "string" ? record.id : "submitted-report",
+    evalRunId: typeof record.evalRunId === "string" ? record.evalRunId : readEvalRunId(report),
+    format: record.format === "json_audit_bundle" ? record.format : "json_audit_bundle",
+    reportVersion: record.reportVersion === reportVersion ? record.reportVersion : reportVersion,
+    report,
+    signature,
+    tenantId: typeof record.tenantId === "string" ? record.tenantId : undefined,
+    createdBy: typeof record.createdBy === "string" ? record.createdBy : undefined,
+    createdAt: typeof record.createdAt === "string" ? record.createdAt : new Date(0).toISOString(),
+  };
+}
+
+function readEvalRunId(report: Record<string, unknown>) {
+  const run = readRecord(report.run);
+  return typeof run?.id === "string" ? run.id : "unknown";
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function safeCompare(left: string | undefined, right: string | undefined) {
+  if (!left || !right) {
+    return false;
+  }
+
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function canonicalStringify(value: unknown): string {
