@@ -334,15 +334,13 @@ export async function listObservabilitySloApprovalPolicyVersions({
       FROM omni_observability_slo_approval_policy_versions
       WHERE policy_id = ${SLO_APPROVAL_POLICY_ID}
       ORDER BY version DESC, created_at DESC
-      LIMIT ${cappedLimit}
+      LIMIT ${Math.max(cappedLimit, 100)}
     `;
-    return rows.map(sloApprovalPolicyVersionFromRow);
+    return dedupeSloApprovalPolicyVersions(rows.map(sloApprovalPolicyVersionFromRow)).slice(0, cappedLimit);
   }
 
   const ledger = await readSloApprovalPolicyLedger();
-  return ledger.versions
-    .map(normalizeSloApprovalPolicyVersion)
-    .sort((left, right) => right.version - left.version || Date.parse(right.createdAt) - Date.parse(left.createdAt))
+  return dedupeSloApprovalPolicyVersions(ledger.versions.map(normalizeSloApprovalPolicyVersion))
     .slice(0, cappedLimit);
 }
 
@@ -1219,7 +1217,7 @@ function createSloApprovalPolicyVersion(
 ): ObservabilitySloApprovalPolicyVersion {
   const createdAt = policy.updatedAt || new Date().toISOString();
   const versionCore = {
-    id: `sloapprpolver_${policy.version}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    id: `sloapprpolver_${policy.id}_${policy.version}`,
     policyId: policy.id,
     version: policy.version,
     policy,
@@ -1253,6 +1251,22 @@ function normalizeSloApprovalPolicyVersion(value: unknown): ObservabilitySloAppr
       ? String(raw.evidenceHash || raw.evidence_hash)
       : hashValue(record),
   };
+}
+
+function dedupeSloApprovalPolicyVersions(
+  versions: ObservabilitySloApprovalPolicyVersion[],
+): ObservabilitySloApprovalPolicyVersion[] {
+  const seen = new Set<string>();
+  return versions
+    .sort((left, right) => right.version - left.version || Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    .filter((version) => {
+      const key = `${version.policyId}:${version.version}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
 }
 
 function normalizePolicy(policy: ObservabilitySloPolicy): ObservabilitySloPolicy {
