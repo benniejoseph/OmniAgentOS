@@ -194,3 +194,4 @@ flowchart TD
 32. Workflow health semantics: separate live workflow liveness risk from recovered terminal failure history, resolve stale recovery incidents cleanly, and add pure regression coverage. Done.
 33. Command Center liveness semantics: expose live workflow risk, recent unhandled failures, recovered failures, and historical terminal failures as distinct operations counters with regression coverage. Done.
 34. Recovery history details: expose workflow recovery event history through operations overview and render operator-facing Command Center rows with disposition, stale age, attempt counts, actor, reason, and affected queue jobs. Done.
+35. Production evaluation governance: classify eval cases by read-only/synthetic/mutation safety mode, default production runs to safe cases, require admin override reasons for mutation-capable cases, expose Command Center risk labels, and add governance regression coverage. Done.

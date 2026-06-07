@@ -85,7 +85,7 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - `/api/workflows/tick` lease queued workflow jobs and scheduled alert deliveries for cron or operator control
 - `/api/triggers` webhook workflow trigger management and audit endpoint
 - `/api/triggers/:id/dispatch` signed webhook dispatch endpoint that creates and enqueues workflow runs
-- `/api/evaluations` regression suite start/list endpoint
+- `/api/evaluations` governed regression suite start/list endpoint with case safety metadata, safe default selection, and production mutation gating
 - `/api/evaluations/:id` evaluation run detail endpoint
 - `/api/security/context` tenant, actor, role, RBAC, and secret-vault policy endpoint
 - `/api/security/audits` RBAC allow/deny audit endpoint
@@ -132,10 +132,12 @@ OMNIAGENT_ALERT_EMAIL_FROM=
 - Vercel Cron integration for secured production workflow queue ticks, observability SLO monitoring, and scheduled alert dispatch with `CRON_SECRET`
 - Durable observability ledger for workflow ticks, alert actions, diagnostics, evaluations, route failures, and correlation IDs
 - Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
+- Evaluation governance with read-only, synthetic, and mutation-allowed safety modes, production admin override requirements, cleanup policy metadata, and Command Center risk labels
 - Operations regression case for approval queue, operations overview, workflow liveness summary, recovery history, and connection catalog readiness
 - Operations regression case for persisted health diagnostics, SLO metrics, incident consistency, and repair ledgers
 - Operations regression case for stale workflow queue recovery, safe requeue/fail reconciliation, bounded drain reporting, cleanup, and registry exposure
 - Operations regression case for workflow health liveness semantics and recovered failure history
+- Operations regression case for production evaluation governance, safe-suite filtering, mutation blocking, and admin override policy
 - Operations regression case for incident sync, alert routing metadata, acknowledgement actions, and playbook execution
 - Operations regression case for alert delivery queueing, dispatch lifecycle, delivery policies, target readiness, and signed webhook support
 - Operations regression case for secured scheduled alert dispatch metadata, queue/dispatch limits, and delivery progress

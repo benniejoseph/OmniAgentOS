@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { defaultEvalCases, runEvaluationSuite } from "@/lib/evaluations/runner";
+import {
+  defaultEvalCases,
+  defaultEvaluationMaxSafetyMode,
+  evaluateEvaluationGovernance,
+  selectEvaluationCases,
+  summarizeEvaluationGovernance,
+  runEvaluationSuite,
+} from "@/lib/evaluations/runner";
 import { getEvalStats, listEvalRuns } from "@/lib/evaluations/store";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { SecurityPolicyError } from "@/lib/security/context";
@@ -10,6 +17,9 @@ export const runtime = "nodejs";
 const evalRunSchema = z.object({
   suite: z.string().min(1).max(80).optional(),
   caseIds: z.array(z.string().min(1)).optional(),
+  maxSafetyMode: z.enum(["read_only", "synthetic", "mutation_allowed"]).optional(),
+  allowMutation: z.boolean().optional(),
+  reason: z.string().min(1).max(500).optional(),
 });
 
 export async function GET(request: Request) {
@@ -17,6 +27,10 @@ export async function GET(request: Request) {
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
   return Response.json({
     cases: defaultEvalCases,
+    governance: summarizeEvaluationGovernance(defaultEvalCases),
+    defaults: {
+      maxSafetyMode: defaultEvaluationMaxSafetyMode(),
+    },
     runs: await listEvalRuns(limit),
     stats: await getEvalStats(),
   });
@@ -42,11 +56,71 @@ export async function POST(request: Request) {
       resourceType: "evaluation",
       metadata: parsed.data,
     });
+    const maxSafetyMode = parsed.data.maxSafetyMode ??
+      (parsed.data.caseIds?.length ? undefined : defaultEvaluationMaxSafetyMode());
+    const selection = selectEvaluationCases({
+      caseIds: parsed.data.caseIds,
+      maxSafetyMode,
+    });
+
+    if (selection.unknownCaseIds.length) {
+      return Response.json(
+        {
+          error: "Unknown evaluation case",
+          unknownCaseIds: selection.unknownCaseIds,
+        },
+        { status: 400 },
+      );
+    }
+
+    const governance = evaluateEvaluationGovernance({
+      cases: selection.cases,
+      role: context.role,
+      allowMutation: parsed.data.allowMutation,
+      reason: parsed.data.reason,
+    });
+
+    if (!governance.allowed) {
+      await recordRuntimeEventSafely({
+        level: "warn",
+        category: "evaluation",
+        action: "evaluation.governance_blocked",
+        route: "/api/evaluations",
+        method: "POST",
+        statusCode: 403,
+        durationMs: Date.now() - startedAt,
+        requestId: telemetry.requestId,
+        correlationId: telemetry.correlationId,
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        resourceType: "evaluation",
+        message: "Evaluation run blocked by governance policy.",
+        metadata: {
+          suite: parsed.data.suite || "core",
+          caseIds: selection.cases.map((evalCase) => evalCase.id),
+          violations: governance.violations,
+          summary: governance.summary,
+        },
+      });
+      return Response.json(
+        {
+          error: "Evaluation governance blocked run",
+          violations: governance.violations,
+          governance: governance.summary,
+        },
+        { status: 403 },
+      );
+    }
+
     const detail = await runEvaluationSuite({
       suite: parsed.data.suite || "core",
-      caseIds: parsed.data.caseIds,
+      caseIds: selection.cases.map((evalCase) => evalCase.id),
     });
-    const status = detail?.run.status === "failed" ? 202 : 201;
+    if (!detail) {
+      throw new Error("Evaluation run detail unavailable.");
+    }
+
+    const status = detail.run.status === "failed" ? 202 : 201;
     await recordRuntimeEventSafely({
       category: "evaluation",
       action: "evaluation.run",
@@ -59,19 +133,22 @@ export async function POST(request: Request) {
       tenantId: context.tenantId,
       actorId: context.actorId,
       resourceType: "evaluation",
-      resourceId: detail?.run.id,
+      resourceId: detail.run.id,
       message: "Evaluation suite completed.",
       metadata: {
-        suite: detail?.run.suite,
-        status: detail?.run.status,
-        total: detail?.run.summary.total,
-        passed: detail?.run.summary.passed,
-        failed: detail?.run.summary.failed,
-        warnings: detail?.run.summary.warnings,
-        caseIds: parsed.data.caseIds || [],
+        suite: detail.run.suite,
+        status: detail.run.status,
+        total: detail.run.summary.total,
+        passed: detail.run.summary.passed,
+        failed: detail.run.summary.failed,
+        warnings: detail.run.summary.warnings,
+        caseIds: selection.cases.map((evalCase) => evalCase.id),
+        governance: governance.summary,
+        maxSafetyMode,
+        allowMutation: Boolean(parsed.data.allowMutation),
       },
     });
-    return Response.json(detail, { status });
+    return Response.json({ ...detail, governance: governance.summary }, { status });
   } catch (error) {
     if (!(error instanceof SecurityPolicyError)) {
       await recordRuntimeEventSafely({

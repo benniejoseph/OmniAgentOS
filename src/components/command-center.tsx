@@ -756,6 +756,21 @@ type WorkflowsResponse = {
 };
 
 type EvalResultStatus = "pass" | "fail" | "warn";
+type EvalSafetyMode = "read_only" | "synthetic" | "mutation_allowed";
+type EvalCleanupPolicy = "none" | "self_cleaning" | "audit_retained" | "manual_review";
+
+type EvalCaseGovernance = {
+  safetyMode: EvalSafetyMode;
+  riskLevel: 0 | 1 | 2 | 3;
+  writesToDatabase: boolean;
+  cleanup: EvalCleanupPolicy;
+  production: {
+    allowedByDefault: boolean;
+    requiresAdmin: boolean;
+    requiresMutationApproval: boolean;
+  };
+  notes: string[];
+};
 
 type EvalCaseDefinition = {
   id: string;
@@ -764,6 +779,7 @@ type EvalCaseDefinition = {
   type: "system" | "retrieval" | "tool" | "workflow" | "security" | "operations";
   input: Record<string, unknown>;
   expected: Record<string, unknown>;
+  governance: EvalCaseGovernance;
 };
 
 type EvalRunRecord = {
@@ -808,8 +824,22 @@ type EvalStats = {
   estimatedCostUsd: number;
 };
 
+type EvalGovernanceSummary = {
+  production: boolean;
+  totalCases: number;
+  selectedCaseIds: string[];
+  bySafetyMode: Record<EvalSafetyMode, number>;
+  mutatingCases: number;
+  maxRiskLevel: number;
+  requiresMutationApproval: boolean;
+};
+
 type EvaluationsResponse = {
   cases: EvalCaseDefinition[];
+  governance: EvalGovernanceSummary;
+  defaults: {
+    maxSafetyMode: EvalSafetyMode;
+  };
   runs: EvalRunRecord[];
   stats: EvalStats;
 };
@@ -817,6 +847,7 @@ type EvaluationsResponse = {
 type EvalRunDetail = {
   run: EvalRunRecord;
   results: EvalResultRecord[];
+  governance?: EvalGovernanceSummary;
 };
 
 type ObservabilityLevel = "info" | "warn" | "error";
@@ -1432,6 +1463,8 @@ export function CommandCenter() {
   const recoveredWorkflowFailures = operationSummary?.recoveredWorkflowFailures ?? 0;
   const connectionTemplates = connectionCatalog?.connectors || [];
   const evaluationStats = evaluationState?.stats || capabilities?.evaluations;
+  const evaluationGovernance = evaluationState?.governance;
+  const evaluationDefaultSafetyMode = evaluationState?.defaults.maxSafetyMode || "synthetic";
   const latestEvaluations = evaluationState?.runs.slice(0, 5) || (capabilities?.evaluations.latest ? [capabilities.evaluations.latest] : []);
   const latestEvaluationCases = evaluationState?.cases.slice(0, 4) || [];
   const observabilityStats = observabilityState?.stats || capabilities?.observability;
@@ -2272,7 +2305,10 @@ export function CommandCenter() {
       const response = await fetch("/api/evaluations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ suite: "core" }),
+        body: JSON.stringify({
+          suite: "command-center-safe",
+          maxSafetyMode: evaluationDefaultSafetyMode,
+        }),
       });
       const data = (await response.json()) as EvalRunDetail;
       setEvaluationResult(formatToolResult(data));
@@ -3277,6 +3313,16 @@ export function CommandCenter() {
                 <MiniStat label="Latency" value={`${evaluationStats?.averageLatencyMs ?? 0}ms`} />
                 <MiniStat label="Cost" value={`$${(evaluationStats?.estimatedCostUsd ?? 0).toFixed(4)}`} />
               </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Default" value={evaluationDefaultSafetyMode.replace("_", " ")} />
+                <MiniStat label="Mutating" value={`${evaluationGovernance?.mutatingCases ?? 0}`} />
+                <MiniStat label="Risk" value={`R${evaluationGovernance?.maxRiskLevel ?? 0}`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Read" value={`${evaluationGovernance?.bySafetyMode.read_only ?? 0}`} />
+                <MiniStat label="Synthetic" value={`${evaluationGovernance?.bySafetyMode.synthetic ?? 0}`} />
+                <MiniStat label="Gated" value={`${evaluationGovernance?.bySafetyMode.mutation_allowed ?? 0}`} />
+              </div>
               <div className="flex flex-col gap-3">
                 <button
                   type="button"
@@ -3284,7 +3330,7 @@ export function CommandCenter() {
                   className="flex h-10 items-center justify-center gap-2 rounded-md border border-primary/60 text-sm font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
                 >
                   <Play size={15} />
-                  Run suite
+                  Run safe suite
                 </button>
                 {evaluationResult ? (
                   <pre className="max-h-48 overflow-auto rounded-md border border-line bg-background/70 p-3 font-mono text-[11px] leading-5 text-muted">
@@ -4729,13 +4775,20 @@ function EvaluationCaseRow({ evalCase }: { evalCase: EvalCaseDefinition }) {
   return (
     <div className="rounded-md border border-line bg-background/54 p-3">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="rounded bg-primary/16 px-2 py-1 font-mono text-[11px] text-primary">
-          {evalCase.type}
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", evalSafetyTone(evalCase.governance.safetyMode))}>
+          {evalCase.governance.safetyMode}
         </span>
-        <span className="font-mono text-[11px] text-muted">{evalCase.id}</span>
+        <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", riskTone(evalCase.governance.riskLevel))}>
+          R{evalCase.governance.riskLevel}
+        </span>
       </div>
       <p className="line-clamp-1 text-sm font-medium leading-5">{evalCase.name}</p>
       <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">{evalCase.description}</p>
+      <div className="mt-3 flex min-w-0 items-center justify-between gap-3 font-mono text-[11px] text-muted">
+        <span className="truncate">{evalCase.type}</span>
+        <span>{evalCase.governance.cleanup}</span>
+        <span>{evalCase.governance.writesToDatabase ? "writes" : "read"}</span>
+      </div>
     </div>
   );
 }
@@ -4782,6 +4835,18 @@ function evaluationRunTone(status: EvalRunRecord["status"]) {
   }
 
   if (status === "failed") {
+    return "bg-danger/14 text-danger";
+  }
+
+  return "bg-accent/14 text-accent";
+}
+
+function evalSafetyTone(mode: EvalSafetyMode) {
+  if (mode === "read_only") {
+    return "bg-primary/16 text-primary";
+  }
+
+  if (mode === "mutation_allowed") {
     return "bg-danger/14 text-danger";
   }
 

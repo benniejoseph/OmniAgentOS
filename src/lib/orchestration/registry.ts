@@ -192,7 +192,13 @@ export const tools: Capability[] = [
   {
     id: "eval.harness",
     name: "Evaluation Harness",
-    description: "Run regression suites for readiness, retrieval, governed tools, workflows, latency, and cost.",
+    description: "Run governed regression suites for readiness, retrieval, tools, workflows, latency, and cost.",
+    status: "active",
+  },
+  {
+    id: "ops.eval_governance",
+    name: "Evaluation Governance",
+    description: "Classifies evaluation safety modes, gates production mutations, and exposes operator override evidence.",
     status: "active",
   },
   {

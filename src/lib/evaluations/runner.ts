@@ -64,11 +64,14 @@ import {
   saveEvalResult,
 } from "@/lib/evaluations/store";
 import type {
+  EvalCaseGovernance,
   EvalCaseDefinition,
   EvalResultRecord,
   EvalResultStatus,
   EvalRunSummary,
+  EvalSafetyMode,
 } from "@/lib/evaluations/types";
+import type { SecurityRole } from "@/lib/security/types";
 import type { WorkflowRunRecord } from "@/lib/workflows/types";
 
 type CaseResult = {
@@ -78,7 +81,31 @@ type CaseResult = {
   estimatedCostUsd?: number;
 };
 
-export const defaultEvalCases: EvalCaseDefinition[] = [
+type RawEvalCaseDefinition = Omit<EvalCaseDefinition, "governance">;
+
+export type EvalGovernanceSummary = {
+  production: boolean;
+  totalCases: number;
+  selectedCaseIds: string[];
+  bySafetyMode: Record<EvalSafetyMode, number>;
+  mutatingCases: number;
+  maxRiskLevel: number;
+  requiresMutationApproval: boolean;
+};
+
+export type EvalGovernanceDecision = {
+  allowed: boolean;
+  violations: string[];
+  summary: EvalGovernanceSummary;
+};
+
+export const evalSafetyOrder: Record<EvalSafetyMode, number> = {
+  read_only: 0,
+  synthetic: 1,
+  mutation_allowed: 2,
+};
+
+const rawEvalCases: RawEvalCaseDefinition[] = [
   {
     id: "system.readiness",
     name: "System readiness",
@@ -304,6 +331,20 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
     },
   },
   {
+    id: "operations.eval_governance",
+    name: "Evaluation governance",
+    description: "Validates production evaluation policy metadata, safe-suite filtering, mutation gating, admin override requirements, and registry exposure.",
+    type: "operations",
+    input: {},
+    expected: {
+      metadataComplete: true,
+      safeSuiteExcludesMutations: true,
+      productionMutationBlocked: true,
+      adminOverrideAllowed: true,
+      registryTool: "ops.eval_governance",
+    },
+  },
+  {
     id: "operations.incident_management",
     name: "Incident management",
     description: "Validates incident lifecycle sync, alert routing metadata, acknowledgement actions, and remediation playbook availability.",
@@ -470,6 +511,213 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
   },
 ];
 
+const evalGovernanceById: Record<string, EvalCaseGovernance> = {
+  "system.readiness": evalGovernance("read_only", 0, false, "none", [
+    "Reads capability registry and environment configuration only.",
+  ]),
+  "retrieval.context_quality": evalGovernance("read_only", 0, false, "none", [
+    "Runs retrieval checks without creating operational records.",
+  ]),
+  "retrieval.context_engine": evalGovernance("synthetic", 1, true, "audit_retained", [
+    "Persists retrieval trace evidence for auditability.",
+  ]),
+  "memory.graph_engine": evalGovernance("mutation_allowed", 2, true, "audit_retained", [
+    "Seeds evaluation memory and rebuilds graph memory artifacts.",
+  ]),
+  "tool.policy_dry_run": evalGovernance("synthetic", 1, true, "audit_retained", [
+    "Creates dry-run tool audit evidence only.",
+  ]),
+  "workflow.lifecycle": evalGovernance("mutation_allowed", 2, true, "audit_retained", [
+    "Creates and ticks durable workflow records.",
+  ]),
+  "workflow.dynamic_planner": evalGovernance("mutation_allowed", 2, true, "audit_retained", [
+    "Creates durable workflow and planner records.",
+  ]),
+  "workflow.plan_executor": evalGovernance("mutation_allowed", 2, true, "audit_retained", [
+    "Executes persisted plan-node ledgers and governed tool decisions.",
+  ]),
+  "workflow.webhook_triggers": evalGovernance("mutation_allowed", 2, true, "audit_retained", [
+    "Creates trigger, event, workflow, and queue records.",
+  ]),
+  "security.rbac_controls": evalGovernance("read_only", 0, false, "none", [
+    "Pure RBAC and redaction checks.",
+  ]),
+  "auth.identity_controls": evalGovernance("read_only", 0, false, "none", [
+    "Pure password hash and RBAC checks.",
+  ]),
+  "operations.approval_center": evalGovernance("read_only", 0, false, "none", [
+    "Reads operations ledgers and catalog readiness.",
+  ]),
+  "operations.self_healing": evalGovernance("mutation_allowed", 2, true, "audit_retained", [
+    "Runs repair diagnostics and may reconcile queue/workflow state.",
+  ]),
+  "operations.queue_recovery": evalGovernance("mutation_allowed", 3, true, "self_cleaning", [
+    "Creates stale workflow fixtures, requeues jobs, and fails exhausted fixtures.",
+  ]),
+  "operations.health_semantics": evalGovernance("synthetic", 0, false, "none", [
+    "Uses synthetic in-memory workflow health fixtures.",
+  ]),
+  "operations.eval_governance": evalGovernance("synthetic", 0, false, "none", [
+    "Pure governance policy regression using in-memory decisions.",
+  ]),
+  "operations.incident_management": evalGovernance("mutation_allowed", 2, true, "audit_retained", [
+    "Runs diagnostics, incident acknowledgement, and playbook paths.",
+  ]),
+  "operations.alert_delivery": evalGovernance("mutation_allowed", 2, true, "audit_retained", [
+    "Queues or dispatches incident alert delivery records.",
+  ]),
+  "operations.alert_scheduler": evalGovernance("mutation_allowed", 2, true, "audit_retained", [
+    "Exercises scheduled alert queue and dispatch paths.",
+  ]),
+  "operations.alert_target_health": evalGovernance("mutation_allowed", 1, true, "audit_retained", [
+    "May retry failed alert delivery records.",
+  ]),
+  "operations.observability_console": evalGovernance("synthetic", 1, true, "audit_retained", [
+    "Writes a low-risk runtime event marker.",
+  ]),
+  "operations.slo_alerting": evalGovernance("mutation_allowed", 2, true, "self_cleaning", [
+    "Creates temporary SLO policy and incident evidence, then resolves evaluation incident.",
+  ]),
+  "operations.slo_policy_management": evalGovernance("mutation_allowed", 2, true, "self_cleaning", [
+    "Creates temporary SLO policy configuration and deletes it.",
+  ]),
+  "operations.slo_policy_change_control": evalGovernance("mutation_allowed", 3, true, "self_cleaning", [
+    "Creates, approves, applies, rolls back, and cleans up governed SLO changes.",
+  ]),
+  "operations.slo_multi_party_approval": evalGovernance("mutation_allowed", 3, true, "self_cleaning", [
+    "Exercises high-risk quorum approval records and cleans up temporary policy.",
+  ]),
+  "operations.slo_approval_policy_admin": evalGovernance("mutation_allowed", 3, true, "manual_review", [
+    "Temporarily changes global SLO approval policy and restores it.",
+  ]),
+};
+
+export const defaultEvalCases: EvalCaseDefinition[] = rawEvalCases.map((evalCase) => ({
+  ...evalCase,
+  governance: evalGovernanceById[evalCase.id] || evalGovernance("synthetic", 1, true, "manual_review", [
+    "Fallback governance applied; classify this case explicitly before production use.",
+  ]),
+}));
+
+export function selectEvaluationCases({
+  caseIds,
+  maxSafetyMode,
+}: {
+  caseIds?: string[];
+  maxSafetyMode?: EvalSafetyMode;
+}) {
+  const knownIds = new Set(defaultEvalCases.map((evalCase) => evalCase.id));
+  const unknownCaseIds = (caseIds || []).filter((caseId) => !knownIds.has(caseId));
+  const selectedIds = new Set(caseIds || []);
+  const maxSafetyRank = maxSafetyMode ? evalSafetyOrder[maxSafetyMode] : undefined;
+  const cases = defaultEvalCases.filter((evalCase) => {
+    if (selectedIds.size && !selectedIds.has(evalCase.id)) {
+      return false;
+    }
+    if (maxSafetyRank !== undefined && evalSafetyOrder[evalCase.governance.safetyMode] > maxSafetyRank) {
+      return false;
+    }
+    return true;
+  });
+
+  return { cases, unknownCaseIds };
+}
+
+export function summarizeEvaluationGovernance(cases: EvalCaseDefinition[], production = isProductionRuntime()): EvalGovernanceSummary {
+  const bySafetyMode: Record<EvalSafetyMode, number> = {
+    read_only: 0,
+    synthetic: 0,
+    mutation_allowed: 0,
+  };
+  for (const evalCase of cases) {
+    bySafetyMode[evalCase.governance.safetyMode] += 1;
+  }
+  const mutatingCases = cases.filter((evalCase) => evalCase.governance.writesToDatabase).length;
+
+  return {
+    production,
+    totalCases: cases.length,
+    selectedCaseIds: cases.map((evalCase) => evalCase.id),
+    bySafetyMode,
+    mutatingCases,
+    maxRiskLevel: cases.reduce((max, evalCase) => Math.max(max, evalCase.governance.riskLevel), 0),
+    requiresMutationApproval: cases.some((evalCase) => evalCase.governance.production.requiresMutationApproval),
+  };
+}
+
+export function evaluateEvaluationGovernance({
+  cases,
+  role,
+  allowMutation = false,
+  reason,
+  production = isProductionRuntime(),
+}: {
+  cases: EvalCaseDefinition[];
+  role: SecurityRole;
+  allowMutation?: boolean;
+  reason?: string;
+  production?: boolean;
+}): EvalGovernanceDecision {
+  const summary = summarizeEvaluationGovernance(cases, production);
+  const violations: string[] = [];
+  const mutationCases = cases.filter((evalCase) =>
+    evalCase.governance.safetyMode === "mutation_allowed" ||
+    evalCase.governance.production.requiresMutationApproval
+  );
+
+  if (!cases.length) {
+    violations.push("No evaluation cases were selected.");
+  }
+
+  if (production && mutationCases.length) {
+    if (!allowMutation) {
+      violations.push("Production mutation-capable evaluation cases require allowMutation=true.");
+    }
+    if (!["admin", "system"].includes(role)) {
+      violations.push("Production mutation-capable evaluation cases require admin or system role.");
+    }
+    if (!reason || reason.trim().length < 12) {
+      violations.push("Production mutation-capable evaluation cases require an operator reason.");
+    }
+  }
+
+  return {
+    allowed: violations.length === 0,
+    violations,
+    summary,
+  };
+}
+
+export function defaultEvaluationMaxSafetyMode(production = isProductionRuntime()): EvalSafetyMode {
+  return production ? "synthetic" : "mutation_allowed";
+}
+
+export function isProductionRuntime() {
+  return process.env.VERCEL_ENV === "production" || Boolean(process.env.VERCEL);
+}
+
+function evalGovernance(
+  safetyMode: EvalSafetyMode,
+  riskLevel: 0 | 1 | 2 | 3,
+  writesToDatabase: boolean,
+  cleanup: EvalCaseGovernance["cleanup"],
+  notes: string[],
+): EvalCaseGovernance {
+  const mutationAllowed = safetyMode === "mutation_allowed";
+  return {
+    safetyMode,
+    riskLevel,
+    writesToDatabase,
+    cleanup,
+    production: {
+      allowedByDefault: !mutationAllowed,
+      requiresAdmin: mutationAllowed,
+      requiresMutationApproval: mutationAllowed,
+    },
+    notes,
+  };
+}
+
 export async function runEvaluationSuite({
   suite = "core",
   caseIds,
@@ -593,6 +841,10 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
 
   if (evalCase.id === "operations.health_semantics") {
     return evaluateHealthSemantics(evalCase);
+  }
+
+  if (evalCase.id === "operations.eval_governance") {
+    return evaluateEvalGovernance(evalCase);
   }
 
   if (evalCase.id === "operations.incident_management") {
@@ -1438,6 +1690,61 @@ async function evaluateHealthSemantics(evalCase: EvalCaseDefinition): Promise<Ca
       recentUnhandled,
       staleRunnable,
       oldFailure,
+    },
+  };
+}
+
+async function evaluateEvalGovernance(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+  const allCases = defaultEvalCases;
+  const safeSuite = selectEvaluationCases({ maxSafetyMode: "synthetic" }).cases;
+  const mutatingSelection = selectEvaluationCases({ caseIds: ["operations.queue_recovery"] }).cases;
+  const blocked = evaluateEvaluationGovernance({
+    cases: mutatingSelection,
+    role: "operator",
+    production: true,
+  });
+  const allowed = evaluateEvaluationGovernance({
+    cases: mutatingSelection,
+    role: "admin",
+    allowMutation: true,
+    reason: "Production evaluation governance override regression.",
+    production: true,
+  });
+  const registry = getCapabilityRegistry();
+  const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
+  const checks = {
+    metadataComplete: Boolean(evalCase.expected.metadataComplete)
+      ? allCases.every((item) =>
+          item.governance &&
+          typeof item.governance.safetyMode === "string" &&
+          typeof item.governance.riskLevel === "number" &&
+          typeof item.governance.writesToDatabase === "boolean" &&
+          Boolean(item.governance.cleanup)
+        )
+      : true,
+    safeSuiteExcludesMutations: Boolean(evalCase.expected.safeSuiteExcludesMutations)
+      ? safeSuite.length > 0 && safeSuite.every((item) => item.governance.safetyMode !== "mutation_allowed")
+      : true,
+    productionMutationBlocked: Boolean(evalCase.expected.productionMutationBlocked)
+      ? !blocked.allowed && blocked.violations.some((violation) => violation.includes("allowMutation=true"))
+      : true,
+    adminOverrideAllowed: Boolean(evalCase.expected.adminOverrideAllowed)
+      ? allowed.allowed && allowed.summary.mutatingCases >= 1
+      : true,
+    registryToolAvailable: activeToolIds.has(String(evalCase.expected.registryTool || "ops.eval_governance")),
+  };
+  const passed = Object.values(checks).filter(Boolean).length;
+  const total = Object.keys(checks).length;
+
+  return {
+    status: passed === total ? "pass" : passed >= total - 1 ? "warn" : "fail",
+    score: passed / total,
+    output: {
+      checks,
+      allCases: summarizeEvaluationGovernance(allCases, true),
+      safeSuite: summarizeEvaluationGovernance(safeSuite, true),
+      blocked,
+      allowed,
     },
   };
 }
