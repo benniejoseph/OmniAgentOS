@@ -1,5 +1,6 @@
 import { listMcpConnectors } from "@/lib/connectors/store";
 import { listOpenApiConnectors } from "@/lib/connectors/openapi-store";
+import { summarizeWorkflowHealth } from "@/lib/diagnostics/health";
 import {
   getSloPolicyApprovalProgress,
   listObservabilitySloPolicyChanges,
@@ -110,6 +111,8 @@ export async function getOperationsOverview() {
   const connectorErrors =
     mcpConnectors.filter((connector) => connector.status === "error").length +
     openApiConnectors.filter((connector) => connector.status === "error").length;
+  const workflowHealth = summarizeWorkflowHealth(workflowStats, workflowRuns);
+  const liveWorkflowRisks = workflowHealth.staleRunnable + workflowHealth.recentUnhandledFailures;
 
   return {
     approvals,
@@ -117,6 +120,10 @@ export async function getOperationsOverview() {
       pendingApprovals: approvals.stats.total,
       activeWorkflows: workflowStats.active,
       failedWorkflows: workflowStats.byStatus.failed || 0,
+      historicalFailedWorkflows: workflowStats.byStatus.failed || 0,
+      liveWorkflowRisks,
+      recentUnhandledWorkflowFailures: workflowHealth.recentUnhandledFailures,
+      recoveredWorkflowFailures: workflowHealth.recoveredTerminalFailures,
       failedTools: toolStats.byStatus.failed || 0,
       connectorErrors,
       runningRuns: agentRuns.filter((run) => run.status === "running").length,
@@ -125,7 +132,7 @@ export async function getOperationsOverview() {
       failedJobs: operationJobStats.byStatus.failed || 0,
       runnableJobs: operationJobStats.runnable,
       expiredLeases: operationJobStats.expiredLeases,
-      staleWorkflows: recovery.staleWorkflows.length,
+      staleWorkflows: workflowHealth.staleRunnable,
       recoverableWorkflows: recovery.staleWorkflows.filter((workflow) => workflow.reason.includes("retryable")).length,
     },
     recovery,

@@ -244,6 +244,10 @@ type OperationsResponse = {
     pendingApprovals: number;
     activeWorkflows: number;
     failedWorkflows: number;
+    historicalFailedWorkflows?: number;
+    liveWorkflowRisks?: number;
+    recentUnhandledWorkflowFailures?: number;
+    recoveredWorkflowFailures?: number;
     failedTools: number;
     connectorErrors: number;
     runningRuns: number;
@@ -1389,6 +1393,15 @@ export function CommandCenter() {
   const approvalStats = approvalState?.stats || operationState?.approvals.stats;
   const operationSummary = operationState?.summary;
   const operationRecovery = operationState?.recovery;
+  const historicalFailedWorkflows = operationSummary?.historicalFailedWorkflows ??
+    operationSummary?.failedWorkflows ??
+    workflowStats?.byStatus.failed ??
+    0;
+  const liveWorkflowRisks = operationSummary?.liveWorkflowRisks ??
+    ((operationSummary?.staleWorkflows ?? operationRecovery?.staleWorkflows.length ?? 0) +
+      (operationSummary?.recentUnhandledWorkflowFailures ?? 0));
+  const recentUnhandledWorkflowFailures = operationSummary?.recentUnhandledWorkflowFailures ?? 0;
+  const recoveredWorkflowFailures = operationSummary?.recoveredWorkflowFailures ?? 0;
   const connectionTemplates = connectionCatalog?.connectors || [];
   const evaluationStats = evaluationState?.stats || capabilities?.evaluations;
   const latestEvaluations = evaluationState?.runs.slice(0, 5) || (capabilities?.evaluations.latest ? [capabilities.evaluations.latest] : []);
@@ -2923,11 +2936,12 @@ export function CommandCenter() {
               <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
                 <MiniStat label="Approvals" value={`${operationSummary?.pendingApprovals ?? approvalStats?.total ?? 0}`} />
                 <MiniStat label="Active" value={`${operationSummary?.activeWorkflows ?? workflowStats?.active ?? 0}`} />
-                <MiniStat label="Failures" value={`${(operationSummary?.failedWorkflows ?? 0) + (operationSummary?.failedTools ?? 0)}`} />
+                <MiniStat label="Live risk" value={`${liveWorkflowRisks}`} />
               </div>
-              <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Tool fail" value={`${operationSummary?.failedTools ?? 0}`} />
+                <MiniStat label="Hist fail" value={`${historicalFailedWorkflows}`} />
                 <MiniStat label="Connectors" value={`${operationSummary?.connectorErrors ?? 0} errors`} />
-                <MiniStat label="Runs" value={`${operationSummary?.runningRuns ?? 0} running`} />
               </div>
               <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
                 <MiniStat label="Queued" value={`${operationSummary?.queuedJobs ?? queueStats?.byStatus.queued ?? 0}`} />
@@ -2936,8 +2950,13 @@ export function CommandCenter() {
               </div>
               <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
                 <MiniStat label="Stale" value={`${operationSummary?.staleWorkflows ?? operationRecovery?.staleWorkflows.length ?? 0}`} />
+                <MiniStat label="Unhandled" value={`${recentUnhandledWorkflowFailures}`} />
+                <MiniStat label="Recovered" value={`${recoveredWorkflowFailures}`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
                 <MiniStat label="Requeued" value={`${operationRecovery?.requeuedWorkflows ?? 0}`} />
-                <MiniStat label="Failed" value={`${operationRecovery?.failedWorkflows ?? 0}`} />
+                <MiniStat label="Recov fail" value={`${operationRecovery?.failedWorkflows ?? 0}`} />
+                <MiniStat label="Runs" value={`${operationSummary?.runningRuns ?? 0} running`} />
               </div>
               <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
                 <MiniStat label="Health" value={healthStats?.latestStatus || "unknown"} />
@@ -3126,6 +3145,11 @@ export function CommandCenter() {
                 <MiniStat label="Total" value={`${workflowStats?.total ?? 0}`} />
                 <MiniStat label="Active" value={`${workflowStats?.active ?? 0}`} />
                 <MiniStat label="Approval" value={`${workflowStats?.waitingApproval ?? 0}`} />
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Live risk" value={`${liveWorkflowRisks}`} />
+                <MiniStat label="Hist fail" value={`${historicalFailedWorkflows}`} />
+                <MiniStat label="Recovered" value={`${recoveredWorkflowFailures}`} />
               </div>
               <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
                 <MiniStat label="Queue" value={`${queueStats?.byStatus.queued ?? 0}`} />

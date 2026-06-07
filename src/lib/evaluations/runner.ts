@@ -254,6 +254,7 @@ export const defaultEvalCases: EvalCaseDefinition[] = [
       minCatalogTargets: 8,
       operationsSummary: true,
       approvalStats: true,
+      workflowRiskSummary: true,
     },
   },
   {
@@ -578,7 +579,7 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
   }
 
   if (evalCase.id === "operations.approval_center") {
-    return evaluateOperationsCenter();
+    return evaluateOperationsCenter(evalCase);
   }
 
   if (evalCase.id === "operations.self_healing") {
@@ -1145,7 +1146,7 @@ async function evaluateIdentityControls(): Promise<CaseResult> {
   };
 }
 
-async function evaluateOperationsCenter(): Promise<CaseResult> {
+async function evaluateOperationsCenter(evalCase: EvalCaseDefinition): Promise<CaseResult> {
   const [approvals, operations] = await Promise.all([
     getApprovalQueue(10),
     getOperationsOverview(),
@@ -1156,6 +1157,12 @@ async function evaluateOperationsCenter(): Promise<CaseResult> {
     catalogHasOpenApi: connectionCatalog.some((connector) => connector.adapter === "openapi"),
     approvalStatsAvailable: typeof approvals.stats.total === "number",
     operationsSummaryAvailable: typeof operations.summary.pendingApprovals === "number",
+    workflowRiskSummaryAvailable: Boolean(evalCase.expected.workflowRiskSummary)
+      ? typeof operations.summary.liveWorkflowRisks === "number" &&
+        typeof operations.summary.historicalFailedWorkflows === "number" &&
+        typeof operations.summary.recentUnhandledWorkflowFailures === "number" &&
+        typeof operations.summary.recoveredWorkflowFailures === "number"
+      : true,
     latestLedgersAvailable: Array.isArray(operations.latest.toolExecutions) && Array.isArray(operations.latest.workflows),
   };
   const passed = Object.values(checks).filter(Boolean).length;
