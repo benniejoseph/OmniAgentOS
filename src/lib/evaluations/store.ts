@@ -4,6 +4,7 @@ import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type {
   EvalLedger,
+  EvalReportSnapshot,
   EvalResultRecord,
   EvalRunDetail,
   EvalRunRecord,
@@ -164,6 +165,74 @@ export async function getEvalRunDetail(runId: string): Promise<EvalRunDetail | n
   };
 }
 
+export async function saveEvalReportSnapshot(snapshot: Omit<EvalReportSnapshot, "id" | "createdAt">) {
+  const record: EvalReportSnapshot = {
+    ...snapshot,
+    id: randomUUID(),
+    createdAt: new Date().toISOString(),
+  };
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    await getSql()`
+      INSERT INTO omni_eval_reports (
+        id, eval_run_id, format, report_version, report, signature,
+        tenant_id, created_by, created_at
+      )
+      VALUES (
+        ${record.id}, ${record.evalRunId}, ${record.format}, ${record.reportVersion},
+        ${JSON.stringify(record.report)}::jsonb,
+        ${JSON.stringify(record.signature)}::jsonb,
+        ${record.tenantId || null}, ${record.createdBy || null}, ${record.createdAt}
+      )
+    `;
+    return record;
+  }
+
+  await mutateEvalLedger((ledger) => {
+    ledger.reports = [record, ...(ledger.reports || [])];
+    return trimEvalLedger(ledger);
+  });
+  return record;
+}
+
+export async function listEvalReportSnapshots(runId: string, limit = 5) {
+  const boundedLimit = Math.min(Math.max(limit, 1), 25);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_eval_reports
+      WHERE eval_run_id = ${runId}
+      ORDER BY created_at DESC
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map(evalReportFromRow);
+  }
+
+  const ledger = await readEvalLedger();
+  return (ledger.reports || [])
+    .filter((report) => report.evalRunId === runId)
+    .slice(0, boundedLimit);
+}
+
+export async function getEvalReportSnapshot(reportId: string) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_eval_reports
+      WHERE id = ${reportId}
+      LIMIT 1
+    `;
+    return rows[0] ? evalReportFromRow(rows[0]) : null;
+  }
+
+  const ledger = await readEvalLedger();
+  return (ledger.reports || []).find((report) => report.id === reportId) || null;
+}
+
 export async function getEvalStats(): Promise<EvalStats> {
   const runs = await listEvalRuns(100);
   const byStatus = runs.reduce<Record<string, number>>((acc, run) => {
@@ -233,7 +302,12 @@ async function updateEvalRun(
 }
 
 async function readEvalLedger() {
-  return readJsonFile<EvalLedger>(getEvalFile(), { runs: [], results: [] });
+  const ledger = await readJsonFile<EvalLedger>(getEvalFile(), { runs: [], results: [], reports: [] });
+  return {
+    runs: ledger.runs || [],
+    results: ledger.results || [],
+    reports: ledger.reports || [],
+  };
 }
 
 async function mutateEvalLedger(mutator: (ledger: EvalLedger) => EvalLedger) {
@@ -259,6 +333,7 @@ function trimEvalLedger(ledger: EvalLedger): EvalLedger {
   return {
     runs: ledger.runs.slice(0, 100),
     results: ledger.results.filter((result) => runIds.has(result.evalRunId)).slice(-1000),
+    reports: (ledger.reports || []).filter((report) => runIds.has(report.evalRunId)).slice(0, 250),
   };
 }
 
@@ -297,6 +372,20 @@ function evalResultFromRow(row: Record<string, unknown>): EvalResultRecord {
     input: parseObject(row.input) || {},
     output: parseObject(row.output),
     error: row.error ? String(row.error) : undefined,
+    createdAt: normalizeDate(row.created_at),
+  };
+}
+
+function evalReportFromRow(row: Record<string, unknown>): EvalReportSnapshot {
+  return {
+    id: String(row.id),
+    evalRunId: String(row.eval_run_id),
+    format: String(row.format || "json_audit_bundle") as EvalReportSnapshot["format"],
+    reportVersion: String(row.report_version || "2026-06-07") as EvalReportSnapshot["reportVersion"],
+    report: parseObject(row.report) || {},
+    signature: (parseObject(row.signature) || {}) as EvalReportSnapshot["signature"],
+    tenantId: row.tenant_id ? String(row.tenant_id) : undefined,
+    createdBy: row.created_by ? String(row.created_by) : undefined,
     createdAt: normalizeDate(row.created_at),
   };
 }

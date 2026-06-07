@@ -722,6 +722,22 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_eval_results_case_id_idx ON omni_eval_results (case_id)`;
 
       await sql`
+        CREATE TABLE IF NOT EXISTS omni_eval_reports (
+          id TEXT PRIMARY KEY,
+          eval_run_id TEXT NOT NULL REFERENCES omni_eval_runs(id) ON DELETE CASCADE,
+          format TEXT NOT NULL,
+          report_version TEXT NOT NULL,
+          report JSONB NOT NULL DEFAULT '{}',
+          signature JSONB NOT NULL DEFAULT '{}',
+          tenant_id TEXT,
+          created_by TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_eval_reports_run_created_idx ON omni_eval_reports (eval_run_id, created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_eval_reports_created_idx ON omni_eval_reports (created_at DESC)`;
+
+      await sql`
         CREATE TABLE IF NOT EXISTS omni_auth_tenants (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL,

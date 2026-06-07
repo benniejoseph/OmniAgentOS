@@ -69,9 +69,32 @@ export type EvalRunDetail = {
   results: EvalResultRecord[];
 };
 
+export type EvalReportSignature = {
+  algorithm: "HMAC-SHA256";
+  keyId: string;
+  digest: string;
+  signature: string;
+  canonicalHash: string;
+  signedAt: string;
+  verifier: "omniagent-eval-report-v1";
+};
+
+export type EvalReportSnapshot = {
+  id: string;
+  evalRunId: string;
+  format: "json_audit_bundle";
+  reportVersion: "2026-06-07";
+  report: Record<string, unknown>;
+  signature: EvalReportSignature;
+  tenantId?: string;
+  createdBy?: string;
+  createdAt: string;
+};
+
 export type EvalLedger = {
   runs: EvalRunRecord[];
   results: EvalResultRecord[];
+  reports?: EvalReportSnapshot[];
 };
 
 export type EvalStats = {

@@ -38,6 +38,7 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - Observability console with durable runtime events, correlation IDs, SLO summaries, configurable SLO policies, route failure counts, monitor controls, and secret-safe metadata
 - External connection catalog for MCP/OpenAPI adapter setup across common production apps
 - Evaluation harness with persisted suites, case results, pass/warn/fail status, retrieval checks, workflow lifecycle checks, latency, and cost estimates
+- Signed evaluation report snapshots with persistent JSON audit bundles, HMAC signatures, evidence manifests, and download support
 - Security controls with tenant-scoped context headers, RBAC roles, server-only secret env-var references, sensitive metadata redaction, and persisted allow/deny audit trails
 - Identity control plane with auth-enabled mode, scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
 
@@ -87,6 +88,8 @@ flowchart TD
   EVAL --> WPLAN
   EVAL --> RAG
   EVAL --> DB
+  EVAL --> EREPORT["Signed Report Snapshots"]
+  EREPORT --> DB
   API --> TRIG["Webhook Trigger Layer"]
   TRIG --> WF
   TRIG --> OQ
@@ -197,3 +200,4 @@ flowchart TD
 35. Production evaluation governance: classify eval cases by read-only/synthetic/mutation safety mode, default production runs to safe cases, require admin override reasons for mutation-capable cases, expose Command Center risk labels, and add governance regression coverage. Done.
 36. Evaluation override operations: split Command Center evaluation execution into safe and gated lanes, require admin/system role plus explicit mutation consent and operator reason for gated suites, and attach override evidence to evaluation runtime responses and events. Done.
 37. Evaluation run drill-down: enrich run detail responses with case governance, override evidence, and correlated runtime events, then add Command Center run selection with all/failed/warned/gated case filters and compact case result inspection. Done.
+38. Persistent evaluation report export: persist signed JSON audit bundles for evaluation runs, expose authenticated report list/download APIs, add Command Center create/download controls, and include regression-ready case/event manifests. Done.

@@ -8,6 +8,7 @@ import {
   Cable,
   CheckCircle2,
   Database,
+  Download,
   FileText,
   GitBranch,
   Globe2,
@@ -853,6 +854,35 @@ type EvalRunDetail = {
   events?: ObservabilityEventRecord[];
 };
 
+type EvalReportSignature = {
+  algorithm: "HMAC-SHA256";
+  keyId: string;
+  digest: string;
+  signature: string;
+  canonicalHash: string;
+  signedAt: string;
+  verifier: "omniagent-eval-report-v1";
+};
+
+type EvalReportSnapshot = {
+  id: string;
+  evalRunId: string;
+  format: "json_audit_bundle";
+  reportVersion: "2026-06-07";
+  report: Record<string, unknown>;
+  signature: EvalReportSignature;
+  tenantId?: string;
+  createdBy?: string;
+  createdAt: string;
+};
+
+type EvalReportResponse = {
+  reports?: EvalReportSnapshot[];
+  latest?: EvalReportSnapshot;
+  report?: EvalReportSnapshot;
+  error?: string;
+};
+
 type EvalOverrideEvidence = {
   requested: boolean;
   allowMutation: boolean;
@@ -1417,6 +1447,8 @@ export function CommandCenter() {
   const [selectedEvaluationRunId, setSelectedEvaluationRunId] = useState("");
   const [selectedEvaluationDetail, setSelectedEvaluationDetail] = useState<EvalRunDetail | null>(null);
   const [evaluationDetailFilter, setEvaluationDetailFilter] = useState<EvalDetailFilter>("all");
+  const [evaluationReportsByRun, setEvaluationReportsByRun] = useState<Record<string, EvalReportSnapshot[]>>({});
+  const [evaluationReportResult, setEvaluationReportResult] = useState("");
   const [evaluationAllowMutation, setEvaluationAllowMutation] = useState(false);
   const [evaluationOverrideReason, setEvaluationOverrideReason] = useState("");
   const [observabilityState, setObservabilityState] = useState<ObservabilityResponse | null>(null);
@@ -1549,6 +1581,7 @@ export function CommandCenter() {
 
     return true;
   });
+  const selectedEvaluationReports = selectedEvaluationRunId ? evaluationReportsByRun[selectedEvaluationRunId] || [] : [];
   const latestEvaluations = evaluationState?.runs.slice(0, 5) || (capabilities?.evaluations.latest ? [capabilities.evaluations.latest] : []);
   const latestEvaluationCases = evaluationCases.slice(0, 3);
   const observabilityStats = observabilityState?.stats || capabilities?.observability;
@@ -2399,6 +2432,7 @@ export function CommandCenter() {
 
       setSelectedEvaluationDetail(data);
       setEvaluationDetailFilter("all");
+      await loadEvaluationReports(runId, true);
       if (!quiet) {
         setStatus("evaluation detail loaded");
       }
@@ -2406,6 +2440,118 @@ export function CommandCenter() {
       if (!quiet) {
         setStatus(error instanceof Error ? error.message : "evaluation detail failed");
       }
+    }
+  }
+
+  async function loadEvaluationReports(runId: string, quiet = true) {
+    try {
+      const response = await fetch(`/api/evaluations/${runId}/report`);
+      const data = (await response.json()) as EvalReportResponse;
+      if (!response.ok) {
+        if (!quiet) {
+          setEvaluationReportResult(formatToolResult(data));
+        }
+        return;
+      }
+
+      const reports = data.reports || (data.latest ? [data.latest] : []);
+      setEvaluationReportsByRun((current) => ({
+        ...current,
+        [runId]: reports,
+      }));
+    } catch (error) {
+      if (!quiet) {
+        setEvaluationReportResult(error instanceof Error ? error.message : "evaluation reports failed");
+      }
+    }
+  }
+
+  async function createEvaluationReport(runId: string) {
+    if (!runId) {
+      return;
+    }
+
+    setStatus("creating evaluation report");
+    setEvaluationReportResult("");
+
+    try {
+      const response = await fetch(`/api/evaluations/${runId}/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Command Center signed evaluation report snapshot." }),
+      });
+      const data = (await response.json()) as EvalReportResponse;
+      if (!response.ok || !data.report) {
+        setEvaluationReportResult(formatToolResult(data));
+        setStatus(data.error || "evaluation report failed");
+        return;
+      }
+
+      setEvaluationReportsByRun((current) => ({
+        ...current,
+        [runId]: [
+          data.report as EvalReportSnapshot,
+          ...(current[runId] || []).filter((report) => report.id !== data.report?.id),
+        ].slice(0, 5),
+      }));
+      setEvaluationReportResult(formatToolResult({
+        reportId: data.report.id,
+        format: data.report.format,
+        reportVersion: data.report.reportVersion,
+        signature: data.report.signature,
+        createdAt: data.report.createdAt,
+      }));
+      setStatus("evaluation report signed");
+      await loadEvaluationReports(runId, true);
+    } catch (error) {
+      setEvaluationReportResult(error instanceof Error ? error.message : "evaluation report failed");
+      setStatus(error instanceof Error ? error.message : "evaluation report failed");
+    }
+  }
+
+  async function downloadEvaluationReport(runId: string, reportId?: string) {
+    if (!runId) {
+      return;
+    }
+
+    const query = new URLSearchParams({ download: "1" });
+    if (reportId) {
+      query.set("reportId", reportId);
+    }
+
+    setStatus("downloading evaluation report");
+
+    try {
+      const response = await fetch(`/api/evaluations/${runId}/report?${query.toString()}`);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: "evaluation report download failed" })) as { error?: string };
+        setEvaluationReportResult(formatToolResult(error));
+        setStatus(error.error || "evaluation report download failed");
+        return;
+      }
+
+      const blob = await response.blob();
+      const filename = extractDownloadFilename(
+        response.headers.get("Content-Disposition"),
+        `omniagent-eval-${runId}.json`,
+      );
+      const href = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(href), 0);
+
+      setEvaluationReportResult(formatToolResult({
+        downloaded: filename,
+        signature: response.headers.get("X-Omni-Report-Signature") || undefined,
+      }));
+      setStatus("evaluation report downloaded");
+    } catch (error) {
+      setEvaluationReportResult(error instanceof Error ? error.message : "evaluation report download failed");
+      setStatus(error instanceof Error ? error.message : "evaluation report download failed");
     }
   }
 
@@ -3518,7 +3664,11 @@ export function CommandCenter() {
                     detail={selectedEvaluationDetail}
                     caseEvidence={filteredEvaluationCaseEvidence}
                     filter={evaluationDetailFilter}
+                    reports={selectedEvaluationReports}
+                    reportResult={evaluationReportResult}
                     onFilterChange={setEvaluationDetailFilter}
+                    onCreateReport={createEvaluationReport}
+                    onDownloadReport={downloadEvaluationReport}
                   />
                 ) : null}
                 <div className="flex flex-col gap-3">
@@ -4940,17 +5090,26 @@ function EvaluationRunDetailPanel({
   detail,
   caseEvidence,
   filter,
+  reports,
+  reportResult,
   onFilterChange,
+  onCreateReport,
+  onDownloadReport,
 }: {
   detail: EvalRunDetail;
   caseEvidence: EvalCaseEvidence[];
   filter: EvalDetailFilter;
+  reports: EvalReportSnapshot[];
+  reportResult: string;
   onFilterChange: (filter: EvalDetailFilter) => void;
+  onCreateReport: (runId: string) => void;
+  onDownloadReport: (runId: string, reportId?: string) => void;
 }) {
   const passRate = detail.run.summary.total ? Math.round((detail.run.summary.passed / detail.run.summary.total) * 100) : 0;
   const override = detail.override;
   const governance = detail.governance;
   const event = detail.events?.[0];
+  const latestReport = reports[0];
 
   return (
     <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
@@ -4973,6 +5132,47 @@ function EvaluationRunDetailPanel({
         <MiniStat label="Role" value={override?.role || "unknown"} />
         <MiniStat label="Event" value={event?.statusCode ? `${event.statusCode}` : "none"} />
       </div>
+      <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+        <MiniStat label="Reports" value={`${reports.length}`} />
+        <MiniStat label="Key" value={latestReport?.signature.keyId || "none"} />
+        <MiniStat label="Sig" value={latestReport ? latestReport.signature.signature.slice(0, 10) : "none"} />
+      </div>
+      <div className="mb-3 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onCreateReport(detail.run.id)}
+          className="flex h-9 items-center justify-center gap-2 rounded-md border border-primary/60 text-xs font-medium text-primary transition hover:bg-primary hover:text-primary-ink"
+        >
+          <FileText size={14} />
+          Create report
+        </button>
+        <button
+          type="button"
+          disabled={!latestReport}
+          onClick={() => onDownloadReport(detail.run.id, latestReport?.id)}
+          className="flex h-9 items-center justify-center gap-2 rounded-md border border-line text-xs font-medium text-muted transition hover:border-primary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <Download size={14} />
+          Download
+        </button>
+      </div>
+      {latestReport ? (
+        <div className="mb-3 rounded-md border border-line bg-background/70 p-2 font-mono text-[10px] leading-5 text-muted">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <span className="truncate" title={latestReport.id}>{latestReport.id}</span>
+            <span className="shrink-0">{latestReport.reportVersion}</span>
+          </div>
+          <div className="mt-1 flex min-w-0 items-center justify-between gap-3">
+            <span className="truncate" title={latestReport.signature.digest}>{latestReport.signature.digest}</span>
+            <span className="shrink-0">{new Date(latestReport.createdAt).toLocaleTimeString()}</span>
+          </div>
+        </div>
+      ) : null}
+      {reportResult ? (
+        <pre className="mb-3 max-h-36 overflow-auto rounded-md border border-line bg-background/70 p-2 font-mono text-[10px] leading-4 text-muted">
+          {reportResult}
+        </pre>
+      ) : null}
       <div className="mb-3 grid grid-cols-4 gap-1.5">
         {evaluationDetailFilters.map((item) => (
           <button
@@ -5411,6 +5611,15 @@ function formatCompactJson(value: unknown) {
   }
   const formatted = JSON.stringify(value, null, 2) || "";
   return formatted.length > 900 ? `${formatted.slice(0, 900)}\n...` : formatted;
+}
+
+function extractDownloadFilename(contentDisposition: string | null, fallback: string) {
+  if (!contentDisposition) {
+    return fallback;
+  }
+
+  const filenameMatch = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(contentDisposition);
+  return filenameMatch?.[1] ? decodeURIComponent(filenameMatch[1]) : fallback;
 }
 
 async function readEventStream(
