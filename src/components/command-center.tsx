@@ -968,10 +968,14 @@ type ObservabilityEventRecord = {
 
 type ObservabilityStats = {
   total: number;
+  sloEligibleEvents?: number;
+  sloExcludedEvents?: number;
+  syntheticEvents?: number;
   byLevel: Record<string, number>;
   byCategory: Record<string, number>;
   routeFailures: number;
   authFailures?: number;
+  authenticationChallenges?: number;
   policyBlocks?: number;
   connectorFailures?: number;
   averageDurationMs: number;
@@ -3361,17 +3365,35 @@ export function CommandCenter() {
   return (
     <main className="min-h-screen subtle-grid px-4 py-4 text-foreground sm:px-6 lg:px-8">
       <div className="mx-auto flex w-full min-w-0 max-w-7xl flex-col gap-4">
-        <header className="panel flex min-w-0 flex-col gap-4 rounded-lg px-5 py-4 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-4">
+        <header className="panel flex min-w-0 flex-col gap-4 rounded-lg px-4 py-4 sm:px-5 md:flex-row md:items-start md:justify-between">
+          <div className="flex min-w-0 items-center gap-4">
             <div className="flex size-12 items-center justify-center rounded-md bg-primary text-primary-ink">
               <Layers3 size={24} strokeWidth={2.4} />
             </div>
-            <div>
+            <div className="min-w-0">
               <p className="text-sm font-medium text-primary">OmniAgent OS</p>
-              <h1 className="text-2xl font-semibold">Agentic orchestration command center</h1>
+              <h1 className="text-xl font-semibold leading-tight sm:text-2xl">Agentic orchestration command center</h1>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 xl:grid-cols-6">
+          <div className="flex max-w-full gap-2 overflow-x-auto pb-1 text-sm md:max-w-[68%] lg:max-w-[72%]">
+            <StatusPill
+              icon={<CheckCircle2 size={15} />}
+              label="Release"
+              value={releaseEvidenceReport?.releaseGate.status || "loading"}
+            />
+            <StatusPill icon={<Activity size={15} />} label="Health" value={healthStats?.latestStatus || "unknown"} />
+            <StatusPill label="SLO" icon={<BarChart3 size={15} />} value={observabilityStats?.slo.healthy ? "healthy" : "watch"} />
+            <StatusPill icon={<HardDrive size={15} />} label="Store" value={storageLabel} />
+            <StatusPill
+              icon={<Database size={15} />}
+              label="Vector"
+              value={capabilities?.vectorStore.configured ? "HNSW" : "JSON"}
+            />
+            <StatusPill
+              icon={<Sparkles size={15} />}
+              label="OpenAI"
+              value={capabilities?.openaiConfigured ? "Live" : "Fallback"}
+            />
             <StatusPill icon={<Brain size={15} />} label="Memory" value={`${capabilities?.memory.total ?? 0}`} />
             <StatusPill
               icon={<Database size={15} />}
@@ -3386,7 +3408,6 @@ export function CommandCenter() {
             <StatusPill icon={<Layers3 size={15} />} label="Plans" value={`${plannerStats?.total ?? 0}`} />
             <StatusPill icon={<CheckCircle2 size={15} />} label="Nodes" value={`${planExecutionStats?.total ?? 0}`} />
             <StatusPill icon={<Cable size={15} />} label="Triggers" value={`${triggerStats?.active ?? 0}`} />
-            <StatusPill icon={<Activity size={15} />} label="Health" value={healthStats?.latestStatus || "unknown"} />
             <StatusPill icon={<ShieldCheck size={15} />} label="Incidents" value={`${incidentStats?.active ?? 0}`} />
             <StatusPill icon={<Send size={15} />} label="Alerts" value={`${alertStats?.queued ?? 0}`} />
             <StatusPill
@@ -3400,22 +3421,11 @@ export function CommandCenter() {
             <StatusPill icon={<ShieldCheck size={15} />} label="Audits" value={`${toolAuditStats?.total ?? 0}`} />
             <StatusPill icon={<CheckCircle2 size={15} />} label="Approval" value={`${approvalStats?.total ?? 0}`} />
             <StatusPill icon={<Users size={15} />} label="Auth" value={authMode} />
-            <StatusPill icon={<HardDrive size={15} />} label="Store" value={storageLabel} />
-            <StatusPill
-              icon={<Database size={15} />}
-              label="Vector"
-              value={capabilities?.vectorStore.configured ? "HNSW" : "JSON"}
-            />
-            <StatusPill
-              icon={<Sparkles size={15} />}
-              label="OpenAI"
-              value={capabilities?.openaiConfigured ? "Live" : "Fallback"}
-            />
           </div>
         </header>
 
         <section className="grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-          <div className="panel flex min-h-[680px] min-w-0 flex-col rounded-lg">
+          <div className="panel flex min-h-[560px] min-w-0 flex-col rounded-lg lg:sticky lg:top-4 lg:h-[calc(100vh-7rem)]">
             <div className="flex flex-col gap-3 border-b border-line px-5 py-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <p className="text-sm text-muted">Run state</p>
@@ -3544,10 +3554,15 @@ export function CommandCenter() {
 	                <MiniStat label="Conn" value={`${observabilityStats?.byCategory.connector ?? 0}`} />
 	              </div>
 	              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
-	                <MiniStat label="Auth" value={`${observabilityStats?.authFailures ?? 0}`} />
+	                <MiniStat label="Auth fail" value={`${observabilityStats?.authFailures ?? 0}`} />
 	                <MiniStat label="Policy" value={`${observabilityStats?.policyBlocks ?? 0}`} />
 	                <MiniStat label="Conn fail" value={`${observabilityStats?.connectorFailures ?? 0}`} />
 	              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
+                <MiniStat label="Eligible" value={`${observabilityStats?.sloEligibleEvents ?? observabilityStats?.total ?? 0}`} />
+                <MiniStat label="Excluded" value={`${observabilityStats?.sloExcludedEvents ?? 0}`} />
+                <MiniStat label="Challenges" value={`${observabilityStats?.authenticationChallenges ?? 0}`} />
+              </div>
               <button
                 type="button"
                 onClick={runSloMonitor}
@@ -4329,6 +4344,11 @@ export function CommandCenter() {
                   <MiniStat label="SLO" value={releaseEvidenceReport?.observability.breaches.length ? `${releaseEvidenceReport.observability.breaches.length} breach` : "clear"} />
                   <MiniStat label="RLS" value={`${releaseEvidenceReport?.tenantIsolation.summary.protectedTables ?? 0}/${releaseEvidenceReport?.tenantIsolation.summary.expectedTables ?? 0}`} />
                 </div>
+                <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                  <MiniStat label="Eligible" value={`${releaseEvidenceReport?.observability.stats.sloEligibleEvents ?? 0}`} />
+                  <MiniStat label="Excluded" value={`${releaseEvidenceReport?.observability.stats.sloExcludedEvents ?? 0}`} />
+                  <MiniStat label="Synthetic" value={`${releaseEvidenceReport?.observability.stats.syntheticEvents ?? 0}`} />
+                </div>
                 <p className={clsx(
                   "mt-3 line-clamp-2 text-xs leading-5",
                   releaseEvidenceFailures.length ? "text-danger" : "text-muted",
@@ -4922,12 +4942,12 @@ function StatusPill({
   value: string;
 }) {
   return (
-    <div className="min-w-0 rounded-md border border-line bg-background/70 px-3 py-2">
+    <div className="min-h-16 w-32 shrink-0 rounded-md border border-line bg-background/70 px-3 py-2">
       <div className="flex min-w-0 items-center gap-2 text-muted">
-        {icon}
-        <span className="whitespace-nowrap">{label}</span>
+        <span className="shrink-0">{icon}</span>
+        <span className="truncate">{label}</span>
       </div>
-      <p className="mt-1 whitespace-nowrap font-mono text-sm text-foreground sm:text-base" title={value}>
+      <p className="mt-1 truncate font-mono text-sm text-foreground sm:text-base" title={value}>
         {value}
       </p>
     </div>
