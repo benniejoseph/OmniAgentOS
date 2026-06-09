@@ -21,6 +21,19 @@ export async function authorizeRequest({
   try {
     context = await resolveSecurityContext(request);
   } catch (error) {
+    if (!(error instanceof SecurityPolicyError)) {
+      await recordSecuritySystemFailureSafely({
+        request,
+        action,
+        resourceType,
+        resourceId,
+        reason: error instanceof Error ? error.message : "Security context failed.",
+        riskLevel,
+        metadata,
+      });
+      throw error;
+    }
+
     await recordSecurityEventSafely({
       request,
       action: "security.auth_failed",
@@ -93,6 +106,51 @@ async function recordAuditSafely(args: Parameters<typeof recordSecurityAudit>[0]
     await recordSecurityAudit(args);
   } catch (error) {
     console.warn("Security audit write failed.", error instanceof Error ? error.message : error);
+  }
+}
+
+async function recordSecuritySystemFailureSafely({
+  request,
+  action,
+  resourceType,
+  resourceId,
+  reason,
+  riskLevel,
+  metadata,
+}: {
+  request: Request;
+  action: string;
+  resourceType: string;
+  resourceId?: string;
+  reason: string;
+  riskLevel?: number;
+  metadata?: Record<string, unknown>;
+}) {
+  try {
+    const { createRequestTelemetry, recordRuntimeEventSafely } = await import("@/lib/observability/store");
+    const telemetry = createRequestTelemetry(request, "security");
+    await recordRuntimeEventSafely({
+      level: "error",
+      category: "security",
+      action: "security.context_failed",
+      route: new URL(request.url).pathname,
+      method: request.method,
+      statusCode: 500,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      resourceType,
+      resourceId,
+      message: reason,
+      metadata: {
+        failureType: "security_context_failure",
+        requestedAction: action,
+        riskLevel,
+        ...telemetry.syntheticMetadata,
+        ...metadata,
+      },
+    });
+  } catch (eventError) {
+    console.warn("Security context observability write failed.", eventError instanceof Error ? eventError.message : eventError);
   }
 }
 

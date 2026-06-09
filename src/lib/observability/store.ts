@@ -325,6 +325,10 @@ function isSloExcludedEvent(event: ObservabilityEventRecord) {
     return true;
   }
 
+  if (event.action === "security.auth_failed" && isMisclassifiedSecurityContextFailure(event.message)) {
+    return true;
+  }
+
   return Boolean(event.metadata.smoke);
 }
 
@@ -333,6 +337,12 @@ function isAuthenticationChallenge(event: ObservabilityEventRecord) {
     event.statusCode === 401 &&
     event.message === "Authentication required." &&
     event.route !== "/api/auth/login";
+}
+
+function isMisclassifiedSecurityContextFailure(message: string) {
+  return message.includes("omni_tenant_isolation") ||
+    message.includes("tuple concurrently updated") ||
+    message.includes("duplicate key value violates unique constraint");
 }
 
 async function readObservabilityLedger() {

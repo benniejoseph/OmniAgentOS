@@ -1154,16 +1154,45 @@ async function ensureTenantIsolationPolicies(sql: SqlClient) {
   `;
 
   for (const tableName of tenantPolicyTables) {
-    await sql.query(`ALTER TABLE ${tableName} ENABLE ROW LEVEL SECURITY`);
-    await sql.query(`ALTER TABLE ${tableName} FORCE ROW LEVEL SECURITY`);
-    await sql.query(`DROP POLICY IF EXISTS omni_tenant_isolation ON ${tableName}`);
-    await sql.query(`
-      CREATE POLICY omni_tenant_isolation ON ${tableName}
-      FOR ALL
-      USING (omni_tenant_visible(tenant_id))
-      WITH CHECK (omni_tenant_visible(tenant_id))
-    `);
+    await runSchemaConcurrencySafe(() => sql.query(`ALTER TABLE ${tableName} ENABLE ROW LEVEL SECURITY`));
+    await runSchemaConcurrencySafe(() => sql.query(`ALTER TABLE ${tableName} FORCE ROW LEVEL SECURITY`));
+    await runSchemaConcurrencySafe(() => sql.query(`
+      DO $$
+      BEGIN
+        CREATE POLICY omni_tenant_isolation ON ${tableName}
+        FOR ALL
+        USING (omni_tenant_visible(tenant_id))
+        WITH CHECK (omni_tenant_visible(tenant_id));
+      EXCEPTION WHEN duplicate_object THEN
+        ALTER POLICY omni_tenant_isolation ON ${tableName}
+        USING (omni_tenant_visible(tenant_id))
+        WITH CHECK (omni_tenant_visible(tenant_id));
+      END
+      $$
+    `));
   }
+}
+
+async function runSchemaConcurrencySafe(operation: () => Promise<unknown>) {
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await operation();
+      return;
+    } catch (error) {
+      if (attempt === maxAttempts || !isSchemaConcurrencyError(error)) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 40 * attempt));
+    }
+  }
+}
+
+function isSchemaConcurrencyError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("tuple concurrently updated") ||
+    message.includes("already exists") ||
+    message.includes("duplicate key value violates unique constraint");
 }
 
 function normalizeTenantId(value?: string) {
