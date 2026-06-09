@@ -2378,6 +2378,9 @@ async function evaluateSloAlerting(evalCase: EvalCaseDefinition): Promise<CaseRe
     message: "SLO alerting evaluation failure marker.",
     metadata: {
       policyFixture: "route failure breach",
+      synthetic: true,
+      syntheticSource: "evaluation_fixture",
+      sloExcluded: true,
     },
   });
   const policyId = `eval_route_failure_${Date.now()}`;

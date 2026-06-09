@@ -1,6 +1,7 @@
 const baseUrl = normalizeBaseUrl(process.env.BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "http://127.0.0.1:3000");
 const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
 const checks = [];
+const syntheticHeaders = createSyntheticHeaders("tenant");
 
 if (!internalSecret) {
   console.log("PASS tenant isolation smoke skipped - set SMOKE_INTERNAL_AUTH_SECRET or OMNIAGENT_INTERNAL_AUTH_SECRET");
@@ -12,6 +13,12 @@ const tenantA = `smoke_tenant_a_${suffix}`;
 const tenantB = `smoke_tenant_b_${suffix}`;
 const connectorName = `Smoke MCP tenant isolation ${suffix}`;
 const correlationId = `smoke-tenant-isolation-${suffix}`;
+const syntheticMetadata = {
+  smoke: true,
+  synthetic: true,
+  syntheticSource: process.env.SMOKE_SYNTHETIC_SOURCE || "production-smoke",
+  sloExcluded: true,
+};
 
 const createdConnector = await jsonRequest("/api/connectors", {
   method: "POST",
@@ -72,7 +79,7 @@ const marker = await jsonRequest("/api/observability", {
     level: "info",
     message: `Tenant isolation smoke marker ${suffix}`,
     correlationId,
-    metadata: { smoke: true, tenant: tenantA },
+    metadata: { ...syntheticMetadata, tenant: tenantA },
   },
 });
 checks.push(assert(marker.status === 201, "tenant A can record observability marker", statusDetail(marker)));
@@ -95,7 +102,7 @@ const workflow = await jsonRequest("/api/workflows", {
     mode: "research",
     requireApproval: true,
     maxAttempts: 1,
-    metadata: { smoke: true, tenant: tenantA },
+    metadata: { ...syntheticMetadata, tenant: tenantA },
   },
 });
 checks.push(assert(workflow.status === 201, "tenant A can create workflow", statusDetail(workflow)));
@@ -132,6 +139,7 @@ async function jsonRequest(path, { method = "GET", tenantId = tenantA, body } = 
     redirect: "manual",
     headers: {
       "content-type": "application/json",
+      ...syntheticHeaders,
       "x-omni-internal-auth": internalSecret,
       "x-omni-tenant-id": tenantId,
       "x-omni-user-id": `${tenantId}:smoke`,
@@ -158,4 +166,18 @@ function assert(ok, label, detail) {
 
 function normalizeBaseUrl(value) {
   return value.replace(/\/+$/, "");
+}
+
+function createSyntheticHeaders(scope) {
+  if (!internalSecret) {
+    return {};
+  }
+
+  const runId = process.env.SMOKE_RUN_ID || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    "x-omni-synthetic-auth": internalSecret,
+    "x-omni-synthetic-source": process.env.SMOKE_SYNTHETIC_SOURCE || "production-smoke",
+    "x-omni-slo-excluded": "true",
+    "x-omni-correlation-id": `production-smoke:${scope}:${runId}`,
+  };
 }

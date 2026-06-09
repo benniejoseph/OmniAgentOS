@@ -1306,8 +1306,12 @@ type ReleaseEvidenceReport = {
     }[];
     stats: {
       total: number;
+      sloEligibleEvents: number;
+      sloExcludedEvents: number;
+      syntheticEvents: number;
       routeFailures: number;
       authFailures: number;
+      authenticationChallenges: number;
       policyBlocks: number;
       connectorFailures: number;
       availability: number;

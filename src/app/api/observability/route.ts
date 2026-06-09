@@ -64,7 +64,11 @@ export async function GET(request: Request) {
     actorId: context.actorId,
     resourceType: "observability",
     message: "Read observability timeline.",
-    metadata: { count: events.length, filters: { level, category, correlationId, route, limit } },
+    metadata: {
+      count: events.length,
+      filters: { level, category, correlationId, route, limit },
+      ...telemetry.syntheticMetadata,
+    },
   });
 
   return Response.json({ events, stats });
@@ -108,7 +112,10 @@ export async function POST(request: Request) {
     actorId: context.actorId,
     resourceType: "observability",
     message: parsed.data.message || "Operator observability marker.",
-    metadata: parsed.data.metadata || {},
+    metadata: {
+      ...(parsed.data.metadata || {}),
+      ...telemetry.syntheticMetadata,
+    },
   });
 
   return Response.json({ event, stats: await getObservabilityStats({ tenantId: context.tenantId }) }, { status: 201 });

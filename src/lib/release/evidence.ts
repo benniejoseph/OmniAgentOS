@@ -50,8 +50,12 @@ export type ReleaseEvidenceReport = {
     }[];
     stats: {
       total: number;
+      sloEligibleEvents: number;
+      sloExcludedEvents: number;
+      syntheticEvents: number;
       routeFailures: number;
       authFailures: number;
+      authenticationChallenges: number;
       policyBlocks: number;
       connectorFailures: number;
       availability: number;
@@ -206,8 +210,12 @@ export async function getReleaseEvidenceReport(tenantId: string): Promise<Releas
       })),
       stats: {
         total: observabilitySlo.stats.total,
+        sloEligibleEvents: observabilitySlo.stats.sloEligibleEvents,
+        sloExcludedEvents: observabilitySlo.stats.sloExcludedEvents,
+        syntheticEvents: observabilitySlo.stats.syntheticEvents,
         routeFailures: observabilitySlo.stats.routeFailures,
         authFailures: observabilitySlo.stats.authFailures,
+        authenticationChallenges: observabilitySlo.stats.authenticationChallenges,
         policyBlocks: observabilitySlo.stats.policyBlocks,
         connectorFailures: observabilitySlo.stats.connectorFailures,
         availability: observabilitySlo.stats.slo.availability,

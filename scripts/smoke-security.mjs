@@ -1,6 +1,8 @@
 const baseUrl = normalizeBaseUrl(process.env.BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "http://127.0.0.1:3000");
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
 const password = process.env.SMOKE_ADMIN_PASSWORD || process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
+const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
+const syntheticHeaders = createSyntheticHeaders("security");
 
 const protectedReads = [
   "/api/memory",
@@ -141,6 +143,10 @@ async function request(path, init) {
   return fetch(`${baseUrl}${path}`, {
     redirect: "manual",
     ...init,
+    headers: {
+      ...syntheticHeaders,
+      ...(init?.headers || {}),
+    },
   });
 }
 
@@ -150,4 +156,18 @@ function assert(ok, label, detail) {
 
 function normalizeBaseUrl(value) {
   return value.replace(/\/+$/, "");
+}
+
+function createSyntheticHeaders(scope) {
+  if (!internalSecret) {
+    return {};
+  }
+
+  const runId = process.env.SMOKE_RUN_ID || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    "x-omni-synthetic-auth": internalSecret,
+    "x-omni-synthetic-source": process.env.SMOKE_SYNTHETIC_SOURCE || "production-smoke",
+    "x-omni-slo-excluded": "true",
+    "x-omni-correlation-id": `production-smoke:${scope}:${runId}`,
+  };
 }

@@ -15,7 +15,10 @@ jobs:
       SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
       SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
       SMOKE_INTERNAL_AUTH_SECRET: ${{ secrets.SMOKE_INTERNAL_AUTH_SECRET }}
+      SMOKE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_SYNTHETIC_SOURCE: production-smoke
       EXPECT_SECURE_COOKIES: "true"
+      RELEASE_EVIDENCE_OUTPUT: artifacts/release-evidence.json
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,4 +33,14 @@ jobs:
         run: npm ci
 
       - name: Run production smoke gates
-        run: npm run test:production-smoke
+        run: |
+          mkdir -p artifacts
+          npm run test:production-smoke
+
+      - name: Upload release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-release-evidence
+          path: artifacts/release-evidence.json
+          if-no-files-found: warn

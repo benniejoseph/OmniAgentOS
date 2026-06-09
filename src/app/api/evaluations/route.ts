@@ -123,6 +123,7 @@ export async function POST(request: Request) {
           violations: governance.violations,
           summary: governance.summary,
           override: overrideEvidence,
+          ...telemetry.syntheticMetadata,
         },
       });
       return Response.json(
@@ -171,6 +172,7 @@ export async function POST(request: Request) {
         governance: governance.summary,
         maxSafetyMode,
         override: overrideEvidence,
+        ...telemetry.syntheticMetadata,
       },
     });
     return Response.json({ ...detail, governance: governance.summary, override: overrideEvidence }, { status });
@@ -188,7 +190,10 @@ export async function POST(request: Request) {
         correlationId: telemetry.correlationId,
         resourceType: "evaluation",
         message: "Evaluation suite failed.",
-        metadata: { error: error instanceof Error ? error.message : "Evaluation failed." },
+        metadata: {
+          error: error instanceof Error ? error.message : "Evaluation failed.",
+          ...telemetry.syntheticMetadata,
+        },
       });
       return Response.json(
         { error: error instanceof Error ? error.message : "Evaluation failed." },

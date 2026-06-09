@@ -3,6 +3,7 @@ const caseId = process.env.SMOKE_EVAL_CASE_ID || "security.tenant_isolation";
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
 const password = process.env.SMOKE_ADMIN_PASSWORD || process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
 const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
+const syntheticHeaders = createSyntheticHeaders("eval");
 
 const checks = [];
 const headers = await resolveAuthHeaders();
@@ -59,11 +60,12 @@ async function resolveAuthHeaders() {
     }
     const cookie = (login.headers.get("set-cookie") || "").split(";")[0];
     checks.push(assert(Boolean(cookie), "session cookie returned", "missing session cookie"));
-    return cookie ? { cookie } : undefined;
+    return cookie ? { cookie, ...syntheticHeaders } : undefined;
   }
 
   if (internalSecret) {
     return {
+      ...syntheticHeaders,
       "x-omni-internal-auth": internalSecret,
       "x-omni-tenant-id": process.env.SMOKE_TENANT_ID || "production_smoke",
       "x-omni-user-id": process.env.SMOKE_ACTOR_ID || "production-smoke",
@@ -78,6 +80,10 @@ async function request(path, init) {
   return fetch(`${baseUrl}${path}`, {
     redirect: "manual",
     ...init,
+    headers: {
+      ...syntheticHeaders,
+      ...(init?.headers || {}),
+    },
   });
 }
 
@@ -99,4 +105,18 @@ function assert(ok, label, detail) {
 
 function normalizeBaseUrl(value) {
   return value.replace(/\/+$/, "");
+}
+
+function createSyntheticHeaders(scope) {
+  if (!internalSecret) {
+    return {};
+  }
+
+  const runId = process.env.SMOKE_RUN_ID || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    "x-omni-synthetic-auth": internalSecret,
+    "x-omni-synthetic-source": process.env.SMOKE_SYNTHETIC_SOURCE || "production-smoke",
+    "x-omni-slo-excluded": "true",
+    "x-omni-correlation-id": `production-smoke:${scope}:${runId}`,
+  };
 }

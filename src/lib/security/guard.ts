@@ -124,6 +124,12 @@ async function recordSecurityEventSafely({
   try {
     const { createRequestTelemetry, recordRuntimeEventSafely } = await import("@/lib/observability/store");
     const telemetry = createRequestTelemetry(request, "security");
+    const syntheticFailureMetadata = telemetry.syntheticMetadata.synthetic
+      ? {
+          ...telemetry.syntheticMetadata,
+          expectedFailure: action === "security.auth_failed",
+        }
+      : {};
     await recordRuntimeEventSafely({
       level: "warn",
       category: "security",
@@ -143,6 +149,7 @@ async function recordSecurityEventSafely({
         failureType: action === "security.auth_failed" ? "auth_failure" : "policy_block",
         requestedAction,
         riskLevel,
+        ...syntheticFailureMetadata,
         ...metadata,
       },
     });

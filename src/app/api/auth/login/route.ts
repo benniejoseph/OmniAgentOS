@@ -41,6 +41,7 @@ export async function POST(request: Request) {
         failureType: "auth_failure",
         authMethod: "password",
         emailDomain: parsed.data.email.split("@")[1]?.toLowerCase(),
+        ...telemetry.syntheticMetadata,
       },
     });
     return Response.json(

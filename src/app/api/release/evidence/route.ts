@@ -39,6 +39,7 @@ export async function GET(request: Request) {
         approved: report.releaseGate.approved,
         failures: report.releaseGate.summary.failures,
         warnings: report.releaseGate.summary.warnings,
+        ...telemetry.syntheticMetadata,
       },
     });
     return Response.json({ report });
@@ -57,7 +58,10 @@ export async function GET(request: Request) {
       actorId: context.actorId,
       resourceType: "release_evidence",
       message: "Release evidence gate failed.",
-      metadata: { error: error instanceof Error ? error.message : "Release evidence failed." },
+      metadata: {
+        error: error instanceof Error ? error.message : "Release evidence failed.",
+        ...telemetry.syntheticMetadata,
+      },
     });
     return Response.json(
       { error: error instanceof Error ? error.message : "Release evidence failed." },

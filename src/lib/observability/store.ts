@@ -37,9 +37,13 @@ export type ObservabilityEventRecord = {
 
 export type ObservabilityStats = {
   total: number;
+  sloEligibleEvents: number;
+  sloExcludedEvents: number;
+  syntheticEvents: number;
   byLevel: Record<string, number>;
   byCategory: Record<string, number>;
   authFailures: number;
+  authenticationChallenges: number;
   policyBlocks: number;
   connectorFailures: number;
   routeFailures: number;
@@ -68,8 +72,24 @@ export function createRequestTelemetry(request?: Request, prefix = "obs") {
     request?.headers.get("x-omni-correlation-id") ||
     request?.headers.get("x-vercel-id") ||
     `${prefix}:${randomUUID()}`;
+  const syntheticMetadata = getSyntheticRequestMetadata(request);
 
-  return { requestId, correlationId };
+  return { requestId, correlationId, syntheticMetadata };
+}
+
+export function getSyntheticRequestMetadata(request?: Request): Record<string, unknown> {
+  const configuredSecret = process.env.OMNIAGENT_INTERNAL_AUTH_SECRET?.trim();
+  const providedSecret = request?.headers.get("x-omni-synthetic-auth")?.trim();
+
+  if (!configuredSecret || !providedSecret || configuredSecret !== providedSecret) {
+    return {};
+  }
+
+  return {
+    synthetic: true,
+    syntheticSource: normalizeSyntheticSource(request?.headers.get("x-omni-synthetic-source")),
+    sloExcluded: request?.headers.get("x-omni-slo-excluded") !== "false",
+  };
 }
 
 export async function recordRuntimeEvent(input: {
@@ -233,30 +253,36 @@ export async function listObservabilityEvents({
 
 export async function getObservabilityStats(options: { tenantId?: string } = {}): Promise<ObservabilityStats> {
   const events = await listObservabilityEvents({ limit: 500, tenantId: options.tenantId });
-  const durations = events
+  const sloEvents = events.filter((event) => !isSloExcludedEvent(event));
+  const durations = sloEvents
     .map((event) => event.durationMs)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
     .sort((left, right) => left - right);
-  const failures = events.filter((event) => event.level === "error" || (event.statusCode || 0) >= 500);
-  const routeEvents = events.filter((event) => event.route);
+  const failures = sloEvents.filter((event) => event.level === "error" || (event.statusCode || 0) >= 500);
+  const routeEvents = sloEvents.filter((event) => event.route);
   const routeFailures = routeEvents.filter((event) => event.level === "error" || (event.statusCode || 0) >= 500).length;
-  const authFailures = events.filter(
+  const authFailureEvents = sloEvents.filter(
     (event) => event.metadata.failureType === "auth_failure" || event.action === "security.auth_failed",
-  ).length;
-  const policyBlocks = events.filter(
+  );
+  const authenticationChallenges = authFailureEvents.filter(isAuthenticationChallenge).length;
+  const authFailures = authFailureEvents.length - authenticationChallenges;
+  const policyBlocks = sloEvents.filter(
     (event) => event.metadata.failureType === "policy_block" || event.action === "security.policy_blocked",
   ).length;
-  const connectorFailures = events.filter(
+  const connectorFailures = sloEvents.filter(
     (event) =>
       event.metadata.failureType === "connector_failure" ||
       (event.category === "connector" && (event.level === "error" || event.action.endsWith("_failed"))),
   ).length;
-  const errorRate = events.length ? failures.length / events.length : 0;
+  const errorRate = sloEvents.length ? failures.length / sloEvents.length : 0;
   const availability = routeEvents.length ? 1 - routeFailures / routeEvents.length : 1;
   const p95DurationMs = percentile(durations, 0.95);
 
   return {
     total: events.length,
+    sloEligibleEvents: sloEvents.length,
+    sloExcludedEvents: events.length - sloEvents.length,
+    syntheticEvents: events.filter((event) => event.metadata.synthetic === true).length,
     byLevel: events.reduce<Record<string, number>>((acc, event) => {
       acc[event.level] = (acc[event.level] || 0) + 1;
       return acc;
@@ -266,6 +292,7 @@ export async function getObservabilityStats(options: { tenantId?: string } = {})
       return acc;
     }, {}),
     authFailures,
+    authenticationChallenges,
     policyBlocks,
     connectorFailures,
     routeFailures,
@@ -283,6 +310,29 @@ export async function getObservabilityStats(options: { tenantId?: string } = {})
       latencyP95Ms: p95DurationMs,
     },
   };
+}
+
+function isSloExcludedEvent(event: ObservabilityEventRecord) {
+  if (event.metadata.sloExcluded === true) {
+    return true;
+  }
+
+  if (event.metadata.synthetic === true && event.metadata.syntheticSource) {
+    return true;
+  }
+
+  if (event.action === "observability.slo_eval_failure_marker" || event.metadata.policyFixture) {
+    return true;
+  }
+
+  return Boolean(event.metadata.smoke);
+}
+
+function isAuthenticationChallenge(event: ObservabilityEventRecord) {
+  return event.action === "security.auth_failed" &&
+    event.statusCode === 401 &&
+    event.message === "Authentication required." &&
+    event.route !== "/api/auth/login";
 }
 
 async function readObservabilityLedger() {
@@ -360,6 +410,13 @@ function normalizeTenantId(value?: string) {
     .trim()
     .replace(/[^a-zA-Z0-9_.:-]/g, "_")
     .slice(0, 120) || "default";
+}
+
+function normalizeSyntheticSource(value: string | null | undefined) {
+  return (value || "synthetic")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "synthetic";
 }
 
 function getObservabilityFile() {
