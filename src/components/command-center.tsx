@@ -1257,6 +1257,67 @@ type TenantIsolationReport = {
   recommendations: string[];
 };
 
+type ReleaseEvidenceGateStatus = "pass" | "warn" | "fail";
+
+type ReleaseEvidenceGate = {
+  id: string;
+  name: string;
+  status: ReleaseEvidenceGateStatus;
+  summary: string;
+  details: Record<string, unknown>;
+};
+
+type ReleaseEvidenceReport = {
+  tenantId: string;
+  checkedAt: string;
+  deployment: {
+    provider: "vercel" | "local";
+    environment: string;
+    url?: string;
+    commitSha?: string;
+    branch?: string;
+    region?: string;
+  };
+  releaseGate: {
+    approved: boolean;
+    status: "passed" | "warning" | "blocked";
+    reasons: string[];
+    warnings: string[];
+    summary: {
+      total: number;
+      passed: number;
+      warnings: number;
+      failures: number;
+    };
+  };
+  gates: ReleaseEvidenceGate[];
+  tenantIsolation: TenantIsolationReport;
+  observability: {
+    checkedAt: string;
+    healthy: boolean;
+    policies: number;
+    breaches: {
+      policyId: string;
+      name: string;
+      severity?: string;
+      message: string;
+      value: number;
+      threshold?: number;
+    }[];
+    stats: {
+      total: number;
+      routeFailures: number;
+      authFailures: number;
+      policyBlocks: number;
+      connectorFailures: number;
+      availability: number;
+      errorRate: number;
+      latencyP95Ms: number;
+    };
+  };
+  recommendations: string[];
+};
+
 type AuthTenant = {
   id: string;
   name: string;
@@ -1566,6 +1627,8 @@ export function CommandCenter() {
   const [securityState, setSecurityState] = useState<SecurityState | null>(null);
   const [tenantIsolationReport, setTenantIsolationReport] = useState<TenantIsolationReport | null>(null);
   const [tenantIsolationResult, setTenantIsolationResult] = useState("");
+  const [releaseEvidenceReport, setReleaseEvidenceReport] = useState<ReleaseEvidenceReport | null>(null);
+  const [releaseEvidenceResult, setReleaseEvidenceResult] = useState("");
   const [authState, setAuthState] = useState<AuthSessionResponse | null>(null);
   const [authControlPlane, setAuthControlPlane] = useState<AuthControlPlane | null>(null);
   const [authEmail, setAuthEmail] = useState("");
@@ -1725,6 +1788,14 @@ export function CommandCenter() {
   const securityRules = securityPolicy?.rbacRules.slice(0, 5) || [];
   const tenantIsolationFailingTables = tenantIsolationReport?.tables.filter((table) => table.status === "fail") || [];
   const tenantIsolationLatestEval = tenantIsolationReport?.latestEval;
+  const releaseEvidenceFailures = releaseEvidenceReport?.gates.filter((gate) => gate.status === "fail") || [];
+  const releaseEvidenceWarnings = releaseEvidenceReport?.gates.filter((gate) => gate.status === "warn") || [];
+  const releaseEvidenceCommit = releaseEvidenceReport?.deployment.commitSha?.slice(0, 7) || "unknown";
+  const releaseEvidencePrimaryIssue =
+    releaseEvidenceFailures[0]?.summary ||
+    releaseEvidenceWarnings[0]?.summary ||
+    releaseEvidenceReport?.recommendations[0] ||
+    "Awaiting release evidence.";
   const authStats = authControlPlane?.stats || authState?.stats;
   const authUsers = authControlPlane?.users.slice(0, 5) || [];
   const currentIdentity = authState?.user?.email || securityContext?.actorId || "anonymous";
@@ -3194,6 +3265,30 @@ export function CommandCenter() {
     }
   }
 
+  async function refreshReleaseEvidence(showResult = false) {
+    if (showResult) {
+      setReleaseEvidenceResult("Checking release evidence.");
+    }
+
+    try {
+      const response = await fetch("/api/release/evidence");
+      const data = response.ok ? await response.json() : null;
+      if (data?.report) {
+        setReleaseEvidenceReport(data.report);
+        setTenantIsolationReport(data.report.tenantIsolation);
+        if (showResult) {
+          setReleaseEvidenceResult(`Release gate ${data.report.releaseGate.status}.`);
+        }
+      } else if (showResult) {
+        setReleaseEvidenceResult("Release evidence unavailable.");
+      }
+    } catch (error) {
+      if (showResult) {
+        setReleaseEvidenceResult(error instanceof Error ? error.message : "Release evidence failed.");
+      }
+    }
+  }
+
   function refreshWorkspace() {
     refreshCapabilities();
     fetch("/api/memory?limit=5")
@@ -3222,6 +3317,7 @@ export function CommandCenter() {
     refreshSloPolicies();
     refreshSecurity();
     void refreshTenantIsolationReport();
+    void refreshReleaseEvidence();
   }
 
   useEffect(() => {
@@ -4192,6 +4288,55 @@ export function CommandCenter() {
 	                  </p>
 	                ) : null}
 	              </div>
+              <div className="mb-3 rounded-md border border-line bg-background/54 p-3">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted">Release evidence</p>
+                    <p className="mt-1 truncate text-sm font-medium text-foreground">
+                      {releaseEvidenceReport?.releaseGate.status || "unchecked"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void refreshReleaseEvidence(true)}
+                    className="flex h-8 items-center justify-center gap-1.5 rounded-md border border-line px-2 text-xs font-medium text-foreground transition hover:border-primary"
+                  >
+                    <CheckCircle2 size={13} />
+                    Gate
+                  </button>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                  <MiniStat label="Pass" value={`${releaseEvidenceReport?.releaseGate.summary.passed ?? 0}/${releaseEvidenceReport?.releaseGate.summary.total ?? 0}`} />
+                  <MiniStat label="Warn" value={`${releaseEvidenceReport?.releaseGate.summary.warnings ?? 0}`} />
+                  <MiniStat label="Fail" value={`${releaseEvidenceReport?.releaseGate.summary.failures ?? 0}`} />
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  <span className={clsx("rounded px-2 py-1 font-mono text-[11px]", releaseGateTone(releaseEvidenceReport?.releaseGate.status))}>
+                    {releaseEvidenceReport?.releaseGate.approved ? "approved" : "blocked"}
+                  </span>
+                  <span className="rounded border border-line px-2 py-1 font-mono text-[11px] text-muted">
+                    {releaseEvidenceReport?.deployment.environment || "unknown"}
+                  </span>
+                  <span className="rounded border border-line px-2 py-1 font-mono text-[11px] text-muted">
+                    {releaseEvidenceCommit}
+                  </span>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <MiniStat label="SLO" value={releaseEvidenceReport?.observability.breaches.length ? `${releaseEvidenceReport.observability.breaches.length} breach` : "clear"} />
+                  <MiniStat label="RLS" value={`${releaseEvidenceReport?.tenantIsolation.summary.protectedTables ?? 0}/${releaseEvidenceReport?.tenantIsolation.summary.expectedTables ?? 0}`} />
+                </div>
+                <p className={clsx(
+                  "mt-3 line-clamp-2 text-xs leading-5",
+                  releaseEvidenceFailures.length ? "text-danger" : "text-muted",
+                )}>
+                  {releaseEvidencePrimaryIssue}
+                </p>
+                {releaseEvidenceResult ? (
+                  <p className="mt-2 rounded border border-line bg-background px-2 py-1.5 text-xs text-muted">
+                    {releaseEvidenceResult}
+                  </p>
+                ) : null}
+              </div>
 	              <div className="flex flex-col gap-3">
 	                {securityRules.map((rule) => (
 	                  <RbacRuleRow key={rule.action} rule={rule} />
@@ -5978,6 +6123,19 @@ function isolationTone(status?: TenantIsolationReport["status"]) {
   }
   if (status === "degraded") {
     return "bg-danger/14 text-danger";
+  }
+  return "bg-background text-muted";
+}
+
+function releaseGateTone(status?: ReleaseEvidenceReport["releaseGate"]["status"]) {
+  if (status === "passed") {
+    return "bg-primary/16 text-primary";
+  }
+  if (status === "blocked") {
+    return "bg-danger/14 text-danger";
+  }
+  if (status === "warning") {
+    return "bg-accent/14 text-accent";
   }
   return "bg-background text-muted";
 }

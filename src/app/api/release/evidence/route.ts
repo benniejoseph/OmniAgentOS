@@ -1,0 +1,67 @@
+import { getReleaseEvidenceReport } from "@/lib/release/evidence";
+import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
+import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+
+export const runtime = "nodejs";
+
+export async function GET(request: Request) {
+  const startedAt = Date.now();
+  const telemetry = createRequestTelemetry(request, "release-evidence");
+
+  let context;
+  try {
+    context = await authorizeRequest({
+      request,
+      action: "read.security",
+      resourceType: "release_evidence",
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
+  try {
+    const report = await getReleaseEvidenceReport(context.tenantId);
+    await recordRuntimeEventSafely({
+      category: "api",
+      action: "release.evidence.read",
+      route: "/api/release/evidence",
+      method: "GET",
+      statusCode: 200,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      resourceType: "release_evidence",
+      message: "Read release evidence gate.",
+      metadata: {
+        status: report.releaseGate.status,
+        approved: report.releaseGate.approved,
+        failures: report.releaseGate.summary.failures,
+        warnings: report.releaseGate.summary.warnings,
+      },
+    });
+    return Response.json({ report });
+  } catch (error) {
+    await recordRuntimeEventSafely({
+      level: "error",
+      category: "api",
+      action: "release.evidence.failed",
+      route: "/api/release/evidence",
+      method: "GET",
+      statusCode: 500,
+      durationMs: Date.now() - startedAt,
+      requestId: telemetry.requestId,
+      correlationId: telemetry.correlationId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      resourceType: "release_evidence",
+      message: "Release evidence gate failed.",
+      metadata: { error: error instanceof Error ? error.message : "Release evidence failed." },
+    });
+    return Response.json(
+      { error: error instanceof Error ? error.message : "Release evidence failed." },
+      { status: 500 },
+    );
+  }
+}

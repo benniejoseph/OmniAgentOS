@@ -91,6 +91,10 @@ export function getSecurityContext(request?: Request): SecurityContext {
 }
 
 export async function resolveSecurityContext(request?: Request): Promise<SecurityContext> {
+  if (getTrustedIdentityHeaders(request).source === "headers") {
+    return getSecurityContext(request);
+  }
+
   if (!isAuthEnforced()) {
     return getSecurityContext(request);
   }

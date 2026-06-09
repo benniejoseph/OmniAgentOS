@@ -10,9 +10,10 @@
     "smoke:security": "node scripts/smoke-security.mjs",
     "smoke:tenant": "node scripts/smoke-tenant-isolation.mjs",
     "smoke:eval": "node scripts/smoke-eval-case.mjs",
+    "smoke:release": "node scripts/smoke-release-evidence.mjs",
     "test:security": "npm run smoke:security",
     "test:tenant": "npm run smoke:tenant",
-    "test:production-smoke": "npm run smoke:security && npm run smoke:tenant && npm run smoke:eval",
+    "test:production-smoke": "npm run smoke:security && npm run smoke:tenant && npm run smoke:eval && npm run smoke:release",
     "test": "npm run lint"
   },
   "dependencies": {

@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       BASE_URL: ${{ vars.PRODUCTION_SMOKE_BASE_URL || 'https://omniagent-os.vercel.app' }}
       SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
       SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}

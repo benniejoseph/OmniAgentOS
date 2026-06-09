@@ -17,6 +17,7 @@ const protectedReads = [
   "/api/approvals",
   "/api/workflows/plan",
   "/api/security/isolation-report",
+  "/api/release/evidence",
 ];
 
 const checks = [];
