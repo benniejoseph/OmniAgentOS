@@ -325,7 +325,7 @@ function isSloExcludedEvent(event: ObservabilityEventRecord) {
     return true;
   }
 
-  if (event.action === "security.auth_failed" && isMisclassifiedSecurityContextFailure(event.message)) {
+  if (isSchemaConcurrencyContextFailure(event)) {
     return true;
   }
 
@@ -339,7 +339,15 @@ function isAuthenticationChallenge(event: ObservabilityEventRecord) {
     event.route !== "/api/auth/login";
 }
 
-function isMisclassifiedSecurityContextFailure(message: string) {
+function isSchemaConcurrencyContextFailure(event: ObservabilityEventRecord) {
+  return (
+    event.action === "security.auth_failed" ||
+    event.action === "security.context_failed" ||
+    event.metadata.failureType === "security_context_failure"
+  ) && isSchemaConcurrencyFailure(event.message);
+}
+
+function isSchemaConcurrencyFailure(message: string) {
   return message.includes("omni_tenant_isolation") ||
     message.includes("tuple concurrently updated") ||
     message.includes("duplicate key value violates unique constraint");

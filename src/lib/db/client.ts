@@ -188,7 +188,7 @@ export async function ensureDatabaseSchema() {
 
   if (!schemaReady) {
     const sql = getRawSql();
-    schemaReady = (async () => {
+    schemaReady = runSchemaConcurrencySafe(async () => {
       await sql`SELECT pg_advisory_lock(271828182)`;
       try {
         await sql`
@@ -1120,7 +1120,7 @@ export async function ensureDatabaseSchema() {
     } finally {
       await sql`SELECT pg_advisory_unlock(271828182)`;
     }
-    })();
+    });
   }
 
   try {
