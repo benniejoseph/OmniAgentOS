@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import { DomainConsole } from "@/components/app-shell/domain-console";
 
 export const metadata: Metadata = {
-  title: "Integrations",
+  title: "Approvals",
 };
 
-export default function ConnectorsPage() {
-  return <DomainConsole domain="integrations" />;
+export default function ApprovalsPage() {
+  return <DomainConsole domain="approvals" />;
 }

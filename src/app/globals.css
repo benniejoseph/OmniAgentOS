@@ -96,6 +96,54 @@ body {
   backdrop-filter: blur(18px);
 }
 
+.action-button,
+.action-link,
+.primary-button {
+  display: inline-flex;
+  height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.375rem;
+  padding: 0 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 650;
+  line-height: 1;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    filter 160ms ease;
+}
+
+.action-button,
+.action-link {
+  border: 1px solid var(--line);
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.primary-button {
+  border: 1px solid transparent;
+  background: var(--primary);
+  color: var(--primary-ink);
+}
+
+.action-button:hover,
+.action-link:hover {
+  background: var(--surface-raised);
+}
+
+.primary-button:hover {
+  filter: brightness(1.05);
+}
+
+.action-button:disabled,
+.primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 .animate-rise {
   animation: rise-in 760ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }

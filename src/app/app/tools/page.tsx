@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { FeaturePage } from "@/components/app-shell/feature-page";
+import { DomainConsole } from "@/components/app-shell/domain-console";
 
 export const metadata: Metadata = {
-  title: "Tools",
+  title: "Tool Catalog",
 };
 
 export default function ToolsPage() {
-  return <FeaturePage pageKey="tools" />;
+  return <DomainConsole domain="tools" />;
 }

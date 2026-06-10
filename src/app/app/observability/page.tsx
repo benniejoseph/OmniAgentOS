@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { FeaturePage } from "@/components/app-shell/feature-page";
+import { DomainConsole } from "@/components/app-shell/domain-console";
 
 export const metadata: Metadata = {
-  title: "Observability",
+  title: "Monitoring",
 };
 
 export default function ObservabilityPage() {
-  return <FeaturePage pageKey="observability" />;
+  return <DomainConsole domain="monitoring" />;
 }

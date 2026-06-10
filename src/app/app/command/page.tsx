@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { CommandCenter } from "@/components/command-center";
+import { AgentRunsWorkspace } from "@/components/agent-runs-workspace";
 
 export const metadata: Metadata = {
-  title: "Command Center",
+  title: "Agent Runs",
 };
 
 export default function CommandPage() {
-  return <CommandCenter />;
+  return <AgentRunsWorkspace />;
 }

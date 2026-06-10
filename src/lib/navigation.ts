@@ -25,6 +25,12 @@ export type AppNavItem = {
   label: string;
   description: string;
   icon: NavIcon;
+  shortLabel?: string;
+};
+
+export type AppNavGroup = {
+  label: string;
+  items: AppNavItem[];
 };
 
 export type ProductPage = AppNavItem & {
@@ -49,50 +55,61 @@ export const marketingNav = [
 export const appNav: AppNavItem[] = [
   {
     href: "/app",
-    label: "Overview",
-    description: "Release readiness, live health, approvals, and operating posture.",
+    label: "Control Room",
+    shortLabel: "Control",
+    description: "What needs attention now: health, approvals, live work, incidents, and release risk.",
     icon: Activity,
   },
   {
     href: "/app/command",
-    label: "Command",
-    description: "Goal entry, orchestration, execution ledger, and live agent loop.",
+    label: "Agent Runs",
+    shortLabel: "Runs",
+    description: "Start focused agent work, preview context, inspect plans, and track execution evidence.",
     icon: TerminalSquare,
-  },
-  {
-    href: "/app/memory",
-    label: "Memory",
-    description: "Durable memory, RAG, graph context, embeddings, and provenance.",
-    icon: Brain,
   },
   {
     href: "/app/workflows",
     label: "Workflows",
-    description: "Durable plans, triggers, queue drains, approvals, and recovery.",
+    description: "Build durable plans, triggers, queues, approvals, recovery, and workflow runs.",
     icon: Workflow,
   },
   {
+    href: "/app/approvals",
+    label: "Approvals",
+    description: "Review risky tool calls, workflow gates, and SLO policy changes before they proceed.",
+    icon: CheckCircle2,
+  },
+  {
+    href: "/app/memory",
+    label: "Knowledge",
+    description: "Manage memory, RAG, documents, graph context, embeddings, traces, and provenance.",
+    icon: Brain,
+  },
+  {
     href: "/app/connectors",
-    label: "Connectors",
-    description: "MCP, OpenAPI, private endpoint controls, and governed imports.",
+    label: "Integrations",
+    shortLabel: "Integrate",
+    description: "Register MCP and OpenAPI systems, discover operations, and monitor connector health.",
     icon: Cable,
   },
   {
     href: "/app/tools",
-    label: "Tools",
-    description: "Risk policy, dry runs, approval gates, and execution audit trails.",
+    label: "Tool Catalog",
+    shortLabel: "Tools",
+    description: "Govern capabilities with risk policy, dry runs, approvals, and execution audit trails.",
     icon: Wrench,
   },
   {
     href: "/app/evaluations",
     label: "Evaluations",
-    description: "Regression suites, signed reports, tenant isolation checks, and release proof.",
+    shortLabel: "Evals",
+    description: "Run regression suites, safe checks, signed reports, and release readiness gates.",
     icon: CheckCircle2,
   },
   {
     href: "/app/observability",
-    label: "Observability",
-    description: "Runtime events, SLO policy, incidents, alerts, and production evidence.",
+    label: "Monitoring",
+    description: "Track runtime events, SLO policy, incidents, alerts, diagnostics, and reliability evidence.",
     icon: Layers3,
   },
   {
@@ -109,9 +126,36 @@ export const appNav: AppNavItem[] = [
   },
 ];
 
+export const appNavGroups: AppNavGroup[] = [
+  {
+    label: "Operate",
+    items: appNav.filter((item) => ["/app", "/app/command", "/app/workflows", "/app/approvals"].includes(item.href)),
+  },
+  {
+    label: "Build",
+    items: appNav.filter((item) => ["/app/memory", "/app/connectors", "/app/tools"].includes(item.href)),
+  },
+  {
+    label: "Assure",
+    items: appNav.filter((item) => ["/app/evaluations", "/app/observability", "/app/security"].includes(item.href)),
+  },
+  {
+    label: "Admin",
+    items: appNav.filter((item) => item.href === "/app/settings"),
+  },
+];
+
+function appNavItem(href: string) {
+  const item = appNav.find((entry) => entry.href === href);
+  if (!item) {
+    throw new Error(`Missing app nav item for ${href}`);
+  }
+  return item;
+}
+
 export const productPages: Record<string, ProductPage> = {
   memory: {
-    ...appNav[2],
+    ...appNavItem("/app/memory"),
     eyebrow: "Memory + RAG",
     headline: "Long-horizon context that stays auditable.",
     summary: "Unify structured memory, source-backed retrieval, graph context, and embeddings into one durable substrate for every agent run.",
@@ -146,7 +190,7 @@ export const productPages: Record<string, ProductPage> = {
     ],
   },
   workflows: {
-    ...appNav[3],
+    ...appNavItem("/app/workflows"),
     eyebrow: "Workflow OS",
     headline: "Durable agent work that survives retries, approvals, and recovery.",
     summary: "Plan, queue, tick, approve, signal, and recover complex agent workflows with auditable state transitions.",
@@ -181,7 +225,7 @@ export const productPages: Record<string, ProductPage> = {
     ],
   },
   connectors: {
-    ...appNav[4],
+    ...appNavItem("/app/connectors"),
     eyebrow: "Connectivity",
     headline: "Connect to tools without turning every integration into a security exception.",
     summary: "Import MCP and OpenAPI capabilities, govern their risk, and block unsafe network or secret references by default.",
@@ -216,7 +260,7 @@ export const productPages: Record<string, ProductPage> = {
     ],
   },
   tools: {
-    ...appNav[5],
+    ...appNavItem("/app/tools"),
     eyebrow: "Governed Execution",
     headline: "Every tool call knows its risk before it runs.",
     summary: "Treat tools as governed capabilities with dry runs, approval rules, execution records, and operator-grade auditability.",
@@ -251,7 +295,7 @@ export const productPages: Record<string, ProductPage> = {
     ],
   },
   evaluations: {
-    ...appNav[6],
+    ...appNavItem("/app/evaluations"),
     eyebrow: "Evaluation System",
     headline: "Release decisions backed by signed evidence.",
     summary: "Run regression checks, tenant isolation probes, and release gates with signed reports and downloadable evidence.",
@@ -286,7 +330,7 @@ export const productPages: Record<string, ProductPage> = {
     ],
   },
   observability: {
-    ...appNav[7],
+    ...appNavItem("/app/observability"),
     eyebrow: "Observability",
     headline: "A live operating picture for agentic systems.",
     summary: "Track runtime events, route health, SLO policies, incidents, alerts, diagnostics, and recovery actions in one place.",
@@ -321,7 +365,7 @@ export const productPages: Record<string, ProductPage> = {
     ],
   },
   security: {
-    ...appNav[8],
+    ...appNavItem("/app/security"),
     eyebrow: "Enterprise Security",
     headline: "Tenant isolation and policy controls built into the runtime.",
     summary: "Authentication, tenant-aware database context, row-level security, audit logs, and network controls protect every workflow boundary.",
@@ -356,7 +400,7 @@ export const productPages: Record<string, ProductPage> = {
     ],
   },
   settings: {
-    ...appNav[9],
+    ...appNavItem("/app/settings"),
     eyebrow: "Control Plane",
     headline: "Configure the operating system behind every agent run.",
     summary: "Centralize environment posture, model configuration, tenant defaults, release metadata, and operator controls.",

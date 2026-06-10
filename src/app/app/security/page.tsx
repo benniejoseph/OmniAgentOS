@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { FeaturePage } from "@/components/app-shell/feature-page";
+import { DomainConsole } from "@/components/app-shell/domain-console";
 
 export const metadata: Metadata = {
   title: "Security",
 };
 
 export default function SecurityPage() {
-  return <FeaturePage pageKey="security" />;
+  return <DomainConsole domain="security" />;
 }
