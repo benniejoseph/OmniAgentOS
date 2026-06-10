@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
-import { MarketingPage } from "@/components/marketing/marketing-page";
+import { DocsGuide } from "@/components/marketing/docs-guide";
 
 export const metadata: Metadata = {
-  title: "Docs",
+  title: "How to Use OmniAgentOS",
+  description: "Step-by-step guide to using OmniAgentOS, including onboarding, command center, memory, RAG, workflows, connectors, tools, evaluations, observability, security, and production operations.",
 };
 
 export default function DocsPage() {
-  return <MarketingPage pageKey="docs" />;
+  return <DocsGuide />;
 }
