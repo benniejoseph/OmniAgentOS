@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, ArrowRight, Sparkles } from "lucide-react";
+import { ArrowRight, Sparkles } from "lucide-react";
 import { clsx } from "clsx";
 import { appNav, appNavGroups } from "@/lib/navigation";
+import { CommandPalette } from "@/components/app-shell/command-palette";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 
 export function AppShell({ children, banner }: { children: React.ReactNode; banner?: React.ReactNode }) {
@@ -80,10 +81,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <div className="hidden items-center gap-2 rounded-md border border-line bg-surface px-3 py-2 text-sm md:flex">
-                <Activity size={15} className="text-success" aria-hidden="true" />
-                <span>Production</span>
-              </div>
+              <CommandPalette />
               <ThemeToggle compact />
               <Link
                 href="/app/command"

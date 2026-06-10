@@ -1,203 +1,49 @@
 # OmniAgent OS
 
-An AI agentic orchestration framework starter built with Next.js, OpenAI, durable Postgres memory, and a RAG v2 knowledge layer.
+An enterprise AI agent platform: a governed tool-calling agent with durable workflows, long-term memory and RAG, MCP/OpenAPI connectors, approvals, observability, and signed release evidence — built on Next.js, OpenAI, and Neon Postgres.
 
-The interactive agent (`/api/agent`) runs a governed tool-calling loop: the model can call active governed tools (memory, knowledge, web search, runs, plus discovered MCP/OpenAPI tools below risk level 3). Risk 0-1 tools execute live; side-effecting or approval-gated tools run as dry-run previews until a human approves them, and every call lands in the tool audit ledger. Loop limits are configurable:
-
-```bash
-OMNIAGENT_AGENT_MAX_TOOL_STEPS=6
-OMNIAGENT_AGENT_MAX_MESSAGE_CHARS=32000
-OMNIAGENT_AGENT_MAX_MESSAGES=40
-OMNIAGENT_AGENT_RUNS_PER_MINUTE=10
-```
-
-Run `npm run test:unit` for the Vitest unit suite (tool policy, auth crypto, SSRF guard, JSON store, queue, rate limiter); `npm test` runs lint plus unit tests, and CI runs lint, unit tests, and build on every push and pull request.
-
-## Run Locally
+## Quickstart
 
 ```bash
 npm install
-cp .env.example .env.local
-npm run dev
+cp .env.example .env.local   # set OMNIAGENT_DEFAULT_ROLE=operator and OPENAI_API_KEY
+npm run dev                  # Node >= 20.9
 ```
 
-Open `http://localhost:3000`.
+Open http://localhost:3000, go to **Run Agent**, and give it a goal. Without `OPENAI_API_KEY` the app streams a clearly labeled simulated response; with it, the agent runs a real tool loop. Press **⌘K** to jump between workspaces.
 
-The app runs in fallback mode until `OPENAI_API_KEY` is set in `.env.local`.
-Embeddings default to `text-embedding-3-large` with `OPENAI_EMBEDDING_DIMENSIONS=1536`, which keeps pgvector HNSW indexes compatible with Neon/Postgres.
+## How it works
 
-For durable production memory, run history, and RAG documents, attach a Postgres database and set:
+The interactive agent (`/api/agent`) exposes active governed tools to the model — memory and knowledge search, live web search, memory writes, knowledge ingest, run history, plus any discovered MCP/OpenAPI connector tools below risk level 3. Every call routes through risk policy and the immutable tool audit ledger:
+
+- **Risk 0–1** tools execute live.
+- **Risk 2 / approval-gated** tools file an `approval_required` record; approving it in the **Approvals** workspace executes the real call.
+- **Risk 3** tools are never exposed.
+
+Longer work runs as durable workflows: LLM-planned DAGs executed through a Postgres-backed queue with leases, retries, recovery, and operator signals. Everything feeds the observability ledger, SLO policies, incidents, alerts, and signed evaluation reports.
+
+## Documentation
+
+| Doc | Covers |
+|---|---|
+| [docs/getting-started.md](docs/getting-started.md) | Local setup, identity, first task |
+| [docs/deployment.md](docs/deployment.md) | Vercel + Neon, full env-var table, cron cadence, release gates |
+| [docs/architecture.md](docs/architecture.md) | System map, agent loop, workflows, storage, security model |
+| [docs/adr/](docs/adr/README.md) | Architecture decisions |
+| [docs/AUDIT_REPORT.md](docs/AUDIT_REPORT.md) | Technical audit and roadmap |
+
+## Development
 
 ```bash
-DATABASE_URL=
+npm test                    # lint + unit tests (vitest)
+npm run build               # production build
+BASE_URL=<url> npm run test:production-smoke   # deployed-instance smoke gates
 ```
 
-For scheduled production workflow ticks on Vercel, set:
+CI runs lint, unit tests, and build on every push and PR; a nightly workflow smokes the production deployment and uploads release evidence.
 
-```bash
-CRON_SECRET=
-OMNIAGENT_QUEUE_LEASE_SECONDS=120
-OMNIAGENT_WORKFLOW_DRAIN_LIMIT=2
-OMNIAGENT_ALERT_QUEUE_LIMIT=10
-OMNIAGENT_ALERT_DISPATCH_LIMIT=10
-```
+## Security notes
 
-Without `DATABASE_URL`, local development uses `.omniagent/` and Vercel uses ephemeral `/tmp/omniagent`.
-When Postgres supports pgvector, the app adds vector columns and HNSW indexes for semantic retrieval. Keep `OPENAI_EMBEDDING_DIMENSIONS` at or below `2000` for HNSW indexing; larger JSON embeddings are normalized into the pgvector index dimension.
-Workflow execution is backed by the durable `omni_operation_jobs` Postgres queue. User actions enqueue workflow tick jobs, lease them for bounded execution, retry failed jobs with backoff, and opportunistically drain work after responses with Next.js `after()`. The included `vercel.json` schedules `/api/workflows/tick` once daily as a Hobby-compatible safety net. That secured tick also evaluates observability SLO policies, syncs breach incidents, and queues/dispatches incident alert deliveries through the alert scheduler. Pro deployments can raise the cadence by changing the cron expression.
-
-For external alert delivery, set one or more of:
-
-```bash
-OMNIAGENT_ALERT_WEBHOOK_URL=
-OMNIAGENT_ALERT_WEBHOOK_SECRET=
-SLACK_WEBHOOK_URL=
-RESEND_API_KEY=
-OMNIAGENT_ALERT_EMAIL_TO=
-OMNIAGENT_ALERT_EMAIL_FROM=
-```
-
-For signed evaluation audit report snapshots, set a stable signing secret in production:
-
-```bash
-OMNIAGENT_REPORT_SIGNING_SECRET=
-OMNIAGENT_REPORT_SIGNING_KEY_ID=
-OMNIAGENT_REPORT_SIGNING_KEYS=
-```
-
-`OMNIAGENT_REPORT_SIGNING_KEYS` accepts a JSON array/object of rotated verification keys without exposing them to clients; reports return only key id/status metadata.
-
-## What Is Included
-
-- Command center UI for agent runs
-- `/api/agent` streaming orchestration endpoint
-- `/api/memory` long-term memory endpoint
-- `/api/memory/graph` graph-memory search, stats, and rebuild endpoint
-- `/api/ingest` text ingestion endpoint
-- `/api/knowledge` document, chunk, and knowledge-search endpoint
-- `/api/retrieval/plan` adaptive context-engine endpoint with evidence packing and retrieval traces
-- `/api/capabilities` registry/status endpoint
-- `/api/runs` run ledger endpoint
-- `/api/tools` governed tool registry, policy, and audit endpoint
-- `/api/tools/execute` schema-validated tool execution endpoint with dry-run defaults
-- `/api/approvals` pending workflow/tool/SLO policy approval queue endpoint
-- `/api/approvals/:id` durable approve/reject endpoint for workflows, tool execution records, quorum-gated SLO policy changes, and break-glass SLO approvals
-- `/api/operations` production operations overview and queue recovery endpoint for stale workflow inspection, repair, and bounded drain actions
-- `/api/observability` durable runtime event timeline, SLO summary, route failure, and correlation-id endpoint
-- `/api/observability/slo` observability SLO snapshot and monitor endpoint that opens/resolves incidents and queues alerts
-- `/api/observability/slo/policies` durable SLO policy configuration endpoint for thresholds, severity, routing, suppression, enablement, defaults, approval requests, versioned approval-policy administration, break-glass rules, signed evidence, history, and rollback
-- `/api/health` public production health endpoint with component status and SLO metrics
-- `/api/diagnostics` authenticated diagnostics and self-healing repair endpoint
-- `/api/incidents` authenticated incident lifecycle, stats, playbook, and alert-routing endpoint
-- `/api/incidents/:id` incident detail and event history endpoint
-- `/api/incidents/:id/actions` acknowledge, resolve, and remediation-playbook action endpoint
-- `/api/alerts` alert delivery queue, dispatch, retry, target health, policy, and delivery history endpoint
-- `/api/connection-catalog` connector template catalog for external app targets
-- `/api/connectors` MCP connector registration and discovery endpoint
-- `/api/connectors/:id/discover` MCP tool rediscovery endpoint
-- `/api/openapi-connectors` OpenAPI connector registration and import endpoint
-- `/api/openapi-connectors/:id/import` OpenAPI operation re-import endpoint
-- `/api/workflows` durable workflow start/list endpoint
-- `/api/workflows/plan` dynamic workflow DAG planner endpoint
-- `/api/workflows/executions` dynamic plan-node execution ledger endpoint
-- `/api/workflows/:id` durable workflow detail endpoint
-- `/api/workflows/:id/tick` enqueue and lease one persisted workflow step
-- `/api/workflows/:id/signal` pause, resume, approve, retry, or cancel a workflow
-- `/api/workflows/tick` lease queued workflow jobs and scheduled alert deliveries for cron or operator control
-- `/api/triggers` webhook workflow trigger management and audit endpoint
-- `/api/triggers/:id/dispatch` signed webhook dispatch endpoint that creates and enqueues workflow runs
-- `/api/evaluations` governed regression suite start/list endpoint with case safety metadata, safe default selection, and production mutation gating
-- `/api/evaluations/:id` evaluation run detail endpoint with case evidence, governance metadata, override evidence, and correlated runtime events
-- `/api/evaluations/:id/report` signed persistent evaluation report snapshot endpoint with JSON audit bundle downloads
-- `/api/evaluations/:id/report/verify` signed evaluation report verifier endpoint for stored reports or submitted JSON audit bundles
-- `/api/security/context` tenant, actor, role, RBAC, and secret-vault policy endpoint
-- `/api/security/audits` RBAC allow/deny audit endpoint
-- `/api/auth/session` current auth/session state endpoint
-- `/api/auth/login` password session sign-in endpoint
-- `/api/auth/logout` session revocation endpoint
-- `/api/auth/control-plane` tenant, user, membership, and session admin endpoint
-- Command center panels for knowledge ingest, memory browser, and knowledge library
-- Command center panel for governed tool dry-runs, executions, and audit review
-- Command center panel for MCP connector registration, discovery, and discovered tool review
-- Command center panel for OpenAPI connector import, operation review, and governed REST execution
-- Command center panel for durable workflow start, tick, approval, pause/resume, retry, and cancel controls
-- Command center panel for regression suite runs, pass rate, latency, and cost estimates
-- Command center panel for runtime observability, SLO health, route failures, SLO breach policies, threshold/severity/routing/suppression controls, approval-backed policy changes, monitor execution, recent errors, and correlated event timelines
-- Command center panel for tenant context, RBAC rules, secret policy, and security audit trails
-- Command center panel for auth mode, current identity, tenant users, and admin user creation
-- Command center panel for pending approvals, failed work, active workflows, and connector errors
-- Command center health counters for system status, incidents, and completed recovery actions
-- Command center incident response controls for active incidents, acknowledgements, resolutions, and remediation playbooks
-- Command center alert delivery controls for queueing active incident alerts, dispatching pending deliveries, probing target readiness, retrying failed deliveries, and exercising the scheduled alert tick
-- Connection catalog for GitHub, Gmail, Slack, Notion, Google Drive, Supabase, Neon, Upstash, browser automation, custom MCP, and custom OpenAPI adapter setup
-- Local memory and knowledge persisted under `.omniagent/`
-- Postgres-backed memory, RAG documents/chunks, run history, tool audit history, MCP connectors, OpenAPI connectors, and discovered tool schemas when `DATABASE_URL` is configured
-- Hybrid retrieval across durable memories and source chunks with semantic, keyword, recency, and importance signals
-- Adaptive context engine with query routing, evidence confidence, source diversity, positional context packing, and persisted retrieval traces
-- Graph memory over durable memories and retrieval traces, with concept/entity communities feeding multi-hop context back into the adaptive context engine
-- Memory consolidation after completed runs into durable facts, preferences, procedures, decisions, and tasks
-- Governed tool execution with risk levels, approval gates, durable approve/reject decisions, planned connector blocking, and immutable audit records
-- MCP connector host for Streamable HTTP servers; discovered tools flow into the governed tool registry and inherit risk/audit policy
-- OpenAPI connector importer for JSON/YAML specs; imported REST operations flow into the governed tool registry with env-var based auth, dry-runs, approval gates, and audit policy
-- Durable workflow runtime for persisted step execution with Postgres queue leases, retries, approval waits, operator signals, event history, and final report persistence
-- Dynamic workflow planner that decomposes goals into typed DAGs with tool selection, connector targets, risk policy, verification criteria, and memory feedback
-- Plan-driven workflow executor that persists each dynamic DAG node, runs read-only governed tools, dry-runs side-effecting or approval-gated actions, and feeds execution summaries into verification and reports
-- Native webhook workflow triggers with HMAC signature support, trigger/event ledgers, workflow run creation, and durable queue enqueue
-- Production health diagnostics across database, OpenAI configuration, vector store, operation jobs, workflows, planner, triggers, evaluations, tools, memory, and connectors
-- Workflow health semantics that separate live stale/recent unrecovered failure pressure from recovered terminal workflow history
-- Command Center workflow liveness counters that distinguish live risk, recent unhandled failures, recovered failures, and historical terminal failure records
-- Command Center recovery history rows for inspecting recovery disposition, stale age, attempts, actor, reason, and affected queue jobs without opening raw JSON
-- Self-healing repair path for expired operation-job leases, stale workflow execution, queue recovery inspection, bounded drains, and safe failure of exhausted stale workflows
-- Incident management with normalized incident records, status lifecycle, event history, alert target metadata, and operator playbooks
-- Alert delivery with dashboard/ops persistence, signed outbound webhooks, Slack/email adapters, retry/backoff, target health probes, failed-delivery requeue, and escalation policy metadata
-- Observability SLO alerting that evaluates error budget, availability, route failure, and P95 latency policies, then opens/resolves incidents and queues alert deliveries
-- Durable SLO policy management backed by `omni_observability_slo_policies`, `omni_observability_slo_policy_changes`, `omni_observability_slo_approval_policies`, and `omni_observability_slo_approval_policy_versions`, with configurable thresholds, severities, alert target routing, suppression windows, quorum approval requests, versioned approval rules, break-glass policy, role-gated evidence, rollback snapshots, and default reset
-- Vercel Cron integration for secured production workflow queue ticks, observability SLO monitoring, and scheduled alert dispatch with `CRON_SECRET`
-- Durable observability ledger for workflow ticks, alert actions, diagnostics, evaluations, route failures, and correlation IDs
-- Evaluation harness for system readiness, RAG retrieval quality, governed tool policy, workflow lifecycle reliability, latency, and estimated cost
-- Evaluation governance with read-only, synthetic, and mutation-allowed safety modes, production admin override requirements, cleanup policy metadata, and Command Center risk labels
-- Command Center evaluation override operations with separate safe/gated execution lanes, mutation consent, operator reason capture, and override evidence in runtime events
-- Command Center evaluation run drill-down with case-level result inspection, failed/warned/gated filters, governance evidence, override reason, and correlated runtime event details
-- Command Center signed evaluation report snapshots with durable JSON audit bundles, HMAC signatures, and one-click downloads
-- Command Center report verification controls with key status, canonical digest checks, and HMAC validation evidence
-- Operations regression case for approval queue, operations overview, workflow liveness summary, recovery history, and connection catalog readiness
-- Operations regression case for persisted health diagnostics, SLO metrics, incident consistency, and repair ledgers
-- Operations regression case for stale workflow queue recovery, safe requeue/fail reconciliation, bounded drain reporting, cleanup, and registry exposure
-- Operations regression case for workflow health liveness semantics and recovered failure history
-- Operations regression case for production evaluation governance, safe-suite filtering, mutation blocking, and admin override policy
-- Operations regression case for incident sync, alert routing metadata, acknowledgement actions, and playbook execution
-- Operations regression case for alert delivery queueing, dispatch lifecycle, delivery policies, target readiness, and signed webhook support
-- Operations regression case for secured scheduled alert dispatch metadata, queue/dispatch limits, and delivery progress
-- Operations regression case for alert target health probes, secret-safe readiness reporting, and failed-delivery retry controls
-- Operations regression case for durable observability events, SLO summaries, correlation IDs, redaction, and registry exposure
-- Operations regression case for observability SLO breach detection, incident creation, alert queueing, policy evidence, and registry exposure
-- Operations regression case for durable SLO policy configuration, cleanup, threshold/severity/routing/suppression persistence, and registry exposure
-- Operations regression case for governed SLO policy change requests, approval application, immutable history, rollback, and registry exposure
-- Operations regression case for high-risk SLO quorum, required approver roles, requester separation, signed evidence, and registry exposure
-- Operations regression case for versioned SLO approval policy administration, custom quorum resolution, emergency break-glass application, restore, and registry exposure
-- Operations regression case for persistent signed evaluation report snapshots, downloadable JSON audit bundles, and report signature metadata
-- Operations regression case for evaluation report verification, canonical digest validation, HMAC keyring checks, and signing-key rotation metadata
-- Tenant-aware security controls with viewer/operator/admin/system roles, server-only secret env-var references, redacted audit metadata, and persisted RBAC allow/deny records
-- First-party identity control plane with scrypt password hashes, HttpOnly opaque session cookies, hashed session tokens, tenants, users, memberships, and role-derived security context
-
-## Connector Secrets
-
-Connector records store environment variable names only. Put bearer tokens or API keys in local `.env.local` or Vercel environment variables, then reference the env var name from the connector form. Connector secrets must use the `OMNIAGENT_CONNECTOR_` prefix or be listed in `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST`; platform secrets such as `OPENAI_API_KEY`, `DATABASE_URL`, bootstrap passwords, and public env vars are blocked.
-
-Connector URLs are validated before registration, import, discovery, and execution. Hosted deployments require public HTTP(S) targets, block private/loopback/metadata hosts, reject embedded URL credentials, and execute connector fetches without following unvalidated redirects.
-
-## Security Context
-
-Authenticated sessions are enforced automatically in Vercel and any `NODE_ENV=production` runtime. Non-production can opt into sessions with `OMNIAGENT_AUTH_ENABLED=true`; production cannot be disabled by accident.
-
-Unsigned `x-omni-tenant-id`, `x-omni-user-id`, and `x-omni-user-role` identity headers are not trusted by default. Internal callers must send `x-omni-internal-auth` matching `OMNIAGENT_INTERNAL_AUTH_SECRET`; local development can explicitly opt into unsigned headers with `OMNIAGENT_TRUST_UNSIGNED_IDENTITY_HEADERS=true`. Without a trusted session/header, the default role is `viewer`.
-
-Configure `OMNIAGENT_BOOTSTRAP_EMAIL` and `OMNIAGENT_BOOTSTRAP_PASSWORD` before deployment so the first admin can sign in and manage users.
-
-## Release Gates
-
-Run `npm run lint`, `npm run build`, and `BASE_URL=<deployment-url> npm run test:security` before promoting a release. The security smoke verifies anonymous API lockdown, session cookie flags, authenticated memory access, connector secret allowlisting, and private-endpoint rejection.
-
-## Implementation Roadmap
-
-See `docs/IMPLEMENTATION_PLAN.md`.
+- Auth is always enforced in production and cannot be disabled there. Set `OMNIAGENT_BOOTSTRAP_EMAIL` / `OMNIAGENT_BOOTSTRAP_PASSWORD` before the first deploy.
+- Connectors store environment variable *names* only (prefix `OMNIAGENT_CONNECTOR_` or allowlisted); platform secrets are blocked, connector URLs are SSRF-guarded, and sensitive metadata is redacted.
+- Tenant data is isolated with forced row-level security; allow/deny decisions are audited with correlation IDs.

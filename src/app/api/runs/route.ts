@@ -1,4 +1,4 @@
-import { listAgentRuns } from "@/lib/runs/store";
+import { getRunStats, listAgentRuns } from "@/lib/runs/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -17,7 +17,9 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit") || 20);
+  const includeStats = url.searchParams.get("stats") === "true";
   return Response.json({
     runs: await listAgentRuns(Math.min(Math.max(limit, 1), 100), { tenantId: context.tenantId }),
+    ...(includeStats ? { stats: await getRunStats({ tenantId: context.tenantId }) } : {}),
   });
 }

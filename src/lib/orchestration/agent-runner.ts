@@ -197,11 +197,13 @@ export async function* runAgent(
           });
 
           const input = parseFunctionArguments(call.argumentsJson);
-          const dryRun = definition.riskLevel >= 2 || definition.approvalRequired;
+          // dryRun=false lets policy decide: low-risk tools execute live,
+          // gated tools persist an approval_required record that the
+          // Approvals workspace can later approve and execute for real.
           const execution = await executeGovernedTool({
             toolId: definition.id,
             input,
-            dryRun,
+            dryRun: false,
             approved: false,
             context: securityContext,
           });
@@ -223,8 +225,8 @@ export async function* runAgent(
               dryRun: execution.record.dryRun,
               approvalRequired: execution.record.approvalRequired,
               note:
-                execution.record.status === "dry_run"
-                  ? "This was a PREVIEW only; no side effects happened. A human must approve the real execution from the Approvals workspace."
+                execution.record.status === "approval_required"
+                  ? `This action did NOT run. It is queued for human approval in the Approvals workspace (execution id ${execution.record.id}). Tell the user approval is needed before it executes.`
                   : execution.record.status === "executed"
                     ? "Executed for real."
                     : execution.record.reason,
@@ -251,7 +253,10 @@ export async function* runAgent(
       await flushDeltas();
     }
 
-    if (query.trim() && response.trim()) {
+    // Skip memory writes for trivial exchanges so the store does not fill
+    // with low-value episodes that dilute retrieval quality.
+    const worthRemembering = query.trim().length >= 12 && response.trim().length >= 280;
+    if (worthRemembering) {
       const episodeContent = [`User request: ${query}`, `Assistant response: ${response}`].join("\n\n");
       const embedding = (await embedTexts([episodeContent]))?.[0];
       await saveMemory({

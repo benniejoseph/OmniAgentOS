@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { getDataPath } from "@/lib/storage/paths";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type { MemoryRecord, MemorySearchResult, MemoryType } from "@/lib/memory/types";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
 
@@ -76,9 +76,10 @@ export async function saveMemory(input: CreateMemoryInput) {
     return record;
   }
 
-  const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
-  memories.unshift(record);
-  await writeJsonFile(getMemoryFile(), memories);
+  await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) => {
+    memories.unshift(record);
+    return memories;
+  });
   return record;
 }
 

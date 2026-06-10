@@ -29,6 +29,7 @@ type DashboardState = {
   release?: JsonRecord;
   slo?: JsonRecord;
   incidents?: JsonRecord;
+  runs?: JsonRecord;
 };
 
 type LoadState = "loading" | "ready" | "error";
@@ -133,12 +134,13 @@ export function DashboardOverview() {
         return;
       }
 
-      const [operations, capabilities, release, slo, incidents] = await Promise.all([
+      const [operations, capabilities, release, slo, incidents, runs] = await Promise.all([
         readJson("/api/operations"),
         readJson("/api/capabilities"),
         readJson("/api/release/evidence"),
         readJson("/api/observability/slo"),
         readJson("/api/incidents?status=active&limit=8"),
+        readJson("/api/runs?limit=1&stats=true").catch(() => ({})),
       ]);
 
       setData({
@@ -149,6 +151,7 @@ export function DashboardOverview() {
         release: asRecord(release),
         slo: asRecord(slo),
         incidents: asRecord(incidents),
+        runs: asRecord(runs),
       });
       setState("ready");
       setLastRefresh(new Date().toLocaleTimeString());
@@ -357,7 +360,16 @@ export function DashboardOverview() {
         </Panel>
       </section>
 
-      <section className="mt-4 grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
+      <section className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+        <Panel title="Agent quality" description="Is the agent itself healthy, not just the server?">
+          <div className="grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2">
+            <Metric label="Total runs" value={numberPath(data, "runs.stats.total")} tone="neutral" />
+            <Metric label="Completion rate" value={completionRate(data)} tone={completionTone(data)} />
+            <Metric label="Failed runs" value={numberPath(data, "runs.stats.byStatus.failed")} tone={numberPath(data, "runs.stats.byStatus.failed") === "0" ? "success" : "danger"} />
+            <Metric label="Memories saved" value={numberPath(data, "runs.stats.consolidated.memories")} tone="neutral" />
+          </div>
+        </Panel>
+
         <Panel title="Capability health" description="The operating substrate behind agent runs.">
           <div className="grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2">
             <Capability label="Storage" value={stringPath(data, "capabilities.storageBackend", "unknown")} icon={Database} />
@@ -523,6 +535,28 @@ async function readJson(path: string) {
     throw new HttpError(response.status, message);
   }
   return body;
+}
+
+function completionRate(data: DashboardState) {
+  const total = Number(readPath(data, "runs.stats.total") || 0);
+  if (!total) {
+    return "—";
+  }
+  const completed = Number(readPath(data, "runs.stats.byStatus.completed") || 0);
+  return `${Math.round((completed / total) * 100)}%`;
+}
+
+function completionTone(data: DashboardState): Tone {
+  const total = Number(readPath(data, "runs.stats.total") || 0);
+  if (!total) {
+    return "neutral";
+  }
+  const completed = Number(readPath(data, "runs.stats.byStatus.completed") || 0);
+  const rate = completed / total;
+  if (rate >= 0.9) {
+    return "success";
+  }
+  return rate >= 0.7 ? "warning" : "danger";
 }
 
 function computePosture(data: DashboardState) {
