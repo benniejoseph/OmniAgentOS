@@ -15,7 +15,10 @@ const executeSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const body = await request.json();
+  const body = await request.json().catch(() => null);
+  if (body === null) {
+    return Response.json({ error: "Invalid request", message: "Request body is not valid JSON." }, { status: 400 });
+  }
   const parsed = executeSchema.safeParse(body);
 
   if (!parsed.success) {

@@ -144,6 +144,18 @@ body {
   opacity: 0.62;
 }
 
+.action-button:focus-visible,
+.action-link:focus-visible,
+.primary-button:focus-visible,
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .animate-rise {
   animation: rise-in 760ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }

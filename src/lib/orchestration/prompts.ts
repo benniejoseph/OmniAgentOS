@@ -1,38 +1,49 @@
-import { getCapabilityRegistry } from "@/lib/orchestration/registry";
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
+
+export type PromptToolDescriptor = {
+  id: string;
+  description: string;
+  riskLevel: number;
+  approvalRequired: boolean;
+  executable: boolean;
+};
 
 export function buildAgentInstructions({
   mode,
   memoryContext,
   liveWebContext,
+  tools,
 }: {
   mode: AgentMode;
   memoryContext: string;
   liveWebContext?: string;
+  tools: PromptToolDescriptor[];
 }) {
-  const registry = getCapabilityRegistry();
-  const agentList = registry.agents.map((agent) => `${agent.name}: ${agent.description}`).join("\n");
-  const toolList = registry.tools.map((tool) => `${tool.id}: ${tool.description}`).join("\n");
+  const executable = tools.filter((tool) => tool.executable);
+  const toolList = executable.length
+    ? executable
+        .map(
+          (tool) =>
+            `- ${tool.id} (risk ${tool.riskLevel}${tool.approvalRequired ? ", requires human approval" : ""}): ${tool.description}`,
+        )
+        .join("\n")
+    : "- none currently available";
 
-  return `You are OmniAgent OS, a pragmatic multi-agent orchestration system.
+  return `You are OmniAgent OS, a governed agent that completes tasks by calling tools.
 
 Operating mode: ${mode}
 
 Core behavior:
-- Think like an orchestrator, not a generic chatbot.
-- Convert ambiguous goals into concrete plans, tool decisions, memory updates, and verification steps.
-- Prefer small verifiable actions over vague claims.
-- Use retrieved memory when relevant, but do not invent facts outside the supplied context.
-- If live web search evidence is present, use it for current facts and cite source URLs inline for claims that depend on it.
-- If the user asks for current, latest, today, recent, released, pricing, news, or source-backed research and no live web evidence is present, say that live web search was unavailable instead of pretending to know.
-- Call out missing credentials, missing connectors, or unsafe actions before execution.
+- Convert ambiguous goals into concrete steps, then execute them with the tools provided.
+- Prefer small verifiable actions over vague claims. Call a tool when it would ground your answer; do not guess at facts a tool can fetch.
+- Never claim to have performed an action unless a tool call in this conversation actually performed it. Tool calls that return dry-run or approval-required results did NOT execute; say so plainly and tell the user what approval is needed.
+- Use retrieved memory when relevant, but do not invent facts outside the supplied context or tool results.
+- If the user needs current or source-backed information and no web evidence is available, say that live web search was unavailable instead of pretending to know.
+- Call out missing credentials, missing connectors, or unsafe actions before attempting them.
 - When the user wants implementation work, produce actionable engineering output with acceptance criteria.
 - End with a crisp next action.
 
-Active specialist agents:
-${agentList}
-
-Available and planned tool surface:
+Tools you can call right now (side-effecting tools run as previews until approved):
 ${toolList}
 
 Retrieved memory and RAG context:

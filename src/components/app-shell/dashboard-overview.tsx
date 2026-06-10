@@ -166,6 +166,9 @@ export function DashboardOverview() {
   }, []);
 
   const posture = useMemo(() => computePosture(data), [data]);
+  const authenticated = Boolean(readPath(data, "session.authenticated"));
+  const placeholder = state === "loading" ? "loading…" : authenticated ? "unavailable" : "sign in";
+  const placeholderTone: Tone = state === "loading" ? "neutral" : authenticated ? "warning" : "neutral";
   const approvals = arrayPath(data, "operations.approvals.items");
   const workflows = arrayPath(data, "operations.latest.workflows");
   const jobs = arrayPath(data, "operations.latest.operationJobs");
@@ -215,12 +218,24 @@ export function DashboardOverview() {
         </div>
 
         <div className="mt-5 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-6">
-          <StatusCell label="Environment" value="Production" tone="success" />
-          <StatusCell label="Health" value={stringPath(data, "health.status", "unknown")} tone={toneForStatus(readPath(data, "health.status"))} />
-          <StatusCell label="Release" value={stringPath(data, "release.report.releaseGate.status", "unknown")} tone={toneForStatus(readPath(data, "release.report.releaseGate.status"))} />
-          <StatusCell label="SLO" value={Boolean(readPath(data, "slo.healthy")) ? "healthy" : "watch"} tone={Boolean(readPath(data, "slo.healthy")) ? "success" : "warning"} />
-          <StatusCell label="Role" value={stringPath(data, "session.membership.role", "guest")} tone="neutral" />
-          <StatusCell label="Updated" value={lastRefresh || "..."} tone="neutral" />
+          <StatusCell label="Session" value={state === "loading" ? "loading…" : authenticated ? "signed in" : "signed out"} tone={authenticated ? "success" : "neutral"} />
+          <StatusCell
+            label="Health"
+            value={readPath(data, "health.status") ? stringPath(data, "health.status", placeholder) : placeholder}
+            tone={readPath(data, "health.status") ? toneForStatus(readPath(data, "health.status")) : placeholderTone}
+          />
+          <StatusCell
+            label="Release"
+            value={readPath(data, "release.report.releaseGate.status") ? stringPath(data, "release.report.releaseGate.status", placeholder) : placeholder}
+            tone={readPath(data, "release.report.releaseGate.status") ? toneForStatus(readPath(data, "release.report.releaseGate.status")) : placeholderTone}
+          />
+          <StatusCell
+            label="SLO"
+            value={data.slo ? (Boolean(readPath(data, "slo.healthy")) ? "healthy" : "watch") : placeholder}
+            tone={data.slo ? (Boolean(readPath(data, "slo.healthy")) ? "success" : "warning") : placeholderTone}
+          />
+          <StatusCell label="Role" value={stringPath(data, "session.membership.role", authenticated ? "member" : "guest")} tone="neutral" />
+          <StatusCell label="Updated" value={lastRefresh || (state === "loading" ? "loading…" : "—")} tone="neutral" />
         </div>
       </section>
 

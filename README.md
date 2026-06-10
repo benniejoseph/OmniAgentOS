@@ -2,6 +2,17 @@
 
 An AI agentic orchestration framework starter built with Next.js, OpenAI, durable Postgres memory, and a RAG v2 knowledge layer.
 
+The interactive agent (`/api/agent`) runs a governed tool-calling loop: the model can call active governed tools (memory, knowledge, web search, runs, plus discovered MCP/OpenAPI tools below risk level 3). Risk 0-1 tools execute live; side-effecting or approval-gated tools run as dry-run previews until a human approves them, and every call lands in the tool audit ledger. Loop limits are configurable:
+
+```bash
+OMNIAGENT_AGENT_MAX_TOOL_STEPS=6
+OMNIAGENT_AGENT_MAX_MESSAGE_CHARS=32000
+OMNIAGENT_AGENT_MAX_MESSAGES=40
+OMNIAGENT_AGENT_RUNS_PER_MINUTE=10
+```
+
+Run `npm run test:unit` for the Vitest unit suite (tool policy, auth crypto, SSRF guard, JSON store, queue, rate limiter); `npm test` runs lint plus unit tests, and CI runs lint, unit tests, and build on every push and pull request.
+
 ## Run Locally
 
 ```bash

@@ -25,6 +25,15 @@ type StreamEvent =
   | { type: "status"; label?: string; detail?: string }
   | { type: "memory"; title?: string; count?: number }
   | { type: "delta"; text?: string }
+  | {
+      type: "tool";
+      toolId?: string;
+      toolName?: string;
+      status?: string;
+      riskLevel?: number;
+      dryRun?: boolean;
+      summary?: string;
+    }
   | { type: "done"; response?: string }
   | { type: "error"; message?: string };
 
@@ -884,6 +893,25 @@ function streamEventLabel(event: StreamEvent) {
   }
   if (event.type === "memory") {
     return event.count ? `${event.title || "Memory"} (${event.count})` : event.title || "Memory event.";
+  }
+  if (event.type === "tool") {
+    const name = event.toolName || event.toolId || "Tool";
+    if (event.status === "running") {
+      return `${name} is running (risk ${event.riskLevel ?? "?"}).`;
+    }
+    if (event.status === "executed") {
+      return `${name} executed.`;
+    }
+    if (event.status === "dry_run") {
+      return `${name} previewed only — no side effects. Approve it from Approvals to run for real.`;
+    }
+    if (event.status === "approval_required") {
+      return `${name} is waiting for human approval.`;
+    }
+    if (event.status === "blocked") {
+      return `${name} was blocked by policy${event.summary ? `: ${event.summary}` : "."}`;
+    }
+    return `${name} failed${event.summary ? `: ${event.summary}` : "."}`;
   }
   if (event.type === "done") {
     return "Agent run completed.";

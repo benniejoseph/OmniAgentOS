@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, ArrowRight, Search, Sparkles } from "lucide-react";
+import { Activity, ArrowRight, Sparkles } from "lucide-react";
 import { clsx } from "clsx";
 import { appNav, appNavGroups } from "@/lib/navigation";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({ children, banner }: { children: React.ReactNode; banner?: React.ReactNode }) {
   const pathname = usePathname();
   const activeItem = appNav.find((item) => isActivePath(pathname, item.href));
 
@@ -23,7 +23,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <p className="truncate text-xs text-muted">Enterprise control plane</p>
           </div>
         </div>
-        <nav className="space-y-5 px-3 py-4" aria-label="Application navigation">
+        <nav className="space-y-5 overflow-y-auto px-3 py-4 pb-32" style={{ maxHeight: "calc(100vh - 4rem)" }} aria-label="Application navigation">
           {appNavGroups.map((group) => (
             <div key={group.label}>
               <p className="px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">{group.label}</p>
@@ -60,6 +60,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="lg:pl-72">
+        {banner}
         <header className="sticky top-0 z-20 border-b border-line bg-background/82 backdrop-blur-xl">
           <div className="flex h-16 items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
             <div className="flex min-w-0 items-center gap-3">
@@ -74,9 +75,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <p className="truncate text-sm font-semibold">{activeItem?.label || "OmniAgentOS"}</p>
                 <p className="hidden truncate text-xs text-muted sm:block">{activeItem?.description || "Enterprise AI operations workspace"}</p>
               </div>
-              <div className="ml-3 hidden min-w-0 items-center gap-2 rounded-md border border-line bg-surface px-3 py-2 text-sm text-muted xl:flex">
-                <Search size={15} aria-hidden="true" />
-                <span className="truncate">Flow: Start, Run, Approve, Results</span>
+              <div className="ml-3 hidden min-w-0 items-center gap-2 text-sm text-muted xl:flex">
+                <span className="truncate">Flow: Start → Run → Approve → Results</span>
               </div>
             </div>
             <div className="flex items-center gap-2">

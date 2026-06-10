@@ -343,6 +343,7 @@ async function executeGoal(detail: WorkflowRunDetail) {
   const instructions = buildAgentInstructions({
     mode: detail.run.input.mode || "orchestrate",
     memoryContext: String(retrieveOutput?.contextBlock || "No context available."),
+    tools: [],
   });
   const input = [
     `Goal: ${detail.run.goal}`,

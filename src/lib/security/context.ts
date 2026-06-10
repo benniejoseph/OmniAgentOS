@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { getSessionToken } from "@/lib/auth/session";
 import { getSessionIdentity, isAuthEnforced } from "@/lib/auth/store";
 import { enterDatabaseTenantContext } from "@/lib/db/client";
@@ -36,6 +37,11 @@ export const rbacRules: RbacRule[] = [
     action: "manage.connector",
     description: "Register, import, and discover external connectors.",
     roles: ["admin", "system"],
+  },
+  {
+    action: "run.agent",
+    description: "Start interactive agent runs that may execute low-risk governed tools.",
+    roles: ["operator", "admin", "system"],
   },
   {
     action: "manage.workflow",
@@ -198,7 +204,7 @@ function canTrustIdentityHeaders(request?: Request) {
   const configuredSecret = process.env.OMNIAGENT_INTERNAL_AUTH_SECRET?.trim();
   const providedSecret = request?.headers.get("x-omni-internal-auth")?.trim();
 
-  if (configuredSecret && providedSecret && configuredSecret === providedSecret) {
+  if (configuredSecret && providedSecret && secretsMatch(configuredSecret, providedSecret)) {
     return true;
   }
 
@@ -207,6 +213,12 @@ function canTrustIdentityHeaders(request?: Request) {
     !process.env.VERCEL &&
     process.env.NODE_ENV !== "production"
   );
+}
+
+function secretsMatch(expected: string, provided: string) {
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  const providedDigest = createHash("sha256").update(provided).digest();
+  return timingSafeEqual(expectedDigest, providedDigest);
 }
 
 function connectorSecretAllowlist() {

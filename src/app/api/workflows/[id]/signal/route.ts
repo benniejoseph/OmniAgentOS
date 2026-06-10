@@ -14,7 +14,7 @@ export async function POST(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  const parsed = signalSchema.safeParse(await request.json());
+  const parsed = signalSchema.safeParse(await request.json().catch(() => ({})));
 
   if (!parsed.success) {
     return Response.json(

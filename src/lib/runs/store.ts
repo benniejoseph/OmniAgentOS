@@ -3,7 +3,7 @@ import { getDatabaseTenantContext, hasDatabaseUrl, ensureDatabaseSchema, getSql 
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { AgentRunEventRecord, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 
 export async function createAgentRun(input: {
   tenantId?: string;
@@ -40,9 +40,10 @@ export async function createAgentRun(input: {
     return run;
   }
 
-  const ledger = await readRunLedger();
-  ledger.runs.unshift(run);
-  await writeRunLedger(ledger);
+  await updateRunLedger((ledger) => {
+    ledger.runs.unshift(run);
+    return ledger;
+  });
   return run;
 }
 
@@ -66,10 +67,11 @@ export async function appendRunEvent(runId: string, event: AgentEvent) {
     return record;
   }
 
-  const ledger = await readRunLedger();
-  record.tenantId = normalizeTenantId(ledger.runs.find((run) => run.id === runId)?.tenantId);
-  ledger.events.push(record);
-  await writeRunLedger(trimLedger(ledger));
+  await updateRunLedger((ledger) => {
+    record.tenantId = normalizeTenantId(ledger.runs.find((run) => run.id === runId)?.tenantId);
+    ledger.events.push(record);
+    return ledger;
+  });
   return record;
 }
 
@@ -223,20 +225,23 @@ async function setRunStatus(
 }
 
 async function updateFileRun(runId: string, mutate: (run: AgentRunRecord) => void) {
-  const ledger = await readRunLedger();
-  const run = ledger.runs.find((item) => item.id === runId);
-  if (run) {
-    mutate(run);
-    await writeRunLedger(ledger);
-  }
+  await updateRunLedger((ledger) => {
+    const run = ledger.runs.find((item) => item.id === runId);
+    if (run) {
+      mutate(run);
+    }
+    return ledger;
+  });
 }
 
 async function readRunLedger() {
   return readJsonFile<RunLedger>(getRunsFile(), { runs: [], events: [] });
 }
 
-async function writeRunLedger(ledger: RunLedger) {
-  await writeJsonFile(getRunsFile(), trimLedger(ledger));
+async function updateRunLedger(mutate: (ledger: RunLedger) => RunLedger) {
+  return updateJsonFile<RunLedger>(getRunsFile(), { runs: [], events: [] }, (ledger) =>
+    trimLedger(mutate(ledger)),
+  );
 }
 
 function trimLedger(ledger: RunLedger): RunLedger {

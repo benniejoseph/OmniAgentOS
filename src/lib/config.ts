@@ -39,8 +39,29 @@ export function hasOpenAIKey() {
 }
 
 export function getAppBaseUrl() {
-  return process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const vercelHost = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
+  return (
+    process.env.NEXT_PUBLIC_APP_URL ||
+    (vercelHost ? `https://${vercelHost}` : "http://localhost:3000")
+  );
 }
+
+export const AGENT_MAX_TOOL_STEPS = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_TOOL_STEPS,
+  6,
+);
+export const AGENT_MAX_MESSAGE_CHARS = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_MESSAGE_CHARS,
+  32_000,
+);
+export const AGENT_MAX_MESSAGES = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_MESSAGES,
+  40,
+);
+export const AGENT_RUNS_PER_MINUTE = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_RUNS_PER_MINUTE,
+  10,
+);
 
 function normalizePositiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value);
