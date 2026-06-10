@@ -27,10 +27,10 @@ export function MarketingPage({ pageKey }: { pageKey: MarketingPageKey }) {
             <p className="max-w-2xl text-lg leading-8 text-muted">{page.summary}</p>
             <div className="mt-8">
               <Link
-                href="/app"
+                href="/demo"
                 className="inline-flex h-12 items-center gap-2 rounded-md bg-primary px-5 text-sm font-semibold text-primary-ink transition hover:brightness-105"
               >
-                Open app
+                Try demo
                 <ArrowRight size={16} aria-hidden="true" />
               </Link>
             </div>

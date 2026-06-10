@@ -66,10 +66,10 @@ export function LandingPage() {
             </p>
             <div className="animate-rise-delay mt-8 flex flex-col gap-3 sm:flex-row">
               <Link
-                href="/app"
+                href="/demo"
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-primary px-5 text-sm font-semibold text-primary-ink transition hover:brightness-105 focus:outline-none focus:ring-2 focus:ring-primary/40"
               >
-                Open command center
+                Try demo workspace
                 <ArrowRight size={16} aria-hidden="true" />
               </Link>
               <Link
@@ -289,10 +289,10 @@ export function LandingPage() {
             </p>
           </div>
           <Link
-            href="/app"
+            href="/onboarding"
             className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-background px-5 text-sm font-semibold text-foreground transition hover:opacity-90"
           >
-            Launch OmniAgentOS
+            Start onboarding
             <ArrowRight size={16} aria-hidden="true" />
           </Link>
         </div>

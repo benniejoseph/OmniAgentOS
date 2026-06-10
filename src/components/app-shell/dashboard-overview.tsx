@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  ArrowRight,
   AlertTriangle,
   Brain,
   Cable,
@@ -168,6 +170,21 @@ export function DashboardOverview() {
           <p className="mt-5 max-w-2xl text-base leading-7 text-muted">
             Monitor release readiness, health, memory, workflows, approvals, connectors, incidents, and live SLO posture from one surface.
           </p>
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+            <Link
+              href="/onboarding"
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-ink transition hover:brightness-105"
+            >
+              Continue onboarding
+              <ArrowRight size={15} aria-hidden="true" />
+            </Link>
+            <Link
+              href="/demo"
+              className="inline-flex h-11 items-center justify-center rounded-md border border-line bg-background px-4 text-sm font-semibold transition hover:bg-surface-raised"
+            >
+              View demo mode
+            </Link>
+          </div>
           <div className="mt-10 grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-2">
             {primaryMetrics.map((metric) => {
               const Icon = metric.icon;

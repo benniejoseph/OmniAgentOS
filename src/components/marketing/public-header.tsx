@@ -27,10 +27,16 @@ export function PublicHeader() {
         <div className="flex items-center gap-2">
           <ThemeToggle compact />
           <Link
-            href="/app"
+            href="/login"
+            className="hidden h-10 items-center rounded-md px-3 text-sm font-semibold text-muted transition hover:bg-surface hover:text-foreground sm:inline-flex"
+          >
+            Sign in
+          </Link>
+          <Link
+            href="/signup"
             className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink transition hover:brightness-105 focus:outline-none focus:ring-2 focus:ring-primary/40"
           >
-            Open app
+            Get access
             <ArrowRight size={15} aria-hidden="true" />
           </Link>
         </div>
