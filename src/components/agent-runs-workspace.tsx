@@ -33,7 +33,7 @@ const tabs: Array<{ key: TabKey; label: string; icon: typeof TerminalSquare }> =
   { key: "context", label: "Context", icon: Brain },
   { key: "plan", label: "Plan", icon: GitBranch },
   { key: "execute", label: "Execute", icon: Play },
-  { key: "evidence", label: "Evidence", icon: FileText },
+  { key: "evidence", label: "Results", icon: FileText },
 ];
 
 const starterGoals = [
@@ -41,6 +41,59 @@ const starterGoals = [
   "Prepare a production release readiness report using evaluations, SLOs, incidents, and security evidence.",
   "Find weak knowledge coverage for connector operations and create an ingest plan.",
 ];
+
+const runMapSteps = [
+  {
+    step: "1",
+    key: "goal",
+    label: "First",
+    title: "Goal",
+    body: "Say what you want done.",
+    icon: TerminalSquare,
+  },
+  {
+    step: "2",
+    key: "context",
+    label: "RAG",
+    title: "Context",
+    body: "See what memory will be used.",
+    icon: Brain,
+  },
+  {
+    step: "3",
+    key: "plan",
+    label: "Before action",
+    title: "Plan",
+    body: "Check steps, risk, and gates.",
+    icon: GitBranch,
+  },
+  {
+    step: "4",
+    key: "execute",
+    label: "Action",
+    title: "Execute",
+    body: "Run the agent or workflow.",
+    icon: Play,
+  },
+  {
+    step: "5",
+    key: "approvals",
+    label: "If blocked",
+    title: "Approve",
+    body: "Decide risky gates only if needed.",
+    icon: ShieldCheck,
+    href: "/app/approvals",
+  },
+  {
+    step: "6",
+    key: "results",
+    label: "Last",
+    title: "Results",
+    body: "Read output and evidence.",
+    icon: FileText,
+    href: "/app/results",
+  },
+] as const;
 
 export function AgentRunsWorkspace() {
   const [goal, setGoal] = useState(starterGoals[0]);
@@ -281,6 +334,20 @@ export function AgentRunsWorkspace() {
         ) : null}
       </section>
 
+      <RunMap
+        activeTab={activeTab}
+        onStage={(key) => setActiveTab(key)}
+        contextReady={contextResults.length > 0}
+        planReady={planNodes.length > 0}
+        executionStarted={Boolean(workflowRun || streamEvents.length || agentResponse)}
+        approvalCount={approvalItems.length}
+        resultReady={Boolean(
+          agentResponse ||
+            runRows.some((row) => stringValue(row.status) === "completed") ||
+            stringPath(workflowRun, "run.status", "") === "completed"
+        )}
+      />
+
       <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="min-w-0 rounded-lg border border-line bg-surface">
           <nav className="flex max-w-full gap-2 overflow-x-auto border-b border-line p-2" aria-label="Agent run stages">
@@ -406,19 +473,20 @@ export function AgentRunsWorkspace() {
             ) : null}
 
             {activeTab === "evidence" ? (
-              <StagePanel title="Evidence and approvals" description="Recent run ledger, approval queue, release gate, and runtime events.">
+              <StagePanel title="Results and evidence" description="Inline result history, approval blockers, release gate, and runtime events. Use the Results page as the final cross-run destination.">
                 <div className="mb-4 flex flex-wrap gap-2">
                   <button type="button" onClick={() => void refreshEvidence()} className="action-button">
                     <RefreshCw size={14} aria-hidden="true" />
                     Refresh evidence
                   </button>
+                  <Link href="/app/results" className="primary-button">Open Results</Link>
                   <Link href="/app/approvals" className="action-link">Open approvals</Link>
                   <Link href="/app/evaluations" className="action-link">Release evidence</Link>
                 </div>
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <EvidenceCard title="Recent agent runs" rows={runRows.map((item) => evidenceRow(item, "prompt", "status"))} empty="No run records loaded." />
-                  <EvidenceCard title="Pending approvals" rows={approvalItems.map((item) => evidenceRow(item, "title", "kind"))} empty="No approvals pending." />
-                  <EvidenceCard title="Workflow runs" rows={arrayPath(evidence, "workflows.runs").map((item) => evidenceRow(item, "goal", "status"))} empty="No workflows loaded." />
+                  <EvidenceCard title="Agent answers" rows={runRows.map((item) => evidenceRow(item, "prompt", "status"))} empty="No run records loaded." />
+                  <EvidenceCard title="Blocked before result" rows={approvalItems.map((item) => evidenceRow(item, "title", "kind"))} empty="No approvals pending." />
+                  <EvidenceCard title="Workflow outcomes" rows={arrayPath(evidence, "workflows.runs").map((item) => evidenceRow(item, "goal", "status"))} empty="No workflows loaded." />
                   <EvidenceCard title="Runtime events" rows={arrayPath(evidence, "events.events").map((item) => evidenceRow(item, "message", "level"))} empty="No runtime events loaded." />
                 </div>
               </StagePanel>
@@ -443,6 +511,7 @@ export function AgentRunsWorkspace() {
 
           <StagePanel title="Related workspaces" description="Subsystem controls live in their own pages.">
             <div className="grid gap-2">
+              <WorkspaceLink href="/app/results" label="Results" icon={FileText} />
               <WorkspaceLink href="/app/memory" label="Knowledge" icon={Brain} />
               <WorkspaceLink href="/app/workflows" label="Workflows" icon={Workflow} />
               <WorkspaceLink href="/app/tools" label="Tool Catalog" icon={ShieldCheck} />
@@ -453,6 +522,133 @@ export function AgentRunsWorkspace() {
       </section>
     </div>
   );
+}
+
+function RunMap({
+  activeTab,
+  onStage,
+  contextReady,
+  planReady,
+  executionStarted,
+  approvalCount,
+  resultReady,
+}: {
+  activeTab: TabKey;
+  onStage: (key: TabKey) => void;
+  contextReady: boolean;
+  planReady: boolean;
+  executionStarted: boolean;
+  approvalCount: number;
+  resultReady: boolean;
+}) {
+  return (
+    <section className="mt-4 rounded-lg border border-primary/30 bg-surface p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Run map</p>
+          <h2 className="mt-1 text-lg font-semibold">Move left to right. Results are the end.</h2>
+        </div>
+        <p className="max-w-2xl text-sm leading-6 text-muted">
+          Do not judge the work from the middle of the page. A run is complete only when the result is visible or the blocker is resolved.
+        </p>
+      </div>
+      <div className="mt-4 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-3 2xl:grid-cols-6">
+        {runMapSteps.map((item) => {
+          const state = runMapState(item.key, {
+            activeTab,
+            contextReady,
+            planReady,
+            executionStarted,
+            approvalCount,
+            resultReady,
+          });
+          return <RunMapStep key={item.key} item={item} state={state} onStage={onStage} />;
+        })}
+      </div>
+    </section>
+  );
+}
+
+function RunMapStep({
+  item,
+  state,
+  onStage,
+}: {
+  item: (typeof runMapSteps)[number];
+  state: { tone: Tone; label: string };
+  onStage: (key: TabKey) => void;
+}) {
+  const Icon = item.icon;
+  const body = (
+    <>
+      <div className="flex items-center justify-between gap-3">
+        <span className="grid size-9 place-items-center rounded-md bg-primary text-sm font-semibold text-primary-ink">{item.step}</span>
+        <span className={clsx("rounded-md px-2 py-1 font-mono text-[11px]", pillTone(state.tone))}>{state.label}</span>
+      </div>
+      <Icon size={17} className="mt-5 text-primary" aria-hidden="true" />
+      <p className="mt-3 text-sm font-semibold">{item.title}</p>
+      <p className="mt-2 text-xs leading-5 text-muted">{item.body}</p>
+      <p className="mt-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">{item.label}</p>
+    </>
+  );
+
+  if ("href" in item && item.href) {
+    return (
+      <Link href={item.href} className="group min-h-44 bg-background p-4 text-left transition hover:bg-surface-raised">
+        {body}
+      </Link>
+    );
+  }
+
+  return (
+    <button type="button" onClick={() => onStage(item.key as TabKey)} className="group min-h-44 bg-background p-4 text-left transition hover:bg-surface-raised">
+      {body}
+    </button>
+  );
+}
+
+function runMapState(
+  key: (typeof runMapSteps)[number]["key"],
+  state: {
+    activeTab: TabKey;
+    contextReady: boolean;
+    planReady: boolean;
+    executionStarted: boolean;
+    approvalCount: number;
+    resultReady: boolean;
+  },
+): { tone: Tone; label: string } {
+  if (key === "goal") {
+    return state.activeTab === "goal" ? { tone: "warning", label: "active" } : { tone: "success", label: "ready" };
+  }
+  if (key === "context") {
+    if (state.contextReady) {
+      return { tone: "success", label: "built" };
+    }
+    return state.activeTab === "context" ? { tone: "warning", label: "active" } : { tone: "neutral", label: "next" };
+  }
+  if (key === "plan") {
+    if (state.planReady) {
+      return { tone: "success", label: "ready" };
+    }
+    return state.activeTab === "plan" ? { tone: "warning", label: "active" } : { tone: "neutral", label: "pending" };
+  }
+  if (key === "execute") {
+    if (state.executionStarted) {
+      return { tone: "success", label: "started" };
+    }
+    return state.activeTab === "execute" ? { tone: "warning", label: "active" } : { tone: "neutral", label: "pending" };
+  }
+  if (key === "approvals") {
+    if (state.approvalCount > 0) {
+      return { tone: "warning", label: "blocked" };
+    }
+    return state.executionStarted ? { tone: "success", label: "clear" } : { tone: "neutral", label: "if needed" };
+  }
+  if (state.resultReady) {
+    return { tone: "success", label: "available" };
+  }
+  return state.activeTab === "evidence" ? { tone: "warning", label: "review" } : { tone: "neutral", label: "last" };
 }
 
 function GoalStage({
@@ -481,7 +677,7 @@ function GoalStage({
   onWorkflow: () => void;
 }) {
   return (
-    <StagePanel title="Compose goal" description="Start with intent, mode, and approval posture. Then move left to right: context, plan, execute, evidence.">
+    <StagePanel title="Compose goal" description="Start with intent, mode, and approval posture. Then move left to right: context, plan, execute, results.">
       <label className="block text-sm font-semibold">
         Goal
         <textarea

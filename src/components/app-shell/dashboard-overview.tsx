@@ -9,6 +9,8 @@ import {
   Brain,
   Cable,
   Database,
+  FileText,
+  GitBranch,
   Loader2,
   RefreshCw,
   ShieldCheck,
@@ -33,28 +35,79 @@ type LoadState = "loading" | "ready" | "error";
 
 const quickLinks = [
   {
-    title: "Start agent work",
-    body: "Compose a goal, retrieve context, generate a plan, and run with evidence.",
+    title: "1. Run agent",
+    body: "Write the goal, build context, preview the plan, then execute.",
     href: "/app/command",
     icon: TerminalSquare,
   },
   {
-    title: "Build workflow",
-    body: "Create durable runs, triggers, approval gates, and queue recovery paths.",
+    title: "2. Check results",
+    body: "Use this as the final destination for outputs, workflow state, and evidence.",
+    href: "/app/results",
+    icon: FileText,
+  },
+  {
+    title: "3. Approve blockers",
+    body: "If a run pauses, unblock or reject the risky step here.",
+    href: "/app/approvals",
+    icon: ShieldCheck,
+  },
+  {
+    title: "4. Improve context",
+    body: "Add knowledge when results are thin, stale, or missing source evidence.",
+    href: "/app/memory",
+    icon: Brain,
+  },
+];
+
+const runFlowSteps = [
+  {
+    step: "1",
+    label: "First",
+    title: "Run Agent",
+    body: "Type the goal and choose the work mode.",
+    href: "/app/command",
+    icon: TerminalSquare,
+  },
+  {
+    step: "2",
+    label: "Context",
+    title: "Build Context",
+    body: "Pull memory and RAG evidence before planning.",
+    href: "/app/command",
+    icon: Brain,
+  },
+  {
+    step: "3",
+    label: "Plan",
+    title: "Preview Plan",
+    body: "Inspect steps, risks, approvals, and checks.",
+    href: "/app/command",
+    icon: GitBranch,
+  },
+  {
+    step: "4",
+    label: "Execute",
+    title: "Start Work",
+    body: "Run the agent or durable workflow queue.",
     href: "/app/workflows",
     icon: Workflow,
   },
   {
-    title: "Improve knowledge",
-    body: "Add memories, ingest documents, test retrieval, and rebuild the graph.",
-    href: "/app/memory",
-    icon: Brain,
-  },
-  {
-    title: "Review approvals",
-    body: "Decide on risky tool calls, workflow gates, and SLO policy changes.",
+    step: "5",
+    label: "If blocked",
+    title: "Approve",
+    body: "Review gates only when the system pauses.",
     href: "/app/approvals",
     icon: ShieldCheck,
+  },
+  {
+    step: "6",
+    label: "Last",
+    title: "Results",
+    body: "Read outputs, blockers, and release evidence.",
+    href: "/app/results",
+    icon: FileText,
   },
 ];
 
@@ -128,12 +181,12 @@ export function DashboardOverview() {
                 <Activity size={18} aria-hidden="true" />
               </span>
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Control Room</p>
-                <h1 className="mt-1 text-2xl font-semibold tracking-normal">What needs attention now?</h1>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Start Here</p>
+                <h1 className="mt-1 text-2xl font-semibold tracking-normal">Follow this flow from goal to results.</h1>
               </div>
             </div>
             <p className="mt-4 max-w-4xl text-sm leading-6 text-muted">
-              This is the operating surface for OmniAgentOS: pending approvals, active work, release risk, incidents, connector health, and production readiness.
+              Use OmniAgentOS in this order: run an agent, build context, preview the plan, execute work, approve only if blocked, then read the result. The operational panels below show what needs attention now.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -149,8 +202,14 @@ export function DashboardOverview() {
               href="/app/command"
               className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink transition hover:brightness-105"
             >
-              New run
+              Start run
               <ArrowRight size={15} aria-hidden="true" />
+            </Link>
+            <Link
+              href="/app/results"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised"
+            >
+              Results
             </Link>
           </div>
         </div>
@@ -163,6 +222,47 @@ export function DashboardOverview() {
           <StatusCell label="Role" value={stringPath(data, "session.membership.role", "guest")} tone="neutral" />
           <StatusCell label="Updated" value={lastRefresh || "..."} tone="neutral" />
         </div>
+      </section>
+
+      <section className="mt-4 rounded-lg border border-primary/30 bg-surface p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">The only flow you need</p>
+            <h2 className="mt-1 text-lg font-semibold">Start at step 1. End at Results.</h2>
+          </div>
+          <p className="max-w-2xl text-sm leading-6 text-muted">
+            Knowledge, workflows, tools, evaluations, and monitoring are supporting workspaces. The main user path is below.
+          </p>
+        </div>
+        <div className="mt-4 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-3 xl:grid-cols-6">
+          {runFlowSteps.map((step) => (
+            <FlowStepLink key={`${step.step}-${step.title}`} item={step} />
+          ))}
+        </div>
+      </section>
+
+      <section className="mt-4 grid gap-4 lg:grid-cols-3">
+        <DecisionCard
+          label="First place to look"
+          title="Run Agent"
+          body="This is where a task begins. Enter the outcome you want, then use the staged tabs in order."
+          href="/app/command"
+          linkLabel="Open Run Agent"
+        />
+        <DecisionCard
+          label="Most important now"
+          title={approvals.length || incidents.length ? "Action inbox" : "No blockers"}
+          body={approvals.length || incidents.length ? "Approvals or incidents are blocking final results. Clear these before judging the outcome." : "No approvals or incidents are currently waiting. You can start a run or inspect recent results."}
+          href={approvals.length || incidents.length ? "/app/approvals" : "/app/results"}
+          linkLabel={approvals.length || incidents.length ? "Open Approvals" : "Open Results"}
+        />
+        <DecisionCard
+          label="Last place to look"
+          title="Results"
+          body="This is the destination after execution. It shows outputs, workflow outcomes, pending approval blockers, and evidence."
+          href="/app/results"
+          linkLabel="View Results"
+        />
       </section>
 
       {!Boolean(readPath(data, "session.authenticated")) && state === "ready" ? (
@@ -269,6 +369,36 @@ export function DashboardOverview() {
         </Panel>
       </section>
     </div>
+  );
+}
+
+function FlowStepLink({ item }: { item: (typeof runFlowSteps)[number] }) {
+  const Icon = item.icon;
+  return (
+    <Link href={item.href} className="group min-h-48 bg-background p-4 transition hover:bg-surface-raised">
+      <div className="flex items-center justify-between gap-3">
+        <span className="grid size-9 place-items-center rounded-md bg-primary text-sm font-semibold text-primary-ink">{item.step}</span>
+        <span className="rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">{item.label}</span>
+      </div>
+      <Icon size={17} className="mt-6 text-primary" aria-hidden="true" />
+      <p className="mt-3 text-sm font-semibold">{item.title}</p>
+      <p className="mt-2 text-xs leading-5 text-muted">{item.body}</p>
+      <ArrowRight size={14} className="mt-4 text-muted transition group-hover:translate-x-1 group-hover:text-primary" aria-hidden="true" />
+    </Link>
+  );
+}
+
+function DecisionCard({ label, title, body, href, linkLabel }: { label: string; title: string; body: string; href: string; linkLabel: string }) {
+  return (
+    <section className="rounded-lg border border-line bg-surface p-4">
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">{label}</p>
+      <h2 className="mt-2 text-lg font-semibold">{title}</h2>
+      <p className="mt-2 min-h-12 text-sm leading-6 text-muted">{body}</p>
+      <Link href={href} className="mt-4 inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised">
+        {linkLabel}
+        <ArrowRight size={14} aria-hidden="true" />
+      </Link>
+    </section>
   );
 }
 

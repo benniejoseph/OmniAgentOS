@@ -55,17 +55,23 @@ export const marketingNav = [
 export const appNav: AppNavItem[] = [
   {
     href: "/app",
-    label: "Control Room",
-    shortLabel: "Control",
-    description: "What needs attention now: health, approvals, live work, incidents, and release risk.",
+    label: "Start Here",
+    shortLabel: "Start",
+    description: "Guided path from goal to context, plan, execution, approval, and results.",
     icon: Activity,
   },
   {
     href: "/app/command",
-    label: "Agent Runs",
-    shortLabel: "Runs",
-    description: "Start focused agent work, preview context, inspect plans, and track execution evidence.",
+    label: "Run Agent",
+    shortLabel: "Run",
+    description: "First active step: enter a goal, build context, preview the plan, and execute.",
     icon: TerminalSquare,
+  },
+  {
+    href: "/app/results",
+    label: "Results",
+    description: "Find final outputs, workflow status, approval blockers, and evidence after work runs.",
+    icon: FileText,
   },
   {
     href: "/app/workflows",
@@ -129,7 +135,7 @@ export const appNav: AppNavItem[] = [
 export const appNavGroups: AppNavGroup[] = [
   {
     label: "Operate",
-    items: appNav.filter((item) => ["/app", "/app/command", "/app/workflows", "/app/approvals"].includes(item.href)),
+    items: appNav.filter((item) => ["/app", "/app/command", "/app/results", "/app/workflows", "/app/approvals"].includes(item.href)),
   },
   {
     label: "Build",

@@ -76,7 +76,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </div>
               <div className="ml-3 hidden min-w-0 items-center gap-2 rounded-md border border-line bg-surface px-3 py-2 text-sm text-muted xl:flex">
                 <Search size={15} aria-hidden="true" />
-                <span className="truncate">Jump to runs, knowledge, workflows, tools</span>
+                <span className="truncate">Flow: Start, Run, Approve, Results</span>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -89,7 +89,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 href="/app/command"
                 className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink transition hover:brightness-105"
               >
-                New run
+                Start run
               </Link>
             </div>
           </div>
