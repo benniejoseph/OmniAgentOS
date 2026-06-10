@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowRight, Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowRight, ChevronDown, Sparkles } from "lucide-react";
 import { clsx } from "clsx";
 import { appNav, appNavGroups } from "@/lib/navigation";
 import { CommandPalette } from "@/components/app-shell/command-palette";
@@ -24,34 +25,9 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
             <p className="truncate text-xs text-muted">Enterprise control plane</p>
           </div>
         </div>
-        <nav className="space-y-5 overflow-y-auto px-3 py-4 pb-32" style={{ maxHeight: "calc(100vh - 4rem)" }} aria-label="Application navigation">
+        <nav className="space-y-4 overflow-y-auto px-3 py-4 pb-32" style={{ maxHeight: "calc(100vh - 4rem)" }} aria-label="Application navigation">
           {appNavGroups.map((group) => (
-            <div key={group.label}>
-              <p className="px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">{group.label}</p>
-              <div className="mt-2 space-y-1">
-                {group.items.map((item) => {
-                  const Icon = item.icon;
-                  const active = isActivePath(pathname, item.href);
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      title={item.description}
-                      className={clsx(
-                        "group flex items-center gap-3 rounded-md px-3 py-2.5 text-sm transition",
-                        active
-                          ? "bg-primary text-primary-ink"
-                          : "text-muted hover:bg-surface-raised hover:text-foreground",
-                      )}
-                    >
-                      <Icon size={17} className="shrink-0" aria-hidden="true" />
-                      <span className="min-w-0 flex-1 truncate font-medium">{item.label}</span>
-                      {active ? <ArrowRight size={14} className="shrink-0" aria-hidden="true" /> : null}
-                    </Link>
-                  );
-                })}
-              </div>
-            </div>
+            <NavGroup key={group.label} group={group} pathname={pathname} />
           ))}
         </nav>
         <div className="absolute inset-x-3 bottom-3 rounded-md border border-line bg-background p-3">
@@ -109,6 +85,77 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
 
         <main>{children}</main>
       </div>
+    </div>
+  );
+}
+
+function NavGroup({ group, pathname }: { group: (typeof appNavGroups)[number]; pathname: string }) {
+  const containsActive = group.items.some((item) => isActivePath(pathname, item.href));
+  const [open, setOpen] = useState(() => {
+    if (!group.collapsible || containsActive) {
+      return true;
+    }
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return window.localStorage.getItem(`omni-nav-open:${group.label}`) === "true";
+  });
+
+  // A navigation into a collapsed group should reveal it.
+  useEffect(() => {
+    if (containsActive) {
+      setOpen(true);
+    }
+  }, [containsActive]);
+
+  function toggle() {
+    setOpen((current) => {
+      const next = !current;
+      window.localStorage.setItem(`omni-nav-open:${group.label}`, String(next));
+      return next;
+    });
+  }
+
+  return (
+    <div>
+      {group.collapsible ? (
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          className="flex w-full items-center justify-between rounded-md px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted transition hover:text-foreground"
+        >
+          {group.label}
+          <ChevronDown size={13} className={clsx("transition-transform", open ? "" : "-rotate-90")} aria-hidden="true" />
+        </button>
+      ) : (
+        <p className="px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">{group.label}</p>
+      )}
+      {open ? (
+        <div className="mt-2 space-y-1">
+          {group.items.map((item) => {
+            const Icon = item.icon;
+            const active = isActivePath(pathname, item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                title={item.description}
+                className={clsx(
+                  "group flex items-center gap-3 rounded-md px-3 py-2.5 text-sm transition",
+                  active
+                    ? "bg-primary text-primary-ink"
+                    : "text-muted hover:bg-surface-raised hover:text-foreground",
+                )}
+              >
+                <Icon size={17} className="shrink-0" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate font-medium">{item.label}</span>
+                {active ? <ArrowRight size={14} className="shrink-0" aria-hidden="true" /> : null}
+              </Link>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }

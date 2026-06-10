@@ -31,6 +31,7 @@ export type AppNavItem = {
 export type AppNavGroup = {
   label: string;
   items: AppNavItem[];
+  collapsible?: boolean;
 };
 
 export type ProductPage = AppNavItem & {
@@ -135,18 +136,21 @@ export const appNav: AppNavItem[] = [
 export const appNavGroups: AppNavGroup[] = [
   {
     label: "Operate",
-    items: appNav.filter((item) => ["/app", "/app/command", "/app/results", "/app/workflows", "/app/approvals"].includes(item.href)),
+    items: appNav.filter((item) => ["/app", "/app/command", "/app/results", "/app/approvals"].includes(item.href)),
   },
   {
     label: "Build",
-    items: appNav.filter((item) => ["/app/memory", "/app/connectors", "/app/tools"].includes(item.href)),
+    collapsible: true,
+    items: appNav.filter((item) => ["/app/workflows", "/app/memory", "/app/connectors", "/app/tools"].includes(item.href)),
   },
   {
     label: "Assure",
+    collapsible: true,
     items: appNav.filter((item) => ["/app/evaluations", "/app/observability", "/app/security"].includes(item.href)),
   },
   {
     label: "Admin",
+    collapsible: true,
     items: appNav.filter((item) => item.href === "/app/settings"),
   },
 ];

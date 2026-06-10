@@ -145,7 +145,23 @@ export async function executeGovernedTool({
       ...baseRecord,
       status: "approval_required" as const,
     });
-    return { record: await saveToolExecution(record), result: null };
+    const saved = await saveToolExecution(record);
+    await recordRuntimeEventSafely({
+      level: "warn",
+      category: "workflow",
+      action: "tool.approval_pending",
+      tenantId: context?.tenantId,
+      actorId: context?.actorId,
+      resourceType: "tool_execution",
+      resourceId: saved.id,
+      message: `${tool.name} is waiting for human approval.`,
+      metadata: {
+        toolId: tool.id,
+        toolName: tool.name,
+        riskLevel: tool.riskLevel,
+      },
+    });
+    return { record: saved, result: null };
   }
 
   try {
