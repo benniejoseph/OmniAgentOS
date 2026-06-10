@@ -13,6 +13,7 @@ import {
   recordRunConsolidation,
   updateRunContextCount,
 } from "@/lib/runs/store";
+import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
 
 export async function* runAgent(
   request: AgentRunRequest,
@@ -44,9 +45,38 @@ export async function* runAgent(
       count: retrieval.results.length,
     });
 
+    let liveWebContext = "";
+    if (shouldUseLiveWebSearch(query)) {
+      yield await emit({
+        type: "status",
+        label: "live web search",
+        detail: "The request appears to need current information, so OmniAgentOS is searching the web before answering.",
+      });
+      try {
+        const liveWeb = await runLiveWebSearch({
+          query,
+          contextSize: mode === "research" ? "high" : "medium",
+          abortSignal,
+        });
+        liveWebContext = formatLiveWebSearchContext(liveWeb);
+        yield await emit({
+          type: "memory",
+          title: "live web sources ready",
+          count: liveWeb.sourceCount,
+        });
+      } catch (webSearchError) {
+        yield await emit({
+          type: "status",
+          label: "live web unavailable",
+          detail: webSearchError instanceof Error ? webSearchError.message : "Live web search failed.",
+        });
+      }
+    }
+
     const instructions = buildAgentInstructions({
       mode,
       memoryContext: retrieval.contextBlock,
+      liveWebContext,
     });
     const input = transcriptFromMessages(request.messages);
 

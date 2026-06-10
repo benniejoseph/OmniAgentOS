@@ -56,7 +56,7 @@ const runMapSteps = [
     key: "context",
     label: "RAG",
     title: "Context",
-    body: "See what memory will be used.",
+    body: "See memory and live-web evidence.",
     icon: Brain,
   },
   {
@@ -311,7 +311,7 @@ export function AgentRunsWorkspace() {
               </div>
             </div>
             <p className="mt-4 max-w-4xl text-sm leading-6 text-muted">
-              Compose the goal, preview retrieval context, generate a workflow plan, execute as an agent or durable workflow, then review evidence and approvals from one staged workspace.
+              Compose the goal, preview memory/RAG context, let OmniAgentOS search the live web when the request needs current facts, generate a workflow plan, execute, then review results and approvals from one staged workspace.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">

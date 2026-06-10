@@ -30,6 +30,22 @@ export const governedTools: ToolDefinition[] = [
     }),
   },
   {
+    id: "web.search",
+    name: "Live Web Search",
+    description: "Read-only live web research for current facts, breaking releases, prices, schedules, and source-backed answers.",
+    category: "web",
+    status: "active",
+    riskLevel: 0,
+    dryRunSupported: true,
+    approvalRequired: false,
+    inputSchema: objectSchema({
+      query: { type: "string", description: "Live web search query." },
+      limit: { type: "number", description: "Maximum number of source URLs to return.", default: 8 },
+      searchContextSize: { type: "string", enum: ["low", "medium", "high"], default: "medium" },
+      allowedDomains: { type: "array", items: { type: "string" } },
+    }),
+  },
+  {
     id: "memory.write",
     name: "Write Memory",
     description: "Persist a durable memory record with optional embedding.",

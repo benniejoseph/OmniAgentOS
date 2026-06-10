@@ -411,6 +411,14 @@ function buildToolInput({
     return { query, limit: 5 };
   }
 
+  if (toolId === "web.search") {
+    return {
+      query,
+      limit: 8,
+      searchContextSize: node.kind === "research" ? "high" : "medium",
+    };
+  }
+
   if (toolId === "runs.list") {
     return { limit: 5 };
   }

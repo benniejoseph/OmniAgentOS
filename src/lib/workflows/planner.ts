@@ -10,6 +10,7 @@ import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import { getGovernedTools } from "@/lib/tools/registry";
 import type { ToolDefinition } from "@/lib/tools/types";
+import { shouldUseLiveWebSearch } from "@/lib/web-search/search";
 import type {
   WorkflowDynamicPlan,
   WorkflowPlanNode,
@@ -292,6 +293,8 @@ function toolCandidate(tool: ToolDefinition, terms: string[]): PlannerToolCandid
   const categoryBoost =
     tool.category === "memory" || tool.category === "knowledge"
       ? 0.18
+      : tool.category === "web"
+        ? 0.16
       : tool.category === "runs"
         ? 0.08
         : 0;
@@ -352,7 +355,7 @@ function deterministicPlan({
       kind: "research",
       description: "Clarify objective, constraints, dependencies, assumptions, and acceptance criteria.",
       dependsOn: [],
-      toolIds: ["memory.search", "knowledge.search"].filter((toolId) => selectedToolIds.includes(toolId)),
+      toolIds: ["memory.search", "knowledge.search", "web.search"].filter((toolId) => selectedToolIds.includes(toolId)),
       connectorTargets: [],
       riskLevel: 0,
       approvalRequired: false,
@@ -712,6 +715,9 @@ function selectToolIds(goal: string, candidates: PlannerToolCandidate[]) {
     if (candidates.some((tool) => tool.id === required)) {
       selected.add(required);
     }
+  }
+  if (shouldUseLiveWebSearch(goal) && candidates.some((tool) => tool.id === "web.search")) {
+    selected.add("web.search");
   }
   if (/\b(save|remember|learn|persist|document|ingest|knowledge)\b/i.test(goal)) {
     for (const optional of ["memory.write", "knowledge.ingest"]) {

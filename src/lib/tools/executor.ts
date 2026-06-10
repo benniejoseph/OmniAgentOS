@@ -16,10 +16,18 @@ import { evaluateToolPolicy } from "@/lib/tools/policy";
 import type { SecurityContext } from "@/lib/security/types";
 import { getGovernedTool } from "@/lib/tools/registry";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
+import { runLiveWebSearch } from "@/lib/web-search/search";
 
 const searchSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().min(1).max(20).optional(),
+});
+
+const webSearchSchema = z.object({
+  query: z.string().min(1),
+  limit: z.number().int().min(1).max(20).optional(),
+  searchContextSize: z.enum(["low", "medium", "high"]).optional(),
+  allowedDomains: z.array(z.string().min(1)).max(20).optional(),
 });
 
 const memoryWriteSchema = z.object({
@@ -245,6 +253,16 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>, con
     };
   }
 
+  if (tool.id === "web.search") {
+    const { query, limit, searchContextSize, allowedDomains } = webSearchSchema.parse(parsed);
+    return runLiveWebSearch({
+      query,
+      maxSources: limit || 8,
+      contextSize: searchContextSize || "medium",
+      allowedDomains,
+    });
+  }
+
   if (tool.id === "memory.write") {
     const value = memoryWriteSchema.parse(parsed);
     const contentForEmbedding = `${value.title}\n\n${value.content}`;
@@ -407,6 +425,10 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return searchSchema.parse(input);
   }
 
+  if (tool.id === "web.search") {
+    return webSearchSchema.parse(input);
+  }
+
   if (tool.id === "memory.write") {
     return memoryWriteSchema.parse(input);
   }
@@ -433,6 +455,10 @@ function describeSideEffects(toolId: string) {
 
   if (toolId === "knowledge.ingest") {
     return ["writes omni_knowledge_documents", "writes omni_knowledge_chunks", "writes compatible memory records"];
+  }
+
+  if (toolId === "web.search") {
+    return ["read-only live web search", "uses OpenAI Responses web_search hosted tool", "stores source metadata in the tool audit ledger"];
   }
 
   if (toolId.startsWith("mcp:")) {

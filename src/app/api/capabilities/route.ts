@@ -36,6 +36,7 @@ export async function GET(request: Request) {
 
   return Response.json({
     openaiConfigured: hasOpenAIKey(),
+    liveWebSearchConfigured: hasOpenAIKey(),
     databaseConfigured: hasDatabaseUrl(),
     storageBackend: getStorageBackend(),
     vectorStore: await getVectorStoreStatus(),

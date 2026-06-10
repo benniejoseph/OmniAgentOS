@@ -64,6 +64,12 @@ export const tools: Capability[] = [
     status: "active",
   },
   {
+    id: "web.search",
+    name: "Live Web Search",
+    description: "Searches the public web for current facts, breaking releases, pricing, schedules, and source-backed research.",
+    status: "active",
+  },
+  {
     id: "tool.executor",
     name: "Governed Tool Executor",
     description: "Runs schema-validated tools through risk policy, dry-runs, approval gates, and audit logging.",

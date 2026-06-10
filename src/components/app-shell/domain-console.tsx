@@ -588,6 +588,26 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
     ],
     actions: [
       {
+        id: "live-web-search",
+        title: "Run live web search",
+        description: "Search current public web sources through the governed read-only web.search tool.",
+        method: "POST",
+        path: "/api/tools/execute",
+        fields: [
+          { name: "query", label: "Search query", type: "textarea", placeholder: "Research Claude Fable 5 released today and cite multiple sources." },
+          { name: "searchContextSize", label: "Depth", type: "select", defaultValue: "medium", options: ["low", "medium", "high"].map((value) => ({ label: value, value })) },
+        ],
+        buildPayload: (values) => ({
+          toolId: "web.search",
+          input: {
+            query: textValue(values.query),
+            searchContextSize: textValue(values.searchContextSize, "medium"),
+            limit: 8,
+          },
+          dryRun: false,
+        }),
+      },
+      {
         id: "dry-run-tool",
         title: "Tool dry run",
         description: "Execute a policy-safe dry run with explicit input JSON.",

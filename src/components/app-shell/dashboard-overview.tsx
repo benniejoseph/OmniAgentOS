@@ -348,7 +348,7 @@ export function DashboardOverview() {
             <Capability label="Storage" value={stringPath(data, "capabilities.storageBackend", "unknown")} icon={Database} />
             <Capability label="Memory" value={`${numberPath(data, "capabilities.memory.total")} records`} icon={Brain} />
             <Capability label="Connectors" value={`${numberPath(data, "operations.summary.connectorErrors")} errors`} icon={Cable} />
-            <Capability label="Security audits" value={numberPath(data, "capabilities.security.stats.total")} icon={ShieldCheck} />
+            <Capability label="Live web" value={Boolean(readPath(data, "capabilities.liveWebSearchConfigured")) ? "enabled" : "needs OpenAI"} icon={FileText} />
           </div>
         </Panel>
 
