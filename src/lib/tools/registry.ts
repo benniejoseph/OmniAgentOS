@@ -10,6 +10,7 @@ export const governedTools: ToolDefinition[] = [
     riskLevel: 0,
     dryRunSupported: true,
     approvalRequired: false,
+    reversible: true,
     inputSchema: objectSchema({
       query: { type: "string", description: "Search query." },
       limit: { type: "number", description: "Maximum number of results.", default: 5 },
@@ -24,6 +25,7 @@ export const governedTools: ToolDefinition[] = [
     riskLevel: 0,
     dryRunSupported: true,
     approvalRequired: false,
+    reversible: true,
     inputSchema: objectSchema({
       query: { type: "string", description: "Search query." },
       limit: { type: "number", description: "Maximum number of results.", default: 5 },
@@ -38,6 +40,7 @@ export const governedTools: ToolDefinition[] = [
     riskLevel: 0,
     dryRunSupported: true,
     approvalRequired: false,
+    reversible: true,
     inputSchema: objectSchema({
       query: { type: "string", description: "Live web search query." },
       limit: { type: "number", description: "Maximum number of source URLs to return.", default: 8 },
@@ -54,6 +57,7 @@ export const governedTools: ToolDefinition[] = [
     riskLevel: 1,
     dryRunSupported: true,
     approvalRequired: false,
+    reversible: true,
     inputSchema: objectSchema({
       title: { type: "string" },
       content: { type: "string" },
@@ -71,6 +75,7 @@ export const governedTools: ToolDefinition[] = [
     riskLevel: 1,
     dryRunSupported: true,
     approvalRequired: false,
+    reversible: true,
     inputSchema: objectSchema({
       title: { type: "string" },
       content: { type: "string" },
@@ -87,6 +92,7 @@ export const governedTools: ToolDefinition[] = [
     riskLevel: 0,
     dryRunSupported: true,
     approvalRequired: false,
+    reversible: true,
     inputSchema: objectSchema({
       limit: { type: "number", description: "Maximum number of runs.", default: 5 },
     }),
@@ -101,6 +107,7 @@ export const governedTools: ToolDefinition[] = [
     riskLevel: 2,
     dryRunSupported: true,
     approvalRequired: true,
+    reversible: false,
     inputSchema: objectSchema({
       url: { type: "string", description: "Public http(s) URL to call." },
       method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], default: "GET" },

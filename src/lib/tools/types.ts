@@ -17,6 +17,8 @@ export type ToolDefinition = {
   riskLevel: ToolRiskLevel;
   dryRunSupported: boolean;
   approvalRequired: boolean;
+  /** Whether the effect can be undone. Irreversible actions never graduate to autonomy. Defaults to false (conservative). */
+  reversible?: boolean;
   inputSchema: Record<string, unknown>;
 };
 

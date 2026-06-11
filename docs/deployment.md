@@ -22,6 +22,8 @@
 | `OMNIAGENT_AGENT_MAX_MESSAGE_CHARS` | No (32000) | Per-message content cap |
 | `OMNIAGENT_AGENT_MAX_MESSAGES` | No (40) | Conversation length cap |
 | `OMNIAGENT_AGENT_RUNS_PER_MINUTE` | No (10) | Per tenant+actor rate limit (instance-local) |
+| `OMNIAGENT_GRADUATED_AUTONOMY` | No (false) | Opt-in: let action classes that earned trust auto-execute reversible risk<3 tools with alerting |
+| `OMNIAGENT_AUTONOMY_GRADUATION_THRESHOLD` | No (25) | Consecutive clean executions required before an action class graduates |
 | `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST` | No | Extra env names connectors may reference (`OMNIAGENT_CONNECTOR_*` always allowed) |
 
 Auth is always enforced in production runtimes and cannot be disabled there.

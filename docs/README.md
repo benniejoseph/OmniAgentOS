@@ -1,5 +1,13 @@
 # OmniAgent OS Documentation
 
+## Product vision (Tenure)
+
+- [Product](vision/PRODUCT.md) — the earned-autonomy thesis and six pillars
+- [Business model](vision/BUSINESS_MODEL.md) — market, pricing, moat, GTM, roadmap
+- [Event-log substrate spec](vision/EVENT_LOG.md) — the M1 source-of-truth design
+
+## Platform docs
+
 - [Getting started](getting-started.md) — local setup and your first agent task
 - [Deployment](deployment.md) — Vercel + Neon, env var reference, cron cadence, release gates
 - [Architecture](architecture.md) — system map, agent tool loop, workflows, storage, security model

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ArrowRight, ChevronDown, Sparkles } from "lucide-react";
 import { clsx } from "clsx";
 import { appNav, appNavGroups } from "@/lib/navigation";
@@ -91,29 +91,22 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
 
 function NavGroup({ group, pathname }: { group: (typeof appNavGroups)[number]; pathname: string }) {
   const containsActive = group.items.some((item) => isActivePath(pathname, item.href));
-  const [open, setOpen] = useState(() => {
-    if (!group.collapsible || containsActive) {
-      return true;
-    }
+  const [userPref, setUserPref] = useState<boolean | null>(() => {
     if (typeof window === "undefined") {
-      return false;
+      return null;
     }
-    return window.localStorage.getItem(`omni-nav-open:${group.label}`) === "true";
+    const stored = window.localStorage.getItem(`omni-nav-open:${group.label}`);
+    return stored === null ? null : stored === "true";
   });
 
-  // A navigation into a collapsed group should reveal it.
-  useEffect(() => {
-    if (containsActive) {
-      setOpen(true);
-    }
-  }, [containsActive]);
+  // Derived, not stored in an effect: an active group is always revealed; a
+  // user preference wins otherwise; collapsible groups default closed.
+  const open = !group.collapsible || containsActive || (userPref ?? false);
 
   function toggle() {
-    setOpen((current) => {
-      const next = !current;
-      window.localStorage.setItem(`omni-nav-open:${group.label}`, String(next));
-      return next;
-    });
+    const next = !open;
+    setUserPref(next);
+    window.localStorage.setItem(`omni-nav-open:${group.label}`, String(next));
   }
 
   return (

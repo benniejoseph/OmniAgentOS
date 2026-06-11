@@ -16,11 +16,27 @@ type ApprovalItem = {
   reason?: string;
   createdAt: string;
   input?: JsonRecord;
+  record?: { toolId?: string };
 };
 
 type QueueResponse = {
   items: ApprovalItem[];
   stats: { total: number; tools: number; workflows: number; sloPolicies: number };
+};
+
+type TrustProfile = {
+  toolId: string;
+  cleanStreak: number;
+  successes: number;
+  failures: number;
+  autonomyMode: "approve_each" | "auto_with_alert";
+  reversible: boolean;
+};
+
+type TrustResponse = {
+  enabled: boolean;
+  threshold: number;
+  profiles: TrustProfile[];
 };
 
 export function ApprovalsWorkspace() {
@@ -30,17 +46,24 @@ export function ApprovalsWorkspace() {
   const [decisionInFlight, setDecisionInFlight] = useState<string>();
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [lastDecision, setLastDecision] = useState<string>();
+  const [trust, setTrust] = useState<TrustResponse>();
 
   async function load() {
     setState("loading");
     setError(undefined);
     try {
-      const response = await fetch("/api/approvals?limit=50");
-      const body = (await response.json().catch(() => ({}))) as JsonRecord;
-      if (!response.ok) {
-        throw new Error(String(body.message || body.error || `Approvals returned ${response.status}`));
+      const [queueRes, trustRes] = await Promise.all([
+        fetch("/api/approvals?limit=50"),
+        fetch("/api/trust").catch(() => undefined),
+      ]);
+      const body = (await queueRes.json().catch(() => ({}))) as JsonRecord;
+      if (!queueRes.ok) {
+        throw new Error(String(body.message || body.error || `Approvals returned ${queueRes.status}`));
       }
       setQueue(body as unknown as QueueResponse);
+      if (trustRes && trustRes.ok) {
+        setTrust((await trustRes.json().catch(() => undefined)) as TrustResponse | undefined);
+      }
       setState("ready");
     } catch (loadError) {
       setState("error");
@@ -49,7 +72,8 @@ export function ApprovalsWorkspace() {
   }
 
   useEffect(() => {
-    void load();
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   async function decide(item: ApprovalItem, decision: "approve" | "reject") {
@@ -137,6 +161,9 @@ export function ApprovalsWorkspace() {
           <ApprovalCard
             key={`${item.kind}-${item.id}`}
             item={item}
+            trust={trust?.profiles.find((profile) => profile.toolId === item.record?.toolId)}
+            trustEnabled={trust?.enabled}
+            threshold={trust?.threshold}
             reason={reasons[item.id] || ""}
             onReason={(value) => setReasons((current) => ({ ...current, [item.id]: value }))}
             onDecide={(decision) => void decide(item, decision)}
@@ -150,12 +177,18 @@ export function ApprovalsWorkspace() {
 
 function ApprovalCard({
   item,
+  trust,
+  trustEnabled,
+  threshold,
   reason,
   onReason,
   onDecide,
   inFlight,
 }: {
   item: ApprovalItem;
+  trust?: TrustProfile;
+  trustEnabled?: boolean;
+  threshold?: number;
   reason: string;
   onReason: (value: string) => void;
   onDecide: (decision: "approve" | "reject") => void;
@@ -176,6 +209,8 @@ function ApprovalCard({
           </p>
         </div>
       </div>
+
+      {trust ? <TrackRecord trust={trust} threshold={threshold} enabled={trustEnabled} /> : null}
 
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
         <ConsentFact label="If you approve" value={whatWillHappen(item)} />
@@ -208,6 +243,46 @@ function ApprovalCard({
         </button>
       </div>
     </article>
+  );
+}
+
+function TrackRecord({
+  trust,
+  threshold,
+  enabled,
+}: {
+  trust: TrustProfile;
+  threshold?: number;
+  enabled?: boolean;
+}) {
+  const target = threshold || 25;
+  const graduated = trust.autonomyMode === "auto_with_alert";
+  const pct = graduated ? 100 : Math.min(Math.round((trust.cleanStreak / target) * 100), 99);
+  return (
+    <div className="mt-4 rounded-md border border-line bg-background p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">Track record</p>
+        <p className="text-xs text-muted">
+          {trust.successes} ok · {trust.failures} failed · streak {trust.cleanStreak}
+        </p>
+      </div>
+      {trust.reversible ? (
+        <>
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface-raised">
+            <div className={clsx("h-full rounded-full", graduated ? "bg-success" : "bg-primary")} style={{ width: `${pct}%` }} />
+          </div>
+          <p className="mt-2 text-xs text-muted">
+            {graduated
+              ? enabled
+                ? "Earned autonomy — future calls run automatically with alerting."
+                : "Eligible for autonomy. Enable graduated autonomy to let it run without gating."
+              : `${trust.cleanStreak}/${target} clean executions toward earning autonomy.`}
+          </p>
+        </>
+      ) : (
+        <p className="mt-2 text-xs text-muted">Irreversible action — always gated, never graduates.</p>
+      )}
+    </div>
   );
 }
 

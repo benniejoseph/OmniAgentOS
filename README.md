@@ -22,6 +22,14 @@ The interactive agent (`/api/agent`) exposes active governed tools to the model 
 
 Built-in tools include `http.request` — SSRF-guarded outbound HTTP for webhooks and REST APIs (risk 2, approval-gated, secrets referenced by env var name only).
 
+### Earned autonomy (Tenure)
+
+Approvals get cheaper as the agent proves itself. Every gateable action class accrues a trust profile; once it reaches a clean-streak threshold, reversible risk&lt;3 actions can graduate from "approve each" to "auto with alert" (opt-in via `OMNIAGENT_GRADUATED_AUTONOMY=true`). Any failure or rejection resets the streak; irreversible and risk-3 actions never graduate. See [docs/vision/PRODUCT.md](docs/vision/PRODUCT.md). Trust profiles are visible at `/api/trust` and on each approval card.
+
+### Agent quality evals
+
+`evals/golden-tasks.json` holds gradeable agent tasks; `npm run eval:agents` (against a running server) drives the real agent and prints a pass-rate scoreboard. The deterministic scorer is unit-tested in `src/lib/evals2/scorer.ts`.
+
 Longer work runs as durable workflows: LLM-planned DAGs executed through a Postgres-backed queue with leases, retries, recovery, and operator signals. Everything feeds the observability ledger, SLO policies, incidents, alerts, and signed evaluation reports.
 
 ## Documentation

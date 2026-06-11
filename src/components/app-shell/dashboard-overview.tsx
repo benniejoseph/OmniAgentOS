@@ -30,6 +30,7 @@ type DashboardState = {
   slo?: JsonRecord;
   incidents?: JsonRecord;
   runs?: JsonRecord;
+  trust?: JsonRecord;
 };
 
 type LoadState = "loading" | "ready" | "error";
@@ -134,13 +135,14 @@ export function DashboardOverview() {
         return;
       }
 
-      const [operations, capabilities, release, slo, incidents, runs] = await Promise.all([
+      const [operations, capabilities, release, slo, incidents, runs, trust] = await Promise.all([
         readJson("/api/operations"),
         readJson("/api/capabilities"),
         readJson("/api/release/evidence"),
         readJson("/api/observability/slo"),
         readJson("/api/incidents?status=active&limit=8"),
         readJson("/api/runs?limit=1&stats=true").catch(() => ({})),
+        readJson("/api/trust").catch(() => ({})),
       ]);
 
       setData({
@@ -152,6 +154,7 @@ export function DashboardOverview() {
         slo: asRecord(slo),
         incidents: asRecord(incidents),
         runs: asRecord(runs),
+        trust: asRecord(trust),
       });
       setState("ready");
       setLastRefresh(new Date().toLocaleTimeString());
@@ -367,6 +370,13 @@ export function DashboardOverview() {
             <Metric label="Completion rate" value={completionRate(data)} tone={completionTone(data)} />
             <Metric label="Failed runs" value={numberPath(data, "runs.stats.byStatus.failed")} tone={numberPath(data, "runs.stats.byStatus.failed") === "0" ? "success" : "danger"} />
             <Metric label="Memories saved" value={numberPath(data, "runs.stats.consolidated.memories")} tone="neutral" />
+          </div>
+          <div className="mt-3 flex items-center justify-between rounded-md border border-line bg-background px-3 py-2">
+            <span className="text-sm text-muted">Earned autonomy</span>
+            <span className="font-mono text-sm">
+              {numberPath(data, "trust.stats.graduated")} earned / {numberPath(data, "trust.stats.tracked")} tracked
+              {Boolean(readPath(data, "trust.enabled")) ? "" : " (gated)"}
+            </span>
           </div>
         </Panel>
 

@@ -15,7 +15,8 @@
     "test:tenant": "npm run smoke:tenant",
     "test:production-smoke": "npm run smoke:security && npm run smoke:tenant && npm run smoke:eval && npm run smoke:release",
     "test": "npm run lint && npm run test:unit",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run",
+    "eval:agents": "node scripts/run-evals.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

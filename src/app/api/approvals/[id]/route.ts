@@ -7,6 +7,7 @@ import {
 import { getToolExecution, saveToolExecution } from "@/lib/tools/audit-store";
 import { executeGovernedTool, hasRisk3Quorum } from "@/lib/tools/executor";
 import { RISK3_QUORUM } from "@/lib/tools/types";
+import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
@@ -140,19 +141,27 @@ export async function POST(
 
   if (parsed.data.decision === "reject") {
     const now = new Date().toISOString();
-    return Response.json({
-      record: await saveToolExecution({
-        ...record,
-        status: "rejected",
-        approvalDecision: "rejected",
-        approvedBy: securityContext.actorId,
-        approvedAt: now,
-        approvalReason: parsed.data.reason,
-        reason: parsed.data.reason ? `Rejected: ${parsed.data.reason}` : "Rejected by operator.",
-        completedAt: now,
-      }),
-      result: null,
+    const rejected = await saveToolExecution({
+      ...record,
+      status: "rejected",
+      approvalDecision: "rejected",
+      approvedBy: securityContext.actorId,
+      approvedAt: now,
+      approvalReason: parsed.data.reason,
+      reason: parsed.data.reason ? `Rejected: ${parsed.data.reason}` : "Rejected by operator.",
+      completedAt: now,
     });
+    // A rejection is a trust signal: it resets the action class's clean streak.
+    await recordActionOutcome({
+      actionClass: actionClassFor(record.toolId),
+      toolId: record.toolId,
+      tenantId: securityContext.tenantId,
+      kind: "rejected",
+      reversible: false,
+      riskLevel: record.riskLevel,
+      humanApproved: false,
+    }).catch(() => undefined);
+    return Response.json({ record: rejected, result: null });
   }
 
   // Risk-3 tools need a quorum of distinct admin approvals before execution.

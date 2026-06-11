@@ -18,6 +18,8 @@ import { evaluateToolPolicy } from "@/lib/tools/policy";
 import type { SecurityContext } from "@/lib/security/types";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/lib/tools/types";
+import { actionClassFor, recordActionOutcome, resolveAutonomy } from "@/lib/trust/ledger";
+import { isGraduatedAutonomyEnabled } from "@/lib/trust/policy";
 import { runLiveWebSearch } from "@/lib/web-search/search";
 
 const searchSchema = z.object({
@@ -115,7 +117,24 @@ export async function executeGovernedTool({
   // Enforced here so no API caller can bypass it with a bare approved flag.
   const effectiveApproved =
     approved && (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord));
-  const decision = evaluateToolPolicy({ tool, approved: effectiveApproved });
+
+  // Graduated autonomy: an action class that has earned trust (clean track
+  // record, reversible, risk < 3) may auto-approve instead of gating. Opt-in
+  // and conservative — resolveAutonomy re-checks reversibility and risk tier.
+  const reversible = tool.reversible ?? false;
+  let autonomy: Awaited<ReturnType<typeof resolveAutonomy>> | undefined;
+  let autonomyApproved = false;
+  if (!dryRun && !effectiveApproved && isGraduatedAutonomyEnabled() && tool.riskLevel < 3) {
+    autonomy = await resolveAutonomy({
+      toolId: tool.id,
+      tenantId: normalizeTenantId(context?.tenantId),
+      riskLevel: tool.riskLevel,
+      reversible,
+    });
+    autonomyApproved = autonomy.mode === "auto_with_alert";
+  }
+
+  const decision = evaluateToolPolicy({ tool, approved: effectiveApproved || autonomyApproved });
   const baseRecord = {
     tenantId: existingRecord?.tenantId || context?.tenantId,
     actorId: existingRecord?.actorId || context?.actorId,
@@ -205,7 +224,28 @@ export async function executeGovernedTool({
       approvalReason,
       completedAt: new Date().toISOString(),
     });
-    return { record: await saveToolExecution(record), result };
+    const saved = await saveToolExecution(record);
+    if (autonomyApproved) {
+      await recordRuntimeEventSafely({
+        level: "warn",
+        category: "security",
+        action: "autonomy.auto_approved",
+        tenantId: context?.tenantId,
+        actorId: context?.actorId,
+        resourceType: "tool_execution",
+        resourceId: saved.id,
+        message: `${tool.name} executed on earned autonomy without a fresh human approval.`,
+        metadata: {
+          toolId: tool.id,
+          toolName: tool.name,
+          riskLevel: tool.riskLevel,
+          autonomyReason: autonomy?.reason,
+          cleanStreak: autonomy?.cleanStreak,
+        },
+      });
+    }
+    await recordTrustOutcomeSafely(tool, context, "success", effectiveApproved);
+    return { record: saved, result };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Tool execution failed.";
     if (tool.category === "mcp" || tool.category === "openapi") {
@@ -233,8 +273,42 @@ export async function executeGovernedTool({
       reason: message,
       completedAt: new Date().toISOString(),
     });
-    return { record: await saveToolExecution(record), result: null };
+    const saved = await saveToolExecution(record);
+    await recordTrustOutcomeSafely(tool, context, "failure", effectiveApproved);
+    return { record: saved, result: null };
   }
+}
+
+/**
+ * Record a trust outcome for gateable tools only (the ones where autonomy can
+ * ever matter). Never throws — trust accounting must not break execution.
+ */
+async function recordTrustOutcomeSafely(
+  tool: ToolDefinition,
+  context: SecurityContext | undefined,
+  kind: "success" | "failure",
+  humanApproved: boolean,
+) {
+  if (!tool.approvalRequired && tool.riskLevel < 2) {
+    return;
+  }
+  try {
+    await recordActionOutcome({
+      actionClass: actionClassFor(tool.id),
+      toolId: tool.id,
+      tenantId: normalizeTenantId(context?.tenantId),
+      kind,
+      reversible: tool.reversible ?? false,
+      riskLevel: tool.riskLevel,
+      humanApproved,
+    });
+  } catch (error) {
+    console.warn("Trust outcome write failed.", error instanceof Error ? error.message : error);
+  }
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim() || "default";
 }
 
 function dryRunTool(tool: ToolDefinition, input: Record<string, unknown>) {
