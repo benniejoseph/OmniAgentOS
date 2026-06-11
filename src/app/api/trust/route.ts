@@ -1,3 +1,5 @@
+import { foldTrustProfile } from "@/lib/events/projections";
+import { listStreamEvents } from "@/lib/events/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { listTrustProfiles } from "@/lib/trust/ledger";
 import { graduationThreshold, isGraduatedAutonomyEnabled } from "@/lib/trust/policy";
@@ -14,6 +16,31 @@ export async function GET(request: Request) {
     });
   } catch (error) {
     return forbiddenResponse(error);
+  }
+
+  const url = new URL(request.url);
+  // ?replay=<actionClass> rebuilds the profile by folding its event stream —
+  // verifiable proof that the stored profile matches its event history.
+  const replayClass = url.searchParams.get("replay");
+  if (replayClass) {
+    const events = await listStreamEvents(`trust:${replayClass}`, { tenantId: context.tenantId });
+    const replayed = foldTrustProfile(events, { actionClass: replayClass, tenantId: context.tenantId });
+    const stored = (await listTrustProfiles({ tenantId: context.tenantId })).find(
+      (profile) => profile.actionClass === replayClass,
+    );
+    const consistent =
+      Boolean(replayed && stored) &&
+      replayed?.total === stored?.total &&
+      replayed?.cleanStreak === stored?.cleanStreak &&
+      replayed?.successes === stored?.successes &&
+      replayed?.failures === stored?.failures;
+    return Response.json({
+      actionClass: replayClass,
+      eventCount: events.length,
+      replayed,
+      stored,
+      consistent,
+    });
   }
 
   const profiles = await listTrustProfiles({ tenantId: context.tenantId });

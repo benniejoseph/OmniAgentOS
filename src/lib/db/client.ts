@@ -28,6 +28,8 @@ export const tenantRootPolicyTables = [
   "omni_security_audits",
   "omni_observability_events",
   "omni_observability_slo_policy_changes",
+  "omni_trust_profiles",
+  "omni_events",
 ] as const;
 
 export const tenantChildPolicyTables = [
@@ -1029,6 +1031,45 @@ export async function ensureDatabaseSchema() {
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_route_created_idx ON omni_observability_events (route, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_resource_created_idx ON omni_observability_events (resource_type, resource_id, created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_observability_events_tenant_created_idx ON omni_observability_events (tenant_id, created_at DESC)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_trust_profiles (
+          tenant_id TEXT NOT NULL,
+          action_class TEXT NOT NULL,
+          tool_id TEXT NOT NULL,
+          risk_level INTEGER NOT NULL DEFAULT 0,
+          reversible BOOLEAN NOT NULL DEFAULT FALSE,
+          total INTEGER NOT NULL DEFAULT 0,
+          successes INTEGER NOT NULL DEFAULT 0,
+          failures INTEGER NOT NULL DEFAULT 0,
+          rejections INTEGER NOT NULL DEFAULT 0,
+          human_approvals INTEGER NOT NULL DEFAULT 0,
+          clean_streak INTEGER NOT NULL DEFAULT 0,
+          last_outcome_at TIMESTAMPTZ,
+          last_failure_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (tenant_id, action_class)
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_trust_profiles_streak_idx ON omni_trust_profiles (tenant_id, clean_streak DESC)`;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS omni_events (
+          seq BIGSERIAL PRIMARY KEY,
+          id TEXT NOT NULL UNIQUE,
+          stream_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          tenant_id TEXT NOT NULL DEFAULT 'default',
+          actor_id TEXT NOT NULL DEFAULT 'system',
+          payload JSONB NOT NULL DEFAULT '{}',
+          causation_id TEXT,
+          correlation_id TEXT,
+          at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS omni_events_stream_idx ON omni_events (stream_id, seq ASC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_events_tenant_at_idx ON omni_events (tenant_id, at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS omni_events_type_idx ON omni_events (type, at DESC)`;
 
       await sql`
         CREATE TABLE IF NOT EXISTS omni_observability_slo_policies (

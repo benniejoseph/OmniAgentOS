@@ -38,7 +38,7 @@ This is the actual product. Not "an agent that can do anything" — a system whe
 
 ### 1. Event-log substrate (source of truth)
 Everything — intent, plan, tool call, observation, approval, correction — is an immutable event in an append-only log. Current state is a projection. This makes **time travel free**: replay a run with a better prompt, fork from step 4 with a human correction, show every decision that touched a customer's data. Audit, debugging, evals, and recovery become one mechanism instead of four bolted-on subsystems.
-*Status: spec'd (see `docs/vision/EVENT_LOG.md`), foundation present in the durable run/workflow ledgers.*
+*Status: stage 1 shipped — `omni_events` log with RLS, dual-writes from runs/workflows/trust, and a verifiable projection rebuild (`/api/trust?replay=...`). See `docs/vision/EVENT_LOG.md`.*
 
 ### 2. Self-rewriting plan graph (parallel)
 Not a linear tool loop, not a static DAG. A live plan graph where independent branches run in parallel via sub-agents, fan back in, and any failure or new observation triggers a **bounded re-plan of just the affected subtree**. The model decides the *shape* of the work, not just the next action.

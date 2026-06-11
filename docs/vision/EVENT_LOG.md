@@ -1,8 +1,12 @@
 # Event-Log Substrate — Spec (M1)
 
-> Not yet built. This is the design the next milestone implements. The current
-> run ledger, workflow events, observability events, and security audit are four
-> partial implementations of this idea; M1 unifies them.
+> **Stage 1 shipped.** `src/lib/events/store.ts` implements the log
+> (Postgres `omni_events` with RLS + file fallback); runs, workflows, and trust
+> outcomes dual-write into it; `src/lib/events/projections.ts` proves
+> projection-rebuild for trust profiles, verifiable live via
+> `GET /api/trust?replay=<actionClass>` (returns `consistent: true/false`).
+> Streams are readable at `GET /api/events?stream=<id>`. Stages 2–3 below
+> migrate the remaining projections and then retire the bespoke ledgers.
 
 ## Principle
 

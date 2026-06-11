@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import { appendDomainEventSafely } from "@/lib/events/store";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type {
@@ -305,6 +306,14 @@ export async function appendWorkflowEvent(
   type: string,
   payload: Record<string, unknown> = {},
 ) {
+  // Stage-1 event-log dual-write (docs/vision/EVENT_LOG.md).
+  await appendDomainEventSafely({
+    streamId: `workflow:${runId}`,
+    type: `workflow.${type.replace(/^workflow\./, "")}`,
+    payload,
+    correlationId: runId,
+  });
+
   let record: WorkflowEventRecord | undefined;
 
   if (hasDatabaseUrl()) {

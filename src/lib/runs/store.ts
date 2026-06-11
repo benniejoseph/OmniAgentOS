@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getDatabaseTenantContext, hasDatabaseUrl, ensureDatabaseSchema, getSql } from "@/lib/db/client";
+import { appendDomainEventSafely } from "@/lib/events/store";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { AgentRunEventRecord, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
@@ -55,6 +56,17 @@ export async function appendRunEvent(runId: string, event: AgentEvent) {
     payload: event,
     createdAt: new Date().toISOString(),
   };
+
+  // Stage-1 event-log dual-write (docs/vision/EVENT_LOG.md). Text deltas are
+  // skipped: they are streaming transport, not decisions worth replaying.
+  if (event.type !== "delta") {
+    await appendDomainEventSafely({
+      streamId: `run:${runId}`,
+      type: `run.${event.type}`,
+      payload: event as unknown as Record<string, unknown>,
+      correlationId: runId,
+    });
+  }
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
