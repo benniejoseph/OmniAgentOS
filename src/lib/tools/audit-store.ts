@@ -22,14 +22,15 @@ export async function saveToolExecution(record: ToolExecutionRecord) {
     await getSql()`
       INSERT INTO omni_tool_executions (
         id, tool_id, tool_name, risk_level, status, dry_run, approval_required,
-        tenant_id, actor_id, input, output, reason, approval_decision, approved_by,
+        tenant_id, actor_id, input, output, reason, approval_decision, approvals, approved_by,
         approved_at, approval_reason, created_at, completed_at
       )
       VALUES (
         ${record.id}, ${record.toolId}, ${record.toolName}, ${record.riskLevel}, ${record.status},
         ${record.dryRun}, ${record.approvalRequired}, ${record.tenantId || null}, ${record.actorId || null},
         ${JSON.stringify(record.input)}::jsonb, ${JSON.stringify(record.output ?? null)}::jsonb,
-        ${record.reason || null}, ${record.approvalDecision || null}, ${record.approvedBy || null},
+        ${record.reason || null}, ${record.approvalDecision || null},
+        ${record.approvals ? JSON.stringify(record.approvals) : null}::jsonb, ${record.approvedBy || null},
         ${record.approvedAt || null}, ${record.approvalReason || null}, ${record.createdAt},
         ${record.completedAt || null}
       )
@@ -46,6 +47,7 @@ export async function saveToolExecution(record: ToolExecutionRecord) {
         output = EXCLUDED.output,
         reason = EXCLUDED.reason,
         approval_decision = EXCLUDED.approval_decision,
+        approvals = EXCLUDED.approvals,
         approved_by = EXCLUDED.approved_by,
         approved_at = EXCLUDED.approved_at,
         approval_reason = EXCLUDED.approval_reason,
@@ -217,6 +219,7 @@ function recordFromRow(row: Record<string, unknown>): ToolExecutionRecord {
     output: row.output,
     reason: row.reason ? String(row.reason) : undefined,
     approvalDecision: row.approval_decision ? String(row.approval_decision) as ToolExecutionRecord["approvalDecision"] : undefined,
+    approvals: Array.isArray(row.approvals) ? (row.approvals as ToolExecutionRecord["approvals"]) : undefined,
     approvedBy: row.approved_by ? String(row.approved_by) : undefined,
     approvedAt: row.approved_at ? normalizeDate(row.approved_at) : undefined,
     approvalReason: row.approval_reason ? String(row.approval_reason) : undefined,

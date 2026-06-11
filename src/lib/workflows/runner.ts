@@ -95,6 +95,28 @@ export async function tickWorkflowRun(runId: string) {
     });
     await appendWorkflowEvent(detail.run.id, "step.completed", { stepKey, attempt });
 
+    // Bounded replanning: one failed verification sends the workflow back to
+    // planning with the failure evidence; a second failure stands.
+    const verifyOutput = stepKey === "verify" ? (output as Record<string, unknown>) : undefined;
+    if (verifyOutput && verifyOutput.passed === false && !hasReplanned(freshDetail)) {
+      const verdict = verifyOutput.modelVerdict as { failures?: string[]; assessment?: string } | undefined;
+      await appendWorkflowEvent(detail.run.id, "workflow.replan_triggered", {
+        failures: verdict?.failures || [],
+        assessment: verdict?.assessment || "Mechanical verification failed.",
+        mechanicalPassed: verifyOutput.mechanicalPassed,
+      });
+      for (const resetKey of ["plan", "execute", "verify"] as const) {
+        await updateWorkflowStep(detail.run.id, resetKey, {
+          status: "pending",
+          attempt: 0,
+          output: undefined,
+          error: undefined,
+          startedAt: undefined,
+          completedAt: undefined,
+        });
+      }
+    }
+
     const nextKey = nextStepKey(await getWorkflowRunDetail(runId) as WorkflowRunDetail);
     if (nextKey) {
       await setWorkflowRunStatus(detail.run.id, "queued", { currentStep: nextKey, error: undefined });
@@ -273,9 +295,19 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
       "execution output captured",
       "report step can persist durable summary",
     ];
+    const mechanicalPassed = Boolean(executeOutput?.response || executeOutput?.deliverable) &&
+      (!planExecution || planExecution.failedNodes === 0);
+    const modelVerdict = await verifyWithModel({
+      goal: detail.run.goal,
+      criteria,
+      executeOutput,
+      planExecution,
+    });
     return {
-      passed: Boolean(executeOutput?.response || executeOutput?.deliverable) &&
-        (!planExecution || planExecution.failedNodes === 0),
+      // The model can veto a mechanically-passing run, never rescue a failing one.
+      passed: mechanicalPassed && (modelVerdict?.passed ?? true),
+      mechanicalPassed,
+      modelVerdict,
       checks: criteria,
       plannerValidation: plan?.validation,
       dynamicPlanId: plan?.id,
@@ -299,14 +331,98 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
   throw new Error(`No workflow step registered for ${stepKey}.`);
 }
 
+function hasReplanned(detail: WorkflowRunDetail) {
+  return detail.events.some((event) => event.type === "workflow.replan_triggered");
+}
+
+type ModelVerificationVerdict = {
+  passed: boolean;
+  score: number;
+  failures: string[];
+  assessment: string;
+  error?: string;
+};
+
+async function verifyWithModel({
+  goal,
+  criteria,
+  executeOutput,
+  planExecution,
+}: {
+  goal: string;
+  criteria: string[];
+  executeOutput?: Record<string, unknown>;
+  planExecution?: ReturnType<typeof parsePlanExecutionOutput>;
+}): Promise<ModelVerificationVerdict | undefined> {
+  if (!hasOpenAIKey()) {
+    return undefined;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error("Verification timed out.")),
+    WORKFLOW_EXECUTOR_TIMEOUT_MS,
+  );
+  try {
+    const raw = await createStructuredResponse({
+      instructions:
+        "You are a strict verification reviewer for an agent workflow. Judge ONLY from the evidence provided whether the acceptance criteria are satisfied. Dry-run or approval-pending tool results do not satisfy criteria that require real side effects. Be conservative: if evidence is missing or ambiguous, fail that criterion.",
+      input: [
+        `Goal: ${goal}`,
+        `Acceptance criteria:\n${criteria.map((item) => `- ${item}`).join("\n")}`,
+        `Execution output: ${JSON.stringify(executeOutput || {}, null, 2).slice(0, 6000)}`,
+        `Plan execution summary: ${JSON.stringify(planExecution || {}, null, 2).slice(0, 3000)}`,
+      ].join("\n\n"),
+      name: "workflow_verification",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["passed", "score", "failures", "assessment"],
+        properties: {
+          passed: { type: "boolean" },
+          score: { type: "number", description: "0-1 confidence that the goal was met." },
+          failures: { type: "array", items: { type: "string" }, description: "Criteria that are not satisfied and why." },
+          assessment: { type: "string", description: "One-paragraph verdict." },
+        },
+      },
+      abortSignal: controller.signal,
+    });
+    const parsed = JSON.parse(raw) as ModelVerificationVerdict;
+    return {
+      passed: Boolean(parsed.passed),
+      score: Number(parsed.score) || 0,
+      failures: Array.isArray(parsed.failures) ? parsed.failures.map(String).slice(0, 10) : [],
+      assessment: String(parsed.assessment || ""),
+    };
+  } catch (error) {
+    // Verification must not take the workflow down; fall back to mechanical checks.
+    return {
+      passed: true,
+      score: 0,
+      failures: [],
+      assessment: "Model verification unavailable; mechanical checks only.",
+      error: error instanceof Error ? error.message : "Verification failed.",
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function buildPlan(detail: WorkflowRunDetail) {
   const retrieveOutput = stepOutput(detail, "retrieve_context");
+  const replanEvent = [...detail.events]
+    .reverse()
+    .find((event) => event.type === "workflow.replan_triggered");
+  const replanFeedback = replanEvent
+    ? `\n\nIMPORTANT: a previous plan for this goal failed verification. Address these failures in the new plan:\n${JSON.stringify(replanEvent.payload || {}, null, 2).slice(0, 2000)}`
+    : "";
   const record = await buildDynamicWorkflowPlan({
     tenantId: detail.run.tenantId,
-    goal: detail.run.goal,
+    goal: `${detail.run.goal}${replanFeedback}`,
     mode: detail.run.input.mode || "orchestrate",
     workflowRunId: detail.run.id,
     requireApproval: detail.run.approvalRequired,
+    reuseExisting: !replanEvent,
   });
   await appendWorkflowEvent(detail.run.id, "workflow.dynamic_plan.created", {
     planId: record.id,

@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolRiskLevel } from "@/lib/tools/types";
+import { RISK3_QUORUM, type ToolDefinition, type ToolRiskLevel } from "@/lib/tools/types";
 
 export type ToolPolicyDecision = {
   allowed: boolean;
@@ -27,11 +27,13 @@ export function evaluateToolPolicy({
 
   if (tool.riskLevel >= 3) {
     return {
-      allowed: false,
+      allowed: Boolean(approved),
       approvalRequired: true,
-      blocked: true,
+      blocked: false,
       riskLevel: tool.riskLevel,
-      reason: "Risk level 3 tools are blocked until multi-party approval is implemented.",
+      reason: approved
+        ? "Risk 3 quorum satisfied."
+        : `Risk 3 tools require ${RISK3_QUORUM} distinct admin approvals (requester excluded).`,
     };
   }
 

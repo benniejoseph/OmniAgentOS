@@ -92,18 +92,28 @@ export const governedTools: ToolDefinition[] = [
     }),
   },
   {
-    id: "connector.external_action",
-    name: "External Action",
-    description: "Placeholder for future side-effecting connectors; requires approval.",
+    id: "http.request",
+    name: "HTTP Request",
+    description:
+      "Send an HTTP request to a public endpoint (webhooks, REST APIs). SSRF-guarded: private networks, internal hostnames, and embedded credentials are blocked. Requires human approval before it executes.",
     category: "connector",
-    status: "planned",
+    status: "active",
     riskLevel: 2,
     dryRunSupported: true,
     approvalRequired: true,
     inputSchema: objectSchema({
-      connector: { type: "string" },
-      action: { type: "string" },
-      payload: { type: "object" },
+      url: { type: "string", description: "Public http(s) URL to call." },
+      method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], default: "GET" },
+      headers: {
+        type: "object",
+        description: "Optional request headers. Reference secrets by env var name via authEnv instead of pasting values.",
+        additionalProperties: { type: "string" },
+      },
+      body: { type: "string", description: "Optional request body (string; JSON should be pre-serialized)." },
+      authEnv: {
+        type: "string",
+        description: "Optional env var name (OMNIAGENT_CONNECTOR_* or allowlisted) whose value is sent as a Bearer token.",
+      },
     }),
   },
 ];

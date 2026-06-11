@@ -8,6 +8,8 @@ import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { saveMemory, searchMemories } from "@/lib/memory/store";
 import type { MemoryType } from "@/lib/memory/types";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
+import { validateConnectorSecretEnvName } from "@/lib/security/context";
+import { assertPublicHttpUrl } from "@/lib/security/network";
 import { ingestTextDocument } from "@/lib/rag/retriever";
 import { searchKnowledge } from "@/lib/rag/store";
 import { listAgentRuns } from "@/lib/runs/store";
@@ -15,7 +17,7 @@ import { createToolExecutionRecord, saveToolExecution } from "@/lib/tools/audit-
 import { evaluateToolPolicy } from "@/lib/tools/policy";
 import type { SecurityContext } from "@/lib/security/types";
 import { getGovernedTool } from "@/lib/tools/registry";
-import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
+import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/lib/tools/types";
 import { runLiveWebSearch } from "@/lib/web-search/search";
 
 const searchSchema = z.object({
@@ -48,6 +50,17 @@ const knowledgeIngestSchema = z.object({
 const runsListSchema = z.object({
   limit: z.number().int().min(1).max(25).optional(),
 });
+
+const httpRequestSchema = z.object({
+  url: z.string().min(1).max(2048),
+  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
+  headers: z.record(z.string(), z.string().max(4096)).optional(),
+  body: z.string().max(100_000).optional(),
+  authEnv: z.string().max(120).optional(),
+});
+
+const HTTP_REQUEST_TIMEOUT_MS = 15_000;
+const HTTP_RESPONSE_MAX_CHARS = 20_000;
 
 export async function executeGovernedTool({
   toolId,
@@ -97,7 +110,12 @@ export async function executeGovernedTool({
     };
   }
 
-  const decision = evaluateToolPolicy({ tool, approved });
+  // Risk-3 approval is only honored when the record itself carries quorum
+  // evidence: RISK3_QUORUM distinct admin/system approvers, requester excluded.
+  // Enforced here so no API caller can bypass it with a bare approved flag.
+  const effectiveApproved =
+    approved && (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord));
+  const decision = evaluateToolPolicy({ tool, approved: effectiveApproved });
   const baseRecord = {
     tenantId: existingRecord?.tenantId || context?.tenantId,
     actorId: existingRecord?.actorId || context?.actorId,
@@ -322,6 +340,10 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>, con
     };
   }
 
+  if (tool.id === "http.request") {
+    return runHttpRequestTool(httpRequestSchema.parse(parsed));
+  }
+
   if (tool.category === "mcp") {
     const mcpTool = await getMcpToolById(tool.id, { tenantId: context?.tenantId });
     if (!mcpTool) {
@@ -429,6 +451,69 @@ async function recordToolPolicyBlock({
   });
 }
 
+export function hasRisk3Quorum(record?: ToolExecutionRecord) {
+  if (!record?.approvals?.length) {
+    return false;
+  }
+  const distinctAdmins = new Set(
+    record.approvals
+      .filter((approval) => (approval.role === "admin" || approval.role === "system") && approval.by !== record.actorId)
+      .map((approval) => approval.by),
+  );
+  return distinctAdmins.size >= RISK3_QUORUM;
+}
+
+async function runHttpRequestTool(input: z.infer<typeof httpRequestSchema>) {
+  const url = await assertPublicHttpUrl(input.url, "Request URL");
+
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(input.headers || {})) {
+    // Header values that look like pasted secrets are rejected; secrets must
+    // arrive via authEnv so they never sit in the audit ledger input.
+    if (/^(sk-|Bearer\s|eyJ)/i.test(value.trim())) {
+      throw new Error(`Header ${name} looks like a pasted secret. Reference it via authEnv instead.`);
+    }
+    headers.set(name, value);
+  }
+
+  if (input.authEnv) {
+    if (!validateConnectorSecretEnvName(input.authEnv)) {
+      throw new Error("authEnv must be an OMNIAGENT_CONNECTOR_* env var or allowlisted secret name.");
+    }
+    const secret = process.env[input.authEnv.trim().toUpperCase()];
+    if (!secret) {
+      throw new Error(`Env var ${input.authEnv} is not set in this environment.`);
+    }
+    headers.set("authorization", `Bearer ${secret}`);
+  }
+
+  const method = input.method || "GET";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error("HTTP request timed out.")), HTTP_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: method === "GET" ? undefined : input.body,
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    const rawBody = await response.text();
+    return {
+      url,
+      method,
+      status: response.status,
+      statusText: response.statusText,
+      redirected: response.status >= 300 && response.status < 400,
+      location: response.headers.get("location") || undefined,
+      contentType: response.headers.get("content-type") || undefined,
+      body: rawBody.length > HTTP_RESPONSE_MAX_CHARS ? `${rawBody.slice(0, HTTP_RESPONSE_MAX_CHARS)}… [truncated]` : rawBody,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function stripEmbedding<T extends { embedding?: number[] }>(value: T) {
   return {
     ...value,
@@ -457,6 +542,10 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return runsListSchema.parse(input);
   }
 
+  if (tool.id === "http.request") {
+    return httpRequestSchema.parse(input);
+  }
+
   if (tool.category === "mcp" || tool.category === "openapi") {
     return input;
   }
@@ -475,6 +564,14 @@ function describeSideEffects(toolId: string) {
 
   if (toolId === "web.search") {
     return ["read-only live web search", "uses OpenAI Responses web_search hosted tool", "stores source metadata in the tool audit ledger"];
+  }
+
+  if (toolId === "http.request") {
+    return [
+      "outbound HTTP call to a public endpoint",
+      "side effects depend on the target API and method",
+      "SSRF-guarded; redirects are not followed; response is truncated in the audit record",
+    ];
   }
 
   if (toolId.startsWith("mcp:")) {

@@ -104,7 +104,7 @@ Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured 
 
 - First-party auth: scrypt password hashes, opaque session tokens stored as SHA-256 digests, HttpOnly/Secure/SameSite=Lax cookies. Enforcement cannot be disabled in production.
 - RBAC: `viewer` → read; `operator` → run agents/tools/workflows/evals; `admin` → connectors, security, identity; `system` → internal.
-- Tool risk levels 0–3: 0–1 auto-execute, 2 requires approval, 3 blocked.
+- Tool risk levels 0–3: 0–1 auto-execute, 2 requires one human approval, 3 requires a quorum of two distinct admin approvals (requester excluded) and is never exposed to the agent's tool loop.
 - Connectors: SSRF guard (private IP/hostname blocking, DNS resolution checks, no embedded credentials), secret env-name allowlisting, recursive metadata redaction.
 - Every auth failure, policy block, and allow/deny decision is recorded to the security audit and observability ledgers with correlation IDs.
 

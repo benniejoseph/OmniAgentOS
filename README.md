@@ -18,7 +18,9 @@ The interactive agent (`/api/agent`) exposes active governed tools to the model 
 
 - **Risk 0–1** tools execute live.
 - **Risk 2 / approval-gated** tools file an `approval_required` record; approving it in the **Approvals** workspace executes the real call.
-- **Risk 3** tools are never exposed.
+- **Risk 3** tools are never exposed to the model; executing one requires two distinct admin approvals (the requester cannot approve their own request).
+
+Built-in tools include `http.request` — SSRF-guarded outbound HTTP for webhooks and REST APIs (risk 2, approval-gated, secrets referenced by env var name only).
 
 Longer work runs as durable workflows: LLM-planned DAGs executed through a Postgres-backed queue with leases, retries, recovery, and operator signals. Everything feeds the observability ledger, SLO policies, incidents, alerts, and signed evaluation reports.
 

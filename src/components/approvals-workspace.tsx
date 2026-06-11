@@ -244,7 +244,7 @@ function reversibility(riskLevel: number) {
   if (riskLevel === 2) {
     return "Side-effecting — may reach external systems and may not be reversible. Review the inputs first.";
   }
-  return "High impact — blocked by policy until multi-party approval exists.";
+  return "High impact — requires two distinct admin approvals (the requester cannot approve their own request).";
 }
 
 function riskPill(riskLevel: number) {

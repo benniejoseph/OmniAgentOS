@@ -46,9 +46,10 @@ const tabs: Array<{ key: TabKey; label: string; icon: typeof TerminalSquare }> =
 ];
 
 const starterGoals = [
+  "Search my memory and knowledge for anything about this project, then summarize what you found and what is missing.",
   "Research the latest workflow failures, build a remediation plan, and save durable lessons.",
   "Prepare a production release readiness report using evaluations, SLOs, incidents, and security evidence.",
-  "Find weak knowledge coverage for connector operations and create an ingest plan.",
+  "Fetch https://api.github.com/zen with the http.request tool and tell me what came back.",
 ];
 
 const runMapSteps = [

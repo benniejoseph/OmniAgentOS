@@ -45,9 +45,15 @@ describe("evaluateToolPolicy", () => {
     expect(decision.approvalRequired).toBe(true);
   });
 
-  it("blocks risk 3 tools even when approved", () => {
+  it("gates risk 3 tools behind approval without hard-blocking", () => {
+    const decision = evaluateToolPolicy({ tool: tool({ riskLevel: 3 }) });
+    expect(decision).toMatchObject({ allowed: false, approvalRequired: true, blocked: false });
+    expect(decision.reason).toMatch(/distinct admin approvals/);
+  });
+
+  it("allows risk 3 tools once the caller certifies quorum approval", () => {
     const decision = evaluateToolPolicy({ tool: tool({ riskLevel: 3 }), approved: true });
-    expect(decision).toMatchObject({ allowed: false, blocked: true });
+    expect(decision.allowed).toBe(true);
   });
 
   it("blocks inactive tools", () => {

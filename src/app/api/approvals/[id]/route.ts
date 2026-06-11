@@ -5,7 +5,8 @@ import {
   rejectObservabilitySloPolicyChange,
 } from "@/lib/observability/slo-policy-store";
 import { getToolExecution, saveToolExecution } from "@/lib/tools/audit-store";
-import { executeGovernedTool } from "@/lib/tools/executor";
+import { executeGovernedTool, hasRisk3Quorum } from "@/lib/tools/executor";
+import { RISK3_QUORUM } from "@/lib/tools/types";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
@@ -151,6 +152,61 @@ export async function POST(
         completedAt: now,
       }),
       result: null,
+    });
+  }
+
+  // Risk-3 tools need a quorum of distinct admin approvals before execution.
+  if (record.riskLevel >= 3) {
+    if (securityContext.role !== "admin" && securityContext.role !== "system") {
+      return Response.json(
+        { error: "Risk 3 approvals require an admin role." },
+        { status: 403 },
+      );
+    }
+    if (record.actorId && securityContext.actorId === record.actorId) {
+      return Response.json(
+        { error: "The requester cannot approve their own risk 3 execution." },
+        { status: 403 },
+      );
+    }
+
+    const approvals = [
+      ...(record.approvals || []).filter((approval) => approval.by !== securityContext.actorId),
+      {
+        by: securityContext.actorId,
+        role: securityContext.role,
+        at: new Date().toISOString(),
+        reason: parsed.data.reason,
+      },
+    ];
+    const pendingRecord = await saveToolExecution({ ...record, approvals });
+
+    if (!hasRisk3Quorum(pendingRecord)) {
+      return Response.json(
+        {
+          record: pendingRecord,
+          result: null,
+          quorum: {
+            have: approvals.length,
+            need: RISK3_QUORUM,
+            message: `Approval recorded. ${RISK3_QUORUM - approvals.length} more distinct admin approval(s) required.`,
+          },
+        },
+        { status: 202 },
+      );
+    }
+
+    const quorumResult = await executeGovernedTool({
+      toolId: pendingRecord.toolId,
+      input: pendingRecord.input,
+      dryRun: false,
+      approved: true,
+      context: securityContext,
+      existingRecord: pendingRecord,
+      approvalReason: parsed.data.reason,
+    });
+    return Response.json(quorumResult, {
+      status: quorumResult.record.status === "failed" ? 500 : 200,
     });
   }
 

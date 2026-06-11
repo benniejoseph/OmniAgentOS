@@ -433,6 +433,7 @@ export async function ensureDatabaseSchema() {
       await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS approved_by TEXT`;
       await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`;
       await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS approval_reason TEXT`;
+      await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS approvals JSONB`;
       await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_tool_id_idx ON omni_tool_executions (tool_id)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_status_idx ON omni_tool_executions (status)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_created_at_idx ON omni_tool_executions (created_at DESC)`;

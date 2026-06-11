@@ -20,6 +20,15 @@ export type ToolDefinition = {
   inputSchema: Record<string, unknown>;
 };
 
+export type ToolQuorumApproval = {
+  by: string;
+  role: string;
+  at: string;
+  reason?: string;
+};
+
+export const RISK3_QUORUM = 2;
+
 export type ToolExecutionRecord = {
   id: string;
   tenantId?: string;
@@ -34,6 +43,8 @@ export type ToolExecutionRecord = {
   output?: unknown;
   reason?: string;
   approvalDecision?: "approved" | "rejected";
+  /** Risk-3 quorum: distinct admin approvals collected so far. */
+  approvals?: ToolQuorumApproval[];
   approvedBy?: string;
   approvedAt?: string;
   approvalReason?: string;
