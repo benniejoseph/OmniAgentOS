@@ -17,13 +17,17 @@ import {
   completeAgentRun,
   createAgentRun,
   failAgentRun,
+  findAgentRunWaitingForToolApproval,
+  markAgentRunResuming,
+  markAgentRunWaitingForApproval,
   recordRunConsolidation,
   updateRunContextCount,
 } from "@/lib/runs/store";
+import type { AgentRunContinuation } from "@/lib/runs/types";
 import type { SecurityContext, SecurityRole } from "@/lib/security/types";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { getGovernedTools } from "@/lib/tools/registry";
-import type { ToolDefinition } from "@/lib/tools/types";
+import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
 
 const MAX_TOOL_RESULT_CHARS = 8_000;
@@ -219,15 +223,45 @@ export async function* runAgent(
             executionId: execution.record.id,
           });
 
+          if (execution.record.status === "approval_required") {
+            const continuation: AgentRunContinuation = {
+              previousResponseId: previousResponseId || turn.responseId || "",
+              instructions,
+              response,
+              toolSteps,
+              outputsBeforeApproval: outputs,
+              pendingToolCall: {
+                callId: call.callId,
+                toolId: definition.id,
+                toolName: definition.name,
+                riskLevel: definition.riskLevel,
+                executionId: execution.record.id,
+              },
+              context: {
+                tenantId: securityContext.tenantId,
+                actorId: securityContext.actorId,
+                role: securityContext.role,
+              },
+              createdAt: new Date().toISOString(),
+            };
+            await flushDeltas();
+            await markAgentRunWaitingForApproval(run.id, { response, continuation });
+            yield await emit({
+              type: "waiting_approval",
+              executionId: execution.record.id,
+              toolId: definition.id,
+              message: "Run paused. Approval will resume this same agent run after the tool executes.",
+            });
+            return;
+          }
+
           outputs.push(
             functionCallOutput(call, {
               status: execution.record.status,
               dryRun: execution.record.dryRun,
               approvalRequired: execution.record.approvalRequired,
               note:
-                execution.record.status === "approval_required"
-                  ? `This action did NOT run. It is queued for human approval in the Approvals workspace (execution id ${execution.record.id}). Tell the user approval is needed before it executes.`
-                  : execution.record.status === "executed"
+                execution.record.status === "executed"
                     ? "Executed for real."
                     : execution.record.reason,
               result: execution.result,
@@ -253,45 +287,14 @@ export async function* runAgent(
       await flushDeltas();
     }
 
-    // Skip memory writes for trivial exchanges so the store does not fill
-    // with low-value episodes that dilute retrieval quality.
-    const worthRemembering = query.trim().length >= 12 && response.trim().length >= 280;
-    if (worthRemembering) {
-      const episodeContent = [`User request: ${query}`, `Assistant response: ${response}`].join("\n\n");
-      const embedding = (await embedTexts([episodeContent]))?.[0];
-      await saveMemory({
-        tenantId: request.tenantId,
-        type: "episode",
-        title: `Agent run: ${query.slice(0, 72)}`,
-        content: episodeContent,
-        tags: ["agent-run", mode],
-        source: "agent",
-        importance: 0.42,
-        embedding,
-      });
-
-      yield await emit({
-        type: "status",
-        label: "consolidating memory",
-        detail: "Extracting durable facts, decisions, procedures, preferences, and tasks.",
-      });
-      const consolidation = await consolidateRunMemory({
-        tenantId: request.tenantId,
-        runId: run.id,
-        mode,
-        prompt: query,
-        response,
-      });
-      await recordRunConsolidation(run.id, {
-        count: consolidation.saved.length,
-        error: consolidation.error,
-      });
-      yield await emit({
-        type: "memory",
-        title: consolidation.error ? "memory consolidation failed" : "memory consolidated",
-        count: consolidation.saved.length,
-      });
-    }
+    await maybeConsolidateRunMemory({
+      runId: run.id,
+      tenantId: request.tenantId,
+      mode,
+      query,
+      response,
+      emit,
+    });
 
     await completeAgentRun(run.id, response);
     yield await emit({ type: "done", response });
@@ -300,6 +303,210 @@ export async function* runAgent(
     await failAgentRun(run.id, message);
     yield await emit({ type: "error", message });
   }
+}
+
+export async function resumeAgentRunAfterToolApproval({
+  executionId,
+  toolExecution,
+  tenantId,
+  abortSignal,
+}: {
+  executionId: string;
+  toolExecution: { record: ToolExecutionRecord; result?: unknown };
+  tenantId?: string;
+  abortSignal?: AbortSignal;
+}) {
+  const run = await findAgentRunWaitingForToolApproval(executionId, { tenantId });
+  const continuation = run?.continuation;
+  if (!run || !continuation || run.status !== "waiting_approval") {
+    return { resumed: false, reason: "No waiting agent run continuation found." };
+  }
+
+  if (!hasOpenAIKey()) {
+    const message = "Cannot resume approved agent run because OPENAI_API_KEY is not configured.";
+    await failAgentRun(run.id, message);
+    await appendRunEvent(run.id, { type: "error", message });
+    return { resumed: false, reason: message };
+  }
+
+  const claimed = await markAgentRunResuming(run.id);
+  if (!claimed) {
+    return { resumed: false, reason: "Run is already being resumed by another approval decision." };
+  }
+  await appendRunEvent(run.id, {
+    type: "status",
+    label: "resuming after approval",
+    detail: `Tool approval ${executionId} resolved; continuing the same agent run.`,
+  });
+
+  const toolbox = await buildAgentToolbox(continuation.context.tenantId);
+  let response = continuation.response || run.response || "";
+  let previousResponseId = continuation.previousResponseId;
+  let toolSteps = continuation.toolSteps;
+  let turnInput: ResponseTurnInput = [
+    ...continuation.outputsBeforeApproval,
+    functionCallOutputFromCallId(continuation.pendingToolCall.callId, {
+      status: toolExecution.record.status,
+      dryRun: toolExecution.record.dryRun,
+      approvalRequired: toolExecution.record.approvalRequired,
+      note: toolExecution.record.status === "executed"
+        ? "Approved and executed for real."
+        : toolExecution.record.reason,
+      result: toolExecution.result,
+    }),
+  ];
+
+  try {
+    for (;;) {
+      const turn = await streamResponseTurn({
+        instructions: continuation.instructions,
+        input: turnInput,
+        previousResponseId,
+        tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
+        abortSignal,
+        onDelta: async (text) => {
+          response += text;
+          await appendRunEvent(run.id, { type: "delta", text });
+        },
+      });
+      previousResponseId = turn.responseId;
+
+      if (!turn.functionCalls.length) {
+        break;
+      }
+
+      toolSteps += 1;
+      const outputs: AgentRunContinuation["outputsBeforeApproval"] = [];
+
+      for (const call of turn.functionCalls.slice(0, MAX_TOOL_CALLS_PER_TURN)) {
+        const entry = toolbox.byFunctionName.get(call.name);
+        if (!entry) {
+          outputs.push(functionCallOutput(call, { error: `Unknown tool ${call.name}.` }));
+          continue;
+        }
+
+        const definition = entry.definition;
+        await appendRunEvent(run.id, {
+          type: "tool",
+          toolId: definition.id,
+          toolName: definition.name,
+          status: "running",
+          riskLevel: definition.riskLevel,
+        });
+
+        const execution = await executeGovernedTool({
+          toolId: definition.id,
+          input: parseFunctionArguments(call.argumentsJson),
+          dryRun: false,
+          approved: false,
+          context: {
+            tenantId: continuation.context.tenantId,
+            actorId: continuation.context.actorId,
+            role: continuation.context.role,
+            source: "default",
+          },
+        });
+
+        await appendRunEvent(run.id, {
+          type: "tool",
+          toolId: definition.id,
+          toolName: definition.name,
+          status: toolExecutionStatus(execution.record.status),
+          riskLevel: definition.riskLevel,
+          dryRun: execution.record.dryRun,
+          summary: execution.record.reason,
+          executionId: execution.record.id,
+        });
+
+        if (execution.record.status === "approval_required") {
+          await markAgentRunWaitingForApproval(run.id, {
+            response,
+            continuation: {
+              previousResponseId,
+              instructions: continuation.instructions,
+              response,
+              toolSteps,
+              outputsBeforeApproval: outputs,
+              pendingToolCall: {
+                callId: call.callId,
+                toolId: definition.id,
+                toolName: definition.name,
+                riskLevel: definition.riskLevel,
+                executionId: execution.record.id,
+              },
+              context: continuation.context,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          await appendRunEvent(run.id, {
+            type: "waiting_approval",
+            executionId: execution.record.id,
+            toolId: definition.id,
+            message: "Run paused again for a newly required approval.",
+          });
+          return { resumed: true, status: "waiting_approval" };
+        }
+
+        outputs.push(functionCallOutput(call, {
+          status: execution.record.status,
+          dryRun: execution.record.dryRun,
+          approvalRequired: execution.record.approvalRequired,
+          note: execution.record.status === "executed" ? "Executed for real." : execution.record.reason,
+          result: execution.result,
+        }));
+      }
+
+      for (const call of turn.functionCalls.slice(MAX_TOOL_CALLS_PER_TURN)) {
+        outputs.push(functionCallOutput(call, { error: "Per-turn tool call limit reached; call skipped." }));
+      }
+
+      if (toolSteps >= AGENT_MAX_TOOL_STEPS) {
+        await appendRunEvent(run.id, {
+          type: "status",
+          label: "tool budget reached",
+          detail: `Tool step budget (${AGENT_MAX_TOOL_STEPS}) reached; asking the model for its final answer.`,
+        });
+      }
+
+      turnInput = outputs;
+    }
+
+    await maybeConsolidateRunMemory({
+      runId: run.id,
+      tenantId: continuation.context.tenantId,
+      mode: run.mode,
+      query: run.prompt,
+      response,
+      emit: (event) => appendRunEvent(run.id, event),
+    });
+    await completeAgentRun(run.id, response);
+    await appendRunEvent(run.id, { type: "done", response });
+    return { resumed: true, status: "completed" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Approved agent run resume failed.";
+    await failAgentRun(run.id, message);
+    await appendRunEvent(run.id, { type: "error", message });
+    return { resumed: true, status: "failed", error: message };
+  }
+}
+
+export async function rejectAgentRunApproval({
+  executionId,
+  tenantId,
+  reason,
+}: {
+  executionId: string;
+  tenantId?: string;
+  reason?: string;
+}) {
+  const run = await findAgentRunWaitingForToolApproval(executionId, { tenantId });
+  if (!run || run.status !== "waiting_approval") {
+    return { rejected: false };
+  }
+  const message = reason ? `Approval rejected: ${reason}` : "Approval rejected by operator.";
+  await failAgentRun(run.id, message);
+  await appendRunEvent(run.id, { type: "error", message });
+  return { rejected: true, runId: run.id };
 }
 
 type ToolboxEntry = {
@@ -345,11 +552,15 @@ async function buildAgentToolbox(tenantId?: string): Promise<{
 }
 
 function functionCallOutput(call: ResponseFunctionCall, payload: unknown) {
+  return functionCallOutputFromCallId(call.callId, payload);
+}
+
+function functionCallOutputFromCallId(callId: string, payload: unknown) {
   let output = JSON.stringify(payload ?? null);
   if (output.length > MAX_TOOL_RESULT_CHARS) {
     output = `${output.slice(0, MAX_TOOL_RESULT_CHARS)}… [truncated]`;
   }
-  return { type: "function_call_output" as const, call_id: call.callId, output };
+  return { type: "function_call_output" as const, call_id: callId, output };
 }
 
 function parseFunctionArguments(argumentsJson: string): Record<string, unknown> {
@@ -399,6 +610,72 @@ function normalizeRole(role?: string): SecurityRole {
   return role === "viewer" || role === "operator" || role === "admin" || role === "system"
     ? role
     : "operator";
+}
+
+function toolExecutionStatus(status: ToolExecutionRecord["status"]): "executed" | "dry_run" | "approval_required" | "blocked" | "failed" {
+  return status === "executed" ? "executed" :
+    status === "dry_run" ? "dry_run" :
+      status === "approval_required" ? "approval_required" :
+        status === "blocked" ? "blocked" :
+          "failed";
+}
+
+async function maybeConsolidateRunMemory({
+  runId,
+  tenantId,
+  mode,
+  query,
+  response,
+  emit,
+}: {
+  runId: string;
+  tenantId?: string;
+  mode: "orchestrate" | "research" | "execute" | "learn";
+  query: string;
+  response: string;
+  emit: (event: AgentEvent) => Promise<unknown>;
+}) {
+  // Skip memory writes for trivial exchanges so the store does not fill with
+  // low-value episodes that dilute retrieval quality.
+  const worthRemembering = query.trim().length >= 12 && response.trim().length >= 280;
+  if (!worthRemembering) {
+    return;
+  }
+
+  const episodeContent = [`User request: ${query}`, `Assistant response: ${response}`].join("\n\n");
+  const embedding = (await embedTexts([episodeContent]))?.[0];
+  await saveMemory({
+    tenantId,
+    type: "episode",
+    title: `Agent run: ${query.slice(0, 72)}`,
+    content: episodeContent,
+    tags: ["agent-run", mode],
+    source: "agent",
+    importance: 0.42,
+    embedding,
+  });
+
+  await emit({
+    type: "status",
+    label: "consolidating memory",
+    detail: "Extracting durable facts, decisions, procedures, preferences, and tasks.",
+  });
+  const consolidation = await consolidateRunMemory({
+    tenantId,
+    runId,
+    mode,
+    prompt: query,
+    response,
+  });
+  await recordRunConsolidation(runId, {
+    count: consolidation.saved.length,
+    error: consolidation.error,
+  });
+  await emit({
+    type: "memory",
+    title: consolidation.error ? "memory consolidation failed" : "memory consolidated",
+    count: consolidation.saved.length,
+  });
 }
 
 function normalizeTenantId(value?: string) {

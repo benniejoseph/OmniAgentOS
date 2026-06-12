@@ -115,6 +115,24 @@ export async function tickWorkflowRun(runId: string) {
           completedAt: undefined,
         });
       }
+
+      // The human approved the OLD plan. A replanned workflow produces a new
+      // plan the approver never saw, so the approval is revoked and the
+      // approval gate re-opens before any side-effecting tool can execute.
+      if (freshDetail.run.approvalRequired && freshDetail.run.approvedAt) {
+        await updateWorkflowRun(detail.run.id, { approvedAt: undefined });
+        await updateWorkflowStep(detail.run.id, "approval_gate", {
+          status: "pending",
+          attempt: 0,
+          output: undefined,
+          error: undefined,
+          startedAt: undefined,
+          completedAt: undefined,
+        });
+        await appendWorkflowEvent(detail.run.id, "workflow.approval_revoked_on_replan", {
+          reason: "Replanning produced a new plan; prior approval applied to the old plan only.",
+        });
+      }
     }
 
     const nextKey = nextStepKey(await getWorkflowRunDetail(runId) as WorkflowRunDetail);
@@ -395,11 +413,12 @@ async function verifyWithModel({
       assessment: String(parsed.assessment || ""),
     };
   } catch (error) {
-    // Verification must not take the workflow down; fall back to mechanical checks.
+    // Verification is part of the production evidence gate. If the model
+    // verifier is unavailable, do not silently pass autonomous work.
     return {
-      passed: true,
+      passed: false,
       score: 0,
-      failures: [],
+      failures: ["Model verification unavailable; rerun verification before promoting this result."],
       assessment: "Model verification unavailable; mechanical checks only.",
       error: error instanceof Error ? error.message : "Verification failed.",
     };

@@ -1,6 +1,27 @@
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 
-export type RunStatus = "running" | "completed" | "failed";
+export type RunStatus = "running" | "waiting_approval" | "resuming" | "completed" | "failed";
+
+export type AgentRunContinuation = {
+  previousResponseId: string;
+  instructions: string;
+  response: string;
+  toolSteps: number;
+  outputsBeforeApproval: Array<{ type: "function_call_output"; call_id: string; output: string }>;
+  pendingToolCall: {
+    callId: string;
+    toolId: string;
+    toolName: string;
+    riskLevel?: number;
+    executionId: string;
+  };
+  context: {
+    tenantId: string;
+    actorId: string;
+    role: "viewer" | "operator" | "admin" | "system";
+  };
+  createdAt: string;
+};
 
 export type AgentRunRecord = {
   id: string;
@@ -15,6 +36,7 @@ export type AgentRunRecord = {
   response?: string;
   error?: string;
   consolidationError?: string;
+  continuation?: AgentRunContinuation;
   startedAt: string;
   completedAt?: string;
   consolidatedAt?: string;

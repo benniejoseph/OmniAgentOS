@@ -1,9 +1,11 @@
+import { after } from "next/server";
 import { z } from "zod";
 import {
   applyObservabilitySloPolicyChange,
   getObservabilitySloPolicyChange,
   rejectObservabilitySloPolicyChange,
 } from "@/lib/observability/slo-policy-store";
+import { rejectAgentRunApproval, resumeAgentRunAfterToolApproval } from "@/lib/orchestration/agent-runner";
 import { getToolExecution, saveToolExecution } from "@/lib/tools/audit-store";
 import { executeGovernedTool, hasRisk3Quorum } from "@/lib/tools/executor";
 import { RISK3_QUORUM } from "@/lib/tools/types";
@@ -161,7 +163,12 @@ export async function POST(
       riskLevel: record.riskLevel,
       humanApproved: false,
     }).catch(() => undefined);
-    return Response.json({ record: rejected, result: null });
+    const continuation = await rejectAgentRunApproval({
+      executionId: record.id,
+      tenantId: securityContext.tenantId,
+      reason: parsed.data.reason,
+    });
+    return Response.json({ record: rejected, result: null, continuation });
   }
 
   // Risk-3 tools need a quorum of distinct admin approvals before execution.
@@ -214,7 +221,12 @@ export async function POST(
       existingRecord: pendingRecord,
       approvalReason: parsed.data.reason,
     });
-    return Response.json(quorumResult, {
+    const continuation = scheduleAgentRunResume({
+      executionId: pendingRecord.id,
+      toolExecution: quorumResult,
+      tenantId: securityContext.tenantId,
+    });
+    return Response.json({ ...quorumResult, continuation }, {
       status: quorumResult.record.status === "failed" ? 500 : 200,
     });
   }
@@ -229,7 +241,37 @@ export async function POST(
     approvalReason: parsed.data.reason,
   });
 
-  return Response.json(result, {
+  const continuation = scheduleAgentRunResume({
+    executionId: record.id,
+    toolExecution: result,
+    tenantId: securityContext.tenantId,
+  });
+
+  return Response.json({ ...result, continuation }, {
     status: result.record.status === "failed" ? 500 : 200,
   });
+}
+
+/**
+ * The remaining agent run can span many model turns, so it must not block the
+ * approver's request (or run into the function timeout mid-stream). after()
+ * keeps the function alive past the response while the run continues.
+ */
+function scheduleAgentRunResume(input: {
+  executionId: string;
+  toolExecution: { record: Parameters<typeof resumeAgentRunAfterToolApproval>[0]["toolExecution"]["record"]; result?: unknown };
+  tenantId?: string;
+}) {
+  after(async () => {
+    try {
+      const outcome = await resumeAgentRunAfterToolApproval(input);
+      console.log("Agent run resume finished.", JSON.stringify(outcome));
+    } catch (error) {
+      console.error(
+        "Agent run resume crashed.",
+        error instanceof Error ? error.message : error,
+      );
+    }
+  });
+  return { scheduled: true, status: "resuming" as const };
 }

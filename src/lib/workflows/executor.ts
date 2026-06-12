@@ -292,12 +292,13 @@ async function executePlanNode({
 
   for (const toolId of node.toolIds.slice(0, 6)) {
     const tool = await getToolDefinition(toolId, { tenantId: detail.run.tenantId });
-    const dryRun = shouldDryRunTool({ toolId, tool, node });
+    const workflowApproved = Boolean(detail.run.approvedAt);
+    const dryRun = shouldDryRunWorkflowTool({ toolId, tool, node, workflowApproved });
     const execution = await executeGovernedTool({
       toolId,
       input: buildToolInput({ detail, plan, planId, node, toolId, dependencyRecords }),
       dryRun,
-      approved: Boolean(detail.run.approvedAt && !dryRun),
+      approved: workflowApproved && !dryRun,
       context: {
         tenantId: normalizeTenantId(detail.run.tenantId),
         actorId: "workflow",
@@ -357,17 +358,23 @@ async function getToolDefinition(
     undefined;
 }
 
-function shouldDryRunTool({
+export function shouldDryRunWorkflowTool({
   toolId,
   tool,
   node,
+  workflowApproved = false,
 }: {
   toolId: string;
   tool?: ToolDefinition;
   node: WorkflowPlanNode;
+  workflowApproved?: boolean;
 }) {
   if (!tool) {
     return true;
+  }
+
+  if (workflowApproved) {
+    return false;
   }
 
   if (node.policy !== "auto" || node.approvalRequired || node.riskLevel >= 2 || tool.approvalRequired || tool.riskLevel >= 1) {

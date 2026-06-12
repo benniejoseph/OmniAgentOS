@@ -371,6 +371,7 @@ export async function ensureDatabaseSchema() {
           consolidation_count INTEGER NOT NULL DEFAULT 0,
           response TEXT,
           error TEXT,
+          continuation JSONB,
           started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           completed_at TIMESTAMPTZ,
           consolidated_at TIMESTAMPTZ,
@@ -381,6 +382,7 @@ export async function ensureDatabaseSchema() {
       await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS consolidation_count INTEGER NOT NULL DEFAULT 0`;
       await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS consolidated_at TIMESTAMPTZ`;
       await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS consolidation_error TEXT`;
+      await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS continuation JSONB`;
       await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_started_at_idx ON omni_agent_runs (started_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_tenant_started_at_idx ON omni_agent_runs (tenant_id, started_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_status_idx ON omni_agent_runs (status)`;

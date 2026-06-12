@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getDatabaseTenantContext, hasDatabaseUrl, ensureDatabaseSchema, getSql } from "@/lib/db/client";
 import { appendDomainEventSafely } from "@/lib/events/store";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
-import type { AgentRunEventRecord, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
+import type { AgentRunContinuation, AgentRunEventRecord, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 
@@ -136,6 +136,123 @@ export async function failAgentRun(runId: string, error: string) {
   await setRunStatus(runId, "failed", { error });
 }
 
+export async function markAgentRunWaitingForApproval(
+  runId: string,
+  values: { response: string; continuation: AgentRunContinuation },
+) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    await getSql()`
+      UPDATE omni_agent_runs
+      SET status = 'waiting_approval',
+          response = ${values.response || null},
+          continuation = ${JSON.stringify(values.continuation)}::jsonb,
+          completed_at = NULL
+      WHERE id = ${runId}
+    `;
+    return;
+  }
+
+  await updateFileRun(runId, (run) => {
+    run.status = "waiting_approval";
+    run.response = values.response;
+    run.continuation = values.continuation;
+    run.completedAt = undefined;
+  });
+}
+
+/**
+ * Conditional transition: only one caller can move a run from
+ * waiting_approval to resuming. Returns false if another approval already
+ * claimed the run, so concurrent decisions cannot double-resume it.
+ */
+export async function markAgentRunResuming(runId: string): Promise<boolean> {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      UPDATE omni_agent_runs
+      SET status = 'resuming',
+          completed_at = NULL
+      WHERE id = ${runId}
+        AND status = 'waiting_approval'
+      RETURNING id
+    `;
+    return Boolean(rows[0]);
+  }
+
+  let transitioned = false;
+  await updateFileRun(runId, (run) => {
+    if (run.status === "waiting_approval") {
+      run.status = "resuming";
+      run.completedAt = undefined;
+      transitioned = true;
+    }
+  });
+  return transitioned;
+}
+
+export async function getAgentRun(runId: string, options: { tenantId?: string } = {}) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const tenantId = options.tenantId ? normalizeTenantId(options.tenantId) : undefined;
+    const rows = tenantId
+      ? await getSql()`
+          SELECT *
+          FROM omni_agent_runs
+          WHERE id = ${runId}
+            AND tenant_id = ${tenantId}
+          LIMIT 1
+        `
+      : await getSql()`
+          SELECT *
+          FROM omni_agent_runs
+          WHERE id = ${runId}
+          LIMIT 1
+        `;
+    return rows[0] ? runFromRow(rows[0]) : undefined;
+  }
+
+  const ledger = await readRunLedger();
+  return ledger.runs.find((run) => run.id === runId && (!options.tenantId || normalizeTenantId(run.tenantId) === normalizeTenantId(options.tenantId)));
+}
+
+export async function findAgentRunWaitingForToolApproval(
+  executionId: string,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = options.tenantId ? normalizeTenantId(options.tenantId) : undefined;
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = tenantId
+      ? await getSql()`
+          SELECT *
+          FROM omni_agent_runs
+          WHERE tenant_id = ${tenantId}
+            AND status IN ('waiting_approval', 'resuming')
+            AND continuation->'pendingToolCall'->>'executionId' = ${executionId}
+          ORDER BY started_at DESC
+          LIMIT 1
+        `
+      : await getSql()`
+          SELECT *
+          FROM omni_agent_runs
+          WHERE status IN ('waiting_approval', 'resuming')
+            AND continuation->'pendingToolCall'->>'executionId' = ${executionId}
+          ORDER BY started_at DESC
+          LIMIT 1
+        `;
+    return rows[0] ? runFromRow(rows[0]) : undefined;
+  }
+
+  const ledger = await readRunLedger();
+  return ledger.runs.find((run) =>
+    (run.status === "waiting_approval" || run.status === "resuming") &&
+    run.continuation?.pendingToolCall.executionId === executionId &&
+    (!tenantId || normalizeTenantId(run.tenantId) === tenantId)
+  );
+}
+
 export async function listAgentRuns(limit = 20, options: { tenantId?: string } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
 
@@ -222,6 +339,7 @@ async function setRunStatus(
       SET status = ${status},
           response = ${values.response || null},
           error = ${values.error || null},
+          continuation = NULL,
           completed_at = ${completedAt}
       WHERE id = ${runId}
     `;
@@ -232,6 +350,7 @@ async function setRunStatus(
     run.status = status;
     run.response = values.response;
     run.error = values.error;
+    run.continuation = undefined;
     run.completedAt = completedAt;
   });
 }
@@ -278,10 +397,61 @@ function runFromRow(row: Record<string, unknown>): AgentRunRecord {
     response: row.response ? String(row.response) : undefined,
     error: row.error ? String(row.error) : undefined,
     consolidationError: row.consolidation_error ? String(row.consolidation_error) : undefined,
+    continuation: parseContinuation(row.continuation),
     startedAt: normalizeDate(row.started_at),
     completedAt: row.completed_at ? normalizeDate(row.completed_at) : undefined,
     consolidatedAt: row.consolidated_at ? normalizeDate(row.consolidated_at) : undefined,
   };
+}
+
+function parseContinuation(value: unknown): AgentRunContinuation | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const candidate = value as AgentRunContinuation;
+  if (
+    typeof candidate.previousResponseId !== "string" ||
+    typeof candidate.instructions !== "string" ||
+    !candidate.pendingToolCall ||
+    typeof candidate.pendingToolCall.executionId !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    previousResponseId: candidate.previousResponseId,
+    instructions: candidate.instructions,
+    response: typeof candidate.response === "string" ? candidate.response : "",
+    toolSteps: Number.isInteger(candidate.toolSteps) ? candidate.toolSteps : 0,
+    outputsBeforeApproval: Array.isArray(candidate.outputsBeforeApproval)
+      ? candidate.outputsBeforeApproval.filter(isFunctionCallOutput)
+      : [],
+    pendingToolCall: {
+      callId: String(candidate.pendingToolCall.callId || ""),
+      toolId: String(candidate.pendingToolCall.toolId || ""),
+      toolName: String(candidate.pendingToolCall.toolName || candidate.pendingToolCall.toolId || ""),
+      riskLevel: typeof candidate.pendingToolCall.riskLevel === "number" ? candidate.pendingToolCall.riskLevel : undefined,
+      executionId: candidate.pendingToolCall.executionId,
+    },
+    context: {
+      tenantId: String(candidate.context?.tenantId || "default"),
+      actorId: String(candidate.context?.actorId || "agent"),
+      role: normalizeRole(candidate.context?.role),
+    },
+    createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : new Date().toISOString(),
+  };
+}
+
+function isFunctionCallOutput(value: unknown): value is AgentRunContinuation["outputsBeforeApproval"][number] {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as { type?: unknown }).type === "function_call_output" &&
+    typeof (value as { call_id?: unknown }).call_id === "string" &&
+    typeof (value as { output?: unknown }).output === "string",
+  );
 }
 
 async function resolveAgentRunTenantId(runId: string) {
@@ -304,4 +474,10 @@ function normalizeDate(value: unknown) {
 
 function normalizeTenantId(value?: string) {
   return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default";
+}
+
+function normalizeRole(value: unknown): AgentRunContinuation["context"]["role"] {
+  return value === "viewer" || value === "operator" || value === "admin" || value === "system"
+    ? value
+    : "operator";
 }

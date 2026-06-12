@@ -89,7 +89,11 @@ export function ApprovalsWorkspace() {
       if (!response.ok) {
         throw new Error(String(body.message || body.error || `Decision failed (${response.status}).`));
       }
-      setLastDecision(`${decision === "approve" ? "Approved" : "Rejected"}: ${item.title}`);
+      const continuation = body.continuation as { scheduled?: boolean; rejected?: boolean } | undefined;
+      const resumeNote = continuation?.scheduled
+        ? " The paused agent run is resuming in the background — its final answer lands in Results."
+        : "";
+      setLastDecision(`${decision === "approve" ? "Approved" : "Rejected"}: ${item.title}.${resumeNote}`);
       await load();
     } catch (decisionError) {
       setError(decisionError instanceof Error ? decisionError.message : "Decision failed.");

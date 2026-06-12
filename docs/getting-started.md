@@ -42,14 +42,14 @@ Without it, agent runs stream a clearly labeled simulated response. With it, the
 1. Open **Run Agent** (`/app/command`).
 2. Enter a goal — e.g. *"Search our knowledge for connector setup notes, then summarize what's missing."*
 3. Watch the run stream: context retrieval, tool calls (with risk levels), and the final answer.
-4. Tool calls that need approval appear in **Approvals** (`/app/approvals`); approving one executes it for real and records the result in the tool audit ledger.
+4. Tool calls that need approval appear in **Approvals** (`/app/approvals`); approving one executes it for real and resumes the same agent run with the approved tool result.
 5. Final outputs and evidence land in **Results** (`/app/results`).
 
 Press **⌘K** anywhere in the app to jump between workspaces.
 
 ## 5. Make it durable (optional)
 
-Without `DATABASE_URL`, data lives in `.omniagent/` JSON files locally (and ephemeral `/tmp` on Vercel — the app shows a warning banner). For real persistence:
+Without `DATABASE_URL`, data lives in `.omniagent/` JSON files locally. Hosted production requires Postgres; no-DB hosted mode is blocked unless `OMNIAGENT_ALLOW_DEMO_STORAGE=true` is set for a disposable demo. For real persistence:
 
 ```bash
 DATABASE_URL=postgres://...

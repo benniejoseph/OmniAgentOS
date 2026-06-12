@@ -34,6 +34,7 @@ type StreamEvent =
       dryRun?: boolean;
       summary?: string;
     }
+  | { type: "waiting_approval"; executionId?: string; toolId?: string; message?: string }
   | { type: "done"; response?: string }
   | { type: "error"; message?: string };
 
@@ -913,6 +914,12 @@ function streamEventLabel(event: StreamEvent) {
       return `${name} was blocked by policy${event.summary ? `: ${event.summary}` : "."}`;
     }
     return `${name} failed${event.summary ? `: ${event.summary}` : "."}`;
+  }
+  if (event.type === "waiting_approval") {
+    return (
+      event.message ||
+      `Run paused for approval of ${event.toolId || "a gated tool"}. Approving it in the Approvals workspace resumes this run automatically.`
+    );
   }
   if (event.type === "done") {
     return "Agent run completed.";

@@ -8,7 +8,8 @@
 | `OPENAI_AGENT_MODEL` | No (default `gpt-5`) | Generation model |
 | `OPENAI_EMBEDDING_MODEL` | No (default `text-embedding-3-large`) | Embedding model |
 | `OPENAI_EMBEDDING_DIMENSIONS` | No (default `1536`) | Keep ≤ 2000 for pgvector HNSW |
-| `DATABASE_URL` | Strongly recommended | Neon/Postgres; without it hosted storage is ephemeral `/tmp` and a warning banner is shown |
+| `DATABASE_URL` | Yes (production) | Neon/Postgres; required for autonomous execution state, approvals, workflows, memory, and audit evidence |
+| `OMNIAGENT_ALLOW_DEMO_STORAGE` | No (default `false`) | Explicitly allows hosted no-DB demo mode. Do not set on production deployments. |
 | `CRON_SECRET` | Yes (production) | Secures `/api/workflows/tick` for Vercel Cron |
 | `OMNIAGENT_BOOTSTRAP_EMAIL` / `OMNIAGENT_BOOTSTRAP_PASSWORD` | Yes (first deploy) | First admin sign-in |
 | `OMNIAGENT_INTERNAL_AUTH_SECRET` | Yes (if using smoke tests) | Trusted internal identity headers (timing-safe compared) |
@@ -25,12 +26,29 @@
 | `OMNIAGENT_GRADUATED_AUTONOMY` | No (false) | Opt-in: let action classes that earned trust auto-execute reversible risk<3 tools with alerting |
 | `OMNIAGENT_AUTONOMY_GRADUATION_THRESHOLD` | No (25) | Consecutive clean executions required before an action class graduates |
 | `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST` | No | Extra env names connectors may reference (`OMNIAGENT_CONNECTOR_*` always allowed) |
+| `OMNIAGENT_WORKER_BASE_URL` | Yes (worker) | Web origin the dedicated worker should tick |
+| `OMNIAGENT_WORKER_INTERVAL_MS` | No (5000) | Delay between worker drain attempts |
+| `OMNIAGENT_WORKER_LIMIT` | No (5) | Workflow jobs to lease per worker tick, max 10 |
+| `OMNIAGENT_WORKER_SLO` / `OMNIAGENT_WORKER_ALERTS` | No (true/true) | Whether the worker also evaluates SLOs and dispatches alerts |
 
 Auth is always enforced in production runtimes and cannot be disabled there.
 
+Production requests are blocked when `DATABASE_URL` is missing unless `OMNIAGENT_ALLOW_DEMO_STORAGE=true` is set. That override is for disposable demos only.
+
+## Dedicated worker
+
+Run the web app and worker as separate processes:
+
+```bash
+npm run start
+npm run worker
+```
+
+The worker authenticates with `OMNIAGENT_INTERNAL_AUTH_SECRET` and trusted system identity headers, then continuously drains `/api/workflows/tick`. This is the preferred production path for autonomous execution because it does not depend on user traffic.
+
 ## Cron cadence
 
-`vercel.json` schedules `/api/workflows/tick` **once daily** (Hobby-compatible). That tick drains the workflow queue, evaluates SLO policies, syncs incidents, and dispatches alerts. User actions also drain opportunistically via `after()`.
+`vercel.json` still schedules `/api/workflows/tick` **once daily** as a backstop. The dedicated worker should be the primary queue driver. User actions also drain opportunistically via `after()`.
 
 A daily tick means an unattended workflow can wait up to 24h. Options:
 

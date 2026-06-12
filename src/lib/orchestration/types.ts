@@ -23,6 +23,7 @@ export type AgentEvent =
   | { type: "delta"; text: string }
   | { type: "memory"; title: string; count?: number }
   | AgentToolEvent
+  | { type: "waiting_approval"; executionId: string; toolId: string; message: string }
   | { type: "done"; response: string }
   | { type: "error"; message: string };
 

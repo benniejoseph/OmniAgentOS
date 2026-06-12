@@ -47,6 +47,7 @@ Longer work runs as durable workflows: LLM-planned DAGs executed through a Postg
 ```bash
 npm test                    # lint + unit tests (vitest)
 npm run build               # production build
+npm run worker              # dedicated queue/SLO/alert worker
 BASE_URL=<url> npm run test:production-smoke   # deployed-instance smoke gates
 ```
 
@@ -55,5 +56,6 @@ CI runs lint, unit tests, and build on every push and PR; a nightly workflow smo
 ## Security notes
 
 - Auth is always enforced in production and cannot be disabled there. Set `OMNIAGENT_BOOTSTRAP_EMAIL` / `OMNIAGENT_BOOTSTRAP_PASSWORD` before the first deploy.
+- Production requires `DATABASE_URL`; hosted no-DB storage is blocked unless `OMNIAGENT_ALLOW_DEMO_STORAGE=true` is set for a disposable demo.
 - Connectors store environment variable *names* only (prefix `OMNIAGENT_CONNECTOR_` or allowlisted); platform secrets are blocked, connector URLs are SSRF-guarded, and sensitive metadata is redacted.
 - Tenant data is isolated with forced row-level security; allow/deny decisions are audited with correlation IDs.
