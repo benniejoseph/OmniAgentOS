@@ -174,12 +174,14 @@ export async function createStructuredResponse({
   schema,
   name,
   abortSignal,
+  reasoningEffort,
 }: {
   instructions: string;
   input: string;
   schema: ResponseFormatTextJSONSchemaConfig["schema"];
   name: string;
   abortSignal?: AbortSignal;
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
 }) {
   const response = await getOpenAIClient().responses.create(
     {
@@ -194,6 +196,7 @@ export async function createStructuredResponse({
           schema,
         },
       },
+      ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
     },
     { signal: abortSignal },
   );
