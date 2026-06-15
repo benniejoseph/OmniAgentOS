@@ -14,6 +14,7 @@ import { getOperationJobStats } from "@/lib/operations/job-queue";
 import { processWorkflowQueue } from "@/lib/workflows/queue";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const tickSchema = z.object({
   limit: z.number().int().min(1).max(10).optional(),

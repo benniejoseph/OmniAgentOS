@@ -4,6 +4,7 @@ import { processWorkflowQueue } from "@/lib/workflows/queue";
 import { getWorkflowRunDetail } from "@/lib/workflows/store";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function POST(
   request: Request,

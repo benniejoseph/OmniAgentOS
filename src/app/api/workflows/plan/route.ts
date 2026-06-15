@@ -3,6 +3,7 @@ import { buildDynamicWorkflowPlan, getWorkflowPlanStats, listWorkflowPlans } fro
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const workflowPlanSchema = z.object({
   goal: z.string().min(1).max(4000),
