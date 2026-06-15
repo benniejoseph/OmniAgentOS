@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { foldTrustProfile } from "@/lib/events/projections";
+import { foldRunProjection, foldTrustProfile } from "@/lib/events/projections";
 import type { DomainEvent } from "@/lib/events/store";
 
 beforeEach(() => {
@@ -61,5 +61,83 @@ describe("foldTrustProfile", () => {
     ];
     const profile = foldTrustProfile(events, { actionClass: "demo.tool", tenantId: "default" });
     expect(profile?.total).toBe(1);
+  });
+});
+
+function runEvent(seq: number, type: string, payload: Record<string, unknown> = {}): DomainEvent {
+  return {
+    id: `r${seq}`,
+    seq,
+    streamId: "run:demo-run",
+    type: `run.${type}`,
+    tenantId: "default",
+    actorId: "system",
+    payload,
+    at: new Date(1700000000000 + seq * 1000).toISOString(),
+  };
+}
+
+describe("foldRunProjection", () => {
+  it("defaults to running with no tool calls for an empty stream", () => {
+    expect(foldRunProjection([])).toEqual({
+      status: "running",
+      memoryContextCount: 0,
+      toolCalls: [],
+    });
+  });
+
+  it("rebuilds a completed run's status, response, and tool calls", () => {
+    const events = [
+      runEvent(1, "status", { label: "thinking" }),
+      runEvent(2, "memory", { title: "context", count: 3 }),
+      runEvent(3, "tool", { toolId: "search", toolName: "Search", status: "executed", riskLevel: 1 }),
+      runEvent(4, "done", { response: "all done" }),
+    ];
+    const projection = foldRunProjection(events);
+    expect(projection.status).toBe("completed");
+    expect(projection.response).toBe("all done");
+    expect(projection.memoryContextCount).toBe(3);
+    expect(projection.toolCalls).toEqual([
+      { toolId: "search", toolName: "Search", status: "executed", riskLevel: 1, dryRun: false, summary: undefined, executionId: undefined },
+    ]);
+  });
+
+  it("rebuilds a failed run's status and error", () => {
+    const events = [runEvent(1, "error", { message: "boom" })];
+    const projection = foldRunProjection(events);
+    expect(projection.status).toBe("failed");
+    expect(projection.error).toBe("boom");
+  });
+
+  it("rebuilds a run waiting on approval", () => {
+    const events = [
+      runEvent(1, "tool", { toolId: "delete", toolName: "Delete", status: "approval_required" }),
+      runEvent(2, "waiting_approval", { executionId: "exec-1", toolId: "delete", message: "needs approval" }),
+    ];
+    const projection = foldRunProjection(events);
+    expect(projection.status).toBe("waiting_approval");
+    expect(projection.waitingApproval).toEqual({
+      executionId: "exec-1",
+      toolId: "delete",
+      message: "needs approval",
+    });
+  });
+
+  it("folds out-of-order input deterministically by seq", () => {
+    const events = [
+      runEvent(2, "done", { response: "final" }),
+      runEvent(1, "tool", { toolId: "search", toolName: "Search", status: "executed" }),
+    ];
+    const projection = foldRunProjection(events);
+    expect(projection.status).toBe("completed");
+    expect(projection.response).toBe("final");
+    expect(projection.toolCalls).toHaveLength(1);
+  });
+
+  it("ignores events outside the run stream namespace", () => {
+    const events = [
+      { ...runEvent(1, "done", { response: "final" }), streamId: "workflow:other", type: "workflow.done" },
+    ];
+    expect(foldRunProjection(events).status).toBe("running");
   });
 });

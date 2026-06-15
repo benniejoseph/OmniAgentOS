@@ -1,4 +1,5 @@
 import type { DomainEvent } from "@/lib/events/store";
+import type { RunStatus } from "@/lib/runs/types";
 import { applyOutcome } from "@/lib/trust/ledger";
 import { computeAutonomy } from "@/lib/trust/policy";
 import type { TrustProfile } from "@/lib/trust/types";
@@ -54,4 +55,85 @@ export function foldTrustProfile(
   }
 
   return { ...profile, autonomyMode: computeAutonomy(profile).mode };
+}
+
+export type RunToolCallProjection = {
+  toolId: string;
+  toolName: string;
+  status: string;
+  riskLevel?: number;
+  dryRun?: boolean;
+  summary?: string;
+  executionId?: string;
+};
+
+export type RunProjection = {
+  status: RunStatus;
+  response?: string;
+  error?: string;
+  memoryContextCount: number;
+  toolCalls: RunToolCallProjection[];
+  waitingApproval?: { executionId: string; toolId: string; message: string };
+};
+
+/**
+ * Stage-2 (EVENT_LOG.md): rebuild a run's lifecycle status, response/error,
+ * and tool-call history by folding its `run.*` event stream — the same
+ * proof shape as foldTrustProfile, exposed via `GET /api/runs/:id?replay=true`.
+ */
+export function foldRunProjection(events: DomainEvent[]): RunProjection {
+  const ordered = [...events]
+    .filter((event) => event.streamId.startsWith("run:") && event.type.startsWith("run."))
+    .sort((left, right) => left.seq - right.seq);
+
+  const projection: RunProjection = {
+    status: "running",
+    memoryContextCount: 0,
+    toolCalls: [],
+  };
+
+  for (const event of ordered) {
+    const kind = event.type.replace("run.", "");
+    const payload = event.payload;
+
+    switch (kind) {
+      case "memory":
+        projection.memoryContextCount = Number(payload.count ?? projection.memoryContextCount);
+        break;
+      case "tool":
+        projection.toolCalls.push({
+          toolId: String(payload.toolId || ""),
+          toolName: String(payload.toolName || payload.toolId || ""),
+          status: String(payload.status || ""),
+          riskLevel: typeof payload.riskLevel === "number" ? payload.riskLevel : undefined,
+          dryRun: Boolean(payload.dryRun),
+          summary: typeof payload.summary === "string" ? payload.summary : undefined,
+          executionId: typeof payload.executionId === "string" ? payload.executionId : undefined,
+        });
+        break;
+      case "waiting_approval":
+        projection.status = "waiting_approval";
+        projection.waitingApproval = {
+          executionId: String(payload.executionId || ""),
+          toolId: String(payload.toolId || ""),
+          message: String(payload.message || ""),
+        };
+        break;
+      case "done":
+        projection.status = "completed";
+        projection.response = String(payload.response || "");
+        projection.error = undefined;
+        projection.waitingApproval = undefined;
+        break;
+      case "error":
+        projection.status = "failed";
+        projection.error = String(payload.message || "");
+        projection.waitingApproval = undefined;
+        break;
+      default:
+        break;
+    }
+  }
+
+  return projection;
 }
