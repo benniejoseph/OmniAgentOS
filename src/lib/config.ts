@@ -27,7 +27,7 @@ export const ALERT_SCHEDULER_DISPATCH_LIMIT = normalizePositiveInteger(
 );
 export const WORKFLOW_PLANNER_TIMEOUT_MS = normalizePositiveInteger(
   process.env.OMNIAGENT_WORKFLOW_PLANNER_TIMEOUT_MS,
-  30000,
+  45000,
 );
 export const WORKFLOW_EXECUTOR_TIMEOUT_MS = normalizePositiveInteger(
   process.env.OMNIAGENT_WORKFLOW_EXECUTOR_TIMEOUT_MS,

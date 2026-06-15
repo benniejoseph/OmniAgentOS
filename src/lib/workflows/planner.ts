@@ -245,7 +245,7 @@ async function generatePlan({
           `Context evidence:\n${contextBlock.slice(0, 6000)}`,
         ].join("\n\n"),
         abortSignal: controller.signal,
-        reasoningEffort: "low",
+        reasoningEffort: "minimal",
       },
     ).finally(() => clearTimeout(timer));
     const parsed = dynamicPlanSchema.parse(JSON.parse(raw));
