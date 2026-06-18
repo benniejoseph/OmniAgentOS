@@ -12,13 +12,30 @@ import {
 } from "lucide-react";
 import {
   capabilityMatrix,
-  liveSignalRail,
   operatingModes,
   orchestrationJourney,
   platformPillars,
   proofMetrics,
 } from "@/lib/navigation";
 import { PublicHeader } from "@/components/marketing/public-header";
+
+async function fetchHealthStatus(): Promise<"healthy" | "degraded" | "unhealthy" | "unknown"> {
+  try {
+    const baseUrl =
+      process.env.NEXT_PUBLIC_APP_URL ||
+      (process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+        : "http://localhost:3000");
+    const res = await fetch(`${baseUrl}/api/health`, { next: { revalidate: 60 } });
+    if (!res.ok) return "unknown";
+    const data = (await res.json()) as { status?: string };
+    const s = data.status;
+    if (s === "healthy" || s === "degraded" || s === "unhealthy") return s;
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 const workflowSteps = [
   "Goal",
@@ -37,7 +54,21 @@ const enterpriseControls = [
   "Connector network and secret controls",
 ];
 
-export function LandingPage() {
+export async function LandingPage() {
+  const healthStatus = await fetchHealthStatus();
+  const signalRail = [
+    {
+      label: "Health",
+      value: healthStatus,
+      tone: healthStatus === "healthy" ? "success" : healthStatus === "degraded" ? "warning" : "neutral",
+    },
+    { label: "Release gate", value: "active", tone: "neutral" },
+    { label: "Store", value: "Postgres", tone: "neutral" },
+    { label: "Vector", value: "HNSW", tone: "neutral" },
+    { label: "OpenAI", value: "wired", tone: "neutral" },
+    { label: "Auth", value: "enforced", tone: "neutral" },
+  ] as const;
+
   return (
     <main className="min-h-screen overflow-hidden bg-background text-foreground">
       <PublicHeader />
@@ -81,10 +112,10 @@ export function LandingPage() {
               </Link>
             </div>
             <div className="animate-rise-delay mt-10 grid max-w-2xl grid-cols-2 gap-px overflow-hidden rounded-lg border border-white/14 bg-white/14 backdrop-blur sm:grid-cols-3">
-              {liveSignalRail.map((signal) => (
+              {signalRail.map((signal) => (
                 <div key={signal.label} className="bg-black/24 px-4 py-3">
                   <p className="text-xs text-white/56">{signal.label}</p>
-                  <p className={signal.tone === "success" ? "mt-1 font-mono text-sm text-primary" : "mt-1 font-mono text-sm text-white"}>
+                  <p className={signal.tone === "success" ? "mt-1 font-mono text-sm text-primary" : signal.tone === "warning" ? "mt-1 font-mono text-sm text-amber-400" : "mt-1 font-mono text-sm text-white"}>
                     {signal.value}
                   </p>
                 </div>

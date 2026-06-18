@@ -130,7 +130,7 @@ export function DemoWorkspace() {
               </div>
 
               <div className="rounded-lg border border-line bg-foreground p-5 text-background">
-                <p className="text-sm font-semibold uppercase tracking-[0.22em] opacity-68">Live signals</p>
+                <p className="text-sm font-semibold uppercase tracking-[0.22em] opacity-68">Sample signals</p>
                 <div className="mt-6 grid gap-px overflow-hidden rounded-lg border border-background/14 bg-background/14 sm:grid-cols-2">
                   {sampleSignals.map(([label, value]) => (
                     <div key={label} className="bg-background/8 p-4">

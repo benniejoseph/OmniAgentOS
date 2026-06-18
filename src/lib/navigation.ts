@@ -476,14 +476,6 @@ export const proofMetrics = [
   { label: "Risk levels", value: "0-3" },
 ];
 
-export const liveSignalRail = [
-  { label: "Release", value: "passed", tone: "success" },
-  { label: "Health", value: "healthy", tone: "success" },
-  { label: "Store", value: "Postgres", tone: "neutral" },
-  { label: "Vector", value: "HNSW", tone: "neutral" },
-  { label: "OpenAI", value: "Live", tone: "success" },
-  { label: "Auth", value: "Enforced", tone: "neutral" },
-];
 
 export const orchestrationJourney = [
   {
@@ -601,10 +593,10 @@ export const marketingPages = {
     summary: "Track shipped platform slices, operational hardening, UI updates, and release evidence as OmniAgentOS evolves.",
     icon: GitBranch,
     sections: [
-      "Production smoke gates now pass from GitHub Actions.",
-      "Postgres, pgvector, and OpenAI are live in production.",
-      "Schema startup is hardened against transient DDL races.",
-      "The public SaaS surface and app shell are now being introduced.",
+      "Event-log stage 2: fold runs projection, GET /api/runs/:id?replay=true proves stored state matches event history.",
+      "Dedicated Fly.io worker drains the operation queue every 5 s — replaces daily-only Vercel cron.",
+      "Planner health fixed: reasoning effort set to minimal, 45 s timeout, route maxDuration = 60.",
+      "Earned-autonomy trust engine and event-log substrate (stage 1) shipped with verifiable projection rebuild.",
     ],
   },
 };
