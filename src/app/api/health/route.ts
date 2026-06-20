@@ -1,43 +1,32 @@
-import { runSystemDiagnostics } from "@/lib/diagnostics/health";
+import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 30;
 
 export async function GET(request: Request) {
   const startedAt = Date.now();
   const requestId = request.headers.get("x-vercel-id") || crypto.randomUUID();
-  console.log(JSON.stringify({
-    level: "info",
-    msg: "start",
-    route: "/api/health",
-    method: "GET",
-  }));
-  try {
-    const check = await runSystemDiagnostics({ scope: "health" });
-    const status = check.status === "healthy" ? 200 : check.status === "degraded" ? 200 : 503;
-    console.log(JSON.stringify({
-      level: "info",
-      msg: "done",
-      route: "/api/health",
-      method: "GET",
-      status: check.status,
-      httpStatus: status,
-      ms: Date.now() - startedAt,
-    }));
+  const checkedAt = new Date().toISOString();
 
-    return Response.json({ status: check.status, checkedAt: check.createdAt, requestId }, { status });
+  if (!hasDatabaseUrl()) {
+    return Response.json({ status: "degraded", checkedAt, requestId }, { status: 200 });
+  }
+
+  try {
+    await ensureDatabaseSchema();
+    await getSql()`SELECT 1 AS ok`;
+    const ms = Date.now() - startedAt;
+    console.log(JSON.stringify({ level: "info", msg: "health ok", ms, route: "/api/health" }));
+    return Response.json({ status: "healthy", checkedAt, requestId }, { status: 200 });
   } catch (error) {
+    const ms = Date.now() - startedAt;
     console.error(JSON.stringify({
       level: "error",
-      msg: "failed",
+      msg: "health failed",
+      ms,
       route: "/api/health",
-      method: "GET",
-      ms: Date.now() - startedAt,
-      error: error instanceof Error ? error.message : "Health check failed.",
+      error: error instanceof Error ? error.message : String(error),
     }));
-    return Response.json(
-      { status: "unhealthy", checkedAt: new Date().toISOString(), requestId },
-      { status: 503 },
-    );
+    return Response.json({ status: "unhealthy", checkedAt, requestId }, { status: 503 });
   }
 }
