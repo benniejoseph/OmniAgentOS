@@ -12,6 +12,9 @@ export async function GET(request: Request) {
     route: "/api/health",
     method: "GET",
   }));
+  if (request.headers.get("x-health-quick") === "1") {
+    return Response.json({ status: "ok", ms: Date.now() - startedAt }, { status: 200 });
+  }
   try {
     console.log(JSON.stringify({ level: "info", msg: "diag_start", ms: Date.now() - startedAt }));
     const check = await runSystemDiagnostics({ scope: "health" });
