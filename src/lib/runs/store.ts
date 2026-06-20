@@ -140,7 +140,8 @@ export async function failAgentRun(runId: string, error: string) {
 export async function repairStuckAgentRuns(staleAfterMs = 5 * 60 * 1000) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const staleAfterSecs = Math.floor(staleAfterMs / 1000);
+    // Use epoch arithmetic to avoid named-parameter / type issues with intervals.
+    const staleBeforeEpoch = new Date(Date.now() - staleAfterMs).toISOString();
     const rows = await getSql()`
       UPDATE omni_agent_runs
       SET status = 'failed',
@@ -148,7 +149,7 @@ export async function repairStuckAgentRuns(staleAfterMs = 5 * 60 * 1000) {
           completed_at = NOW(),
           updated_at   = NOW()
       WHERE status = 'running'
-        AND started_at <= NOW() - make_interval(secs => ${staleAfterSecs})
+        AND started_at <= ${staleBeforeEpoch}::timestamptz
       RETURNING id
     `;
     return rows.length;

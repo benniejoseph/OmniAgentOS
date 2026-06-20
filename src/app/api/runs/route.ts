@@ -16,7 +16,9 @@ export async function GET(request: Request) {
   }
 
   // Repair runs stuck in 'running' from timed-out invocations (one UPDATE, fast).
-  await repairStuckAgentRuns().catch(() => {});
+  await repairStuckAgentRuns().catch((err) => {
+    console.error(JSON.stringify({ level: "error", msg: "repairStuckAgentRuns failed", error: String(err) }));
+  });
 
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit") || 20);
