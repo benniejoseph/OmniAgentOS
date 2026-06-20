@@ -116,11 +116,16 @@ export async function* runAgent(
     }
 
     const toolbox = await buildAgentToolbox(request.tenantId);
+    // Skip web.search when we already fetched live web context — avoids redundant
+    // tool-call loops that blow the 60s Vercel budget.
+    const activeTools = liveWebContext
+      ? toolbox.tools.filter((e) => e.definition.id !== "web.search")
+      : toolbox.tools;
     const instructions = buildAgentInstructions({
       mode,
       memoryContext: retrieval.contextBlock,
       liveWebContext,
-      tools: toolbox.tools.map((entry) => ({
+      tools: activeTools.map((entry) => ({
         id: entry.definition.id,
         description: entry.definition.description,
         riskLevel: entry.definition.riskLevel,

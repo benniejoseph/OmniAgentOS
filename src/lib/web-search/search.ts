@@ -80,7 +80,6 @@ export async function runLiveWebSearch({
           {
             type: "web_search",
             search_context_size: contextSize,
-            ...(allowedDomains?.length ? { filters: { allowed_domains: allowedDomains } } : {}),
           },
         ],
         include: ["web_search_call.results", "web_search_call.action.sources"],
