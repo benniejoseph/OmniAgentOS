@@ -222,6 +222,28 @@ function getRawPg(): postgres.Sql {
       max: 1,
       idle_timeout: 20,
       connect_timeout: 10,
+      // Under prepare:false (required by the pooler) the driver returns json/jsonb
+      // columns as raw strings instead of parsed values. Parse them back to objects/
+      // arrays here so every store reads structured data, not strings. Non-JSON
+      // columns and already-parsed values pass through untouched.
+      transform: {
+        value: {
+          from: (value: unknown, column?: { type?: number }) => {
+            if (
+              typeof value === "string" &&
+              column &&
+              (column.type === 114 /* json */ || column.type === 3802 /* jsonb */)
+            ) {
+              try {
+                return JSON.parse(value);
+              } catch {
+                return value;
+              }
+            }
+            return value;
+          },
+        },
+      },
     });
   }
 

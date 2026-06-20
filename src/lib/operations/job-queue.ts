@@ -704,6 +704,20 @@ function parseObject(value: unknown): Record<string, unknown> | undefined {
     return value as Record<string, unknown>;
   }
 
+  // Supabase's transaction pooler requires prepare:false, under which the
+  // postgres driver returns jsonb columns as raw strings rather than parsed
+  // objects. Parse them here so payloads survive the round-trip.
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
   return undefined;
 }
 
