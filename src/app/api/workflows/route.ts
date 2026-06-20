@@ -5,6 +5,7 @@ import { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workfl
 import { createWorkflowRun, getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 
 const workflowStartSchema = z.object({
   goal: z.string().min(1).max(4000),
@@ -28,11 +29,12 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
-  return Response.json({
-    runs: await listWorkflowRuns(limit, { tenantId: context.tenantId }),
-    stats: await getWorkflowStats({ tenantId: context.tenantId }),
-    queue: await getOperationJobStats(),
-  });
+  const [runs, stats, queue] = await Promise.all([
+    listWorkflowRuns(limit, { tenantId: context.tenantId }),
+    getWorkflowStats({ tenantId: context.tenantId }),
+    getOperationJobStats(),
+  ]);
+  return Response.json({ runs, stats, queue });
 }
 
 export async function POST(request: Request) {

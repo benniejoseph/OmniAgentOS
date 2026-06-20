@@ -7,6 +7,7 @@ import { runAgent } from "@/lib/orchestration/agent-runner";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const chatMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),

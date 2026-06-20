@@ -136,6 +136,25 @@ export async function failAgentRun(runId: string, error: string) {
   await setRunStatus(runId, "failed", { error });
 }
 
+/** Mark agent runs stuck in 'running' for longer than staleAfterMs as failed. */
+export async function repairStuckAgentRuns(staleAfterMs = 5 * 60 * 1000) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      UPDATE omni_agent_runs
+      SET status = 'failed',
+          error  = 'Run timed out (function invocation limit exceeded).',
+          completed_at = NOW(),
+          updated_at   = NOW()
+      WHERE status = 'running'
+        AND started_at <= NOW() - (${staleAfterMs} || ' milliseconds')::interval
+      RETURNING id
+    `;
+    return rows.length;
+  }
+  return 0;
+}
+
 export async function markAgentRunWaitingForApproval(
   runId: string,
   values: { response: string; continuation: AgentRunContinuation },

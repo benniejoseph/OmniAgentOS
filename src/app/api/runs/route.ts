@@ -1,4 +1,4 @@
-import { getRunStats, listAgentRuns } from "@/lib/runs/store";
+import { getRunStats, listAgentRuns, repairStuckAgentRuns } from "@/lib/runs/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -14,6 +14,9 @@ export async function GET(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+
+  // Opportunistically repair runs stuck in 'running' from timed-out invocations.
+  repairStuckAgentRuns().catch(() => {});
 
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit") || 20);
