@@ -16,11 +16,9 @@ export async function GET(request: Request) {
   }
 
   // Repair runs stuck in 'running' from timed-out invocations (one UPDATE, fast).
-  let repairError: string | undefined;
   const repaired = await repairStuckAgentRuns().catch((err: unknown) => {
-    repairError = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack}` : String(err);
-    console.error(`repairStuckAgentRuns error: ${repairError}`);
-    return -1;
+    console.error(`repairStuckAgentRuns error: ${err instanceof Error ? err.message : String(err)}`);
+    return 0;
   });
   if (repaired > 0) {
     console.log(`repairStuckAgentRuns: fixed ${repaired} stuck run(s)`);
@@ -32,7 +30,5 @@ export async function GET(request: Request) {
   return Response.json({
     runs: await listAgentRuns(Math.min(Math.max(limit, 1), 100), { tenantId: context.tenantId }),
     ...(includeStats ? { stats: await getRunStats({ tenantId: context.tenantId }) } : {}),
-    ...(repairError ? { _repairError: repairError } : {}),
-    ...(repaired >= 0 ? { _repaired: repaired } : {}),
   });
 }

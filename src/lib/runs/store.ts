@@ -144,10 +144,9 @@ export async function repairStuckAgentRuns(staleAfterMs = 5 * 60 * 1000) {
     const staleBeforeEpoch = new Date(Date.now() - staleAfterMs).toISOString();
     const rows = await getSql()`
       UPDATE omni_agent_runs
-      SET status = 'failed',
-          error  = 'Run timed out (function invocation limit exceeded).',
-          completed_at = NOW(),
-          updated_at   = NOW()
+      SET status       = 'failed',
+          error        = 'Run timed out (function invocation limit exceeded).',
+          completed_at = NOW()
       WHERE status = 'running'
         AND started_at <= ${staleBeforeEpoch}::timestamptz
       RETURNING id
