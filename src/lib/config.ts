@@ -68,8 +68,26 @@ export const AGENT_RUNS_PER_MINUTE = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_RUNS_PER_MINUTE,
   10,
 );
+// gpt-5 defaults to medium/high reasoning, which overruns the 60s Vercel budget
+// for agent runs. Cap it to keep the streamed response finishing in time.
+export const AGENT_REASONING_EFFORT: "minimal" | "low" | "medium" | "high" =
+  normalizeReasoningEffort(process.env.OMNIAGENT_AGENT_REASONING_EFFORT, "low");
+export const AGENT_MAX_OUTPUT_TOKENS = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS,
+  4_000,
+);
 
 function normalizePositiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizeReasoningEffort(
+  value: string | undefined,
+  fallback: "minimal" | "low" | "medium" | "high",
+): "minimal" | "low" | "medium" | "high" {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "minimal" || normalized === "low" || normalized === "medium" || normalized === "high"
+    ? normalized
+    : fallback;
 }

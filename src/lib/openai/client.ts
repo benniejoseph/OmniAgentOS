@@ -103,12 +103,16 @@ export async function streamResponseTurn({
   tools,
   onDelta,
   abortSignal,
+  reasoningEffort,
+  maxOutputTokens,
 }: {
   instructions?: string;
   input: ResponseTurnInput;
   tools?: ResponseFunctionTool[];
   onDelta: (text: string) => void | Promise<void>;
   abortSignal?: AbortSignal;
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  maxOutputTokens?: number;
 }): Promise<{ responseId: string; functionCalls: ResponseFunctionCall[]; functionCallItems: ResponseFunctionCallItem[]; text: string }> {
   const stream = await getOpenAIClient().responses.create(
     {
@@ -116,6 +120,8 @@ export async function streamResponseTurn({
       ...(instructions ? { instructions } : {}),
       input: input as never,
       ...(tools && tools.length ? { tools: tools as never } : {}),
+      ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+      ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
       stream: true,
     },
     { signal: abortSignal },

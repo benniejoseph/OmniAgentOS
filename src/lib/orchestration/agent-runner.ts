@@ -1,4 +1,4 @@
-import { AGENT_MAX_TOOL_STEPS, AGENT_MODEL, hasOpenAIKey } from "@/lib/config";
+import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_MODEL, AGENT_REASONING_EFFORT, hasOpenAIKey } from "@/lib/config";
 import { listMcpGovernedTools, listOpenApiGovernedTools } from "@/lib/connectors/governed-tools";
 import { consolidateRunMemory } from "@/lib/memory/consolidator";
 import { saveMemory } from "@/lib/memory/store";
@@ -171,6 +171,8 @@ export async function* runAgent(
           input: turnInput,
           tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
           abortSignal,
+          reasoningEffort: AGENT_REASONING_EFFORT,
+          maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
           onDelta: (text) => channel.push(text),
         }).finally(() => channel.close());
 
@@ -375,6 +377,8 @@ export async function resumeAgentRunAfterToolApproval({
         input: conversationItems,
         tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
         abortSignal,
+        reasoningEffort: AGENT_REASONING_EFFORT,
+        maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
         onDelta: async (text) => {
           response += text;
           await appendRunEvent(run.id, { type: "delta", text });
