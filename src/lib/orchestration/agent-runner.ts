@@ -115,17 +115,17 @@ export async function* runAgent(
       }
     }
 
-    const toolbox = await buildAgentToolbox(request.tenantId);
     // Skip web.search when we already fetched live web context — avoids redundant
-    // tool-call loops that blow the 60s Vercel budget.
-    const activeTools = liveWebContext
-      ? toolbox.tools.filter((e) => e.definition.id !== "web.search")
-      : toolbox.tools;
+    // tool-call loops that blow the 60s Vercel budget. Excluding it from the toolbox
+    // filters the OpenAI tool list, the instructions, and the dispatch map together.
+    const toolbox = await buildAgentToolbox(request.tenantId, {
+      excludeToolIds: liveWebContext ? ["web.search"] : [],
+    });
     const instructions = buildAgentInstructions({
       mode,
       memoryContext: retrieval.contextBlock,
       liveWebContext,
-      tools: activeTools.map((entry) => ({
+      tools: toolbox.tools.map((entry) => ({
         id: entry.definition.id,
         description: entry.definition.description,
         riskLevel: entry.definition.riskLevel,
@@ -525,7 +525,10 @@ type ToolboxEntry = {
   functionName: string;
 };
 
-async function buildAgentToolbox(tenantId?: string): Promise<{
+async function buildAgentToolbox(
+  tenantId?: string,
+  options?: { excludeToolIds?: readonly string[] },
+): Promise<{
   tools: ToolboxEntry[];
   openAITools: ResponseFunctionTool[];
   byFunctionName: Map<string, ToolboxEntry>;
@@ -535,8 +538,9 @@ async function buildAgentToolbox(tenantId?: string): Promise<{
     listOpenApiGovernedTools({ tenantId }).catch(() => [] as ToolDefinition[]),
   ]);
 
+  const excluded = new Set(options?.excludeToolIds ?? []);
   const definitions = [...getGovernedTools(), ...mcpTools, ...openApiTools].filter(
-    (tool) => tool.status === "active" && tool.riskLevel < 3,
+    (tool) => tool.status === "active" && tool.riskLevel < 3 && !excluded.has(tool.id),
   );
 
   const used = new Set<string>();

@@ -22,6 +22,11 @@ export type LiveWebSearchResult = {
 const freshnessPattern = /\b(today|tonight|yesterday|tomorrow|now|current|currently|latest|newest|recent|recently|breaking|live|real[-\s]?time|up[-\s]?to[-\s]?date|as of|this week|this month|this year|released|launch(?:ed)?|announc(?:ed|ement)|price|pricing|stock|market|weather|score|schedule|deadline|version|changelog|news|web search|search (?:the )?web|browse|look up|verify|multiple sources|sources|citations?)\b/i;
 const noWebPattern = /\b(do not|don't|dont|without|no)\s+(?:use\s+)?(?:web|internet|browser|search|live search)\b|\bfrom memory only\b|\boffline\b/i;
 
+/** The gpt-4o family does not accept the `filters` param on the hosted web_search tool. */
+function supportsWebSearchFilters(model: string) {
+  return !/^gpt-4o/i.test(model);
+}
+
 export function shouldUseLiveWebSearch(query: string) {
   const normalized = query.trim();
   if (!normalized || noWebPattern.test(normalized)) {
@@ -80,6 +85,11 @@ export async function runLiveWebSearch({
           {
             type: "web_search",
             search_context_size: contextSize,
+            // The gpt-4o family rejects the `filters` param on the hosted web_search
+            // tool; only attach domain filtering for models that support it.
+            ...(allowedDomains?.length && supportsWebSearchFilters(WEB_SEARCH_MODEL)
+              ? { filters: { allowed_domains: allowedDomains } }
+              : {}),
           },
         ],
         include: ["web_search_call.results", "web_search_call.action.sources"],
