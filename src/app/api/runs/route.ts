@@ -15,8 +15,8 @@ export async function GET(request: Request) {
     return forbiddenResponse(error);
   }
 
-  // Opportunistically repair runs stuck in 'running' from timed-out invocations.
-  repairStuckAgentRuns().catch(() => {});
+  // Repair runs stuck in 'running' from timed-out invocations (one UPDATE, fast).
+  await repairStuckAgentRuns().catch(() => {});
 
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit") || 20);
