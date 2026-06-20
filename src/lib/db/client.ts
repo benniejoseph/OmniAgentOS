@@ -158,14 +158,23 @@ export async function ensureDatabaseSchema() {
   if (!schemaReady) {
     const pg = getRawPg();
     schemaReady = (async () => {
-      // Fast-path: skip the 200+ migration statements if the schema already exists.
+      // Fast-path: skip the 200+ migration statements if the schema is already applied.
+      // Check for omni_schema_version (stamped after migration) OR omni_memories (tables
+      // may exist from a pre-version run that didn't stamp the marker).
       const [{ exists }] = await pg`
         SELECT EXISTS (
           SELECT 1 FROM pg_tables
-          WHERE schemaname = 'public' AND tablename = 'omni_schema_version'
+          WHERE schemaname = 'public'
+            AND tablename IN ('omni_schema_version', 'omni_memories')
         ) AS exists
       `;
-      if (exists) return;
+      if (exists) {
+        // Stamp the version marker if it's missing (upgrades pre-marker deployments).
+        await pg`CREATE TABLE IF NOT EXISTS omni_schema_version (applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`;
+        const [{ cnt }] = await pg`SELECT COUNT(*)::int AS cnt FROM omni_schema_version`;
+        if (!cnt) await pg`INSERT INTO omni_schema_version (applied_at) VALUES (now())`;
+        return;
+      }
 
       await pg.begin(async (tx) => {
         const sql = wrapPg(tx);
