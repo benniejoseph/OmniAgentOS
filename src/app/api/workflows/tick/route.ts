@@ -208,10 +208,13 @@ export async function POST(request: Request) {
           dispatchLimit: parsed.data.alertDispatchLimit || ALERT_SCHEDULER_DISPATCH_LIMIT,
         })
       : undefined;
-    const stats = {
-      operationJobs: await getOperationJobStats(),
-      alerts: alerts?.stats || await getAlertDeliveryStats(),
-    };
+    const stats =
+      parsed.data.slo || parsed.data.alerts
+        ? {
+            operationJobs: await getOperationJobStats(),
+            alerts: alerts?.stats ?? (parsed.data.alerts ? await getAlertDeliveryStats() : undefined),
+          }
+        : undefined;
     await recordRuntimeEventSafely({
       category: "workflow",
       action: "workflow_tick.operator",

@@ -10,10 +10,10 @@ primary_region = "sin"
 [env]
   OMNIAGENT_WORKER_BASE_URL = "https://omniagent-os.vercel.app"
   OMNIAGENT_DEFAULT_TENANT = "default"
-  OMNIAGENT_WORKER_INTERVAL_MS = "5000"
+  OMNIAGENT_WORKER_INTERVAL_MS = "60000"
   OMNIAGENT_WORKER_LIMIT = "5"
-  OMNIAGENT_WORKER_SLO = "true"
-  OMNIAGENT_WORKER_ALERTS = "true"
+  OMNIAGENT_WORKER_SLO = "false"
+  OMNIAGENT_WORKER_ALERTS = "false"
 
 [[vm]]
   memory = "256mb"
