@@ -1,6 +1,7 @@
 import { runSystemDiagnostics } from "@/lib/diagnostics/health";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function GET(request: Request) {
   const startedAt = Date.now();
@@ -12,7 +13,9 @@ export async function GET(request: Request) {
     method: "GET",
   }));
   try {
+    console.log(JSON.stringify({ level: "info", msg: "diag_start", ms: Date.now() - startedAt }));
     const check = await runSystemDiagnostics({ scope: "health" });
+    console.log(JSON.stringify({ level: "info", msg: "diag_done", ms: Date.now() - startedAt }));
     const status = check.status === "healthy" ? 200 : check.status === "degraded" ? 200 : 503;
     console.log(JSON.stringify({
       level: "info",

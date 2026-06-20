@@ -126,6 +126,7 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
     }
   }
 
+  console.log(JSON.stringify({ level: "info", msg: "health_parallel_start", ms: Date.now() - startedAt }));
   const [
     database,
     vectorStore,
@@ -165,6 +166,7 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
     getOpenApiConnectorStats(),
   ]);
 
+  console.log(JSON.stringify({ level: "info", msg: "health_parallel_done", ms: Date.now() - startedAt }));
   const workflowHealth = summarizeWorkflowHealth(workflows, workflowRows);
   const queueMaxAgeMs = maxQueuedAge(operationJobRows);
   const workflowTerminal = (workflows.byStatus.completed || 0) + (workflows.byStatus.failed || 0) + (workflows.byStatus.canceled || 0);
