@@ -28,6 +28,19 @@ export async function GET(request: Request) {
       return Response.json({ error: String(err) }, { status: 500 });
     }
   }
+  if (request.headers.get("x-health-timeout") === "1") {
+    const timeout = (ms: number) => new Promise<string>((_, reject) => setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms));
+    try {
+      await Promise.race([runSystemDiagnostics({ scope: "health" }), timeout(15000)]);
+      return Response.json({ status: "completed within 15s" });
+    } catch (err) {
+      const logs = await new Promise<string[]>((resolve) => {
+        const lines: string[] = [];
+        resolve(lines);
+      });
+      return Response.json({ error: String(err), ms: Date.now() - startedAt }, { status: 500 });
+    }
+  }
   try {
     console.log(JSON.stringify({ level: "info", msg: "diag_start", ms: Date.now() - startedAt }));
     const check = await runSystemDiagnostics({ scope: "health" });

@@ -126,6 +126,7 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
     }
   }
 
+  const t = (label: string) => ({ label, ms: Date.now() - startedAt });
   console.log(JSON.stringify({ level: "info", msg: "health_parallel_start", ms: Date.now() - startedAt }));
   const [
     database,
@@ -144,26 +145,24 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
     mcp,
     openapi,
   ] = await Promise.all([
-    checkDatabase(),
-    getVectorStoreStatus().catch((error) => ({
-      configured: false,
-      dimensions: 0,
-      hnswSupported: false,
-      error: error instanceof Error ? error.message : "Vector status unavailable.",
-    })),
-    getOperationJobStats(),
-    listOperationJobs(100),
-    getWorkflowStats(),
-    listWorkflowRuns(100),
-    listWorkflowPlans(100),
-    getWorkflowPlanNodeExecutionStats(),
-    getWorkflowTriggerStats(),
-    getEvalStats(),
-    getToolExecutionStats(),
-    getRunStats(),
-    getMemoryStats(),
-    getMcpConnectorStats(),
-    getOpenApiConnectorStats(),
+    checkDatabase().then((r) => { console.log(JSON.stringify(t("checkDatabase"))); return r; }),
+    getVectorStoreStatus().then((r) => { console.log(JSON.stringify(t("vectorStore"))); return r; }).catch((error) => {
+      console.log(JSON.stringify(t("vectorStore_err")));
+      return { configured: false, dimensions: 0, hnswSupported: false, error: error instanceof Error ? error.message : "Vector status unavailable." };
+    }),
+    getOperationJobStats().then((r) => { console.log(JSON.stringify(t("opJobStats"))); return r; }),
+    listOperationJobs(100).then((r) => { console.log(JSON.stringify(t("listOpJobs"))); return r; }),
+    getWorkflowStats().then((r) => { console.log(JSON.stringify(t("workflowStats"))); return r; }),
+    listWorkflowRuns(100).then((r) => { console.log(JSON.stringify(t("listWorkflows"))); return r; }),
+    listWorkflowPlans(100).then((r) => { console.log(JSON.stringify(t("listPlans"))); return r; }),
+    getWorkflowPlanNodeExecutionStats().then((r) => { console.log(JSON.stringify(t("planNodeStats"))); return r; }),
+    getWorkflowTriggerStats().then((r) => { console.log(JSON.stringify(t("triggerStats"))); return r; }),
+    getEvalStats().then((r) => { console.log(JSON.stringify(t("evalStats"))); return r; }),
+    getToolExecutionStats().then((r) => { console.log(JSON.stringify(t("toolStats"))); return r; }),
+    getRunStats().then((r) => { console.log(JSON.stringify(t("runStats"))); return r; }),
+    getMemoryStats().then((r) => { console.log(JSON.stringify(t("memStats"))); return r; }),
+    getMcpConnectorStats().then((r) => { console.log(JSON.stringify(t("mcpStats"))); return r; }),
+    getOpenApiConnectorStats().then((r) => { console.log(JSON.stringify(t("oaStats"))); return r; }),
   ]);
 
   console.log(JSON.stringify({ level: "info", msg: "health_parallel_done", ms: Date.now() - startedAt }));
