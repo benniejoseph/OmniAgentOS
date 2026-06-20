@@ -1,4 +1,10 @@
 export const AGENT_MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-5";
+// Separate faster model for web search summarization — gpt-5 is too slow for the 60s Vercel budget.
+export const WEB_SEARCH_MODEL = process.env.OPENAI_WEB_SEARCH_MODEL || "gpt-4o-mini";
+export const WEB_SEARCH_TIMEOUT_MS = normalizePositiveInteger(
+  process.env.OMNIAGENT_WEB_SEARCH_TIMEOUT_MS,
+  25_000,
+);
 export const EMBEDDING_MODEL =
   process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-large";
 export const EMBEDDING_DIMENSIONS = normalizePositiveInteger(

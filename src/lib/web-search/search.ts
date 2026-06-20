@@ -1,4 +1,4 @@
-import { AGENT_MODEL, hasOpenAIKey } from "@/lib/config";
+import { WEB_SEARCH_MODEL, WEB_SEARCH_TIMEOUT_MS, hasOpenAIKey } from "@/lib/config";
 import { getOpenAIClient } from "@/lib/openai/client";
 
 export type LiveWebSearchContextSize = "low" | "medium" | "high";
@@ -52,33 +52,44 @@ export async function runLiveWebSearch({
     throw new Error("OPENAI_API_KEY is required for live web search.");
   }
 
-  const response = await getOpenAIClient().responses.create(
-    {
-      model: AGENT_MODEL,
-      instructions: [
-        "You are OmniAgentOS live web search.",
-        "Search the public web when needed, compare multiple credible sources, and summarize only source-supported facts.",
-        "Return a compact research brief with source titles and URLs. If sources disagree, call that out.",
-      ].join("\n"),
-      input: [
-        `Search query: ${normalizedQuery}`,
-        "",
-        "Output format:",
-        "1. Short answer",
-        "2. Key facts",
-        "3. Sources with title and URL",
-      ].join("\n"),
-      tools: [
-        {
-          type: "web_search",
-          search_context_size: contextSize,
-          ...(allowedDomains?.length ? { filters: { allowed_domains: allowedDomains } } : {}),
-        },
-      ],
-      include: ["web_search_call.results", "web_search_call.action.sources"],
-    },
-    { signal: abortSignal },
-  );
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(new Error(`Web search timed out after ${WEB_SEARCH_TIMEOUT_MS}ms`)), WEB_SEARCH_TIMEOUT_MS);
+  const combinedSignal = AbortSignal.any
+    ? AbortSignal.any([timeoutController.signal, ...(abortSignal ? [abortSignal] : [])])
+    : timeoutController.signal;
+
+  let response;
+  try {
+    response = await getOpenAIClient().responses.create(
+      {
+        model: WEB_SEARCH_MODEL,
+        instructions: [
+          "You are OmniAgentOS live web search.",
+          "Search the public web when needed, compare multiple credible sources, and summarize only source-supported facts.",
+          "Return a compact research brief with source titles and URLs. If sources disagree, call that out.",
+        ].join("\n"),
+        input: [
+          `Search query: ${normalizedQuery}`,
+          "",
+          "Output format:",
+          "1. Short answer",
+          "2. Key facts",
+          "3. Sources with title and URL",
+        ].join("\n"),
+        tools: [
+          {
+            type: "web_search",
+            search_context_size: contextSize,
+            ...(allowedDomains?.length ? { filters: { allowed_domains: allowedDomains } } : {}),
+          },
+        ],
+        include: ["web_search_call.results", "web_search_call.action.sources"],
+      },
+      { signal: combinedSignal },
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   const sources = extractWebSources(response).slice(0, Math.min(Math.max(maxSources, 1), 20));
 
@@ -86,7 +97,7 @@ export async function runLiveWebSearch({
     query: normalizedQuery,
     searchedAt: new Date().toISOString(),
     provider: "openai.responses.web_search",
-    model: AGENT_MODEL,
+    model: WEB_SEARCH_MODEL,
     summary: response.output_text || "Live web search completed, but no summary text was returned.",
     sources,
     sourceCount: sources.length,

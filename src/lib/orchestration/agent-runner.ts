@@ -97,7 +97,7 @@ export async function* runAgent(
       try {
         const liveWeb = await runLiveWebSearch({
           query,
-          contextSize: mode === "research" ? "high" : "medium",
+          contextSize: "medium",
           abortSignal,
         });
         liveWebContext = formatLiveWebSearchContext(liveWeb);
