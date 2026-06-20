@@ -409,35 +409,36 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
     return undefined;
   }
 
-  const candidate = value as AgentRunContinuation;
+  const candidate = value as Record<string, unknown>;
   if (
-    typeof candidate.previousResponseId !== "string" ||
     typeof candidate.instructions !== "string" ||
     !candidate.pendingToolCall ||
-    typeof candidate.pendingToolCall.executionId !== "string"
+    typeof (candidate.pendingToolCall as { executionId?: unknown }).executionId !== "string"
   ) {
     return undefined;
   }
 
   return {
-    previousResponseId: candidate.previousResponseId,
+    conversationItems: Array.isArray(candidate.conversationItems)
+      ? (candidate.conversationItems as Array<Record<string, unknown>>)
+      : [],
     instructions: candidate.instructions,
     response: typeof candidate.response === "string" ? candidate.response : "",
-    toolSteps: Number.isInteger(candidate.toolSteps) ? candidate.toolSteps : 0,
+    toolSteps: Number.isInteger(candidate.toolSteps) ? (candidate.toolSteps as number) : 0,
     outputsBeforeApproval: Array.isArray(candidate.outputsBeforeApproval)
-      ? candidate.outputsBeforeApproval.filter(isFunctionCallOutput)
+      ? (candidate.outputsBeforeApproval as unknown[]).filter(isFunctionCallOutput)
       : [],
     pendingToolCall: {
-      callId: String(candidate.pendingToolCall.callId || ""),
-      toolId: String(candidate.pendingToolCall.toolId || ""),
-      toolName: String(candidate.pendingToolCall.toolName || candidate.pendingToolCall.toolId || ""),
-      riskLevel: typeof candidate.pendingToolCall.riskLevel === "number" ? candidate.pendingToolCall.riskLevel : undefined,
-      executionId: candidate.pendingToolCall.executionId,
+      callId: String((candidate.pendingToolCall as { callId?: unknown }).callId || ""),
+      toolId: String((candidate.pendingToolCall as { toolId?: unknown }).toolId || ""),
+      toolName: String((candidate.pendingToolCall as { toolName?: unknown; toolId?: unknown }).toolName || (candidate.pendingToolCall as { toolId?: unknown }).toolId || ""),
+      riskLevel: typeof (candidate.pendingToolCall as { riskLevel?: unknown }).riskLevel === "number" ? (candidate.pendingToolCall as { riskLevel: number }).riskLevel : undefined,
+      executionId: (candidate.pendingToolCall as { executionId: string }).executionId,
     },
     context: {
-      tenantId: String(candidate.context?.tenantId || "default"),
-      actorId: String(candidate.context?.actorId || "agent"),
-      role: normalizeRole(candidate.context?.role),
+      tenantId: String((candidate.context as { tenantId?: unknown })?.tenantId || "default"),
+      actorId: String((candidate.context as { actorId?: unknown })?.actorId || "agent"),
+      role: normalizeRole((candidate.context as { role?: unknown })?.role),
     },
     createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : new Date().toISOString(),
   };

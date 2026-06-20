@@ -3,7 +3,8 @@ import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 export type RunStatus = "running" | "waiting_approval" | "resuming" | "completed" | "failed";
 
 export type AgentRunContinuation = {
-  previousResponseId: string;
+  /** Full conversation array for ZDR-safe resume (replaces previousResponseId). */
+  conversationItems: Array<Record<string, unknown>>;
   instructions: string;
   response: string;
   toolSteps: number;

@@ -11,7 +11,7 @@ beforeAll(async () => {
 
 function continuationFor(executionId: string): AgentRunContinuation {
   return {
-    previousResponseId: "resp_1",
+    conversationItems: [{ role: "user", content: "test" }],
     instructions: "test",
     response: "partial",
     toolSteps: 1,

@@ -5,6 +5,7 @@ import { saveMemory } from "@/lib/memory/store";
 import {
   embedTexts,
   streamResponseTurn,
+  type ConversationItem,
   type ResponseFunctionCall,
   type ResponseFunctionTool,
   type ResponseTurnInput,
@@ -149,20 +150,20 @@ export async function* runAgent(
         source: "default",
       };
 
-      let turnInput: ResponseTurnInput = transcriptFromMessages(request.messages);
-      let previousResponseId: string | undefined;
+      // ZDR-safe multi-turn: build a full conversation array instead of
+      // relying on previous_response_id (blocked when org has Zero Data Retention).
+      let conversationItems: ConversationItem[] | null = null;
       let toolSteps = 0;
 
       // Tool loop: stream a turn; if the model called tools, execute them
       // through the governed executor and continue with the outputs.
       for (;;) {
+        const turnInput: ResponseTurnInput =
+          conversationItems ?? transcriptFromMessages(request.messages);
         const channel = createDeltaChannel();
-        const turnPromise = streamResponseTurn({
-          // The Responses API does not carry instructions across
-          // previous_response_id chains, so they are sent on every turn.
+        const turnPromise: ReturnType<typeof streamResponseTurn> = streamResponseTurn({
           instructions,
           input: turnInput,
-          previousResponseId,
           tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
           abortSignal,
           onDelta: (text) => channel.push(text),
@@ -175,11 +176,16 @@ export async function* runAgent(
         }
 
         const turn = await turnPromise;
-        previousResponseId = turn.responseId;
 
         if (!turn.functionCalls.length) {
           break;
         }
+
+        // Build the next conversation array: prior items + model's function call
+        // items + tool outputs. This replaces previous_response_id chaining.
+        const priorItems: ConversationItem[] =
+          conversationItems ?? [{ role: "user", content: transcriptFromMessages(request.messages) }];
+        conversationItems = [...priorItems, ...turn.functionCallItems];
 
         toolSteps += 1;
         const outputs: Array<{ type: "function_call_output"; call_id: string; output: string }> = [];
@@ -225,7 +231,7 @@ export async function* runAgent(
 
           if (execution.record.status === "approval_required") {
             const continuation: AgentRunContinuation = {
-              previousResponseId: previousResponseId || turn.responseId || "",
+              conversationItems: conversationItems ?? [],
               instructions,
               response,
               toolSteps,
@@ -281,7 +287,7 @@ export async function* runAgent(
           });
         }
 
-        turnInput = outputs;
+        conversationItems = [...(conversationItems ?? []), ...outputs];
       }
 
       await flushDeltas();
@@ -341,9 +347,10 @@ export async function resumeAgentRunAfterToolApproval({
 
   const toolbox = await buildAgentToolbox(continuation.context.tenantId);
   let response = continuation.response || run.response || "";
-  let previousResponseId = continuation.previousResponseId;
   let toolSteps = continuation.toolSteps;
-  let turnInput: ResponseTurnInput = [
+  // Rebuild full conversation: items saved before approval + approved tool output
+  let conversationItems: ConversationItem[] = [
+    ...(continuation.conversationItems as ConversationItem[]),
     ...continuation.outputsBeforeApproval,
     functionCallOutputFromCallId(continuation.pendingToolCall.callId, {
       status: toolExecution.record.status,
@@ -360,8 +367,7 @@ export async function resumeAgentRunAfterToolApproval({
     for (;;) {
       const turn = await streamResponseTurn({
         instructions: continuation.instructions,
-        input: turnInput,
-        previousResponseId,
+        input: conversationItems,
         tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
         abortSignal,
         onDelta: async (text) => {
@@ -369,12 +375,12 @@ export async function resumeAgentRunAfterToolApproval({
           await appendRunEvent(run.id, { type: "delta", text });
         },
       });
-      previousResponseId = turn.responseId;
 
       if (!turn.functionCalls.length) {
         break;
       }
 
+      conversationItems = [...conversationItems, ...turn.functionCallItems];
       toolSteps += 1;
       const outputs: AgentRunContinuation["outputsBeforeApproval"] = [];
 
@@ -422,7 +428,7 @@ export async function resumeAgentRunAfterToolApproval({
           await markAgentRunWaitingForApproval(run.id, {
             response,
             continuation: {
-              previousResponseId,
+              conversationItems,
               instructions: continuation.instructions,
               response,
               toolSteps,
@@ -468,7 +474,7 @@ export async function resumeAgentRunAfterToolApproval({
         });
       }
 
-      turnInput = outputs;
+      conversationItems = [...conversationItems, ...outputs];
     }
 
     await maybeConsolidateRunMemory({

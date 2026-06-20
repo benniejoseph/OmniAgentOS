@@ -77,36 +77,44 @@ export type ResponseFunctionCall = {
   argumentsJson: string;
 };
 
-export type ResponseTurnInput =
-  | string
-  | Array<{ type: "function_call_output"; call_id: string; output: string }>;
+export type ResponseFunctionCallItem = {
+  type: "function_call";
+  id: string;
+  call_id: string;
+  name: string;
+  arguments: string;
+};
+
+export type ConversationItem =
+  | { role: "user"; content: string }
+  | ResponseFunctionCallItem
+  | { type: "function_call_output"; call_id: string; output: string };
+
+export type ResponseTurnInput = string | ConversationItem[];
 
 /**
  * Streams one model turn. Text deltas flow through onDelta; any function calls
- * the model emitted are returned so the caller can execute them and continue
- * the conversation with previous_response_id chaining.
+ * the model emitted are returned alongside their raw items so the caller can
+ * build a full conversation array for the next turn (ZDR-safe, no previous_response_id).
  */
 export async function streamResponseTurn({
   instructions,
   input,
-  previousResponseId,
   tools,
   onDelta,
   abortSignal,
 }: {
   instructions?: string;
   input: ResponseTurnInput;
-  previousResponseId?: string;
   tools?: ResponseFunctionTool[];
   onDelta: (text: string) => void | Promise<void>;
   abortSignal?: AbortSignal;
-}): Promise<{ responseId: string; functionCalls: ResponseFunctionCall[]; text: string }> {
+}): Promise<{ responseId: string; functionCalls: ResponseFunctionCall[]; functionCallItems: ResponseFunctionCallItem[]; text: string }> {
   const stream = await getOpenAIClient().responses.create(
     {
       model: AGENT_MODEL,
       ...(instructions ? { instructions } : {}),
       input: input as never,
-      ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
       ...(tools && tools.length ? { tools: tools as never } : {}),
       stream: true,
     },
@@ -115,7 +123,7 @@ export async function streamResponseTurn({
 
   let responseId = "";
   let text = "";
-  const callsByItemId = new Map<string, { callId: string; name: string; argumentsJson: string }>();
+  const callsByItemId = new Map<string, { itemId: string; callId: string; name: string; argumentsJson: string }>();
 
   for await (const rawEvent of stream as AsyncIterable<Record<string, unknown>>) {
     const eventType = String(rawEvent.type || "");
@@ -136,6 +144,7 @@ export async function streamResponseTurn({
         | undefined;
       if (item?.type === "function_call" && item.id) {
         callsByItemId.set(item.id, {
+          itemId: item.id,
           callId: item.call_id || item.id,
           name: item.name || "",
           argumentsJson: item.arguments || "",
@@ -157,13 +166,21 @@ export async function streamResponseTurn({
     }
   }
 
+  const calls = [...callsByItemId.values()];
   return {
     responseId,
     text,
-    functionCalls: [...callsByItemId.values()].map((call) => ({
+    functionCalls: calls.map((call) => ({
       callId: call.callId,
       name: call.name,
       argumentsJson: call.argumentsJson,
+    })),
+    functionCallItems: calls.map((call) => ({
+      type: "function_call" as const,
+      id: call.itemId,
+      call_id: call.callId,
+      name: call.name,
+      arguments: call.argumentsJson,
     })),
   };
 }
