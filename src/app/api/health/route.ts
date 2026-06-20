@@ -1,5 +1,4 @@
 import { runSystemDiagnostics } from "@/lib/diagnostics/health";
-import { getSql, ensureDatabaseSchema } from "@/lib/db/client";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -13,38 +12,8 @@ export async function GET(request: Request) {
     route: "/api/health",
     method: "GET",
   }));
-  if (request.headers.get("x-health-quick") === "1") {
-    return Response.json({ status: "ok", ms: Date.now() - startedAt }, { status: 200 });
-  }
-  if (request.headers.get("x-health-db-only") === "1") {
-    try {
-      const t0 = Date.now();
-      await ensureDatabaseSchema();
-      const t1 = Date.now();
-      const rows = await getSql()`SELECT 1 AS ok`;
-      const t2 = Date.now();
-      return Response.json({ schema_ms: t1 - t0, query_ms: t2 - t1, rows }, { status: 200 });
-    } catch (err) {
-      return Response.json({ error: String(err) }, { status: 500 });
-    }
-  }
-  if (request.headers.get("x-health-timeout") === "1") {
-    const timeout = (ms: number) => new Promise<string>((_, reject) => setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms));
-    try {
-      await Promise.race([runSystemDiagnostics({ scope: "health" }), timeout(15000)]);
-      return Response.json({ status: "completed within 15s" });
-    } catch (err) {
-      const logs = await new Promise<string[]>((resolve) => {
-        const lines: string[] = [];
-        resolve(lines);
-      });
-      return Response.json({ error: String(err), ms: Date.now() - startedAt }, { status: 500 });
-    }
-  }
   try {
-    console.log(JSON.stringify({ level: "info", msg: "diag_start", ms: Date.now() - startedAt }));
     const check = await runSystemDiagnostics({ scope: "health" });
-    console.log(JSON.stringify({ level: "info", msg: "diag_done", ms: Date.now() - startedAt }));
     const status = check.status === "healthy" ? 200 : check.status === "degraded" ? 200 : 503;
     console.log(JSON.stringify({
       level: "info",
