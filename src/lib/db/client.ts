@@ -219,7 +219,7 @@ function getRawPg(): postgres.Sql {
     sqlClient = postgres(process.env.DATABASE_URL!, {
       prepare: false,  // required for Supabase transaction-mode pooler (Supavisor)
       ssl: "require",
-      max: 2,
+      max: 1,
       idle_timeout: 20,
       connect_timeout: 10,
     });
