@@ -1,4 +1,5 @@
 import { runSystemDiagnostics } from "@/lib/diagnostics/health";
+import { getSql, ensureDatabaseSchema } from "@/lib/db/client";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -14,6 +15,18 @@ export async function GET(request: Request) {
   }));
   if (request.headers.get("x-health-quick") === "1") {
     return Response.json({ status: "ok", ms: Date.now() - startedAt }, { status: 200 });
+  }
+  if (request.headers.get("x-health-db-only") === "1") {
+    try {
+      const t0 = Date.now();
+      await ensureDatabaseSchema();
+      const t1 = Date.now();
+      const rows = await getSql()`SELECT 1 AS ok`;
+      const t2 = Date.now();
+      return Response.json({ schema_ms: t1 - t0, query_ms: t2 - t1, rows }, { status: 200 });
+    } catch (err) {
+      return Response.json({ error: String(err) }, { status: 500 });
+    }
   }
   try {
     console.log(JSON.stringify({ level: "info", msg: "diag_start", ms: Date.now() - startedAt }));
