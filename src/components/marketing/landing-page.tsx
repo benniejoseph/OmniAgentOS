@@ -26,7 +26,10 @@ async function fetchHealthStatus(): Promise<"healthy" | "degraded" | "unhealthy"
       (process.env.VERCEL_PROJECT_PRODUCTION_URL
         ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
         : "http://localhost:3000");
-    const res = await fetch(`${baseUrl}/api/health`, { next: { revalidate: 60 } });
+    const res = await fetch(`${baseUrl}/api/health`, {
+      next: { revalidate: 60 },
+      signal: AbortSignal.timeout(8000),
+    });
     if (!res.ok) return "unknown";
     const data = (await res.json()) as { status?: string };
     const s = data.status;
