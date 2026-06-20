@@ -157,16 +157,32 @@ export async function ensureDatabaseSchema() {
 
   if (!schemaReady) {
     const pg = getRawPg();
-    schemaReady = pg
-      .begin(async (tx) => {
+    schemaReady = (async () => {
+      // Fast-path: skip the 200+ migration statements if the schema already exists.
+      const [{ exists }] = await pg`
+        SELECT EXISTS (
+          SELECT 1 FROM pg_tables
+          WHERE schemaname = 'public' AND tablename = 'omni_schema_version'
+        ) AS exists
+      `;
+      if (exists) return;
+
+      await pg.begin(async (tx) => {
         const sql = wrapPg(tx);
         // Transaction-scoped advisory lock: prevents concurrent schema migrations.
         await tx`SELECT pg_advisory_xact_lock(271828182)`;
         await runTableMigrations(sql);
         await ensureTenantIsolationPolicies(sql);
         await ensureVectorSchema(sql);
-      })
-      .then(() => undefined);
+        // Mark schema as fully applied so future cold starts skip migrations.
+        await tx`
+          CREATE TABLE IF NOT EXISTS omni_schema_version (
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          )
+        `;
+        await tx`INSERT INTO omni_schema_version (applied_at) VALUES (now())`;
+      });
+    })();
   }
 
   try {
