@@ -75,7 +75,7 @@ export const AGENT_REASONING_EFFORT: "minimal" | "low" | "medium" | "high" =
   normalizeReasoningEffort(process.env.OMNIAGENT_AGENT_REASONING_EFFORT, "minimal");
 export const AGENT_MAX_OUTPUT_TOKENS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS,
-  2_000,
+  1_000,
 );
 
 function normalizePositiveInteger(value: string | undefined, fallback: number) {
