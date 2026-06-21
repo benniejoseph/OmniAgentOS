@@ -14,7 +14,9 @@ import { getOperationJobStats } from "@/lib/operations/job-queue";
 import { processWorkflowQueue } from "@/lib/workflows/queue";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+// Workflow steps run gpt-5 planning/execution that can exceed 60s; 300s is the
+// Vercel Pro ceiling (silently capped to 60s on Hobby).
+export const maxDuration = 300;
 
 const tickSchema = z.object({
   limit: z.number().int().min(1).max(10).optional(),

@@ -7,7 +7,9 @@ import { runAgent } from "@/lib/orchestration/agent-runner";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+// gpt-5 research/orchestrate runs can exceed 60s; 300s is the Vercel Pro ceiling.
+// On Hobby this is silently capped to 60s (harmless).
+export const maxDuration = 300;
 
 const chatMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
