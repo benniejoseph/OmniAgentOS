@@ -68,13 +68,14 @@ export const AGENT_RUNS_PER_MINUTE = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_RUNS_PER_MINUTE,
   10,
 );
-// gpt-5 defaults to medium/high reasoning, which overruns the 60s Vercel budget
-// for agent runs. Cap it to keep the streamed response finishing in time.
+// gpt-5 streams output relatively slowly (~1 delta/sec here), so a long research
+// answer can exceed even the 300s Vercel Pro budget. Use minimal reasoning and a
+// bounded output so runs finish — and persist — within the function window.
 export const AGENT_REASONING_EFFORT: "minimal" | "low" | "medium" | "high" =
-  normalizeReasoningEffort(process.env.OMNIAGENT_AGENT_REASONING_EFFORT, "low");
+  normalizeReasoningEffort(process.env.OMNIAGENT_AGENT_REASONING_EFFORT, "minimal");
 export const AGENT_MAX_OUTPUT_TOKENS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS,
-  4_000,
+  2_000,
 );
 
 function normalizePositiveInteger(value: string | undefined, fallback: number) {
