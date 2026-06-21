@@ -4,6 +4,12 @@ import { AGENT_MODEL, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, hasOpenAIKey } from
 
 let client: OpenAI | null = null;
 
+// Only reasoning models (gpt-5 family, o-series) accept the `reasoning.effort`
+// parameter; gpt-4o and other chat models reject it with a 400.
+function supportsReasoningEffort(model: string) {
+  return /^(gpt-5|o\d)/i.test(model);
+}
+
 export function getOpenAIClient() {
   if (!hasOpenAIKey()) {
     throw new Error("OPENAI_API_KEY is not configured.");
@@ -120,7 +126,7 @@ export async function streamResponseTurn({
       ...(instructions ? { instructions } : {}),
       input: input as never,
       ...(tools && tools.length ? { tools: tools as never } : {}),
-      ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+      ...(reasoningEffort && supportsReasoningEffort(AGENT_MODEL) ? { reasoning: { effort: reasoningEffort } } : {}),
       ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
       stream: true,
     },
@@ -219,7 +225,7 @@ export async function createStructuredResponse({
           schema,
         },
       },
-      ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+      ...(reasoningEffort && supportsReasoningEffort(AGENT_MODEL) ? { reasoning: { effort: reasoningEffort } } : {}),
     },
     { signal: abortSignal },
   );
