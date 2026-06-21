@@ -73,9 +73,13 @@ export const AGENT_RUNS_PER_MINUTE = normalizePositiveInteger(
 // bounded output so runs finish — and persist — within the function window.
 export const AGENT_REASONING_EFFORT: "minimal" | "low" | "medium" | "high" =
   normalizeReasoningEffort(process.env.OMNIAGENT_AGENT_REASONING_EFFORT, "minimal");
+// Measured output throughput on the current OpenAI tier is ~1.3 tok/sec
+// regardless of prompt size, so only ~350 tokens fit in the 300s function
+// budget. Cap at 300 so research runs COMPLETE and persist (rather than being
+// killed mid-stream). Raise this once the OpenAI account TPM tier is increased.
 export const AGENT_MAX_OUTPUT_TOKENS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS,
-  2_000,
+  300,
 );
 
 function normalizePositiveInteger(value: string | undefined, fallback: number) {
