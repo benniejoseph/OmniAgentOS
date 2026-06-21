@@ -97,7 +97,10 @@ export async function* runAgent(
       try {
         const liveWeb = await runLiveWebSearch({
           query,
-          contextSize: "medium",
+          // Keep the injected context small: the production OpenAI tier is
+          // TPM-throttled, and large prompts stream output very slowly.
+          contextSize: "low",
+          maxSources: 4,
           abortSignal,
         });
         liveWebContext = formatLiveWebSearchContext(liveWeb);

@@ -113,12 +113,25 @@ export async function runLiveWebSearch({
   };
 }
 
+// Cap how much web evidence is injected into the agent prompt. The production
+// OpenAI tier is TPM-throttled, so a large prompt makes output stream very slowly
+// and can overrun the function budget. Keep the brief and snippets compact.
+const MAX_SUMMARY_CHARS = 1_200;
+const MAX_SNIPPET_CHARS = 200;
+
 export function formatLiveWebSearchContext(result: LiveWebSearchResult) {
   const sources = result.sources.length
     ? result.sources
-      .map((source, index) => `[${index + 1}] ${source.title || source.url} - ${source.url}${source.snippet ? `\n    ${source.snippet}` : ""}`)
+      .map((source, index) => {
+        const snippet = source.snippet ? source.snippet.slice(0, MAX_SNIPPET_CHARS) : "";
+        return `[${index + 1}] ${source.title || source.url} - ${source.url}${snippet ? `\n    ${snippet}` : ""}`;
+      })
       .join("\n")
     : "No structured source URLs were returned. Use the live web brief cautiously and say that source extraction was incomplete.";
+
+  const summary = result.summary.length > MAX_SUMMARY_CHARS
+    ? `${result.summary.slice(0, MAX_SUMMARY_CHARS)}… [truncated]`
+    : result.summary;
 
   return [
     "Live web search evidence:",
@@ -127,7 +140,7 @@ export function formatLiveWebSearchContext(result: LiveWebSearchResult) {
     `Query: ${result.query}`,
     "",
     "Brief:",
-    result.summary,
+    summary,
     "",
     "Sources:",
     sources,
