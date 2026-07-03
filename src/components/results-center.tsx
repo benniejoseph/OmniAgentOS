@@ -463,7 +463,7 @@ function choosePrimaryResult(agentRuns: JsonRecord[], workflowRuns: JsonRecord[]
     title: "No result yet",
     status: "empty",
     body: "Start at Run Agent. After an agent run or workflow produces output, the latest result appears here.",
-    meta: "Start Here -> Run Agent -> Results",
+    meta: "Home -> Run Agent -> Results",
     href: "/app/command",
     tone: "neutral",
   };

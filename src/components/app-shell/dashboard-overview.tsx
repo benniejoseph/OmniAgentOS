@@ -190,7 +190,7 @@ export function DashboardOverview() {
                 <Activity size={18} aria-hidden="true" />
               </span>
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Start Here</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Home</p>
                 <h1 className="mt-1 text-2xl font-semibold tracking-normal">Follow this flow from goal to results.</h1>
               </div>
             </div>

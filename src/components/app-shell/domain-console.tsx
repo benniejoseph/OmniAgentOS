@@ -451,7 +451,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
       { title: "Choose", body: "Start from catalog, MCP endpoint, or OpenAPI spec.", icon: Database },
       { title: "Register", body: "Validate URLs, secret env references, and auth type.", icon: Cable },
       { title: "Discover", body: "Import available operations and suggested policies.", icon: Search },
-      { title: "Govern", body: "Send operations to the Tool Catalog for risk and approval policy.", icon: Wrench },
+      { title: "Govern", body: "Send operations to Tools for risk and approval policy.", icon: Wrench },
     ],
     sections: [
       {
@@ -546,7 +546,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
     ],
   },
   tools: {
-    title: "Tool Catalog",
+    title: "Tools",
     eyebrow: "Risk, dry-run, execution audit",
     description: "Govern every capability the agent can call: source, input schema, risk level, approval requirement, dry-run support, and execution history.",
     icon: Wrench,

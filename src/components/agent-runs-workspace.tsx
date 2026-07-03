@@ -525,7 +525,7 @@ export function AgentRunsWorkspace() {
               <WorkspaceLink href="/app/results" label="Results" icon={FileText} />
               <WorkspaceLink href="/app/memory" label="Knowledge" icon={Brain} />
               <WorkspaceLink href="/app/workflows" label="Workflows" icon={Workflow} />
-              <WorkspaceLink href="/app/tools" label="Tool Catalog" icon={ShieldCheck} />
+              <WorkspaceLink href="/app/tools" label="Tools" icon={ShieldCheck} />
               <WorkspaceLink href="/app/observability" label="Monitoring" icon={Layers3} />
             </div>
           </StagePanel>

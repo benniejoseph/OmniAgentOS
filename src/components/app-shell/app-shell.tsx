@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { ArrowRight, ChevronDown, Sparkles } from "lucide-react";
 import { clsx } from "clsx";
-import { appNav, appNavGroups } from "@/lib/navigation";
+import { appNav, appNavGroups, primaryNavHrefs } from "@/lib/navigation";
 import { CommandPalette } from "@/components/app-shell/command-palette";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 
@@ -22,7 +22,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
           </Link>
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold">OmniAgentOS</p>
-            <p className="truncate text-xs text-muted">Enterprise control plane</p>
+            <p className="truncate text-xs text-muted">Your AI agent workspace</p>
           </div>
         </div>
         <nav className="space-y-4 overflow-y-auto px-3 py-4 pb-32" style={{ maxHeight: "calc(100vh - 4rem)" }} aria-label="Application navigation">
@@ -31,8 +31,8 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
           ))}
         </nav>
         <div className="absolute inset-x-3 bottom-3 rounded-md border border-line bg-background p-3">
-          <p className="text-xs font-semibold text-foreground">Current surface</p>
-          <p className="mt-1 text-xs leading-5 text-muted">{activeItem?.description || "Choose a workspace from the navigation."}</p>
+          <p className="text-xs font-semibold text-foreground">{activeItem?.label || "OmniAgentOS"}</p>
+          <p className="mt-1 text-xs leading-5 text-muted">{activeItem?.description || "Pick a page from the menu."}</p>
         </div>
       </aside>
 
@@ -50,10 +50,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
               </Link>
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold">{activeItem?.label || "OmniAgentOS"}</p>
-                <p className="hidden truncate text-xs text-muted sm:block">{activeItem?.description || "Enterprise AI operations workspace"}</p>
-              </div>
-              <div className="ml-3 hidden min-w-0 items-center gap-2 text-sm text-muted xl:flex">
-                <span className="truncate">Flow: Start → Run → Approve → Results</span>
+                <p className="hidden truncate text-xs text-muted sm:block">{activeItem?.description || "Your AI agent workspace"}</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -68,18 +65,22 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
             </div>
           </div>
           <nav className="flex gap-2 overflow-x-auto border-t border-line px-4 py-2 lg:hidden" aria-label="Mobile app navigation">
-            {appNav.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={clsx(
-                  "shrink-0 rounded-md px-3 py-2 text-sm",
-                  isActivePath(pathname, item.href) ? "bg-primary text-primary-ink" : "bg-surface text-muted",
-                )}
-              >
-                {item.shortLabel || item.label}
-              </Link>
-            ))}
+            {/* Mobile shows only the everyday loop; everything else lives in the
+                sidebar's Advanced group on desktop or the command palette. */}
+            {appNav
+              .filter((item) => primaryNavHrefs.includes(item.href) || isActivePath(pathname, item.href))
+              .map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={clsx(
+                    "shrink-0 rounded-md px-3 py-2 text-sm",
+                    isActivePath(pathname, item.href) ? "bg-primary text-primary-ink" : "bg-surface text-muted",
+                  )}
+                >
+                  {item.shortLabel || item.label}
+                </Link>
+              ))}
           </nav>
         </header>
 

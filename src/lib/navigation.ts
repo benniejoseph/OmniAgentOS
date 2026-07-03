@@ -56,102 +56,95 @@ export const marketingNav = [
 export const appNav: AppNavItem[] = [
   {
     href: "/app",
-    label: "Start Here",
-    shortLabel: "Start",
-    description: "Guided path from goal to context, plan, execution, approval, and results.",
+    label: "Home",
+    shortLabel: "Home",
+    description: "Your starting point: what's running, what needs you, and what finished.",
     icon: Activity,
   },
   {
     href: "/app/command",
     label: "Run Agent",
     shortLabel: "Run",
-    description: "First active step: enter a goal, build context, preview the plan, and execute.",
+    description: "Type a goal and let the agent research, plan, and execute it.",
     icon: TerminalSquare,
   },
   {
     href: "/app/results",
     label: "Results",
-    description: "Find final outputs, workflow status, approval blockers, and evidence after work runs.",
+    description: "Everything the agent produced, newest first.",
     icon: FileText,
   },
   {
     href: "/app/workflows",
     label: "Workflows",
-    description: "Build durable plans, triggers, queues, approvals, recovery, and workflow runs.",
+    description: "Multi-step jobs that run in the background with retries and approvals.",
     icon: Workflow,
   },
   {
     href: "/app/approvals",
     label: "Approvals",
-    description: "Review risky tool calls, workflow gates, and SLO policy changes before they proceed.",
+    description: "Actions waiting for your yes or no before they run.",
     icon: CheckCircle2,
   },
   {
     href: "/app/memory",
     label: "Knowledge",
-    description: "Manage memory, RAG, documents, graph context, embeddings, traces, and provenance.",
+    description: "What the agent remembers: saved facts, documents, and past learnings.",
     icon: Brain,
   },
   {
     href: "/app/connectors",
     label: "Integrations",
     shortLabel: "Integrate",
-    description: "Register MCP and OpenAPI systems, discover operations, and monitor connector health.",
+    description: "Connect external tools and APIs the agent is allowed to use.",
     icon: Cable,
   },
   {
     href: "/app/tools",
-    label: "Tool Catalog",
+    label: "Tools",
     shortLabel: "Tools",
-    description: "Govern capabilities with risk policy, dry runs, approvals, and execution audit trails.",
+    description: "What the agent can do, with risk levels and an audit trail.",
     icon: Wrench,
   },
   {
     href: "/app/evaluations",
-    label: "Evaluations",
-    shortLabel: "Evals",
-    description: "Run regression suites, safe checks, signed reports, and release readiness gates.",
+    label: "Quality Checks",
+    shortLabel: "Checks",
+    description: "Automated tests that verify the agent behaves before you rely on it.",
     icon: CheckCircle2,
   },
   {
     href: "/app/observability",
     label: "Monitoring",
-    description: "Track runtime events, SLO policy, incidents, alerts, diagnostics, and reliability evidence.",
+    description: "System health: events, errors, alerts, and incidents.",
     icon: Layers3,
   },
   {
     href: "/app/security",
     label: "Security",
-    description: "Tenant isolation, audit logs, auth posture, and policy controls.",
+    description: "Access control, audit logs, and data isolation.",
     icon: ShieldCheck,
   },
   {
     href: "/app/settings",
     label: "Settings",
-    description: "Environment, tenant, model, release, and operator configuration.",
+    description: "Models, environment, and configuration.",
     icon: Settings,
   },
 ];
 
+// The everyday loop: run work, see results, unblock approvals.
+export const primaryNavHrefs = ["/app", "/app/command", "/app/results", "/app/approvals"];
+
 export const appNavGroups: AppNavGroup[] = [
   {
-    label: "Operate",
-    items: appNav.filter((item) => ["/app", "/app/command", "/app/results", "/app/approvals"].includes(item.href)),
+    label: "Everyday",
+    items: appNav.filter((item) => primaryNavHrefs.includes(item.href)),
   },
   {
-    label: "Build",
+    label: "Advanced",
     collapsible: true,
-    items: appNav.filter((item) => ["/app/workflows", "/app/memory", "/app/connectors", "/app/tools"].includes(item.href)),
-  },
-  {
-    label: "Assure",
-    collapsible: true,
-    items: appNav.filter((item) => ["/app/evaluations", "/app/observability", "/app/security"].includes(item.href)),
-  },
-  {
-    label: "Admin",
-    collapsible: true,
-    items: appNav.filter((item) => item.href === "/app/settings"),
+    items: appNav.filter((item) => !primaryNavHrefs.includes(item.href)),
   },
 ];
 
