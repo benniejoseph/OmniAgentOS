@@ -50,24 +50,42 @@ export async function* runAgent(
   });
 
   // Persist non-delta events immediately; buffer text deltas so streaming does
-  // not produce one store write per token.
+  // not produce one store write per token. Delta writes are queued onto a
+  // background chain instead of awaited inline: with a remote DB each write
+  // costs longer than the flush interval, and a blocking write per delta
+  // clamps streaming to ~1 delta per write round-trip.
+  const runId = run.id;
   let pendingDeltaText = "";
   let lastDeltaFlush = Date.now();
+  let deltaWriteChain: Promise<void> = Promise.resolve();
 
-  async function flushDeltas() {
+  function queueDeltaWrite() {
     if (!pendingDeltaText) {
       return;
     }
     const chunk = pendingDeltaText;
     pendingDeltaText = "";
     lastDeltaFlush = Date.now();
-    await appendRunEvent(run.id, { type: "delta", text: chunk });
+    deltaWriteChain = deltaWriteChain
+      .then(async () => {
+        await appendRunEvent(runId, { type: "delta", text: chunk });
+      })
+      .catch((error: unknown) => {
+        console.error(`agent delta persist failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
   }
 
-  async function persistDelta(text: string) {
+  // Full barrier: everything buffered so far is durably written.
+  async function flushDeltas() {
+    queueDeltaWrite();
+    await deltaWriteChain;
+  }
+
+  // Non-blocking: buffers text and schedules a background write when due.
+  function persistDelta(text: string) {
     pendingDeltaText += text;
     if (pendingDeltaText.length >= 2_000 || Date.now() - lastDeltaFlush >= 750) {
-      await flushDeltas();
+      queueDeltaWrite();
     }
   }
 
@@ -97,8 +115,8 @@ export async function* runAgent(
       try {
         const liveWeb = await runLiveWebSearch({
           query,
-          // Keep the injected context small: the production OpenAI tier is
-          // TPM-throttled, and large prompts stream output very slowly.
+          // Keep the injected context compact: 4 sources is plenty of evidence
+          // and keeps the prompt (and cost) small.
           contextSize: "low",
           maxSources: 4,
           abortSignal,
@@ -143,7 +161,7 @@ export async function* runAgent(
       yield await emit({ type: "status", label: "dev fallback", detail: "OPENAI_API_KEY is not configured. This is a simulated response, not model output." });
       for (const chunk of fallbackResponse(query, retrieval.results.length)) {
         response += chunk;
-        await persistDelta(chunk);
+        persistDelta(chunk);
         yield { type: "delta", text: chunk };
         await wait(18);
       }
@@ -181,7 +199,7 @@ export async function* runAgent(
 
         for await (const text of channel.drain()) {
           response += text;
-          await persistDelta(text);
+          persistDelta(text);
           yield { type: "delta", text };
         }
 
@@ -373,6 +391,34 @@ export async function resumeAgentRunAfterToolApproval({
     }),
   ];
 
+  // Buffer delta writes onto a background chain — a blocking DB write per
+  // delta clamps streaming to one delta per write round-trip (see runAgent).
+  const runId = run.id;
+  let pendingDeltaText = "";
+  let lastDeltaFlush = Date.now();
+  let deltaWriteChain: Promise<void> = Promise.resolve();
+
+  function queueDeltaWrite() {
+    if (!pendingDeltaText) {
+      return;
+    }
+    const chunk = pendingDeltaText;
+    pendingDeltaText = "";
+    lastDeltaFlush = Date.now();
+    deltaWriteChain = deltaWriteChain
+      .then(async () => {
+        await appendRunEvent(runId, { type: "delta", text: chunk });
+      })
+      .catch((error: unknown) => {
+        console.error(`agent delta persist failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+  }
+
+  async function flushDeltas() {
+    queueDeltaWrite();
+    await deltaWriteChain;
+  }
+
   try {
     for (;;) {
       const turn = await streamResponseTurn({
@@ -382,9 +428,12 @@ export async function resumeAgentRunAfterToolApproval({
         abortSignal,
         reasoningEffort: AGENT_REASONING_EFFORT,
         maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
-        onDelta: async (text) => {
+        onDelta: (text) => {
           response += text;
-          await appendRunEvent(run.id, { type: "delta", text });
+          pendingDeltaText += text;
+          if (pendingDeltaText.length >= 2_000 || Date.now() - lastDeltaFlush >= 750) {
+            queueDeltaWrite();
+          }
         },
       });
 
@@ -489,6 +538,7 @@ export async function resumeAgentRunAfterToolApproval({
       conversationItems = [...conversationItems, ...outputs];
     }
 
+    await flushDeltas();
     await maybeConsolidateRunMemory({
       runId: run.id,
       tenantId: continuation.context.tenantId,
@@ -502,6 +552,7 @@ export async function resumeAgentRunAfterToolApproval({
     return { resumed: true, status: "completed" };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Approved agent run resume failed.";
+    await flushDeltas().catch(() => undefined);
     await failAgentRun(run.id, message);
     await appendRunEvent(run.id, { type: "error", message });
     return { resumed: true, status: "failed", error: message };
