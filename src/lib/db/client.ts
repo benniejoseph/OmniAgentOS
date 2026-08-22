@@ -611,11 +611,17 @@ export async function getMaintenanceDatabaseRoleSafety() {
       sameDatabase: false,
     };
   }
-  const [runtimeIdentity, maintenanceIdentity, role] = await Promise.all([
+  const [runtimeIdentity, maintenanceState] = await Promise.all([
     readDatabaseIdentity(getRawPg()),
-    readDatabaseIdentity(getRawMaintenancePg()),
-    readRuntimeDatabaseRoleSafety(getRawMaintenancePg()),
+    (async () => {
+      const maintenancePg = getRawMaintenancePg();
+      const identity = await readDatabaseIdentity(maintenancePg);
+      const role = await readRuntimeDatabaseRoleSafety(maintenancePg);
+      return { identity, role };
+    })(),
   ]);
+  const maintenanceIdentity = maintenanceState.identity;
+  const role = maintenanceState.role;
   const sameDatabase = Boolean(
     runtimeIdentity &&
       maintenanceIdentity &&
@@ -670,13 +676,23 @@ async function assertMaintenanceDatabaseRoleSafety(runtimePg: postgres.Sql) {
     );
   }
   const maintenancePg = getRawMaintenancePg();
-  const [runtimeIdentity, maintenanceIdentity, runtimeRole, maintenanceRole] =
+  const [runtimeState, maintenanceState] =
     await Promise.all([
-      readDatabaseIdentity(runtimePg),
-      readDatabaseIdentity(maintenancePg),
-      readRuntimeDatabaseRoleSafety(runtimePg),
-      readRuntimeDatabaseRoleSafety(maintenancePg),
+      (async () => {
+        const identity = await readDatabaseIdentity(runtimePg);
+        const role = await readRuntimeDatabaseRoleSafety(runtimePg);
+        return { identity, role };
+      })(),
+      (async () => {
+        const identity = await readDatabaseIdentity(maintenancePg);
+        const role = await readRuntimeDatabaseRoleSafety(maintenancePg);
+        return { identity, role };
+      })(),
     ]);
+  const runtimeIdentity = runtimeState.identity;
+  const runtimeRole = runtimeState.role;
+  const maintenanceIdentity = maintenanceState.identity;
+  const maintenanceRole = maintenanceState.role;
   if (
     !runtimeIdentity ||
     !maintenanceIdentity ||

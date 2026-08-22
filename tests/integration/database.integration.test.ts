@@ -682,10 +682,17 @@ databaseDescribe("Postgres schema integration", () => {
     );
     vi.stubEnv("DATABASE_URL", runtimeUrl);
     vi.stubEnv("OMNIAGENT_MAINTENANCE_DATABASE_URL", maintenanceUrl);
+    vi.stubEnv("NODE_ENV", "production");
     vi.resetModules();
     try {
       const client = await import("@/lib/db/client");
-      const safety = await client.getMaintenanceDatabaseRoleSafety();
+      await expect(
+        withTimeout(client.ensureDatabaseSchema(), 5_000),
+      ).resolves.toBeUndefined();
+      const safety = await withTimeout(
+        client.getMaintenanceDatabaseRoleSafety(),
+        5_000,
+      );
       expect(safety).toMatchObject({
         configured: true,
         safe: true,
