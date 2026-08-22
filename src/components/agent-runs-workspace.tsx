@@ -4,15 +4,12 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
-  ArrowRight,
   Brain,
   FileText,
   GitBranch,
-  Layers3,
   Loader2,
   Play,
   RefreshCw,
-  ShieldCheck,
   Square,
   TerminalSquare,
   Workflow,
@@ -46,72 +43,39 @@ type StreamEvent =
   | { type: "error"; message?: string };
 
 const tabs: Array<{ key: TabKey; label: string; icon: typeof TerminalSquare }> = [
-  { key: "goal", label: "Goal", icon: TerminalSquare },
+  { key: "goal", label: "Task", icon: TerminalSquare },
   { key: "context", label: "Context", icon: Brain },
   { key: "plan", label: "Plan", icon: GitBranch },
-  { key: "execute", label: "Execute", icon: Play },
-  { key: "evidence", label: "Results", icon: FileText },
+  { key: "execute", label: "Progress", icon: Play },
+  { key: "evidence", label: "Result", icon: FileText },
 ];
 
 const starterGoals = [
-  "Search my memory and knowledge for anything about this project, then summarize what you found and what is missing.",
-  "Research the latest workflow failures, build a remediation plan, and save durable lessons.",
-  "Prepare a production release readiness report using evaluations, SLOs, incidents, and security evidence.",
-  "Fetch https://api.github.com/zen with the http.request tool and tell me what came back.",
+  {
+    label: "Research a decision",
+    description: "Compare sources and recommend a next step.",
+    mode: "research" as AgentMode,
+    goal: "Research current human-in-the-loop agent UX patterns, compare credible sources, and recommend the three changes that would most improve this workspace. Do not modify external systems.",
+  },
+  {
+    label: "Check release readiness",
+    description: "Summarize evidence, blockers, and safe actions.",
+    mode: "orchestrate" as AgentMode,
+    goal: "Prepare a production release readiness report using evaluations, SLOs, incidents, and security evidence. Identify blockers and three safe next actions without changing external systems.",
+  },
+  {
+    label: "Investigate a failure",
+    description: "Find likely causes and propose remediation.",
+    mode: "research" as AgentMode,
+    goal: "Inspect recent workflow failures, identify the most likely root cause, and produce a bounded remediation plan with verification steps. Do not apply changes.",
+  },
+  {
+    label: "Summarize workspace knowledge",
+    description: "Show what is known and what is missing.",
+    mode: "learn" as AgentMode,
+    goal: "Search workspace memory and knowledge for this project, summarize what is known, identify missing context, and suggest what should be added next.",
+  },
 ];
-
-const runMapSteps = [
-  {
-    step: "1",
-    key: "goal",
-    label: "First",
-    title: "Goal",
-    body: "Say what you want done.",
-    icon: TerminalSquare,
-  },
-  {
-    step: "2",
-    key: "context",
-    label: "RAG",
-    title: "Context",
-    body: "See memory and live-web evidence.",
-    icon: Brain,
-  },
-  {
-    step: "3",
-    key: "plan",
-    label: "Before action",
-    title: "Plan",
-    body: "Check steps, risk, and gates.",
-    icon: GitBranch,
-  },
-  {
-    step: "4",
-    key: "execute",
-    label: "Action",
-    title: "Execute",
-    body: "Run the agent or workflow.",
-    icon: Play,
-  },
-  {
-    step: "5",
-    key: "approvals",
-    label: "If blocked",
-    title: "Approve",
-    body: "Decide risky gates only if needed.",
-    icon: ShieldCheck,
-    href: "/app/approvals",
-  },
-  {
-    step: "6",
-    key: "results",
-    label: "Last",
-    title: "Results",
-    body: "Read output and evidence.",
-    icon: FileText,
-    href: "/app/results",
-  },
-] as const;
 
 export function AgentRunsWorkspace() {
   const {
@@ -119,7 +83,7 @@ export function AgentRunsWorkspace() {
     status: sessionStatus,
     role,
   } = useWorkspaceSession();
-  const [goal, setGoal] = useState(starterGoals[0]);
+  const [goal, setGoal] = useState(starterGoals[0].goal);
   const [mode, setMode] = useState<AgentMode>("orchestrate");
   const [approvalRequired, setApprovalRequired] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>("goal");
@@ -666,7 +630,7 @@ export function AgentRunsWorkspace() {
 
   return (
     <div
-      className="px-4 py-6 sm:px-6 lg:px-8"
+      className="mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8"
       aria-busy={Boolean(loading)}
       data-testid="work-workspace"
     >
@@ -681,12 +645,12 @@ export function AgentRunsWorkspace() {
                 <TerminalSquare size={18} aria-hidden="true" />
               </span>
               <div>
-                <p className="text-xs font-semibold text-primary">Work</p>
-                <h1 className="mt-1 text-2xl font-semibold tracking-normal">Give the agent a bounded outcome.</h1>
+                <p className="text-xs font-semibold text-primary">Start</p>
+                <h1 className="mt-1 text-2xl font-semibold tracking-normal">Start with the outcome you need.</h1>
               </div>
             </div>
             <p className="mt-4 max-w-4xl text-sm leading-6 text-muted">
-              Write the goal, inspect context and the plan, then run it. Sensitive actions pause in Inbox. Completed output and evidence appear in Results.
+              Run a focused task immediately, or preview a durable workflow plan first. Risky actions pause in Approvals and completed work appears in Results.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -732,25 +696,9 @@ export function AgentRunsWorkspace() {
         ) : null}
       </section>
 
-      <RunMap
-        activeTab={activeTab}
-        onStage={(key) => setActiveTab(key)}
-        contextReady={Boolean(contextPack)}
-        planReady={reviewedPlanReady}
-        executionStarted={Boolean(workflowRun || streamEvents.length || agentResponse)}
-        approvalCount={
-          waitingApproval || activeWorkflowStatus === "waiting_approval" ? 1 : 0
-        }
-        resultReady={Boolean(
-          agentResponse ||
-            streamEvents.some((event) => event.type === "done") ||
-            activeWorkflowStatus === "completed"
-        )}
-      />
-
-      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+      <section className="mx-auto mt-4 max-w-6xl">
         <div className="min-w-0 rounded-lg border border-line bg-surface">
-          <nav className="flex max-w-full gap-2 overflow-x-auto border-b border-line p-2" aria-label="Agent run stages" role="tablist">
+          <nav className="flex max-w-full gap-1 overflow-x-auto border-b border-line p-2 sm:gap-2" aria-label="Agent run stages" role="tablist">
             {tabs.map((tab, index) => {
               const Icon = tab.icon;
               return (
@@ -765,11 +713,11 @@ export function AgentRunsWorkspace() {
                   aria-controls="run-stage-panel"
                   tabIndex={activeTab === tab.key ? 0 : -1}
                   className={clsx(
-                    "inline-flex min-h-11 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-semibold transition",
+                    "inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-2 text-sm font-semibold transition sm:gap-2 sm:px-3",
                     activeTab === tab.key ? "bg-primary text-primary-ink" : "text-muted hover:bg-surface-raised hover:text-foreground",
                   )}
                 >
-                  <Icon size={15} aria-hidden="true" />
+                  <Icon size={15} className="hidden sm:block" aria-hidden="true" />
                   {tab.label}
                 </button>
               );
@@ -827,7 +775,7 @@ export function AgentRunsWorkspace() {
                     meta: stringValue(item.content, "No excerpt"),
                     score: stringValue(item.confidence || item.score, ""),
                   }))}
-                  empty="No context pack yet. Build context from the Goal stage."
+                  empty="No context pack yet. Preview context from the Task stage."
                 />
               </StagePanel>
             ) : null}
@@ -902,7 +850,7 @@ export function AgentRunsWorkspace() {
                   >
                     Risk-3 actions stay in preview mode. Executing an
                     irreversible action must be initiated in Tools, then receive
-                    two distinct admin approvals in the Inbox.
+                    two distinct admin approvals in Approvals.
                   </div>
                 ) : null}
                 <ResultRows
@@ -912,7 +860,7 @@ export function AgentRunsWorkspace() {
                     meta: stringValue(item.description, "No description"),
                     score: Boolean(item.approvalRequired) ? "approval" : stringValue(item.policy, "auto"),
                   }))}
-                  empty="No plan generated yet. Use Preview plan from the Goal stage."
+                  empty="No plan generated yet. Use Preview plan from the Task stage."
                 />
               </StagePanel>
             ) : null}
@@ -937,7 +885,7 @@ export function AgentRunsWorkspace() {
                     className="primary-button"
                   >
                     {loading === "agent" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
-                    Run agent
+                    Run task
                   </button>
                   {loading === "agent" ? (
                     <button type="button" onClick={stopAgent} className="action-button border-danger/50 text-danger" data-testid="stop-agent-run">
@@ -971,7 +919,7 @@ export function AgentRunsWorkspace() {
                         <p className="mt-1 text-xs leading-5 text-muted">{streamEventLabel(waitingApproval)}</p>
                       </div>
                     </div>
-                    <Link href="/app/approvals" className="primary-button shrink-0">Open Inbox</Link>
+                    <Link href="/app/approvals" className="primary-button shrink-0">Open Approvals</Link>
                   </div>
                 ) : null}
                 {!waitingApproval &&
@@ -1066,189 +1014,9 @@ export function AgentRunsWorkspace() {
             ) : null}
           </div>
         </div>
-
-        <aside className="min-w-0 space-y-4">
-          <StagePanel title="Run brief" description="The current run setup stays visible while you move through stages.">
-            <div className="space-y-3">
-              <SummaryRow label="Mode" value={mode} />
-              <SummaryRow label="Approval" value={approvalRequired ? "required" : "not required"} />
-              <SummaryRow label="Context" value={`${contextResults.length} items`} />
-              <SummaryRow label="Plan nodes" value={`${planNodes.length}`} />
-              <SummaryRow
-                label="Workspace queue"
-                value={`${approvalItems.length} pending`}
-              />
-            </div>
-          </StagePanel>
-
-          <StagePanel title="Goal" description="Keep the active objective short enough to inspect.">
-            <p className="text-sm leading-6 text-muted">{goal}</p>
-          </StagePanel>
-
-          <StagePanel title="Related workspaces" description="Subsystem controls live in their own pages.">
-            <div className="grid gap-2">
-              <WorkspaceLink href="/app/results" label="Results" icon={FileText} />
-              <WorkspaceLink href="/app/memory" label="Knowledge" icon={Brain} />
-              <WorkspaceLink href="/app/workflows" label="Workflows" icon={Workflow} />
-              <WorkspaceLink href="/app/tools" label="Tools" icon={ShieldCheck} />
-              <WorkspaceLink href="/app/observability" label="Monitoring" icon={Layers3} />
-            </div>
-          </StagePanel>
-        </aside>
       </section>
     </div>
   );
-}
-
-function RunMap({
-  activeTab,
-  onStage,
-  contextReady,
-  planReady,
-  executionStarted,
-  approvalCount,
-  resultReady,
-}: {
-  activeTab: TabKey;
-  onStage: (key: TabKey) => void;
-  contextReady: boolean;
-  planReady: boolean;
-  executionStarted: boolean;
-  approvalCount: number;
-  resultReady: boolean;
-}) {
-  return (
-    <section className="mt-4 rounded-lg border border-primary/30 bg-surface p-4">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Run map</p>
-          <h2 className="mt-1 text-lg font-semibold">Move left to right. Results are the end.</h2>
-        </div>
-        <p className="max-w-2xl text-sm leading-6 text-muted">
-          Do not judge the work from the middle of the page. A run is complete only when the result is visible or the blocker is resolved.
-        </p>
-      </div>
-      <div className="mt-4 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-3 2xl:grid-cols-6">
-        {runMapSteps.map((item) => {
-          const state = runMapState(item.key, {
-            activeTab,
-            contextReady,
-            planReady,
-            executionStarted,
-            approvalCount,
-            resultReady,
-          });
-          return (
-            <RunMapStep
-              key={item.key}
-              item={item}
-              state={state}
-              selected={item.key === activeTab || (item.key === "results" && activeTab === "evidence")}
-              onStage={onStage}
-            />
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function RunMapStep({
-  item,
-  state,
-  selected,
-  onStage,
-}: {
-  item: (typeof runMapSteps)[number];
-  state: { tone: Tone; label: string };
-  selected: boolean;
-  onStage: (key: TabKey) => void;
-}) {
-  const Icon = item.icon;
-  const body = (
-    <>
-      <div className="flex items-center justify-between gap-3">
-        <span className="grid size-9 place-items-center rounded-md bg-primary text-sm font-semibold text-primary-ink">{item.step}</span>
-        <span className={clsx("rounded-md px-2 py-1 font-mono text-[11px]", pillTone(state.tone))}>{state.label}</span>
-      </div>
-      <Icon size={17} className="mt-5 text-primary" aria-hidden="true" />
-      <p className="mt-3 text-sm font-semibold">{item.title}</p>
-      <p className="mt-2 text-xs leading-5 text-muted">{item.body}</p>
-      <p className="mt-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">{item.label}</p>
-    </>
-  );
-
-  if ("href" in item && item.href) {
-    return (
-      <Link
-        href={item.href}
-        className={clsx(
-          "group min-h-44 bg-background p-4 text-left transition hover:bg-surface-raised",
-          selected && "ring-2 ring-inset ring-primary",
-        )}
-      >
-        {body}
-      </Link>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={() => onStage(item.key as TabKey)}
-      aria-pressed={selected}
-      className={clsx(
-        "group min-h-44 bg-background p-4 text-left transition hover:bg-surface-raised",
-        selected && "ring-2 ring-inset ring-primary",
-      )}
-    >
-      {body}
-    </button>
-  );
-}
-
-function runMapState(
-  key: (typeof runMapSteps)[number]["key"],
-  state: {
-    activeTab: TabKey;
-    contextReady: boolean;
-    planReady: boolean;
-    executionStarted: boolean;
-    approvalCount: number;
-    resultReady: boolean;
-  },
-): { tone: Tone; label: string } {
-  if (key === "goal") {
-    return state.activeTab === "goal" ? { tone: "warning", label: "active" } : { tone: "success", label: "ready" };
-  }
-  if (key === "context") {
-    if (state.contextReady) {
-      return { tone: "success", label: "built" };
-    }
-    return state.activeTab === "context" ? { tone: "warning", label: "active" } : { tone: "neutral", label: "next" };
-  }
-  if (key === "plan") {
-    if (state.planReady) {
-      return { tone: "success", label: "ready" };
-    }
-    return state.activeTab === "plan" ? { tone: "warning", label: "active" } : { tone: "neutral", label: "pending" };
-  }
-  if (key === "execute") {
-    if (state.executionStarted) {
-      return { tone: "success", label: "started" };
-    }
-    return state.activeTab === "execute" ? { tone: "warning", label: "active" } : { tone: "neutral", label: "pending" };
-  }
-  if (key === "approvals") {
-    if (state.approvalCount > 0) {
-      return { tone: "warning", label: "blocked" };
-    }
-    return state.executionStarted ? { tone: "success", label: "clear" } : { tone: "neutral", label: "if needed" };
-  }
-  if (state.resultReady) {
-    return { tone: "success", label: "available" };
-  }
-  return state.activeTab === "evidence" ? { tone: "warning", label: "review" } : { tone: "neutral", label: "last" };
 }
 
 function GoalStage({
@@ -1291,16 +1059,54 @@ function GoalStage({
   const goalMissing = !goal.trim();
   const draftLocked = Boolean(loading) || workflowInProgress;
   return (
-    <StagePanel title="Compose goal" description="Start with intent, mode, and approval posture. Then move left to right: context, plan, execute, results.">
-      <label className="block text-sm font-semibold">
-        Goal
+    <StagePanel
+      title="Describe the outcome"
+      description="Choose a safe sample or write the result you need. Planning and advanced controls stay optional."
+    >
+      <div aria-labelledby="sample-use-cases">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <p id="sample-use-cases" className="text-sm font-semibold">
+            Sample use cases
+          </p>
+          <p className="text-xs text-muted">Read-only starters you can edit</p>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {starterGoals.map((starter) => (
+            <button
+              key={starter.label}
+              type="button"
+              onClick={() => {
+                onGoalChange(starter.goal);
+                onModeChange(starter.mode);
+              }}
+              disabled={draftLocked}
+              aria-pressed={goal === starter.goal}
+              className={clsx(
+                "rounded-md border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60",
+                goal === starter.goal
+                  ? "border-primary bg-primary/10"
+                  : "border-line bg-background hover:bg-surface-raised",
+              )}
+            >
+              <span className="block text-sm font-semibold">{starter.label}</span>
+              <span className="mt-1 block text-xs leading-5 text-muted">
+                {starter.description}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <label className="mt-6 block text-sm font-semibold">
+        Task outcome
         <textarea
           value={goal}
           onChange={(event) => onGoalChange(event.currentTarget.value)}
-          rows={7}
+          rows={6}
           required
           disabled={draftLocked}
           aria-describedby="run-goal-help"
+          placeholder="Describe what should be produced, important constraints, and how you will know it is complete."
           className="mt-2 w-full rounded-md border border-line bg-background px-3 py-3 text-sm leading-6 outline-none transition focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
         />
         <span id="run-goal-help" className="mt-2 block text-xs font-normal leading-5 text-muted">
@@ -1309,48 +1115,101 @@ function GoalStage({
             : "Describe the outcome, constraints, and evidence you expect. Do not include secrets."}
         </span>
       </label>
-      <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
-        <div>
-          <p className="text-sm font-semibold">Mode</p>
-          <div className="mt-2 grid gap-2 sm:grid-cols-4">
-            {(["orchestrate", "research", "execute", "learn"] as AgentMode[]).map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => onModeChange(item)}
-                disabled={draftLocked}
-                aria-pressed={mode === item}
-                className={clsx(
-                  "min-h-11 rounded-md border px-3 text-sm font-semibold capitalize transition disabled:cursor-not-allowed disabled:opacity-60",
-                  mode === item ? "border-primary bg-primary text-primary-ink" : "border-line bg-background text-muted hover:bg-surface-raised hover:text-foreground",
-                )}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
+
+      <details className="mt-4 rounded-md border border-line bg-background p-3">
+        <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 text-sm font-semibold">
+          <span>Run settings</span>
+          <span className="font-mono text-xs font-normal text-muted">
+            {mode} · approvals {approvalRequired ? "on" : "off"}
+          </span>
+        </summary>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <label className="text-sm font-semibold">
+            How the agent should work
+            <select
+              value={mode}
+              disabled={draftLocked}
+              onChange={(event) =>
+                onModeChange(event.currentTarget.value as AgentMode)
+              }
+              className="mt-2 min-h-11 w-full rounded-md border border-line bg-surface px-3 text-sm font-normal"
+            >
+              <option value="orchestrate">General task</option>
+              <option value="research">Research and compare</option>
+              <option value="execute">Use approved tools</option>
+              <option value="learn">Use and update knowledge</option>
+            </select>
+          </label>
+          <label className="flex min-h-16 items-center justify-between gap-4 rounded-md border border-line bg-surface px-3 py-2 text-sm">
+            <span>
+              <span className="block font-semibold">Require approval</span>
+              <span className="mt-1 block text-xs leading-5 text-muted">
+                Pause durable workflows before gated actions.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={approvalRequired}
+              disabled={draftLocked}
+              onChange={(event) =>
+                onApprovalChange(event.currentTarget.checked)
+              }
+              className="size-4 shrink-0 accent-[var(--primary)]"
+            />
+          </label>
         </div>
-        <label className="flex min-h-11 items-center justify-between gap-3 rounded-md border border-line bg-background px-3 text-sm">
-          <span>Approval gate</span>
-          <input
-            type="checkbox"
-            checked={approvalRequired}
-            disabled={draftLocked}
-            onChange={(event) => onApprovalChange(event.currentTarget.checked)}
-            className="size-4 accent-[var(--primary)]"
-          />
-        </label>
-      </div>
-      <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <button
           type="button"
           onClick={onContext}
-          disabled={Boolean(loading) || goalMissing || Boolean(readDisabledReason)}
-          title={goalMissing ? "Enter a goal first." : readDisabledReason}
-          className="action-button"
+          disabled={
+            Boolean(loading) || goalMissing || Boolean(readDisabledReason)
+          }
+          title={goalMissing ? "Enter a task first." : readDisabledReason}
+          className="action-button mt-4"
         >
-          {loading === "context" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Brain size={14} aria-hidden="true" />}
-          Build context
+          {loading === "context" ? (
+            <Loader2
+              size={14}
+              className="animate-spin"
+              aria-hidden="true"
+            />
+          ) : (
+            <Brain size={14} aria-hidden="true" />
+          )}
+          Preview context
+        </button>
+      </details>
+
+      <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+        <button
+          type="button"
+          onClick={onAgent}
+          disabled={
+            Boolean(loading) ||
+            goalMissing ||
+            Boolean(runDisabledReason) ||
+            workflowInProgress
+          }
+          title={
+            goalMissing
+              ? "Enter a task first."
+              : runDisabledReason ||
+                (workflowInProgress
+                  ? "Wait for the active workflow to finish or cancel it first."
+                  : undefined)
+          }
+          className="primary-button"
+        >
+          {loading === "agent" ? (
+            <Loader2
+              size={14}
+              className="animate-spin"
+              aria-hidden="true"
+            />
+          ) : (
+            <Play size={14} aria-hidden="true" />
+          )}
+          Run task
         </button>
         <button
           type="button"
@@ -1371,78 +1230,53 @@ function GoalStage({
           }
           className="action-button"
         >
-          {loading === "plan" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <GitBranch size={14} aria-hidden="true" />}
+          {loading === "plan" ? (
+            <Loader2
+              size={14}
+              className="animate-spin"
+              aria-hidden="true"
+            />
+          ) : (
+            <GitBranch size={14} aria-hidden="true" />
+          )}
           Preview plan
         </button>
-        <button
-          type="button"
-          onClick={onWorkflow}
-          disabled={
-            Boolean(loading) ||
-            goalMissing ||
-            Boolean(workflowDisabledReason) ||
-            !workflowReady ||
-            workflowStarted
-          }
-          title={
-            goalMissing
-              ? "Enter a goal first."
-              : workflowDisabledReason ||
-                (workflowStarted
-                  ? "Generate a new plan before starting another workflow."
-                  : !workflowReady
-                    ? "Preview and review a plan first."
-                    : undefined)
-          }
-          className="action-button"
-        >
-          {loading === "workflow" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Workflow size={14} aria-hidden="true" />}
-          {workflowStarted
-            ? "Workflow started"
-            : workflowReady
-              ? "Start reviewed plan"
-              : "Review plan first"}
-        </button>
-        <button
-          type="button"
-          onClick={onAgent}
-          disabled={
-            Boolean(loading) ||
-            goalMissing ||
-            Boolean(runDisabledReason) ||
-            workflowInProgress
-          }
-          title={
-            goalMissing
-              ? "Enter a goal first."
-              : runDisabledReason ||
-                (workflowInProgress
-                  ? "Wait for the active workflow to finish or cancel it first."
-                  : undefined)
-          }
-          className="primary-button"
-        >
-          {loading === "agent" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
-          Run agent
-        </button>
-      </div>
-      <div className="mt-5 grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2 xl:grid-cols-4">
-        {starterGoals.map((starter) => (
+        {workflowReady || workflowStarted ? (
           <button
-            key={starter}
             type="button"
-            onClick={() => onGoalChange(starter)}
-            disabled={draftLocked}
-            aria-pressed={goal === starter}
-            className={clsx(
-              "min-h-11 bg-background p-4 text-left text-sm leading-6 transition hover:bg-surface-raised hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60",
-              goal === starter ? "text-foreground ring-2 ring-inset ring-primary" : "text-muted",
-            )}
+            onClick={onWorkflow}
+            disabled={
+              Boolean(loading) ||
+              goalMissing ||
+              Boolean(workflowDisabledReason) ||
+              !workflowReady ||
+              workflowStarted
+            }
+            title={
+              workflowDisabledReason ||
+              (workflowStarted
+                ? "Generate a new plan before starting another workflow."
+                : undefined)
+            }
+            className="action-button"
           >
-            {starter}
+            {loading === "workflow" ? (
+              <Loader2
+                size={14}
+                className="animate-spin"
+                aria-hidden="true"
+              />
+            ) : (
+              <Workflow size={14} aria-hidden="true" />
+            )}
+            {workflowStarted ? "Workflow started" : "Start reviewed plan"}
           </button>
-        ))}
+        ) : null}
       </div>
+      <p className="mt-3 text-xs leading-5 text-muted">
+        Run task for a direct answer. Preview a plan when the work should be
+        durable, reviewable, and resumable.
+      </p>
     </StagePanel>
   );
 }
@@ -1500,27 +1334,6 @@ function EvidenceCard({ title, rows, empty }: { title: string; rows: Array<{ tit
         )}
       </div>
     </div>
-  );
-}
-
-function SummaryRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-line bg-background px-3 py-2">
-      <span className="text-sm text-muted">{label}</span>
-      <span className="font-mono text-sm">{value}</span>
-    </div>
-  );
-}
-
-function WorkspaceLink({ href, label, icon: Icon }: { href: string; label: string; icon: typeof TerminalSquare }) {
-  return (
-    <Link href={href} className="flex items-center justify-between rounded-md border border-line bg-background px-3 py-2 text-sm font-semibold transition hover:bg-surface-raised">
-      <span className="inline-flex items-center gap-2">
-        <Icon size={15} className="text-primary" aria-hidden="true" />
-        {label}
-      </span>
-      <ArrowRight size={14} className="text-muted" aria-hidden="true" />
-    </Link>
   );
 }
 
@@ -1613,7 +1426,7 @@ function streamEventLabel(event: StreamEvent) {
       return `${name} executed.`;
     }
     if (event.status === "dry_run") {
-      return `${name} was previewed only, with no side effects. Approve it from Inbox to run for real.`;
+      return `${name} was previewed only, with no side effects. Approve it from Approvals to run for real.`;
     }
     if (event.status === "approval_required") {
       return `${name} is waiting for human approval.`;

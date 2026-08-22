@@ -223,7 +223,7 @@ export function ResultsCenter() {
   const sourceErrors = [
     ["Agent runs", resourceError(data.runs)],
     ["Workflows", resourceError(data.workflows)],
-    ["Inbox", resourceError(data.approvals)],
+    ["Approvals", resourceError(data.approvals)],
     ["Evaluations", resourceError(data.evaluations)],
     ["Release evidence", resourceError(data.release)],
     ["Runtime events", resourceError(data.events)],
@@ -258,7 +258,7 @@ export function ResultsCenter() {
   }
 
   return (
-    <div className="px-4 py-6 sm:px-6 lg:px-8" aria-busy={state === "loading"} data-testid="results-workspace">
+    <div className="mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8" aria-busy={state === "loading"} data-testid="results-workspace">
       <section className="rounded-lg border border-line bg-surface p-5">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0">
@@ -268,11 +268,11 @@ export function ResultsCenter() {
               </span>
               <div>
                 <p className="text-xs font-semibold text-primary">Results</p>
-                <h1 className="mt-1 text-2xl font-semibold tracking-normal">Results</h1>
+                <h1 className="mt-1 text-2xl font-semibold tracking-normal">Review completed work.</h1>
               </div>
             </div>
             <p className="mt-4 max-w-4xl text-sm leading-6 text-muted">
-              Completed output appears here with workflow, approval, evaluation, and runtime evidence. Unknown or unavailable sources stay visible instead of being counted as zero.
+              Open a result to read the output first. Its plan, approvals, verification, and runtime evidence remain attached for deeper review.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -281,7 +281,7 @@ export function ResultsCenter() {
               Refresh
             </button>
             <Link href="/app/command" className="primary-button">
-              Start run
+              Start task
               <ArrowRight size={14} aria-hidden="true" />
             </Link>
           </div>
@@ -395,7 +395,7 @@ export function ResultsCenter() {
             <NextStepRow
               icon={AlertTriangle}
               title="Waiting approval"
-              body="Open Inbox, decide the request, then return after the workflow advances."
+              body="Open Approvals, decide the request, then return after the workflow advances."
               active={primaryResult.status === "waiting_approval" || approvalItems.length > 0}
             />
             <NextStepRow
@@ -715,8 +715,8 @@ function choosePrimaryResult(timeline: ResultTimelineItem[], sourceError: boolea
     kind: "empty",
     title: "No result yet",
     status: "empty",
-    body: "Start in Work. The latest run, workflow, or approval state will appear here after execution begins.",
-    meta: "Work / Activity / Inbox / Results",
+    body: "Start a task. Its latest run, workflow, or approval state will appear here after execution begins.",
+    meta: "Start / Runs / Approvals / Results",
     href: "/app/command",
     tone: "neutral",
   };

@@ -61,7 +61,7 @@ export function DashboardOverview() {
   } = useWorkspaceSession();
   const [resources, setResources] = useState(initialResources);
   const [lastRefresh, setLastRefresh] = useState<string>();
-  const [announcement, setAnnouncement] = useState("Activity workspace ready.");
+  const [announcement, setAnnouncement] = useState("Runs workspace ready.");
   const loadVersionRef = useRef(0);
 
   const workspaceAvailable = Boolean(
@@ -83,13 +83,13 @@ export function DashboardOverview() {
       setResources({
         runs: { status: "unavailable", error: "Sign in to load agent runs." },
         workflows: { status: "unavailable", error: "Sign in to load workflows." },
-        approvals: { status: "unavailable", error: "Sign in to load Inbox." },
+        approvals: { status: "unavailable", error: "Sign in to load Approvals." },
         incidents: { status: "unavailable", error: "Sign in to load incidents." },
       });
       return;
     }
 
-    setAnnouncement("Refreshing activity.");
+    setAnnouncement("Refreshing runs.");
     setResources((current) => ({
       runs: { status: "loading", data: current.runs.data },
       workflows: { status: "loading", data: current.workflows.data },
@@ -119,8 +119,8 @@ export function DashboardOverview() {
     setLastRefresh(new Date().toLocaleTimeString());
     setAnnouncement(
       entries.some(([, resource]) => resource.status === "error")
-        ? "Activity refreshed with unavailable sources."
-        : "Activity refreshed.",
+        ? "Runs refreshed with unavailable sources."
+        : "Runs refreshed.",
     );
   }
 
@@ -161,7 +161,7 @@ export function DashboardOverview() {
 
   return (
     <div
-      className="px-4 py-6 sm:px-6 lg:px-8"
+      className="mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8"
       aria-busy={isLoading}
       data-testid="activity-workspace"
     >
@@ -177,12 +177,12 @@ export function DashboardOverview() {
                 <Activity size={18} aria-hidden="true" />
               </span>
               <div>
-                <p className="text-xs font-semibold text-primary">Activity</p>
-                <h1 className="mt-1 text-2xl font-semibold">Watch work move.</h1>
+                <p className="text-xs font-semibold text-primary">Runs</p>
+                <h1 className="mt-1 text-2xl font-semibold">Track every task in one place.</h1>
               </div>
             </div>
             <p className="mt-4 max-w-3xl text-sm leading-6 text-muted">
-              Follow active and recent agent runs and workflows. Approval requests and incidents stay in Inbox. Completed output stays in Results.
+              See active and recent agent runs and workflows. Decisions wait in Approvals, and completed output stays in Results.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -193,16 +193,16 @@ export function DashboardOverview() {
               className="action-button"
             >
               {isLoading ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
-              Refresh activity
+              Refresh runs
             </button>
             <Link href="/app/command" className="primary-button">
-              New work
+              Start task
               <ArrowRight size={15} aria-hidden="true" />
             </Link>
           </div>
         </div>
 
-        <div className="mt-5 grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-2 xl:grid-cols-5">
+        <div className="mt-5 grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-2 md:grid-cols-5">
           <Metric
             label="Active runs"
             value={metricValue(resources.runs, activeRows.filter((row) => row.kind === "agent").length)}
@@ -223,7 +223,12 @@ export function DashboardOverview() {
             value={combinedMetric(resources.runs, resources.workflows, completedRows.length)}
             tone={combinedTone(resources.runs, resources.workflows, completedRows.length)}
           />
-          <Metric label="Updated" value={lastRefresh || (isLoading ? "Loading" : "Unknown")} tone="neutral" />
+          <Metric
+            label="Updated"
+            value={lastRefresh || (isLoading ? "Loading" : "Unknown")}
+            tone="neutral"
+            className="sm:col-span-2 md:col-span-1"
+          />
         </div>
       </section>
 
@@ -231,7 +236,7 @@ export function DashboardOverview() {
         <StateNotice
           tone="danger"
           title="Session status unavailable"
-          body={sessionError || "Refresh the page before relying on workspace activity."}
+          body={sessionError || "Refresh the page before relying on workspace run status."}
         />
       ) : null}
 
@@ -240,7 +245,7 @@ export function DashboardOverview() {
           <div className="flex items-start gap-3">
             <LockKeyhole size={18} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
             <div>
-              <h2 className="text-sm font-semibold">Sign in to load workspace activity</h2>
+              <h2 className="text-sm font-semibold">Sign in to load workspace runs</h2>
               <p className="mt-1 text-sm leading-6 text-muted">No protected endpoint was called while your session was signed out.</p>
             </div>
           </div>
@@ -252,7 +257,7 @@ export function DashboardOverview() {
         <StateNotice
           tone="neutral"
           title="Refreshing"
-          body="Showing the last loaded activity until every source responds."
+          body="Showing the last loaded runs until every source responds."
         />
       ) : null}
 
@@ -261,13 +266,13 @@ export function DashboardOverview() {
           <div className="flex items-start gap-3">
             <AlertTriangle size={18} className="mt-0.5 shrink-0 text-danger" aria-hidden="true" />
             <div>
-              <h2 id="activity-errors" className="text-sm font-semibold">Some activity could not be loaded</h2>
+              <h2 id="activity-errors" className="text-sm font-semibold">Some runs could not be loaded</h2>
               <ul className="mt-2 space-y-1 text-sm leading-6 text-muted">
                 {sourceErrors.map(([key, resource]) => (
                   <li key={key}><strong className="text-foreground">{resourceLabel(key)}:</strong> {resource.error}</li>
                 ))}
               </ul>
-              <button type="button" onClick={() => void load()} className="action-button mt-3">Retry activity</button>
+              <button type="button" onClick={() => void load()} className="action-button mt-3">Retry runs</button>
             </div>
           </div>
         </section>
@@ -284,13 +289,13 @@ export function DashboardOverview() {
               </div>
             ) : resources.runs.status === "ready" && resources.workflows.status === "ready" ? (
               <EmptyState
-                title="No work has started"
-                body="Create a bounded goal in Work. The run will appear here as soon as execution starts."
+                title="No tasks have started"
+                body="Describe an outcome in Start. The run will appear here as soon as execution begins."
                 href="/app/command"
-                linkLabel="Create work"
+                linkLabel="Start a task"
               />
             ) : (
-              <UnavailableState label="Activity state is unknown because its sources are unavailable." />
+              <UnavailableState label="Run state is unknown because its sources are unavailable." />
             )}
           </Panel>
 
@@ -327,7 +332,7 @@ export function DashboardOverview() {
               ) : resources.runs.status === "ready" && resources.workflows.status === "ready" ? (
                 <EmptyState
                   title="No completed result yet"
-                  body="Active, blocked, failed, and canceled work remains in Activity until a result completes."
+                  body="Active, blocked, failed, and canceled work remains in Runs until a result completes."
                   href="/app/results"
                   linkLabel="Open Results"
                 />
@@ -340,7 +345,7 @@ export function DashboardOverview() {
       ) : null}
 
       <details className="mt-4 rounded-lg border border-line bg-surface p-4">
-        <summary className="min-h-11 cursor-pointer content-center text-sm font-semibold">Advanced workspaces</summary>
+        <summary className="min-h-11 cursor-pointer content-center text-sm font-semibold">More workspaces</summary>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">
           Use these when a result needs deeper context, configuration, verification, or system diagnosis.
         </p>
@@ -470,9 +475,19 @@ function Panel({ title, description, children }: { title: string; description: s
   );
 }
 
-function Metric({ label, value, tone }: { label: string; value: string; tone: Tone }) {
+function Metric({
+  label,
+  value,
+  tone,
+  className,
+}: {
+  label: string;
+  value: string;
+  tone: Tone;
+  className?: string;
+}) {
   return (
-    <div className="bg-background p-3">
+    <div className={clsx("bg-background p-3", className)}>
       <p className="text-xs text-muted">{label}</p>
       <p className={clsx("mt-2 font-mono text-lg", textTone(tone))}>{value}</p>
     </div>
@@ -500,7 +515,7 @@ function UnavailableState({ label }: { label: string }) {
 
 function LoadingRows({ compact = false }: { compact?: boolean }) {
   return (
-    <div className="space-y-2" role="status" aria-label="Loading activity">
+    <div className="space-y-2" role="status" aria-label="Loading runs">
       {[0, 1, 2].slice(0, compact ? 2 : 3).map((index) => (
         <div key={index} className="rounded-md border border-line bg-background p-3">
           <div className="h-3 w-2/3 animate-pulse rounded bg-surface-raised" />
@@ -559,7 +574,7 @@ function metricTone(resource: ResourceState, tone: Tone): Tone {
 function resourceLabel(key: ResourceKey) {
   if (key === "runs") return "Agent runs";
   if (key === "workflows") return "Workflows";
-  if (key === "approvals") return "Inbox";
+  if (key === "approvals") return "Approvals";
   return "Incidents";
 }
 

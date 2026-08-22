@@ -337,7 +337,7 @@ export function ApprovalsWorkspace() {
   ].filter(Boolean);
 
   return (
-    <div className="px-4 py-6 sm:px-6 lg:px-8" aria-busy={state === "loading"} data-testid="inbox-workspace">
+    <div className="mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8" aria-busy={state === "loading"} data-testid="inbox-workspace">
       <section className="rounded-lg border border-line bg-surface p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
@@ -345,8 +345,8 @@ export function ApprovalsWorkspace() {
               <ShieldCheck size={18} aria-hidden="true" />
             </span>
             <div>
-              <p className="text-xs font-semibold text-primary">Inbox</p>
-              <h1 className="mt-1 text-xl font-semibold">Decisions requiring attention</h1>
+              <p className="text-xs font-semibold text-primary">Approvals</p>
+              <h1 className="mt-1 text-xl font-semibold">Decide what can proceed.</h1>
               <p className="mt-1 text-sm text-muted">
                 Review agent actions and workspace access requests from one queue.
               </p>
@@ -394,7 +394,7 @@ export function ApprovalsWorkspace() {
           <div className="flex items-start gap-3">
             <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
             <div>
-              <h2 className="text-sm font-semibold">Inbox access is limited</h2>
+              <h2 className="text-sm font-semibold">Approval access is limited</h2>
               <p className="mt-1 text-sm leading-6 text-muted">{decisionPermission} Current role: {role}.</p>
             </div>
           </div>
@@ -577,7 +577,7 @@ function AccessRequestCard({
       ) : (
         <>
           <p className="mt-3 text-xs leading-5 text-muted">
-            Approving records the decision and keeps this request in Inbox
+            Approving records the decision and keeps this request in Approvals
             until the workspace identity is provisioned.
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-2">

@@ -125,7 +125,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
         Skip to workspace
       </a>
 
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 border-r border-line bg-surface lg:flex lg:flex-col">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-line bg-surface lg:flex lg:flex-col">
         <div className="flex h-16 items-center gap-3 border-b border-line px-5">
           <Link
             href="/app"
@@ -137,7 +137,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
             </span>
             <span className="min-w-0">
               <span className="block truncate text-sm font-semibold">OmniAgentOS</span>
-              <span className="block truncate text-xs text-muted">Operator workspace</span>
+              <span className="block truncate text-xs text-muted">Governed AI workspace</span>
             </span>
           </Link>
         </div>
@@ -159,7 +159,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
         </div>
       </aside>
 
-      <div className="lg:pl-72">
+      <div className="lg:pl-64">
         {banner}
         <header className="sticky top-0 z-20 border-b border-line bg-background/95 backdrop-blur">
           <div className="flex min-h-16 items-center justify-between gap-3 px-3 py-2 sm:px-6 lg:px-8">
@@ -177,9 +177,10 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
                 <Menu size={19} aria-hidden="true" />
               </button>
               <div className="min-w-0">
-                <p className="truncate text-xs text-muted">Workspace /</p>
                 <p className="truncate text-sm font-semibold">{activeItem?.label || "Workspace"}</p>
-                <p className="hidden truncate text-xs text-muted sm:block">{activeItem?.description || "Your AI agent workspace"}</p>
+                <p className="hidden truncate text-xs text-muted sm:block">
+                  {activeItem?.description || "Give the agent work and review the outcome."}
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -189,7 +190,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
                 href="/app/command"
                 className="hidden min-h-11 items-center justify-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink transition hover:brightness-105 sm:inline-flex"
               >
-                New work
+                Start task
               </Link>
             </div>
           </div>

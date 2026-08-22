@@ -73,8 +73,8 @@ export function DemoWorkspace() {
       <section className="border-b border-line pt-16">
         <div className="mx-auto grid max-w-7xl gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[0.78fr_1.22fr] lg:px-8">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Demo workspace</p>
-            <h1 className="mt-4 max-w-3xl text-5xl font-semibold tracking-normal sm:text-6xl">
+            <p className="text-sm font-semibold text-primary">Demo workspace</p>
+            <h1 className="mt-4 max-w-3xl text-4xl font-semibold tracking-normal sm:text-5xl">
               Experience the onboarding loop with sample data.
             </h1>
             <p className="mt-6 max-w-2xl text-lg leading-8 text-muted">
@@ -137,19 +137,19 @@ export function DemoWorkspace() {
                 <p className="mt-4 text-sm leading-6 text-muted">{step.body}</p>
               </div>
 
-              <div className="rounded-lg border border-line bg-foreground p-5 text-background">
-                <p className="text-sm font-semibold uppercase tracking-[0.22em] opacity-68">Sample signals</p>
-                <div className="mt-6 grid gap-px overflow-hidden rounded-lg border border-background/14 bg-background/14 sm:grid-cols-2">
+              <div className="rounded-lg border border-line bg-surface-raised p-5 text-foreground">
+                <p className="text-sm font-semibold">Sample signals</p>
+                <div className="mt-6 grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-2">
                   {sampleSignals.map(([label, value]) => (
-                    <div key={label} className="bg-background/8 p-4">
-                      <p className="text-xs opacity-60">{label}</p>
+                    <div key={label} className="bg-surface p-4">
+                      <p className="text-xs text-muted">{label}</p>
                       <p className="mt-2 font-mono text-sm">{value}</p>
                     </div>
                   ))}
                 </div>
-                <div className="mt-6 flex items-start gap-3 border-t border-background/14 pt-5">
+                <div className="mt-6 flex items-start gap-3 border-t border-line pt-5">
                   <LockKeyhole size={17} className="mt-0.5 text-primary" aria-hidden="true" />
-                  <p className="text-sm leading-6 opacity-72">
+                  <p className="text-sm leading-6 text-muted">
                     Demo mode never executes external connectors or writes private tenant data.
                   </p>
                 </div>

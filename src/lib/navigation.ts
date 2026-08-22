@@ -56,23 +56,23 @@ export const marketingNav = [
 export const appNav: AppNavItem[] = [
   {
     href: "/app/command",
-    label: "Work",
-    shortLabel: "Work",
-    description: "Give the agent a goal, review the plan, and start the run.",
+    label: "Start",
+    shortLabel: "Start",
+    description: "Describe an outcome and choose how the agent should run it.",
     icon: TerminalSquare,
   },
   {
     href: "/app",
-    label: "Activity",
-    shortLabel: "Activity",
-    description: "Watch active and recent agent runs, workflows, and blockers.",
+    label: "Runs",
+    shortLabel: "Runs",
+    description: "Watch active and recent tasks, workflows, and blockers.",
     icon: Activity,
   },
   {
     href: "/app/approvals",
-    label: "Inbox",
-    shortLabel: "Inbox",
-    description: "Review agent approvals and workspace access requests that require your attention.",
+    label: "Approvals",
+    shortLabel: "Approvals",
+    description: "Review actions and access requests that need a decision.",
     icon: CheckCircle2,
   },
   {
@@ -139,13 +139,32 @@ export const primaryNavHrefs = ["/app/command", "/app", "/app/approvals", "/app/
 
 export const appNavGroups: AppNavGroup[] = [
   {
-    label: "Workspace",
+    label: "Operate",
     items: appNav.filter((item) => primaryNavHrefs.includes(item.href)),
   },
   {
-    label: "Advanced",
+    label: "Build and connect",
     collapsible: true,
-    items: appNav.filter((item) => !primaryNavHrefs.includes(item.href)),
+    items: appNav.filter((item) =>
+      [
+        "/app/workflows",
+        "/app/memory",
+        "/app/connectors",
+        "/app/tools",
+      ].includes(item.href),
+    ),
+  },
+  {
+    label: "Admin",
+    collapsible: true,
+    items: appNav.filter((item) =>
+      [
+        "/app/evaluations",
+        "/app/observability",
+        "/app/security",
+        "/app/settings",
+      ].includes(item.href),
+    ),
   },
 ];
 

@@ -31,9 +31,9 @@ test("public and mobile application navigation stay usable", async ({ page }) =>
 
   const mobileNavigation = page.getByRole("navigation", { name: "Primary workspace navigation" });
   await expect(mobileNavigation).toBeVisible();
-  await expect(mobileNavigation.getByRole("link", { name: "Activity" })).toBeVisible();
-  await expect(mobileNavigation.getByRole("link", { name: "Work" })).toBeVisible();
-  await mobileNavigation.getByRole("link", { name: "Work" }).click();
+  await expect(mobileNavigation.getByRole("link", { name: "Runs" })).toBeVisible();
+  await expect(mobileNavigation.getByRole("link", { name: "Start" })).toBeVisible();
+  await mobileNavigation.getByRole("link", { name: "Start" }).click();
   await expect(page).toHaveURL(/\/app\/command$/);
 });
 
@@ -82,9 +82,9 @@ test("agent work streams a clearly labeled fallback into results", async ({ page
   await signIn(page);
   await page.goto("/app/command");
   await page
-    .getByRole("textbox", { name: /^Goal/ })
+    .getByRole("textbox", { name: /^Task outcome/ })
     .fill("Summarize the release posture without making external changes.");
-  await page.getByRole("button", { name: "Run agent" }).click();
+  await page.getByRole("button", { name: "Run task" }).click();
 
   const executionPanel = page.getByRole("tabpanel");
   await expect(executionPanel).toContainText("[Simulated response]");
@@ -92,7 +92,7 @@ test("agent work streams a clearly labeled fallback into results", async ({ page
     "OPENAI_API_KEY is not configured, so no model ran.",
   );
 
-  await page.getByRole("tab", { name: "Results" }).click();
+  await page.getByRole("tab", { name: "Result" }).click();
   const resultsLink = page.getByRole("link", { name: "Open Results" });
   await expect(resultsLink).toHaveAttribute(
     "href",
@@ -106,7 +106,7 @@ test("reviewed workflow plans bind to one visible run", async ({ page }) => {
   await signIn(page);
   await page.goto("/app/command");
 
-  await page.getByRole("textbox", { name: /^Goal/ }).fill(
+  await page.getByRole("textbox", { name: /^Task outcome/ }).fill(
     "Summarize recent workflow evidence and produce a bounded verification report.",
   );
   await page.getByRole("button", { name: "Preview plan" }).click();
