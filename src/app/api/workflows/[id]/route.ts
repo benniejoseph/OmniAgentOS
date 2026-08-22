@@ -1,9 +1,11 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import { getWorkflowRunDetail } from "@/lib/workflows/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 
-export async function GET(
+async function GETHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {

@@ -3,6 +3,7 @@ export type ToolRiskLevel = 0 | 1 | 2 | 3;
 export type ToolExecutionStatus =
   | "dry_run"
   | "executed"
+  | "executing"
   | "approval_required"
   | "blocked"
   | "failed"
@@ -20,6 +21,8 @@ export type ToolDefinition = {
   /** Whether the effect can be undone. Irreversible actions never graduate to autonomy. Defaults to false (conservative). */
   reversible?: boolean;
   inputSchema: Record<string, unknown>;
+  /** Hash of the exact connector/operation contract reviewed for execution. */
+  approvalFingerprint?: string;
 };
 
 export type ToolQuorumApproval = {

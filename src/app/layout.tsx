@@ -15,10 +15,10 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "OmniAgentOS",
+    default: "OmniAgentOS Operator Workspace",
     template: "%s | OmniAgentOS",
   },
-  description: "Enterprise AI agent orchestration platform with OpenAI, memory, RAG, tools, workflows, observability, and release evidence.",
+  description: "Give an AI agent work, watch its progress, resolve approvals, and review evidence.",
 };
 
 const themeBootScript = `

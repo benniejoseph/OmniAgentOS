@@ -1,9 +1,12 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import { parseBoundedInteger } from "@/lib/http/body";
 import { listRecentEvents, listStreamEvents } from "@/lib/events/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   let context;
   try {
     context = await authorizeRequest({
@@ -16,9 +19,11 @@ export async function GET(request: Request) {
   }
 
   const url = new URL(request.url);
-  const streamId = url.searchParams.get("stream") || undefined;
-  const type = url.searchParams.get("type") || undefined;
-  const limit = Number(url.searchParams.get("limit") || 50);
+  const streamId = url.searchParams.get("stream")?.slice(0, 240) || undefined;
+  const type = url.searchParams.get("type")?.slice(0, 160) || undefined;
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 50, {
+    max: 200,
+  });
 
   if (streamId) {
     return Response.json({

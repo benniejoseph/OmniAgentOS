@@ -1,4 +1,11 @@
+import { hasOpenAIKey } from "@/lib/config";
+import {
+  getMaintenanceDatabaseRoleSafety,
+  getRuntimeDatabaseRoleSafety,
+} from "@/lib/db/client";
 import { getObservabilitySloSnapshot } from "@/lib/observability/slo-monitor";
+import { getOpenAIReadiness } from "@/lib/openai/client";
+import { getLatestWorkerHeartbeat } from "@/lib/operations/worker-heartbeat";
 import { getTenantIsolationReport, type TenantIsolationReport } from "@/lib/security/isolation-report";
 
 export type ReleaseEvidenceGateStatus = "pass" | "warn" | "fail";
@@ -73,15 +80,49 @@ const advisorySloPolicyIds = new Set([
 
 export async function getReleaseEvidenceReport(tenantId: string): Promise<ReleaseEvidenceReport> {
   const checkedAt = new Date().toISOString();
-  const [tenantIsolation, observabilitySlo] = await Promise.all([
+  const deployment = getDeploymentEvidence();
+  const [
+    tenantIsolation,
+    observabilitySlo,
+    databaseRole,
+    maintenanceDatabaseRole,
+    openAi,
+    workerHeartbeat,
+  ] = await Promise.all([
     getTenantIsolationReport(tenantId),
     getObservabilitySloSnapshot({ tenantId }),
+    getRuntimeDatabaseRoleSafety(),
+    getMaintenanceDatabaseRoleSafety(),
+    deployment.environment === "production"
+      ? getOpenAIReadiness()
+      : Promise.resolve({
+          configured: hasOpenAIKey(),
+          reachable: hasOpenAIKey(),
+          model: process.env.OMNIAGENT_AGENT_MODEL || "configured model",
+          checkedAt,
+        }),
+    getLatestWorkerHeartbeat(),
   ]);
 
-  const deployment = getDeploymentEvidence();
   const criticalBlockingBreaches = observabilitySlo.breaches.filter(
     (breach) => breach.severity === "critical" && !advisorySloPolicyIds.has(breach.policy.id),
   );
+  const workerHeartbeatMaxAgeMs = normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS,
+    420_000,
+  );
+  const workerHeartbeatAgeMs = workerHeartbeat
+    ? Date.now() - Date.parse(workerHeartbeat.recordedAt)
+    : Number.POSITIVE_INFINITY;
+  const workerRevisionMatches = Boolean(
+    workerHeartbeat?.revision &&
+      deployment.commitSha &&
+      workerHeartbeat.revision === deployment.commitSha,
+  );
+  const workerReady =
+    Number.isFinite(workerHeartbeatAgeMs) &&
+    workerHeartbeatAgeMs <= workerHeartbeatMaxAgeMs &&
+    workerRevisionMatches;
 
   const gates: ReleaseEvidenceGate[] = [
     {
@@ -103,6 +144,69 @@ export async function getReleaseEvidenceReport(tenantId: string): Promise<Releas
       details: {
         configured: Boolean(process.env.OMNIAGENT_INTERNAL_AUTH_SECRET?.trim()),
         connectorRefsBlocked: true,
+      },
+    },
+    {
+      id: "openai_provider",
+      name: "OpenAI provider readiness",
+      status: openAi.configured && openAi.reachable ? "pass" : "fail",
+      summary:
+        openAi.configured && openAi.reachable
+          ? `OpenAI model ${openAi.model} is reachable.`
+          : openAi.configured
+            ? "OpenAI is configured but the bounded provider probe failed."
+            : "OPENAI_API_KEY is not configured.",
+      details: {
+        configured: openAi.configured,
+        reachable: openAi.reachable,
+        model: openAi.model,
+        checkedAt: openAi.checkedAt,
+      },
+    },
+    {
+      id: "cron_auth",
+      name: "Scheduled maintenance authentication",
+      status: process.env.CRON_SECRET?.trim() ? "pass" : "fail",
+      summary: process.env.CRON_SECRET?.trim()
+        ? "CRON_SECRET is configured for authenticated scheduled maintenance."
+        : "CRON_SECRET is missing; scheduled maintenance cannot authenticate.",
+      details: {
+        configured: Boolean(process.env.CRON_SECRET?.trim()),
+      },
+    },
+    {
+      id: "runtime_database_role",
+      name: "Runtime database role",
+      status: databaseRole.safe ? "pass" : "fail",
+      summary: databaseRole.safe
+        ? "Runtime database role is a non-owner without superuser or BYPASSRLS privileges."
+        : "Runtime database role can bypass tenant enforcement or could not be verified.",
+      details: databaseRole,
+    },
+    {
+      id: "maintenance_database_role",
+      name: "Maintenance database role",
+      status: maintenanceDatabaseRole.safe ? "pass" : "fail",
+      summary: maintenanceDatabaseRole.safe
+        ? "Audited system work uses a dedicated BYPASSRLS role bound to this database."
+        : "The maintenance role is missing, unsafe, or points at a different database.",
+      details: maintenanceDatabaseRole,
+    },
+    {
+      id: "dedicated_worker",
+      name: "Dedicated worker readiness",
+      status: workerReady ? "pass" : "fail",
+      summary: workerReady
+        ? "Dedicated worker heartbeat is fresh and matches the web release revision."
+        : "Dedicated worker heartbeat is missing, stale, or running a different release revision.",
+      details: {
+        expectedRevision: deployment.commitSha,
+        heartbeat: workerHeartbeat,
+        ageMs: Number.isFinite(workerHeartbeatAgeMs)
+          ? workerHeartbeatAgeMs
+          : undefined,
+        maxAgeMs: workerHeartbeatMaxAgeMs,
+        revisionMatches: workerRevisionMatches,
       },
     },
     {
@@ -233,10 +337,20 @@ function getDeploymentEvidence(): ReleaseEvidenceReport["deployment"] {
     provider: process.env.VERCEL ? "vercel" : "local",
     environment: process.env.VERCEL_ENV || process.env.NODE_ENV || "development",
     url: vercelUrl ? `https://${vercelUrl}` : process.env.NEXT_PUBLIC_APP_URL,
-    commitSha: process.env.VERCEL_GIT_COMMIT_SHA,
+    commitSha:
+      process.env.VERCEL_GIT_COMMIT_SHA ||
+      process.env.OMNIAGENT_RELEASE_SHA,
     branch: process.env.VERCEL_GIT_COMMIT_REF,
     region: process.env.VERCEL_REGION,
   };
+}
+
+function normalizePositiveInteger(
+  value: string | undefined,
+  fallback: number,
+) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function buildReleaseRecommendations(gates: ReleaseEvidenceGate[], tenantIsolationRecommendations: string[]) {

@@ -5,13 +5,14 @@ import type {
   OpenApiOperationRecord,
 } from "@/lib/connectors/openapi-types";
 import { createOpenApiToolId, hashOpenApiSpec } from "@/lib/connectors/openapi-store";
-import { assertPublicHttpUrl } from "@/lib/security/network";
+import { readResponseTextLimited } from "@/lib/http/body";
+import { fetchPublicHttpUrl } from "@/lib/security/network";
 import type { ToolRiskLevel } from "@/lib/tools/types";
 
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete", "head", "options"] as const;
 const SAFE_METHODS = new Set<OpenApiHttpMethod>(["GET", "HEAD", "OPTIONS"]);
 const MAX_IMPORTED_OPERATIONS = 250;
-const MAX_SPEC_BYTES = 2_000_000;
+export const MAX_OPENAPI_SPEC_BYTES = 2_000_000;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -23,24 +24,21 @@ type OpenApiImportResult = {
 };
 
 export async function loadOpenApiSpec(specUrl: string) {
-  await assertPublicHttpUrl(specUrl, "OpenAPI spec URL");
-
-  const response = await fetch(specUrl, {
+  const response = await fetchPublicHttpUrl(specUrl, {
     headers: { accept: "application/json, application/yaml, text/yaml, text/plain" },
-    redirect: "manual",
     signal: AbortSignal.timeout(30_000),
-  });
+  }, "OpenAPI spec URL");
 
   if (!response.ok) {
     throw new Error(`OpenAPI spec fetch failed with HTTP ${response.status}.`);
   }
 
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_SPEC_BYTES) {
+  const body = await readResponseTextLimited(response, MAX_OPENAPI_SPEC_BYTES);
+  if (body.truncated) {
     throw new Error("OpenAPI spec is too large for the current importer limit.");
   }
 
-  return text;
+  return body.text;
 }
 
 export function importOpenApiSpec({
@@ -52,7 +50,7 @@ export function importOpenApiSpec({
   specText: string;
   baseUrlOverride?: string;
 }): OpenApiImportResult {
-  if (new TextEncoder().encode(specText).byteLength > MAX_SPEC_BYTES) {
+  if (new TextEncoder().encode(specText).byteLength > MAX_OPENAPI_SPEC_BYTES) {
     throw new Error("OpenAPI spec is too large for the current importer limit.");
   }
 
@@ -113,6 +111,7 @@ function extractOperations({
   const now = new Date().toISOString();
 
   for (const [path, rawPathItem] of Object.entries(paths)) {
+    assertSafeOpenApiOperationPath(path);
     const pathItem = resolveReference(rawPathItem, document);
     if (!isRecord(pathItem)) {
       continue;
@@ -132,7 +131,7 @@ function extractOperations({
         normalizeOperationId(String(operation.operationId || `${method}_${path}`)),
         operationIds,
       );
-      const riskLevel = inferRiskLevel(normalizedMethod, operation, connector.defaultRiskLevel);
+      const riskLevel = inferOpenApiRiskLevel(normalizedMethod, operation, connector.defaultRiskLevel);
       const parameters = [
         ...pathParameters,
         ...readParameterList(operation.parameters, document),
@@ -284,7 +283,15 @@ function readResponseContentTypes(value: unknown, document: JsonRecord) {
   return [...contentTypes];
 }
 
-function resolveJsonSchema(value: unknown, document: JsonRecord, seen = new Set<string>()): Record<string, unknown> {
+function resolveJsonSchema(
+  value: unknown,
+  document: JsonRecord,
+  seen = new Set<string>(),
+  depth = 0,
+): Record<string, unknown> {
+  if (depth >= 64) {
+    return {};
+  }
   const resolved = resolveReference(value, document, seen);
   if (!isRecord(resolved)) {
     return {};
@@ -292,7 +299,10 @@ function resolveJsonSchema(value: unknown, document: JsonRecord, seen = new Set<
 
   if (Array.isArray(resolved.allOf)) {
     return resolved.allOf.reduce<Record<string, unknown>>((merged, item) => {
-      return mergeSchemas(merged, resolveJsonSchema(item, document, seen));
+      return mergeSchemas(
+        merged,
+        resolveJsonSchema(item, document, new Set(seen), depth + 1),
+      );
     }, {});
   }
 
@@ -306,19 +316,26 @@ function resolveJsonSchema(value: unknown, document: JsonRecord, seen = new Set<
       schema.properties = Object.fromEntries(
         Object.entries(rawValue).map(([propertyName, propertySchema]) => [
           propertyName,
-          resolveJsonSchema(propertySchema, document, seen),
+          resolveJsonSchema(propertySchema, document, new Set(seen), depth + 1),
         ]),
       );
       continue;
     }
 
     if (key === "items") {
-      schema.items = resolveJsonSchema(rawValue, document, seen);
+      schema.items = resolveJsonSchema(
+        rawValue,
+        document,
+        new Set(seen),
+        depth + 1,
+      );
       continue;
     }
 
     if ((key === "oneOf" || key === "anyOf") && Array.isArray(rawValue)) {
-      schema[key] = rawValue.map((item) => resolveJsonSchema(item, document, seen));
+      schema[key] = rawValue.map((item) =>
+        resolveJsonSchema(item, document, new Set(seen), depth + 1)
+      );
       continue;
     }
 
@@ -328,18 +345,24 @@ function resolveJsonSchema(value: unknown, document: JsonRecord, seen = new Set<
   return schema;
 }
 
-function resolveReference(value: unknown, document: JsonRecord, seen = new Set<string>()): unknown {
-  if (!isRecord(value) || typeof value.$ref !== "string") {
-    return value;
+function resolveReference(
+  value: unknown,
+  document: JsonRecord,
+  seen = new Set<string>(),
+): unknown {
+  let current = value;
+  for (let depth = 0; depth < 64; depth += 1) {
+    if (!isRecord(current) || typeof current.$ref !== "string") {
+      return current;
+    }
+    const ref = current.$ref;
+    if (!ref.startsWith("#/") || seen.has(ref)) {
+      return {};
+    }
+    seen.add(ref);
+    current = readJsonPointer(document, ref.slice(2));
   }
-
-  const ref = value.$ref;
-  if (!ref.startsWith("#/") || seen.has(ref)) {
-    return {};
-  }
-
-  seen.add(ref);
-  return resolveReference(readJsonPointer(document, ref.slice(2)), document, seen);
+  return {};
 }
 
 function readJsonPointer(document: JsonRecord, pointer: string) {
@@ -369,13 +392,17 @@ function mergeSchemas(left: Record<string, unknown>, right: Record<string, unkno
   return merged;
 }
 
-function inferRiskLevel(method: OpenApiHttpMethod, operation: JsonRecord, defaultRiskLevel: ToolRiskLevel) {
+export function inferOpenApiRiskLevel(
+  method: OpenApiHttpMethod,
+  operation: JsonRecord,
+  defaultRiskLevel: ToolRiskLevel,
+) {
   const explicitRisk = Number(operation["x-omni-risk-level"]);
-  if ([0, 1, 2, 3].includes(explicitRisk)) {
-    return explicitRisk as ToolRiskLevel;
-  }
-
-  return SAFE_METHODS.has(method) ? 0 : defaultRiskLevel;
+  const remoteRisk = [0, 1, 2, 3].includes(explicitRisk)
+    ? explicitRisk as ToolRiskLevel
+    : 0;
+  const methodFloor: ToolRiskLevel = SAFE_METHODS.has(method) ? 0 : 2;
+  return Math.max(defaultRiskLevel, methodFloor, remoteRisk) as ToolRiskLevel;
 }
 
 function firstServerUrl(document: JsonRecord, specUrl?: string) {
@@ -393,6 +420,31 @@ function normalizeBaseUrl(baseUrl: string, specUrl?: string) {
 
   const resolvedUrl = specUrl ? new URL(trimmed, specUrl).toString() : new URL(trimmed).toString();
   return resolvedUrl.replace(/\/$/, "");
+}
+
+export function assertSafeOpenApiOperationPath(path: string) {
+  if (!path.startsWith("/")) {
+    throw new Error(`OpenAPI operation path must start with "/": ${path}`);
+  }
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(path);
+  } catch {
+    throw new Error(`OpenAPI operation path contains invalid percent encoding: ${path}`);
+  }
+  if (
+    path.startsWith("//") ||
+    path.includes("\\") ||
+    /%5c/i.test(path) ||
+    /%25(?:2e|2f|5c)/i.test(path) ||
+    /[\u0000-\u001f\u007f]/.test(path) ||
+    decodedPath.startsWith("//") ||
+    decodedPath.includes("\\") ||
+    decodedPath.split("/").some((segment) => segment === "." || segment === "..")
+  ) {
+    throw new Error(`OpenAPI operation path is not a safe relative path: ${path}`);
+  }
+  return path;
 }
 
 function normalizeOperationId(value: string) {

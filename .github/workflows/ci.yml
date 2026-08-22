@@ -5,28 +5,250 @@ on:
     branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24.13.0"
+
 jobs:
-  verify:
+  quality:
+    name: quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "24"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - name: Install
         run: npm ci
 
-      - name: Lint
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Strict lint
         run: npm run lint
 
-      - name: Unit tests
-        run: npm run test:unit
+      - name: Unit tests with coverage floor
+        run: npm run test:coverage
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
 
       - name: Build
         run: npm run build
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Audit production dependencies
+        run: npm run audit:production
+
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg17-bookworm@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+        env:
+          POSTGRES_USER: omniagent
+          POSTGRES_PASSWORD: local-integration-only
+          POSTGRES_DB: omniagent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U omniagent -d omniagent_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Enable TLS on Postgres service
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          docker exec "$POSTGRES_CONTAINER" sh -ec '
+            openssl req -new -x509 -days 1 -nodes \
+              -subj "/CN=localhost" \
+              -out /var/lib/postgresql/data/server.crt \
+              -keyout /var/lib/postgresql/data/server.key
+            chown postgres:postgres /var/lib/postgresql/data/server.crt /var/lib/postgresql/data/server.key
+            chmod 600 /var/lib/postgresql/data/server.key
+          '
+          docker exec -u postgres "$POSTGRES_CONTAINER" \
+            psql -U omniagent -d omniagent_test -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET ssl = 'on';"
+          docker restart "$POSTGRES_CONTAINER"
+          for attempt in $(seq 1 30); do
+            if docker exec "$POSTGRES_CONTAINER" pg_isready -U omniagent -d omniagent_test >/dev/null 2>&1 &&
+              [ "$(docker exec -u postgres "$POSTGRES_CONTAINER" psql -U omniagent -d omniagent_test -Atc 'SHOW ssl')" = "on" ]; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$POSTGRES_CONTAINER"
+          exit 1
+
+      - name: Postgres schema and RLS integration tests
+        env:
+          DATABASE_URL: postgres://omniagent:local-integration-only@127.0.0.1:5432/omniagent_test
+          OMNIAGENT_INTEGRATION_DATABASE_RESET: "true"
+        run: npm run test:integration
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3100
+      OMNIAGENT_ALLOW_DEMO_STORAGE: "true"
+      OMNIAGENT_LOCAL_PRODUCTION: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Production build
+        run: npm run build
+
+      - name: Playwright smoke tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-diagnostics
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: warn
+          retention-days: 7
+
+  worker:
+    name: worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Worker syntax
+        run: npm run check:worker
+
+      - name: Backup and restore script syntax
+        run: npm run check:operations
+
+      - name: Validate Fly configuration
+        run: |
+          python - <<'PY'
+          import pathlib
+          import tomllib
+
+          config = tomllib.loads(pathlib.Path("fly.toml").read_text())
+          assert config["build"]["dockerfile"] == "Dockerfile.worker"
+          assert config["processes"]["worker"] == "node worker.mjs"
+          assert config["env"]["OMNIAGENT_WORKER_BASE_URL"].startswith("https://")
+          assert config["env"]["OMNIAGENT_WORKER_SLO"] == "true"
+          assert config["env"]["OMNIAGENT_WORKER_ALERTS"] == "true"
+          assert config["env"]["OMNIAGENT_WORKER_RETENTION"] == "true"
+          PY
+
+      - name: Build worker container
+        run: >-
+          docker build --pull
+          --build-arg OMNIAGENT_RELEASE_SHA="${GITHUB_SHA}"
+          --tag omniagent-worker:ci
+          --file Dockerfile.worker
+          .
+
+      - name: Validate worker image policy
+        run: |
+          config="$(docker image inspect omniagent-worker:ci --format '{{json .Config}}')"
+          node -e '
+            const config = JSON.parse(process.argv[1]);
+            if (config.User !== "node") throw new Error(`expected non-root node user, got ${config.User || "root"}`);
+            if (!config.Healthcheck?.Test?.length) throw new Error("worker image has no health check");
+            const release = config.Env?.find((value) => value.startsWith("OMNIAGENT_RELEASE_SHA="))?.split("=", 2)[1];
+            if (release !== process.env.GITHUB_SHA) throw new Error("worker image release SHA does not match CI");
+          ' "$config"
+          docker run --rm --entrypoint node omniagent-worker:ci --version

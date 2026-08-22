@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import {
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   CircuitBoard,
@@ -50,27 +51,16 @@ const workflowSteps = [
   "Release",
 ];
 
-const enterpriseControls = [
-  "Forced tenant row-level security",
-  "Governed tool execution with approval gates",
-  "Release evidence with SLO and eval proof",
-  "Connector network and secret controls",
+const governanceControls = [
+  "Tenant-scoped data access",
+  "Tool approvals based on action risk",
+  "Evaluation and release evidence",
+  "Connector credentials kept server-side",
 ];
 
 export async function LandingPage() {
   const healthStatus = await fetchHealthStatus();
-  const signalRail = [
-    {
-      label: "Health",
-      value: healthStatus,
-      tone: healthStatus === "healthy" ? "success" : healthStatus === "degraded" ? "warning" : "neutral",
-    },
-    { label: "Release gate", value: "active", tone: "neutral" },
-    { label: "Store", value: "Postgres", tone: "neutral" },
-    { label: "Vector", value: "HNSW", tone: "neutral" },
-    { label: "OpenAI", value: "wired", tone: "neutral" },
-    { label: "Auth", value: "enforced", tone: "neutral" },
-  ] as const;
+  const healthLabel = healthStatus === "unknown" ? "unavailable" : healthStatus;
 
   return (
     <main className="min-h-screen overflow-hidden bg-background text-foreground">
@@ -79,7 +69,7 @@ export async function LandingPage() {
       <section className="relative min-h-[calc(100svh-0px)] overflow-hidden pt-16">
         <Image
           src="/omniagent-command-center.png"
-          alt="OmniAgentOS production command center showing release health, memory, workflows, observability, and governed tools."
+          alt="OmniAgentOS workspace showing task progress, approvals, and result evidence."
           fill
           priority
           sizes="100vw"
@@ -88,41 +78,40 @@ export async function LandingPage() {
         <div className="hero-scrim absolute inset-0" />
         <div className="relative z-10 mx-auto flex min-h-[calc(100svh-4rem)] max-w-7xl items-center px-4 pb-16 pt-12 sm:px-6 lg:px-8">
           <div className="max-w-3xl">
-            <p className="animate-rise inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-sm font-medium text-white backdrop-blur">
+            <p className="animate-rise inline-flex items-center gap-2 rounded-full border border-white/20 bg-black/35 px-3 py-1 text-sm font-medium text-white">
               <Sparkles size={15} aria-hidden="true" />
-              Public enterprise AI orchestration platform
+              Operator workspace for governed agent work
             </p>
             <h1 className="animate-rise mt-7 max-w-3xl text-5xl font-semibold tracking-normal text-white sm:text-7xl lg:text-8xl">
               OmniAgentOS
             </h1>
             <p className="animate-rise-delay mt-6 max-w-2xl text-lg leading-8 text-white/78 sm:text-xl">
-              Build, govern, remember, retrieve, execute, observe, and release AI agents from one production control plane.
+              Give an agent a goal, follow its plan and tool activity, approve sensitive actions, and review the result with evidence.
             </p>
             <div className="animate-rise-delay mt-8 flex flex-col gap-3 sm:flex-row">
               <Link
                 href="/demo"
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-primary px-5 text-sm font-semibold text-primary-ink transition hover:brightness-105 focus:outline-none focus:ring-2 focus:ring-primary/40"
               >
-                Try demo workspace
+                Open sample workspace
                 <ArrowRight size={16} aria-hidden="true" />
               </Link>
               <Link
                 href="/platform"
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-md border border-white/18 bg-white/10 px-5 text-sm font-semibold text-white backdrop-blur transition hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-white/30"
               >
-                View platform
+                See how it works
                 <Play size={16} aria-hidden="true" />
               </Link>
             </div>
-            <div className="animate-rise-delay mt-10 grid max-w-2xl grid-cols-2 gap-px overflow-hidden rounded-lg border border-white/14 bg-white/14 backdrop-blur sm:grid-cols-3">
-              {signalRail.map((signal) => (
-                <div key={signal.label} className="bg-black/24 px-4 py-3">
-                  <p className="text-xs text-white/56">{signal.label}</p>
-                  <p className={signal.tone === "success" ? "mt-1 font-mono text-sm text-primary" : signal.tone === "warning" ? "mt-1 font-mono text-sm text-amber-400" : "mt-1 font-mono text-sm text-white"}>
-                    {signal.value}
-                  </p>
-                </div>
-              ))}
+            <div className="animate-rise-delay mt-10 inline-flex min-h-12 items-center gap-3 rounded-md border border-white/20 bg-black/35 px-4 text-sm text-white">
+              {healthStatus === "healthy" ? (
+                <CheckCircle2 size={17} className="text-emerald-300" aria-hidden="true" />
+              ) : (
+                <AlertTriangle size={17} className="text-amber-300" aria-hidden="true" />
+              )}
+              <span>Public API health:</span>
+              <strong className="font-mono">{healthLabel}</strong>
             </div>
           </div>
         </div>
@@ -183,12 +172,12 @@ export async function LandingPage() {
         <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
           <div className="grid gap-12 lg:grid-cols-[0.72fr_1.28fr]">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Capability matrix</p>
+              <p className="text-sm font-semibold text-primary">Included workspaces</p>
               <h2 className="mt-4 max-w-xl text-4xl font-semibold tracking-normal sm:text-5xl">
-                A full stack for agentic operations.
+                Work, review, and evidence in one workspace.
               </h2>
               <p className="mt-6 max-w-xl text-base leading-7 text-muted">
-                Each layer is built as an operational subsystem, so the product can move from showcase to production without swapping foundations.
+                Start a run, inspect retrieved context and tool activity, resolve approvals, and review the stored result.
               </p>
             </div>
             <div className="grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-2">
@@ -209,7 +198,7 @@ export async function LandingPage() {
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Workflow</p>
               <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">
-                From prompt to proof, every step has a state.
+                Each run records its current step.
               </h2>
             </div>
             <div className="overflow-x-auto">
@@ -268,16 +257,16 @@ export async function LandingPage() {
             <div className="absolute inset-x-8 top-10 rounded-md border border-line bg-background/86 p-5 backdrop-blur">
               <div className="flex items-center justify-between border-b border-line pb-4">
                 <div>
-                  <p className="text-sm text-muted">Release evidence</p>
-                  <p className="mt-1 text-2xl font-semibold">Passed</p>
+                  <p className="text-sm text-muted">Result evidence</p>
+                  <p className="mt-1 text-2xl font-semibold">Linked to the work</p>
                 </div>
-                <CheckCircle2 className="text-success" size={28} aria-hidden="true" />
+                <ShieldCheck className="text-primary" size={28} aria-hidden="true" />
               </div>
               <div className="mt-5 grid grid-cols-3 gap-3">
-                {["Tenant RLS", "SLO", "Signing"].map((item) => (
+                {["Tool activity", "Approvals", "Verification"].map((item) => (
                   <div key={item} className="rounded-md border border-line bg-surface px-3 py-4">
-                    <p className="text-xs text-muted">{item}</p>
-                    <p className="mt-2 font-mono text-sm text-success">pass</p>
+                    <p className="text-xs leading-5 text-muted">{item}</p>
+                    <p className="mt-2 font-mono text-sm text-foreground">evidence</p>
                   </div>
                 ))}
               </div>
@@ -294,15 +283,15 @@ export async function LandingPage() {
             </div>
           </div>
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Enterprise</p>
+            <p className="text-sm font-semibold text-primary">Controls</p>
             <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">
-              Governance is part of the runtime, not a bolt-on.
+              Review controls before work reaches connected systems.
             </h2>
             <p className="mt-6 text-lg leading-8 text-muted">
-              The platform is built for agentic work that touches real systems: tenant data, external APIs, durable workflows, and operational release gates.
+              Agent work can read tenant data, call external APIs, and start workflows. Risk rules determine which actions pause for approval and what evidence is retained.
             </p>
             <div className="mt-8 grid gap-3">
-              {enterpriseControls.map((control) => (
+              {governanceControls.map((control) => (
                 <div key={control} className="flex items-center gap-3 border-b border-line py-4">
                   <ShieldCheck size={18} className="text-primary" aria-hidden="true" />
                   <span className="text-sm font-medium">{control}</span>
@@ -317,9 +306,9 @@ export async function LandingPage() {
         <div className="mx-auto flex max-w-7xl flex-col gap-8 px-4 py-16 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
           <div>
             <LockKeyhole size={24} aria-hidden="true" />
-            <h2 className="mt-4 text-3xl font-semibold tracking-normal">Run the control plane.</h2>
+            <h2 className="mt-4 text-3xl font-semibold tracking-normal">Open the workspace.</h2>
             <p className="mt-3 max-w-2xl text-sm opacity-72">
-              Open the production app, inspect release evidence, and continue building from the enterprise shell.
+              Open the workspace, give the agent a bounded task, and inspect what it changed.
             </p>
           </div>
           <Link

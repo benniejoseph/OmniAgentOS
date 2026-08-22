@@ -13,7 +13,7 @@ flowchart TD
     DASH[Overview dashboard]
     RUN[Run Agent workspace]
     RES[Results]
-    CONSOLES[Workflows · Approvals · Knowledge · Integrations · Tools · Evals · Monitoring · Security · Settings]
+    CONSOLES[Work · Activity · Inbox · Results · advanced administration]
   end
 
   subgraph API["Next.js route handlers"]
@@ -61,7 +61,7 @@ sequenceDiagram
   participant R as Agent loop
   participant M as OpenAI (function tools)
   participant G as Governed executor
-  participant A as Approvals workspace
+  participant A as Inbox
 
   U->>R: goal (SSE run starts)
   R->>R: build context pack (memory + RAG + graph)
@@ -75,7 +75,7 @@ sequenceDiagram
       G-->>R: approval_required record
       Note over A: operator approves later →<br/>tool executes for real
     end
-    R->>M: function_call_output (previous_response_id chain)
+    R->>M: full conversation + function_call_output
   end
   M-->>U: final streamed answer
   R->>R: consolidate memory (non-trivial runs only)
@@ -83,10 +83,10 @@ sequenceDiagram
 
 Key properties:
 
-- Every tool call goes through risk policy and lands in the immutable tool audit ledger.
+- Every tool call goes through risk policy and lands in a persistent execution record.
 - Risk 3 tools and `planned` tools are never exposed to the model.
-- Gated calls create `approval_required` records; approving them in `/app/approvals` executes the real call via the same executor.
-- The loop re-sends instructions on every turn (the Responses API does not carry them across `previous_response_id`).
+- Gated calls create `approval_required` records and persist a run continuation. Approval executes the real call and resumes the same run with its saved conversation and outputs.
+- The loop re-sends instructions and the complete conversation array on every turn. It does not use `previous_response_id`, so it remains compatible with OpenAI Zero Data Retention.
 - Step budget (`OMNIAGENT_AGENT_MAX_TOOL_STEPS`), per-turn call cap, and output truncation bound cost.
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
@@ -99,6 +99,15 @@ Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured 
 - **Postgres mode** (`DATABASE_URL`): all ledgers, pgvector embeddings + HNSW indexes, forced row-level security on every tenant-scoped table.
 - **File mode** (local dev): JSON ledgers under `.omniagent/` with per-file write locks and corrupt-file quarantine.
 - **Ephemeral mode** (hosted, no DB): `/tmp` with a persistent warning banner — for demos only.
+
+Schema changes run as ordered, idempotent migrations under a Postgres advisory lock. `omni_schema_version` records each applied version and upgrades the older timestamp-only marker. pgvector setup is attempted under the same lock but remains optional when the database role lacks extension privileges.
+
+The ledgers have different mutation semantics:
+
+- `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.
+- Tool-execution records are mutable by design while status, approvals, and output are resolved.
+- Local JSON ledgers are bounded and rewrite files during updates; they are not an immutable audit archive.
+- Signed evaluation exports provide integrity evidence, but durable retention and object-lock controls belong in the deployment platform.
 
 ## Security model
 

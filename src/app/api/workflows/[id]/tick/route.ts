@@ -1,3 +1,4 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getOperationJobStats } from "@/lib/operations/job-queue";
 import { processWorkflowQueue } from "@/lib/workflows/queue";
@@ -5,15 +6,16 @@ import { getWorkflowRunDetail } from "@/lib/workflows/store";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+export const POST = withDatabaseRequestScope(POSTHandler);
 
-export async function POST(
+async function POSTHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
 
   try {
-    await authorizeRequest({
+    const securityContext = await authorizeRequest({
       request,
       action: "manage.workflow",
       resourceType: "workflow",
@@ -23,11 +25,12 @@ export async function POST(
       workflowRunId: id,
       limit: 1,
       bootstrapQueuedRuns: false,
+      tenantId: securityContext.tenantId,
     });
     return Response.json({
-      detail: await getWorkflowRunDetail(id),
+      detail: await getWorkflowRunDetail(id, { tenantId: securityContext.tenantId }),
       queue,
-      stats: await getOperationJobStats(),
+      stats: await getOperationJobStats({ tenantId: securityContext.tenantId }),
     });
   } catch (error) {
     try {

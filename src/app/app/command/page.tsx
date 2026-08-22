@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { AgentRunsWorkspace } from "@/components/agent-runs-workspace";
 
 export const metadata: Metadata = {
-  title: "Agent Runs",
+  title: "Work",
 };
 
 export default function CommandPage() {

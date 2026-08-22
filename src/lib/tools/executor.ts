@@ -1,19 +1,34 @@
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { embedTexts } from "@/lib/openai/client";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
+import { validateConnectorInput } from "@/lib/connectors/input-validation";
 import { callMcpTool } from "@/lib/connectors/mcp-client";
 import { callOpenApiOperation } from "@/lib/connectors/openapi-client";
+import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/openapi-store";
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
+import { readResponseTextLimited } from "@/lib/http/body";
 import { saveMemory, searchMemories } from "@/lib/memory/store";
 import type { MemoryType } from "@/lib/memory/types";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
-import { validateConnectorSecretEnvName } from "@/lib/security/context";
-import { assertPublicHttpUrl } from "@/lib/security/network";
+import { redactSensitive } from "@/lib/security/context";
+import { assertPublicHttpUrl, fetchPublicHttpUrl } from "@/lib/security/network";
+import { redactExactSecrets } from "@/lib/security/secret-redaction";
 import { ingestTextDocument } from "@/lib/rag/retriever";
 import { searchKnowledge } from "@/lib/rag/store";
 import { listAgentRuns } from "@/lib/runs/store";
-import { createToolExecutionRecord, saveToolExecution } from "@/lib/tools/audit-store";
+import { publicAgentRun } from "@/lib/runs/public";
+import {
+  completeClaimedToolExecution,
+  claimIdempotentToolExecution,
+  createToolExecutionRecord,
+  getToolExecutionApprovalFingerprint,
+  recoverStaleToolExecutionClaim,
+  saveToolExecution,
+  sealToolExecutionInput,
+} from "@/lib/tools/audit-store";
+import { toolApprovalFingerprint } from "@/lib/tools/fingerprint";
 import { evaluateToolPolicy } from "@/lib/tools/policy";
 import type { SecurityContext } from "@/lib/security/types";
 import { getGovernedTool } from "@/lib/tools/registry";
@@ -23,46 +38,84 @@ import { isGraduatedAutonomyEnabled } from "@/lib/trust/policy";
 import { runLiveWebSearch } from "@/lib/web-search/search";
 
 const searchSchema = z.object({
-  query: z.string().min(1),
+  query: z.string().min(1).max(4_000),
   limit: z.number().int().min(1).max(20).optional(),
-});
+}).strict();
 
 const webSearchSchema = z.object({
-  query: z.string().min(1),
+  query: z.string().min(1).max(4_000),
   limit: z.number().int().min(1).max(20).optional(),
   searchContextSize: z.enum(["low", "medium", "high"]).optional(),
-  allowedDomains: z.array(z.string().min(1)).max(20).optional(),
-});
+  allowedDomains: z.array(z.string().min(1).max(253)).max(20).optional(),
+}).strict();
 
 const memoryWriteSchema = z.object({
-  title: z.string().min(1),
-  content: z.string().min(1),
+  title: z.string().min(1).max(240),
+  content: z.string().min(1).max(200_000),
   type: z.enum(["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"]).optional(),
-  tags: z.array(z.string()).optional(),
+  tags: z.array(z.string().min(1).max(80)).max(50).optional(),
   importance: z.number().min(0).max(1).optional(),
-});
+}).strict();
 
 const knowledgeIngestSchema = z.object({
-  title: z.string().min(1),
+  title: z.string().min(1).max(240),
   content: z.string().min(1).max(20000),
-  source: z.string().optional(),
-  tags: z.array(z.string()).optional(),
-});
+  source: z.string().max(2_000).optional(),
+  tags: z.array(z.string().min(1).max(80)).max(50).optional(),
+}).strict();
 
 const runsListSchema = z.object({
   limit: z.number().int().min(1).max(25).optional(),
-});
+}).strict();
 
 const httpRequestSchema = z.object({
   url: z.string().min(1).max(2048),
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
-  headers: z.record(z.string(), z.string().max(4096)).optional(),
+  headers: z.record(z.string().max(120), z.string().max(4096)).refine(
+    (headers) => Object.keys(headers).length <= 50,
+    "At most 50 request headers are allowed.",
+  ).optional(),
   body: z.string().max(100_000).optional(),
   authEnv: z.string().max(120).optional(),
+  authHeader: z.enum(["authorization", "x-api-key", "x-auth-token", "api-key"]).optional(),
+  authMode: z.enum(["bearer", "basic", "raw"]).optional(),
+}).strict().superRefine((input, context) => {
+  if ((input.authHeader || input.authMode) && !input.authEnv) {
+    context.addIssue({
+      code: "custom",
+      message: "authHeader and authMode require authEnv.",
+    });
+  }
+  const header = input.authHeader || "authorization";
+  const mode = input.authMode || (header === "authorization" ? "bearer" : "raw");
+  if (
+    (header === "authorization" && mode === "raw") ||
+    (header !== "authorization" && mode !== "raw")
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Authorization supports bearer or basic mode; API-key headers require raw mode.",
+    });
+  }
 });
 
 const HTTP_REQUEST_TIMEOUT_MS = 15_000;
-const HTTP_RESPONSE_MAX_CHARS = 20_000;
+const HTTP_RESPONSE_MAX_BYTES = 20_000;
+
+class ExecutionClaimLostError extends Error {
+  constructor() {
+    super("Tool execution claim was lost before completion.");
+    this.name = "ExecutionClaimLostError";
+  }
+}
+
+export class ToolInputValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ToolInputValidationError";
+  }
+}
 
 export async function executeGovernedTool({
   toolId,
@@ -72,6 +125,9 @@ export async function executeGovernedTool({
   context,
   existingRecord,
   approvalReason,
+  executionClaimToken,
+  abortSignal,
+  idempotencyKey,
 }: {
   toolId: string;
   input: Record<string, unknown>;
@@ -80,14 +136,29 @@ export async function executeGovernedTool({
   context?: SecurityContext;
   existingRecord?: ToolExecutionRecord;
   approvalReason?: string;
+  executionClaimToken?: string;
+  abortSignal?: AbortSignal;
+  idempotencyKey?: string;
 }) {
+  try {
+    assertToolInputSize(input);
+  } catch (error) {
+    if (existingRecord && executionClaimToken) {
+      return completeClaimedInputValidationFailure(
+        existingRecord,
+        executionClaimToken,
+        error,
+      );
+    }
+    throw error;
+  }
   const tool =
     getGovernedTool(toolId) ||
     (await getMcpGovernedTool(toolId, { tenantId: context?.tenantId })) ||
     (await getOpenApiGovernedTool(toolId, { tenantId: context?.tenantId }));
   if (!tool) {
     const reason = "Unknown tools are blocked by default.";
-    const record = createToolExecutionRecord({
+    const patch: Omit<ToolExecutionRecord, "id" | "createdAt"> = {
       tenantId: context?.tenantId,
       actorId: context?.actorId,
       toolId,
@@ -96,9 +167,20 @@ export async function executeGovernedTool({
       status: "blocked",
       dryRun,
       approvalRequired: true,
-      input,
+      input: redactSensitive(input) as Record<string, unknown>,
+      output: undefined,
       reason,
-    });
+      completedAt: new Date().toISOString(),
+    };
+    const record = existingRecord
+      ? {
+          ...existingRecord,
+          ...patch,
+          id: existingRecord.id,
+          createdAt: existingRecord.createdAt,
+          input: existingRecord.input,
+        }
+      : createToolExecutionRecord(patch);
     await recordToolPolicyBlock({
       context,
       toolId,
@@ -106,17 +188,75 @@ export async function executeGovernedTool({
       input,
       riskLevel: 3,
     });
-    return {
-      record: await saveToolExecution(record),
-      result: null,
-    };
+    const saved = executionClaimToken
+      ? await completeClaimedToolExecution(record, executionClaimToken)
+      : await saveToolExecution(record);
+    if (!saved) {
+      throw new ExecutionClaimLostError();
+    }
+    return { record: saved, result: null };
+  }
+  if (existingRecord && executionClaimToken) {
+    const reviewedFingerprint =
+      getToolExecutionApprovalFingerprint(existingRecord);
+    if (
+      !reviewedFingerprint ||
+      reviewedFingerprint !== toolApprovalFingerprint(tool)
+    ) {
+      return completeClaimedInputValidationFailure(
+        existingRecord,
+        executionClaimToken,
+        new ToolInputValidationError(
+          "The tool contract changed after approval. Submit the action again.",
+        ),
+      );
+    }
+  }
+  let preparedInput: Record<string, unknown>;
+  try {
+    preparedInput = parseInput(tool, input);
+  } catch (error) {
+    if (existingRecord && executionClaimToken) {
+      return completeClaimedInputValidationFailure(
+        existingRecord,
+        executionClaimToken,
+        error,
+      );
+    }
+    throw toolInputValidationError(error);
+  }
+  if (tool.id === "http.request") {
+    try {
+      await validateHttpRequestForApproval(
+        httpRequestSchema.parse(preparedInput),
+        context,
+      );
+    } catch (error) {
+      if (existingRecord && executionClaimToken) {
+        return completeClaimedInputValidationFailure(
+          existingRecord,
+          executionClaimToken,
+          error,
+        );
+      }
+      throw toolInputValidationError(error);
+    }
   }
 
   // Risk-3 approval is only honored when the record itself carries quorum
   // evidence: RISK3_QUORUM distinct admin/system approvers, requester excluded.
   // Enforced here so no API caller can bypass it with a bare approved flag.
+  // A persisted approval record is executable only after the approval store
+  // atomically changes it to `executing` and supplies the matching claim token.
+  // This also fences legacy callers that pass approved=true after merely
+  // reading an approval_required record.
+  const durableApprovalClaim =
+    !existingRecord ||
+    (existingRecord.status === "executing" && Boolean(executionClaimToken));
   const effectiveApproved =
-    approved && (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord));
+    approved &&
+    durableApprovalClaim &&
+    (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord));
 
   // Graduated autonomy: an action class that has earned trust (clean track
   // record, reversible, risk < 3) may auto-approve instead of gating. Opt-in
@@ -143,27 +283,43 @@ export async function executeGovernedTool({
     riskLevel: decision.riskLevel,
     dryRun,
     approvalRequired: decision.approvalRequired,
-    input,
+    input:
+      redactSensitive(preparedInput) as Record<string, unknown>,
     reason: decision.reason,
   };
+  let executionRecord = existingRecord;
+  let activeExecutionClaimToken = executionClaimToken;
   const createRecord = (patch: Omit<ToolExecutionRecord, "id" | "createdAt">) => {
-    if (!existingRecord) {
+    if (!executionRecord) {
       return createToolExecutionRecord(patch);
     }
 
     return {
-      ...existingRecord,
+      ...executionRecord,
       ...patch,
-      id: existingRecord.id,
-      createdAt: existingRecord.createdAt,
-      input: existingRecord.input,
+      id: executionRecord.id,
+      createdAt: executionRecord.createdAt,
     };
+  };
+  const persistRecord = async (record: ToolExecutionRecord) => {
+    if (!activeExecutionClaimToken) {
+      return saveToolExecution(record);
+    }
+    const saved = await completeClaimedToolExecution(
+      record,
+      activeExecutionClaimToken,
+    );
+    if (!saved) {
+      throw new ExecutionClaimLostError();
+    }
+    return saved;
   };
 
   if (decision.blocked) {
     const record = createRecord({
       ...baseRecord,
       status: "blocked" as const,
+      output: undefined,
       completedAt: new Date().toISOString(),
     });
     await recordToolPolicyBlock({
@@ -171,18 +327,27 @@ export async function executeGovernedTool({
       toolId: tool.id,
       toolName: tool.name,
       reason: decision.reason,
-      input,
+      input: preparedInput,
       riskLevel: decision.riskLevel,
     });
-    return { record: await saveToolExecution(record), result: null };
+    return { record: await persistRecord(record), result: null };
   }
 
   if (decision.approvalRequired && !decision.allowed && !dryRun) {
-    const record = createRecord({
+    const pendingRecord = createRecord({
       ...baseRecord,
       status: "approval_required" as const,
+      output: undefined,
     });
-    const saved = await saveToolExecution(record);
+    const record = {
+      ...pendingRecord,
+      output: sealToolExecutionInput(
+        preparedInput,
+        pendingRecord,
+        toolApprovalFingerprint(tool),
+      ),
+    };
+    const saved = await persistRecord(record);
     await recordRuntimeEventSafely({
       level: "warn",
       category: "workflow",
@@ -201,30 +366,81 @@ export async function executeGovernedTool({
     return { record: saved, result: null };
   }
 
+  if (!dryRun && idempotencyKey && !executionRecord) {
+    const claimToken = randomUUID();
+    const intent = createToolExecutionRecord({
+      ...baseRecord,
+      status: "executing",
+      output: {
+        __executionClaim: {
+          token: claimToken,
+          claimedAt: new Date().toISOString(),
+        },
+        __idempotencyKeyHash: createHash("sha256")
+          .update(idempotencyKey)
+          .digest("hex"),
+      },
+      approvalDecision: decision.approvalRequired ? "approved" : undefined,
+      approvedBy: decision.approvalRequired ? context?.actorId : undefined,
+      approvedAt: decision.approvalRequired
+        ? new Date().toISOString()
+        : undefined,
+      approvalReason,
+    });
+    intent.id = idempotentToolExecutionId(
+      normalizeTenantId(context?.tenantId),
+      idempotencyKey,
+    );
+    const claim = await claimIdempotentToolExecution(intent);
+    if (claim.outcome === "existing") {
+      const recovered =
+        claim.record.status === "executing"
+          ? await recoverStaleToolExecutionClaim(claim.record.id, {
+              tenantId: context?.tenantId,
+            })
+          : undefined;
+      const record = recovered || claim.record;
+      return {
+        record,
+        result: record.status === "executed" ? record.output : null,
+      };
+    }
+    executionRecord = claim.record;
+    activeExecutionClaimToken = claimToken;
+  }
+
   try {
     if (dryRun) {
-      const preview = dryRunTool(tool, input);
+      const preview = dryRunTool(tool, preparedInput);
+      const safePreview = redactSensitive(preview);
       const record = createRecord({
         ...baseRecord,
         status: "dry_run" as const,
-        output: preview,
+        output: safePreview,
         completedAt: new Date().toISOString(),
       });
-      return { record: await saveToolExecution(record), result: preview };
+      return { record: await persistRecord(record), result: safePreview };
     }
 
-    const result = await runTool(tool, input, context);
+    const result = await runTool(
+      tool,
+      preparedInput,
+      context,
+      existingRecord?.id || idempotencyKey,
+      abortSignal,
+    );
+    const safeResult = redactSensitive(result);
     const record = createRecord({
       ...baseRecord,
       status: "executed" as const,
-      output: result,
+      output: safeResult,
       approvalDecision: decision.approvalRequired ? "approved" as const : undefined,
       approvedBy: decision.approvalRequired ? context?.actorId : undefined,
       approvedAt: decision.approvalRequired ? new Date().toISOString() : undefined,
       approvalReason,
       completedAt: new Date().toISOString(),
     });
-    const saved = await saveToolExecution(record);
+    const saved = await persistRecord(record);
     if (autonomyApproved) {
       await recordRuntimeEventSafely({
         level: "warn",
@@ -245,9 +461,14 @@ export async function executeGovernedTool({
       });
     }
     await recordTrustOutcomeSafely(tool, context, "success", effectiveApproved);
-    return { record: saved, result };
+    return { record: saved, result: safeResult };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Tool execution failed.";
+    if (error instanceof ExecutionClaimLostError) {
+      throw error;
+    }
+    const message = String(
+      redactSensitive(error instanceof Error ? error.message : "Tool execution failed."),
+    );
     if (tool.category === "mcp" || tool.category === "openapi") {
       await recordRuntimeEventSafely({
         level: "error",
@@ -273,7 +494,7 @@ export async function executeGovernedTool({
       reason: message,
       completedAt: new Date().toISOString(),
     });
-    const saved = await saveToolExecution(record);
+    const saved = await persistRecord(record);
     await recordTrustOutcomeSafely(tool, context, "failure", effectiveApproved);
     return { record: saved, result: null };
   }
@@ -311,6 +532,15 @@ function normalizeTenantId(value?: string) {
   return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim() || "default";
 }
 
+function idempotentToolExecutionId(
+  tenantId: string,
+  idempotencyKey: string,
+) {
+  return `idem_${createHash("sha256")
+    .update(`${tenantId}\u0000${idempotencyKey}`)
+    .digest("hex")}`;
+}
+
 function dryRunTool(tool: ToolDefinition, input: Record<string, unknown>) {
   const parsed = parseInput(tool, input);
   return {
@@ -323,13 +553,20 @@ function dryRunTool(tool: ToolDefinition, input: Record<string, unknown>) {
   };
 }
 
-async function runTool(tool: ToolDefinition, input: Record<string, unknown>, context?: SecurityContext) {
+async function runTool(
+  tool: ToolDefinition,
+  input: Record<string, unknown>,
+  context?: SecurityContext,
+  idempotencyKey?: string,
+  abortSignal?: AbortSignal,
+) {
   const parsed = parseInput(tool, input);
 
   if (tool.id === "memory.search") {
     const { query, limit } = searchSchema.parse(parsed);
-    const queryEmbedding = (await embedTexts([query]))?.[0];
-    const results = await searchMemories(query, { limit: limit || 5, queryEmbedding, tenantId: context?.tenantId });
+    const safeQuery = String(redactSensitive(query));
+    const queryEmbedding = (await embedTexts([safeQuery], abortSignal))?.[0];
+    const results = await searchMemories(safeQuery, { limit: limit || 5, queryEmbedding, tenantId: context?.tenantId });
     return {
       results: results.map((result) => ({
         score: result.score,
@@ -344,8 +581,9 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>, con
 
   if (tool.id === "knowledge.search") {
     const { query, limit } = searchSchema.parse(parsed);
-    const queryEmbedding = (await embedTexts([query]))?.[0];
-    const results = await searchKnowledge(query, { limit: limit || 5, queryEmbedding, tenantId: context?.tenantId });
+    const safeQuery = String(redactSensitive(query));
+    const queryEmbedding = (await embedTexts([safeQuery], abortSignal))?.[0];
+    const results = await searchKnowledge(safeQuery, { limit: limit || 5, queryEmbedding, tenantId: context?.tenantId });
     return {
       results: results.map((result) => ({
         score: result.score,
@@ -364,25 +602,27 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>, con
   if (tool.id === "web.search") {
     const { query, limit, searchContextSize, allowedDomains } = webSearchSchema.parse(parsed);
     return runLiveWebSearch({
-      query,
+      query: String(redactSensitive(query)),
       maxSources: limit || 8,
       contextSize: searchContextSize || "medium",
       allowedDomains,
+      abortSignal,
     });
   }
 
   if (tool.id === "memory.write") {
     const value = memoryWriteSchema.parse(parsed);
-    const contentForEmbedding = `${value.title}\n\n${value.content}`;
-    const embedding = (await embedTexts([contentForEmbedding]))?.[0];
+    const safeValue = redactSensitive(value) as typeof value;
+    const contentForEmbedding = `${safeValue.title}\n\n${safeValue.content}`;
+    const embedding = (await embedTexts([contentForEmbedding], abortSignal))?.[0];
     return {
       record: stripEmbedding(await saveMemory({
         tenantId: context?.tenantId,
-        title: value.title,
-        content: value.content,
-        type: value.type as MemoryType | undefined,
-        tags: value.tags || ["tool-execution"],
-        importance: value.importance ?? 0.5,
+        title: safeValue.title,
+        content: safeValue.content,
+        type: safeValue.type as MemoryType | undefined,
+        tags: safeValue.tags || ["tool-execution"],
+        importance: safeValue.importance ?? 0.5,
         source: "tool-executor",
         scope: "workspace",
         embedding,
@@ -392,13 +632,14 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>, con
 
   if (tool.id === "knowledge.ingest") {
     const value = knowledgeIngestSchema.parse(parsed);
+    const safeValue = redactSensitive(value) as typeof value;
     const result = await ingestTextDocument({
       tenantId: context?.tenantId,
-      title: value.title,
-      content: value.content,
-      source: value.source || "tool-executor",
+      title: safeValue.title,
+      content: safeValue.content,
+      source: safeValue.source || "tool-executor",
       sourceType: "manual",
-      tags: value.tags || ["tool-execution"],
+      tags: safeValue.tags || ["tool-execution"],
     });
     return {
       document: result.document,
@@ -410,12 +651,18 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>, con
   if (tool.id === "runs.list") {
     const { limit } = runsListSchema.parse(parsed);
     return {
-      runs: await listAgentRuns(limit || 5, { tenantId: context?.tenantId }),
+      runs: (
+        await listAgentRuns(limit || 5, { tenantId: context?.tenantId })
+      ).map(publicAgentRun),
     };
   }
 
   if (tool.id === "http.request") {
-    return runHttpRequestTool(httpRequestSchema.parse(parsed));
+    return runHttpRequestTool(httpRequestSchema.parse(parsed), {
+      idempotencyKey,
+      context,
+      abortSignal,
+    });
   }
 
   if (tool.category === "mcp") {
@@ -448,6 +695,9 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>, con
         connector,
         toolName: mcpTool.name,
         args: parsed,
+        idempotencyKey,
+        actorRole: context?.role,
+        abortSignal,
       }),
     };
   }
@@ -484,6 +734,9 @@ async function runTool(tool: ToolDefinition, input: Record<string, unknown>, con
         connector,
         operation,
         input: parsed,
+        idempotencyKey,
+        actorRole: context?.role,
+        abortSignal,
       }),
     };
   }
@@ -537,43 +790,80 @@ export function hasRisk3Quorum(record?: ToolExecutionRecord) {
   return distinctAdmins.size >= RISK3_QUORUM;
 }
 
-async function runHttpRequestTool(input: z.infer<typeof httpRequestSchema>) {
+async function validateHttpRequestForApproval(
+  input: z.infer<typeof httpRequestSchema>,
+  context?: SecurityContext,
+) {
+  validateHttpRequestHeaders(input);
+  const url = await assertPublicHttpUrl(input.url, "Request URL");
+  if (input.authEnv) {
+    assertConnectorSecretBinding({
+      envName: input.authEnv,
+      tenantId: context?.tenantId,
+      targetUrl: url,
+      role: context?.role,
+    });
+  }
+}
+
+async function runHttpRequestTool(
+  input: z.infer<typeof httpRequestSchema>,
+  options: { idempotencyKey?: string; context?: SecurityContext; abortSignal?: AbortSignal } = {},
+) {
   const url = await assertPublicHttpUrl(input.url, "Request URL");
 
+  validateHttpRequestHeaders(input);
   const headers = new Headers();
+  let activeSecret: string | undefined;
   for (const [name, value] of Object.entries(input.headers || {})) {
-    // Header values that look like pasted secrets are rejected; secrets must
-    // arrive via authEnv so they never sit in the audit ledger input.
-    if (/^(sk-|Bearer\s|eyJ)/i.test(value.trim())) {
-      throw new Error(`Header ${name} looks like a pasted secret. Reference it via authEnv instead.`);
-    }
     headers.set(name, value);
   }
 
   if (input.authEnv) {
-    if (!validateConnectorSecretEnvName(input.authEnv)) {
-      throw new Error("authEnv must be an OMNIAGENT_CONNECTOR_* env var or allowlisted secret name.");
-    }
+    assertConnectorSecretBinding({
+      envName: input.authEnv,
+      tenantId: options.context?.tenantId,
+      targetUrl: url,
+      role: options.context?.role,
+    });
     const secret = process.env[input.authEnv.trim().toUpperCase()];
     if (!secret) {
       throw new Error(`Env var ${input.authEnv} is not set in this environment.`);
     }
-    headers.set("authorization", `Bearer ${secret}`);
+    activeSecret = secret;
+    const authHeader = input.authHeader || "authorization";
+    const authMode =
+      input.authMode || (authHeader === "authorization" ? "bearer" : "raw");
+    const authValue =
+      authMode === "bearer"
+        ? `Bearer ${secret}`
+        : authMode === "basic"
+          ? `Basic ${Buffer.from(secret, "utf8").toString("base64")}`
+          : secret;
+    headers.set(authHeader, authValue);
   }
 
   const method = input.method || "GET";
+  if (method !== "GET" && options.idempotencyKey) {
+    headers.set("idempotency-key", normalizeIdempotencyKey(options.idempotencyKey));
+  }
+  if (input.body && Buffer.byteLength(input.body, "utf8") > 100_000) {
+    throw new Error("HTTP request body exceeds the 100,000-byte limit.");
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("HTTP request timed out.")), HTTP_REQUEST_TIMEOUT_MS);
+  const signal = options.abortSignal
+    ? AbortSignal.any([controller.signal, options.abortSignal])
+    : controller.signal;
   try {
-    const response = await fetch(url, {
+    const response = await fetchPublicHttpUrl(url, {
       method,
       headers,
       body: method === "GET" ? undefined : input.body,
-      redirect: "manual",
-      signal: controller.signal,
-    });
-    const rawBody = await response.text();
-    return {
+      signal,
+    }, "Request URL");
+    const rawBody = await readResponseTextLimited(response, HTTP_RESPONSE_MAX_BYTES);
+    return redactExactSecrets({
       url,
       method,
       status: response.status,
@@ -581,11 +871,98 @@ async function runHttpRequestTool(input: z.infer<typeof httpRequestSchema>) {
       redirected: response.status >= 300 && response.status < 400,
       location: response.headers.get("location") || undefined,
       contentType: response.headers.get("content-type") || undefined,
-      body: rawBody.length > HTTP_RESPONSE_MAX_CHARS ? `${rawBody.slice(0, HTTP_RESPONSE_MAX_CHARS)}… [truncated]` : rawBody,
-    };
+      body: rawBody.truncated ? `${rawBody.text}… [truncated]` : rawBody.text,
+    }, [activeSecret]);
   } finally {
     clearTimeout(timer);
   }
+}
+
+function validateHttpRequestHeaders(input: z.infer<typeof httpRequestSchema>) {
+  for (const [name, value] of Object.entries(input.headers || {})) {
+    assertSafeHttpToolHeader(name);
+    // Secrets must arrive via authEnv so they never sit in the approval or
+    // audit ledger as caller-provided header values.
+    if (redactSensitive(value) !== value) {
+      throw new Error(
+        `Header ${name} looks like a pasted secret. Reference it via authEnv instead.`,
+      );
+    }
+  }
+}
+
+function assertSafeHttpToolHeader(name: string) {
+  const normalized = name.trim().toLowerCase();
+  if (
+    !normalized ||
+    normalized.length > 120 ||
+    /[\r\n]/.test(name) ||
+    /^(authorization|cookie|host|connection|content-length|transfer-encoding|forwarded|proxy-|sec-|cf-connecting-ip|true-client-ip|x-(?:forwarded-|original-|rewrite-|http-method-override$|method-override$|real-ip$|client-ip$|vercel-))/i.test(normalized) ||
+    /(?:api[-_]?key|token|secret)/i.test(normalized)
+  ) {
+    throw new Error(`HTTP request header is not allowed: ${name}`);
+  }
+}
+
+function normalizeIdempotencyKey(value: string) {
+  const normalized = value.trim().replace(/[\r\n]/g, "").slice(0, 200);
+  if (!normalized) {
+    throw new Error("Idempotency key must not be empty.");
+  }
+  return normalized;
+}
+
+function assertToolInputSize(input: Record<string, unknown>) {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(input);
+  } catch {
+    throw new ToolInputValidationError("Tool input must be JSON serializable.");
+  }
+  if (Buffer.byteLength(serialized, "utf8") > 250_000) {
+    throw new ToolInputValidationError(
+      "Tool input exceeds the 250,000-byte execution limit.",
+    );
+  }
+}
+
+function toolInputValidationError(error: unknown) {
+  if (error instanceof ToolInputValidationError) {
+    return error;
+  }
+  if (error instanceof z.ZodError) {
+    return new ToolInputValidationError(
+      error.issues[0]?.message || "Tool input did not match the required schema.",
+    );
+  }
+  return new ToolInputValidationError(
+    error instanceof Error ? error.message : "Tool input is invalid.",
+  );
+}
+
+async function completeClaimedInputValidationFailure(
+  existingRecord: ToolExecutionRecord,
+  executionClaimToken: string,
+  error: unknown,
+) {
+  const validationError = toolInputValidationError(error);
+  const record: ToolExecutionRecord = {
+    ...existingRecord,
+    status: "failed",
+    output: {
+      error: `Approved tool input could not be validated: ${validationError.message}`,
+    },
+    reason: `Approved tool input could not be validated: ${validationError.message}`,
+    completedAt: new Date().toISOString(),
+  };
+  const saved = await completeClaimedToolExecution(
+    record,
+    executionClaimToken,
+  );
+  if (!saved) {
+    throw new ExecutionClaimLostError();
+  }
+  return { record: saved, result: null };
 }
 
 function stripEmbedding<T extends { embedding?: number[] }>(value: T) {
@@ -621,6 +998,7 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
   }
 
   if (tool.category === "mcp" || tool.category === "openapi") {
+    validateConnectorInput(tool.inputSchema, input);
     return input;
   }
 

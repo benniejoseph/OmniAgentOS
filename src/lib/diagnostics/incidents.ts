@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
+} from "@/lib/db/client";
 import type { HealthIncident, SystemHealthRecord } from "@/lib/diagnostics/health";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
 export type IncidentSeverity = "info" | "warning" | "critical";
@@ -39,6 +44,7 @@ export type IncidentPlaybook = {
 
 export type IncidentRecord = {
   id: string;
+  tenantId: string;
   fingerprint: string;
   componentId: string;
   severity: IncidentSeverity;
@@ -64,6 +70,7 @@ export type IncidentRecord = {
 
 export type IncidentEventRecord = {
   id: string;
+  tenantId: string;
   incidentId: string;
   type: IncidentEventType;
   actorId?: string;
@@ -93,6 +100,7 @@ export type IncidentStats = {
 };
 
 type ListIncidentOptions = {
+  tenantId?: string;
   status?: IncidentStatus | "active" | "all";
   limit?: number;
 };
@@ -150,8 +158,6 @@ const playbooks: IncidentPlaybook[] = [
   },
 ];
 
-let incidentFileWriteQueue: Promise<void> = Promise.resolve();
-
 export function getIncidentPlaybooks() {
   return playbooks;
 }
@@ -206,6 +212,7 @@ export function getIncidentAlertTargets(severity: IncidentSeverity = "warning"):
 }
 
 export async function syncIncidentsFromHealthCheck(check: SystemHealthRecord): Promise<IncidentSyncResult> {
+  const tenantId = normalizeTenantId(check.tenantId);
   const now = new Date().toISOString();
   const activeFingerprints = new Set(check.incidents.map(createIncidentFingerprint));
   const checkedComponentIds = new Set(check.components.map((component) => component.id));
@@ -215,13 +222,14 @@ export async function syncIncidentsFromHealthCheck(check: SystemHealthRecord): P
   for (const healthIncident of check.incidents) {
     const component = check.components.find((item) => item.id === healthIncident.componentId);
     const fingerprint = createIncidentFingerprint(healthIncident);
-    const existing = await getIncidentByFingerprint(fingerprint);
+    const existing = await getIncidentByFingerprint(fingerprint, tenantId);
     const selectedPlaybookIds = selectPlaybookIds(healthIncident.componentId);
     const alertTargets = getIncidentAlertTargets(healthIncident.severity);
 
     if (!existing) {
       const record: IncidentRecord = {
         id: randomUUID(),
+        tenantId,
         fingerprint,
         componentId: healthIncident.componentId,
         severity: healthIncident.severity,
@@ -245,12 +253,14 @@ export async function syncIncidentsFromHealthCheck(check: SystemHealthRecord): P
       await saveIncident(record);
       changedIncidents.push(record);
       events.push(await recordIncidentEvent({
+        tenantId,
         incidentId: record.id,
         type: "opened",
         message: `Opened ${record.severity} incident for ${record.componentId}.`,
         metadata: { checkId: check.id, fingerprint },
       }));
       const alertEvent = await recordIncidentEvent({
+        tenantId,
         incidentId: record.id,
         type: "alert_routed",
         message: `Routed incident to ${alertTargets.filter((target) => target.status === "ready").length} ready target(s).`,
@@ -286,6 +296,7 @@ export async function syncIncidentsFromHealthCheck(check: SystemHealthRecord): P
     await saveIncident(record);
     changedIncidents.push(record);
     const observedEvent = await recordIncidentEvent({
+      tenantId,
       incidentId: record.id,
       type: wasResolved ? "reopened" : "observed",
       message: wasResolved
@@ -299,12 +310,13 @@ export async function syncIncidentsFromHealthCheck(check: SystemHealthRecord): P
     }
   }
 
-  const activeIncidents = await listIncidents({ status: "active", limit: 500 });
+  const activeIncidents = await listIncidents({ tenantId, status: "active", limit: 500 });
   for (const incident of activeIncidents) {
     if (!checkedComponentIds.has(incident.componentId) || activeFingerprints.has(incident.fingerprint)) {
       continue;
     }
     const resolved = await resolveIncident(incident.id, {
+      tenantId,
       actorId: "system",
       resolution: `Resolved by health check ${check.id}.`,
       metadata: { checkId: check.id },
@@ -328,6 +340,7 @@ async function enqueueAlertDeliverySafely(incident: IncidentRecord, eventId: str
 }
 
 export async function listIncidents(options: ListIncidentOptions = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
   const limit = Math.min(Math.max(options.limit || 50, 1), 500);
   const status = options.status || "active";
 
@@ -337,6 +350,7 @@ export async function listIncidents(options: ListIncidentOptions = {}) {
       ? await getSql()`
           SELECT *
           FROM omni_incidents
+          WHERE tenant_id = ${tenantId}
           ORDER BY updated_at DESC
           LIMIT ${limit}
         `
@@ -344,14 +358,16 @@ export async function listIncidents(options: ListIncidentOptions = {}) {
         ? await getSql()`
             SELECT *
             FROM omni_incidents
-            WHERE status IN ('open', 'acknowledged')
+            WHERE tenant_id = ${tenantId}
+              AND status IN ('open', 'acknowledged')
             ORDER BY updated_at DESC
             LIMIT ${limit}
           `
         : await getSql()`
             SELECT *
             FROM omni_incidents
-            WHERE status = ${status}
+            WHERE tenant_id = ${tenantId}
+              AND status = ${status}
             ORDER BY updated_at DESC
             LIMIT ${limit}
           `;
@@ -360,41 +376,57 @@ export async function listIncidents(options: ListIncidentOptions = {}) {
 
   const ledger = await readIncidentLedger();
   return ledger.incidents
+    .filter((incident) => incidentTenantId(incident) === tenantId)
     .filter((incident) => status === "all" || (status === "active" ? incident.status !== "resolved" : incident.status === status))
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
     .slice(0, limit);
 }
 
-export async function getIncident(incidentId: string) {
+export async function getIncident(
+  incidentId: string,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_incidents
       WHERE id = ${incidentId}
+        AND tenant_id = ${tenantId}
       LIMIT 1
     `;
     return rows[0] ? incidentFromRow(rows[0]) : null;
   }
 
   const ledger = await readIncidentLedger();
-  return ledger.incidents.find((incident) => incident.id === incidentId) || null;
+  return ledger.incidents.find(
+    (incident) => incident.id === incidentId && incidentTenantId(incident) === tenantId,
+  ) || null;
 }
 
-export async function getIncidentDetail(incidentId: string) {
-  const incident = await getIncident(incidentId);
+export async function getIncidentDetail(
+  incidentId: string,
+  options: { tenantId?: string } = {},
+) {
+  const incident = await getIncident(incidentId, options);
   if (!incident) {
     return null;
   }
 
   return {
     incident,
-    events: await listIncidentEvents(incidentId, 100),
+    events: await listIncidentEvents(incidentId, 100, options),
     playbooks: playbooks.filter((playbook) => incident.playbookIds.includes(playbook.id)),
   };
 }
 
-export async function listIncidentEvents(incidentId: string, limit = 50) {
+export async function listIncidentEvents(
+  incidentId: string,
+  limit = 50,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
   const boundedLimit = Math.min(Math.max(limit, 1), 200);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -402,6 +434,7 @@ export async function listIncidentEvents(incidentId: string, limit = 50) {
       SELECT *
       FROM omni_incident_events
       WHERE incident_id = ${incidentId}
+        AND tenant_id = ${tenantId}
       ORDER BY created_at DESC
       LIMIT ${boundedLimit}
     `;
@@ -410,15 +443,19 @@ export async function listIncidentEvents(incidentId: string, limit = 50) {
 
   const ledger = await readIncidentLedger();
   return ledger.events
-    .filter((event) => event.incidentId === incidentId)
+    .filter(
+      (event) => event.incidentId === incidentId && incidentEventTenantId(event) === tenantId,
+    )
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
     .slice(0, boundedLimit);
 }
 
-export async function getIncidentStats(): Promise<IncidentStats> {
+export async function getIncidentStats(
+  options: { tenantId?: string } = {},
+): Promise<IncidentStats> {
   const [incidents, latestEvents] = await Promise.all([
-    listIncidents({ status: "all", limit: 500 }),
-    listLatestIncidentEvents(10),
+    listIncidents({ ...options, status: "all", limit: 500 }),
+    listLatestIncidentEvents(10, options),
   ]);
   const active = incidents.filter((incident) => incident.status !== "resolved");
 
@@ -443,9 +480,14 @@ export async function getIncidentStats(): Promise<IncidentStats> {
 
 export async function acknowledgeIncident(
   incidentId: string,
-  input: { actorId: string; reason?: string; metadata?: Record<string, unknown> },
+  input: {
+    tenantId?: string;
+    actorId: string;
+    reason?: string;
+    metadata?: Record<string, unknown>;
+  },
 ) {
-  const incident = await getIncident(incidentId);
+  const incident = await getIncident(incidentId, { tenantId: input.tenantId });
   if (!incident) {
     return null;
   }
@@ -461,6 +503,7 @@ export async function acknowledgeIncident(
   };
   await saveIncident(next);
   const event = await recordIncidentEvent({
+    tenantId: incident.tenantId,
     incidentId,
     type: "acknowledged",
     actorId: input.actorId,
@@ -473,9 +516,14 @@ export async function acknowledgeIncident(
 
 export async function resolveIncident(
   incidentId: string,
-  input: { actorId: string; resolution?: string; metadata?: Record<string, unknown> },
+  input: {
+    tenantId?: string;
+    actorId: string;
+    resolution?: string;
+    metadata?: Record<string, unknown>;
+  },
 ) {
-  const incident = await getIncident(incidentId);
+  const incident = await getIncident(incidentId, { tenantId: input.tenantId });
   if (!incident) {
     return null;
   }
@@ -491,6 +539,7 @@ export async function resolveIncident(
   };
   await saveIncident(next);
   const event = await recordIncidentEvent({
+    tenantId: incident.tenantId,
     incidentId,
     type: "resolved",
     actorId: input.actorId,
@@ -502,6 +551,7 @@ export async function resolveIncident(
 }
 
 export async function upsertIncidentFromSignal(input: {
+  tenantId?: string;
   fingerprint: string;
   componentId: string;
   severity: IncidentSeverity;
@@ -512,14 +562,16 @@ export async function upsertIncidentFromSignal(input: {
   playbookIds?: string[];
   alertTargets?: IncidentAlertTarget[];
 }) {
+  const tenantId = normalizeTenantId(input.tenantId);
   const now = new Date().toISOString();
-  const existing = await getIncidentByFingerprint(input.fingerprint);
+  const existing = await getIncidentByFingerprint(input.fingerprint, tenantId);
   const alertTargets = input.alertTargets || getIncidentAlertTargets(input.severity);
   const playbookIds = input.playbookIds || selectPlaybookIds(input.componentId);
 
   if (!existing) {
     const incident: IncidentRecord = {
       id: randomUUID(),
+      tenantId,
       fingerprint: input.fingerprint,
       componentId: input.componentId,
       severity: input.severity,
@@ -537,6 +589,7 @@ export async function upsertIncidentFromSignal(input: {
     };
     await saveIncident(incident);
     const event = await recordIncidentEvent({
+      tenantId,
       incidentId: incident.id,
       type: "opened",
       actorId: input.actorId,
@@ -544,6 +597,7 @@ export async function upsertIncidentFromSignal(input: {
       metadata: { fingerprint: input.fingerprint, ...(input.metadata || {}) },
     });
     await recordIncidentEvent({
+      tenantId,
       incidentId: incident.id,
       type: "alert_routed",
       actorId: input.actorId,
@@ -583,6 +637,7 @@ export async function upsertIncidentFromSignal(input: {
   };
   await saveIncident(incident);
   const event = await recordIncidentEvent({
+    tenantId,
     incidentId: incident.id,
     type: reopened ? "reopened" : "observed",
     actorId: input.actorId,
@@ -608,9 +663,14 @@ export async function upsertIncidentFromSignal(input: {
 
 export async function resolveIncidentByFingerprint(
   fingerprint: string,
-  input: { actorId: string; resolution?: string; metadata?: Record<string, unknown> },
+  input: {
+    tenantId?: string;
+    actorId: string;
+    resolution?: string;
+    metadata?: Record<string, unknown>;
+  },
 ) {
-  const incident = await getIncidentByFingerprint(fingerprint);
+  const incident = await getIncidentByFingerprint(fingerprint, input.tenantId);
   if (!incident || incident.status === "resolved") {
     return null;
   }
@@ -621,8 +681,9 @@ export async function resolveIncidentByFingerprint(
 export async function updateIncidentMetadata(
   incidentId: string,
   metadata: Record<string, unknown>,
+  options: { tenantId?: string } = {},
 ) {
-  const incident = await getIncident(incidentId);
+  const incident = await getIncident(incidentId, options);
   if (!incident) {
     return null;
   }
@@ -640,14 +701,17 @@ export async function updateIncidentMetadata(
 }
 
 export async function recordIncidentEvent(input: {
+  tenantId?: string;
   incidentId: string;
   type: IncidentEventType;
   actorId?: string;
   message: string;
   metadata?: Record<string, unknown>;
 }) {
+  const tenantId = normalizeTenantId(input.tenantId);
   const event: IncidentEventRecord = {
     id: randomUUID(),
+    tenantId,
     incidentId: input.incidentId,
     type: input.type,
     actorId: input.actorId,
@@ -660,10 +724,10 @@ export async function recordIncidentEvent(input: {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_incident_events (
-        id, incident_id, type, actor_id, message, metadata, created_at
+        id, tenant_id, incident_id, type, actor_id, message, metadata, created_at
       )
       VALUES (
-        ${event.id}, ${event.incidentId}, ${event.type}, ${event.actorId || null},
+        ${event.id}, ${tenantId}, ${event.incidentId}, ${event.type}, ${event.actorId || null},
         ${event.message}, ${JSON.stringify(event.metadata)}::jsonb, ${event.createdAt}
       )
     `;
@@ -677,20 +741,26 @@ export async function recordIncidentEvent(input: {
   return event;
 }
 
-async function getIncidentByFingerprint(fingerprint: string) {
+async function getIncidentByFingerprint(fingerprint: string, requestedTenantId?: string) {
+  const tenantId = normalizeTenantId(requestedTenantId);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_incidents
-      WHERE fingerprint = ${fingerprint}
+      WHERE fingerprint = ${storageFingerprint(tenantId, fingerprint)}
+        AND tenant_id = ${tenantId}
       LIMIT 1
     `;
     return rows[0] ? incidentFromRow(rows[0]) : null;
   }
 
   const ledger = await readIncidentLedger();
-  return ledger.incidents.find((incident) => incident.fingerprint === fingerprint) || null;
+  return ledger.incidents.find(
+    (incident) =>
+      incidentTenantId(incident) === tenantId &&
+      incident.fingerprint === fingerprint,
+  ) || null;
 }
 
 async function saveIncident(record: IncidentRecord) {
@@ -698,14 +768,14 @@ async function saveIncident(record: IncidentRecord) {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_incidents (
-        id, fingerprint, component_id, severity, status, title, message,
+        id, tenant_id, fingerprint, component_id, severity, status, title, message,
         first_seen_at, last_seen_at, last_check_id, occurrence_count,
         acknowledged_at, acknowledged_by, acknowledgement_reason,
         resolved_at, resolved_by, resolution, alert_targets, playbook_ids,
         metadata, created_at, updated_at
       )
       VALUES (
-        ${record.id}, ${record.fingerprint}, ${record.componentId}, ${record.severity},
+        ${record.id}, ${record.tenantId}, ${storageFingerprint(record.tenantId, record.fingerprint)}, ${record.componentId}, ${record.severity},
         ${record.status}, ${record.title}, ${record.message}, ${record.firstSeenAt},
         ${record.lastSeenAt}, ${record.lastCheckId || null}, ${record.occurrenceCount},
         ${record.acknowledgedAt || null}, ${record.acknowledgedBy || null},
@@ -715,6 +785,7 @@ async function saveIncident(record: IncidentRecord) {
         ${JSON.stringify(record.metadata)}::jsonb, ${record.createdAt}, ${record.updatedAt}
       )
       ON CONFLICT (id) DO UPDATE SET
+        tenant_id = EXCLUDED.tenant_id,
         fingerprint = EXCLUDED.fingerprint,
         component_id = EXCLUDED.component_id,
         severity = EXCLUDED.severity,
@@ -740,19 +811,30 @@ async function saveIncident(record: IncidentRecord) {
   }
 
   await mutateIncidentLedger((ledger) => {
-    ledger.incidents = [record, ...ledger.incidents.filter((incident) => incident.id !== record.id)];
+    ledger.incidents = [
+      record,
+      ...ledger.incidents.filter(
+        (incident) =>
+          incident.id !== record.id || incidentTenantId(incident) !== record.tenantId,
+      ),
+    ];
     return trimIncidentLedger(ledger);
   });
   return record;
 }
 
-async function listLatestIncidentEvents(limit = 10) {
+async function listLatestIncidentEvents(
+  limit = 10,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
   const boundedLimit = Math.min(Math.max(limit, 1), 100);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_incident_events
+      WHERE tenant_id = ${tenantId}
       ORDER BY created_at DESC
       LIMIT ${boundedLimit}
     `;
@@ -761,30 +843,34 @@ async function listLatestIncidentEvents(limit = 10) {
 
   const ledger = await readIncidentLedger();
   return ledger.events
+    .filter((event) => incidentEventTenantId(event) === tenantId)
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
     .slice(0, boundedLimit);
 }
 
 async function readIncidentLedger() {
-  return readJsonFile<IncidentLedger>(getIncidentFile(), { incidents: [], events: [] });
+  const ledger = await readJsonFile<IncidentLedger>(getIncidentFile(), {
+    incidents: [],
+    events: [],
+  });
+  return {
+    incidents: ledger.incidents.map((incident) => ({
+      ...incident,
+      tenantId: incidentTenantId(incident),
+    })),
+    events: ledger.events.map((event) => ({
+      ...event,
+      tenantId: incidentEventTenantId(event),
+    })),
+  };
 }
 
 async function mutateIncidentLedger(mutator: (ledger: IncidentLedger) => IncidentLedger) {
-  incidentFileWriteQueue = incidentFileWriteQueue.then(
-    async () => {
-      const ledger = mutator(await readIncidentLedger());
-      await writeIncidentLedger(ledger);
-    },
-    async () => {
-      const ledger = mutator(await readIncidentLedger());
-      await writeIncidentLedger(ledger);
-    },
+  await updateJsonFile<IncidentLedger>(
+    getIncidentFile(),
+    { incidents: [], events: [] },
+    (ledger) => trimIncidentLedger(mutator(ledger)),
   );
-  await incidentFileWriteQueue;
-}
-
-async function writeIncidentLedger(ledger: IncidentLedger) {
-  await writeJsonFile(getIncidentFile(), trimIncidentLedger(ledger));
 }
 
 function trimIncidentLedger(ledger: IncidentLedger): IncidentLedger {
@@ -809,9 +895,11 @@ function severityRank(severity: IncidentSeverity) {
 }
 
 function incidentFromRow(row: Record<string, unknown>): IncidentRecord {
+  const tenantId = storedTenantId(row.tenant_id ? String(row.tenant_id) : undefined);
   return {
     id: String(row.id),
-    fingerprint: String(row.fingerprint),
+    tenantId,
+    fingerprint: logicalFingerprint(tenantId, String(row.fingerprint)),
     componentId: String(row.component_id),
     severity: normalizeSeverity(row.severity),
     status: normalizeStatus(row.status),
@@ -838,6 +926,7 @@ function incidentFromRow(row: Record<string, unknown>): IncidentRecord {
 function incidentEventFromRow(row: Record<string, unknown>): IncidentEventRecord {
   return {
     id: String(row.id),
+    tenantId: storedTenantId(row.tenant_id ? String(row.tenant_id) : undefined),
     incidentId: String(row.incident_id),
     type: normalizeEventType(row.type),
     actorId: row.actor_id ? String(row.actor_id) : undefined,
@@ -897,6 +986,38 @@ function parseObject(value: unknown): Record<string, unknown> | undefined {
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
+}
+
+function incidentTenantId(incident: { tenantId?: string }) {
+  return storedTenantId(incident.tenantId);
+}
+
+function incidentEventTenantId(event: { tenantId?: string }) {
+  return storedTenantId(event.tenantId);
+}
+
+function storedTenantId(value?: string) {
+  return normalizeTenantId(
+    value || process.env.OMNIAGENT_DEFAULT_TENANT || "default",
+  );
+}
+
+function storageFingerprint(tenantId: string, fingerprint: string) {
+  return tenantId === "default" ? fingerprint : `${tenantId}/${fingerprint}`;
+}
+
+function logicalFingerprint(tenantId: string, fingerprint: string) {
+  const prefix = `${tenantId}/`;
+  return tenantId !== "default" && fingerprint.startsWith(prefix)
+    ? fingerprint.slice(prefix.length)
+    : fingerprint;
 }
 
 function getIncidentFile() {

@@ -1,8 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
+} from "@/lib/db/client";
+import {
+  ConnectorContractReviewConflictError,
+  mcpContractReviewSummary,
+  mcpToolContractFingerprint,
+} from "@/lib/connectors/contract-review";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { getDataPath } from "@/lib/storage/paths";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type {
   McpConnectorAuthType,
   McpConnectorLedger,
@@ -12,8 +22,6 @@ import type {
   McpToolRecord,
 } from "@/lib/connectors/types";
 import type { ToolRiskLevel } from "@/lib/tools/types";
-
-let connectorFileWriteQueue: Promise<void> = Promise.resolve();
 
 export type RegisterMcpConnectorInput = {
   tenantId?: string;
@@ -31,6 +39,12 @@ export type UpdateMcpConnectorInput = Partial<Pick<
   "name" | "endpoint" | "authType" | "authTokenEnv" | "defaultRiskLevel" | "approvalRequired"
 >> & {
   status?: McpConnectorRecord["status"];
+};
+
+export type McpContractPromotionResult = {
+  connector: McpConnectorRecord;
+  tools: McpToolRecord[];
+  promoted: number;
 };
 
 type TenantScopedOptions = {
@@ -146,6 +160,45 @@ export async function listMcpConnectors(limit = 20, options: TenantScopedOptions
     .slice(0, limit);
 }
 
+export async function listMcpConnectorsRequiringReview(
+  options: TenantScopedOptions = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT connectors.*
+      FROM omni_mcp_connectors connectors
+      WHERE connectors.tenant_id = ${tenantId}
+        AND EXISTS (
+          SELECT 1
+          FROM omni_mcp_tools tools
+          WHERE tools.connector_id = connectors.id
+            AND tools.tenant_id = connectors.tenant_id
+            AND tools.status = 'pending_review'
+        )
+      ORDER BY connectors.updated_at DESC
+    `;
+    return rows.map(connectorFromRow);
+  }
+
+  const ledger = await readConnectorLedger();
+  const pendingConnectorIds = new Set(
+    ledger.tools
+      .filter(
+        (tool) =>
+          normalizeTenantId(tool.tenantId) === tenantId &&
+          tool.status === "pending_review",
+      )
+      .map((tool) => tool.connectorId),
+  );
+  return ledger.connectors.filter(
+    (connector) =>
+      normalizeTenantId(connector.tenantId) === tenantId &&
+      pendingConnectorIds.has(connector.id),
+  );
+}
+
 export async function getMcpConnector(connectorId: string, options: TenantScopedOptions = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
 
@@ -178,20 +231,34 @@ export async function updateMcpConnector(
   }
 
   const now = new Date().toISOString();
+  const contractConfigurationChanged =
+    (input.endpoint !== undefined && input.endpoint.trim() !== connector.endpoint) ||
+    (input.authType !== undefined && input.authType !== connector.authType) ||
+    (input.authTokenEnv !== undefined &&
+      (input.authTokenEnv?.trim() || undefined) !== connector.authTokenEnv);
   const nextConnector: McpConnectorRecord = {
     ...connector,
     name: input.name?.trim() || connector.name,
     endpoint: input.endpoint?.trim() || connector.endpoint,
     authType: input.authType || connector.authType,
     authTokenEnv: input.authTokenEnv === undefined ? connector.authTokenEnv : input.authTokenEnv?.trim() || undefined,
-    status: input.status || connector.status,
+    status: contractConfigurationChanged
+      ? "disabled"
+      : input.status || connector.status,
     defaultRiskLevel: input.defaultRiskLevel ?? connector.defaultRiskLevel,
     approvalRequired: input.approvalRequired ?? connector.approvalRequired,
-    lastError: input.status === "active" ? undefined : connector.lastError,
+    lastDiscoveredAt: contractConfigurationChanged
+      ? undefined
+      : connector.lastDiscoveredAt,
+    lastError: input.status === "active" && !contractConfigurationChanged
+      ? undefined
+      : connector.lastError,
     updatedAt: now,
   };
   const saved = await saveMcpConnector(nextConnector);
-  await syncMcpToolsForConnector(saved);
+  await syncMcpToolsForConnector(saved, {
+    invalidateReviewedContracts: contractConfigurationChanged,
+  });
   return saved;
 }
 
@@ -243,10 +310,13 @@ export async function saveMcpDiscovery({
   serverVersion?: Record<string, unknown>;
 }) {
   const discoveredAt = new Date().toISOString();
+  const existingTools = await listMcpTools(connector.id, {
+    tenantId: normalizeTenantId(connector.tenantId),
+  });
   const nextConnector: McpConnectorRecord = {
     ...connector,
     tenantId: normalizeTenantId(connector.tenantId),
-    status: "active",
+    status: connector.status === "error" ? "active" : connector.status,
     toolCount: tools.length,
     capabilities: capabilities || {},
     instructions,
@@ -255,6 +325,12 @@ export async function saveMcpDiscovery({
     lastError: undefined,
     updatedAt: discoveredAt,
   };
+  const nextTools = preserveReviewedMcpToolPolicy({
+    discovered: tools,
+    existing: existingTools,
+    connector: nextConnector,
+    reviewedConnector: connector,
+  });
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -264,18 +340,12 @@ export async function saveMcpDiscovery({
       WHERE connector_id = ${connector.id}
         AND tenant_id = ${nextConnector.tenantId}
     `;
-    const nextTools = tools.map((tool) => ({
-      ...tool,
-      tenantId: nextConnector.tenantId,
-      connectorName: nextConnector.name,
-    }));
-    for (const tool of tools) {
-      await saveMcpTool({ ...tool, tenantId: nextConnector.tenantId, connectorName: nextConnector.name });
+    for (const tool of nextTools) {
+      await saveMcpTool(tool);
     }
     return { connector: nextConnector, tools: nextTools };
   }
 
-  const nextTools = tools.map((tool) => ({ ...tool, tenantId: nextConnector.tenantId, connectorName: nextConnector.name }));
   await mutateConnectorLedger((ledger) => {
     ledger.connectors = [nextConnector, ...ledger.connectors.filter((item) => item.id !== connector.id)];
     ledger.tools = [
@@ -287,6 +357,161 @@ export async function saveMcpDiscovery({
     return ledger;
   });
   return { connector: nextConnector, tools: nextTools };
+}
+
+export function preserveReviewedMcpToolPolicy({
+  discovered,
+  existing,
+  connector,
+  reviewedConnector = connector,
+}: {
+  discovered: McpToolRecord[];
+  existing: McpToolRecord[];
+  connector: McpConnectorRecord;
+  reviewedConnector?: McpConnectorRecord;
+}) {
+  const reviewedByName = new Map(existing.map((tool) => [tool.name, tool]));
+  return discovered.map((tool) => {
+    const reviewed = reviewedByName.get(tool.name);
+    return {
+      ...tool,
+      tenantId: normalizeTenantId(connector.tenantId),
+      connectorName: connector.name,
+      riskLevel: Math.max(tool.riskLevel, reviewed?.riskLevel ?? 0) as ToolRiskLevel,
+      approvalRequired: tool.approvalRequired || Boolean(reviewed?.approvalRequired),
+      status:
+        reviewed &&
+        mcpToolContractFingerprint(reviewed, reviewedConnector) ===
+          mcpToolContractFingerprint(tool, connector)
+          ? reviewed.status
+          : "pending_review",
+      createdAt: reviewed?.createdAt || tool.createdAt,
+    };
+  });
+}
+
+export async function promoteMcpContracts(
+  {
+    connectorId,
+    expectedFingerprint,
+  }: {
+    connectorId: string;
+    expectedFingerprint: string;
+  },
+  options: TenantScopedOptions = {},
+): Promise<McpContractPromotionResult | null> {
+  const tenantId = normalizeTenantId(options.tenantId);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const connectorRows = await sql`
+        SELECT *
+        FROM omni_mcp_connectors
+        WHERE id = ${connectorId}
+          AND tenant_id = ${tenantId}
+        FOR UPDATE
+      `;
+      if (!connectorRows[0]) {
+        return null;
+      }
+      const connector = connectorFromRow(connectorRows[0]);
+      const toolRows = await sql`
+        SELECT *
+        FROM omni_mcp_tools
+        WHERE connector_id = ${connectorId}
+          AND tenant_id = ${tenantId}
+        ORDER BY id
+        FOR UPDATE
+      `;
+      const tools = toolRows.map(toolFromRow);
+      const review = mcpContractReviewSummary(tools, connector);
+      if (!review.pendingCount) {
+        return { connector, tools, promoted: 0 };
+      }
+      if (review.fingerprint !== expectedFingerprint) {
+        throw new ConnectorContractReviewConflictError();
+      }
+      await sql`
+        UPDATE omni_mcp_tools
+        SET status = 'active',
+            updated_at = NOW()
+        WHERE connector_id = ${connectorId}
+          AND tenant_id = ${tenantId}
+          AND status = 'pending_review'
+      `;
+      const activatedRows = await sql`
+        UPDATE omni_mcp_connectors
+        SET status = 'active',
+            error = NULL,
+            updated_at = NOW()
+        WHERE id = ${connectorId}
+          AND tenant_id = ${tenantId}
+        RETURNING *
+      `;
+      const activatedConnector = activatedRows[0]
+        ? connectorFromRow(activatedRows[0])
+        : { ...connector, status: "active" as const };
+      return {
+        connector: activatedConnector,
+        tools: tools.map((tool) =>
+          tool.status === "pending_review"
+            ? { ...tool, status: "active" as const }
+            : tool,
+        ),
+        promoted: review.pendingCount,
+      };
+    }) as Promise<McpContractPromotionResult | null>;
+  }
+
+  let result: McpContractPromotionResult | null = null;
+  await mutateConnectorLedger((ledger) => {
+    const connector = ledger.connectors.find(
+      (item) =>
+        item.id === connectorId &&
+        normalizeTenantId(item.tenantId) === tenantId,
+    );
+    if (!connector) {
+      result = null;
+      return ledger;
+    }
+    const tools = ledger.tools.filter(
+      (tool) =>
+        tool.connectorId === connectorId &&
+        normalizeTenantId(tool.tenantId) === tenantId,
+    );
+    const review = mcpContractReviewSummary(tools, connector);
+    if (review.pendingCount && review.fingerprint !== expectedFingerprint) {
+      throw new ConnectorContractReviewConflictError();
+    }
+    ledger.tools = ledger.tools.map((tool) =>
+      tool.connectorId === connectorId &&
+      normalizeTenantId(tool.tenantId) === tenantId &&
+      tool.status === "pending_review"
+        ? { ...tool, status: "active", updatedAt: new Date().toISOString() }
+        : tool,
+    );
+    const activatedConnector = {
+      ...connector,
+      status: "active" as const,
+      error: undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    ledger.connectors = ledger.connectors.map((item) =>
+      item.id === connector.id ? activatedConnector : item,
+    );
+    result = {
+      connector: activatedConnector,
+      tools: ledger.tools.filter(
+        (tool) =>
+          tool.connectorId === connectorId &&
+          normalizeTenantId(tool.tenantId) === tenantId,
+      ),
+      promoted: review.pendingCount,
+    };
+    return ledger;
+  });
+  return result;
 }
 
 export async function saveMcpTool(tool: McpToolRecord) {
@@ -335,16 +560,23 @@ export async function saveMcpTool(tool: McpToolRecord) {
   return record;
 }
 
-async function syncMcpToolsForConnector(connector: McpConnectorRecord) {
+async function syncMcpToolsForConnector(
+  connector: McpConnectorRecord,
+  options: { invalidateReviewedContracts?: boolean } = {},
+) {
   const tenantId = normalizeTenantId(connector.tenantId);
-  const nextToolStatus = connector.status === "disabled" ? "disabled" : "active";
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await getSql()`
       UPDATE omni_mcp_tools
       SET connector_name = ${connector.name},
-          status = ${nextToolStatus},
+          status = CASE
+            WHEN ${Boolean(options.invalidateReviewedContracts)}
+              AND status = 'active'
+              THEN 'pending_review'
+            ELSE status
+          END,
           updated_at = ${connector.updatedAt}
       WHERE connector_id = ${connector.id}
         AND tenant_id = ${tenantId}
@@ -358,7 +590,10 @@ async function syncMcpToolsForConnector(connector: McpConnectorRecord) {
         ? {
             ...tool,
             connectorName: connector.name,
-            status: nextToolStatus,
+            status:
+              options.invalidateReviewedContracts && tool.status === "active"
+                ? "pending_review"
+                : tool.status,
             updatedAt: connector.updatedAt,
           }
         : tool,
@@ -413,6 +648,7 @@ export async function recordMcpConnectorError(connector: McpConnectorRecord, err
     lastError: error,
     updatedAt: now,
   });
+  await syncMcpToolsForConnector(saved);
   await recordRuntimeEventSafely({
     level: "error",
     category: "connector",
@@ -433,11 +669,19 @@ export async function recordMcpConnectorError(connector: McpConnectorRecord, err
 export async function getMcpConnectorStats(options: TenantScopedOptions = {}): Promise<McpConnectorStats> {
   const connectors = await listMcpConnectors(100, options);
   const tools = await listMcpTools(undefined, options);
+  const activeConnectorIds = new Set(
+    connectors
+      .filter((connector) => connector.status === "active")
+      .map((connector) => connector.id),
+  );
   return {
     total: connectors.length,
     active: connectors.filter((connector) => connector.status === "active").length,
     error: connectors.filter((connector) => connector.status === "error").length,
-    toolCount: tools.filter((tool) => tool.status === "active").length,
+    toolCount: tools.filter(
+      (tool) =>
+        tool.status === "active" && activeConnectorIds.has(tool.connectorId),
+    ).length,
     latest: connectors.slice(0, 5),
   };
 }
@@ -447,24 +691,17 @@ async function readConnectorLedger() {
 }
 
 async function mutateConnectorLedger(mutator: (ledger: McpConnectorLedger) => McpConnectorLedger) {
-  connectorFileWriteQueue = connectorFileWriteQueue.then(
-    async () => {
-      const ledger = mutator(await readConnectorLedger());
-      await writeConnectorLedger(ledger);
-    },
-    async () => {
-      const ledger = mutator(await readConnectorLedger());
-      await writeConnectorLedger(ledger);
+  await updateJsonFile<McpConnectorLedger>(
+    getConnectorLedgerFile(),
+    { connectors: [], tools: [] },
+    (ledger) => {
+      const next = mutator(ledger);
+      return {
+        connectors: next.connectors.slice(0, 100),
+        tools: next.tools.slice(0, 500),
+      };
     },
   );
-  await connectorFileWriteQueue;
-}
-
-async function writeConnectorLedger(ledger: McpConnectorLedger) {
-  await writeJsonFile(getConnectorLedgerFile(), {
-    connectors: ledger.connectors.slice(0, 100),
-    tools: ledger.tools.slice(0, 500),
-  });
 }
 
 function getConnectorLedgerFile() {
@@ -527,7 +764,7 @@ function normalizeDate(value: unknown) {
 }
 
 function normalizeTenantId(value?: string) {
-  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
     .trim()
     .replace(/[^a-zA-Z0-9_.:-]/g, "_")
     .slice(0, 120) || "default";

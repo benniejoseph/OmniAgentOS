@@ -5,6 +5,7 @@ import { saveMemory, searchMemories } from "@/lib/memory/store";
 import type { MemorySearchResult } from "@/lib/memory/types";
 import { createKnowledgeDocument, searchKnowledge } from "@/lib/rag/store";
 import type { KnowledgeSearchResult, KnowledgeSourceType } from "@/lib/rag/types";
+import { redactSensitive } from "@/lib/security/context";
 
 export async function ingestTextDocument({
   tenantId,
@@ -21,15 +22,19 @@ export async function ingestTextDocument({
   sourceType?: KnowledgeSourceType;
   tags?: string[];
 }) {
-  const chunks = chunkText(content);
+  const safeTitle = String(redactSensitive(title)).slice(0, 240);
+  const safeContent = String(redactSensitive(content)).slice(0, 900_000);
+  const safeSource = String(redactSensitive(source)).slice(0, 2_000);
+  const safeTags = tags.map((tag) => String(redactSensitive(tag))).slice(0, 50);
+  const chunks = chunkText(safeContent);
   const embeddings = await embedTexts(chunks.map((chunk) => chunk.content));
   const knowledge = await createKnowledgeDocument({
     tenantId,
-    title,
-    content,
-    source,
+    title: safeTitle,
+    content: safeContent,
+    source: safeSource,
     sourceType,
-    tags,
+    tags: safeTags,
     chunks: chunks.map((chunk) => ({
       ...chunk,
       embedding: embeddings?.[chunk.index],
@@ -42,10 +47,12 @@ export async function ingestTextDocument({
       await saveMemory({
         tenantId,
         type: "knowledge",
-        title: chunks.length > 1 ? `${title} (${chunk.index + 1}/${chunks.length})` : title,
+        title: chunks.length > 1
+          ? `${safeTitle} (${chunk.index + 1}/${chunks.length})`
+          : safeTitle,
         content: chunk.content,
-        source,
-        tags: ["rag", ...tags],
+        source: safeSource,
+        tags: ["rag", ...safeTags],
         scope: "workspace",
         importance: 0.72,
         embedding: embeddings?.[chunk.index],
@@ -62,10 +69,11 @@ export async function ingestTextDocument({
 }
 
 export async function retrieveContext(query: string, limit = 8, options: { tenantId?: string } = {}) {
-  const queryEmbedding = (await embedTexts([query]))?.[0];
+  const safeQuery = String(redactSensitive(query));
+  const queryEmbedding = (await embedTexts([safeQuery]))?.[0];
   const [memoryResults, knowledgeResults] = await Promise.all([
-    searchMemories(query, { limit, queryEmbedding, tenantId: options.tenantId }),
-    searchKnowledge(query, { limit, queryEmbedding, tenantId: options.tenantId }),
+    searchMemories(safeQuery, { limit, queryEmbedding, tenantId: options.tenantId }),
+    searchKnowledge(safeQuery, { limit, queryEmbedding, tenantId: options.tenantId }),
   ]);
   const contextItems = [
     ...memoryResults.map((result) => ({ kind: "memory" as const, result })),
@@ -92,25 +100,29 @@ function formatContext(
     return "No relevant long-term memory or RAG records were found.";
   }
 
-  return items
-    .map((item, index) => {
-      if (item.kind === "memory") {
-        const memory = item.result.record;
-        return [
-          `[${index + 1}] Memory: ${memory.title}`,
-          `type: ${memory.type}; tags: ${memory.tags.join(", ") || "none"}; score: ${item.result.score.toFixed(2)}`,
-          `reasons: ${item.result.reasons.join(", ") || "ranked context"}`,
-          memory.content,
-        ].join("\n");
-      }
+  return String(
+    redactSensitive(
+      items
+        .map((item, index) => {
+          if (item.kind === "memory") {
+            const memory = item.result.record;
+            return [
+              `[${index + 1}] Memory: ${memory.title}`,
+              `type: ${memory.type}; tags: ${memory.tags.join(", ") || "none"}; score: ${item.result.score.toFixed(2)}`,
+              `reasons: ${item.result.reasons.join(", ") || "ranked context"}`,
+              memory.content,
+            ].join("\n");
+          }
 
-      const { chunk, document } = item.result;
-      return [
-        `[${index + 1}] Knowledge: ${chunk.title}`,
-        `source: ${document?.title || chunk.source}; tags: ${chunk.tags.join(", ") || "none"}; score: ${item.result.score.toFixed(2)}`,
-        `reasons: ${item.result.reasons.join(", ") || "ranked context"}`,
-        chunk.content,
-      ].join("\n");
-    })
-    .join("\n\n---\n\n");
+          const { chunk, document } = item.result;
+          return [
+            `[${index + 1}] Knowledge: ${chunk.title}`,
+            `source: ${document?.title || chunk.source}; tags: ${chunk.tags.join(", ") || "none"}; score: ${item.result.score.toFixed(2)}`,
+            `reasons: ${item.result.reasons.join(", ") || "ranked context"}`,
+            chunk.content,
+          ].join("\n");
+        })
+        .join("\n\n---\n\n"),
+    ),
+  );
 }

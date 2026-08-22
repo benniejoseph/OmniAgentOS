@@ -1,15 +1,21 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import { parseBoundedInteger } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getHealthStats, getLatestHealthChecks, runSystemDiagnostics } from "@/lib/diagnostics/health";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "diagnostics");
   const url = new URL(request.url);
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, {
+    max: 100,
+  });
   console.log(JSON.stringify({
     level: "info",
     msg: "start",
@@ -26,9 +32,14 @@ export async function GET(request: Request) {
       resourceType: "system_diagnostics",
       metadata: { limit },
     });
-    const check = await runSystemDiagnostics({ scope: "diagnostics" });
-    const stats = await getHealthStats();
-    const history = await getLatestHealthChecks(limit);
+    const check = await runSystemDiagnostics({
+      tenantId: context.tenantId,
+      scope: "diagnostics",
+    });
+    const stats = await getHealthStats({ tenantId: context.tenantId });
+    const history = await getLatestHealthChecks(limit, {
+      tenantId: context.tenantId,
+    });
     console.log(JSON.stringify({
       level: "info",
       msg: "done",
@@ -93,7 +104,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+async function POSTHandler(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "diagnostics-repair");
   console.log(JSON.stringify({
@@ -111,8 +122,12 @@ export async function POST(request: Request) {
       resourceType: "system_diagnostics",
       metadata: { repair: true },
     });
-    const check = await runSystemDiagnostics({ scope: "repair", repair: true });
-    const stats = await getHealthStats();
+    const check = await runSystemDiagnostics({
+      tenantId: context.tenantId,
+      scope: "repair",
+      repair: true,
+    });
+    const stats = await getHealthStats({ tenantId: context.tenantId });
     const status = check.status === "unhealthy" ? 202 : 200;
     console.log(JSON.stringify({
       level: "info",

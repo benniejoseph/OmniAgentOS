@@ -2,7 +2,7 @@ import type { ToolRiskLevel } from "@/lib/tools/types";
 
 export type OpenApiConnectorAuthType = "none" | "bearer_env" | "api_key_header_env";
 export type OpenApiConnectorStatus = "active" | "error" | "disabled";
-export type OpenApiOperationStatus = "active" | "disabled";
+export type OpenApiOperationStatus = "active" | "pending_review" | "disabled";
 export type OpenApiHttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";
 
 export type OpenApiConnectorRecord = {

@@ -8,7 +8,7 @@ The platform needs generation, embeddings, structured output, and hosted web sea
 
 ## Decision
 
-Use the OpenAI Responses API exclusively (`src/lib/openai/client.ts`): streaming with function tools and `previous_response_id` chaining, `text-embedding-3-*` embeddings (dimension-capped for pgvector HNSW), and the hosted `web_search` tool.
+Use the OpenAI Responses API exclusively (`src/lib/openai/client.ts`): streaming with function tools and explicit full-conversation arrays, `text-embedding-3-*` embeddings (dimension-capped for pgvector HNSW), and the hosted `web_search` tool. Full arrays replaced `previous_response_id` chaining so multi-turn tool execution and persisted approval continuations remain compatible with Zero Data Retention.
 
 ## Consequences
 

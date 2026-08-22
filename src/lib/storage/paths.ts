@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 
 export function getDataRoot() {
   if (process.env.OMNIAGENT_DATA_DIR?.trim()) {
@@ -19,6 +19,7 @@ export function getDataPath(...parts: string[]) {
 
 export async function ensureDataDir(...parts: string[]) {
   const dir = getDataPath(...parts);
-  await mkdir(dir, { recursive: true });
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700).catch(() => undefined);
   return dir;
 }

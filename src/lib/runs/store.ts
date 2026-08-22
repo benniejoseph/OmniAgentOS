@@ -1,6 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getDatabaseTenantContext, hasDatabaseUrl, ensureDatabaseSchema, getSql } from "@/lib/db/client";
 import { appendDomainEventSafely } from "@/lib/events/store";
+import {
+  enqueueOperationJob,
+  getAgentResumeJobDedupeKey,
+} from "@/lib/operations/job-queue";
+import { redactSensitive } from "@/lib/security/context";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { AgentRunContinuation, AgentRunEventRecord, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
@@ -14,13 +19,17 @@ export async function createAgentRun(input: {
   model?: string;
 }) {
   const now = new Date().toISOString();
+  const safeMessages = input.messages.map((message) => ({
+    ...message,
+    content: safeRunText(message.content, 30_000),
+  }));
   const run: AgentRunRecord = {
     id: randomUUID(),
     tenantId: normalizeTenantId(input.tenantId),
     mode: input.mode,
     status: "running",
-    prompt: input.prompt,
-    messages: input.messages,
+    prompt: safeRunText(input.prompt, 30_000),
+    messages: safeMessages,
     model: input.model,
     memoryContextCount: 0,
     consolidationCount: 0,
@@ -49,24 +58,27 @@ export async function createAgentRun(input: {
 }
 
 export async function appendRunEvent(runId: string, event: AgentEvent) {
+  const redactedEvent = redactSensitive(event) as AgentEvent;
   const record: AgentRunEventRecord = {
     id: randomUUID(),
     runId,
     type: event.type,
-    payload: event,
+    payload: redactedEvent,
     createdAt: new Date().toISOString(),
   };
 
-  // Stage-1 event-log dual-write (docs/vision/EVENT_LOG.md). Text deltas are
-  // skipped: they are streaming transport, not decisions worth replaying.
-  if (event.type !== "delta") {
-    await appendDomainEventSafely({
-      streamId: `run:${runId}`,
-      type: `run.${event.type}`,
-      payload: event as unknown as Record<string, unknown>,
-      correlationId: runId,
-    });
+  // Text deltas are streaming transport rather than replayable decisions. The
+  // completed response remains on the run, so persisting every token would
+  // duplicate sensitive model output and inflate storage.
+  if (event.type === "delta") {
+    return record;
   }
+  await appendDomainEventSafely({
+    streamId: `run:${runId}`,
+    type: `run.${event.type}`,
+    payload: domainEventPayload(redactedEvent),
+    correlationId: runId,
+  });
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -85,6 +97,17 @@ export async function appendRunEvent(runId: string, event: AgentEvent) {
     return ledger;
   });
   return record;
+}
+
+function domainEventPayload(event: AgentEvent): Record<string, unknown> {
+  if (event.type !== "done") {
+    return event as unknown as Record<string, unknown>;
+  }
+  return {
+    type: event.type,
+    responseLength: event.response.length,
+    responseSha256: createHash("sha256").update(event.response).digest("hex"),
+  };
 }
 
 export async function updateRunContextCount(runId: string, count: number) {
@@ -114,7 +137,7 @@ export async function recordRunConsolidation(
     await getSql()`
       UPDATE omni_agent_runs
       SET consolidation_count = ${result.count},
-          consolidation_error = ${result.error || null},
+          consolidation_error = ${result.error ? safeRunText(result.error, 2_000) : null},
           consolidated_at = ${consolidatedAt}
       WHERE id = ${runId}
     `;
@@ -123,62 +146,156 @@ export async function recordRunConsolidation(
 
   await updateFileRun(runId, (run) => {
     run.consolidationCount = result.count;
-    run.consolidationError = result.error;
+    run.consolidationError = result.error
+      ? safeRunText(result.error, 2_000)
+      : undefined;
     run.consolidatedAt = consolidatedAt;
   });
 }
 
 export async function completeAgentRun(runId: string, response: string) {
-  await setRunStatus(runId, "completed", { response });
+  return setRunStatus(runId, "completed", { response });
 }
 
 export async function failAgentRun(runId: string, error: string) {
-  await setRunStatus(runId, "failed", { error });
+  return setRunStatus(runId, "failed", { error });
 }
 
-/** Mark agent runs stuck in 'running' for longer than staleAfterMs as failed. */
-export async function repairStuckAgentRuns(staleAfterMs = 5 * 60 * 1000) {
+export async function cancelAgentRun(runId: string, reason = "Canceled by the operator.") {
+  return setRunStatus(runId, "canceled", { error: reason });
+}
+
+/** Fail stale initial runs and interrupted resume claims without replaying work. */
+export async function repairStuckAgentRuns({
+  staleAfterMs = 7 * 60 * 1000,
+  tenantId: requestedTenantId,
+}: {
+  staleAfterMs?: number;
+  tenantId?: string;
+} = {}) {
+  const tenantId = normalizeTenantId(requestedTenantId);
+  const staleBeforeEpoch = new Date(Date.now() - staleAfterMs).toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     // Use epoch arithmetic to avoid named-parameter / type issues with intervals.
-    const staleBeforeEpoch = new Date(Date.now() - staleAfterMs).toISOString();
     const rows = await getSql()`
       UPDATE omni_agent_runs
       SET status       = 'failed',
-          error        = 'Run timed out (function invocation limit exceeded).',
+          error        = CASE
+            WHEN status = 'resuming'
+              THEN 'Approved run resume was interrupted; side effects were not replayed.'
+            ELSE 'Run timed out (function invocation limit exceeded).'
+          END,
+          continuation = NULL,
           completed_at = NOW()
-      WHERE status = 'running'
-        AND started_at <= ${staleBeforeEpoch}::timestamptz
+      WHERE tenant_id = ${tenantId}
+        AND (
+          (status = 'running' AND started_at <= ${staleBeforeEpoch}::timestamptz)
+          OR (
+            status = 'resuming'
+            AND COALESCE(
+              (continuation->>'resumeClaimedAt')::timestamptz,
+              started_at
+            ) <= ${staleBeforeEpoch}::timestamptz
+          )
+        )
       RETURNING id
     `;
     return rows.length;
   }
-  return 0;
+  let repaired = 0;
+  await updateRunLedger((ledger) => {
+    const staleBefore = Date.parse(staleBeforeEpoch);
+    for (const run of ledger.runs) {
+      if (normalizeTenantId(run.tenantId) !== tenantId) {
+        continue;
+      }
+      const staleRunning =
+        run.status === "running" &&
+        Date.parse(run.startedAt) <= staleBefore;
+      const resumeClaimedAt =
+        run.continuation?.resumeClaimedAt || run.startedAt;
+      const staleResuming =
+        run.status === "resuming" &&
+        Date.parse(resumeClaimedAt) <= staleBefore;
+      if (!staleRunning && !staleResuming) {
+        continue;
+      }
+      repaired += 1;
+      run.status = "failed";
+      run.error = staleResuming
+        ? "Approved run resume was interrupted; side effects were not replayed."
+        : "Run timed out (function invocation limit exceeded).";
+      run.continuation = undefined;
+      run.completedAt = new Date().toISOString();
+    }
+    return ledger;
+  });
+  return repaired;
 }
 
 export async function markAgentRunWaitingForApproval(
   runId: string,
   values: { response: string; continuation: AgentRunContinuation },
 ) {
+  const tenantId = normalizeTenantId(values.continuation.context.tenantId);
+  const executionId = values.continuation.pendingToolCall.executionId;
+  const resumeJobInput = {
+    tenantId,
+    type: "agent.resume" as const,
+    dedupeKey: getAgentResumeJobDedupeKey(executionId),
+    payload: { agentRunId: runId, executionId },
+    priority: 20,
+    maxAttempts: 10,
+  };
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`
-      UPDATE omni_agent_runs
-      SET status = 'waiting_approval',
-          response = ${values.response || null},
-          continuation = ${JSON.stringify(values.continuation)}::jsonb,
-          completed_at = NULL
-      WHERE id = ${runId}
-    `;
-    return;
+    return getSql().transaction(
+      async (sql: ReturnType<typeof getSql>) => {
+        const rows = await sql`
+          UPDATE omni_agent_runs
+          SET status = 'waiting_approval',
+              response = ${values.response ? safeRunText(values.response, 100_000) : null},
+              continuation = ${JSON.stringify(values.continuation)}::jsonb,
+              completed_at = NULL
+          WHERE id = ${runId}
+            AND tenant_id = ${tenantId}
+            AND status IN ('running', 'resuming')
+          RETURNING id
+        `;
+        if (!rows[0]) {
+          return { parked: false, resumeJob: undefined };
+        }
+        const resumeJob = await enqueueOperationJob(resumeJobInput, { sql });
+        return { parked: true, resumeJob };
+      },
+    ) as Promise<{
+      parked: boolean;
+      resumeJob:
+        | Awaited<ReturnType<typeof enqueueOperationJob>>
+        | undefined;
+    }>;
   }
 
+  // File mode has no cross-file transaction. Pre-arm the durable job first;
+  // the resume worker defers it while the continuation write is incomplete.
+  const resumeJob = await enqueueOperationJob(resumeJobInput);
+  let parked = false;
   await updateFileRun(runId, (run) => {
+    if (
+      normalizeTenantId(run.tenantId) !== tenantId ||
+      !["running", "resuming"].includes(run.status)
+    ) {
+      return;
+    }
     run.status = "waiting_approval";
-    run.response = values.response;
+    run.response = safeRunText(values.response, 100_000);
     run.continuation = values.continuation;
     run.completedAt = undefined;
+    parked = true;
   });
+  return { parked, resumeJob };
 }
 
 /**
@@ -187,11 +304,18 @@ export async function markAgentRunWaitingForApproval(
  * claimed the run, so concurrent decisions cannot double-resume it.
  */
 export async function markAgentRunResuming(runId: string): Promise<boolean> {
+  const claimedAt = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       UPDATE omni_agent_runs
       SET status = 'resuming',
+          continuation = jsonb_set(
+            continuation,
+            '{resumeClaimedAt}',
+            to_jsonb(${claimedAt}::text),
+            true
+          ),
           completed_at = NULL
       WHERE id = ${runId}
         AND status = 'waiting_approval'
@@ -204,6 +328,12 @@ export async function markAgentRunResuming(runId: string): Promise<boolean> {
   await updateFileRun(runId, (run) => {
     if (run.status === "waiting_approval") {
       run.status = "resuming";
+      if (run.continuation) {
+        run.continuation = {
+          ...run.continuation,
+          resumeClaimedAt: claimedAt,
+        };
+      }
       run.completedAt = undefined;
       transitioned = true;
     }
@@ -351,28 +481,44 @@ async function setRunStatus(
   values: { response?: string; error?: string },
 ) {
   const completedAt = new Date().toISOString();
+  const safeResponse = values.response
+    ? safeRunText(values.response, 100_000)
+    : undefined;
+  const safeError = values.error ? safeRunText(values.error, 2_000) : undefined;
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`
+    const rows = await getSql()`
       UPDATE omni_agent_runs
       SET status = ${status},
-          response = ${values.response || null},
-          error = ${values.error || null},
+          response = ${safeResponse || null},
+          error = ${safeError || null},
           continuation = NULL,
           completed_at = ${completedAt}
       WHERE id = ${runId}
+        AND status NOT IN ('completed', 'failed', 'canceled')
+      RETURNING id
     `;
-    return;
+    return Boolean(rows[0]);
   }
 
+  let changed = false;
   await updateFileRun(runId, (run) => {
+    if (["completed", "failed", "canceled"].includes(run.status)) {
+      return;
+    }
+    changed = true;
     run.status = status;
-    run.response = values.response;
-    run.error = values.error;
+    run.response = safeResponse;
+    run.error = safeError;
     run.continuation = undefined;
     run.completedAt = completedAt;
   });
+  return changed;
+}
+
+function safeRunText(value: string, maxChars: number) {
+  return String(redactSensitive(value)).slice(0, maxChars);
 }
 
 async function updateFileRun(runId: string, mutate: (run: AgentRunRecord) => void) {
@@ -386,7 +532,14 @@ async function updateFileRun(runId: string, mutate: (run: AgentRunRecord) => voi
 }
 
 async function readRunLedger() {
-  return readJsonFile<RunLedger>(getRunsFile(), { runs: [], events: [] });
+  const ledger = await readJsonFile<RunLedger>(
+    getRunsFile(),
+    { runs: [], events: [] },
+  );
+  return {
+    runs: ledger.runs.map(sanitizeAgentRunRecord),
+    events: redactSensitive(ledger.events) as RunLedger["events"],
+  };
 }
 
 async function updateRunLedger(mutate: (ledger: RunLedger) => RunLedger) {
@@ -396,15 +549,25 @@ async function updateRunLedger(mutate: (ledger: RunLedger) => RunLedger) {
 }
 
 function trimLedger(ledger: RunLedger): RunLedger {
-  const runIds = new Set(ledger.runs.slice(0, 100).map((run) => run.id));
+  const nonterminal = ledger.runs.filter((run) =>
+    ["running", "waiting_approval", "resuming"].includes(run.status),
+  );
+  const terminal = ledger.runs.filter(
+    (run) => !["running", "waiting_approval", "resuming"].includes(run.status),
+  );
+  const runs = [
+    ...nonterminal,
+    ...terminal.slice(0, Math.max(0, 100 - nonterminal.length)),
+  ];
+  const runIds = new Set(runs.map((run) => run.id));
   return {
-    runs: ledger.runs.slice(0, 100),
+    runs,
     events: ledger.events.filter((event) => runIds.has(event.runId)).slice(-1000),
   };
 }
 
 function runFromRow(row: Record<string, unknown>): AgentRunRecord {
-  return {
+  return sanitizeAgentRunRecord({
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
     mode: String(row.mode) as AgentMode,
@@ -421,6 +584,26 @@ function runFromRow(row: Record<string, unknown>): AgentRunRecord {
     startedAt: normalizeDate(row.started_at),
     completedAt: row.completed_at ? normalizeDate(row.completed_at) : undefined,
     consolidatedAt: row.consolidated_at ? normalizeDate(row.consolidated_at) : undefined,
+  });
+}
+
+function sanitizeAgentRunRecord(run: AgentRunRecord): AgentRunRecord {
+  return {
+    ...run,
+    prompt: String(redactSensitive(run.prompt)).slice(0, 20_000),
+    messages: redactSensitive(run.messages) as ChatMessage[],
+    response: run.response
+      ? String(redactSensitive(run.response))
+      : undefined,
+    error: run.error
+      ? String(redactSensitive(run.error)).slice(0, 2_000)
+      : undefined,
+    consolidationError: run.consolidationError
+      ? String(redactSensitive(run.consolidationError)).slice(0, 2_000)
+      : undefined,
+    continuation: run.continuation
+      ? (redactSensitive(run.continuation) as AgentRunContinuation)
+      : undefined,
   };
 }
 
@@ -461,6 +644,10 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
       role: normalizeRole((candidate.context as { role?: unknown })?.role),
     },
     createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : new Date().toISOString(),
+    resumeClaimedAt:
+      typeof candidate.resumeClaimedAt === "string"
+        ? candidate.resumeClaimedAt
+        : undefined,
   };
 }
 
@@ -494,7 +681,10 @@ function normalizeDate(value: unknown) {
 }
 
 function normalizeTenantId(value?: string) {
-  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default";
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }
 
 function normalizeRole(value: unknown): AgentRunContinuation["context"]["role"] {

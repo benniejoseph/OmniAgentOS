@@ -1,4 +1,7 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import { parseBoundedInteger } from "@/lib/http/body";
 import { embedTexts } from "@/lib/openai/client";
+import { redactSensitive } from "@/lib/security/context";
 import {
   getKnowledgeStats,
   listKnowledgeChunks,
@@ -8,8 +11,9 @@ import {
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   let context;
   try {
     context = await authorizeRequest({
@@ -22,13 +26,25 @@ export async function GET(request: Request) {
   }
 
   const url = new URL(request.url);
-  const query = url.searchParams.get("q");
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
+  const query = url.searchParams.get("q")?.trim().slice(0, 4_000);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, {
+    max: 100,
+  });
 
   if (query) {
-    const queryEmbedding = (await embedTexts([query]))?.[0];
+    const safeQuery = String(redactSensitive(query));
+    const queryEmbedding = (await embedTexts([safeQuery]))?.[0];
     return Response.json({
-      results: await searchKnowledge(query, { limit, queryEmbedding, tenantId: context.tenantId }),
+      results: (
+        await searchKnowledge(safeQuery, {
+          limit,
+          queryEmbedding,
+          tenantId: context.tenantId,
+        })
+      ).map((result) => ({
+        ...result,
+        chunk: withoutEmbedding(result.chunk),
+      })),
       stats: await getKnowledgeStats({ tenantId: context.tenantId }),
     });
   }
@@ -39,5 +55,15 @@ export async function GET(request: Request) {
     getKnowledgeStats({ tenantId: context.tenantId }),
   ]);
 
-  return Response.json({ documents, chunks, stats });
+  return Response.json({
+    documents,
+    chunks: chunks.map(withoutEmbedding),
+    stats,
+  });
+}
+
+function withoutEmbedding<T extends { embedding?: number[] }>(record: T) {
+  const publicRecord = { ...record };
+  delete publicRecord.embedding;
+  return publicRecord;
 }

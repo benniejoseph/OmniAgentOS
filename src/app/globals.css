@@ -1,19 +1,20 @@
 @import "tailwindcss";
 
 :root {
-  --background: oklch(0.982 0.006 95);
+  --background: oklch(0.982 0.004 174);
   --foreground: oklch(0.18 0.018 245);
-  --surface: oklch(0.998 0.002 95);
-  --surface-raised: oklch(0.955 0.008 95);
-  --surface-overlay: oklch(0.935 0.012 95);
-  --muted: oklch(0.47 0.025 245);
-  --line: oklch(0.86 0.014 245);
-  --primary: oklch(0.56 0.12 174);
-  --primary-ink: oklch(0.99 0.006 95);
-  --accent: oklch(0.66 0.16 72);
-  --success: oklch(0.58 0.13 150);
-  --warning: oklch(0.68 0.16 75);
-  --danger: oklch(0.62 0.19 27);
+  --surface: oklch(0.998 0.002 174);
+  --surface-raised: oklch(0.95 0.008 174);
+  --surface-overlay: oklch(0.92 0.012 174);
+  --muted: oklch(0.42 0.024 245);
+  --line: oklch(0.82 0.014 245);
+  --primary: oklch(0.42 0.105 174);
+  --primary-ink: oklch(0.99 0.004 174);
+  --accent: oklch(0.44 0.13 72);
+  --success: oklch(0.39 0.115 150);
+  --warning: oklch(0.42 0.11 72);
+  --danger: oklch(0.46 0.17 27);
+  --info: oklch(0.42 0.11 245);
 }
 
 :root[data-theme="dark"] {
@@ -30,6 +31,7 @@
   --success: oklch(0.72 0.12 150);
   --warning: oklch(0.8 0.15 75);
   --danger: oklch(0.72 0.18 26);
+  --info: oklch(0.74 0.1 245);
 }
 
 @theme inline {
@@ -46,19 +48,50 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-danger: var(--danger);
+  --color-info: var(--info);
   --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
 }
 
+html {
+  scroll-padding-top: 6.5rem;
+}
+
 body {
+  min-width: 20rem;
   background: var(--background);
   color: var(--foreground);
   font-family: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.5;
   text-rendering: optimizeLegibility;
 }
 
 * {
   box-sizing: border-box;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+p,
+li {
+  text-wrap: pretty;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
 }
 
 ::selection {
@@ -70,11 +103,6 @@ body {
   background:
     linear-gradient(180deg, oklch(from var(--surface-raised) l c h / 0.92), oklch(from var(--surface) l c h / 0.92)),
     var(--surface);
-  box-shadow: 0 24px 70px oklch(0.08 0.02 245 / 0.16);
-}
-
-:root[data-theme="dark"] .panel {
-  box-shadow: 0 24px 70px oklch(0.08 0.02 245 / 0.34);
 }
 
 .subtle-grid {
@@ -100,7 +128,7 @@ body {
 .action-link,
 .primary-button {
   display: inline-flex;
-  height: 2.5rem;
+  min-height: 2.75rem;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
@@ -151,9 +179,11 @@ a:focus-visible,
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
-select:focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 2px;
+select:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 3px;
 }
 
 .animate-rise {
@@ -196,5 +226,27 @@ select:focus-visible {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --line: oklch(0.58 0.018 245);
+    --muted: oklch(0.3 0.02 245);
+  }
+
+  :root[data-theme="dark"] {
+    --line: oklch(0.68 0.02 245);
+    --muted: oklch(0.86 0.02 245);
+  }
+}
+
+@media (forced-colors: active) {
+  .action-button,
+  .action-link,
+  .primary-button,
+  button,
+  a {
+    forced-color-adjust: auto;
   }
 }

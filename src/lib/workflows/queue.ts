@@ -1,21 +1,33 @@
 import { after } from "next/server";
 import { OPERATION_QUEUE_LEASE_SECONDS, WORKFLOW_DRAIN_LIMIT } from "@/lib/config";
 import {
+  getDatabaseTenantContext,
+  runWithDatabaseTenantScope,
+} from "@/lib/db/client";
+import {
   cancelOperationJobByDedupeKey,
   completeOperationJob,
   enqueueOperationJob,
   failOperationJob,
+  heartbeatOperationJob,
   leaseOperationJobs,
+  listRunnableWorkflowTenantIds,
   type OperationJobRecord,
 } from "@/lib/operations/job-queue";
 import { tickWorkflowRun } from "@/lib/workflows/runner";
-import { appendWorkflowEvent, listWorkflowRuns } from "@/lib/workflows/store";
+import {
+  appendWorkflowEvent,
+  failWorkflowRunForQueueExhaustion,
+  listWorkflowRuns,
+  reclaimWorkflowRunForQueueDelivery,
+} from "@/lib/workflows/store";
 import type { WorkflowRunDetail } from "@/lib/workflows/types";
 
 type ProcessWorkflowQueueInput = {
   limit?: number;
   workflowRunId?: string;
   bootstrapQueuedRuns?: boolean;
+  tenantId?: string;
 };
 
 type WorkflowQueueJobResult = {
@@ -37,16 +49,23 @@ export type WorkflowQueueResult = {
   jobs: WorkflowQueueJobResult[];
 };
 
+export type AllTenantWorkflowQueueResult = WorkflowQueueResult & {
+  tenantIds: string[];
+  tenantResults: Array<{ tenantId: string; result: WorkflowQueueResult }>;
+};
+
 const workflowJobPriority = 10;
 const workflowJobMaxAttempts = 5;
-const runnableWorkflowStatuses = new Set(["queued", "running"]);
+const runnableWorkflowStatuses = new Set(["queued"]);
 
 export async function enqueueWorkflowRunTick(
   workflowRunId: string,
   reason = "workflow_queued",
   priority = workflowJobPriority,
+  tenantId?: string,
 ) {
   const job = await enqueueOperationJob({
+    tenantId,
     type: "workflow.tick",
     dedupeKey: getWorkflowJobDedupeKey(workflowRunId),
     payload: {
@@ -65,8 +84,16 @@ export async function enqueueWorkflowRunTick(
   return job;
 }
 
-export async function cancelWorkflowRunTick(workflowRunId: string, reason = "Workflow job canceled.") {
-  const jobs = await cancelOperationJobByDedupeKey(getWorkflowJobDedupeKey(workflowRunId), reason);
+export async function cancelWorkflowRunTick(
+  workflowRunId: string,
+  reason = "Workflow job canceled.",
+  tenantId?: string,
+) {
+  const jobs = await cancelOperationJobByDedupeKey(
+    getWorkflowJobDedupeKey(workflowRunId),
+    reason,
+    { tenantId },
+  );
   if (jobs.length) {
     await appendWorkflowEvent(workflowRunId, "workflow.queue.canceled", {
       reason,
@@ -76,25 +103,97 @@ export async function cancelWorkflowRunTick(workflowRunId: string, reason = "Wor
   return jobs;
 }
 
-export async function enqueueRunnableWorkflowRuns(limit = 50) {
-  const runs = await listWorkflowRuns(Math.max(limit, 50));
+export async function enqueueRunnableWorkflowRuns(limit = 50, options: { tenantId?: string } = {}) {
+  const runs = await listWorkflowRuns(Math.max(limit, 50), options);
   const runnable = runs
     .filter((run) => runnableWorkflowStatuses.has(run.status))
     .slice(0, limit);
   const jobs = [];
   for (const run of runnable) {
-    jobs.push(await enqueueWorkflowRunTick(run.id, "queue_bootstrap", workflowJobPriority - 1));
+    jobs.push(await enqueueWorkflowRunTick(
+      run.id,
+      "queue_bootstrap",
+      workflowJobPriority - 1,
+      run.tenantId,
+    ));
   }
   return jobs;
 }
 
-export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}): Promise<WorkflowQueueResult> {
+export function processWorkflowQueue(
+  input: ProcessWorkflowQueueInput = {},
+): Promise<WorkflowQueueResult> {
+  const tenantId =
+    input.tenantId ||
+    getDatabaseTenantContext() ||
+    process.env.OMNIAGENT_DEFAULT_TENANT ||
+    "default";
+  return runWithDatabaseTenantScope(tenantId, () =>
+    processWorkflowQueueInScope({ ...input, tenantId }),
+  );
+}
+
+export async function processAllTenantWorkflowQueues(
+  input: { limit?: number } = {},
+): Promise<AllTenantWorkflowQueueResult> {
+  const limit = Math.min(Math.max(input.limit || WORKFLOW_DRAIN_LIMIT, 1), 10);
+  const tenantIds = await listRunnableWorkflowTenantIds(limit);
+  const tenantResults: AllTenantWorkflowQueueResult["tenantResults"] = [];
+  const jobs: WorkflowQueueJobResult[] = [];
+  let remaining = limit;
+  let activeTenantIds = tenantIds;
+
+  while (remaining > 0 && activeTenantIds.length) {
+    const nextActive: string[] = [];
+    for (const tenantId of activeTenantIds) {
+      if (remaining <= 0) {
+        break;
+      }
+      const result = await processWorkflowQueue({
+        tenantId,
+        limit: 1,
+        bootstrapQueuedRuns: true,
+      });
+      tenantResults.push({ tenantId, result });
+      jobs.push(...result.jobs);
+      remaining -= result.leased;
+      if (result.leased > 0 && result.requeued > 0) {
+        nextActive.push(tenantId);
+      }
+    }
+    if (nextActive.length === activeTenantIds.length && jobs.length === 0) {
+      break;
+    }
+    activeTenantIds = nextActive;
+  }
+
+  return {
+    requested: limit,
+    leased: jobs.length,
+    completed: jobs.filter((result) => result.status === "completed").length,
+    failed: jobs.filter((result) => result.status === "failed").length,
+    stale: jobs.filter((result) => result.status === "stale").length,
+    requeued: jobs.filter((result) => result.requeued).length,
+    jobs,
+    tenantIds,
+    tenantResults,
+  };
+}
+
+async function processWorkflowQueueInScope(
+  input: ProcessWorkflowQueueInput,
+): Promise<WorkflowQueueResult> {
   const limit = Math.min(Math.max(input.limit || WORKFLOW_DRAIN_LIMIT, 1), 10);
 
   if (input.workflowRunId) {
-    await enqueueWorkflowRunTick(input.workflowRunId, "operator_tick", workflowJobPriority + 10);
+    await enqueueWorkflowRunTick(
+      input.workflowRunId,
+      "operator_tick",
+      workflowJobPriority + 10,
+      input.tenantId,
+    );
   } else if (input.bootstrapQueuedRuns !== false) {
-    await enqueueRunnableWorkflowRuns(50);
+    await enqueueRunnableWorkflowRuns(50, { tenantId: input.tenantId });
   }
 
   const jobs = await leaseOperationJobs({
@@ -102,6 +201,7 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
     dedupeKey: input.workflowRunId ? getWorkflowJobDedupeKey(input.workflowRunId) : undefined,
     limit,
     leaseSeconds: OPERATION_QUEUE_LEASE_SECONDS,
+    tenantId: input.tenantId,
   });
   const results: WorkflowQueueJobResult[] = [];
 
@@ -109,7 +209,7 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
     const workflowRunId = String(job.payload.workflowRunId || "");
     if (!workflowRunId) {
       const error = "Workflow queue job is missing workflowRunId.";
-      const failedJob = await failOperationJob(job.id, error, job.leaseOwner);
+      const failedJob = await failOperationJob(job.id, error, job.leaseOwner, job.tenantId);
       results.push({
         job: failedJob || job,
         status: failedJob ? "failed" : "stale",
@@ -124,8 +224,133 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
         attempt: job.attempt,
         leaseExpiresAt: job.leaseExpiresAt,
       }).catch(() => undefined);
-      const detail = await tickWorkflowRun(workflowRunId);
-      const completedJob = await completeOperationJob(job.id, job.leaseOwner);
+      const controller = new AbortController();
+      let leaseLost = false;
+      let heartbeatChain = Promise.resolve();
+      const heartbeat = async () => {
+        try {
+          const renewed = await heartbeatOperationJob(job.id, job.leaseOwner || "", {
+            tenantId: job.tenantId,
+            leaseSeconds: OPERATION_QUEUE_LEASE_SECONDS,
+          });
+          if (renewed) {
+            return;
+          }
+          leaseLost = true;
+          controller.abort(new Error("Workflow queue lease was lost."));
+        } catch (error) {
+          leaseLost = true;
+          controller.abort(
+            error instanceof Error ? error : new Error("Workflow queue lease heartbeat failed."),
+          );
+        }
+      };
+      await heartbeat();
+      if (leaseLost) {
+        results.push({
+          job,
+          workflowRunId,
+          status: "stale",
+          error: "Workflow queue lease was stale before execution started.",
+        });
+        continue;
+      }
+      if (job.attempt > job.maxAttempts) {
+        const reason =
+          "Workflow queue lease expired after its retry budget was exhausted.";
+        await failWorkflowRunForQueueExhaustion(workflowRunId, {
+          tenantId: job.tenantId,
+          jobId: job.id,
+          leaseOwner: job.leaseOwner || "",
+          reason,
+        });
+        const completedJob = await completeOperationJob(
+          job.id,
+          job.leaseOwner,
+          job.tenantId,
+        );
+        const detail = await tickWorkflowRun(workflowRunId, {
+          tenantId: job.tenantId,
+        });
+        await appendWorkflowEvent(
+          workflowRunId,
+          "workflow.queue.retry_budget_exhausted",
+          { jobId: job.id, attempt: job.attempt },
+        ).catch(() => undefined);
+        results.push({
+          job: completedJob || job,
+          workflowRunId,
+          status: completedJob ? "completed" : "stale",
+          detail,
+          error: reason,
+        });
+        continue;
+      }
+      const reclaimDisposition = await reclaimWorkflowRunForQueueDelivery(
+        workflowRunId,
+        {
+          tenantId: job.tenantId,
+          jobId: job.id,
+          leaseOwner: job.leaseOwner || "",
+          deliveryAttempt: job.attempt,
+        },
+      );
+      if (reclaimDisposition === "stale") {
+        results.push({
+          job,
+          workflowRunId,
+          status: "stale",
+          error: "Workflow queue lease was stale during redelivery recovery.",
+        });
+        continue;
+      }
+      if (reclaimDisposition === "requeued") {
+        await appendWorkflowEvent(
+          workflowRunId,
+          "workflow.queue.redelivery_reclaimed",
+          { jobId: job.id, attempt: job.attempt },
+        ).catch(() => undefined);
+      }
+      if (reclaimDisposition === "failed") {
+        const completedJob = await completeOperationJob(
+          job.id,
+          job.leaseOwner,
+          job.tenantId,
+        );
+        const detail = await tickWorkflowRun(workflowRunId, {
+          tenantId: job.tenantId,
+        });
+        results.push({
+          job: completedJob || job,
+          workflowRunId,
+          status: completedJob ? "completed" : "stale",
+          detail,
+          error:
+            "Workflow retry budget was exhausted during redelivery recovery.",
+        });
+        continue;
+      }
+      const heartbeatTimer = setInterval(() => {
+        heartbeatChain = heartbeatChain.then(heartbeat, heartbeat);
+      }, Math.max(1_000, Math.min(5_000, Math.floor(OPERATION_QUEUE_LEASE_SECONDS * 1_000 / 3))));
+      let detail: WorkflowRunDetail;
+      try {
+        detail = await tickWorkflowRun(workflowRunId, {
+          tenantId: job.tenantId,
+          abortSignal: controller.signal,
+        });
+      } finally {
+        clearInterval(heartbeatTimer);
+        await heartbeatChain;
+      }
+      if (detail.run.status === "running") {
+        throw new Error(
+          "Workflow remained running after its queue delivery completed.",
+        );
+      }
+      const completedJob = leaseLost
+        ? null
+        : await completeOperationJob(job.id, job.leaseOwner, job.tenantId);
       if (!completedJob) {
         results.push({
           job,
@@ -139,7 +364,12 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
       let requeued: OperationJobRecord | undefined;
 
       if (runnableWorkflowStatuses.has(detail.run.status)) {
-        requeued = await enqueueWorkflowRunTick(workflowRunId, "workflow_still_runnable", workflowJobPriority);
+        requeued = await enqueueWorkflowRunTick(
+          workflowRunId,
+          "workflow_still_runnable",
+          workflowJobPriority,
+          job.tenantId,
+        );
       }
 
       results.push({
@@ -151,7 +381,15 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Workflow queue job failed.";
-      const failedJob = await failOperationJob(job.id, message, job.leaseOwner);
+      if (job.attempt >= job.maxAttempts) {
+        await failWorkflowRunForQueueExhaustion(workflowRunId, {
+          tenantId: job.tenantId,
+          jobId: job.id,
+          leaseOwner: job.leaseOwner || "",
+          reason: `Workflow queue exhausted its retry budget: ${message}`,
+        });
+      }
+      const failedJob = await failOperationJob(job.id, message, job.leaseOwner, job.tenantId);
       await appendWorkflowEvent(workflowRunId, "workflow.queue.failed", {
         jobId: job.id,
         error: message,
@@ -176,12 +414,21 @@ export async function processWorkflowQueue(input: ProcessWorkflowQueueInput = {}
   };
 }
 
-export function scheduleWorkflowQueueDrain(limit = WORKFLOW_DRAIN_LIMIT) {
+export function scheduleWorkflowQueueDrain(
+  limit = WORKFLOW_DRAIN_LIMIT,
+  tenantId?: string,
+) {
+  const scopedTenantId =
+    tenantId ||
+    getDatabaseTenantContext() ||
+    process.env.OMNIAGENT_DEFAULT_TENANT ||
+    "default";
   after(async () => {
     try {
       await processWorkflowQueue({
         limit,
         bootstrapQueuedRuns: false,
+        tenantId: scopedTenantId,
       });
     } catch (error) {
       console.warn("Workflow queue drain failed.", error instanceof Error ? error.message : error);

@@ -1,22 +1,26 @@
-const baseUrl = normalizeBaseUrl(process.env.BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "http://127.0.0.1:3000");
+import { failSmoke, getSmokeBaseUrl, positiveInteger, smokeFetch } from "./smoke-helpers.mjs";
+
+const baseUrl = getSmokeBaseUrl();
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
 const password = process.env.SMOKE_ADMIN_PASSWORD || process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
 const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
 const checks = [];
 const syntheticHeaders = createSyntheticHeaders("release");
 
+await clearReleaseEvidenceArtifact();
 const headers = await resolveAuthHeaders();
 
 if (!headers) {
-  console.log("PASS release evidence smoke skipped - set SMOKE_ADMIN_EMAIL/SMOKE_ADMIN_PASSWORD or SMOKE_INTERNAL_AUTH_SECRET");
-  process.exit(0);
+  for (const check of checks) {
+    console.error(`FAIL ${check.label}${check.detail ? ` - ${check.detail}` : ""}`);
+  }
+  failSmoke("release evidence smoke requires valid administrator credentials or SMOKE_INTERNAL_AUTH_SECRET.");
 }
 
 const response = await request("/api/release/evidence", { headers });
 const json = await readJson(response);
 const report = json?.report;
 const gateById = new Map((report?.gates || []).map((gate) => [gate.id, gate]));
-await writeReleaseEvidenceArtifact(report);
 
 checks.push(assert(response.status === 200, "release evidence endpoint returns report", statusDetail(response.status, json)));
 checks.push(assert(Boolean(report), "release evidence report is present", "missing report"));
@@ -25,8 +29,15 @@ checks.push(assert(report?.releaseGate?.status === "passed", "release gate is fu
 checks.push(assert(gateById.get("tenant_isolation_database")?.status === "pass", "database tenant isolation gate passes", gateDetail(gateById.get("tenant_isolation_database"))));
 checks.push(assert(gateById.get("latest_tenant_isolation_eval")?.status === "pass", "tenant isolation eval gate passes", gateDetail(gateById.get("latest_tenant_isolation_eval"))));
 checks.push(assert(gateById.get("internal_smoke_auth")?.status === "pass", "internal smoke auth gate passes", gateDetail(gateById.get("internal_smoke_auth"))));
+checks.push(assert(gateById.get("openai_provider")?.status === "pass", "OpenAI provider gate passes", gateDetail(gateById.get("openai_provider"))));
+checks.push(assert(gateById.get("cron_auth")?.status === "pass", "cron authentication gate passes", gateDetail(gateById.get("cron_auth"))));
+checks.push(assert(gateById.get("runtime_database_role")?.status === "pass", "runtime database role gate passes", gateDetail(gateById.get("runtime_database_role"))));
+checks.push(assert(gateById.get("dedicated_worker")?.status === "pass", "dedicated worker revision and heartbeat gate passes", gateDetail(gateById.get("dedicated_worker"))));
 checks.push(assert(gateById.get("observability_slo")?.status === "pass", "observability SLO gate passes", gateDetail(gateById.get("observability_slo"))));
 checks.push(assert(gateById.get("eval_report_signing")?.status === "pass", "eval report signing gate passes", gateDetail(gateById.get("eval_report_signing"))));
+checks.push(report
+  ? assert(await writeReleaseEvidenceArtifact(report), "release evidence artifact is present and bounded", "artifact validation failed")
+  : assert(false, "release evidence artifact is present and bounded", "report was missing, so no artifact was written"));
 
 const failures = checks.filter((check) => !check.ok);
 for (const check of checks) {
@@ -69,41 +80,75 @@ async function resolveAuthHeaders() {
 }
 
 async function request(path, init) {
-  return fetch(`${baseUrl}${path}`, {
-    redirect: "manual",
-    ...init,
-    headers: {
-      ...syntheticHeaders,
-      ...(init?.headers || {}),
-    },
-  });
+  try {
+    return await smokeFetch(baseUrl, path, {
+      ...init,
+      headers: {
+        ...syntheticHeaders,
+        ...(init?.headers || {}),
+      },
+    });
+  } catch (error) {
+    failSmoke(error instanceof Error ? error.message : `request failed for ${path}`);
+  }
+}
+
+async function clearReleaseEvidenceArtifact() {
+  const outputPath = process.env.RELEASE_EVIDENCE_OUTPUT?.trim();
+  if (!outputPath) {
+    failSmoke("RELEASE_EVIDENCE_OUTPUT is required for the release evidence gate.");
+  }
+  const { rm } = await import("node:fs/promises");
+  await rm(outputPath, { force: true });
 }
 
 async function writeReleaseEvidenceArtifact(report) {
-  const outputPath = process.env.RELEASE_EVIDENCE_OUTPUT;
+  const outputPath = process.env.RELEASE_EVIDENCE_OUTPUT?.trim();
   if (!outputPath) {
-    return;
+    failSmoke("RELEASE_EVIDENCE_OUTPUT is required for the release evidence gate.");
   }
 
-  const [{ mkdir, writeFile }, { dirname }] = await Promise.all([
+  const maxBytes = positiveInteger(
+    process.env.RELEASE_EVIDENCE_MAX_BYTES,
+    262_144,
+    1_048_576,
+  );
+  const [{ mkdir, stat, writeFile }, { dirname }] = await Promise.all([
     import("node:fs/promises"),
     import("node:path"),
   ]);
+  const content = `${JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    baseUrl,
+    smokeRunId: process.env.SMOKE_RUN_ID,
+    releaseGate: {
+      ...report.releaseGate,
+      reasons: limitStrings(report.releaseGate?.reasons),
+      warnings: limitStrings(report.releaseGate?.warnings),
+    },
+    deployment: report.deployment,
+    gates: (report.gates || []).slice(0, 50).map((gate) => ({
+      id: gate.id,
+      name: gate.name,
+      status: gate.status,
+      summary: limitText(gate.summary),
+    })),
+    tenantIsolation: report.tenantIsolation?.summary,
+    observability: {
+      ...report.observability,
+      breaches: (report.observability?.breaches || []).slice(0, 25),
+    },
+    recommendations: limitStrings(report.recommendations),
+  }, null, 2)}\n`;
+  const bytes = Buffer.byteLength(content);
+  if (bytes > maxBytes) {
+    failSmoke(`release evidence artifact is ${bytes} bytes, above the ${maxBytes}-byte limit.`);
+  }
+
   await mkdir(dirname(outputPath), { recursive: true });
-  await writeFile(
-    outputPath,
-    `${JSON.stringify({
-      generatedAt: new Date().toISOString(),
-      baseUrl,
-      smokeRunId: process.env.SMOKE_RUN_ID,
-      releaseGate: report?.releaseGate,
-      deployment: report?.deployment,
-      gates: report?.gates,
-      tenantIsolation: report?.tenantIsolation?.summary,
-      observability: report?.observability,
-      recommendations: report?.recommendations,
-    }, null, 2)}\n`,
-  );
+  await writeFile(outputPath, content, { mode: 0o600 });
+  const artifact = await stat(outputPath);
+  return artifact.isFile() && artifact.size > 0 && artifact.size <= maxBytes;
 }
 
 async function readJson(response) {
@@ -132,8 +177,12 @@ function assert(ok, label, detail) {
   return { ok, label, detail: ok ? undefined : detail };
 }
 
-function normalizeBaseUrl(value) {
-  return value.replace(/\/+$/, "");
+function limitStrings(values) {
+  return (values || []).slice(0, 25).map((value) => limitText(value));
+}
+
+function limitText(value) {
+  return String(value || "").slice(0, 2_000);
 }
 
 function createSyntheticHeaders(scope) {

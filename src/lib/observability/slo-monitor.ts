@@ -1,5 +1,9 @@
 import { enqueueAlertDeliveriesForIncident, type AlertDeliveryRecord } from "@/lib/diagnostics/alerts";
 import {
+  getDatabaseTenantContext,
+  runWithDatabaseTenantScope,
+} from "@/lib/db/client";
+import {
   getIncidentAlertTargets,
   resolveIncidentByFingerprint,
   updateIncidentMetadata,
@@ -67,8 +71,27 @@ export async function getObservabilitySloSnapshot({
   policies?: ObservabilitySloPolicy[];
   tenantId?: string;
 } = {}): Promise<ObservabilitySloSnapshot> {
+  const scopedTenantId = normalizeTenantId(tenantId);
+  return runWithDatabaseTenantScope(scopedTenantId, () =>
+    getObservabilitySloSnapshotForTenant({
+      policies,
+      tenantId: scopedTenantId,
+    }),
+  );
+}
+
+async function getObservabilitySloSnapshotForTenant({
+  policies,
+  tenantId,
+}: {
+  policies?: ObservabilitySloPolicy[];
+  tenantId: string;
+}): Promise<ObservabilitySloSnapshot> {
   const stats = await getObservabilityStats({ tenantId });
-  const enabledPolicies = (policies || await listObservabilitySloPolicies({ includeDisabled: false }))
+  const enabledPolicies = (policies || await listObservabilitySloPolicies({
+    tenantId,
+    includeDisabled: false,
+  }))
     .filter((policy) => policy.enabled);
   const evaluations = enabledPolicies.map((policy) => evaluateSloPolicy(policy, stats));
   const breaches = evaluations.filter((evaluation) => evaluation.breached);
@@ -100,6 +123,37 @@ export async function runObservabilitySloMonitor({
   policies?: ObservabilitySloPolicy[];
   tenantId?: string;
 } = {}): Promise<ObservabilitySloMonitorResult> {
+  const scopedTenantId = normalizeTenantId(tenantId);
+  return runWithDatabaseTenantScope(scopedTenantId, () =>
+    runObservabilitySloMonitorForTenant({
+      trigger,
+      actorId,
+      correlationId,
+      queueAlerts,
+      resolveRecovered,
+      policies,
+      tenantId: scopedTenantId,
+    }),
+  );
+}
+
+async function runObservabilitySloMonitorForTenant({
+  trigger,
+  actorId,
+  correlationId,
+  queueAlerts,
+  resolveRecovered,
+  policies,
+  tenantId,
+}: {
+  trigger: string;
+  actorId: string;
+  correlationId?: string;
+  queueAlerts: boolean;
+  resolveRecovered: boolean;
+  policies?: ObservabilitySloPolicy[];
+  tenantId: string;
+}): Promise<ObservabilitySloMonitorResult> {
   const snapshot = await getObservabilitySloSnapshot({ policies, tenantId });
   const incidentActions: ObservabilitySloIncidentAction[] = [];
   let queuedAlerts = 0;
@@ -109,6 +163,7 @@ export async function runObservabilitySloMonitor({
     if (!evaluation.breached || !evaluation.severity) {
       if (resolveRecovered) {
         const resolved = await resolveIncidentByFingerprint(fingerprint, {
+          tenantId,
           actorId,
           resolution: `${evaluation.policy.name} recovered inside SLO.`,
           metadata: {
@@ -134,6 +189,7 @@ export async function runObservabilitySloMonitor({
     }
 
     const upserted = await upsertIncidentFromSignal({
+      tenantId,
       fingerprint,
       componentId: evaluation.policy.componentId,
       severity: evaluation.severity,
@@ -180,7 +236,7 @@ export async function runObservabilitySloMonitor({
         sloLastAlertedAt: snapshot.checkedAt,
         sloLastAlertPolicyId: evaluation.policy.id,
         sloLastAlertSeverity: evaluation.severity,
-      }).catch(() => undefined);
+      }, { tenantId }).catch(() => undefined);
     }
     incidentActions.push({
       policyId: evaluation.policy.id,
@@ -229,6 +285,13 @@ export async function runObservabilitySloMonitor({
     queuedAlerts,
     incidentActions,
   };
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }
 
 export function createSloIncidentFingerprint(policy: ObservabilitySloPolicy) {

@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
+} from "@/lib/db/client";
+import { redactSensitive } from "@/lib/security/context";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 
@@ -50,7 +56,7 @@ export async function appendDomainEvent(input: AppendDomainEventInput): Promise<
     type: input.type,
     tenantId: normalizeTenantId(input.tenantId),
     actorId: input.actorId || "system",
-    payload: input.payload || {},
+    payload: boundedEventPayload(input.payload || {}),
     causationId: input.causationId,
     correlationId: input.correlationId,
     at: new Date().toISOString(),
@@ -79,6 +85,19 @@ export async function appendDomainEvent(input: AppendDomainEventInput): Promise<
     return ledger;
   });
   return event;
+}
+
+function boundedEventPayload(payload: Record<string, unknown>) {
+  const redacted = redactSensitive(payload) as Record<string, unknown>;
+  const serialized = JSON.stringify(redacted);
+  if (Buffer.byteLength(serialized, "utf8") <= 64_000) {
+    return redacted;
+  }
+  return {
+    truncated: true,
+    originalBytes: Buffer.byteLength(serialized, "utf8"),
+    preview: serialized.slice(0, 32_000),
+  };
 }
 
 /** Dual-write helper: the log must never take down the primary write path. */
@@ -184,5 +203,8 @@ function getEventsFile() {
 }
 
 function normalizeTenantId(value?: string) {
-  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim() || "default";
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }

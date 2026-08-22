@@ -1,20 +1,29 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  jsonBodyErrorResponse,
+  parseBoundedInteger,
+  parseJsonBody,
+} from "@/lib/http/body";
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
 import { listMemories, saveMemory, searchMemories } from "@/lib/memory/store";
 import { embedTexts } from "@/lib/openai/client";
+import { redactSensitive } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const memorySchema = z.object({
-  title: z.string().min(1),
-  content: z.string().min(1),
+  title: z.string().trim().min(1).max(240),
+  content: z.string().min(1).max(200_000),
   type: z.enum(["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"]).optional(),
-  tags: z.array(z.string()).optional(),
+  tags: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
   importance: z.number().min(0).max(1).optional(),
-});
+}).strict();
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   let context;
   try {
     context = await authorizeRequest({
@@ -27,32 +36,50 @@ export async function GET(request: Request) {
   }
 
   const url = new URL(request.url);
-  const query = url.searchParams.get("q");
-  const limit = Number(url.searchParams.get("limit") || 20);
+  const query = url.searchParams.get("q")?.trim().slice(0, 4_000);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, {
+    max: 100,
+  });
 
   if (query) {
-    const queryEmbedding = (await embedTexts([query]))?.[0];
+    const safeQuery = String(redactSensitive(query));
+    const queryEmbedding = (await embedTexts([safeQuery]))?.[0];
     return Response.json({
-      results: await searchMemories(query, {
-        limit: Math.min(Math.max(limit, 1), 100),
-        queryEmbedding,
-        tenantId: context.tenantId,
-      }),
+      results: (
+        await searchMemories(safeQuery, {
+          limit: Math.min(Math.max(limit, 1), 100),
+          queryEmbedding,
+          tenantId: context.tenantId,
+        })
+      ).map((result) => ({
+        ...result,
+        record: publicMemoryRecord(result.record),
+      })),
     });
   }
 
   return Response.json({
-    memories: await listMemories({
-      tenantId: context.tenantId,
-      limit: Math.min(Math.max(limit, 1), 100),
-    }),
+    memories: (
+      await listMemories({
+        tenantId: context.tenantId,
+        limit: Math.min(Math.max(limit, 1), 100),
+      })
+    ).map(publicMemoryRecord),
   });
 }
 
-export async function POST(request: Request) {
-  const body = await request.json().catch(() => null);
-  if (body === null) {
-    return Response.json({ error: "Invalid request", message: "Request body is not valid JSON." }, { status: 400 });
+function publicMemoryRecord<T extends { embedding?: number[] }>(record: T) {
+  const publicRecord = { ...record };
+  delete publicRecord.embedding;
+  return publicRecord;
+}
+
+async function POSTHandler(request: Request) {
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
   }
   const parsed = memorySchema.safeParse(body);
 
@@ -68,11 +95,20 @@ export async function POST(request: Request) {
       request,
       action: "write.memory",
       resourceType: "memory",
-      metadata: body,
+      metadata: {
+        titleLength: parsed.data.title.length,
+        type: parsed.data.type,
+        tagCount: parsed.data.tags?.length || 0,
+        importance: parsed.data.importance,
+        contentLength: parsed.data.content.length,
+      },
     });
-    const embedding = (await embedTexts([`${parsed.data.title}\n\n${parsed.data.content}`]))?.[0];
+    const safeMemory = redactSensitive(parsed.data) as typeof parsed.data;
+    const embedding = (await embedTexts([
+      `${safeMemory.title}\n\n${safeMemory.content}`,
+    ]))?.[0];
     const record = await saveMemory({
-      ...parsed.data,
+      ...safeMemory,
       tenantId: context.tenantId,
       source: "manual",
       scope: "workspace",

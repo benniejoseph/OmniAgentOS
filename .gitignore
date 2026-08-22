@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+/playwright-report/
+/test-results/
 
 # next.js
 /.next/
@@ -37,6 +39,8 @@ yarn-error.log*
 # local agent state
 .omniagent/
 screenshots/
+/backups/
+/artifacts/
 
 # vercel
 .vercel

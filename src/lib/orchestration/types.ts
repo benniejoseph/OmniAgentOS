@@ -19,6 +19,7 @@ export type AgentToolEvent = {
 };
 
 export type AgentEvent =
+  | { type: "run"; runId: string }
   | { type: "status"; label: string; detail?: string }
   | { type: "delta"; text: string }
   | { type: "memory"; title: string; count?: number }

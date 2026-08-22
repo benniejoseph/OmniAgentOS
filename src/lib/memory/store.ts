@@ -1,11 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
+} from "@/lib/db/client";
 import { getDataPath } from "@/lib/storage/paths";
+import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type { MemoryRecord, MemorySearchResult, MemoryType } from "@/lib/memory/types";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
 
 type CreateMemoryInput = {
+  id?: string;
   tenantId?: string;
   type?: MemoryType;
   title: string;
@@ -20,6 +27,14 @@ type CreateMemoryInput = {
 type TenantScopedOptions = {
   tenantId?: string;
   limit?: number;
+  sql?: MemorySqlClient;
+};
+
+type MemorySqlClient = {
+  (
+    strings: TemplateStringsArray,
+    ...params: unknown[]
+  ): Promise<Record<string, unknown>[]>;
 };
 
 export async function listMemories(options: TenantScopedOptions = {}) {
@@ -27,8 +42,11 @@ export async function listMemories(options: TenantScopedOptions = {}) {
   const limit = options.limit || 500;
 
   if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    const rows = await getSql()`
+    if (!options.sql) {
+      await ensureDatabaseSchema();
+    }
+    const sql = options.sql || getSql();
+    const rows = await sql`
       SELECT *
       FROM omni_memories
       WHERE tenant_id = ${tenantId}
@@ -39,30 +57,44 @@ export async function listMemories(options: TenantScopedOptions = {}) {
   }
 
   const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
-  return memories.filter((memory) => normalizeTenantId(memory.tenantId) === tenantId).slice(0, limit);
+  return memories
+    .filter((memory) => normalizeTenantId(memory.tenantId) === tenantId)
+    .slice(0, limit)
+    .map(sanitizeMemoryRecord);
 }
 
 export async function saveMemory(input: CreateMemoryInput) {
   const now = new Date().toISOString();
+  const title = String(redactSensitive(input.title)).slice(0, 240);
+  const content = String(redactSensitive(input.content)).slice(0, 200_000);
+  const tags = normalizeTags(
+    (input.tags || []).map((tag) => String(redactSensitive(tag))),
+  );
+  const source = String(
+    redactSensitive(input.source || "manual"),
+  ).slice(0, 2_000);
+  const textWasRedacted =
+    title !== input.title ||
+    content !== input.content;
   const record: MemoryRecord = {
-    id: randomUUID(),
+    id: input.id?.trim().slice(0, 200) || randomUUID(),
     tenantId: normalizeTenantId(input.tenantId),
     type: input.type || "fact",
-    title: input.title,
-    content: input.content,
-    tags: normalizeTags(input.tags || []),
+    title,
+    content,
+    tags,
     scope: input.scope || "workspace",
-    source: input.source || "manual",
+    source,
     importance: input.importance ?? 0.5,
     createdAt: now,
     updatedAt: now,
-    embedding: input.embedding,
+    embedding: textWasRedacted ? undefined : input.embedding,
   };
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const embeddingJson = record.embedding ? JSON.stringify(record.embedding) : null;
-    await getSql()`
+    const rows = await getSql()`
       INSERT INTO omni_memories (
         id, tenant_id, type, title, content, tags, scope, source, importance, embedding, created_at, updated_at
       )
@@ -71,16 +103,40 @@ export async function saveMemory(input: CreateMemoryInput) {
         ${record.scope}, ${record.source}, ${record.importance}, ${embeddingJson}::jsonb,
         ${record.createdAt}, ${record.updatedAt}
       )
+      ON CONFLICT (id) DO NOTHING
+      RETURNING *
     `;
+    if (!rows[0]) {
+      const existing = await getSql()`
+        SELECT *
+        FROM omni_memories
+        WHERE id = ${record.id}
+          AND tenant_id = ${record.tenantId}
+        LIMIT 1
+      `;
+      if (!existing[0]) {
+        throw new Error("Memory idempotency key collided with another tenant.");
+      }
+      return memoryFromRow(existing[0]);
+    }
     await updateMemoryVector(record.id, record.embedding);
     return record;
   }
 
+  let saved = record;
   await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) => {
+    const existing = memories.find((memory) => memory.id === record.id);
+    if (existing) {
+      if (normalizeTenantId(existing.tenantId) !== record.tenantId) {
+        throw new Error("Memory idempotency key collided with another tenant.");
+      }
+      saved = existing;
+      return memories;
+    }
     memories.unshift(record);
     return memories;
   });
-  return record;
+  return saved;
 }
 
 export async function searchMemories(
@@ -258,7 +314,7 @@ async function searchMemoriesLexicalDb(query: string, limit: number, tenantId: s
 }
 
 function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
-  return {
+  return sanitizeMemoryRecord({
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
     type: String(row.type) as MemoryType,
@@ -271,11 +327,26 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
     embedding: parseEmbedding(row.embedding),
+  });
+}
+
+function sanitizeMemoryRecord(record: MemoryRecord): MemoryRecord {
+  return {
+    ...record,
+    title: String(redactSensitive(record.title)).slice(0, 240),
+    content: String(redactSensitive(record.content)).slice(0, 200_000),
+    tags: normalizeTags(
+      record.tags.map((tag) => String(redactSensitive(tag))),
+    ),
+    source: String(redactSensitive(record.source)).slice(0, 2_000),
   };
 }
 
 function normalizeTenantId(value?: string) {
-  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default";
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }
 
 function memorySearchResultFromRow(row: Record<string, unknown>): MemorySearchResult {

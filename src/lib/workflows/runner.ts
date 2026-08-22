@@ -4,15 +4,18 @@ import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import { buildContextPack } from "@/lib/rag/context-engine";
 import { executeDynamicWorkflowPlan, parseWorkflowPlanOutput } from "@/lib/workflows/executor";
-import { buildDynamicWorkflowPlan } from "@/lib/workflows/planner";
 import {
+  buildDynamicWorkflowPlan,
+  getWorkflowPlanById,
+} from "@/lib/workflows/planner";
+import {
+  approveWorkflowRun,
   appendWorkflowEvent,
   getWorkflowRunDetail,
-  getWorkflowStep,
   listWorkflowRuns,
-  setWorkflowRunStatus,
-  updateWorkflowRun,
+  transitionWorkflowRun,
   updateWorkflowStep,
+  updateWorkflowStepForRunFence,
   workflowStepDefinitions,
 } from "@/lib/workflows/store";
 import type {
@@ -23,8 +26,26 @@ import type {
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "canceled"]);
 
-export async function tickWorkflowRun(runId: string) {
-  const detail = await getWorkflowRunDetail(runId);
+export class WorkflowNotFoundError extends Error {
+  constructor() {
+    super("Workflow run not found.");
+    this.name = "WorkflowNotFoundError";
+  }
+}
+
+export class WorkflowSignalConflictError extends Error {
+  constructor(signal: WorkflowSignalType, status: string) {
+    super(`Workflow cannot accept ${signal} while it is ${status}.`);
+    this.name = "WorkflowSignalConflictError";
+  }
+}
+
+export async function tickWorkflowRun(
+  runId: string,
+  options: { tenantId?: string; abortSignal?: AbortSignal } = {},
+) {
+  throwIfAborted(options.abortSignal);
+  const detail = await getWorkflowRunDetail(runId, { tenantId: options.tenantId });
   if (!detail) {
     throw new Error("Workflow run not found.");
   }
@@ -33,66 +54,104 @@ export async function tickWorkflowRun(runId: string) {
     return detail;
   }
 
-  if (detail.run.status === "paused" || detail.run.status === "waiting_approval") {
+  if (
+    detail.run.status === "paused" ||
+    detail.run.status === "waiting_approval" ||
+    detail.run.status === "running"
+  ) {
     await appendWorkflowEvent(detail.run.id, "workflow.tick.noop", { status: detail.run.status });
-    return getWorkflowRunDetail(runId) as Promise<WorkflowRunDetail>;
+    return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
   }
 
   const stepKey = nextStepKey(detail);
-  if (!stepKey) {
-    await completeWorkflow(detail.run.id);
-    return getWorkflowRunDetail(runId) as Promise<WorkflowRunDetail>;
-  }
-
-  await updateWorkflowRun(detail.run.id, {
+  const claimedRun = await transitionWorkflowRun(detail.run.id, ["queued"], {
     status: "running",
     currentStep: stepKey,
-    attempt: detail.run.attempt + 1,
     error: undefined,
-  });
+  }, { tenantId: detail.run.tenantId });
+  if (!claimedRun) {
+    return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+  }
+  let runFence = claimedRun.updatedAt;
+  if (!stepKey) {
+    await completeWorkflow(detail.run.id, detail.run.tenantId, runFence);
+    return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+  }
 
-  const step = await getWorkflowStep(detail.run.id, stepKey);
+  const claimedDetail = await getWorkflowRunDetail(runId, { tenantId: options.tenantId });
+  const step = claimedDetail?.steps.find((item) => item.stepKey === stepKey);
   if (!step) {
     throw new Error(`Workflow step ${stepKey} is not registered.`);
   }
 
   const attempt = step.attempt + 1;
   const startedAt = new Date().toISOString();
-  await updateWorkflowStep(detail.run.id, stepKey, {
+  const startedStep = await updateWorkflowStepForRunFence(detail.run.id, stepKey, {
     status: "running",
     attempt,
     startedAt,
     error: undefined,
+  }, {
+    tenantId: detail.run.tenantId,
+    expectedRunUpdatedAt: runFence,
   });
+  if (!startedStep) {
+    return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+  }
   await appendWorkflowEvent(detail.run.id, "step.started", { stepKey, attempt });
 
   try {
+    throwIfAborted(options.abortSignal);
     if (stepKey === "approval_gate" && detail.run.approvalRequired && !detail.run.approvedAt) {
-      await updateWorkflowStep(detail.run.id, stepKey, {
+      const waitingStep = await updateWorkflowStepForRunFence(detail.run.id, stepKey, {
         status: "running",
         output: {
           waitingFor: "approval",
           reason: "Workflow requires human approval before execution.",
         },
+      }, {
+        tenantId: detail.run.tenantId,
+        expectedRunUpdatedAt: runFence,
       });
-      await setWorkflowRunStatus(detail.run.id, "waiting_approval", {
+      if (!waitingStep) {
+        return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+      }
+      await transitionWorkflowRun(detail.run.id, ["running"], {
+        status: "waiting_approval",
         currentStep: stepKey,
         error: undefined,
+      }, {
+        tenantId: detail.run.tenantId,
+        expectedUpdatedAt: runFence,
       });
       await appendWorkflowEvent(detail.run.id, "workflow.waiting_approval", { stepKey });
-      return getWorkflowRunDetail(runId) as Promise<WorkflowRunDetail>;
+      return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
     }
 
-    const freshDetail = await getWorkflowRunDetail(runId);
+    const freshDetail = await getWorkflowRunDetail(runId, { tenantId: options.tenantId });
     if (!freshDetail) {
       throw new Error("Workflow run disappeared during execution.");
     }
-    const output = await executeStep(stepKey, freshDetail);
-    await updateWorkflowStep(detail.run.id, stepKey, {
+    const output = await executeStep(stepKey, freshDetail, options.abortSignal);
+    throwIfAborted(options.abortSignal);
+    const beforeCommit = await getWorkflowRunDetail(runId, { tenantId: options.tenantId });
+    if (!beforeCommit) {
+      throw new Error("Workflow run disappeared before step completion could be committed.");
+    }
+    if (beforeCommit.run.status !== "running") {
+      return beforeCommit;
+    }
+    const completedStep = await updateWorkflowStepForRunFence(detail.run.id, stepKey, {
       status: "completed",
       output,
       completedAt: new Date().toISOString(),
+    }, {
+      tenantId: detail.run.tenantId,
+      expectedRunUpdatedAt: runFence,
     });
+    if (!completedStep) {
+      return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+    }
     await appendWorkflowEvent(detail.run.id, "step.completed", { stepKey, attempt });
 
     // Bounded replanning: one failed verification sends the workflow back to
@@ -120,7 +179,17 @@ export async function tickWorkflowRun(runId: string) {
       // plan the approver never saw, so the approval is revoked and the
       // approval gate re-opens before any side-effecting tool can execute.
       if (freshDetail.run.approvalRequired && freshDetail.run.approvedAt) {
-        await updateWorkflowRun(detail.run.id, { approvedAt: undefined });
+        const revoked = await transitionWorkflowRun(detail.run.id, ["running"], {
+          status: "running",
+          approvedAt: undefined,
+        }, {
+          tenantId: detail.run.tenantId,
+          expectedUpdatedAt: runFence,
+        });
+        if (!revoked) {
+          return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+        }
+        runFence = revoked.updatedAt;
         await updateWorkflowStep(detail.run.id, "approval_gate", {
           status: "pending",
           attempt: 0,
@@ -133,44 +202,147 @@ export async function tickWorkflowRun(runId: string) {
           reason: "Replanning produced a new plan; prior approval applied to the old plan only.",
         });
       }
+    } else if (
+      verifyOutput &&
+      verifyOutput.passed === false &&
+      hasReplanned(freshDetail)
+    ) {
+      const verdict = verifyOutput.modelVerdict as
+        | { failures?: string[]; assessment?: string }
+        | undefined;
+      const failed = await transitionWorkflowRun(
+        detail.run.id,
+        ["running"],
+        {
+          status: "failed",
+          currentStep: stepKey,
+          error:
+            verdict?.assessment ||
+            "Workflow verification failed after the bounded replan.",
+          completedAt: new Date().toISOString(),
+        },
+        {
+          tenantId: detail.run.tenantId,
+          expectedUpdatedAt: runFence,
+        },
+      );
+      if (failed) {
+        await appendWorkflowEvent(
+          detail.run.id,
+          "workflow.verification_failed",
+          {
+            failures: verdict?.failures || [],
+            assessment:
+              verdict?.assessment ||
+              "Workflow verification failed after the bounded replan.",
+            mechanicalPassed: verifyOutput.mechanicalPassed,
+          },
+        );
+      }
+      return getWorkflowRunDetail(runId, {
+        tenantId: options.tenantId,
+      }) as Promise<WorkflowRunDetail>;
     }
 
-    const nextKey = nextStepKey(await getWorkflowRunDetail(runId) as WorkflowRunDetail);
+    const nextKey = nextStepKey(
+      await getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as WorkflowRunDetail,
+    );
     if (nextKey) {
-      await setWorkflowRunStatus(detail.run.id, "queued", { currentStep: nextKey, error: undefined });
+      await transitionWorkflowRun(detail.run.id, ["running"], {
+        status: "queued",
+        currentStep: nextKey,
+        error: undefined,
+      }, {
+        tenantId: detail.run.tenantId,
+        expectedUpdatedAt: runFence,
+      });
     } else {
-      await completeWorkflow(detail.run.id);
+      await completeWorkflow(detail.run.id, detail.run.tenantId, runFence);
     }
   } catch (error) {
+    const current = await getWorkflowRunDetail(runId, { tenantId: options.tenantId });
+    if (!current) {
+      throw error;
+    }
+    if (isAbortError(error, options.abortSignal)) {
+      if (current.run.status !== "running") {
+        return current;
+      }
+      const resetStep = await updateWorkflowStepForRunFence(detail.run.id, stepKey, {
+        status: "pending",
+        attempt: step.attempt,
+        startedAt: undefined,
+        completedAt: undefined,
+        error: undefined,
+      }, {
+        tenantId: detail.run.tenantId,
+        expectedRunUpdatedAt: runFence,
+      });
+      if (!resetStep) {
+        return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+      }
+      const interrupted = await transitionWorkflowRun(detail.run.id, ["running"], {
+        status: "queued",
+        currentStep: stepKey,
+        error: "Workflow execution was interrupted and safely requeued.",
+      }, {
+        tenantId: detail.run.tenantId,
+        expectedUpdatedAt: runFence,
+      });
+      if (interrupted) {
+        await appendWorkflowEvent(detail.run.id, "step.interrupted", { stepKey, attempt });
+      }
+      return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+    }
+    if (current.run.status !== "running") {
+      return current;
+    }
     const message = error instanceof Error ? error.message : "Workflow step failed.";
-    await updateWorkflowStep(detail.run.id, stepKey, {
+    const failedStep = await updateWorkflowStepForRunFence(detail.run.id, stepKey, {
       status: "failed",
       error: message,
       completedAt: new Date().toISOString(),
+    }, {
+      tenantId: detail.run.tenantId,
+      expectedRunUpdatedAt: runFence,
     });
+    if (!failedStep) {
+      return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+    }
     await appendWorkflowEvent(detail.run.id, "step.failed", { stepKey, attempt, error: message });
 
     if (attempt < step.maxAttempts) {
-      await setWorkflowRunStatus(detail.run.id, "queued", {
+      await transitionWorkflowRun(detail.run.id, ["running"], {
+        status: "queued",
         currentStep: stepKey,
+        attempt: current.run.attempt + 1,
         error: `Retry scheduled for ${stepKey}: ${message}`,
+      }, {
+        tenantId: detail.run.tenantId,
+        expectedUpdatedAt: runFence,
       });
       await appendWorkflowEvent(detail.run.id, "step.retry_scheduled", { stepKey, nextAttempt: attempt + 1 });
     } else {
-      await setWorkflowRunStatus(detail.run.id, "failed", {
+      await transitionWorkflowRun(detail.run.id, ["running"], {
+        status: "failed",
         currentStep: stepKey,
+        attempt: current.run.attempt + 1,
         error: message,
+        completedAt: new Date().toISOString(),
+      }, {
+        tenantId: detail.run.tenantId,
+        expectedUpdatedAt: runFence,
       });
     }
   }
 
-  return getWorkflowRunDetail(runId) as Promise<WorkflowRunDetail>;
+  return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
 }
 
 export async function tickQueuedWorkflows(limit = 5) {
   const runs = await listWorkflowRuns(50);
   const candidates = runs
-    .filter((run) => run.status === "queued" || run.status === "running")
+    .filter((run) => run.status === "queued")
     .slice(0, limit);
   const results = [];
   for (const run of candidates) {
@@ -182,58 +354,117 @@ export async function tickQueuedWorkflows(limit = 5) {
 export async function signalWorkflowRun(
   runId: string,
   signal: WorkflowSignalType,
-  options: { tenantId?: string } = {},
+  options: {
+    tenantId?: string;
+    actorId?: string;
+    reason?: string;
+  } = {},
 ) {
   const detail = await getWorkflowRunDetail(runId, options);
   if (!detail) {
-    throw new Error("Workflow run not found.");
+    throw new WorkflowNotFoundError();
+  }
+
+  if (
+    signal === "approve" &&
+    detail.run.approvedAt &&
+    detail.run.status !== "canceled"
+  ) {
+    return detail;
   }
 
   if (TERMINAL_STATUSES.has(detail.run.status)) {
-    return detail;
+    if (signal === "cancel" && detail.run.status === "canceled") {
+      return detail;
+    }
+    if (!(signal === "retry" && detail.run.status === "failed")) {
+      throw new WorkflowSignalConflictError(signal, detail.run.status);
+    }
+  }
+  const allowedStatuses: Record<WorkflowSignalType, WorkflowRunDetail["run"]["status"][]> = {
+    pause: ["queued", "running"],
+    resume: ["paused"],
+    cancel: ["queued", "running", "paused", "waiting_approval"],
+    approve: ["waiting_approval"],
+    retry: ["failed"],
+  };
+  if (!allowedStatuses[signal].includes(detail.run.status)) {
+    throw new WorkflowSignalConflictError(signal, detail.run.status);
   }
 
   const now = new Date().toISOString();
 
   if (signal === "pause") {
-    await setWorkflowRunStatus(runId, "paused", { pausedAt: now });
+    const transitioned = await transitionWorkflowRun(runId, ["queued", "running"], {
+      status: "paused",
+      pausedAt: now,
+    }, { tenantId: detail.run.tenantId });
+    if (!transitioned) {
+      throw new WorkflowSignalConflictError(signal, detail.run.status);
+    }
     await appendWorkflowEvent(runId, "workflow.paused", {});
   }
 
   if (signal === "resume") {
-    await setWorkflowRunStatus(runId, "queued", { pausedAt: undefined, error: undefined });
+    const transitioned = await transitionWorkflowRun(runId, ["paused"], {
+      status: "queued",
+      pausedAt: undefined,
+      error: undefined,
+      completedAt: undefined,
+    }, { tenantId: detail.run.tenantId });
+    if (!transitioned) {
+      throw new WorkflowSignalConflictError(signal, detail.run.status);
+    }
     await appendWorkflowEvent(runId, "workflow.resumed", {});
   }
 
   if (signal === "cancel") {
-    await setWorkflowRunStatus(runId, "canceled", { canceledAt: now });
-    await appendWorkflowEvent(runId, "workflow.canceled", {});
+    const transitioned = await transitionWorkflowRun(
+      runId,
+      ["queued", "running", "paused", "waiting_approval"],
+      { status: "canceled", canceledAt: now, completedAt: now },
+      { tenantId: detail.run.tenantId },
+    );
+    if (!transitioned) {
+      throw new WorkflowSignalConflictError(signal, detail.run.status);
+    }
+    await appendWorkflowEvent(runId, "workflow.canceled", {
+      actorId: options.actorId,
+      reason: options.reason,
+    });
   }
 
   if (signal === "approve") {
-    await updateWorkflowRun(runId, {
-      status: "queued",
+    const transitioned = await approveWorkflowRun(runId, {
+      tenantId: detail.run.tenantId,
       approvedAt: now,
-      error: undefined,
-      currentStep: detail.run.currentStep === "approval_gate" ? "execute" : detail.run.currentStep,
     });
-    const approvalStep = detail.steps.find((step) => step.stepKey === "approval_gate");
-    if (approvalStep && approvalStep.status !== "completed") {
-      await updateWorkflowStep(runId, "approval_gate", {
-        status: "completed",
-        output: { approvedAt: now },
-        completedAt: now,
+    if (!transitioned) {
+      const latest = await getWorkflowRunDetail(runId, {
+        tenantId: detail.run.tenantId,
       });
+      if (latest?.run.approvedAt && latest.run.status !== "canceled") {
+        return latest;
+      }
+      throw new WorkflowSignalConflictError(signal, detail.run.status);
     }
-    await appendWorkflowEvent(runId, "workflow.approved", {});
+    await appendWorkflowEvent(runId, "workflow.approved", {
+      actorId: options.actorId,
+      reason: options.reason,
+    });
   }
 
   if (signal === "retry") {
     const failedStep = detail.steps.find((step) => step.status === "failed");
-    await setWorkflowRunStatus(runId, "queued", {
+    const transitioned = await transitionWorkflowRun(runId, ["failed"], {
+      status: "queued",
       currentStep: failedStep?.stepKey || detail.run.currentStep || "preflight",
       error: undefined,
-    });
+      completedAt: undefined,
+    }, { tenantId: detail.run.tenantId });
+    if (!transitioned) {
+      throw new WorkflowSignalConflictError(signal, detail.run.status);
+    }
     await appendWorkflowEvent(runId, "workflow.retry_requested", {
       stepKey: failedStep?.stepKey || detail.run.currentStep || "preflight",
     });
@@ -257,7 +488,12 @@ function nextStepKey(detail: WorkflowRunDetail): WorkflowStepKey | undefined {
   })?.key;
 }
 
-async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) {
+async function executeStep(
+  stepKey: WorkflowStepKey,
+  detail: WorkflowRunDetail,
+  abortSignal?: AbortSignal,
+) {
+  throwIfAborted(abortSignal);
   if (stepKey === "preflight") {
     return {
       workflowType: detail.run.workflowType,
@@ -289,7 +525,7 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
   }
 
   if (stepKey === "plan") {
-    return buildPlan(detail);
+    return buildPlan(detail, abortSignal);
   }
 
   if (stepKey === "approval_gate") {
@@ -300,7 +536,7 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
   }
 
   if (stepKey === "execute") {
-    return executeGoal(detail);
+    return executeGoal(detail, abortSignal);
   }
 
   if (stepKey === "verify") {
@@ -320,6 +556,7 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
       criteria,
       executeOutput,
       planExecution,
+      abortSignal,
     });
     return {
       // The model can veto a mechanically-passing run, never rescue a failing one.
@@ -343,7 +580,7 @@ async function executeStep(stepKey: WorkflowStepKey, detail: WorkflowRunDetail) 
   }
 
   if (stepKey === "persist_report") {
-    return persistWorkflowReport(detail);
+    return persistWorkflowReport(detail, abortSignal);
   }
 
   throw new Error(`No workflow step registered for ${stepKey}.`);
@@ -366,11 +603,13 @@ async function verifyWithModel({
   criteria,
   executeOutput,
   planExecution,
+  abortSignal,
 }: {
   goal: string;
   criteria: string[];
   executeOutput?: Record<string, unknown>;
   planExecution?: ReturnType<typeof parsePlanExecutionOutput>;
+  abortSignal?: AbortSignal;
 }): Promise<ModelVerificationVerdict | undefined> {
   if (!hasOpenAIKey()) {
     return undefined;
@@ -388,8 +627,8 @@ async function verifyWithModel({
       input: [
         `Goal: ${goal}`,
         `Acceptance criteria:\n${criteria.map((item) => `- ${item}`).join("\n")}`,
-        `Execution output: ${JSON.stringify(executeOutput || {}, null, 2).slice(0, 6000)}`,
-        `Plan execution summary: ${JSON.stringify(planExecution || {}, null, 2).slice(0, 3000)}`,
+        `<untrusted_execution_evidence provenance="workflow_tool_outputs">\n${escapeUntrustedPromptText(JSON.stringify(executeOutput || {}, null, 2).slice(0, 6000))}\n</untrusted_execution_evidence>`,
+        `<untrusted_plan_summary provenance="workflow_state">\n${escapeUntrustedPromptText(JSON.stringify(planExecution || {}, null, 2).slice(0, 3000))}\n</untrusted_plan_summary>`,
       ].join("\n\n"),
       name: "workflow_verification",
       schema: {
@@ -403,7 +642,7 @@ async function verifyWithModel({
           assessment: { type: "string", description: "One-paragraph verdict." },
         },
       },
-      abortSignal: controller.signal,
+      abortSignal: combineAbortSignals(controller.signal, abortSignal),
     });
     const parsed = JSON.parse(raw) as ModelVerificationVerdict;
     return {
@@ -427,7 +666,7 @@ async function verifyWithModel({
   }
 }
 
-async function buildPlan(detail: WorkflowRunDetail) {
+async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const replanEvent = [...detail.events]
     .reverse()
@@ -435,14 +674,38 @@ async function buildPlan(detail: WorkflowRunDetail) {
   const replanFeedback = replanEvent
     ? `\n\nIMPORTANT: a previous plan for this goal failed verification. Address these failures in the new plan:\n${JSON.stringify(replanEvent.payload || {}, null, 2).slice(0, 2000)}`
     : "";
-  const record = await buildDynamicWorkflowPlan({
-    tenantId: detail.run.tenantId,
-    goal: `${detail.run.goal}${replanFeedback}`,
-    mode: detail.run.input.mode || "orchestrate",
-    workflowRunId: detail.run.id,
-    requireApproval: detail.run.approvalRequired,
-    reuseExisting: !replanEvent,
-  });
+  const selectedPlan =
+    !replanEvent && detail.run.input.planId
+      ? await getWorkflowPlanById(detail.run.input.planId, {
+          tenantId: detail.run.tenantId,
+        })
+      : undefined;
+  if (
+    detail.run.input.planId &&
+    !replanEvent &&
+    (
+      !selectedPlan ||
+      selectedPlan.status !== "planned" ||
+      selectedPlan.workflowRunId !== detail.run.id ||
+      selectedPlan.goal.trim() !== detail.run.goal.trim() ||
+      selectedPlan.plan.mode !== (detail.run.input.mode || "orchestrate")
+    )
+  ) {
+    throw new Error(
+      "The reviewed workflow plan is missing or no longer matches this run.",
+    );
+  }
+  const record =
+    selectedPlan ||
+    await buildDynamicWorkflowPlan({
+      tenantId: detail.run.tenantId,
+      goal: `${detail.run.goal}${replanFeedback}`,
+      mode: detail.run.input.mode || "orchestrate",
+      workflowRunId: detail.run.id,
+      requireApproval: detail.run.approvalRequired,
+      reuseExisting: !replanEvent,
+      abortSignal,
+    });
   await appendWorkflowEvent(detail.run.id, "workflow.dynamic_plan.created", {
     planId: record.id,
     planner: record.planner,
@@ -470,20 +733,19 @@ async function buildPlan(detail: WorkflowRunDetail) {
   };
 }
 
-async function executeGoal(detail: WorkflowRunDetail) {
+async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const planOutput = stepOutput(detail, "plan");
-  const planExecution = await executeDynamicWorkflowPlan(detail);
+  const planExecution = await executeDynamicWorkflowPlan(detail, { abortSignal });
   const fallback = buildExecutionFallback(detail, planExecution);
   const instructions = buildAgentInstructions({
     mode: detail.run.input.mode || "orchestrate",
-    memoryContext: String(retrieveOutput?.contextBlock || "No context available."),
-    tools: [],
   });
   const input = [
     `Goal: ${detail.run.goal}`,
-    `Plan: ${JSON.stringify(planOutput || {}, null, 2)}`,
-    `Plan execution: ${JSON.stringify(planExecution || {}, null, 2)}`,
+    `<untrusted_retrieved_context provenance="memory_and_rag">\n${escapeUntrustedPromptText(String(retrieveOutput?.contextBlock || "No context available."))}\n</untrusted_retrieved_context>`,
+    `<untrusted_plan_data provenance="planner_output">\n${escapeUntrustedPromptText(JSON.stringify(planOutput || {}, null, 2))}\n</untrusted_plan_data>`,
+    `<untrusted_execution_data provenance="tool_results">\n${escapeUntrustedPromptText(JSON.stringify(planExecution || {}, null, 2))}\n</untrusted_execution_data>`,
     "Return a concise execution result and next best action.",
   ].join("\n\n");
 
@@ -511,7 +773,7 @@ async function executeGoal(detail: WorkflowRunDetail) {
         },
         required: ["deliverable", "response", "nextAction"],
       },
-      abortSignal: controller.signal,
+      abortSignal: combineAbortSignals(controller.signal, abortSignal),
     }).finally(() => clearTimeout(timer));
 
     return {
@@ -527,7 +789,7 @@ async function executeGoal(detail: WorkflowRunDetail) {
   }
 }
 
-async function persistWorkflowReport(detail: WorkflowRunDetail) {
+async function persistWorkflowReport(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
   const executeOutput = stepOutput(detail, "execute");
   const verifyOutput = stepOutput(detail, "verify");
   const planOutput = stepOutput(detail, "plan");
@@ -546,8 +808,9 @@ async function persistWorkflowReport(detail: WorkflowRunDetail) {
     `Execution: ${String(executeOutput?.response || executeOutput?.deliverable || "No execution output.")}`,
     `Verification: ${JSON.stringify(verifyOutput || {})}`,
   ].filter(Boolean).join("\n\n");
-  const embedding = (await embedTexts([content]))?.[0];
+  const embedding = (await embedTexts([content], abortSignal))?.[0];
   const memory = await saveMemory({
+    id: `workflow_report_${detail.run.id}`,
     tenantId: detail.run.tenantId,
     type: "episode",
     title: `Workflow report: ${detail.run.goal.slice(0, 72)}`,
@@ -566,24 +829,36 @@ async function persistWorkflowReport(detail: WorkflowRunDetail) {
   };
 }
 
-async function completeWorkflow(runId: string) {
-  const detail = await getWorkflowRunDetail(runId);
+async function completeWorkflow(
+  runId: string,
+  tenantId?: string,
+  expectedUpdatedAt?: string,
+) {
+  const detail = await getWorkflowRunDetail(runId, { tenantId });
   const reportOutput = detail ? stepOutput(detail, "persist_report") : undefined;
-  await setWorkflowRunStatus(runId, "completed", {
+  const completed = await transitionWorkflowRun(runId, ["running"], {
+    status: "completed",
     currentStep: undefined,
     error: undefined,
+    completedAt: new Date().toISOString(),
     result: {
       report: reportOutput?.report || "Workflow completed.",
       memoryId: reportOutput?.memoryId,
       dynamicPlanId: reportOutput?.dynamicPlanId,
       planExecutionStatus: reportOutput?.planExecutionStatus,
     },
-  });
-  await appendWorkflowEvent(runId, "workflow.completed", {});
+  }, { tenantId, expectedUpdatedAt });
+  if (completed) {
+    await appendWorkflowEvent(runId, "workflow.completed", {});
+  }
 }
 
 function stepOutput(detail: WorkflowRunDetail, stepKey: WorkflowStepKey) {
   return detail.steps.find((step) => step.stepKey === stepKey)?.output;
+}
+
+function escapeUntrustedPromptText(value: string) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function buildExecutionFallback(detail: WorkflowRunDetail, planExecution: Awaited<ReturnType<typeof executeDynamicWorkflowPlan>>) {
@@ -620,4 +895,24 @@ function parsePlanExecutionOutput(output: Record<string, unknown> | undefined) {
     dryRunTools: number;
     executedTools: number;
   };
+}
+
+function combineAbortSignals(primary: AbortSignal, secondary?: AbortSignal) {
+  return secondary ? AbortSignal.any([primary, secondary]) : primary;
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) {
+    return;
+  }
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Workflow execution was aborted.", "AbortError");
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal) {
+  return Boolean(
+    signal?.aborted ||
+    (error && typeof error === "object" && "name" in error && error.name === "AbortError"),
+  );
 }

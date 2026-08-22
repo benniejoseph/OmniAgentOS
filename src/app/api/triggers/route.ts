@@ -1,4 +1,10 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  jsonBodyErrorResponse,
+  parseBoundedInteger,
+  parseJsonBody,
+} from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
   createWorkflowTrigger,
@@ -8,6 +14,8 @@ import {
 } from "@/lib/workflows/triggers";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const triggerSchema = z.object({
   name: z.string().min(1).max(120),
@@ -19,14 +27,17 @@ const triggerSchema = z.object({
   workflowMode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
   requireApproval: z.boolean().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
-});
+}).strict();
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const url = new URL(request.url);
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), 200);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 50, {
+    max: 200,
+  });
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read",
       resourceType: "workflow_trigger",
@@ -37,14 +48,19 @@ export async function GET(request: Request) {
   }
 
   return Response.json({
-    triggers: await listWorkflowTriggers(limit),
-    events: await listWorkflowTriggerEvents(limit),
-    stats: await getWorkflowTriggerStats(),
+    triggers: await listWorkflowTriggers(limit, { tenantId: context.tenantId }),
+    events: await listWorkflowTriggerEvents(limit, { tenantId: context.tenantId }),
+    stats: await getWorkflowTriggerStats({ tenantId: context.tenantId }),
   });
 }
 
-export async function POST(request: Request) {
-  const body = await request.json().catch(() => ({}));
+async function POSTHandler(request: Request) {
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
   const parsed = triggerSchema.safeParse(body);
 
   if (!parsed.success) {
@@ -54,14 +70,22 @@ export async function POST(request: Request) {
     );
   }
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "manage.workflow",
       resourceType: "workflow_trigger",
       metadata: {
-        ...parsed.data,
-        secretEnvVar: parsed.data.secretEnvVar ? "[env-var]" : undefined,
+        nameLength: parsed.data.name.length,
+        source: parsed.data.source,
+        status: parsed.data.status,
+        authMode: parsed.data.authMode,
+        hasSecretBinding: Boolean(parsed.data.secretEnvVar),
+        goalTemplateLength: parsed.data.goalTemplate?.length || 0,
+        workflowMode: parsed.data.workflowMode,
+        requireApproval: Boolean(parsed.data.requireApproval),
+        metadataKeys: Object.keys(parsed.data.metadata || {}).slice(0, 50),
       },
     });
   } catch (error) {
@@ -69,8 +93,14 @@ export async function POST(request: Request) {
   }
 
   try {
-    const trigger = await createWorkflowTrigger(parsed.data);
-    return Response.json({ trigger, stats: await getWorkflowTriggerStats() }, { status: 201 });
+    const trigger = await createWorkflowTrigger({
+      ...parsed.data,
+      tenantId: context.tenantId,
+    });
+    return Response.json({
+      trigger,
+      stats: await getWorkflowTriggerStats({ tenantId: context.tenantId }),
+    }, { status: 201 });
   } catch (error) {
     return Response.json(
       { error: "Workflow trigger create failed", message: error instanceof Error ? error.message : "Unknown error." },

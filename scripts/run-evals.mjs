@@ -16,6 +16,11 @@ import path from "node:path";
 
 const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
 const MIN_PASS_RATE = Number(process.env.MIN_PASS_RATE || 0.6);
+const REQUEST_TIMEOUT_MS = positiveInteger(
+  process.env.EVAL_REQUEST_TIMEOUT_MS,
+  60_000,
+  300_000,
+);
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 function applyAssertion(assert, response) {
@@ -42,19 +47,26 @@ function applyAssertion(assert, response) {
 }
 
 async function runTask(task) {
-  const res = await fetch(`${BASE_URL}/api/agent`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(process.env.SMOKE_INTERNAL_AUTH_SECRET
-        ? {
-            "x-omni-internal-auth": process.env.SMOKE_INTERNAL_AUTH_SECRET,
-            "x-omni-user-role": "operator",
-          }
-        : {}),
-    },
-    body: JSON.stringify({ mode: task.mode || "orchestrate", messages: [{ role: "user", content: task.goal }] }),
-  });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/api/agent`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(process.env.SMOKE_INTERNAL_AUTH_SECRET
+          ? {
+              "x-omni-internal-auth": process.env.SMOKE_INTERNAL_AUTH_SECRET,
+              "x-omni-user-role": "operator",
+            }
+          : {}),
+      },
+      body: JSON.stringify({ mode: task.mode || "orchestrate", messages: [{ role: "user", content: task.goal }] }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "unknown network error";
+    return { response: "", error: `request failed within ${REQUEST_TIMEOUT_MS}ms: ${detail}` };
+  }
   if (!res.ok || !res.body) {
     return { response: "", error: `HTTP ${res.status}` };
   }
@@ -74,6 +86,10 @@ async function runTask(task) {
 }
 
 async function main() {
+  if (!Number.isFinite(MIN_PASS_RATE) || MIN_PASS_RATE < 0 || MIN_PASS_RATE > 1) {
+    throw new Error("MIN_PASS_RATE must be a number from 0 to 1.");
+  }
+
   const raw = await readFile(path.join(here, "..", "evals", "golden-tasks.json"), "utf8");
   const suite = JSON.parse(raw);
   const results = [];
@@ -91,6 +107,11 @@ async function main() {
     console.error(`Below MIN_PASS_RATE (${(MIN_PASS_RATE * 100).toFixed(0)}%).`);
     process.exit(1);
   }
+}
+
+function positiveInteger(value, fallback, maximum = Number.MAX_SAFE_INTEGER) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback;
 }
 
 main().catch((error) => {

@@ -1,10 +1,14 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { getOperationsOverview } from "@/lib/operations/queue";
 import { reconcileOperationsRecovery } from "@/lib/operations/recovery";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const operationsActionSchema = z.object({
   action: z.enum(["inspect_recovery", "repair_recovery", "drain_recovery"]),
@@ -12,9 +16,9 @@ const operationsActionSchema = z.object({
   drainLimit: z.number().int().min(1).max(10).optional(),
   staleWorkflowMs: z.number().int().min(0).max(86_400_000).optional(),
   failAfterMs: z.number().int().min(60_000).max(604_800_000).optional(),
-});
+}).strict();
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   let context;
   try {
     context = await authorizeRequest({
@@ -29,10 +33,16 @@ export async function GET(request: Request) {
   return Response.json(await getOperationsOverview({ tenantId: context.tenantId }));
 }
 
-export async function POST(request: Request) {
+async function POSTHandler(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "operations-recovery");
-  const parsed = operationsActionSchema.safeParse(await request.json().catch(() => ({})));
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
+  const parsed = operationsActionSchema.safeParse(body);
 
   if (!parsed.success) {
     return Response.json(
@@ -47,7 +57,11 @@ export async function POST(request: Request) {
       request,
       action: "manage.workflow",
       resourceType: "operations_recovery",
-      metadata: parsed.data,
+      metadata: {
+        action: parsed.data.action,
+        limit: parsed.data.limit,
+        drainLimit: parsed.data.drainLimit,
+      },
     });
   } catch (error) {
     return forbiddenResponse(error);
@@ -66,6 +80,7 @@ export async function POST(request: Request) {
       staleWorkflowMs: parsed.data.staleWorkflowMs,
       failAfterMs: parsed.data.failAfterMs,
       actorId: context.actorId,
+      tenantId: context.tenantId,
     });
     const overview = await getOperationsOverview({ tenantId: context.tenantId });
     await recordRuntimeEventSafely({

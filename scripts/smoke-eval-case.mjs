@@ -1,4 +1,6 @@
-const baseUrl = normalizeBaseUrl(process.env.BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "http://127.0.0.1:3000");
+import { failSmoke, getSmokeBaseUrl, smokeFetch } from "./smoke-helpers.mjs";
+
+const baseUrl = getSmokeBaseUrl();
 const caseId = process.env.SMOKE_EVAL_CASE_ID || "security.tenant_isolation";
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
 const password = process.env.SMOKE_ADMIN_PASSWORD || process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
@@ -9,8 +11,10 @@ const checks = [];
 const headers = await resolveAuthHeaders();
 
 if (!headers) {
-  console.log("PASS evaluation smoke skipped - set SMOKE_ADMIN_EMAIL/SMOKE_ADMIN_PASSWORD or SMOKE_INTERNAL_AUTH_SECRET");
-  process.exit(0);
+  for (const check of checks) {
+    console.error(`FAIL ${check.label}${check.detail ? ` - ${check.detail}` : ""}`);
+  }
+  failSmoke("evaluation smoke requires valid administrator credentials or SMOKE_INTERNAL_AUTH_SECRET.");
 }
 
 const response = await request("/api/evaluations", {
@@ -60,7 +64,7 @@ async function resolveAuthHeaders() {
     }
     const cookie = (login.headers.get("set-cookie") || "").split(";")[0];
     checks.push(assert(Boolean(cookie), "session cookie returned", "missing session cookie"));
-    return cookie ? { cookie, ...syntheticHeaders } : undefined;
+    return cookie ? { cookie, origin: baseUrl, ...syntheticHeaders } : undefined;
   }
 
   if (internalSecret) {
@@ -77,14 +81,17 @@ async function resolveAuthHeaders() {
 }
 
 async function request(path, init) {
-  return fetch(`${baseUrl}${path}`, {
-    redirect: "manual",
-    ...init,
-    headers: {
-      ...syntheticHeaders,
-      ...(init?.headers || {}),
-    },
-  });
+  try {
+    return await smokeFetch(baseUrl, path, {
+      ...init,
+      headers: {
+        ...syntheticHeaders,
+        ...(init?.headers || {}),
+      },
+    });
+  } catch (error) {
+    failSmoke(error instanceof Error ? error.message : `request failed for ${path}`);
+  }
 }
 
 async function readJson(response) {
@@ -101,10 +108,6 @@ function statusDetail(status, json) {
 
 function assert(ok, label, detail) {
   return { ok, label, detail: ok ? undefined : detail };
-}
-
-function normalizeBaseUrl(value) {
-  return value.replace(/\/+$/, "");
 }
 
 function createSyntheticHeaders(scope) {

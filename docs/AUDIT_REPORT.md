@@ -3,6 +3,8 @@
 Date: 2026-06-10 · Scope: full repository (~44.5k lines TS/TSX, 61 commits over 5 days) · Supersedes `docs/DEEP_DIVE_REVIEW.md`
 Method: 4 phases — Discovery, Evidence-Based Audit, Improvement Strategy, Task Plan.
 
+> Historical snapshot: this audit records the 2026-06-10 repository and is not a current operations reference. The agent tool loop, bounded request/rate controls, production storage guard, worker, and automated suites have since shipped. The current inventory includes unit coverage, guarded Postgres integration coverage, and local Playwright smoke coverage; run the documented commands for the live count. Use the main README and `docs/architecture.md` / `docs/deployment.md` for current behavior.
+
 ---
 
 # Executive Summary
@@ -12,14 +14,14 @@ Method: 4 phases — Discovery, Evidence-Based Audit, Improvement Strategy, Task
 ### Top 3 Risks
 
 1. **The product cannot do what it claims.** The "agent" streams a single LLM completion with no tool-calling loop; the system prompt advertises tools and specialist agents the model has no way to invoke, so it will *hallucinate having done work*. For a product whose pitch is "do any task it's given," this is existential, and it is also a trust/honesty defect: users will catch the model claiming actions that never happened. (`src/lib/orchestration/agent-runner.ts`, `prompts.ts:32-36`)
-2. **No tests under high change velocity.** `npm test` runs lint only; the four smoke scripts require a *deployed* URL. 44k lines of policy, queue, crypto, and planner logic — the exact code where silent regressions cause data loss or security bypass — have zero unit coverage. (`package.json:6-15`)
+2. **At review time, there were no automated tests.** This finding is resolved by the current unit, integration, Playwright, and fail-closed production-smoke suites. (`package.json`, `tests/`)
 3. **Cost and abuse exposure on the LLM path.** `/api/agent` accepts unbounded message content, has no rate limit, no token budget, and persists **one store write per streamed token**, multiplying both latency and database cost per response. (`api/agent/route.ts:8-16`, `agent-runner.ts:33-36,100`)
 
 ### Top 3 Opportunities
 
 1. **~300 lines from a real product.** Every hard piece of a governed autonomous agent already exists — schema-validated tools, risk policy, approval persistence, durable queue, audit ledger, run events. Wiring governed tools into an OpenAI function-calling loop converts the entire platform from "ledger of dry-runs" to a working agentic system.
 2. **Unify the two execution paths.** Chat runs and workflows are disconnected engines. One "Task" concept (chat run that can promote itself to a durable workflow at an approval gate or long step) collapses the product's biggest conceptual confusion and halves the UI surface.
-3. **Sell the trust story.** Signed evaluation reports, forced RLS, SSRF guards, immutable audits — competitors don't have this. Surfaced through a human-readable approval/consent UX instead of JSON dumps, governance becomes the differentiator instead of internal plumbing.
+3. **Sell the trust story.** Signed evaluation reports, forced RLS, SSRF guards, and persistent audit trails — competitors don't have this. Surfaced through a human-readable approval/consent UX instead of JSON dumps, governance becomes the differentiator instead of internal plumbing. WORM retention remains an external deployment control.
 
 ---
 

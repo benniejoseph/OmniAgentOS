@@ -5,7 +5,12 @@ import {
   ALERT_SCHEDULER_DISPATCH_LIMIT,
   ALERT_SCHEDULER_QUEUE_LIMIT,
 } from "@/lib/config";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
+} from "@/lib/db/client";
 import {
   getIncidentAlertTargets,
   recordIncidentEvent,
@@ -13,7 +18,9 @@ import {
   type IncidentRecord,
   type IncidentSeverity,
 } from "@/lib/diagnostics/incidents";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { readResponseTextLimited } from "@/lib/http/body";
+import { fetchPublicHttpUrl } from "@/lib/security/network";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
 export type AlertDeliveryChannel = IncidentAlertTarget["channel"];
@@ -21,6 +28,7 @@ export type AlertDeliveryStatus = "queued" | "running" | "delivered" | "failed" 
 
 export type AlertDeliveryRecord = {
   id: string;
+  tenantId: string;
   incidentId: string;
   incidentEventId?: string;
   targetId: string;
@@ -150,7 +158,8 @@ const alertPolicies: AlertDeliveryPolicy[] = [
 ];
 
 const deliveryLeaseMs = 5 * 60 * 1000;
-let alertFileWriteQueue: Promise<void> = Promise.resolve();
+const alertNetworkDeadlineMs = 15_000;
+const alertResponseMaxBytes = 16_000;
 
 export function getAlertDeliveryPolicies() {
   return alertPolicies;
@@ -198,6 +207,7 @@ export async function enqueueAlertDeliveriesForIncident(
 
   if (saved.length) {
     await recordIncidentEvent({
+      tenantId: incident.tenantId,
       incidentId: incident.id,
       type: "alert_delivery_queued",
       message: `Queued ${saved.length} alert delivery target(s).`,
@@ -212,8 +222,11 @@ export async function enqueueAlertDeliveriesForIncident(
   return saved;
 }
 
-export async function enqueueAlertDeliveriesForActiveIncidents(limit = 25) {
-  const rows = await getSqlSafeListActiveIncidents(limit);
+export async function enqueueAlertDeliveriesForActiveIncidents(
+  limit = 25,
+  options: { tenantId?: string } = {},
+) {
+  const rows = await getSqlSafeListActiveIncidents(limit, options);
   const deliveries: AlertDeliveryRecord[] = [];
 
   for (const incident of rows) {
@@ -225,54 +238,80 @@ export async function enqueueAlertDeliveriesForActiveIncidents(limit = 25) {
   return deliveries;
 }
 
-export async function dispatchAlertDeliveries(limit = 10): Promise<DispatchResult> {
-  await repairExpiredAlertDeliveries();
-  const deliveries = await leaseAlertDeliveries(limit);
+export async function dispatchAlertDeliveries(
+  limit = 10,
+  options: { tenantId?: string } = {},
+): Promise<DispatchResult> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  await repairExpiredAlertDeliveries({ tenantId });
+  const deliveries = await leaseAlertDeliveries(limit, { tenantId });
   const processed: AlertDeliveryRecord[] = [];
   let delivered = 0;
   let skipped = 0;
   let failed = 0;
 
   for (const delivery of deliveries) {
-    const result = await deliverAlert(delivery);
-    if (result.status === "delivered") {
-      delivered += 1;
-      processed.push(await completeAlertDelivery(delivery.id, result.response));
-      await recordIncidentEvent({
-        incidentId: delivery.incidentId,
-        type: "alert_delivered",
-        message: `Delivered alert to ${delivery.targetId}.`,
-        metadata: { deliveryId: delivery.id, channel: delivery.channel },
-      }).catch(() => undefined);
-      continue;
-    }
+    try {
+      const result = await deliverAlert(delivery);
+      if (result.status === "delivered") {
+        const completed = await completeAlertDelivery(delivery, result.response);
+        processed.push(completed);
+        delivered += 1;
+        await recordIncidentEvent({
+          tenantId: delivery.tenantId,
+          incidentId: delivery.incidentId,
+          type: "alert_delivered",
+          message: `Delivered alert to ${delivery.targetId}.`,
+          metadata: { deliveryId: delivery.id, channel: delivery.channel },
+        }).catch(() => undefined);
+        continue;
+      }
 
-    if (result.status === "skipped") {
-      skipped += 1;
-      processed.push(await skipAlertDelivery(delivery.id, result.error || "Alert target is not configured."));
-      continue;
-    }
+      if (result.status === "skipped") {
+        const skippedDelivery = await skipAlertDelivery(
+          delivery,
+          result.error || "Alert target is not configured.",
+        );
+        processed.push(skippedDelivery);
+        skipped += 1;
+        continue;
+      }
 
-    failed += 1;
-    processed.push(await failAlertDelivery(delivery, result.error || "Alert delivery failed."));
-    await recordIncidentEvent({
-      incidentId: delivery.incidentId,
-      type: "alert_delivery_failed",
-      message: `Alert delivery failed for ${delivery.targetId}.`,
-      metadata: { deliveryId: delivery.id, channel: delivery.channel, error: result.error },
-    }).catch(() => undefined);
+      const failedDelivery = await failAlertDelivery(
+        delivery,
+        result.error || "Alert delivery failed.",
+      );
+      processed.push(failedDelivery);
+      failed += 1;
+      await recordAlertFailureEvent(delivery, result.error);
+    } catch (error) {
+      failed += 1;
+      const message = error instanceof Error ? error.message : "Alert delivery threw.";
+      try {
+        processed.push(await failAlertDelivery(delivery, message));
+      } catch (stateError) {
+        console.warn(
+          "Alert delivery state update failed.",
+          stateError instanceof Error ? stateError.message : stateError,
+        );
+      }
+      await recordAlertFailureEvent(delivery, message);
+    }
   }
 
   return { processed, delivered, skipped, failed };
 }
 
 export async function retryFailedAlertDeliveries({
+  tenantId: requestedTenantId,
   limit = 25,
   includeSkipped = true,
 }: {
+  tenantId?: string;
   limit?: number;
   includeSkipped?: boolean;
 } = {}) {
+  const tenantId = normalizeTenantId(requestedTenantId);
   const boundedLimit = Math.min(Math.max(limit, 1), 50);
   const readyTargetIds = getAlertTargetHealth()
     .filter((target) => target.ready)
@@ -290,10 +329,11 @@ export async function retryFailedAlertDeliveries({
       WITH retryable AS (
         SELECT id
         FROM omni_alert_deliveries
-        WHERE status ${includeSkipped ? "IN ('failed', 'skipped')" : "= 'failed'"}
-          AND target_id = ANY($1)
+        WHERE tenant_id = $1
+          AND status ${includeSkipped ? "IN ('failed', 'skipped')" : "= 'failed'"}
+          AND target_id = ANY($2)
         ORDER BY updated_at ASC, created_at ASC
-        LIMIT $2
+        LIMIT $3
         FOR UPDATE SKIP LOCKED
       )
       UPDATE omni_alert_deliveries deliveries
@@ -310,7 +350,7 @@ export async function retryFailedAlertDeliveries({
       WHERE deliveries.id = retryable.id
       RETURNING deliveries.*
     `,
-      [readyTargetIds, boundedLimit],
+      [tenantId, readyTargetIds, boundedLimit],
     );
     return rows.map(alertDeliveryFromRow);
   }
@@ -319,6 +359,7 @@ export async function retryFailedAlertDeliveries({
   const now = new Date().toISOString();
   await mutateAlertLedger((ledger) => {
     const candidates = ledger.deliveries
+      .filter((delivery) => alertTenantId(delivery) === tenantId)
       .filter((delivery) => retryStatuses.includes(delivery.status))
       .filter((delivery) => readyTargetIds.includes(delivery.targetId))
       .sort((left, right) => Date.parse(left.updatedAt) - Date.parse(right.updatedAt))
@@ -349,19 +390,21 @@ export async function retryFailedAlertDeliveries({
 }
 
 export async function runScheduledAlertDispatch({
+  tenantId,
   trigger = "operator.scheduler",
   queueLimit = ALERT_SCHEDULER_QUEUE_LIMIT,
   dispatchLimit = ALERT_SCHEDULER_DISPATCH_LIMIT,
 }: {
+  tenantId?: string;
   trigger?: string;
   queueLimit?: number;
   dispatchLimit?: number;
 } = {}): Promise<ScheduledAlertDispatchResult> {
   const boundedQueueLimit = Math.min(Math.max(queueLimit, 1), 50);
   const boundedDispatchLimit = Math.min(Math.max(dispatchLimit, 1), 50);
-  const enqueued = await enqueueAlertDeliveriesForActiveIncidents(boundedQueueLimit);
-  const dispatch = await dispatchAlertDeliveries(boundedDispatchLimit);
-  const stats = await getAlertDeliveryStats();
+  const enqueued = await enqueueAlertDeliveriesForActiveIncidents(boundedQueueLimit, { tenantId });
+  const dispatch = await dispatchAlertDeliveries(boundedDispatchLimit, { tenantId });
+  const stats = await getAlertDeliveryStats({ tenantId });
 
   return {
     trigger,
@@ -373,14 +416,17 @@ export async function runScheduledAlertDispatch({
 }
 
 export async function listAlertDeliveries({
+  tenantId: requestedTenantId,
   incidentId,
   status = "all",
   limit = 50,
 }: {
+  tenantId?: string;
   incidentId?: string;
   status?: AlertDeliveryStatus | "all";
   limit?: number;
 } = {}) {
+  const tenantId = normalizeTenantId(requestedTenantId);
   const boundedLimit = Math.min(Math.max(limit, 1), 200);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -388,7 +434,8 @@ export async function listAlertDeliveries({
       const rows = await getSql()`
         SELECT *
         FROM omni_alert_deliveries
-        WHERE incident_id = ${incidentId}
+        WHERE tenant_id = ${tenantId}
+          AND incident_id = ${incidentId}
           AND status = ${status}
         ORDER BY updated_at DESC
         LIMIT ${boundedLimit}
@@ -399,7 +446,8 @@ export async function listAlertDeliveries({
       const rows = await getSql()`
         SELECT *
         FROM omni_alert_deliveries
-        WHERE incident_id = ${incidentId}
+        WHERE tenant_id = ${tenantId}
+          AND incident_id = ${incidentId}
         ORDER BY updated_at DESC
         LIMIT ${boundedLimit}
       `;
@@ -409,7 +457,8 @@ export async function listAlertDeliveries({
       const rows = await getSql()`
         SELECT *
         FROM omni_alert_deliveries
-        WHERE status = ${status}
+        WHERE tenant_id = ${tenantId}
+          AND status = ${status}
         ORDER BY updated_at DESC
         LIMIT ${boundedLimit}
       `;
@@ -418,6 +467,7 @@ export async function listAlertDeliveries({
     const rows = await getSql()`
       SELECT *
       FROM omni_alert_deliveries
+      WHERE tenant_id = ${tenantId}
       ORDER BY updated_at DESC
       LIMIT ${boundedLimit}
     `;
@@ -426,14 +476,17 @@ export async function listAlertDeliveries({
 
   const ledger = await readAlertLedger();
   return ledger.deliveries
+    .filter((delivery) => alertTenantId(delivery) === tenantId)
     .filter((delivery) => !incidentId || delivery.incidentId === incidentId)
     .filter((delivery) => status === "all" || delivery.status === status)
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
     .slice(0, boundedLimit);
 }
 
-export async function getAlertDeliveryStats(): Promise<AlertDeliveryStats> {
-  const deliveries = await listAlertDeliveries({ limit: 500 });
+export async function getAlertDeliveryStats(
+  options: { tenantId?: string } = {},
+): Promise<AlertDeliveryStats> {
+  const deliveries = await listAlertDeliveries({ ...options, limit: 500 });
   const now = Date.now();
   const targets = getIncidentAlertTargets("critical");
   const targetHealth = getAlertTargetHealth(targets);
@@ -489,6 +542,7 @@ function createAlertDelivery({
   const now = new Date().toISOString();
   return {
     id: randomUUID(),
+    tenantId: incident.tenantId,
     incidentId: incident.id,
     incidentEventId: eventId,
     targetId: target.id,
@@ -694,16 +748,17 @@ async function deliverWebhookAlert(delivery: AlertDeliveryRecord) {
   }
   const body = JSON.stringify(delivery.payload);
   const signature = createAlertWebhookSignature(body);
-  const response = await fetch(url, {
+  const { response, body: responseBody } = await fetchAlertResponse(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-omniagent-delivery-id": delivery.id,
+      "Idempotency-Key": delivery.id,
       ...(signature ? { "x-omniagent-signature": signature } : {}),
     },
     body,
   });
-  const text = await response.text().catch(() => "");
+  const text = responseBody.text;
 
   if (!response.ok) {
     return { status: "failed" as const, error: `Webhook returned ${response.status}: ${text.slice(0, 240)}` };
@@ -721,9 +776,12 @@ async function deliverSlackAlert(delivery: AlertDeliveryRecord) {
     return { status: "skipped" as const, error: "SLACK_WEBHOOK_URL is not configured." };
   }
   const incident = delivery.payload.incident as { title?: string; message?: string; severity?: string } | undefined;
-  const response = await fetch(url, {
+  const { response, body: responseBody } = await fetchAlertResponse(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": delivery.id,
+    },
     body: JSON.stringify({
       text: `[${incident?.severity || delivery.severity}] ${incident?.title || "OmniAgent incident"}`,
       blocks: [
@@ -737,7 +795,7 @@ async function deliverSlackAlert(delivery: AlertDeliveryRecord) {
       ],
     }),
   });
-  const text = await response.text().catch(() => "");
+  const text = responseBody.text;
 
   if (!response.ok) {
     return { status: "failed" as const, error: `Slack returned ${response.status}: ${text.slice(0, 240)}` };
@@ -753,11 +811,12 @@ async function deliverEmailAlert(delivery: AlertDeliveryRecord) {
     return { status: "skipped" as const, error: "RESEND_API_KEY and OMNIAGENT_ALERT_EMAIL_TO are not configured." };
   }
   const incident = delivery.payload.incident as { title?: string; message?: string; severity?: string } | undefined;
-  const response = await fetch("https://api.resend.com/emails", {
+  const { response, body: responseBody } = await fetchAlertResponse("https://api.resend.com/emails", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
+      "Idempotency-Key": delivery.id,
     },
     body: JSON.stringify({
       from: process.env.OMNIAGENT_ALERT_EMAIL_FROM || "OmniAgent OS <onboarding@resend.dev>",
@@ -766,7 +825,7 @@ async function deliverEmailAlert(delivery: AlertDeliveryRecord) {
       text: `${incident?.message || "Incident alert"}\n\nDelivery: ${delivery.id}`,
     }),
   });
-  const data = await response.json().catch(() => ({}));
+  const data = parseJsonObject(responseBody.text);
 
   if (!response.ok) {
     return { status: "failed" as const, error: `Email returned ${response.status}: ${JSON.stringify(data).slice(0, 240)}` };
@@ -775,19 +834,58 @@ async function deliverEmailAlert(delivery: AlertDeliveryRecord) {
   return { status: "delivered" as const, response: { status: response.status, id: data.id } };
 }
 
+async function fetchAlertResponse(url: string, init: RequestInit) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error(`Alert provider timed out after ${alertNetworkDeadlineMs}ms.`)),
+    alertNetworkDeadlineMs,
+  );
+  try {
+    const response = await fetchPublicHttpUrl(url, {
+      ...init,
+      signal: controller.signal,
+    }, "Alert provider URL");
+    const body = await readResponseTextLimited(response, alertResponseMaxBytes);
+    return { response, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function recordAlertFailureEvent(delivery: AlertDeliveryRecord, error?: string) {
+  await recordIncidentEvent({
+    tenantId: delivery.tenantId,
+    incidentId: delivery.incidentId,
+    type: "alert_delivery_failed",
+    message: `Alert delivery failed for ${delivery.targetId}.`,
+    metadata: { deliveryId: delivery.id, channel: delivery.channel, error },
+  }).catch(() => undefined);
+}
+
 async function saveAlertDelivery(record: AlertDeliveryRecord) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       INSERT INTO omni_alert_deliveries (
-        id, incident_id, incident_event_id, target_id, channel, status, severity,
+        id, tenant_id, incident_id, incident_event_id, target_id, channel, status, severity,
         dedupe_key, payload, response, attempt, max_attempts, run_at, locked_at,
         lease_owner, lease_expires_at, last_error, created_at, updated_at, delivered_at
       )
       VALUES (
-        ${record.id}, ${record.incidentId}, ${record.incidentEventId || null},
+        ${record.id}, ${record.tenantId}, ${record.incidentId}, ${record.incidentEventId || null},
         ${record.targetId}, ${record.channel}, ${record.status}, ${record.severity},
-        ${record.dedupeKey}, ${JSON.stringify(record.payload)}::jsonb,
+        ${storageDedupeKey(record.tenantId, record.dedupeKey)}, ${JSON.stringify(record.payload)}::jsonb,
         ${JSON.stringify(record.response || null)}::jsonb, ${record.attempt},
         ${record.maxAttempts}, ${record.runAt}, ${record.lockedAt || null},
         ${record.leaseOwner || null}, ${record.leaseExpiresAt || null},
@@ -800,10 +898,16 @@ async function saveAlertDelivery(record: AlertDeliveryRecord) {
         status = CASE
           WHEN omni_alert_deliveries.status IN ('delivered', 'skipped')
           THEN omni_alert_deliveries.status
+          WHEN omni_alert_deliveries.status = 'running'
+            AND omni_alert_deliveries.lease_expires_at > NOW()
+          THEN omni_alert_deliveries.status
           ELSE 'queued'
         END,
         run_at = CASE
           WHEN omni_alert_deliveries.status IN ('delivered', 'skipped')
+          THEN omni_alert_deliveries.run_at
+          WHEN omni_alert_deliveries.status = 'running'
+            AND omni_alert_deliveries.lease_expires_at > NOW()
           THEN omni_alert_deliveries.run_at
           ELSE EXCLUDED.run_at
         END,
@@ -815,12 +919,24 @@ async function saveAlertDelivery(record: AlertDeliveryRecord) {
 
   let saved = record;
   await mutateAlertLedger((ledger) => {
-    const existing = ledger.deliveries.find((delivery) => delivery.dedupeKey === record.dedupeKey);
+    const existing = ledger.deliveries.find(
+      (delivery) =>
+        alertTenantId(delivery) === record.tenantId &&
+        delivery.dedupeKey === record.dedupeKey,
+    );
     if (existing) {
-      saved = ["delivered", "skipped"].includes(existing.status)
+      const activeLease =
+        existing.status === "running" &&
+        Boolean(existing.leaseExpiresAt) &&
+        Date.parse(existing.leaseExpiresAt || "") > Date.now();
+      saved = ["delivered", "skipped"].includes(existing.status) || activeLease
         ? existing
         : { ...existing, payload: record.payload, status: "queued", runAt: record.runAt, updatedAt: new Date().toISOString() };
-      ledger.deliveries = ledger.deliveries.map((delivery) => delivery.id === existing.id ? saved : delivery);
+      ledger.deliveries = ledger.deliveries.map((delivery) =>
+        delivery.id === existing.id && alertTenantId(delivery) === record.tenantId
+          ? saved
+          : delivery
+      );
       return trimAlertLedger(ledger);
     }
     ledger.deliveries.unshift(record);
@@ -829,7 +945,11 @@ async function saveAlertDelivery(record: AlertDeliveryRecord) {
   return saved;
 }
 
-async function leaseAlertDeliveries(limit = 10) {
+async function leaseAlertDeliveries(
+  limit = 10,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
   const boundedLimit = Math.min(Math.max(limit, 1), 25);
   const owner = `alerts:${randomUUID()}`;
   const leaseExpiresAt = new Date(Date.now() + deliveryLeaseMs).toISOString();
@@ -840,7 +960,8 @@ async function leaseAlertDeliveries(limit = 10) {
       WITH next_deliveries AS (
         SELECT id
         FROM omni_alert_deliveries
-        WHERE status = 'queued'
+        WHERE tenant_id = ${tenantId}
+          AND status = 'queued'
           AND run_at <= NOW()
         ORDER BY run_at ASC, created_at ASC
         LIMIT ${boundedLimit}
@@ -864,6 +985,7 @@ async function leaseAlertDeliveries(limit = 10) {
   let leased: AlertDeliveryRecord[] = [];
   await mutateAlertLedger((ledger) => {
     const candidates = ledger.deliveries
+      .filter((delivery) => alertTenantId(delivery) === tenantId)
       .filter((delivery) => delivery.status === "queued" && Date.parse(delivery.runAt) <= Date.now())
       .sort((left, right) => Date.parse(left.runAt) - Date.parse(right.runAt))
       .slice(0, boundedLimit);
@@ -889,8 +1011,11 @@ async function leaseAlertDeliveries(limit = 10) {
   return leased;
 }
 
-async function completeAlertDelivery(deliveryId: string, response?: Record<string, unknown>) {
-  return updateAlertDelivery(deliveryId, {
+async function completeAlertDelivery(
+  delivery: AlertDeliveryRecord,
+  response?: Record<string, unknown>,
+) {
+  return updateAlertDelivery(delivery.id, {
     status: "delivered",
     response,
     deliveredAt: new Date().toISOString(),
@@ -898,18 +1023,18 @@ async function completeAlertDelivery(deliveryId: string, response?: Record<strin
     leaseOwner: undefined,
     leaseExpiresAt: undefined,
     lastError: undefined,
-  });
+  }, delivery.tenantId, delivery.leaseOwner);
 }
 
-async function skipAlertDelivery(deliveryId: string, error: string) {
-  return updateAlertDelivery(deliveryId, {
+async function skipAlertDelivery(delivery: AlertDeliveryRecord, error: string) {
+  return updateAlertDelivery(delivery.id, {
     status: "skipped",
     lastError: error,
     lockedAt: undefined,
     leaseOwner: undefined,
     leaseExpiresAt: undefined,
     deliveredAt: new Date().toISOString(),
-  });
+  }, delivery.tenantId, delivery.leaseOwner);
 }
 
 async function failAlertDelivery(delivery: AlertDeliveryRecord, error: string) {
@@ -923,10 +1048,19 @@ async function failAlertDelivery(delivery: AlertDeliveryRecord, error: string) {
     leaseExpiresAt: undefined,
     lastError: error,
     deliveredAt: retry ? undefined : new Date().toISOString(),
-  });
+  }, delivery.tenantId, delivery.leaseOwner);
 }
 
-async function updateAlertDelivery(deliveryId: string, patch: Partial<AlertDeliveryRecord>) {
+async function updateAlertDelivery(
+  deliveryId: string,
+  patch: Partial<AlertDeliveryRecord>,
+  requestedTenantId?: string,
+  leaseOwner?: string,
+) {
+  if (!leaseOwner) {
+    throw new Error(`Alert delivery ${deliveryId} is missing its lease owner.`);
+  }
+  const tenantId = normalizeTenantId(requestedTenantId);
   const now = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -943,15 +1077,29 @@ async function updateAlertDelivery(deliveryId: string, patch: Partial<AlertDeliv
           delivered_at = ${patch.deliveredAt || null},
           updated_at = ${now}
       WHERE id = ${deliveryId}
+        AND tenant_id = ${tenantId}
+        AND status = 'running'
+        AND lease_owner = ${leaseOwner}
+        AND lease_expires_at > NOW()
       RETURNING *
     `;
+    if (!rows[0]) {
+      throw new Error(`Alert delivery ${deliveryId} lease was lost before completion.`);
+    }
     return alertDeliveryFromRow(rows[0]);
   }
 
   let saved: AlertDeliveryRecord | null = null;
   await mutateAlertLedger((ledger) => {
     ledger.deliveries = ledger.deliveries.map((delivery) => {
-      if (delivery.id !== deliveryId) {
+      if (
+        delivery.id !== deliveryId ||
+        alertTenantId(delivery) !== tenantId ||
+        delivery.status !== "running" ||
+        delivery.leaseOwner !== leaseOwner ||
+        !delivery.leaseExpiresAt ||
+        Date.parse(delivery.leaseExpiresAt) <= Date.now()
+      ) {
         return delivery;
       }
       saved = {
@@ -964,13 +1112,16 @@ async function updateAlertDelivery(deliveryId: string, patch: Partial<AlertDeliv
     return trimAlertLedger(ledger);
   });
   if (!saved) {
-    throw new Error(`Alert delivery ${deliveryId} not found.`);
+    throw new Error(`Alert delivery ${deliveryId} lease was lost before completion.`);
   }
   return saved;
 }
 
-async function repairExpiredAlertDeliveries() {
+async function repairExpiredAlertDeliveries(
+  options: { tenantId?: string } = {},
+) {
   const now = new Date().toISOString();
+  const tenantId = normalizeTenantId(options.tenantId);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await getSql()`
@@ -984,6 +1135,7 @@ async function repairExpiredAlertDeliveries() {
           delivered_at = CASE WHEN attempt < max_attempts THEN NULL ELSE NOW() END,
           updated_at = NOW()
       WHERE status = 'running'
+        AND tenant_id = ${tenantId}
         AND lease_expires_at IS NOT NULL
         AND lease_expires_at <= NOW()
     `;
@@ -992,7 +1144,12 @@ async function repairExpiredAlertDeliveries() {
 
   await mutateAlertLedger((ledger) => {
     ledger.deliveries = ledger.deliveries.map((delivery) => {
-      if (delivery.status !== "running" || !delivery.leaseExpiresAt || Date.parse(delivery.leaseExpiresAt) > Date.now()) {
+      if (
+        alertTenantId(delivery) !== tenantId ||
+        delivery.status !== "running" ||
+        !delivery.leaseExpiresAt ||
+        Date.parse(delivery.leaseExpiresAt) > Date.now()
+      ) {
         return delivery;
       }
       const retry = delivery.attempt < delivery.maxAttempts;
@@ -1012,9 +1169,12 @@ async function repairExpiredAlertDeliveries() {
   });
 }
 
-async function getSqlSafeListActiveIncidents(limit: number) {
+async function getSqlSafeListActiveIncidents(
+  limit: number,
+  options: { tenantId?: string } = {},
+) {
   const { listIncidents } = await import("@/lib/diagnostics/incidents");
-  return listIncidents({ status: "active", limit });
+  return listIncidents({ ...options, status: "active", limit });
 }
 
 function policyForSeverity(severity: IncidentSeverity) {
@@ -1027,43 +1187,57 @@ function retryBackoffSeconds(severity: IncidentSeverity, attempt: number) {
 }
 
 async function readAlertLedger() {
-  return readJsonFile<AlertDeliveryLedger>(getAlertFile(), { deliveries: [] });
+  const ledger = await readJsonFile<AlertDeliveryLedger>(getAlertFile(), {
+    deliveries: [],
+  });
+  return {
+    deliveries: ledger.deliveries.map((delivery) => ({
+      ...delivery,
+      tenantId: alertTenantId(delivery),
+    })),
+  };
 }
 
 async function mutateAlertLedger(mutator: (ledger: AlertDeliveryLedger) => AlertDeliveryLedger) {
-  alertFileWriteQueue = alertFileWriteQueue.then(
-    async () => {
-      const ledger = mutator(await readAlertLedger());
-      await writeAlertLedger(ledger);
-    },
-    async () => {
-      const ledger = mutator(await readAlertLedger());
-      await writeAlertLedger(ledger);
-    },
+  await updateJsonFile<AlertDeliveryLedger>(
+    getAlertFile(),
+    { deliveries: [] },
+    (ledger) => trimAlertLedger(mutator({
+      deliveries: ledger.deliveries.map((delivery) => ({
+        ...delivery,
+        tenantId: alertTenantId(delivery),
+      })),
+    })),
   );
-  await alertFileWriteQueue;
-}
-
-async function writeAlertLedger(ledger: AlertDeliveryLedger) {
-  await writeJsonFile(getAlertFile(), trimAlertLedger(ledger));
 }
 
 function trimAlertLedger(ledger: AlertDeliveryLedger): AlertDeliveryLedger {
+  const durable = ledger.deliveries.filter(
+    (delivery) => delivery.status === "queued" || delivery.status === "running",
+  );
+  const terminal = ledger.deliveries.filter(
+    (delivery) => delivery.status !== "queued" && delivery.status !== "running",
+  );
   return {
-    deliveries: ledger.deliveries.slice(0, 2000),
+    deliveries: [
+      ...durable,
+      ...terminal.slice(0, Math.max(0, 2000 - durable.length)),
+    ],
   };
 }
 
 function alertDeliveryFromRow(row: Record<string, unknown>): AlertDeliveryRecord {
+  const tenantId = storedTenantId(row.tenant_id ? String(row.tenant_id) : undefined);
   return {
     id: String(row.id),
+    tenantId,
     incidentId: String(row.incident_id),
     incidentEventId: row.incident_event_id ? String(row.incident_event_id) : undefined,
     targetId: String(row.target_id),
     channel: normalizeChannel(row.channel),
     status: normalizeStatus(row.status),
     severity: normalizeSeverity(row.severity),
-    dedupeKey: String(row.dedupe_key),
+    dedupeKey: logicalDedupeKey(tenantId, String(row.dedupe_key)),
     payload: parseObject(row.payload) || {},
     response: parseObject(row.response),
     attempt: Number(row.attempt || 0),
@@ -1107,6 +1281,34 @@ function parseObject(value: unknown): Record<string, unknown> | undefined {
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
+}
+
+function alertTenantId(delivery: { tenantId?: string }) {
+  return storedTenantId(delivery.tenantId);
+}
+
+function storedTenantId(value?: string) {
+  return normalizeTenantId(
+    value || process.env.OMNIAGENT_DEFAULT_TENANT || "default",
+  );
+}
+
+function storageDedupeKey(tenantId: string, dedupeKey: string) {
+  return tenantId === "default" ? dedupeKey : `${tenantId}/${dedupeKey}`;
+}
+
+function logicalDedupeKey(tenantId: string, dedupeKey: string) {
+  const prefix = `${tenantId}/`;
+  return tenantId !== "default" && dedupeKey.startsWith(prefix)
+    ? dedupeKey.slice(prefix.length)
+    : dedupeKey;
 }
 
 function getAlertFile() {

@@ -38,6 +38,10 @@ export type WorkflowPlanNode = {
   description: string;
   dependsOn: string[];
   toolIds: string[];
+  toolInputs?: Array<{
+    toolId: string;
+    inputJson: string;
+  }>;
   connectorTargets: string[];
   riskLevel: 0 | 1 | 2 | 3;
   approvalRequired: boolean;
@@ -153,6 +157,7 @@ export type WorkflowPlanExecutionSummary = {
 export type WorkflowRunInput = {
   goal: string;
   mode?: "orchestrate" | "research" | "execute" | "learn";
+  planId?: string;
   requireApproval?: boolean;
   maxAttempts?: number;
   metadata?: Record<string, unknown>;
@@ -265,6 +270,7 @@ export type WorkflowTriggerAuthMode = "none" | "hmac_sha256";
 
 export type WorkflowTriggerRecord = {
   id: string;
+  tenantId: string;
   name: string;
   source: string;
   status: WorkflowTriggerStatus;
@@ -285,8 +291,10 @@ export type WorkflowTriggerEventStatus = "accepted" | "rejected" | "enqueued" | 
 
 export type WorkflowTriggerEventRecord = {
   id: string;
-  tenantId?: string;
+  tenantId: string;
   triggerId: string;
+  deliveryKey?: string;
+  signatureDigest?: string;
   status: WorkflowTriggerEventStatus;
   source: string;
   eventType?: string;

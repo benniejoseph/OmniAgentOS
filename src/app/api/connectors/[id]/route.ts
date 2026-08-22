@@ -1,22 +1,27 @@
 import { z } from "zod";
-import { deleteMcpConnector, updateMcpConnector } from "@/lib/connectors/store";
+import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
+import { deleteMcpConnector, getMcpConnector, updateMcpConnector } from "@/lib/connectors/store";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
-import { validateConnectorSecretEnvName } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { assertPublicHttpUrl } from "@/lib/security/network";
 
 export const runtime = "nodejs";
+export const PATCH = withDatabaseRequestScope(PATCHHandler);
+export const DELETE = withDatabaseRequestScope(DELETEHandler);
 
 const updateMcpConnectorSchema = z
   .object({
     name: z.string().min(1).max(120).optional(),
-    endpoint: z.string().url().optional(),
+    endpoint: z.string().url().max(2048).optional(),
     authType: z.enum(["none", "bearer_env"]).optional(),
-    authTokenEnv: z.string().regex(/^[A-Z0-9_]+$/).nullable().optional(),
+    authTokenEnv: z.string().regex(/^[A-Z0-9_]+$/).max(120).nullable().optional(),
     status: z.enum(["active", "error", "disabled"]).optional(),
     defaultRiskLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
     approvalRequired: z.boolean().optional(),
   })
+  .strict()
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one connector field is required.",
   })
@@ -25,14 +30,19 @@ const updateMcpConnectorSchema = z
     path: ["authTokenEnv"],
   });
 
-export async function PATCH(
+async function PATCHHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "mcp_connector");
   const { id } = await context.params;
-  const body = await request.json().catch(() => ({}));
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
   const parsed = updateMcpConnectorSchema.safeParse(body);
 
   if (!parsed.success) {
@@ -42,14 +52,20 @@ export async function PATCH(
     );
   }
 
-  if (!validateConnectorSecretEnvName(parsed.data.authTokenEnv || undefined)) {
-    return Response.json(
-      {
-        error: "Invalid connector secret env var",
-        message: "Connector secrets must use OMNIAGENT_CONNECTOR_* or OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST and cannot reference platform secrets.",
+  let securityContext;
+  try {
+    securityContext = await authorizeRequest({
+      request,
+      action: "manage.connector",
+      resourceType: "mcp_connector",
+      resourceId: id,
+      metadata: {
+        changedFields: Object.keys(parsed.data),
+        hasSecretBinding: typeof parsed.data.authTokenEnv === "string",
       },
-      { status: 400 },
-    );
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   try {
@@ -63,20 +79,44 @@ export async function PATCH(
     );
   }
 
-  let securityContext;
   try {
-    securityContext = await authorizeRequest({
-      request,
-      action: "manage.connector",
-      resourceType: "mcp_connector",
-      resourceId: id,
-      metadata: body,
+    const existing = await getMcpConnector(id, { tenantId: securityContext.tenantId });
+    if (!existing) {
+      return Response.json({ error: "MCP connector not found." }, { status: 404 });
+    }
+    if (parsed.data.status === "active" && !existing.lastDiscoveredAt) {
+      return Response.json(
+        {
+          error: "MCP connector review required.",
+          message:
+            "Discover this connector's tools before activating its reviewed contract.",
+        },
+        { status: 409 },
+      );
+    }
+    const nextAuthType = parsed.data.authType || existing.authType;
+    const nextEnvName = parsed.data.authTokenEnv === null
+      ? undefined
+      : parsed.data.authTokenEnv || existing.authTokenEnv;
+    if (nextAuthType === "bearer_env" && !nextEnvName) {
+      return Response.json(
+        { error: "Invalid MCP connector update", message: "Bearer auth requires authTokenEnv." },
+        { status: 400 },
+      );
+    }
+    const secretBinding = evaluateConnectorSecretBinding({
+      envName: nextAuthType === "bearer_env" ? nextEnvName : undefined,
+      tenantId: securityContext.tenantId,
+      targetUrl: parsed.data.endpoint || existing.endpoint,
+      role: securityContext.role,
     });
-  } catch (error) {
-    return forbiddenResponse(error);
-  }
+    if (!secretBinding.allowed) {
+      return Response.json(
+        { error: "Invalid connector secret binding", message: secretBinding.reason },
+        { status: 400 },
+      );
+    }
 
-  try {
     const connector = await updateMcpConnector(
       id,
       {
@@ -132,7 +172,7 @@ export async function PATCH(
   }
 }
 
-export async function DELETE(
+async function DELETEHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {

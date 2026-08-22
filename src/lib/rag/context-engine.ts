@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
+} from "@/lib/db/client";
 import type { MemorySearchResult } from "@/lib/memory/types";
 import { embedTexts } from "@/lib/openai/client";
 import { searchMemoryGraph } from "@/lib/memory/graph";
 import { searchMemories } from "@/lib/memory/store";
 import { searchKnowledge } from "@/lib/rag/store";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type {
   ContextEngineStats,
@@ -17,6 +22,7 @@ import type {
   RetrievalProfile,
   RetrievalTraceRecord,
 } from "@/lib/rag/types";
+import { redactSensitive } from "@/lib/security/context";
 
 type BuildContextPackOptions = {
   tenantId?: string;
@@ -57,14 +63,12 @@ const stopWords = new Set([
   "your",
 ]);
 
-let traceFileWriteQueue: Promise<void> = Promise.resolve();
-
 export async function buildContextPack(
   query: string,
   options: BuildContextPackOptions = {},
 ): Promise<ContextPack> {
   const startedAt = Date.now();
-  const normalizedQuery = query.trim();
+  const normalizedQuery = String(redactSensitive(query.trim())).slice(0, 4_000);
   const limit = Math.min(Math.max(options.limit || 8, 1), 24);
   const candidateLimit = Math.min(Math.max(options.candidateLimit || limit * 3, limit), 60);
   const profile = profileQuery(normalizedQuery);
@@ -90,7 +94,7 @@ export async function buildContextPack(
         results: [],
       });
     }
-    return pack;
+    return sanitizeContextPack(pack);
   }
 
   const retrievalQuery = profile.expandedQueries.join("\n");
@@ -132,7 +136,7 @@ export async function buildContextPack(
           results: traceResults,
         });
 
-  return {
+  return sanitizeContextPack({
     query: normalizedQuery,
     profile,
     results: selected,
@@ -141,7 +145,11 @@ export async function buildContextPack(
     graphResults,
     contextBlock: formatContextPack(selected, profile),
     trace,
-  };
+  });
+}
+
+function sanitizeContextPack(pack: ContextPack): ContextPack {
+  return redactSensitive(pack) as ContextPack;
 }
 
 export async function listRetrievalTraces(limit = 20, options: { tenantId?: string } = {}) {
@@ -477,7 +485,7 @@ function formatContextPack(items: ContextEvidenceItem[], profile: RetrievalProfi
     .map((item, index) => `${index + 1}. ${item.title} (${item.kind}, confidence ${item.confidence.toFixed(2)})`)
     .join("\n");
 
-  return [
+  return String(redactSensitive([
     "Context Engine Profile",
     `mode: ${profile.mode}`,
     `intent: ${profile.intent}`,
@@ -489,7 +497,7 @@ function formatContextPack(items: ContextEvidenceItem[], profile: RetrievalProfi
     "",
     "Critical Evidence Recap",
     recap,
-  ].join("\n");
+  ].join("\n")));
 }
 
 function positionalPack(items: ContextEvidenceItem[]) {
@@ -506,11 +514,14 @@ function positionalPack(items: ContextEvidenceItem[]) {
 async function saveRetrievalTrace(
   input: Omit<RetrievalTraceRecord, "id" | "createdAt">,
 ): Promise<RetrievalTraceRecord> {
+  const safeInput = redactSensitive(
+    input,
+  ) as Omit<RetrievalTraceRecord, "id" | "createdAt">;
   const record: RetrievalTraceRecord = {
     id: randomUUID(),
     createdAt: new Date().toISOString(),
-    ...input,
-    tenantId: normalizeTenantId(input.tenantId),
+    ...safeInput,
+    tenantId: normalizeTenantId(safeInput.tenantId),
   };
 
   if (hasDatabaseUrl()) {
@@ -552,7 +563,10 @@ function retrievalTraceFromRow(row: Record<string, unknown>): RetrievalTraceReco
 }
 
 function normalizeTenantId(value?: string) {
-  return value?.trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default";
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }
 
 function parseProfile(value: unknown): RetrievalProfile {
@@ -576,19 +590,11 @@ async function readRetrievalTraceLedger() {
 }
 
 async function mutateRetrievalTraceLedger(mutator: (ledger: RetrievalTraceLedger) => RetrievalTraceLedger) {
-  traceFileWriteQueue = traceFileWriteQueue.then(
-    async () => {
-      await writeRetrievalTraceLedger(mutator(await readRetrievalTraceLedger()));
-    },
-    async () => {
-      await writeRetrievalTraceLedger(mutator(await readRetrievalTraceLedger()));
-    },
+  await updateJsonFile<RetrievalTraceLedger>(
+    getRetrievalTraceFile(),
+    { traces: [] },
+    (ledger) => trimRetrievalTraceLedger(mutator(ledger)),
   );
-  await traceFileWriteQueue;
-}
-
-async function writeRetrievalTraceLedger(ledger: RetrievalTraceLedger) {
-  await writeJsonFile(getRetrievalTraceFile(), trimRetrievalTraceLedger(ledger));
 }
 
 function trimRetrievalTraceLedger(ledger: RetrievalTraceLedger): RetrievalTraceLedger {

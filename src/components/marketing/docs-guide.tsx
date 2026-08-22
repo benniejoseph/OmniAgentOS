@@ -42,7 +42,7 @@ const quickStart = [
     title: "Request or enter access",
     href: "/signup",
     action: "Get access",
-    body: "Request an enterprise workspace, or sign in with an administrator-created account when your tenant is ready.",
+    body: "Request workspace access, or sign in after an administrator creates your account.",
     icon: KeyRound,
   },
   {
@@ -83,13 +83,13 @@ const commandModes = [
 const userSurfaces = [
   ["/", "Public product homepage"],
   ["/platform", "Platform overview and product architecture"],
-  ["/solutions", "Enterprise use cases and deployment patterns"],
+  ["/solutions", "Use cases and deployment patterns"],
   ["/security", "Security, governance, and compliance posture"],
   ["/pricing", "Commercial packaging placeholder"],
   ["/docs", "This complete product guide"],
   ["/changelog", "Shipped slices and platform progress"],
   ["/demo", "Public sample workspace"],
-  ["/signup", "Enterprise access request"],
+  ["/signup", "Workspace access request"],
   ["/login", "Secure session sign in"],
   ["/onboarding", "First-run activation checklist"],
   ["/app", "Authenticated operations dashboard"],
@@ -342,7 +342,7 @@ export function DocsGuide() {
         <div className="grid gap-12 lg:grid-cols-[0.8fr_1.2fr] lg:items-start">
           <div className="lg:sticky lg:top-36">
             <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">App flow</p>
-            <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">The control plane has one main loop.</h2>
+            <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">The workspace has one main loop.</h2>
             <p className="mt-5 text-base leading-7 text-muted">
               Every serious task should pass through identity, context, planning, governed execution, observability, release evidence, and memory.
             </p>

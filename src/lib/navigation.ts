@@ -55,23 +55,30 @@ export const marketingNav = [
 
 export const appNav: AppNavItem[] = [
   {
+    href: "/app/command",
+    label: "Work",
+    shortLabel: "Work",
+    description: "Give the agent a goal, review the plan, and start the run.",
+    icon: TerminalSquare,
+  },
+  {
     href: "/app",
-    label: "Home",
-    shortLabel: "Home",
-    description: "Your starting point: what's running, what needs you, and what finished.",
+    label: "Activity",
+    shortLabel: "Activity",
+    description: "Watch active and recent agent runs, workflows, and blockers.",
     icon: Activity,
   },
   {
-    href: "/app/command",
-    label: "Run Agent",
-    shortLabel: "Run",
-    description: "Type a goal and let the agent research, plan, and execute it.",
-    icon: TerminalSquare,
+    href: "/app/approvals",
+    label: "Inbox",
+    shortLabel: "Inbox",
+    description: "Review agent approvals and workspace access requests that require your attention.",
+    icon: CheckCircle2,
   },
   {
     href: "/app/results",
     label: "Results",
-    description: "Everything the agent produced, newest first.",
+    description: "Review completed work with its evidence and verification.",
     icon: FileText,
   },
   {
@@ -79,12 +86,6 @@ export const appNav: AppNavItem[] = [
     label: "Workflows",
     description: "Multi-step jobs that run in the background with retries and approvals.",
     icon: Workflow,
-  },
-  {
-    href: "/app/approvals",
-    label: "Approvals",
-    description: "Actions waiting for your yes or no before they run.",
-    icon: CheckCircle2,
   },
   {
     href: "/app/memory",
@@ -133,12 +134,12 @@ export const appNav: AppNavItem[] = [
   },
 ];
 
-// The everyday loop: run work, see results, unblock approvals.
-export const primaryNavHrefs = ["/app", "/app/command", "/app/results", "/app/approvals"];
+// The everyday loop: give work, watch it, resolve blockers, review evidence.
+export const primaryNavHrefs = ["/app/command", "/app", "/app/approvals", "/app/results"];
 
 export const appNavGroups: AppNavGroup[] = [
   {
-    label: "Everyday",
+    label: "Workspace",
     items: appNav.filter((item) => primaryNavHrefs.includes(item.href)),
   },
   {
@@ -335,7 +336,7 @@ export const productPages: Record<string, ProductPage> = {
   observability: {
     ...appNavItem("/app/observability"),
     eyebrow: "Observability",
-    headline: "A live operating picture for agentic systems.",
+    headline: "Inspect runtime events, incidents, and recovery.",
     summary: "Track runtime events, route health, SLO policies, incidents, alerts, diagnostics, and recovery actions in one place.",
     metrics: [
       { label: "SLO", value: "Policy" },
@@ -369,7 +370,7 @@ export const productPages: Record<string, ProductPage> = {
   },
   security: {
     ...appNavItem("/app/security"),
-    eyebrow: "Enterprise Security",
+    eyebrow: "Security",
     headline: "Tenant isolation and policy controls built into the runtime.",
     summary: "Authentication, tenant-aware database context, row-level security, audit logs, and network controls protect every workflow boundary.",
     metrics: [
@@ -404,7 +405,7 @@ export const productPages: Record<string, ProductPage> = {
   },
   settings: {
     ...appNavItem("/app/settings"),
-    eyebrow: "Control Plane",
+    eyebrow: "Settings",
     headline: "Configure the operating system behind every agent run.",
     summary: "Centralize environment posture, model configuration, tenant defaults, release metadata, and operator controls.",
     metrics: [
@@ -456,23 +457,23 @@ export const platformPillars = [
     icon: Cable,
   },
   {
-    title: "Operate in production",
+    title: "Inspect runtime state",
     body: "Monitor SLOs, incidents, diagnostics, release evidence, and signed evaluation reports.",
     icon: ShieldCheck,
   },
 ];
 
 export const proofMetrics = [
-  { label: "Release gates", value: "6/6" },
-  { label: "Memory layers", value: "4" },
-  { label: "Connector modes", value: "2" },
+  { label: "Core workspaces", value: "4" },
+  { label: "Agent modes", value: "4" },
+  { label: "Accessibility target", value: "AA" },
   { label: "Risk levels", value: "0-3" },
 ];
 
 
 export const orchestrationJourney = [
   {
-    title: "Intent enters the control plane",
+    title: "The operator submits a goal",
     body: "The operator submits a goal and OmniAgentOS routes it through policy, context retrieval, and planning before any side effect is possible.",
     signals: ["mode", "actor", "tenant"],
   },
@@ -522,8 +523,8 @@ export const operatingModes = [
 export const marketingPages = {
   platform: {
     eyebrow: "Platform",
-    headline: "The operating layer for enterprise AI agents.",
-    summary: "OmniAgentOS combines orchestration, memory, RAG, tools, workflows, evaluation, observability, and security into one production control plane.",
+    headline: "Give agents work and review what happens.",
+    summary: "OmniAgentOS brings goals, context, tool activity, approvals, workflows, and result evidence into one operator workspace.",
     icon: Sparkles,
     sections: [
       "Plan and execute durable agent work.",
@@ -534,7 +535,7 @@ export const marketingPages = {
   },
   solutions: {
     eyebrow: "Solutions",
-    headline: "Deploy agentic operations where work already happens.",
+    headline: "Run multi-step work with explicit review points.",
     summary: "Use OmniAgentOS for research, automation, support operations, security workflows, data analysis, and any multi-step AI process that needs memory and control.",
     icon: Globe2,
     sections: [
@@ -546,7 +547,7 @@ export const marketingPages = {
   },
   security: {
     eyebrow: "Security",
-    headline: "Enterprise control for autonomous work.",
+    headline: "Set boundaries for agent actions.",
     summary: "Tenant isolation, governed tools, network restrictions, signed reports, and SLO-backed release evidence are built into the platform surface.",
     icon: LockKeyhole,
     sections: [
@@ -558,14 +559,14 @@ export const marketingPages = {
   },
   pricing: {
     eyebrow: "Pricing",
-    headline: "Start with the control plane. Scale by usage and governance needs.",
-    summary: "The current build is configured as an enterprise-ready product shell. Pricing tiers can be wired to billing when the commercial packaging is finalized.",
+    headline: "Pricing is not published yet.",
+    summary: "Request access to discuss deployment needs. No public plan, price, or service commitment is available in this build.",
     icon: Database,
     sections: [
-      "Builder: local development and prototype workflows.",
-      "Team: shared workspaces, connectors, and evaluations.",
-      "Enterprise: tenant isolation, SSO-ready posture, and release evidence.",
-      "Platform: custom deployment, observability, and support.",
+      "Describe the operators, workflows, and connected systems you need.",
+      "Review hosting, authentication, data retention, and support requirements.",
+      "Confirm commercial terms before treating any feature as purchased.",
+      "Use the local workspace to evaluate the product workflow.",
     ],
   },
   docs: {
@@ -587,7 +588,7 @@ export const marketingPages = {
     icon: GitBranch,
     sections: [
       "Event-log stage 2: fold runs projection, GET /api/runs/:id?replay=true proves stored state matches event history.",
-      "Dedicated Fly.io worker drains the operation queue every 5 s — replaces daily-only Vercel cron.",
+      "Dedicated Fly.io worker drains the operation queue every 5 s, replacing daily-only Vercel cron.",
       "Planner health fixed: reasoning effort set to minimal, 45 s timeout, route maxDuration = 60.",
       "Earned-autonomy trust engine and event-log substrate (stage 1) shipped with verifiable projection rebuild.",
     ],

@@ -1,4 +1,6 @@
 import { discoverMcpTools } from "@/lib/connectors/mcp-client";
+import { mcpContractReviewSummary } from "@/lib/connectors/contract-review";
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   getMcpConnector,
   recordMcpConnectorError,
@@ -7,8 +9,9 @@ import {
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const POST = withDatabaseRequestScope(POSTHandler);
 
-export async function POST(
+async function POSTHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
@@ -32,7 +35,7 @@ export async function POST(
   }
 
   try {
-    const discovery = await discoverMcpTools(connector);
+    const discovery = await discoverMcpTools(connector, { actorRole: securityContext.role });
     const saved = await saveMcpDiscovery({
       connector,
       tools: discovery.tools,
@@ -40,7 +43,13 @@ export async function POST(
       instructions: discovery.instructions,
       serverVersion: discovery.serverVersion,
     });
-    return Response.json({ ...saved, connector: redactMcpConnector(saved.connector) });
+    return Response.json({
+      ...saved,
+      connector: {
+        ...redactMcpConnector(saved.connector),
+        review: mcpContractReviewSummary(saved.tools, saved.connector),
+      },
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "MCP discovery failed.";
     return Response.json(

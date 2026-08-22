@@ -1,9 +1,11 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import { getSecurityStats } from "@/lib/security/audit-store";
 import { canPerform, resolveSecurityContext, rbacRules, secretVaultPolicy, securityErrorResponse } from "@/lib/security/context";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   let context;
   try {
     context = await resolveSecurityContext(request);

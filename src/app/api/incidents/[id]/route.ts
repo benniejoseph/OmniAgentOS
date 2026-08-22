@@ -1,9 +1,11 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import { getIncidentDetail } from "@/lib/diagnostics/incidents";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 
-export async function GET(
+async function GETHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
@@ -18,8 +20,9 @@ export async function GET(
     incidentId: id,
   }));
 
+  let securityContext: Awaited<ReturnType<typeof authorizeRequest>>;
   try {
-    await authorizeRequest({
+    securityContext = await authorizeRequest({
       request,
       action: "read.security",
       resourceType: "incident",
@@ -38,7 +41,7 @@ export async function GET(
     return forbiddenResponse(error);
   }
 
-  const detail = await getIncidentDetail(id);
+  const detail = await getIncidentDetail(id, { tenantId: securityContext.tenantId });
   console.log(JSON.stringify({
     level: "info",
     msg: detail ? "done" : "not_found",

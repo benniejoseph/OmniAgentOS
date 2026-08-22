@@ -1,8 +1,13 @@
 app = "omniagent-worker"
 primary_region = "sin"
+kill_signal = "SIGTERM"
+kill_timeout = "15s"
 
 [build]
   dockerfile = "Dockerfile.worker"
+
+[processes]
+  worker = "node worker.mjs"
 
 [deploy]
   strategy = "immediate"
@@ -11,9 +16,13 @@ primary_region = "sin"
   OMNIAGENT_WORKER_BASE_URL = "https://omniagent-os.vercel.app"
   OMNIAGENT_DEFAULT_TENANT = "default"
   OMNIAGENT_WORKER_INTERVAL_MS = "60000"
+  OMNIAGENT_WORKER_REQUEST_TIMEOUT_MS = "120000"
   OMNIAGENT_WORKER_LIMIT = "5"
-  OMNIAGENT_WORKER_SLO = "false"
-  OMNIAGENT_WORKER_ALERTS = "false"
+  OMNIAGENT_WORKER_SLO = "true"
+  OMNIAGENT_WORKER_ALERTS = "true"
+  OMNIAGENT_WORKER_RETENTION = "true"
+  OMNIAGENT_WORKER_RETENTION_INTERVAL_MS = "21600000"
+  OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS = "420000"
 
 [[vm]]
   memory = "256mb"

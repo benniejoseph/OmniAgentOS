@@ -1,11 +1,16 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import { parseBoundedInteger } from "@/lib/http/body";
 import { getApprovalQueue } from "@/lib/operations/queue";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const url = new URL(request.url);
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 25), 1), 100);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 25, {
+    max: 100,
+  });
 
   let context;
   try {

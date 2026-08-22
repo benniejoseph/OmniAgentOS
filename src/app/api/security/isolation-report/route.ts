@@ -1,9 +1,11 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import { getTenantIsolationReport } from "@/lib/security/isolation-report";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   try {
     const context = await authorizeRequest({
       request,

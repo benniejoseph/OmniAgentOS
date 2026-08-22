@@ -1,9 +1,17 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  jsonBodyErrorResponse,
+  parseBoundedInteger,
+  parseJsonBody,
+} from "@/lib/http/body";
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats, listWorkflowPlans } from "@/lib/workflows/planner";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const workflowPlanSchema = z.object({
   goal: z.string().min(1).max(4000),
@@ -11,11 +19,13 @@ const workflowPlanSchema = z.object({
   workflowRunId: z.string().min(1).optional(),
   requireApproval: z.boolean().optional(),
   reuseExisting: z.boolean().optional(),
-});
+}).strict();
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const url = new URL(request.url);
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, {
+    max: 100,
+  });
 
   let context;
   try {
@@ -35,8 +45,13 @@ export async function GET(request: Request) {
   });
 }
 
-export async function POST(request: Request) {
-  const body = await request.json().catch(() => ({}));
+async function POSTHandler(request: Request) {
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
   const parsed = workflowPlanSchema.safeParse(body);
 
   if (!parsed.success) {

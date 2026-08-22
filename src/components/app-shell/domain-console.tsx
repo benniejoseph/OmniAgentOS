@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
   Brain,
   Cable,
   CheckCircle2,
+  CircleHelp,
   Database,
   FileText,
   GitBranch,
@@ -22,6 +23,11 @@ import {
   XCircle,
 } from "lucide-react";
 import { clsx } from "clsx";
+import {
+  permissionMessage,
+  type WorkspacePermission,
+  useWorkspaceSession,
+} from "@/components/app-shell/session-context";
 import type { NavIcon } from "@/lib/navigation";
 
 export type DomainConsoleKey =
@@ -82,7 +88,7 @@ type FlowStep = {
 type ActionField = {
   name: string;
   label: string;
-  type: "text" | "textarea" | "select" | "checkbox" | "json";
+  type: "text" | "password" | "textarea" | "select" | "checkbox" | "json";
   placeholder?: string;
   defaultValue?: FormValue;
   options?: { label: string; value: string }[];
@@ -92,9 +98,10 @@ type DomainAction = {
   id: string;
   title: string;
   description: string;
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PATCH";
   path: string;
   fields: ActionField[];
+  buildPath?: (values: Record<string, FormValue>) => string;
   buildPayload?: (values: Record<string, FormValue>) => JsonRecord | undefined;
 };
 
@@ -136,6 +143,10 @@ const riskOptions = [
 const authOptions = [
   { label: "No auth", value: "none" },
   { label: "Bearer token env", value: "bearer_env" },
+];
+const openApiAuthOptions = [
+  ...authOptions,
+  { label: "API key header env", value: "api_key_header_env" },
 ];
 
 const ActivityIcon = Layers3;
@@ -321,7 +332,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           arrayPath(data, "workflows.runs").map((item) => ({
             title: stringValue(item.goal, "Workflow run"),
             status: stringValue(item.status, "unknown"),
-            meta: stringValue(item.currentStep, "preflight"),
+            meta: `${stringValue(item.currentStep, "preflight")} · ${stringValue(item.id, "unknown ID")}`,
             time: stringValue(item.updatedAt || item.createdAt),
             tone: toneForStatus(item.status),
           })),
@@ -334,7 +345,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           arrayPath(data, "plans.plans").map((item) => ({
             title: stringValue(item.goal, "Workflow plan"),
             status: `risk ${stringValue(item.highestRiskLevel, "0")}`,
-            meta: `confidence ${stringValue(item.confidence, "0")}`,
+            meta: `${stringPath(item, "plan.mode", "orchestrate")} · confidence ${stringValue(item.confidence, "0")} · ${stringValue(item.id, "unknown ID")}`,
             time: stringValue(item.updatedAt || item.createdAt),
             tone: numberValue(item.highestRiskLevel, 0) > 1 ? "warning" : "neutral",
           })),
@@ -358,11 +369,22 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
       {
         id: "start-workflow",
         title: "Start workflow",
-        description: "Create a durable run and enqueue the first tick.",
+        description: "Create a durable run. Paste the previewed plan ID to execute that exact reviewed plan.",
         method: "POST",
         path: "/api/workflows",
-        fields: workflowGoalFields,
-        buildPayload: workflowPayload,
+        fields: [
+          ...workflowGoalFields,
+          {
+            name: "planId",
+            label: "Reviewed plan ID (recommended)",
+            type: "text",
+            placeholder: "Paste the ID returned by Preview plan",
+          },
+        ],
+        buildPayload: (values) => ({
+          ...workflowPayload(values),
+          planId: textValue(values.planId) || undefined,
+        }),
       },
       {
         id: "tick-queue",
@@ -376,6 +398,39 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           { name: "alerts", label: "Dispatch alerts", type: "checkbox", defaultValue: false },
         ],
         buildPayload: (values) => ({ limit: numberValue(values.limit, 5), slo: Boolean(values.slo), alerts: Boolean(values.alerts) }),
+      },
+      {
+        id: "control-workflow",
+        title: "Control workflow",
+        description: "Pause, resume, cancel, or retry a durable workflow run.",
+        method: "POST",
+        path: "/api/workflows/:id/signal",
+        fields: [
+          {
+            name: "runId",
+            label: "Workflow run ID",
+            type: "text",
+            placeholder: "workflow run ID",
+          },
+          {
+            name: "signal",
+            label: "Signal",
+            type: "select",
+            defaultValue: "pause",
+            options: ["pause", "resume", "cancel", "retry"].map((value) => ({
+              label: value[0].toUpperCase() + value.slice(1),
+              value,
+            })),
+          },
+        ],
+        buildPath: (values) => {
+          const runId = textValue(values.runId);
+          if (!runId) {
+            throw new Error("Workflow run ID is required.");
+          }
+          return `/api/workflows/${encodeURIComponent(runId)}/signal`;
+        },
+        buildPayload: (values) => ({ signal: textValue(values.signal, "pause") }),
       },
       {
         id: "inspect-recovery",
@@ -459,26 +514,46 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
         description: "Registered Model Context Protocol servers and discovered tools.",
         emptyLabel: "No MCP connectors registered.",
         rows: (data) =>
-          arrayPath(data, "connectors.connectors").map((item) => ({
-            title: stringValue(item.name, "MCP connector"),
-            status: stringValue(item.status, "unknown"),
-            meta: stringValue(item.endpoint, "endpoint"),
-            time: stringValue(item.updatedAt || item.createdAt),
-            tone: toneForStatus(item.status),
-          })),
+          arrayPath(data, "connectors.connectors").map((item) => {
+            const pending = numberPath(item, "review.pendingCount");
+            const contracts = arrayPath(item, "review.contracts")
+              .map((contract) => stringValue(contract.name))
+              .filter(Boolean)
+              .slice(0, 3)
+              .join(", ");
+            return {
+              title: stringValue(item.name, "MCP connector"),
+              status: pending ? "review required" : stringValue(item.status, "unknown"),
+              meta: pending
+                ? `${pending} pending${contracts ? `: ${contracts}` : ""} · connector ${stringValue(item.id)}`
+                : stringValue(item.endpoint, "endpoint"),
+              time: stringValue(item.updatedAt || item.createdAt),
+              tone: pending ? "warning" : toneForStatus(item.status),
+            };
+          }),
       },
       {
         title: "OpenAPI connectors",
         description: "REST APIs imported as governed operations.",
         emptyLabel: "No OpenAPI connectors imported.",
         rows: (data) =>
-          arrayPath(data, "openapi.connectors").map((item) => ({
-            title: stringValue(item.name, "OpenAPI connector"),
-            status: stringValue(item.status, "unknown"),
-            meta: stringValue(item.baseUrl || item.specUrl, "base URL"),
-            time: stringValue(item.updatedAt || item.createdAt),
-            tone: toneForStatus(item.status),
-          })),
+          arrayPath(data, "openapi.connectors").map((item) => {
+            const pending = numberPath(item, "review.pendingCount");
+            const contracts = arrayPath(item, "review.contracts")
+              .map((contract) => stringValue(contract.name))
+              .filter(Boolean)
+              .slice(0, 3)
+              .join(", ");
+            return {
+              title: stringValue(item.name, "OpenAPI connector"),
+              status: pending ? "review required" : stringValue(item.status, "unknown"),
+              meta: pending
+                ? `${pending} pending${contracts ? `: ${contracts}` : ""} · connector ${stringValue(item.id)}`
+                : stringValue(item.baseUrl || item.specUrl, "base URL"),
+              time: stringValue(item.updatedAt || item.createdAt),
+              tone: pending ? "warning" : toneForStatus(item.status),
+            };
+          }),
       },
       {
         title: "Catalog suggestions",
@@ -528,8 +603,9 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           { name: "name", label: "Name", type: "text", placeholder: "CRM API" },
           { name: "specUrl", label: "Spec URL", type: "text", placeholder: "https://example.com/openapi.json" },
           { name: "baseUrl", label: "Base URL override", type: "text", placeholder: "https://api.example.com" },
-          { name: "authType", label: "Auth", type: "select", defaultValue: "none", options: authOptions },
+          { name: "authType", label: "Auth", type: "select", defaultValue: "none", options: openApiAuthOptions },
           { name: "authTokenEnv", label: "Token env", type: "text", placeholder: "OMNIAGENT_CONNECTOR_CRM_TOKEN" },
+          { name: "authHeaderName", label: "API key header", type: "text", placeholder: "x-api-key (API key auth only)" },
           { name: "defaultRiskLevel", label: "Default risk", type: "select", defaultValue: "2", options: riskOptions },
         ],
         buildPayload: (values) => ({
@@ -538,6 +614,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           baseUrl: optionalText(values.baseUrl),
           authType: textValue(values.authType, "none"),
           authTokenEnv: optionalText(values.authTokenEnv),
+          authHeaderName: optionalText(values.authHeaderName),
           defaultRiskLevel: numberValue(values.defaultRiskLevel, 2),
           approvalRequired: numberValue(values.defaultRiskLevel, 2) >= 2,
           importSpec: true,
@@ -795,6 +872,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
       { key: "context", label: "Security context", path: "/api/security/context" },
       { key: "audits", label: "Security audit", path: "/api/security/audits?limit=24" },
       { key: "isolation", label: "Isolation report", path: "/api/security/isolation-report" },
+      { key: "retention", label: "Retention policy", path: "/api/security/retention" },
       { key: "release", label: "Release evidence", path: "/api/release/evidence" },
     ],
     metrics: [
@@ -840,8 +918,38 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
         emptyLabel: "Release security evidence is not available.",
         rows: releaseRows,
       },
+      {
+        title: "Sensitive-data retention",
+        description: "Automatic expiry windows applied by the dedicated worker.",
+        emptyLabel: "Retention policy is unavailable.",
+        rows: (data) => [
+          metricRow("Pending approvals", `${numberPath(data, "retention.policy.pendingApprovalDays")} days`),
+          metricRow("Pending access requests", `${numberPath(data, "retention.policy.pendingAccessRequestDays")} days`),
+          metricRow("Reviewed access requests", `${numberPath(data, "retention.policy.reviewedAccessRequestDays")} days`),
+          metricRow("Raw episode memory", `${numberPath(data, "retention.policy.episodeMemoryDays")} days`),
+          metricRow("Consolidated memory", `${numberPath(data, "retention.policy.consolidatedMemoryDays")} days`),
+          metricRow("Retrieval traces", `${numberPath(data, "retention.policy.retrievalTraceDays")} days`),
+          metricRow("Completed workflows", `${numberPath(data, "retention.policy.workflowDays")} days`),
+          metricRow("Webhook events", `${numberPath(data, "retention.policy.triggerEventDays")} days`),
+          metricRow("Completed queue jobs", `${numberPath(data, "retention.policy.operationJobDays")} days`),
+          metricRow("Run content", `${numberPath(data, "retention.policy.runContentDays")} days`),
+          metricRow("Tool payloads", `${numberPath(data, "retention.policy.toolPayloadDays")} days`),
+          metricRow("Operational events", `${numberPath(data, "retention.policy.domainEventDays")} days`),
+          metricRow("Security audits", `${numberPath(data, "retention.policy.securityAuditDays")} days`),
+        ],
+      },
     ],
-    actions: [],
+    actions: [
+      {
+        id: "sweep-retention",
+        title: "Run tenant retention",
+        description: "Remove expired terminal payloads and close approvals older than policy. Executing work and recent decisions are preserved.",
+        method: "POST",
+        path: "/api/security/retention",
+        fields: [],
+        buildPayload: () => ({ scope: "tenant" }),
+      },
+    ],
   },
   settings: {
     title: "Settings",
@@ -850,6 +958,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
     icon: Database,
     endpoints: [
       { key: "session", label: "Session", path: "/api/auth/session" },
+      { key: "identity", label: "Team", path: "/api/auth/control-plane" },
       { key: "capabilities", label: "Capabilities", path: "/api/capabilities" },
       { key: "health", label: "Health", path: "/api/health" },
       { key: "release", label: "Release evidence", path: "/api/release/evidence" },
@@ -859,6 +968,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
       { label: "Database", description: "Database configuration", value: (data) => booleanLabel(readPath(data, "capabilities.databaseConfigured"), "configured", "missing") },
       { label: "Storage", description: "Active persistence backend", value: (data) => stringPath(data, "capabilities.storageBackend", "unknown") },
       { label: "OpenAI", description: "Model provider readiness", value: (data) => booleanLabel(readPath(data, "capabilities.openaiConfigured"), "live", "fallback") },
+      { label: "Users", description: "Workspace identities", value: (data) => numberPath(data, "identity.stats.users") },
     ],
     flow: [
       { title: "Runtime", body: "Confirm Vercel function health, cron, and deployment evidence.", icon: ActivityIcon },
@@ -873,7 +983,11 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
         emptyLabel: "Configuration data unavailable.",
         rows: (data) => [
           metricRow("Auth enforcement", booleanLabel(readPath(data, "session.authEnabled"), "enforced", "open"), readPath(data, "session.authEnabled") ? "success" : "warning"),
-          metricRow("Bootstrap configured", booleanLabel(readPath(data, "session.bootstrapConfigured"), "ready", "missing"), readPath(data, "session.bootstrapConfigured") ? "success" : "warning"),
+          metricRow(
+            "Bootstrap credentials",
+            booleanLabel(readPath(data, "session.bootstrapConfigured"), "remove after first admin", "removed"),
+            readPath(data, "session.bootstrapConfigured") ? "warning" : "success",
+          ),
           metricRow("Database URL", booleanLabel(readPath(data, "capabilities.databaseConfigured"), "configured", "missing"), readPath(data, "capabilities.databaseConfigured") ? "success" : "danger"),
           metricRow("OpenAI API key", booleanLabel(readPath(data, "capabilities.openaiConfigured"), "configured", "fallback"), readPath(data, "capabilities.openaiConfigured") ? "success" : "warning"),
           metricRow("Health endpoint", stringPath(data, "health.status", "unknown"), toneForStatus(readPath(data, "health.status"))),
@@ -890,8 +1004,92 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           metricRow("Knowledge documents", numberPath(data, "capabilities.knowledge.documents")),
         ],
       },
+      {
+        title: "Team members",
+        description: "Users with a membership in this workspace.",
+        emptyLabel: "No workspace members are available.",
+        rows: (data) => {
+          const memberships = arrayPath(data, "identity.memberships");
+          return arrayPath(data, "identity.users").map((user) => {
+            const membership = memberships.find(
+              (item) => item.userId === user.id,
+            );
+            return {
+              title: stringValue(user.name || user.email, "Workspace user"),
+              status: stringValue(membership?.role, "member"),
+              meta: stringValue(user.email),
+              time: stringValue(user.lastLoginAt || user.createdAt),
+              tone: stringValue(user.status) === "active" ? "success" : "warning",
+            };
+          });
+        },
+      },
     ],
-    actions: [],
+    actions: [
+      {
+        id: "create-user",
+        title: "Create workspace user",
+        description: "Provision a user after approving access. Leave password blank to generate a strong one-time credential. Retrying the same approved request rotates the credential so a lost response is recoverable.",
+        method: "POST",
+        path: "/api/auth/control-plane",
+        fields: [
+          { name: "name", label: "Name", type: "text", placeholder: "Ada Operator" },
+          { name: "email", label: "Email", type: "text", placeholder: "ada@example.com" },
+          {
+            name: "role",
+            label: "Workspace role",
+            type: "select",
+            defaultValue: "viewer",
+            options: [
+              { label: "Viewer — read only", value: "viewer" },
+              { label: "Operator — run work", value: "operator" },
+              { label: "Admin — manage workspace", value: "admin" },
+            ],
+          },
+          {
+            name: "password",
+            label: "Initial password (optional)",
+            type: "password",
+            placeholder: "Leave blank to generate",
+          },
+        ],
+        buildPayload: (values) => ({
+          operation: "create",
+          accessRequestId: textValue(values.accessRequestId) || undefined,
+          name: textValue(values.name) || undefined,
+          email: textValue(values.email),
+          role: textValue(values.role, "viewer"),
+          password: textValue(values.password) || undefined,
+        }),
+      },
+      {
+        id: "rotate-user-credential",
+        title: "Rotate workspace credential",
+        description:
+          "Replace a member password and revoke their active sessions. Leave password blank to generate a new one-time credential.",
+        method: "POST",
+        path: "/api/auth/control-plane",
+        fields: [
+          {
+            name: "email",
+            label: "Workspace email",
+            type: "text",
+            placeholder: "ada@example.com",
+          },
+          {
+            name: "password",
+            label: "Replacement password (optional)",
+            type: "password",
+            placeholder: "Leave blank to generate",
+          },
+        ],
+        buildPayload: (values) => ({
+          operation: "rotate",
+          email: textValue(values.email),
+          password: textValue(values.password) || undefined,
+        }),
+      },
+    ],
   },
 };
 
@@ -904,24 +1102,54 @@ function workflowPayload(values: Record<string, FormValue>) {
 }
 
 export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
+  const {
+    session: workspaceSession,
+    status: sessionStatus,
+    error: workspaceSessionError,
+    role,
+  } = useWorkspaceSession();
   const config = domainConfigs[domain];
   const Icon = config.icon;
   const [resources, setResources] = useState<Record<string, ResourceState>>({});
   const [lastRefresh, setLastRefresh] = useState<string>();
   const [actionResult, setActionResult] = useState<ActionResult>();
+  const [copyResultStatus, setCopyResultStatus] = useState<"copied" | "error">();
   const [runningAction, setRunningAction] = useState<string>();
+  const [actionFormVersion, setActionFormVersion] = useState(0);
+  const [actionDefaults, setActionDefaults] = useState<
+    Record<string, Record<string, FormValue>>
+  >({});
+  const [announcement, setAnnouncement] = useState("Workspace ready.");
+  const loadController = useRef<AbortController | null>(null);
 
   const data = useMemo(() => {
     return Object.fromEntries(Object.entries(resources).map(([key, value]) => [key, value.data])) as DomainData;
   }, [resources]);
 
   async function load() {
-    let session: JsonRecord | undefined;
-    try {
-      session = asRecord(await readJson("/api/auth/session"));
-    } catch {
-      session = undefined;
+    if (sessionStatus === "loading") {
+      return;
     }
+    if (sessionStatus === "error" || !workspaceSession) {
+      setResources(
+        Object.fromEntries(
+          config.endpoints.map((endpoint) => [
+            endpoint.key,
+            {
+              status: "error",
+              error: workspaceSessionError || "Session status is unavailable.",
+            } satisfies ResourceState,
+          ]),
+        ),
+      );
+      setAnnouncement(`${config.title} could not verify the current session.`);
+      return;
+    }
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
+    const session = asRecord(workspaceSession);
+    setAnnouncement(`Refreshing ${config.title}.`);
     setResources((current) => {
       const next = { ...current };
       for (const endpoint of config.endpoints) {
@@ -952,7 +1180,7 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
           ] as const;
         }
         try {
-          const data = await readJson(endpoint.path);
+          const data = await readJson(endpoint.path, { signal: controller.signal });
           return [endpoint.key, { status: "ready", data } satisfies ResourceState] as const;
         } catch (error) {
           const message = error instanceof HttpError || error instanceof Error ? error.message : "Request failed.";
@@ -962,29 +1190,102 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
       }),
     );
 
+    if (controller.signal.aborted) {
+      return;
+    }
     setResources(Object.fromEntries(entries));
     setLastRefresh(new Date().toLocaleTimeString());
+    setAnnouncement(
+      entries.some(([, resource]) => resource.status === "error")
+        ? `${config.title} refreshed with unavailable sources.`
+        : `${config.title} refreshed.`,
+    );
   }
 
   useEffect(() => {
+    if (sessionStatus === "loading") {
+      return;
+    }
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => {
+      window.clearTimeout(timer);
+      loadController.current?.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [domain, sessionStatus, workspaceSession]);
+
+  useEffect(() => {
+    if (domain !== "settings") {
+      return;
+    }
+
+    let prefill: Record<string, FormValue> | undefined;
+    try {
+      const raw = window.sessionStorage.getItem("omniagent:pending-user-provision");
+      const parsed = raw ? JSON.parse(raw) as Record<string, unknown> : undefined;
+      const name = typeof parsed?.name === "string" ? parsed.name.trim().slice(0, 120) : "";
+      const email = typeof parsed?.email === "string" ? parsed.email.trim().slice(0, 254) : "";
+      const accessRequestId =
+        typeof parsed?.accessRequestId === "string"
+          ? parsed.accessRequestId.trim()
+          : "";
+      if (name && email && accessRequestId) {
+        prefill = { accessRequestId, name, email };
+      }
+    } catch {
+      // Settings stays usable when browser storage contains invalid data.
+    }
+
+    if (!prefill) {
+      try {
+        window.sessionStorage.removeItem("omniagent:pending-user-provision");
+      } catch {
+        // Ignore unavailable browser storage.
+      }
+      return;
+    }
+    const provisioningDefaults = prefill;
     const timer = window.setTimeout(() => {
-      void load();
+      setActionDefaults({ "create-user": provisioningDefaults });
+      setActionFormVersion((version) => version + 1);
     }, 0);
     return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [domain]);
 
   const protectedError = Object.values(resources).find((resource) => resource.code === 401 || resource.code === 403);
+  const anyLoading = Object.values(resources).some((resource) => resource.status === "loading");
+  const approvalDisabledReason = permissionMessage(
+    workspaceSession,
+    sessionStatus,
+    "manage.workflow",
+  );
+  const connectorReviewDisabledReason = permissionMessage(
+    workspaceSession,
+    sessionStatus,
+    "manage.connector",
+  );
 
   async function runAction(action: DomainAction, values: Record<string, FormValue>) {
+    const disabledReason = permissionMessage(
+      workspaceSession,
+      sessionStatus,
+      actionPermission(action),
+    );
+    if (disabledReason) {
+      setActionResult({ title: action.title, status: "error", message: disabledReason });
+      return;
+    }
     setRunningAction(action.id);
     setActionResult(undefined);
+    setCopyResultStatus(undefined);
+    setAnnouncement(`${action.title} started.`);
     try {
       const body = action.buildPayload?.(values);
-      const result = await readJson(action.path, {
+      const sendsJson = action.method === "POST" || action.method === "PATCH";
+      const result = await readJson(action.buildPath?.(values) || action.path, {
         method: action.method,
-        headers: action.method === "POST" ? { "content-type": "application/json" } : undefined,
-        body: action.method === "POST" ? JSON.stringify(body || {}) : undefined,
+        headers: sendsJson ? { "content-type": "application/json" } : undefined,
+        body: sendsJson ? JSON.stringify(body || {}) : undefined,
       });
       setActionResult({
         title: action.title,
@@ -992,6 +1293,23 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
         message: "Action completed.",
         data: result,
       });
+      if (action.id === "create-user") {
+        try {
+          window.sessionStorage.removeItem("omniagent:pending-user-provision");
+        } catch {
+          // Ignore unavailable browser storage.
+        }
+      }
+      setActionDefaults((current) => {
+        if (!current[action.id]) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[action.id];
+        return next;
+      });
+      setActionFormVersion((version) => version + 1);
+      setAnnouncement(`${action.title} completed.`);
       await load();
     } catch (error) {
       setActionResult({
@@ -999,12 +1317,36 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
         status: "error",
         message: error instanceof Error ? error.message : "Action failed.",
       });
+      setAnnouncement(`${action.title} failed.`);
     } finally {
       setRunningAction(undefined);
     }
   }
 
+  async function copyActionResult() {
+    if (!actionResult?.data) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(actionResult.data, null, 2));
+      setCopyResultStatus("copied");
+      setAnnouncement("Action result copied to the clipboard.");
+    } catch {
+      setCopyResultStatus("error");
+      setAnnouncement("Action result could not be copied.");
+    }
+  }
+
   async function decideApproval(item: JsonRecord, decision: "approve" | "reject") {
+    const disabledReason = permissionMessage(
+      workspaceSession,
+      sessionStatus,
+      "manage.workflow",
+    );
+    if (disabledReason) {
+      setActionResult({ title: "Approval decision", status: "error", message: disabledReason });
+      return;
+    }
     const id = textValue(item.id);
     const kind = textValue(item.kind);
     if (!id || !kind) {
@@ -1031,8 +1373,79 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
     }
   }
 
+  async function reviewConnectorContracts(
+    item: JsonRecord,
+    kind: "mcp" | "openapi",
+  ) {
+    if (connectorReviewDisabledReason) {
+      setActionResult({
+        title: "Connector contract review",
+        status: "error",
+        message: connectorReviewDisabledReason,
+      });
+      return;
+    }
+    const id = textValue(item.id);
+    const fingerprint = stringPath(item, "review.fingerprint", "");
+    if (!id || !fingerprint) {
+      setActionResult({
+        title: "Connector contract review",
+        status: "error",
+        message:
+          "The connector review changed or is incomplete. Refresh Integrations and try again.",
+      });
+      return;
+    }
+
+    const actionId = `review-${kind}-${id}`;
+    const label = kind === "mcp" ? "MCP" : "OpenAPI";
+    setRunningAction(actionId);
+    setActionResult(undefined);
+    setAnnouncement(`Approving the current ${label} contract catalog.`);
+    try {
+      const result = await readJson(
+        kind === "mcp"
+          ? `/api/connectors/${encodeURIComponent(id)}/review`
+          : `/api/openapi-connectors/${encodeURIComponent(id)}/review`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ expectedFingerprint: fingerprint }),
+        },
+      );
+      const promoted = numberValue(readPath(result, "promoted"), 0);
+      setActionResult({
+        title: `${label} contract review`,
+        status: "success",
+        message: promoted
+          ? `Approved ${promoted} exact ${label} ${promoted === 1 ? "contract" : "contracts"} and activated the connector.`
+          : "No pending contracts remained. The connector view was refreshed.",
+        data: result,
+      });
+      setAnnouncement(`${label} contract review completed.`);
+      await load();
+    } catch (error) {
+      setActionResult({
+        title: `${label} contract review`,
+        status: "error",
+        message:
+          error instanceof Error ? error.message : "Contract review failed.",
+      });
+      setAnnouncement(`${label} contract review failed.`);
+    } finally {
+      setRunningAction(undefined);
+    }
+  }
+
   return (
-    <div className="px-4 py-6 sm:px-6 lg:px-8">
+    <div
+      className="px-4 py-6 sm:px-6 lg:px-8"
+      aria-busy={anyLoading || Boolean(runningAction)}
+      data-testid={`${domain}-workspace`}
+    >
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </p>
       <section className="rounded-lg border border-line bg-surface p-5">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0">
@@ -1051,14 +1464,15 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
             <button
               type="button"
               onClick={() => void load()}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised"
+              disabled={anyLoading}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised"
             >
-              <RefreshCw size={15} aria-hidden="true" />
+              {anyLoading ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
               Refresh
             </button>
             <Link
               href="/app/command"
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink transition hover:brightness-105"
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink transition hover:brightness-105"
             >
               New run
               <ArrowRight size={15} aria-hidden="true" />
@@ -1070,10 +1484,7 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
           {config.endpoints.map((endpoint) => {
             const state = resources[endpoint.key]?.status || "idle";
             return (
-              <span key={endpoint.key} className="inline-flex items-center gap-2 rounded-md border border-line bg-background px-2.5 py-1.5">
-                <span className={clsx("size-2 rounded-full", state === "ready" ? "bg-success" : state === "error" ? "bg-danger" : "bg-warning")} />
-                {endpoint.label}
-              </span>
+              <EndpointStatus key={endpoint.key} label={endpoint.label} status={state} />
             );
           })}
           {lastRefresh ? <span className="inline-flex items-center rounded-md border border-line bg-background px-2.5 py-1.5">Updated {lastRefresh}</span> : null}
@@ -1084,24 +1495,33 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
         <section className="mt-4 rounded-lg border border-warning/45 bg-warning/10 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-sm font-semibold">Sign-in required for live console data</p>
+              <p className="text-sm font-semibold">
+                {protectedError.code === 401 ? "Sign in to load this workspace" : "Your role cannot load every source"}
+              </p>
               <p className="mt-1 text-sm text-muted">{protectedError.error}</p>
+              {protectedError.code === 403 ? <p className="mt-1 text-xs text-muted">Current role: {role}.</p> : null}
             </div>
-            <Link href="/login" className="inline-flex h-10 items-center justify-center rounded-md bg-foreground px-3 text-sm font-semibold text-background">
-              Sign in
-            </Link>
+            {protectedError.code === 401 ? (
+              <Link href="/login" className="primary-button">Sign in</Link>
+            ) : null}
           </div>
         </section>
       ) : null}
 
       <section className="mt-4 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-4">
-        {config.metrics.map((metric) => (
-          <div key={metric.label} className="min-h-28 bg-surface p-4">
-            <p className="text-xs text-muted">{metric.label}</p>
-            <p className={clsx("mt-3 font-mono text-2xl", toneClass(metric.tone))}>{metric.value(data)}</p>
-            <p className="mt-2 text-xs leading-5 text-muted">{metric.description}</p>
-          </div>
-        ))}
+        {config.metrics.map((metric) => {
+          const resource = resources[metricResourceKey(domain, metric.label)];
+          const value = metricDisplayValue(metric, data, resource);
+          return (
+            <div key={metric.label} className="min-h-28 bg-surface p-4">
+              <p className="text-xs text-muted">{metric.label}</p>
+              <p className={clsx("mt-3 font-mono text-2xl", toneClass(metricDisplayTone(metric, value, resource)))}>
+                {value}
+              </p>
+              <p className="mt-2 text-xs leading-5 text-muted">{metric.description}</p>
+            </div>
+          );
+        })}
       </section>
 
       <section className="mt-4 grid gap-4 xl:grid-cols-[0.72fr_1.18fr_0.74fr]">
@@ -1130,15 +1550,34 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
         </div>
 
         <div className="space-y-4">
+          {domain === "integrations" ? (
+            <ConnectorContractReviewPanel
+              mcpConnectors={arrayPath(data, "connectors.connectors")}
+              mcpTools={arrayPath(data, "connectors.tools")}
+              openApiConnectors={arrayPath(data, "openapi.connectors")}
+              openApiOperations={arrayPath(data, "openapi.operations")}
+              runningAction={runningAction}
+              disabledReason={connectorReviewDisabledReason}
+              onReview={(item, kind) =>
+                void reviewConnectorContracts(item, kind)
+              }
+            />
+          ) : null}
           {domain === "approvals" ? (
             <ApprovalDecisionPanel
               items={arrayPath(data, "approvals.items")}
               runningAction={runningAction}
+              disabledReason={approvalDisabledReason}
               onDecision={(item, decision) => void decideApproval(item, decision)}
             />
           ) : null}
           {config.sections.map((section) => (
-            <DataPanel key={section.title} section={section} data={data} />
+            <DataPanel
+              key={section.title}
+              section={section}
+              data={data}
+              resources={sectionResourceStates(domain, section.title, resources)}
+            />
           ))}
         </div>
 
@@ -1148,9 +1587,15 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
               {config.actions.length ? (
                 config.actions.map((action) => (
                   <ActionForm
-                    key={action.id}
+                    key={`${action.id}:${actionFormVersion}`}
                     action={action}
+                    defaultValues={actionDefaults[action.id]}
                     loading={runningAction === action.id}
+                    disabledReason={permissionMessage(
+                      workspaceSession,
+                      sessionStatus,
+                      actionPermission(action),
+                    )}
                     onRun={(values) => void runAction(action, values)}
                   />
                 ))
@@ -1164,7 +1609,10 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
 
           {actionResult ? (
             <Panel title={actionResult.title} description={actionResult.status === "success" ? "Result from the last action." : "Action failed."}>
-              <div className={clsx("rounded-md border p-3 text-sm", actionResult.status === "success" ? "border-success/35 bg-success/10" : "border-danger/35 bg-danger/10")}>
+              <div
+                className={clsx("rounded-md border p-3 text-sm", actionResult.status === "success" ? "border-success/35 bg-success/10" : "border-danger/35 bg-danger/10")}
+                role={actionResult.status === "success" ? "status" : "alert"}
+              >
                 <div className="flex items-center gap-2 font-semibold">
                   {actionResult.status === "success" ? <CheckCircle2 size={15} aria-hidden="true" /> : <XCircle size={15} aria-hidden="true" />}
                   {actionResult.message}
@@ -1173,6 +1621,32 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
                   <pre className="mt-3 max-h-64 overflow-auto rounded-md bg-background p-3 text-xs text-muted">
                     {JSON.stringify(actionResult.data, null, 2)}
                   </pre>
+                ) : null}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {actionResult.data ? (
+                    <button
+                      type="button"
+                      onClick={() => void copyActionResult()}
+                      className="inline-flex min-h-9 items-center rounded-md border border-line bg-background px-3 text-xs font-semibold transition hover:bg-surface-raised"
+                    >
+                      {copyResultStatus === "copied" ? "Copied" : "Copy result"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionResult(undefined);
+                      setCopyResultStatus(undefined);
+                    }}
+                    className="inline-flex min-h-9 items-center rounded-md border border-line bg-background px-3 text-xs font-semibold transition hover:bg-surface-raised"
+                  >
+                    Clear result
+                  </button>
+                </div>
+                {copyResultStatus === "error" ? (
+                  <p className="mt-2 text-xs text-danger" role="alert">
+                    Clipboard access failed. Select the result text and copy it manually.
+                  </p>
                 ) : null}
               </div>
             </Panel>
@@ -1195,17 +1669,89 @@ function Panel({ title, description, children }: { title: string; description: s
   );
 }
 
-function DataPanel({ section, data }: { section: DataSection; data: DomainData }) {
+function EndpointStatus({ label, status }: { label: string; status: ResourceState["status"] }) {
+  const Icon =
+    status === "ready"
+      ? CheckCircle2
+      : status === "error"
+        ? AlertTriangle
+        : status === "loading"
+          ? Loader2
+          : CircleHelp;
+  const stateLabel =
+    status === "ready"
+      ? "Ready"
+      : status === "error"
+        ? "Unavailable"
+        : status === "loading"
+          ? "Loading"
+          : "Unknown";
+  return (
+    <span className="inline-flex min-h-8 items-center gap-2 rounded-md border border-line bg-background px-2.5 py-1.5">
+      <Icon
+        size={13}
+        className={clsx(
+          status === "ready"
+            ? "text-success"
+            : status === "error"
+              ? "text-danger"
+              : "text-muted",
+          status === "loading" && "animate-spin",
+        )}
+        aria-hidden="true"
+      />
+      <span>{label}: {stateLabel}</span>
+    </span>
+  );
+}
+
+function DataPanel({
+  section,
+  data,
+  resources,
+}: {
+  section: DataSection;
+  data: DomainData;
+  resources: ResourceState[];
+}) {
   const rows = section.rows(data).filter((row) => row.title || row.status || row.meta);
+  const loading = resources.some((resource) => resource.status === "loading" || resource.status === "idle");
+  const errors = resources.filter((resource) => resource.status === "error");
   return (
     <Panel title={section.title} description={section.description}>
-      {rows.length ? (
+      {loading && rows.length ? (
+        <div className="mb-3 rounded-md border border-info/40 bg-info/10 p-3 text-xs leading-5 text-muted" role="status">
+          Refreshing. The last loaded rows remain visible.
+        </div>
+      ) : null}
+      {errors.length ? (
+        <div className="mb-3 rounded-md border border-danger/40 bg-danger/10 p-3" role="alert">
+          <p className="text-sm font-semibold">Source unavailable</p>
+          {errors.map((resource, index) => (
+            <p key={`${resource.code || "error"}-${index}`} className="mt-1 text-xs leading-5 text-muted">
+              {resource.error || "This source could not be loaded."}
+            </p>
+          ))}
+        </div>
+      ) : null}
+      {loading && !rows.length ? (
+        <div className="space-y-2" role="status" aria-label={`Loading ${section.title}`}>
+          {[0, 1, 2].map((index) => (
+            <div key={index} className="rounded-md border border-line bg-background p-3">
+              <div className="h-3 w-2/3 animate-pulse rounded bg-surface-raised" />
+              <div className="mt-3 h-3 w-1/3 animate-pulse rounded bg-surface-raised" />
+            </div>
+          ))}
+        </div>
+      ) : rows.length ? (
         <div className="divide-y divide-line overflow-hidden rounded-md border border-line bg-background">
           {rows.slice(0, 8).map((row, index) => (
             <div key={`${row.title}-${index}`} className="grid gap-3 p-3 sm:grid-cols-[1fr_auto] sm:items-center">
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold">{row.title}</p>
-                <p className="mt-1 truncate text-xs text-muted">{row.meta || "No extra context"}</p>
+                <p className="mt-1 line-clamp-2 text-xs text-muted [overflow-wrap:anywhere]">
+                  {row.meta || "No extra context"}
+                </p>
               </div>
               <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                 {row.status ? <span className={clsx("rounded-md px-2 py-1 font-mono text-xs", statusPillClass(row.tone || toneForStatus(row.status)))}>{row.status}</span> : null}
@@ -1214,25 +1760,208 @@ function DataPanel({ section, data }: { section: DataSection; data: DomainData }
             </div>
           ))}
         </div>
-      ) : (
+      ) : !errors.length ? (
         <div className="rounded-md border border-dashed border-line bg-background p-4 text-sm leading-6 text-muted">{section.emptyLabel}</div>
-      )}
+      ) : null}
     </Panel>
   );
+}
+
+function ConnectorContractReviewPanel({
+  mcpConnectors,
+  mcpTools,
+  openApiConnectors,
+  openApiOperations,
+  runningAction,
+  disabledReason,
+  onReview,
+}: {
+  mcpConnectors: JsonRecord[];
+  mcpTools: JsonRecord[];
+  openApiConnectors: JsonRecord[];
+  openApiOperations: JsonRecord[];
+  runningAction?: string;
+  disabledReason?: string;
+  onReview: (item: JsonRecord, kind: "mcp" | "openapi") => void;
+}) {
+  const reviews = [
+    ...mcpConnectors.map((connector) => ({
+      connector,
+      kind: "mcp" as const,
+      contracts: mcpTools.filter(
+        (tool) =>
+          textValue(tool.connectorId) === textValue(connector.id) &&
+          textValue(tool.status) === "pending_review",
+      ),
+    })),
+    ...openApiConnectors.map((connector) => ({
+      connector,
+      kind: "openapi" as const,
+      contracts: openApiOperations.filter(
+        (operation) =>
+          textValue(operation.connectorId) === textValue(connector.id) &&
+          textValue(operation.status) === "pending_review",
+      ),
+    })),
+  ].filter(
+    ({ connector }) =>
+      numberValue(readPath(connector, "review.pendingCount"), 0) > 0,
+  );
+
+  if (!reviews.length) {
+    return null;
+  }
+
+  return (
+    <Panel
+      title="Contract review queue"
+      description="Inspect newly discovered operations here. Approval activates the connector and is bound to this exact catalog, so a concurrent contract change is rejected."
+    >
+      {disabledReason ? (
+        <div className="mb-3 rounded-md border border-warning/45 bg-warning/10 p-3 text-xs leading-5 text-muted">
+          {disabledReason}
+        </div>
+      ) : null}
+      <div className="space-y-3">
+        {reviews.map(({ connector, kind, contracts }) => {
+          const id = textValue(connector.id);
+          const actionId = `review-${kind}-${id}`;
+          const pendingCount = numberValue(
+            readPath(connector, "review.pendingCount"),
+            contracts.length,
+          );
+          const label = kind === "mcp" ? "MCP" : "OpenAPI";
+          const busy = runningAction === actionId;
+          return (
+            <article
+              key={`${kind}-${id}`}
+              aria-label={`${stringValue(
+                connector.name,
+                `${label} connector`,
+              )} ${label} contract review`}
+              className="rounded-md border border-warning/45 bg-warning/10 p-3"
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">
+                    {stringValue(connector.name, `${label} connector`)}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-muted">
+                    {pendingCount} newly discovered{" "}
+                    {pendingCount === 1 ? "contract needs" : "contracts need"}{" "}
+                    review before execution.
+                  </p>
+                </div>
+                <span className="shrink-0 rounded-md bg-warning/15 px-2 py-1 font-mono text-xs text-warning">
+                  {label}
+                </span>
+              </div>
+
+              <ul className="mt-3 divide-y divide-line overflow-hidden rounded-md border border-line bg-background">
+                {contracts.slice(0, 8).map((contract, index) => (
+                  <li
+                    key={textValue(contract.id, `${id}-${index}`)}
+                    className="p-3"
+                  >
+                    <p className="text-xs font-semibold [overflow-wrap:anywhere]">
+                      {connectorContractLabel(contract, kind)}
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-muted [overflow-wrap:anywhere]">
+                      {connectorContractMeta(contract)}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+              {contracts.length > 8 ? (
+                <p className="mt-2 text-xs text-muted">
+                  Plus {contracts.length - 8} more contracts in this exact
+                  catalog.
+                </p>
+              ) : null}
+
+              <button
+                type="button"
+                onClick={() => onReview(connector, kind)}
+                disabled={Boolean(disabledReason) || Boolean(runningAction)}
+                className="mt-3 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-ink transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                {busy ? (
+                  <Loader2
+                    size={14}
+                    className="animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <ShieldCheck size={14} aria-hidden="true" />
+                )}
+                {busy
+                  ? "Approving and activating"
+                  : "Approve and activate connector"}
+              </button>
+            </article>
+          );
+        })}
+      </div>
+    </Panel>
+  );
+}
+
+function connectorContractLabel(
+  contract: JsonRecord,
+  kind: "mcp" | "openapi",
+) {
+  if (kind === "openapi") {
+    return `${textValue(contract.method, "operation").toUpperCase()} ${textValue(
+      contract.path,
+      stringValue(contract.operationId, "Unnamed operation"),
+    )}`;
+  }
+  return stringValue(
+    contract.title || contract.name,
+    "Unnamed MCP tool",
+  );
+}
+
+function connectorContractMeta(contract: JsonRecord) {
+  const risk = textValue(contract.riskLevel, "unknown");
+  const approval = Boolean(contract.approvalRequired)
+    ? "approval required"
+    : "no per-call approval";
+  const properties = Object.keys(
+    asRecord(readPath(contract, "inputSchema.properties")),
+  ).slice(0, 6);
+  const inputSummary = properties.length
+    ? `inputs: ${properties.join(", ")}`
+    : "no declared inputs";
+  const description = textValue(contract.summary || contract.description);
+  return [
+    `risk ${risk}`,
+    approval,
+    inputSummary,
+    description,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function ApprovalDecisionPanel({
   items,
   runningAction,
+  disabledReason,
   onDecision,
 }: {
   items: JsonRecord[];
   runningAction?: string;
+  disabledReason?: string;
   onDecision: (item: JsonRecord, decision: "approve" | "reject") => void;
 }) {
   return (
     <Panel title="Decision queue" description="Approve or reject blocking items from the same surface that shows their risk and reason.">
-      {items.length ? (
+      {disabledReason ? (
+        <div className="rounded-md border border-warning/45 bg-warning/10 p-4 text-sm leading-6 text-muted">
+          <span className="font-semibold text-foreground">Decision controls unavailable.</span> {disabledReason}
+        </div>
+      ) : items.length ? (
         <div className="space-y-3">
           {items.slice(0, 6).map((item) => {
             const id = textValue(item.id);
@@ -1252,7 +1981,8 @@ function ApprovalDecisionPanel({
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      disabled={isRunning}
+                      disabled={isRunning || Boolean(disabledReason)}
+                      title={disabledReason}
                       onClick={() => onDecision(item, "reject")}
                       className="inline-flex h-9 items-center justify-center rounded-md border border-line px-3 text-xs font-semibold transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60"
                     >
@@ -1260,7 +1990,8 @@ function ApprovalDecisionPanel({
                     </button>
                     <button
                       type="button"
-                      disabled={isRunning}
+                      disabled={isRunning || Boolean(disabledReason)}
+                      title={disabledReason}
                       onClick={() => onDecision(item, "approve")}
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-xs font-semibold text-primary-ink transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
                     >
@@ -1279,15 +2010,35 @@ function ApprovalDecisionPanel({
   );
 }
 
-function ActionForm({ action, loading, onRun }: { action: DomainAction; loading: boolean; onRun: (values: Record<string, FormValue>) => void }) {
+function ActionForm({
+  action,
+  defaultValues,
+  loading,
+  disabledReason,
+  onRun,
+}: {
+  action: DomainAction;
+  defaultValues?: Record<string, FormValue>;
+  loading: boolean;
+  disabledReason?: string;
+  onRun: (values: Record<string, FormValue>) => void;
+}) {
   const initialValues = useMemo(() => {
-    return Object.fromEntries(action.fields.map((field) => [field.name, field.defaultValue ?? (field.type === "checkbox" ? false : "")])) as Record<string, FormValue>;
-  }, [action.fields]);
+    const fieldDefaults = Object.fromEntries(
+      action.fields.map((field) => [
+        field.name,
+        field.defaultValue ?? (field.type === "checkbox" ? false : ""),
+      ]),
+    ) as Record<string, FormValue>;
+    return { ...fieldDefaults, ...defaultValues };
+  }, [action.fields, defaultValues]);
   const [values, setValues] = useState(initialValues);
 
   return (
     <form
+      id={action.id}
       className="rounded-md border border-line bg-background p-3"
+      aria-busy={loading}
       onSubmit={(event) => {
         event.preventDefault();
         onRun(values);
@@ -1295,6 +2046,11 @@ function ActionForm({ action, loading, onRun }: { action: DomainAction; loading:
     >
       <p className="text-sm font-semibold">{action.title}</p>
       <p className="mt-1 text-xs leading-5 text-muted">{action.description}</p>
+      {disabledReason ? (
+        <p id={`${action.id}-permission`} className="mt-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs leading-5 text-muted">
+          {disabledReason}
+        </p>
+      ) : null}
       <div className="mt-3 space-y-3">
         {action.fields.map((field) => (
           <FieldControl
@@ -1307,7 +2063,9 @@ function ActionForm({ action, loading, onRun }: { action: DomainAction; loading:
       </div>
       <button
         type="submit"
-        disabled={loading}
+        disabled={loading || Boolean(disabledReason)}
+        title={disabledReason}
+        aria-describedby={disabledReason ? `${action.id}-permission` : undefined}
         className="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-ink transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {loading ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
@@ -1334,7 +2092,7 @@ function FieldControl({
           type="checkbox"
           checked={Boolean(value)}
           onChange={(event) => onChange(event.currentTarget.checked)}
-          className="size-4 accent-[var(--primary)]"
+          className="size-4 accent-primary"
         />
       </label>
     );
@@ -1362,7 +2120,8 @@ function FieldControl({
         />
       ) : (
         <input
-          type="text"
+          type={field.type === "password" ? "password" : "text"}
+          autoComplete={field.type === "password" ? "new-password" : undefined}
           value={textValue(value)}
           onChange={(event) => onChange(event.currentTarget.value)}
           placeholder={field.placeholder}
@@ -1371,6 +2130,196 @@ function FieldControl({
       )}
     </label>
   );
+}
+
+const metricResourceKeys: Record<DomainConsoleKey, Record<string, string>> = {
+  knowledge: {
+    Memories: "capabilities",
+    Documents: "capabilities",
+    "Graph nodes": "capabilities",
+    "Retrieval traces": "capabilities",
+  },
+  workflows: {
+    Active: "workflows",
+    Waiting: "workflows",
+    "Queue jobs": "operations",
+    Triggers: "triggers",
+  },
+  approvals: {
+    "Total pending": "approvals",
+    Tools: "approvals",
+    Workflows: "approvals",
+    "SLO policy": "approvals",
+  },
+  integrations: {
+    "MCP active": "connectors",
+    OpenAPI: "openapi",
+    Catalog: "catalog",
+    Tools: "tools",
+  },
+  tools: {
+    Registered: "tools",
+    "Approval waits": "approvals",
+    Failed: "tools",
+    "Dry runs": "tools",
+  },
+  evaluations: {
+    "Eval runs": "evaluations",
+    Cases: "evaluations",
+    "Release gate": "release",
+    Isolation: "isolation",
+  },
+  monitoring: {
+    Events: "observability",
+    SLO: "slo",
+    Breaches: "slo",
+    Incidents: "incidents",
+  },
+  security: {
+    Role: "context",
+    Tenant: "context",
+    Audits: "audits",
+    Isolation: "isolation",
+  },
+  settings: {
+    Auth: "session",
+    Database: "capabilities",
+    Storage: "capabilities",
+    OpenAI: "capabilities",
+    Users: "identity",
+  },
+};
+
+const sectionResourceKeys: Record<DomainConsoleKey, Record<string, string[]>> = {
+  knowledge: {
+    "Recent memories": ["memory"],
+    "Knowledge documents": ["knowledge"],
+    "Graph recall": ["graph"],
+  },
+  workflows: {
+    "Live workflow runs": ["workflows"],
+    "Generated plans": ["plans"],
+    Triggers: ["triggers"],
+  },
+  approvals: {
+    "Approval queue": ["approvals"],
+    "Operational blockers": ["operations"],
+  },
+  integrations: {
+    "MCP connectors": ["connectors"],
+    "OpenAPI connectors": ["openapi"],
+    "Catalog suggestions": ["catalog"],
+  },
+  tools: {
+    "Available tools": ["tools"],
+    "Pending tool approvals": ["approvals"],
+  },
+  evaluations: {
+    "Evaluation runs": ["evaluations"],
+    "Release gate": ["release"],
+    Cases: ["evaluations"],
+  },
+  monitoring: {
+    "Runtime timeline": ["observability"],
+    "SLO breaches": ["slo"],
+    Incidents: ["incidents"],
+  },
+  security: {
+    "Audit records": ["audits"],
+    "RBAC rules": ["context"],
+    "Release security gate": ["release"],
+    "Sensitive-data retention": ["retention"],
+  },
+  settings: {
+    "Configuration checklist": ["session", "capabilities", "health"],
+    "Vector and memory backend": ["capabilities"],
+    "Team members": ["identity"],
+  },
+};
+
+function metricResourceKey(domain: DomainConsoleKey, label: string) {
+  return metricResourceKeys[domain][label];
+}
+
+function metricDisplayValue(
+  metric: MetricConfig,
+  data: DomainData,
+  resource?: ResourceState,
+) {
+  if (!resource || resource.status === "idle" || resource.status === "loading") {
+    return "Loading";
+  }
+  if (resource.status === "error") {
+    return "Unavailable";
+  }
+  const value = metric.value(data);
+  return value || "Unknown";
+}
+
+function metricDisplayTone(
+  metric: MetricConfig,
+  value: string,
+  resource?: ResourceState,
+): MetricConfig["tone"] {
+  if (!resource || resource.status !== "ready" || ["Loading", "Unavailable", "Unknown"].includes(value)) {
+    return "neutral";
+  }
+  const statusTone = toneForStatus(value);
+  if (statusTone !== "neutral") {
+    return statusTone;
+  }
+  if (/^-?\d+(\.\d+)?$/.test(value) && Number(value) === 0) {
+    return "neutral";
+  }
+  return metric.tone || "neutral";
+}
+
+function sectionResourceStates(
+  domain: DomainConsoleKey,
+  title: string,
+  resources: Record<string, ResourceState>,
+) {
+  return (sectionResourceKeys[domain][title] || [])
+    .map((key) => resources[key])
+    .filter((resource): resource is ResourceState => Boolean(resource));
+}
+
+function actionPermission(action: DomainAction): WorkspacePermission {
+  if (action.method === "GET" || action.path.startsWith("/api/retrieval/plan")) {
+    return "read";
+  }
+  if (
+    action.path.startsWith("/api/memory") ||
+    action.path.startsWith("/api/ingest")
+  ) {
+    return "write.memory";
+  }
+  if (
+    action.path.startsWith("/api/connectors") ||
+    action.path.startsWith("/api/openapi-connectors")
+  ) {
+    return "manage.connector";
+  }
+  if (action.path.startsWith("/api/auth/control-plane")) {
+    return "manage.identity";
+  }
+  if (action.path.startsWith("/api/security/retention")) {
+    return "manage.identity";
+  }
+  if (action.path.startsWith("/api/tools")) {
+    return "execute.tool";
+  }
+  if (action.path.startsWith("/api/evaluations")) {
+    return "run.evaluation";
+  }
+  if (
+    action.path.startsWith("/api/workflows") ||
+    action.path.startsWith("/api/operations") ||
+    action.path.startsWith("/api/observability")
+  ) {
+    return "manage.workflow";
+  }
+  return "read";
 }
 
 class HttpError extends Error {
@@ -1411,6 +2360,9 @@ function endpointAccess(path: string, session?: JsonRecord) {
   if (required === "read.security" && !hasRole(role, ["admin", "system"])) {
     return { allowed: false, code: 403, message: "Admin role required for security and release evidence." };
   }
+  if (required === "manage.identity" && !hasRole(role, ["admin", "system"])) {
+    return { allowed: false, code: 403, message: "Admin role required to manage workspace identities." };
+  }
   if (required === "manage.workflow" && !hasRole(role, ["operator", "admin", "system"])) {
     return { allowed: false, code: 403, message: "Operator role required for workflow and approval operations." };
   }
@@ -1426,10 +2378,14 @@ function requiredAction(path: string) {
   if (path.startsWith("/api/approvals") || path.startsWith("/api/operations")) {
     return "manage.workflow";
   }
+  if (path.startsWith("/api/auth/control-plane")) {
+    return "manage.identity";
+  }
   if (
     path.startsWith("/api/release/evidence") ||
     path.startsWith("/api/security/audits") ||
     path.startsWith("/api/security/isolation-report") ||
+    path.startsWith("/api/security/retention") ||
     path.startsWith("/api/observability") ||
     path.startsWith("/api/incidents") ||
     path.startsWith("/api/alerts")
@@ -1460,7 +2416,7 @@ function arrayPath(source: unknown, path: string): JsonRecord[] {
   return Array.isArray(value) ? value.map(asRecord) : [];
 }
 
-function stringPath(source: unknown, path: string, fallback = "0") {
+function stringPath(source: unknown, path: string, fallback = "Unknown") {
   return stringValue(readPath(source, path), fallback);
 }
 
@@ -1472,7 +2428,7 @@ function numberPath(source: unknown, path: string) {
   if (typeof value === "string" && value.trim()) {
     return value;
   }
-  return "0";
+  return "Unknown";
 }
 
 function stringValue(value: unknown, fallback = "") {
@@ -1524,7 +2480,10 @@ function tagsValue(value: unknown) {
 }
 
 function booleanLabel(value: unknown, trueLabel: string, falseLabel: string) {
-  return Boolean(value) ? trueLabel : falseLabel;
+  if (typeof value !== "boolean") {
+    return "unknown";
+  }
+  return value ? trueLabel : falseLabel;
 }
 
 function summaryValue(value: unknown) {
@@ -1532,9 +2491,9 @@ function summaryValue(value: unknown) {
   if (!Object.keys(record).length) {
     return "No summary";
   }
-  const passed = stringValue(record.passed, "0");
-  const failed = stringValue(record.failed, "0");
-  const warnings = stringValue(record.warnings, "0");
+  const passed = stringValue(record.passed, "unknown");
+  const failed = stringValue(record.failed, "unknown");
+  const warnings = stringValue(record.warnings, "unknown");
   return `${passed} passed / ${failed} failed / ${warnings} warnings`;
 }
 
@@ -1562,7 +2521,7 @@ function releaseRows(data: DomainData): Row[] {
     {
       title: "Release gate",
       status: stringValue(gate.status, "unknown"),
-      meta: `${stringValue(summary.failures, "0")} failures / ${stringValue(summary.warnings, "0")} warnings`,
+      meta: `${stringValue(summary.failures, "unknown")} failures / ${stringValue(summary.warnings, "unknown")} warnings`,
       tone: toneForStatus(gate.status),
     },
     {

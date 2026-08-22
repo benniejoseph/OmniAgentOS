@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Eye, EyeOff, Loader2, LogIn, ShieldCheck } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 
-type SessionState = "checking" | "authenticated" | "anonymous" | "error";
+type SessionState = "checking" | "authenticated" | "anonymous" | "local" | "error";
 
 export function LoginForm() {
   const router = useRouter();
@@ -13,6 +13,7 @@ export function LoginForm() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [sessionState, setSessionState] = useState<SessionState>("checking");
+  const [sessionCheckAttempt, setSessionCheckAttempt] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -22,9 +23,28 @@ export function LoginForm() {
     async function checkSession() {
       try {
         const response = await fetch("/api/auth/session");
-        const session = await response.json();
+        const session: unknown = await response.json().catch(() => undefined);
+        if (
+          !response.ok ||
+          !session ||
+          typeof session !== "object" ||
+          typeof (session as Record<string, unknown>).authEnabled !== "boolean" ||
+          typeof (session as Record<string, unknown>).authenticated !== "boolean"
+        ) {
+          throw new Error("Session status is unavailable.");
+        }
+        const validSession = session as {
+          authEnabled: boolean;
+          authenticated: boolean;
+        };
         if (!canceled) {
-          setSessionState(session.authenticated ? "authenticated" : "anonymous");
+          setSessionState(
+            !validSession.authEnabled
+              ? "local"
+              : validSession.authenticated
+                ? "authenticated"
+                : "anonymous",
+          );
         }
       } catch {
         if (!canceled) {
@@ -37,7 +57,7 @@ export function LoginForm() {
     return () => {
       canceled = true;
     };
-  }, []);
+  }, [sessionCheckAttempt]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -86,11 +106,28 @@ export function LoginForm() {
     );
   }
 
+  if (sessionState === "local") {
+    return (
+      <div role="status">
+        <div className="grid size-12 place-items-center rounded-md bg-primary/12 text-primary">
+          <ShieldCheck size={22} aria-hidden="true" />
+        </div>
+        <h2 className="mt-8 text-3xl font-semibold tracking-normal">Authentication is disabled locally.</h2>
+        <p className="mt-4 text-sm leading-6 text-muted">
+          Open the workspace directly. Controls follow the local role configured for this environment.
+        </p>
+        <Link href="/app" className="primary-button mt-8">
+          Open workspace
+        </Link>
+      </div>
+    );
+  }
+
   return (
     <form onSubmit={submit} className="space-y-6" noValidate>
       <div>
-        <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Sign in</p>
-        <h2 className="mt-3 text-3xl font-semibold tracking-normal">Enter the control plane.</h2>
+        <p className="text-sm font-semibold text-primary">Sign in</p>
+        <h2 className="mt-3 text-3xl font-semibold tracking-normal">Open your workspace.</h2>
         <p className="mt-3 text-sm leading-6 text-muted">
           Use the administrator account configured for this deployment. New teams can request access first.
         </p>
@@ -104,8 +141,18 @@ export function LoginForm() {
       ) : null}
 
       {sessionState === "error" ? (
-        <div className="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-foreground" role="status">
-          Session status is unavailable. You can still try signing in.
+        <div className="flex items-center justify-between gap-3 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-foreground" role="status">
+          <span>Session status is unavailable. You can still try signing in.</span>
+          <button
+            type="button"
+            className="action-button min-h-9 shrink-0"
+            onClick={() => {
+              setSessionState("checking");
+              setSessionCheckAttempt((attempt) => attempt + 1);
+            }}
+          >
+            Retry
+          </button>
         </div>
       ) : null}
 
@@ -169,7 +216,7 @@ export function LoginForm() {
       <p className="text-sm text-muted">
         Need access?{" "}
         <Link href="/signup" className="font-semibold text-primary hover:underline">
-          Request an enterprise workspace
+          Request workspace access
         </Link>
         .
       </p>

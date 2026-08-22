@@ -1,4 +1,6 @@
-const baseUrl = normalizeBaseUrl(process.env.BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "http://127.0.0.1:3000");
+import { failSmoke, getSmokeBaseUrl, smokeFetch } from "./smoke-helpers.mjs";
+
+const baseUrl = getSmokeBaseUrl();
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
 const password = process.env.SMOKE_ADMIN_PASSWORD || process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
 const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
@@ -74,7 +76,11 @@ if (email && password) {
   }
 
   const cookie = setCookie.split(";")[0];
-  const authHeaders = { "content-type": "application/json", cookie };
+  const authHeaders = {
+    "content-type": "application/json",
+    cookie,
+    origin: baseUrl,
+  };
   const authenticatedRead = await request("/api/memory?limit=1", { headers: { cookie } });
   checks.push(assert(authenticatedRead.status === 200, "authenticated memory read succeeds", `expected 200, got ${authenticatedRead.status}`));
 
@@ -121,7 +127,11 @@ if (email && password) {
   });
   checks.push(assert(privateEndpoint.status === 400, "connector blocks private endpoints", `expected 400, got ${privateEndpoint.status}`));
 } else {
-  checks.push({ ok: true, label: "authenticated smoke skipped", detail: "set SMOKE_ADMIN_EMAIL and SMOKE_ADMIN_PASSWORD to enable authenticated checks" });
+  checks.push({
+    ok: false,
+    label: "authenticated smoke credentials are configured",
+    detail: "set both SMOKE_ADMIN_EMAIL and SMOKE_ADMIN_PASSWORD",
+  });
 }
 
 const failures = checks.filter((check) => !check.ok);
@@ -140,22 +150,21 @@ async function expectStatus(path, { expected, label }) {
 }
 
 async function request(path, init) {
-  return fetch(`${baseUrl}${path}`, {
-    redirect: "manual",
-    ...init,
-    headers: {
-      ...syntheticHeaders,
-      ...(init?.headers || {}),
-    },
-  });
+  try {
+    return await smokeFetch(baseUrl, path, {
+      ...init,
+      headers: {
+        ...syntheticHeaders,
+        ...(init?.headers || {}),
+      },
+    });
+  } catch (error) {
+    failSmoke(error instanceof Error ? error.message : `request failed for ${path}`);
+  }
 }
 
 function assert(ok, label, detail) {
   return { ok, label, detail: ok ? undefined : detail };
-}
-
-function normalizeBaseUrl(value) {
-  return value.replace(/\/+$/, "");
 }
 
 function createSyntheticHeaders(scope) {

@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getSql,
+  hasDatabaseUrl,
+  runWithDatabaseSystemScope,
+  runWithDatabaseTenantScope,
+} from "@/lib/db/client";
 import { createOpaqueToken, hashPassword, hashSessionToken, verifyPassword } from "@/lib/auth/crypto";
 import type {
   AuthControlPlane,
@@ -12,10 +18,26 @@ import type {
   AuthUserWithPassword,
 } from "@/lib/auth/types";
 import type { SecurityRole } from "@/lib/security/types";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
-let authFileWriteQueue: Promise<void> = Promise.resolve();
+type SqlClientForAuthTransaction = {
+  (strings: TemplateStringsArray, ...params: unknown[]): Promise<Record<string, unknown>[]>;
+};
+
+const dummyPasswordHash =
+  "scrypt-v1$omniagent-dummy-login$X7MyB13IWIzXrU648ArSBJZqJyiiF6mbdpeGIuCUymOwQM0yxhUnxQBmApRQxxniAfsHnDJs8IQuf89TR8LUOQ";
+const sessionTouchIntervalMs = 5 * 60 * 1000;
+
+export class IdentityConflictError extends Error {
+  readonly status = 409;
+  readonly code = "identity_conflict";
+
+  constructor() {
+    super("An identity with this email already exists or cannot be added to this tenant.");
+    this.name = "IdentityConflictError";
+  }
+}
 
 export function isAuthEnforced() {
   const configured = (process.env.OMNIAGENT_AUTH_ENABLED || "").trim().toLowerCase();
@@ -42,7 +64,20 @@ export async function ensureBootstrapIdentity() {
   if (!isBootstrapConfigured()) {
     return;
   }
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseSystemScope(
+      "Seed the configured bootstrap identity before authentication.",
+      ensureBootstrapIdentityInScope,
+    );
+  }
+  return ensureBootstrapIdentityInScope();
+}
 
+async function ensureBootstrapIdentityInScope() {
+  if (!isBootstrapConfigured()) {
+    return;
+  }
   const email = normalizeEmail(process.env.OMNIAGENT_BOOTSTRAP_EMAIL!);
   const password = process.env.OMNIAGENT_BOOTSTRAP_PASSWORD!;
   const tenantName = process.env.OMNIAGENT_BOOTSTRAP_TENANT || "OmniAgent OS";
@@ -50,7 +85,7 @@ export async function ensureBootstrapIdentity() {
   const existing = await findUserByEmail(email);
 
   if (existing) {
-    await ensureMembership({
+    await ensureBootstrapMembership({
       tenantId,
       tenantName,
       userId: existing.id,
@@ -76,9 +111,29 @@ export async function authenticatePassword({
   email: string;
   password: string;
 }) {
-  await ensureBootstrapIdentity();
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseSystemScope(
+      "Authenticate an identity before its tenant is known.",
+      () => authenticatePasswordInScope({ email, password }),
+    );
+  }
+  return authenticatePasswordInScope({ email, password });
+}
+
+async function authenticatePasswordInScope({
+  email,
+  password,
+}: {
+  email: string;
+  password: string;
+}) {
+  await ensureBootstrapIdentityInScope();
   const user = await findUserByEmail(normalizeEmail(email));
-  if (!user || user.status !== "active" || !(await verifyPassword(password, user.passwordHash))) {
+  // Always perform one scrypt verification so unknown emails do not create a
+  // materially cheaper, user-enumerable path.
+  const passwordMatches = await verifyPassword(password, user?.passwordHash || dummyPasswordHash);
+  if (!user || user.status !== "active" || !passwordMatches) {
     return null;
   }
 
@@ -118,7 +173,18 @@ export async function getSessionIdentity(token?: string): Promise<AuthSessionIde
     return null;
   }
 
-  await ensureBootstrapIdentity();
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseSystemScope(
+      "Resolve an opaque session token before its tenant is known.",
+      () => getSessionIdentityInScope(token),
+    );
+  }
+  return getSessionIdentityInScope(token);
+}
+
+async function getSessionIdentityInScope(token: string): Promise<AuthSessionIdentity | null> {
+  await ensureBootstrapIdentityInScope();
   const tokenHash = hashSessionToken(token);
 
   if (hasDatabaseUrl()) {
@@ -162,7 +228,17 @@ export async function getSessionIdentity(token?: string): Promise<AuthSessionIde
       return null;
     }
 
-    await getSql()`UPDATE omni_auth_sessions SET last_seen_at = NOW() WHERE id = ${String(row.session_id)}`;
+    if (
+      Date.now() - new Date(normalizeDate(row.last_seen_at)).getTime() >=
+      sessionTouchIntervalMs
+    ) {
+      await getSql()`
+        UPDATE omni_auth_sessions
+        SET last_seen_at = NOW()
+        WHERE id = ${String(row.session_id)}
+          AND last_seen_at < NOW() - INTERVAL '5 minutes'
+      `;
+    }
     return identityFromJoinedRow(row);
   }
 
@@ -181,12 +257,19 @@ export async function getSessionIdentity(token?: string): Promise<AuthSessionIde
     return null;
   }
 
-  await mutateAuthLedger((current) => ({
-    ...current,
-    sessions: current.sessions.map((item) =>
-      item.id === session.id ? { ...item, lastSeenAt: new Date().toISOString() } : item,
-    ),
-  }));
+  if (
+    Date.now() - new Date(session.lastSeenAt).getTime() >=
+    sessionTouchIntervalMs
+  ) {
+    await mutateAuthLedger((current) => ({
+      ...current,
+      sessions: current.sessions.map((item) =>
+        item.id === session.id
+          ? { ...item, lastSeenAt: new Date().toISOString() }
+          : item,
+      ),
+    }));
+  }
 
   return identityFromRecords({ session, user, tenant, membership });
 }
@@ -199,7 +282,10 @@ export async function destroySession(token?: string) {
   const tokenHash = hashSessionToken(token);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`DELETE FROM omni_auth_sessions WHERE token_hash = ${tokenHash}`;
+    await runWithDatabaseSystemScope(
+      "Destroy an opaque session token before its tenant is known.",
+      () => getSql()`DELETE FROM omni_auth_sessions WHERE token_hash = ${tokenHash}`,
+    );
     return;
   }
 
@@ -226,64 +312,63 @@ export async function createUserWithMembership({
 }) {
   const normalizedEmail = normalizeEmail(email);
   const normalizedTenantId = normalizeTenantId(tenantId);
+  const normalizedTenantName = tenantName?.trim() || normalizedTenantId;
   const now = new Date().toISOString();
   const passwordHash = await hashPassword(password);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`
-      INSERT INTO omni_auth_tenants (id, name, slug, created_at, updated_at)
-      VALUES (${normalizedTenantId}, ${tenantName}, ${normalizedTenantId}, ${now}, ${now})
-      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = EXCLUDED.updated_at
-    `;
-    const existing = await findUserByEmail(normalizedEmail);
-    const userId = existing?.id || randomUUID();
-    await getSql()`
-      INSERT INTO omni_auth_users (id, email, name, password_hash, status, created_at, updated_at)
-      VALUES (${userId}, ${normalizedEmail}, ${name || null}, ${passwordHash}, 'active', ${now}, ${now})
-      ON CONFLICT (email) DO UPDATE
-      SET name = COALESCE(EXCLUDED.name, omni_auth_users.name),
-          password_hash = EXCLUDED.password_hash,
-          status = 'active',
-          updated_at = EXCLUDED.updated_at
-    `;
-    await ensureMembership({
-      tenantId: normalizedTenantId,
-      tenantName,
-      userId,
-      role,
-    });
-    return (await findUserByEmail(normalizedEmail))!;
+    const userId = randomUUID();
+    return runWithDatabaseTenantScope(normalizedTenantId, () =>
+      getSql().transaction(async (sql: SqlClientForAuthTransaction) => {
+        await sql`
+          INSERT INTO omni_auth_tenants (id, name, slug, created_at, updated_at)
+          VALUES (${normalizedTenantId}, ${normalizedTenantName}, ${normalizedTenantId}, ${now}, ${now})
+          ON CONFLICT (id) DO NOTHING
+        `;
+        const users = await sql`
+          INSERT INTO omni_auth_users (id, email, name, password_hash, status, created_at, updated_at)
+          VALUES (${userId}, ${normalizedEmail}, ${name || null}, ${passwordHash}, 'active', ${now}, ${now})
+          ON CONFLICT (email) DO NOTHING
+          RETURNING *
+        `;
+        if (!users[0]) {
+          throw new IdentityConflictError();
+        }
+        await sql`
+          INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role, status, created_at, updated_at)
+          VALUES (${randomUUID()}, ${normalizedTenantId}, ${userId}, ${role}, 'active', ${now}, ${now})
+        `;
+        return userFromRow(users[0]);
+      }) as Promise<AuthUser>,
+    );
   }
 
   await mutateAuthLedger((ledger) => {
     const existing = ledger.users.find((user) => user.email === normalizedEmail);
-    const userId = existing?.id || randomUUID();
+    if (existing) {
+      throw new IdentityConflictError();
+    }
+    const userId = randomUUID();
     const tenants = upsertTenant(ledger.tenants, {
       id: normalizedTenantId,
-      name: tenantName,
+      name: normalizedTenantName,
       slug: normalizedTenantId,
       createdAt: now,
       updatedAt: now,
     });
-    const users = existing
-      ? ledger.users.map((user) =>
-          user.id === userId
-            ? { ...user, name: name || user.name, passwordHash, status: "active" as const, updatedAt: now }
-            : user,
-        )
-      : [
-          ...ledger.users,
-          {
-            id: userId,
-            email: normalizedEmail,
-            name,
-            passwordHash,
-            status: "active" as const,
-            createdAt: now,
-            updatedAt: now,
-          },
-        ];
+    const users = [
+      ...ledger.users,
+      {
+        id: userId,
+        email: normalizedEmail,
+        name,
+        passwordHash,
+        status: "active" as const,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
     return {
       ...ledger,
       tenants,
@@ -300,7 +385,98 @@ export async function createUserWithMembership({
     };
   });
 
-  return (await findUserByEmail(normalizedEmail))!;
+  return stripPassword((await findUserByEmail(normalizedEmail))!);
+}
+
+export async function rotateUserPassword({
+  email,
+  password,
+  tenantId = normalizeTenantId(
+    process.env.OMNIAGENT_DEFAULT_TENANT || "default",
+  ),
+}: {
+  email: string;
+  password: string;
+  tenantId?: string;
+}) {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const passwordHash = await hashPassword(password);
+  const now = new Date().toISOString();
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseTenantScope(normalizedTenantId, () =>
+      getSql().transaction(async (sql: SqlClientForAuthTransaction) => {
+        const users = await sql`
+          SELECT users.*
+          FROM omni_auth_users users
+          JOIN omni_auth_memberships memberships
+            ON memberships.user_id = users.id
+          WHERE users.email = ${normalizedEmail}
+            AND memberships.tenant_id = ${normalizedTenantId}
+            AND memberships.status = 'active'
+          LIMIT 1
+          FOR UPDATE OF users
+        `;
+        if (!users[0]) {
+          return null;
+        }
+        await sql`
+          UPDATE omni_auth_users
+          SET password_hash = ${passwordHash},
+              updated_at = ${now}
+          WHERE id = ${String(users[0].id)}
+        `;
+        await sql`
+          DELETE FROM omni_auth_sessions
+          WHERE user_id = ${String(users[0].id)}
+            AND tenant_id = ${normalizedTenantId}
+        `;
+        return userFromRow({
+          ...users[0],
+          password_hash: passwordHash,
+          updated_at: now,
+        });
+      }) as Promise<AuthUser | null>,
+    );
+  }
+
+  let rotated: AuthUser | null = null;
+  await mutateAuthLedger((ledger) => {
+    const user = ledger.users.find(
+      (candidate) => candidate.email === normalizedEmail,
+    );
+    if (
+      !user ||
+      !ledger.memberships.some(
+        (membership) =>
+          membership.userId === user.id &&
+          membership.tenantId === normalizedTenantId &&
+          membership.status === "active",
+      )
+    ) {
+      return ledger;
+    }
+    const nextUser = {
+      ...user,
+      passwordHash,
+      updatedAt: now,
+    };
+    rotated = stripPassword(nextUser);
+    return {
+      ...ledger,
+      users: ledger.users.map((candidate) =>
+        candidate.id === user.id ? nextUser : candidate,
+      ),
+      sessions: ledger.sessions.filter(
+        (session) =>
+          session.userId !== user.id ||
+          session.tenantId !== normalizedTenantId,
+      ),
+    };
+  });
+  return rotated;
 }
 
 export async function getAuthControlPlane(options: { tenantId?: string } = {}): Promise<AuthControlPlane> {
@@ -309,42 +485,44 @@ export async function getAuthControlPlane(options: { tenantId?: string } = {}): 
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const [tenants, users, memberships, sessions] = await Promise.all([
-      getSql()`SELECT * FROM omni_auth_tenants WHERE id = ${tenantId} ORDER BY created_at DESC LIMIT 50`,
-      getSql()`
-        SELECT users.*
-        FROM omni_auth_users users
-        JOIN omni_auth_memberships memberships ON memberships.user_id = users.id
-        WHERE memberships.tenant_id = ${tenantId}
-        ORDER BY users.created_at DESC
-        LIMIT 100
-      `,
-      getSql()`SELECT * FROM omni_auth_memberships WHERE tenant_id = ${tenantId} ORDER BY created_at DESC LIMIT 100`,
-      getSql()`
-        SELECT *
-        FROM omni_auth_sessions
-        WHERE expires_at > NOW()
-          AND tenant_id = ${tenantId}
-        ORDER BY last_seen_at DESC
-        LIMIT 100
-      `,
-    ]);
-    const safeUsers = users.map(userFromRow);
-    const activeSessions = sessions.map(sessionFromRow);
-    return {
-      authEnabled: isAuthEnforced(),
-      bootstrapConfigured: isBootstrapConfigured(),
-      stats: {
-        tenants: tenants.length,
-        users: safeUsers.length,
-        activeUsers: safeUsers.filter((user) => user.status === "active").length,
-        sessions: activeSessions.length,
-      },
-      tenants: tenants.map(tenantFromRow),
-      users: safeUsers,
-      memberships: memberships.map(membershipFromRow),
-      sessions: activeSessions,
-    };
+    return runWithDatabaseTenantScope(tenantId, async () => {
+      const [tenants, users, memberships, sessions] = await Promise.all([
+        getSql()`SELECT * FROM omni_auth_tenants WHERE id = ${tenantId} ORDER BY created_at DESC LIMIT 50`,
+        getSql()`
+          SELECT users.*
+          FROM omni_auth_users users
+          JOIN omni_auth_memberships memberships ON memberships.user_id = users.id
+          WHERE memberships.tenant_id = ${tenantId}
+          ORDER BY users.created_at DESC
+          LIMIT 100
+        `,
+        getSql()`SELECT * FROM omni_auth_memberships WHERE tenant_id = ${tenantId} ORDER BY created_at DESC LIMIT 100`,
+        getSql()`
+          SELECT *
+          FROM omni_auth_sessions
+          WHERE expires_at > NOW()
+            AND tenant_id = ${tenantId}
+          ORDER BY last_seen_at DESC
+          LIMIT 100
+        `,
+      ]);
+      const safeUsers = users.map(userFromRow);
+      const activeSessions = sessions.map(sessionFromRow);
+      return {
+        authEnabled: isAuthEnforced(),
+        bootstrapConfigured: isBootstrapConfigured(),
+        stats: {
+          tenants: tenants.length,
+          users: safeUsers.length,
+          activeUsers: safeUsers.filter((user) => user.status === "active").length,
+          sessions: activeSessions.length,
+        },
+        tenants: tenants.map(tenantFromRow),
+        users: safeUsers,
+        memberships: memberships.map(membershipFromRow),
+        sessions: activeSessions,
+      };
+    });
   }
 
   const ledger = await readAuthLedger();
@@ -447,7 +625,7 @@ async function findTenant(tenantId: string) {
   return ledger.tenants.find((tenant) => tenant.id === tenantId) || null;
 }
 
-async function ensureMembership({
+async function ensureBootstrapMembership({
   tenantId,
   tenantName,
   userId,
@@ -680,15 +858,11 @@ async function readAuthLedger() {
 }
 
 async function mutateAuthLedger(mutator: (ledger: AuthLedger) => AuthLedger) {
-  authFileWriteQueue = authFileWriteQueue.then(
-    async () => {
-      await writeJsonFile(getAuthFile(), mutator(await readAuthLedger()));
-    },
-    async () => {
-      await writeJsonFile(getAuthFile(), mutator(await readAuthLedger()));
-    },
+  await updateJsonFile<AuthLedger>(
+    getAuthFile(),
+    { tenants: [], users: [], memberships: [], sessions: [] },
+    mutator,
   );
-  await authFileWriteQueue;
 }
 
 function getAuthFile() {

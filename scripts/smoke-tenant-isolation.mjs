@@ -1,11 +1,12 @@
-const baseUrl = normalizeBaseUrl(process.env.BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "http://127.0.0.1:3000");
+import { failSmoke, getSmokeBaseUrl, smokeFetch } from "./smoke-helpers.mjs";
+
+const baseUrl = getSmokeBaseUrl();
 const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
 const checks = [];
 const syntheticHeaders = createSyntheticHeaders("tenant");
 
 if (!internalSecret) {
-  console.log("PASS tenant isolation smoke skipped - set SMOKE_INTERNAL_AUTH_SECRET or OMNIAGENT_INTERNAL_AUTH_SECRET");
-  process.exit(0);
+  failSmoke("tenant isolation smoke requires SMOKE_INTERNAL_AUTH_SECRET or OMNIAGENT_INTERNAL_AUTH_SECRET.");
 }
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -13,6 +14,8 @@ const tenantA = `smoke_tenant_a_${suffix}`;
 const tenantB = `smoke_tenant_b_${suffix}`;
 const connectorName = `Smoke MCP tenant isolation ${suffix}`;
 const correlationId = `smoke-tenant-isolation-${suffix}`;
+let connectorId;
+let workflowId;
 const syntheticMetadata = {
   smoke: true,
   synthetic: true,
@@ -32,7 +35,7 @@ const createdConnector = await jsonRequest("/api/connectors", {
   },
 });
 checks.push(assert(createdConnector.status === 201, "tenant A can create connector", statusDetail(createdConnector)));
-const connectorId = createdConnector.json?.connector?.id;
+connectorId = createdConnector.json?.connector?.id;
 checks.push(assert(Boolean(connectorId), "connector id returned", "missing connector id"));
 
 const tenantAConnectors = await jsonRequest("/api/connectors", { tenantId: tenantA });
@@ -106,7 +109,7 @@ const workflow = await jsonRequest("/api/workflows", {
   },
 });
 checks.push(assert(workflow.status === 201, "tenant A can create workflow", statusDetail(workflow)));
-const workflowId = workflow.json?.run?.id;
+workflowId = workflow.json?.run?.id;
 checks.push(assert(Boolean(workflowId), "workflow id returned", "missing workflow id"));
 
 const tenantBWorkflows = await jsonRequest("/api/workflows?limit=100", { tenantId: tenantB });
@@ -120,8 +123,27 @@ checks.push(assert(
 const tenantBDelete = await jsonRequest(`/api/connectors/${connectorId}`, { method: "DELETE", tenantId: tenantB });
 checks.push(assert(tenantBDelete.status === 404, "tenant B cannot delete tenant A connector", statusDetail(tenantBDelete)));
 
-const tenantADelete = await jsonRequest(`/api/connectors/${connectorId}`, { method: "DELETE", tenantId: tenantA });
-checks.push(assert(tenantADelete.status === 200, "tenant A can delete its connector", statusDetail(tenantADelete)));
+if (workflowId) {
+  const workflowCleanup = await jsonRequest(`/api/workflows/${workflowId}/signal`, {
+    method: "POST",
+    tenantId: tenantA,
+    body: { signal: "cancel" },
+  });
+  checks.push(assert(
+    workflowCleanup.status === 200,
+    "synthetic workflow is canceled after isolation checks",
+    statusDetail(workflowCleanup),
+  ));
+}
+
+if (connectorId) {
+  const tenantADelete = await jsonRequest(`/api/connectors/${connectorId}`, { method: "DELETE", tenantId: tenantA });
+  checks.push(assert(
+    tenantADelete.status === 200,
+    "synthetic connector is deleted after isolation checks",
+    statusDetail(tenantADelete),
+  ));
+}
 
 const failures = checks.filter((check) => !check.ok);
 for (const check of checks) {
@@ -134,19 +156,28 @@ if (failures.length) {
 }
 
 async function jsonRequest(path, { method = "GET", tenantId = tenantA, body } = {}) {
-  const response = await fetch(`${baseUrl}${path}`, {
-    method,
-    redirect: "manual",
-    headers: {
-      "content-type": "application/json",
-      ...syntheticHeaders,
-      "x-omni-internal-auth": internalSecret,
-      "x-omni-tenant-id": tenantId,
-      "x-omni-user-id": `${tenantId}:smoke`,
-      "x-omni-user-role": "admin",
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await smokeFetch(baseUrl, path, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        ...syntheticHeaders,
+        "x-omni-internal-auth": internalSecret,
+        "x-omni-tenant-id": tenantId,
+        "x-omni-user-id": `${tenantId}:smoke`,
+        "x-omni-user-role": "admin",
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (error) {
+    return {
+      status: 0,
+      json: {
+        error: error instanceof Error ? error.message : `request failed for ${path}`,
+      },
+    };
+  }
   let json;
   try {
     json = await response.json();
@@ -162,10 +193,6 @@ function statusDetail(result) {
 
 function assert(ok, label, detail) {
   return { ok, label, detail: ok ? undefined : detail };
-}
-
-function normalizeBaseUrl(value) {
-  return value.replace(/\/+$/, "");
 }
 
 function createSyntheticHeaders(scope) {

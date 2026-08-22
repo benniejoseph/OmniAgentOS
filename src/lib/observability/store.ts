@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
+  runWithDatabaseTenantScope,
+} from "@/lib/db/client";
 import { redactSensitive } from "@/lib/security/context";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
 export type ObservabilityLevel = "info" | "warn" | "error";
@@ -64,8 +70,6 @@ type ObservabilityLedger = {
   events: ObservabilityEventRecord[];
 };
 
-let observabilityFileWriteQueue: Promise<void> = Promise.resolve();
-
 export function createRequestTelemetry(request?: Request, prefix = "obs") {
   const requestId = request?.headers.get("x-vercel-id") || undefined;
   const correlationId =
@@ -120,32 +124,37 @@ export async function recordRuntimeEvent(input: {
     durationMs: input.durationMs,
     requestId: input.requestId,
     correlationId: input.correlationId || `${input.category}:${randomUUID()}`,
-    tenantId: input.tenantId ? normalizeTenantId(input.tenantId) : undefined,
+    tenantId: normalizeTenantId(
+      input.tenantId ||
+        getDatabaseTenantContext() ||
+        process.env.OMNIAGENT_DEFAULT_TENANT ||
+        "default",
+    ),
     actorId: input.actorId,
     resourceType: input.resourceType,
     resourceId: input.resourceId,
-    message: input.message,
-    metadata: (redactSensitive(input.metadata || {}) || {}) as Record<string, unknown>,
+    message: String(redactSensitive(input.message)).slice(0, 2_000),
+    metadata: boundedRedactedMetadata(input.metadata),
     createdAt: new Date().toISOString(),
   };
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`
-      INSERT INTO omni_observability_events (
-        id, level, category, action, route, method, status_code, duration_ms,
-        request_id, correlation_id, tenant_id, actor_id, resource_type,
-        resource_id, message, metadata, created_at
-      )
-      VALUES (
-        ${record.id}, ${record.level}, ${record.category}, ${record.action},
-        ${record.route || null}, ${record.method || null}, ${record.statusCode ?? null},
-        ${record.durationMs ?? null}, ${record.requestId || null}, ${record.correlationId},
-        ${record.tenantId || null}, ${record.actorId || null},
-        ${record.resourceType || null}, ${record.resourceId || null},
-        ${record.message}, ${JSON.stringify(record.metadata)}::jsonb, ${record.createdAt}
-      )
-    `;
+    await runWithDatabaseTenantScope(record.tenantId!, () => getSql()`
+        INSERT INTO omni_observability_events (
+          id, level, category, action, route, method, status_code, duration_ms,
+          request_id, correlation_id, tenant_id, actor_id, resource_type,
+          resource_id, message, metadata, created_at
+        )
+        VALUES (
+          ${record.id}, ${record.level}, ${record.category}, ${record.action},
+          ${record.route || null}, ${record.method || null}, ${record.statusCode ?? null},
+          ${record.durationMs ?? null}, ${record.requestId || null}, ${record.correlationId},
+          ${record.tenantId}, ${record.actorId || null},
+          ${record.resourceType || null}, ${record.resourceId || null},
+          ${record.message}, ${JSON.stringify(record.metadata)}::jsonb, ${record.createdAt}
+        )
+      `);
     return record;
   }
 
@@ -154,6 +163,26 @@ export async function recordRuntimeEvent(input: {
     return trimObservabilityLedger(ledger);
   });
   return record;
+}
+
+function boundedRedactedMetadata(metadata?: Record<string, unknown>) {
+  const redacted = (redactSensitive(metadata || {}) || {}) as Record<
+    string,
+    unknown
+  >;
+  try {
+    const serialized = JSON.stringify(redacted);
+    if (serialized.length <= 64_000) {
+      return redacted;
+    }
+    return {
+      truncated: true,
+      originalCharacters: serialized.length,
+      keys: Object.keys(redacted).slice(0, 50),
+    };
+  } catch {
+    return { invalidMetadata: true };
+  }
 }
 
 export async function recordRuntimeEventSafely(input: Parameters<typeof recordRuntimeEvent>[0]) {
@@ -358,21 +387,11 @@ async function readObservabilityLedger() {
 }
 
 async function mutateObservabilityLedger(mutator: (ledger: ObservabilityLedger) => ObservabilityLedger) {
-  observabilityFileWriteQueue = observabilityFileWriteQueue.then(
-    async () => {
-      const ledger = mutator(await readObservabilityLedger());
-      await writeObservabilityLedger(ledger);
-    },
-    async () => {
-      const ledger = mutator(await readObservabilityLedger());
-      await writeObservabilityLedger(ledger);
-    },
+  await updateJsonFile<ObservabilityLedger>(
+    getObservabilityFile(),
+    { events: [] },
+    (ledger) => trimObservabilityLedger(mutator(ledger)),
   );
-  await observabilityFileWriteQueue;
-}
-
-async function writeObservabilityLedger(ledger: ObservabilityLedger) {
-  await writeJsonFile(getObservabilityFile(), trimObservabilityLedger(ledger));
 }
 
 function trimObservabilityLedger(ledger: ObservabilityLedger): ObservabilityLedger {
@@ -424,7 +443,7 @@ function normalizeDate(value: unknown) {
 }
 
 function normalizeTenantId(value?: string) {
-  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
     .trim()
     .replace(/[^a-zA-Z0-9_.:-]/g, "_")
     .slice(0, 120) || "default";

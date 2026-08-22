@@ -10,9 +10,14 @@
 
 ## Principle
 
-One append-only, immutable log is the source of truth. All other state
-(run status, workflow position, trust profiles, dashboards) is a **projection**
-rebuilt by folding events. Nothing mutates in place.
+The target architecture uses one append-only log as the source of truth. All
+other state (run status, workflow position, trust profiles, dashboards) is a
+**projection** rebuilt by folding events.
+
+Stage 1 is append-only through the application API, not immutable storage:
+database privileges do not prohibit update/delete, and file mode rewrites and
+caps its ledger. WORM/object-lock controls and retention remain deployment
+responsibilities until later stages explicitly implement them.
 
 ## Event shape
 
@@ -35,7 +40,7 @@ type DomainEvent = {
 
 - **Replay**: re-fold a stream through a newer agent version → regression-test against real history.
 - **Fork**: branch a stream at seq N, inject a human correction, continue → "what if" and guided recovery.
-- **Audit**: every decision is already a first-class, queryable, immutable record with causation links — no separate audit subsystem.
+- **Audit**: every decision is a first-class, queryable, application-append-only record with causation links; immutable retention still requires WORM/object-lock controls.
 - **Evals**: golden tasks are just recorded streams; scoring is folding + asserting.
 - **Trust**: the trust ledger becomes a projection of `tool.executed` / `approval.*` events, not a separate store.
 

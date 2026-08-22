@@ -21,7 +21,7 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
         const next = order[(order.indexOf(theme) + 1) % order.length];
         setStoredTheme(next);
       }}
-      className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-surface px-3 text-sm font-medium text-foreground transition hover:border-primary/50 hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-primary/40"
+      className="inline-flex min-h-11 items-center gap-2 rounded-md border border-line bg-surface px-3 text-sm font-medium text-foreground transition hover:border-primary/50 hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-primary/40"
     >
       <Icon size={16} aria-hidden="true" />
       {!compact ? <span>{label}</span> : null}

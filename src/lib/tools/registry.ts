@@ -119,7 +119,17 @@ export const governedTools: ToolDefinition[] = [
       body: { type: "string", description: "Optional request body (string; JSON should be pre-serialized)." },
       authEnv: {
         type: "string",
-        description: "Optional env var name (OMNIAGENT_CONNECTOR_* or allowlisted) whose value is sent as a Bearer token.",
+        description: "Optional deployer-bound env var name (OMNIAGENT_CONNECTOR_* or allowlisted).",
+      },
+      authHeader: {
+        type: "string",
+        enum: ["authorization", "x-api-key", "x-auth-token", "api-key"],
+        description: "Header that receives the secret. Defaults to authorization.",
+      },
+      authMode: {
+        type: "string",
+        enum: ["bearer", "basic", "raw"],
+        description: "Bearer or Basic for authorization; raw for an API-key header.",
       },
     }),
   },

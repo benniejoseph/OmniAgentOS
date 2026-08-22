@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import { dispatchAlertDeliveries } from "@/lib/diagnostics/alerts";
+import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
   getDefaultObservabilitySloPolicies,
   getObservabilitySloSnapshot,
@@ -9,6 +11,8 @@ import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observab
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const sloActionSchema = z.object({
   action: z.enum(["run_monitor"]),
@@ -16,9 +20,9 @@ const sloActionSchema = z.object({
   resolveRecovered: z.boolean().optional(),
   dispatchAlerts: z.boolean().optional(),
   dispatchLimit: z.number().int().min(1).max(50).optional(),
-});
+}).strict();
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "observability-slo");
 
@@ -77,10 +81,16 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+async function POSTHandler(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "observability-slo");
-  const parsed = sloActionSchema.safeParse(await request.json().catch(() => ({})));
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
+  const parsed = sloActionSchema.safeParse(body);
 
   if (!parsed.success) {
     return Response.json(
@@ -95,7 +105,13 @@ export async function POST(request: Request) {
       request,
       action: "manage.workflow",
       resourceType: "observability_slo",
-      metadata: parsed.data,
+      metadata: {
+        action: parsed.data.action,
+        queueAlerts: parsed.data.queueAlerts,
+        resolveRecovered: parsed.data.resolveRecovered,
+        dispatchAlerts: parsed.data.dispatchAlerts,
+        dispatchLimit: parsed.data.dispatchLimit,
+      },
     });
   } catch (error) {
     return forbiddenResponse(error);
@@ -111,7 +127,9 @@ export async function POST(request: Request) {
       tenantId: context.tenantId,
     });
     const dispatch = parsed.data.dispatchAlerts
-      ? await dispatchAlertDeliveries(parsed.data.dispatchLimit || 10)
+      ? await dispatchAlertDeliveries(parsed.data.dispatchLimit || 10, {
+          tenantId: context.tenantId,
+        })
       : undefined;
 
     await recordRuntimeEventSafely({

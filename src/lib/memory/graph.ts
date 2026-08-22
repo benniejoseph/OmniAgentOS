@@ -1,5 +1,11 @@
-import { randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
+  runWithDatabaseTenantScope,
+} from "@/lib/db/client";
 import { listMemories } from "@/lib/memory/store";
 import type {
   MemoryGraphBuildRecord,
@@ -11,18 +17,29 @@ import type {
   MemoryGraphStats,
   MemoryRecord,
 } from "@/lib/memory/types";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import {
+  readJsonFile,
+  updateJsonFile,
+  withJsonFileLock,
+  writeJsonFile,
+} from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
 type RebuildMemoryGraphOptions = {
+  tenantId?: string;
   source?: string;
   memoryLimit?: number;
   traceLimit?: number;
 };
 
 type SearchMemoryGraphOptions = {
+  tenantId?: string;
   limit?: number;
   nodeLimit?: number;
+};
+
+type GraphSqlClient = {
+  (strings: TemplateStringsArray, ...params: unknown[]): Promise<Record<string, unknown>[]>;
 };
 
 type TraceSeed = {
@@ -123,58 +140,96 @@ const domainPhrases: Array<{ phrase: string; label: string; kind: MemoryGraphNod
   { phrase: "queue", label: "Operation Queue", kind: "workflow", tags: ["queue", "workflow"] },
 ];
 
-let graphFileWriteQueue: Promise<void> = Promise.resolve();
-
 export async function rebuildMemoryGraph(options: RebuildMemoryGraphOptions = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  return runWithDatabaseTenantScope(tenantId, () => rebuildMemoryGraphForTenant(options, tenantId));
+}
+
+async function rebuildMemoryGraphForTenant(
+  options: RebuildMemoryGraphOptions,
+  tenantId: string,
+) {
   const startedAt = Date.now();
   const source = options.source || "rebuild";
 
   try {
-    const [memories, traces] = await Promise.all([
-      listMemories(),
-      listTraceSeeds(options.traceLimit || 200),
-    ]);
-    const selectedMemories = memories.slice(0, Math.min(Math.max(options.memoryLimit || 500, 1), 2000));
-    const aggregate = aggregateGraph(selectedMemories, traces);
-    const build = buildRecord({
-      status: "completed",
-      source,
-      memoryCount: selectedMemories.length,
-      traceCount: traces.length,
-      nodeCount: aggregate.nodes.size,
-      edgeCount: aggregate.edges.size,
-      latencyMs: Date.now() - startedAt,
-    });
+    let completedBuild: MemoryGraphBuildRecord | undefined;
 
     if (hasDatabaseUrl()) {
       await ensureDatabaseSchema();
-      await getSql()`DELETE FROM omni_memory_graph_edges`;
-      await getSql()`DELETE FROM omni_memory_graph_nodes`;
-      for (const node of aggregate.nodes.values()) {
-        await insertGraphNode(node);
-      }
-      for (const edge of aggregate.edges.values()) {
-        await insertGraphEdge(edge);
-      }
-      await insertGraphBuild(build);
-      return {
-        build,
-        stats: await getMemoryGraphStats(),
-      };
+      await getSql().transaction(async (sql: GraphSqlClient) => {
+        await sql`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${"memory-graph:" + tenantId}, 0)
+          )
+        `;
+        const { aggregate, selectedMemories, traces } =
+          await collectMemoryGraphAggregate(options, tenantId, sql);
+        const build = buildRecord({
+          tenantId,
+          status: "completed",
+          source,
+          memoryCount: selectedMemories.length,
+          traceCount: traces.length,
+          nodeCount: aggregate.nodes.size,
+          edgeCount: aggregate.edges.size,
+          latencyMs: Date.now() - startedAt,
+        });
+        completedBuild = build;
+        await sql`DELETE FROM omni_memory_graph_edges WHERE tenant_id = ${tenantId}`;
+        await sql`DELETE FROM omni_memory_graph_nodes WHERE tenant_id = ${tenantId}`;
+        for (const node of aggregate.nodes.values()) {
+          await insertGraphNode(node, sql);
+        }
+        for (const edge of aggregate.edges.values()) {
+          await insertGraphEdge(edge, sql);
+        }
+        await insertGraphBuild(build, sql);
+      });
+    } else {
+      await withJsonFileLock(getGraphFile(), async () => {
+        const { aggregate, selectedMemories, traces } =
+          await collectMemoryGraphAggregate(options, tenantId);
+        const build = buildRecord({
+          tenantId,
+          status: "completed",
+          source,
+          memoryCount: selectedMemories.length,
+          traceCount: traces.length,
+          nodeCount: aggregate.nodes.size,
+          edgeCount: aggregate.edges.size,
+          latencyMs: Date.now() - startedAt,
+        });
+        completedBuild = build;
+        const ledger = await readGraphLedger();
+        await writeJsonFile<MemoryGraphLedger>(getGraphFile(), {
+          nodes: [
+            ...ledger.nodes.filter((node) => graphTenantId(node) !== tenantId),
+            ...aggregate.nodes.values(),
+          ].sort(sortNodes).slice(0, 2000),
+          edges: [
+            ...ledger.edges.filter((edge) => graphTenantId(edge) !== tenantId),
+            ...aggregate.edges.values(),
+          ].sort(sortEdges).slice(0, 5000),
+          builds: [
+            build,
+            ...ledger.builds.filter((item) => graphTenantId(item) !== tenantId),
+            ...ledger.builds.filter((item) => graphTenantId(item) === tenantId),
+          ].slice(0, 50),
+        });
+      });
     }
 
-    await writeGraphLedger({
-      nodes: [...aggregate.nodes.values()].sort(sortNodes),
-      edges: [...aggregate.edges.values()].sort(sortEdges),
-      builds: [build, ...(await readGraphLedger()).builds].slice(0, 50),
-    });
-
+    if (!completedBuild) {
+      throw new Error("Memory graph rebuild did not produce a build record.");
+    }
     return {
-      build,
-      stats: await getMemoryGraphStats(),
+      build: completedBuild,
+      stats: await getMemoryGraphStats({ tenantId }),
     };
   } catch (error) {
     const build = buildRecord({
+      tenantId,
       status: "failed",
       source,
       memoryCount: 0,
@@ -189,46 +244,102 @@ export async function rebuildMemoryGraph(options: RebuildMemoryGraphOptions = {}
   }
 }
 
-export async function indexMemoryGraphRecords(records: MemoryRecord[], source = "memory.write") {
+async function collectMemoryGraphAggregate(
+  options: RebuildMemoryGraphOptions,
+  tenantId: string,
+  sql?: GraphSqlClient,
+) {
+  const memoryLimit = Math.min(Math.max(options.memoryLimit || 500, 1), 2000);
+  const [memories, traces] = await Promise.all([
+    listMemories({ tenantId, limit: memoryLimit, sql }),
+    listTraceSeeds(options.traceLimit || 200, tenantId, sql),
+  ]);
+  const selectedMemories = memories.slice(0, memoryLimit);
+  return {
+    aggregate: aggregateGraph(selectedMemories, traces, tenantId),
+    selectedMemories,
+    traces,
+  };
+}
+
+export async function indexMemoryGraphRecords(
+  records: MemoryRecord[],
+  source = "memory.write",
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId || records[0]?.tenantId);
+  if (records.some((record) => normalizeTenantId(record.tenantId) !== tenantId)) {
+    throw new Error("Memory graph indexing cannot mix records from different tenants.");
+  }
+  return runWithDatabaseTenantScope(tenantId, () =>
+    indexMemoryGraphRecordsForTenant(records, source, tenantId),
+  );
+}
+
+async function indexMemoryGraphRecordsForTenant(
+  records: MemoryRecord[],
+  source: string,
+  tenantId: string,
+) {
   if (!records.length) {
-    return getMemoryGraphStats();
+    return getMemoryGraphStats({ tenantId });
   }
 
-  const aggregate = aggregateGraph(records, []);
+  const aggregate = aggregateGraph(records, [], tenantId);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    for (const node of aggregate.nodes.values()) {
-      await upsertGraphNode(node);
-    }
-    for (const edge of aggregate.edges.values()) {
-      await upsertGraphEdge(edge);
-    }
-    await insertGraphBuild(
-      buildRecord({
-        status: "completed",
-        source,
-        memoryCount: records.length,
-        traceCount: 0,
-        nodeCount: aggregate.nodes.size,
-        edgeCount: aggregate.edges.size,
-        latencyMs: 0,
-      }),
-    );
-    return getMemoryGraphStats();
+    await getSql().transaction(async (sql: GraphSqlClient) => {
+      await sql`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${"memory-graph:" + tenantId}, 0)
+        )
+      `;
+      for (const node of aggregate.nodes.values()) {
+        await upsertGraphNode(node, sql);
+      }
+      for (const edge of aggregate.edges.values()) {
+        await upsertGraphEdge(edge, sql);
+      }
+      await insertGraphBuild(
+        buildRecord({
+          tenantId,
+          status: "completed",
+          source,
+          memoryCount: records.length,
+          traceCount: 0,
+          nodeCount: aggregate.nodes.size,
+          edgeCount: aggregate.edges.size,
+          latencyMs: 0,
+        }),
+        sql,
+      );
+    });
+    return getMemoryGraphStats({ tenantId });
   }
 
-  await mutateGraphLedger((ledger) => mergeLedger(ledger, aggregate, source, records.length));
-  return getMemoryGraphStats();
+  await mutateGraphLedger((ledger) => mergeLedger(ledger, aggregate, source, records.length, tenantId));
+  return getMemoryGraphStats({ tenantId });
 }
 
 export async function searchMemoryGraph(
   query: string,
   options: SearchMemoryGraphOptions = {},
 ): Promise<MemoryGraphSearchResult[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  return runWithDatabaseTenantScope(tenantId, () =>
+    searchMemoryGraphForTenant(query, { ...options, tenantId }),
+  );
+}
+
+async function searchMemoryGraphForTenant(
+  query: string,
+  options: SearchMemoryGraphOptions,
+): Promise<MemoryGraphSearchResult[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
   const limit = Math.min(Math.max(options.limit || 6, 1), 24);
   const [nodes, edges] = await Promise.all([
-    listMemoryGraphNodes(options.nodeLimit || 600),
-    listMemoryGraphEdges((options.nodeLimit || 600) * 3),
+    listMemoryGraphNodes(options.nodeLimit || 600, { tenantId }),
+    listMemoryGraphEdges((options.nodeLimit || 600) * 3, { tenantId }),
   ]);
   if (!nodes.length) {
     return [];
@@ -300,41 +411,80 @@ export async function searchMemoryGraph(
     .slice(0, limit);
 }
 
-export async function listMemoryGraphNodes(limit = 100) {
+export async function listMemoryGraphNodes(
+  limit = 100,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  return runWithDatabaseTenantScope(tenantId, () =>
+    listMemoryGraphNodesForTenant(limit, tenantId),
+  );
+}
+
+async function listMemoryGraphNodesForTenant(limit: number, tenantId: string) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_memory_graph_nodes
+      WHERE tenant_id = ${tenantId}
       ORDER BY weight DESC, source_count DESC, updated_at DESC
       LIMIT ${Math.min(Math.max(limit, 1), 2000)}
     `;
     return rows.map(memoryGraphNodeFromRow);
   }
 
-  return (await readGraphLedger()).nodes.slice(0, limit);
+  return (await readGraphLedger()).nodes
+    .filter((node) => graphTenantId(node) === tenantId)
+    .map((node) => ({ ...node, tenantId }))
+    .slice(0, limit);
 }
 
-export async function listMemoryGraphEdges(limit = 200) {
+export async function listMemoryGraphEdges(
+  limit = 200,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  return runWithDatabaseTenantScope(tenantId, () =>
+    listMemoryGraphEdgesForTenant(limit, tenantId),
+  );
+}
+
+async function listMemoryGraphEdgesForTenant(limit: number, tenantId: string) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_memory_graph_edges
+      WHERE tenant_id = ${tenantId}
       ORDER BY weight DESC, evidence_count DESC, updated_at DESC
       LIMIT ${Math.min(Math.max(limit, 1), 5000)}
     `;
     return rows.map(memoryGraphEdgeFromRow);
   }
 
-  return (await readGraphLedger()).edges.slice(0, limit);
+  return (await readGraphLedger()).edges
+    .filter((edge) => graphTenantId(edge) === tenantId)
+    .map((edge) => ({ ...edge, tenantId }))
+    .slice(0, limit);
 }
 
-export async function getMemoryGraphStats(): Promise<MemoryGraphStats> {
+export async function getMemoryGraphStats(
+  options: { tenantId?: string } = {},
+): Promise<MemoryGraphStats> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  return runWithDatabaseTenantScope(tenantId, () =>
+    getMemoryGraphStatsForTenant(tenantId),
+  );
+}
+
+async function getMemoryGraphStatsForTenant(
+  tenantId: string,
+): Promise<MemoryGraphStats> {
   const [nodes, edges, latestBuild] = await Promise.all([
-    listMemoryGraphNodes(1000),
-    listMemoryGraphEdges(3000),
-    getLatestGraphBuild(),
+    listMemoryGraphNodes(1000, { tenantId }),
+    listMemoryGraphEdges(3000, { tenantId }),
+    getLatestGraphBuild(tenantId),
   ]);
   const communities = componentIds(nodes, edges);
   const communityCount = new Set(communities.values()).size;
@@ -349,7 +499,11 @@ export async function getMemoryGraphStats(): Promise<MemoryGraphStats> {
   };
 }
 
-function aggregateGraph(memories: MemoryRecord[], traces: TraceSeed[]): GraphAggregate {
+function aggregateGraph(
+  memories: MemoryRecord[],
+  traces: TraceSeed[],
+  tenantId: string,
+): GraphAggregate {
   const now = new Date().toISOString();
   const aggregate: GraphAggregate = {
     nodes: new Map(),
@@ -366,7 +520,7 @@ function aggregateGraph(memories: MemoryRecord[], traces: TraceSeed[]): GraphAgg
     }).slice(0, 14);
 
     for (const candidate of candidates) {
-      mergeNode(aggregate.nodes, nodeFromCandidate(candidate, now, {
+      mergeNode(aggregate.nodes, nodeFromCandidate(candidate, now, tenantId, {
         sourceCount: 1,
         memoryIds: [memory.id],
         traceIds: [],
@@ -377,7 +531,7 @@ function aggregateGraph(memories: MemoryRecord[], traces: TraceSeed[]): GraphAgg
     for (const [left, right] of boundedPairs(candidates.slice(0, 8))) {
       mergeEdge(
         aggregate.edges,
-        edgeFromCandidates(left, right, relationFor(left, right), now, {
+        edgeFromCandidates(left, right, relationFor(left, right), now, tenantId, {
           weight: (left.weight + right.weight + memory.importance) / 3,
           memoryIds: [memory.id],
           traceIds: [],
@@ -397,7 +551,7 @@ function aggregateGraph(memories: MemoryRecord[], traces: TraceSeed[]): GraphAgg
     }).slice(0, 12);
 
     for (const candidate of candidates) {
-      mergeNode(aggregate.nodes, nodeFromCandidate(candidate, now, {
+      mergeNode(aggregate.nodes, nodeFromCandidate(candidate, now, tenantId, {
         sourceCount: 1,
         memoryIds: [],
         traceIds: [trace.id],
@@ -408,7 +562,7 @@ function aggregateGraph(memories: MemoryRecord[], traces: TraceSeed[]): GraphAgg
     for (const [left, right] of boundedPairs(candidates.slice(0, 7))) {
       mergeEdge(
         aggregate.edges,
-        edgeFromCandidates(left, right, traceRelationFor(left, right), now, {
+        edgeFromCandidates(left, right, traceRelationFor(left, right), now, tenantId, {
           weight: (left.weight + right.weight) / 2,
           memoryIds: [],
           traceIds: [trace.id],
@@ -535,6 +689,7 @@ function addCandidate(candidates: Map<string, GraphCandidate>, candidate: GraphC
 function nodeFromCandidate(
   candidate: GraphCandidate,
   now: string,
+  tenantId: string,
   source: {
     sourceCount: number;
     memoryIds: string[];
@@ -543,7 +698,8 @@ function nodeFromCandidate(
   },
 ): MemoryGraphNode {
   return {
-    id: nodeId(candidate.slug),
+    id: nodeId(candidate.slug, tenantId),
+    tenantId,
     kind: candidate.kind,
     label: candidate.label,
     slug: candidate.slug,
@@ -565,15 +721,20 @@ function edgeFromCandidates(
   right: GraphCandidate,
   relation: MemoryGraphEdgeRelation,
   now: string,
+  tenantId: string,
   source: {
     weight: number;
     memoryIds: string[];
     traceIds: string[];
   },
 ): MemoryGraphEdge {
-  const [sourceNodeId, targetNodeId] = [nodeId(left.slug), nodeId(right.slug)].sort();
+  const [sourceNodeId, targetNodeId] = [
+    nodeId(left.slug, tenantId),
+    nodeId(right.slug, tenantId),
+  ].sort();
   return {
-    id: edgeId(sourceNodeId, targetNodeId, relation),
+    id: edgeId(sourceNodeId, targetNodeId, relation, tenantId),
+    tenantId,
     sourceNodeId,
     targetNodeId,
     relation,
@@ -624,12 +785,20 @@ function mergeEdge(edges: Map<string, MemoryGraphEdge>, edge: MemoryGraphEdge) {
   });
 }
 
-async function listTraceSeeds(limit: number): Promise<TraceSeed[]> {
+async function listTraceSeeds(
+  limit: number,
+  tenantId: string,
+  sql?: GraphSqlClient,
+): Promise<TraceSeed[]> {
   if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    const rows = await getSql()`
+    if (!sql) {
+      await ensureDatabaseSchema();
+    }
+    const query = sql || getSql();
+    const rows = await query`
       SELECT id, query, profile, results, created_at
       FROM omni_retrieval_traces
+      WHERE tenant_id = ${tenantId}
       ORDER BY created_at DESC
       LIMIT ${Math.min(Math.max(limit, 1), 1000)}
     `;
@@ -637,17 +806,26 @@ async function listTraceSeeds(limit: number): Promise<TraceSeed[]> {
   }
 
   const ledger = await readJsonFile<{ traces: TraceSeed[] }>(getDataPath("retrieval-traces.json"), { traces: [] });
-  return ledger.traces.slice(0, limit).map(traceSeedFromRow);
+  return ledger.traces
+    .filter((trace) =>
+      graphTenantId(trace as TraceSeed & { tenantId?: string }) === tenantId
+    )
+    .slice(0, limit)
+    .map(traceSeedFromRow);
 }
 
-async function upsertGraphNode(node: MemoryGraphNode) {
-  await getSql()`
+async function upsertGraphNode(
+  node: MemoryGraphNode,
+  sql: GraphSqlClient = getSql(),
+) {
+  await sql`
     INSERT INTO omni_memory_graph_nodes (
-      id, kind, label, slug, aliases, summary, weight, source_count,
+      id, tenant_id, kind, label, slug, aliases, summary, weight, source_count,
       memory_ids, trace_ids, tags, metadata, created_at, updated_at
     )
     VALUES (
-      ${node.id}, ${node.kind}, ${node.label}, ${node.slug}, ${node.aliases},
+      ${node.id}, ${node.tenantId}, ${node.kind}, ${node.label},
+      ${storageGraphSlug(node.tenantId, node.slug)}, ${node.aliases},
       ${node.summary}, ${node.weight}, ${node.sourceCount}, ${node.memoryIds},
       ${node.traceIds}, ${node.tags}, ${JSON.stringify(node.metadata)}::jsonb,
       ${node.createdAt}, ${node.updatedAt}
@@ -668,14 +846,17 @@ async function upsertGraphNode(node: MemoryGraphNode) {
   `;
 }
 
-async function upsertGraphEdge(edge: MemoryGraphEdge) {
-  await getSql()`
+async function upsertGraphEdge(
+  edge: MemoryGraphEdge,
+  sql: GraphSqlClient = getSql(),
+) {
+  await sql`
     INSERT INTO omni_memory_graph_edges (
-      id, source_node_id, target_node_id, relation, weight, evidence_count,
+      id, tenant_id, source_node_id, target_node_id, relation, weight, evidence_count,
       memory_ids, trace_ids, metadata, created_at, updated_at
     )
     VALUES (
-      ${edge.id}, ${edge.sourceNodeId}, ${edge.targetNodeId}, ${edge.relation},
+      ${edge.id}, ${edge.tenantId}, ${edge.sourceNodeId}, ${edge.targetNodeId}, ${edge.relation},
       ${edge.weight}, ${edge.evidenceCount}, ${edge.memoryIds}, ${edge.traceIds},
       ${JSON.stringify(edge.metadata)}::jsonb, ${edge.createdAt}, ${edge.updatedAt}
     )
@@ -688,14 +869,15 @@ async function upsertGraphEdge(edge: MemoryGraphEdge) {
   `;
 }
 
-async function insertGraphNode(node: MemoryGraphNode) {
-  await getSql()`
+async function insertGraphNode(node: MemoryGraphNode, sql: GraphSqlClient = getSql()) {
+  await sql`
     INSERT INTO omni_memory_graph_nodes (
-      id, kind, label, slug, aliases, summary, weight, source_count,
+      id, tenant_id, kind, label, slug, aliases, summary, weight, source_count,
       memory_ids, trace_ids, tags, metadata, created_at, updated_at
     )
     VALUES (
-      ${node.id}, ${node.kind}, ${node.label}, ${node.slug}, ${node.aliases},
+      ${node.id}, ${node.tenantId}, ${node.kind}, ${node.label},
+      ${storageGraphSlug(node.tenantId, node.slug)}, ${node.aliases},
       ${node.summary}, ${node.weight}, ${node.sourceCount}, ${node.memoryIds},
       ${node.traceIds}, ${node.tags}, ${JSON.stringify(node.metadata)}::jsonb,
       ${node.createdAt}, ${node.updatedAt}
@@ -703,14 +885,14 @@ async function insertGraphNode(node: MemoryGraphNode) {
   `;
 }
 
-async function insertGraphEdge(edge: MemoryGraphEdge) {
-  await getSql()`
+async function insertGraphEdge(edge: MemoryGraphEdge, sql: GraphSqlClient = getSql()) {
+  await sql`
     INSERT INTO omni_memory_graph_edges (
-      id, source_node_id, target_node_id, relation, weight, evidence_count,
+      id, tenant_id, source_node_id, target_node_id, relation, weight, evidence_count,
       memory_ids, trace_ids, metadata, created_at, updated_at
     )
     VALUES (
-      ${edge.id}, ${edge.sourceNodeId}, ${edge.targetNodeId}, ${edge.relation},
+      ${edge.id}, ${edge.tenantId}, ${edge.sourceNodeId}, ${edge.targetNodeId}, ${edge.relation},
       ${edge.weight}, ${edge.evidenceCount}, ${edge.memoryIds}, ${edge.traceIds},
       ${JSON.stringify(edge.metadata)}::jsonb, ${edge.createdAt}, ${edge.updatedAt}
     )
@@ -730,33 +912,36 @@ async function saveGraphBuild(build: MemoryGraphBuildRecord) {
   }));
 }
 
-async function insertGraphBuild(build: MemoryGraphBuildRecord) {
-  await getSql()`
+async function insertGraphBuild(build: MemoryGraphBuildRecord, sql: GraphSqlClient = getSql()) {
+  await sql`
     INSERT INTO omni_memory_graph_builds (
-      id, status, source, memory_count, trace_count, node_count, edge_count,
+      id, tenant_id, status, source, memory_count, trace_count, node_count, edge_count,
       latency_ms, error, created_at
     )
     VALUES (
-      ${build.id}, ${build.status}, ${build.source}, ${build.memoryCount},
+      ${build.id}, ${build.tenantId}, ${build.status}, ${build.source}, ${build.memoryCount},
       ${build.traceCount}, ${build.nodeCount}, ${build.edgeCount},
       ${build.latencyMs}, ${build.error || null}, ${build.createdAt}
     )
   `;
 }
 
-async function getLatestGraphBuild() {
+async function getLatestGraphBuild(tenantId: string) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_memory_graph_builds
+      WHERE tenant_id = ${tenantId}
       ORDER BY created_at DESC
       LIMIT 1
     `;
     return rows[0] ? memoryGraphBuildFromRow(rows[0]) : undefined;
   }
 
-  return (await readGraphLedger()).builds[0];
+  const build = (await readGraphLedger()).builds
+    .find((item) => graphTenantId(item) === tenantId);
+  return build ? { ...build, tenantId } : undefined;
 }
 
 function mergeLedger(
@@ -764,9 +949,20 @@ function mergeLedger(
   aggregate: GraphAggregate,
   source: string,
   memoryCount: number,
+  tenantId: string,
 ): MemoryGraphLedger {
-  const nodes = new Map(ledger.nodes.map((node) => [node.id, node]));
-  const edges = new Map(ledger.edges.map((edge) => [edge.id, edge]));
+  const otherNodes = ledger.nodes.filter((node) => graphTenantId(node) !== tenantId);
+  const otherEdges = ledger.edges.filter((edge) => graphTenantId(edge) !== tenantId);
+  const nodes = new Map(
+    ledger.nodes
+      .filter((node) => graphTenantId(node) === tenantId)
+      .map((node) => [node.id, { ...node, tenantId }]),
+  );
+  const edges = new Map(
+    ledger.edges
+      .filter((edge) => graphTenantId(edge) === tenantId)
+      .map((edge) => [edge.id, { ...edge, tenantId }]),
+  );
   for (const node of aggregate.nodes.values()) {
     mergeNode(nodes, node);
   }
@@ -775,10 +971,11 @@ function mergeLedger(
   }
 
   return {
-    nodes: [...nodes.values()].sort(sortNodes).slice(0, 2000),
-    edges: [...edges.values()].sort(sortEdges).slice(0, 5000),
+    nodes: [...otherNodes, ...nodes.values()].sort(sortNodes).slice(0, 2000),
+    edges: [...otherEdges, ...edges.values()].sort(sortEdges).slice(0, 5000),
     builds: [
       buildRecord({
+        tenantId,
         status: "completed",
         source,
         memoryCount,
@@ -797,31 +994,28 @@ async function readGraphLedger() {
 }
 
 async function mutateGraphLedger(mutator: (ledger: MemoryGraphLedger) => MemoryGraphLedger) {
-  graphFileWriteQueue = graphFileWriteQueue.then(
-    async () => {
-      await writeGraphLedger(mutator(await readGraphLedger()));
-    },
-    async () => {
-      await writeGraphLedger(mutator(await readGraphLedger()));
+  await updateJsonFile<MemoryGraphLedger>(
+    getGraphFile(),
+    { nodes: [], edges: [], builds: [] },
+    (ledger) => {
+      const next = mutator(ledger);
+      return {
+        nodes: next.nodes.slice(0, 2000),
+        edges: next.edges.slice(0, 5000),
+        builds: next.builds.slice(0, 50),
+      };
     },
   );
-  await graphFileWriteQueue;
-}
-
-async function writeGraphLedger(ledger: MemoryGraphLedger) {
-  await writeJsonFile(getGraphFile(), {
-    nodes: ledger.nodes.slice(0, 2000),
-    edges: ledger.edges.slice(0, 5000),
-    builds: ledger.builds.slice(0, 50),
-  });
 }
 
 function memoryGraphNodeFromRow(row: Record<string, unknown>): MemoryGraphNode {
+  const tenantId = storedTenantId(row.tenant_id ? String(row.tenant_id) : undefined);
   return {
     id: String(row.id),
+    tenantId,
     kind: normalizeKind(String(row.kind || "concept")),
     label: String(row.label || ""),
-    slug: String(row.slug || ""),
+    slug: logicalGraphSlug(tenantId, String(row.slug || "")),
     aliases: stringArray(row.aliases),
     summary: String(row.summary || ""),
     weight: Number(row.weight || 0),
@@ -838,6 +1032,7 @@ function memoryGraphNodeFromRow(row: Record<string, unknown>): MemoryGraphNode {
 function memoryGraphEdgeFromRow(row: Record<string, unknown>): MemoryGraphEdge {
   return {
     id: String(row.id),
+    tenantId: storedTenantId(row.tenant_id ? String(row.tenant_id) : undefined),
     sourceNodeId: String(row.source_node_id || ""),
     targetNodeId: String(row.target_node_id || ""),
     relation: normalizeRelation(String(row.relation || "co_occurs")),
@@ -854,6 +1049,7 @@ function memoryGraphEdgeFromRow(row: Record<string, unknown>): MemoryGraphEdge {
 function memoryGraphBuildFromRow(row: Record<string, unknown>): MemoryGraphBuildRecord {
   return {
     id: String(row.id),
+    tenantId: storedTenantId(row.tenant_id ? String(row.tenant_id) : undefined),
     status: row.status === "failed" ? "failed" : "completed",
     source: String(row.source || ""),
     memoryCount: Number(row.memory_count || 0),
@@ -982,12 +1178,24 @@ function inferKind(label: string): MemoryGraphNodeKind {
   return "concept";
 }
 
-function nodeId(slug: string) {
-  return `graph-node-${slug}`;
+function nodeId(slug: string, tenantId: string) {
+  const prefix = tenantId === "default" ? "" : `${tenantNamespace(tenantId)}-`;
+  return `graph-node-${prefix}${slug}`.slice(0, 240);
 }
 
-function edgeId(sourceNodeId: string, targetNodeId: string, relation: MemoryGraphEdgeRelation) {
-  return `graph-edge-${sourceNodeId.replace(/^graph-node-/, "")}-${relation}-${targetNodeId.replace(/^graph-node-/, "")}`.slice(0, 240);
+function edgeId(
+  sourceNodeId: string,
+  targetNodeId: string,
+  relation: MemoryGraphEdgeRelation,
+  tenantId: string,
+) {
+  const digest = createHash("sha256")
+    .update(`${tenantId}\0${sourceNodeId}\0${targetNodeId}\0${relation}`)
+    .digest("hex")
+    .slice(0, 32);
+  return tenantId === "default"
+    ? `graph-edge-${sourceNodeId.replace(/^graph-node-/, "")}-${relation}-${targetNodeId.replace(/^graph-node-/, "")}`.slice(0, 240)
+    : `graph-edge-${tenantNamespace(tenantId)}-${digest}`;
 }
 
 function buildRecord(input: Omit<MemoryGraphBuildRecord, "id" | "createdAt">): MemoryGraphBuildRecord {
@@ -1097,6 +1305,39 @@ function roundScore(value: number) {
     return 0;
   }
   return Math.round(Math.min(1, Math.max(0, value)) * 1000) / 1000;
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
+}
+
+function graphTenantId(record: { tenantId?: string }) {
+  return storedTenantId(record.tenantId);
+}
+
+function storedTenantId(value?: string) {
+  return normalizeTenantId(
+    value || process.env.OMNIAGENT_DEFAULT_TENANT || "default",
+  );
+}
+
+function tenantNamespace(tenantId: string) {
+  return createHash("sha256").update(tenantId).digest("hex").slice(0, 16);
+}
+
+function storageGraphSlug(tenantId: string, slug: string) {
+  return tenantId === "default" ? slug : `${tenantNamespace(tenantId)}-${slug}`.slice(0, 120);
+}
+
+function logicalGraphSlug(tenantId: string, slug: string) {
+  if (tenantId === "default") {
+    return slug;
+  }
+  const prefix = `${tenantNamespace(tenantId)}-`;
+  return slug.startsWith(prefix) ? slug.slice(prefix.length) : slug;
 }
 
 function normalizeDate(value: unknown) {

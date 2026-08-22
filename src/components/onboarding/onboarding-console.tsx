@@ -1,7 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Loader2, LockKeyhole, Play, ShieldCheck } from "lucide-react";
+import {
+  ArrowRight,
+  CheckCircle2,
+  Circle,
+  Loader2,
+  LockKeyhole,
+  Play,
+  RefreshCw,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 type SessionResponse = {
@@ -10,6 +18,16 @@ type SessionResponse = {
   user?: { email?: string; name?: string | null };
   tenant?: { name?: string; slug?: string };
   membership?: { role?: string };
+};
+
+type CapabilitiesResponse = {
+  memory?: { total?: number };
+  knowledge?: { total?: number };
+  runs?: { total?: number };
+  workflows?: { total?: number };
+  mcpConnectors?: { total?: number; active?: number };
+  openApiConnectors?: { total?: number; active?: number };
+  evaluations?: { total?: number };
 };
 
 const activationSteps = [
@@ -29,13 +47,13 @@ const activationSteps = [
     href: "/app/connectors",
   },
   {
-    title: "Run the first workflow",
-    body: "Turn a real goal into queued work with approval gates and recovery visibility.",
+    title: "Run the first goal",
+    body: "Give the agent useful work, then follow approvals, progress, and evidence to completion.",
     href: "/app/command",
   },
   {
-    title: "Review release evidence",
-    body: "Validate SLO, tenant isolation, eval, signing, and deployment gates.",
+    title: "Run a readiness evaluation",
+    body: "Exercise safety, tenant isolation, reliability, and evidence checks before relying on automation.",
     href: "/app/evaluations",
   },
 ];
@@ -43,21 +61,104 @@ const activationSteps = [
 export function OnboardingConsole() {
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [completed, setCompleted] = useState([true, false, false, false, false]);
+  const [completed, setCompleted] = useState([false, false, false, false, false]);
+  const [refreshVersion, setRefreshVersion] = useState(0);
 
   useEffect(() => {
     let canceled = false;
+    const controller = new AbortController();
 
     async function load() {
       try {
-        const response = await fetch("/api/auth/session");
-        const body = await response.json();
+        const response = await fetch("/api/auth/session", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error("Session request failed.");
+        }
+        const body = await response.json() as SessionResponse;
         if (!canceled) {
           setSession(body);
-          setStatus("ready");
         }
-      } catch {
+
+        const identityReady = !body.authEnabled || body.authenticated;
+        if (!identityReady) {
+          if (!canceled) {
+            setCompleted([false, false, false, false, false]);
+            setStatus("ready");
+          }
+          return;
+        }
+
+        const releaseEvidenceExpected = ["admin", "system"].includes(
+          body.membership?.role || "",
+        );
+        const [capabilitiesResult, evidenceResult] = await Promise.allSettled([
+          fetch("/api/capabilities", {
+            cache: "no-store",
+            signal: controller.signal,
+          }),
+          releaseEvidenceExpected
+            ? fetch("/api/release/evidence", {
+                cache: "no-store",
+                signal: controller.signal,
+              })
+            : Promise.resolve(undefined),
+        ]);
+        let capabilities: CapabilitiesResponse | undefined;
+        if (
+          capabilitiesResult.status === "fulfilled" &&
+          capabilitiesResult.value.ok
+        ) {
+          capabilities = await capabilitiesResult.value.json() as CapabilitiesResponse;
+        }
+        if (!capabilities) {
+          if (!canceled) {
+            setCompleted((current) => [identityReady, ...current.slice(1)]);
+            setStatus("error");
+          }
+          return;
+        }
+        let releaseReviewed = false;
+        const releaseEvidenceAvailable =
+          !releaseEvidenceExpected ||
+          (
+            evidenceResult.status === "fulfilled" &&
+            Boolean(evidenceResult.value?.ok)
+          );
+        if (
+          evidenceResult.status === "fulfilled" &&
+          evidenceResult.value?.ok
+        ) {
+          const evidence = await evidenceResult.value.json() as {
+            report?: { releaseGate?: { status?: string; approved?: boolean } };
+          };
+          releaseReviewed =
+            evidence.report?.releaseGate?.status === "passed" &&
+            evidence.report.releaseGate.approved === true;
+        }
+
         if (!canceled) {
+          setCompleted((current) => [
+            identityReady,
+            Number(capabilities?.memory?.total || 0) +
+                Number(capabilities?.knowledge?.total || 0) >
+              0,
+            Number(capabilities?.mcpConnectors?.active || 0) +
+                Number(capabilities?.openApiConnectors?.active || 0) >
+              0,
+            Number(capabilities?.runs?.total || 0) +
+                Number(capabilities?.workflows?.total || 0) >
+              0,
+            releaseReviewed ||
+              Number(capabilities.evaluations?.total || 0) > 0 ||
+              (!releaseEvidenceAvailable && current[4]),
+          ]);
+          setStatus(releaseEvidenceAvailable ? "ready" : "error");
+        }
+      } catch (error) {
+        if (!canceled && !(error instanceof DOMException && error.name === "AbortError")) {
           setStatus("error");
         }
       }
@@ -66,17 +167,14 @@ export function OnboardingConsole() {
     void load();
     return () => {
       canceled = true;
+      controller.abort();
     };
-  }, []);
+  }, [refreshVersion]);
 
   const progress = useMemo(() => {
     const complete = completed.filter(Boolean).length;
     return Math.round((complete / completed.length) * 100);
   }, [completed]);
-
-  function toggle(index: number) {
-    setCompleted((current) => current.map((item, itemIndex) => (itemIndex === index ? !item : item)));
-  }
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -117,21 +215,40 @@ export function OnboardingConsole() {
               {status === "loading" ? (
                 <div className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-background px-3 text-sm text-muted">
                   <Loader2 size={15} className="animate-spin" aria-hidden="true" />
-                  Loading session
+                  Checking workspace
                 </div>
               ) : (
-                <div className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-background px-3 text-sm">
-                  <ShieldCheck size={15} className={session?.authenticated ? "text-success" : "text-warning"} aria-hidden="true" />
-                  {session?.authenticated ? "Signed in" : "Demo mode"}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatus("loading");
+                    setRefreshVersion((version) => version + 1);
+                  }}
+                  className="inline-flex h-10 items-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised"
+                >
+                  <RefreshCw size={15} aria-hidden="true" />
+                  Refresh setup
+                </button>
               )}
             </div>
 
             <div className="mt-6 rounded-lg border border-line bg-background p-5">
               {status === "error" ? (
                 <div role="alert">
-                  <p className="font-semibold">Session status unavailable.</p>
-                  <p className="mt-2 text-sm leading-6 text-muted">You can continue with the sample checklist and try again later.</p>
+                  <p className="font-semibold">Setup status partially unavailable.</p>
+                  <p className="mt-2 text-sm leading-6 text-muted">
+                    Existing progress is shown where available. Refresh when the workspace is healthy.
+                  </p>
+                </div>
+              ) : !session?.authEnabled ? (
+                <div>
+                  <p className="font-semibold">Local workspace</p>
+                  <p className="mt-2 text-sm leading-6 text-muted">
+                    Authentication is disabled. Workspace controls use the configured local role.
+                  </p>
+                  <Link href="/app" className="mt-4 inline-flex text-sm font-semibold text-primary hover:underline">
+                    Open workspace
+                  </Link>
                 </div>
               ) : session?.authenticated ? (
                 <div>
@@ -160,14 +277,13 @@ export function OnboardingConsole() {
               {activationSteps.map((step, index) => (
                 <div key={step.title} className="rounded-lg border border-line bg-background p-4">
                   <div className="flex items-start gap-4">
-                    <button
-                      type="button"
-                      onClick={() => toggle(index)}
+                    <span
                       className={completed[index] ? "mt-1 grid size-7 place-items-center rounded-md bg-primary text-primary-ink" : "mt-1 grid size-7 place-items-center rounded-md border border-line text-muted"}
-                      aria-label={completed[index] ? `Mark ${step.title} incomplete` : `Mark ${step.title} complete`}
+                      aria-label={completed[index] ? `${step.title} complete` : `${step.title} not complete`}
+                      role="img"
                     >
-                      {completed[index] ? <CheckCircle2 size={16} aria-hidden="true" /> : <span className="size-1.5 rounded-full bg-current" aria-hidden="true" />}
-                    </button>
+                      {completed[index] ? <CheckCircle2 size={16} aria-hidden="true" /> : <Circle size={12} aria-hidden="true" />}
+                    </span>
                     <div className="min-w-0 flex-1">
                       <p className="font-semibold">{step.title}</p>
                       <p className="mt-2 text-sm leading-6 text-muted">{step.body}</p>

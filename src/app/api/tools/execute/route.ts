@@ -1,23 +1,29 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import type { SecurityContext } from "@/lib/security/types";
-import { getToolExecution } from "@/lib/tools/audit-store";
-import { executeGovernedTool } from "@/lib/tools/executor";
+import { publicToolExecution } from "@/lib/tools/audit-store";
+import {
+  executeGovernedTool,
+  ToolInputValidationError,
+} from "@/lib/tools/executor";
 
 export const runtime = "nodejs";
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const executeSchema = z.object({
-  toolId: z.string().min(1),
+  toolId: z.string().min(1).max(240),
   input: z.record(z.string(), z.unknown()).default({}),
   dryRun: z.boolean().optional(),
-  approved: z.boolean().optional(),
-  approvalExecutionId: z.string().min(1).optional(),
-});
+}).strict();
 
-export async function POST(request: Request) {
-  const body = await request.json().catch(() => null);
-  if (body === null) {
-    return Response.json({ error: "Invalid request", message: "Request body is not valid JSON." }, { status: 400 });
+async function POSTHandler(request: Request) {
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
   }
   const parsed = executeSchema.safeParse(body);
 
@@ -35,35 +41,34 @@ export async function POST(request: Request) {
       action: parsed.data.dryRun === false ? "execute.tool" : "read",
       resourceType: "tool",
       resourceId: parsed.data.toolId,
-      metadata: { toolId: parsed.data.toolId, input: parsed.data.input, dryRun: parsed.data.dryRun ?? true },
+      metadata: {
+        toolId: parsed.data.toolId,
+        inputKeys: Object.keys(parsed.data.input).slice(0, 50),
+        inputBytes: Buffer.byteLength(JSON.stringify(parsed.data.input)),
+        dryRun: parsed.data.dryRun ?? true,
+      },
     });
   } catch (error) {
     return forbiddenResponse(error);
   }
 
-  const approvalRecord = parsed.data.approvalExecutionId
-    ? await getToolExecution(parsed.data.approvalExecutionId, { tenantId: context.tenantId })
-    : undefined;
-
-  if (parsed.data.approvalExecutionId && !approvalRecord) {
-    return Response.json({ error: "Approval record not found." }, { status: 404 });
+  let result: Awaited<ReturnType<typeof executeGovernedTool>>;
+  try {
+    result = await executeGovernedTool({
+      toolId: parsed.data.toolId,
+      input: parsed.data.input,
+      dryRun: parsed.data.dryRun ?? true,
+      context,
+    });
+  } catch (error) {
+    if (error instanceof ToolInputValidationError) {
+      return Response.json(
+        { error: "Invalid tool input", message: error.message },
+        { status: 400 },
+      );
+    }
+    throw error;
   }
-
-  if (approvalRecord && approvalRecord.status !== "approval_required") {
-    return Response.json(
-      { error: "Approval record is not pending.", status: approvalRecord.status },
-      { status: 409 },
-    );
-  }
-
-  const result = await executeGovernedTool({
-    toolId: approvalRecord?.toolId || parsed.data.toolId,
-    input: approvalRecord?.input || parsed.data.input,
-    dryRun: parsed.data.dryRun ?? true,
-    approved: Boolean(approvalRecord && parsed.data.approved),
-    context,
-    existingRecord: approvalRecord,
-  });
   const status =
     result.record.status === "blocked" || result.record.status === "approval_required"
       ? 202
@@ -71,5 +76,8 @@ export async function POST(request: Request) {
         ? 500
         : 200;
 
-  return Response.json(result, { status });
+  return Response.json(
+    { ...result, record: publicToolExecution(result.record) },
+    { status },
+  );
 }

@@ -5,42 +5,132 @@ on:
   schedule:
     - cron: "17 3 * * *"
 
+permissions:
+  contents: read
+
 jobs:
   production-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    environment: production
+    timeout-minutes: 12
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-      BASE_URL: ${{ vars.PRODUCTION_SMOKE_BASE_URL || 'https://omniagent-os.vercel.app' }}
-      SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
-      SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
-      SMOKE_INTERNAL_AUTH_SECRET: ${{ secrets.SMOKE_INTERNAL_AUTH_SECRET }}
+      BASE_URL: ${{ vars.PRODUCTION_SMOKE_BASE_URL }}
+      SMOKE_EXPECTED_REVISION: ${{ vars.PRODUCTION_SMOKE_EXPECTED_REVISION }}
       SMOKE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       SMOKE_SYNTHETIC_SOURCE: production-smoke
+      SMOKE_REQUEST_TIMEOUT_MS: "15000"
       EXPECT_SECURE_COOKIES: "true"
       RELEASE_EVIDENCE_OUTPUT: artifacts/release-evidence.json
+      RELEASE_EVIDENCE_MAX_BYTES: "262144"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "24"
+          node-version: "24.13.0"
           cache: npm
 
       - name: Install
-        run: npm ci
+        run: npm ci --omit=dev
 
-      - name: Run production smoke gates
+      - name: Prepare evidence directory
+        run: mkdir -p artifacts
+
+      - name: Preflight production target
+        id: preflight
+        timeout-minutes: 1
+        env:
+          SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
+          SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
+          SMOKE_INTERNAL_AUTH_SECRET: ${{ secrets.SMOKE_INTERNAL_AUTH_SECRET }}
+          SMOKE_CRON_SECRET: ${{ secrets.SMOKE_CRON_SECRET }}
+        run: npm run smoke:preflight
+
+      - name: Security gate
+        id: security
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
+          SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
+          SMOKE_INTERNAL_AUTH_SECRET: ${{ secrets.SMOKE_INTERNAL_AUTH_SECRET }}
+        run: npm run smoke:security
+
+      - name: Tenant isolation gate
+        id: tenant
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
+          SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
+          SMOKE_INTERNAL_AUTH_SECRET: ${{ secrets.SMOKE_INTERNAL_AUTH_SECRET }}
+        run: npm run smoke:tenant
+
+      - name: Evaluation gate
+        id: evaluation
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
+          SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
+          SMOKE_INTERNAL_AUTH_SECRET: ${{ secrets.SMOKE_INTERNAL_AUTH_SECRET }}
+        run: npm run smoke:eval
+
+      - name: Release evidence gate
+        id: release
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
+          SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
+          SMOKE_INTERNAL_AUTH_SECRET: ${{ secrets.SMOKE_INTERNAL_AUTH_SECRET }}
+        run: npm run smoke:release
+
+      - name: Verify release evidence artifact
+        id: evidence
+        if: always()
+        continue-on-error: true
         run: |
-          mkdir -p artifacts
-          npm run test:production-smoke
+          test -s "$RELEASE_EVIDENCE_OUTPUT"
+          test "$(wc -c < "$RELEASE_EVIDENCE_OUTPUT")" -le "$RELEASE_EVIDENCE_MAX_BYTES"
 
       - name: Upload release evidence
+        id: upload
         if: always()
-        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: production-release-evidence
           path: artifacts/release-evidence.json
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce production gates
+        if: always()
+        env:
+          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
+          SECURITY_OUTCOME: ${{ steps.security.outcome }}
+          TENANT_OUTCOME: ${{ steps.tenant.outcome }}
+          EVALUATION_OUTCOME: ${{ steps.evaluation.outcome }}
+          RELEASE_OUTCOME: ${{ steps.release.outcome }}
+          EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        run: |
+          set -euo pipefail
+          failures=()
+          for gate in PREFLIGHT SECURITY TENANT EVALUATION RELEASE EVIDENCE UPLOAD; do
+            outcome_variable="${gate}_OUTCOME"
+            outcome="${!outcome_variable}"
+            if [ "$outcome" != "success" ]; then
+              failures+=("${gate,,}=${outcome:-missing}")
+            fi
+          done
+          if [ "${#failures[@]}" -gt 0 ]; then
+            printf 'FAIL production smoke gates: %s\n' "${failures[*]}"
+            exit 1
+          fi
+          echo "PASS all production smoke gates and release evidence upload"

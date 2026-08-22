@@ -1,4 +1,10 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  jsonBodyErrorResponse,
+  parseBoundedInteger,
+  parseJsonBody,
+} from "@/lib/http/body";
 import {
   createEvalReportSnapshot,
   getLatestEvalReportSnapshot,
@@ -11,20 +17,25 @@ import { SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const reportSchema = z.object({
   reason: z.string().min(1).max(500).optional(),
-});
+}).strict();
 
-export async function GET(
+async function GETHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
   const url = new URL(request.url);
-  const reportId = url.searchParams.get("reportId");
+  const reportId =
+    url.searchParams.get("reportId")?.trim().slice(0, 120) || null;
   const download = ["1", "true", "latest"].includes((url.searchParams.get("download") || "").toLowerCase());
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 5), 1), 25);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 5, {
+    max: 25,
+  });
 
   try {
     const securityContext = await authorizeRequest({
@@ -69,14 +80,19 @@ export async function GET(
   }
 }
 
-export async function POST(
+async function POSTHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "evaluation-report");
   const { id } = await context.params;
-  const body = await request.json().catch(() => ({}));
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
   const parsed = reportSchema.safeParse(body);
 
   if (!parsed.success) {
@@ -94,7 +110,7 @@ export async function POST(
       resourceId: id,
       metadata: {
         evalRunId: id,
-        reason: parsed.data.reason,
+        hasReason: Boolean(parsed.data.reason),
       },
     });
     const report = await createEvalReportSnapshot({
@@ -127,7 +143,7 @@ export async function POST(
         reportVersion: report.reportVersion,
         format: report.format,
         signature: report.signature,
-        reason: parsed.data.reason,
+        hasReason: Boolean(parsed.data.reason),
       },
     });
 

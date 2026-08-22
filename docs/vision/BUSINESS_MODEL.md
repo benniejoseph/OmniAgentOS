@@ -6,7 +6,7 @@ Enterprises have piloted agents and stalled at production. The blocker is never 
 
 ## What we sell
 
-**Tenure is the trust and control plane for autonomous AI work.** Bring your own models and tools (MCP/OpenAPI/HTTP); Tenure governs them: risk-tiered execution, human approvals that get cheaper as the agent proves itself, immutable audit, tenant isolation, durable recovery, and continuous quality evals.
+**Tenure is the trust and control plane for autonomous AI work.** Bring your own models and tools (MCP/OpenAPI/HTTP); Tenure governs them: risk-tiered execution, human approvals that get cheaper as the agent proves itself, persistent audit trails with signed evidence exports, tenant isolation, durable recovery, and continuous quality evals. The current database is not WORM storage.
 
 The unit of value is **supervised-action-cost reduction**: we measurably lower the human minutes required per unit of autonomous work, while raising the auditability bar. That is a CFO-legible and a CISO-legible pitch at the same time — rare.
 

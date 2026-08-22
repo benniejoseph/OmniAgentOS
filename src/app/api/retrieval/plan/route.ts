@@ -1,19 +1,29 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  jsonBodyErrorResponse,
+  parseBoundedInteger,
+  parseJsonBody,
+} from "@/lib/http/body";
 import { buildContextPack, getContextEngineStats, listRetrievalTraces } from "@/lib/rag/context-engine";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const contextPlanSchema = z.object({
   query: z.string().min(1).max(4000),
   limit: z.number().int().min(1).max(24).optional(),
   persistTrace: z.boolean().optional(),
-});
+}).strict();
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const url = new URL(request.url);
-  const query = url.searchParams.get("q")?.trim();
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
+  const query = url.searchParams.get("q")?.trim().slice(0, 4_000);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, {
+    max: 100,
+  });
 
   let context;
   try {
@@ -21,7 +31,7 @@ export async function GET(request: Request) {
       request,
       action: "read",
       resourceType: "retrieval",
-      metadata: query ? { query, limit } : { limit },
+      metadata: query ? { queryLength: query.length, limit } : { limit },
     });
   } catch (error) {
     return forbiddenResponse(error);
@@ -44,8 +54,13 @@ export async function GET(request: Request) {
   });
 }
 
-export async function POST(request: Request) {
-  const body = await request.json().catch(() => ({}));
+async function POSTHandler(request: Request) {
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
   const parsed = contextPlanSchema.safeParse(body);
 
   if (!parsed.success) {

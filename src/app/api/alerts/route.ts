@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   dispatchAlertDeliveries,
   enqueueAlertDeliveriesForActiveIncidents,
@@ -10,24 +11,34 @@ import {
   type AlertDeliveryStatus,
 } from "@/lib/diagnostics/alerts";
 import { getIncidentAlertTargets } from "@/lib/diagnostics/incidents";
+import {
+  jsonBodyErrorResponse,
+  parseBoundedInteger,
+  parseJsonBody,
+} from "@/lib/http/body";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const alertActionSchema = z.object({
   action: z.enum(["enqueue_active", "dispatch", "enqueue_and_dispatch", "probe_targets", "retry_failed"]),
   limit: z.number().int().min(1).max(50).optional(),
   includeSkipped: z.boolean().optional(),
-});
+}).strict();
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "alerts");
   const url = new URL(request.url);
   const status = normalizeStatus(url.searchParams.get("status"));
-  const incidentId = url.searchParams.get("incidentId") || undefined;
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), 200);
+  const incidentId =
+    url.searchParams.get("incidentId")?.trim().slice(0, 120) || undefined;
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 50, {
+    max: 200,
+  });
   console.log(JSON.stringify({
     level: "info",
     msg: "start",
@@ -39,8 +50,9 @@ export async function GET(request: Request) {
     limit,
   }));
 
+  let context: Awaited<ReturnType<typeof authorizeRequest>>;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read.security",
       resourceType: "alert_delivery",
@@ -60,8 +72,8 @@ export async function GET(request: Request) {
 
   try {
     const [deliveries, stats] = await Promise.all([
-      listAlertDeliveries({ incidentId, status, limit }),
-      getAlertDeliveryStats(),
+      listAlertDeliveries({ tenantId: context.tenantId, incidentId, status, limit }),
+      getAlertDeliveryStats({ tenantId: context.tenantId }),
     ]);
     console.log(JSON.stringify({
       level: "info",
@@ -126,10 +138,16 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+async function POSTHandler(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "alerts");
-  const parsed = alertActionSchema.safeParse(await request.json().catch(() => ({})));
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
+  const parsed = alertActionSchema.safeParse(body);
   console.log(JSON.stringify({
     level: "info",
     msg: "start",
@@ -152,7 +170,11 @@ export async function POST(request: Request) {
       request,
       action: "manage.workflow",
       resourceType: "alert_delivery",
-      metadata: parsed.data,
+      metadata: {
+        action: parsed.data.action,
+        limit: parsed.data.limit,
+        includeSkipped: parsed.data.includeSkipped,
+      },
     });
   } catch (error) {
     console.error(JSON.stringify({
@@ -170,18 +192,24 @@ export async function POST(request: Request) {
   try {
     const limit = parsed.data.limit || 10;
     const enqueued = parsed.data.action === "enqueue_active" || parsed.data.action === "enqueue_and_dispatch"
-      ? await enqueueAlertDeliveriesForActiveIncidents(limit)
+      ? await enqueueAlertDeliveriesForActiveIncidents(limit, {
+          tenantId: context.tenantId,
+        })
       : [];
     const dispatch = parsed.data.action === "dispatch" || parsed.data.action === "enqueue_and_dispatch"
-      ? await dispatchAlertDeliveries(limit)
+      ? await dispatchAlertDeliveries(limit, { tenantId: context.tenantId })
       : undefined;
     const retried = parsed.data.action === "retry_failed"
-      ? await retryFailedAlertDeliveries({ limit, includeSkipped: parsed.data.includeSkipped ?? true })
+      ? await retryFailedAlertDeliveries({
+          tenantId: context.tenantId,
+          limit,
+          includeSkipped: parsed.data.includeSkipped ?? true,
+        })
       : [];
     const targetHealth = parsed.data.action === "probe_targets"
       ? getAlertTargetHealth()
       : undefined;
-    const stats = await getAlertDeliveryStats();
+    const stats = await getAlertDeliveryStats({ tenantId: context.tenantId });
     console.log(JSON.stringify({
       level: "info",
       msg: "done",

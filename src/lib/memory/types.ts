@@ -40,6 +40,7 @@ export type MemoryGraphEdgeRelation =
 
 export type MemoryGraphNode = {
   id: string;
+  tenantId: string;
   kind: MemoryGraphNodeKind;
   label: string;
   slug: string;
@@ -57,6 +58,7 @@ export type MemoryGraphNode = {
 
 export type MemoryGraphEdge = {
   id: string;
+  tenantId: string;
   sourceNodeId: string;
   targetNodeId: string;
   relation: MemoryGraphEdgeRelation;
@@ -71,6 +73,7 @@ export type MemoryGraphEdge = {
 
 export type MemoryGraphBuildRecord = {
   id: string;
+  tenantId: string;
   status: "completed" | "failed";
   source: string;
   memoryCount: number;

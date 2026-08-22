@@ -3,6 +3,20 @@ import type { ResponseFormatTextJSONSchemaConfig } from "openai/resources/respon
 import { AGENT_MODEL, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, hasOpenAIKey } from "@/lib/config";
 
 let client: OpenAI | null = null;
+let readinessCache:
+  | {
+      checkedAt: number;
+      result: OpenAIReadiness;
+    }
+  | undefined;
+
+export type OpenAIReadiness = {
+  configured: boolean;
+  reachable: boolean;
+  model: string;
+  checkedAt: string;
+  error?: string;
+};
 
 // Only reasoning models (gpt-5 family, o-series) accept the `reasoning.effort`
 // parameter; gpt-4o and other chat models reject it with a 400.
@@ -19,23 +33,83 @@ export function getOpenAIClient() {
     client = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
     });
+    const createResponse = client.responses.create.bind(client.responses);
+    client.responses.create = ((body, options) =>
+      createResponse({ ...body, store: false }, options)) as typeof client.responses.create;
   }
 
   return client;
 }
 
-export async function embedTexts(input: string[]) {
+export async function getOpenAIReadiness(
+  options: { timeoutMs?: number; maxAgeMs?: number } = {},
+): Promise<OpenAIReadiness> {
+  const now = Date.now();
+  const maxAgeMs = options.maxAgeMs ?? 60_000;
+  if (readinessCache && now - readinessCache.checkedAt < maxAgeMs) {
+    return readinessCache.result;
+  }
+  const checkedAt = new Date(now).toISOString();
+  if (!hasOpenAIKey()) {
+    return {
+      configured: false,
+      reachable: false,
+      model: AGENT_MODEL,
+      checkedAt,
+      error: "OPENAI_API_KEY is not configured.",
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    Math.min(Math.max(options.timeoutMs ?? 5_000, 1_000), 15_000),
+  );
+  let result: OpenAIReadiness;
+  try {
+    await getOpenAIClient().models.retrieve(AGENT_MODEL, {
+      signal: controller.signal,
+    });
+    result = {
+      configured: true,
+      reachable: true,
+      model: AGENT_MODEL,
+      checkedAt,
+    };
+  } catch (error) {
+    result = {
+      configured: true,
+      reachable: false,
+      model: AGENT_MODEL,
+      checkedAt,
+      error: error instanceof Error
+        ? error.name === "AbortError"
+          ? "OpenAI readiness probe timed out."
+          : error.message.slice(0, 500)
+        : "OpenAI readiness probe failed.",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+  readinessCache = { checkedAt: now, result };
+  return result;
+}
+
+export async function embedTexts(input: string[], abortSignal?: AbortSignal) {
   if (!hasOpenAIKey() || input.length === 0) {
     return null;
   }
 
-  const response = await getOpenAIClient().embeddings.create({
-    model: EMBEDDING_MODEL,
-    input,
-    ...(EMBEDDING_MODEL.startsWith("text-embedding-3")
-      ? { dimensions: EMBEDDING_DIMENSIONS }
-      : {}),
-  });
+  const response = await getOpenAIClient().embeddings.create(
+    {
+      model: EMBEDDING_MODEL,
+      input,
+      ...(EMBEDDING_MODEL.startsWith("text-embedding-3")
+        ? { dimensions: EMBEDDING_DIMENSIONS }
+        : {}),
+    },
+    { signal: abortSignal },
+  );
 
   return response.data.map((item) => item.embedding);
 }
@@ -55,6 +129,7 @@ export async function* streamOpenAIResponse({
       instructions,
       input,
       stream: true,
+      store: false,
     },
     { signal: abortSignal },
   );
@@ -129,6 +204,7 @@ export async function streamResponseTurn({
       ...(reasoningEffort && supportsReasoningEffort(AGENT_MODEL) ? { reasoning: { effort: reasoningEffort } } : {}),
       ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
       stream: true,
+      store: false,
     },
     { signal: abortSignal },
   );
@@ -226,6 +302,7 @@ export async function createStructuredResponse({
         },
       },
       ...(reasoningEffort && supportsReasoningEffort(AGENT_MODEL) ? { reasoning: { effort: reasoningEffort } } : {}),
+      store: false,
     },
     { signal: abortSignal },
   );

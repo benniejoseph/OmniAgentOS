@@ -68,6 +68,7 @@ export async function runLiveWebSearch({
     response = await getOpenAIClient().responses.create(
       {
         model: WEB_SEARCH_MODEL,
+        store: false,
         instructions: [
           "You are OmniAgentOS live web search.",
           "Search the public web when needed, compare multiple credible sources, and summarize only source-supported facts.",

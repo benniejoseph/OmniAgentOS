@@ -3,7 +3,7 @@ import type { ToolRiskLevel } from "@/lib/tools/types";
 export type McpConnectorTransport = "streamable_http";
 export type McpConnectorAuthType = "none" | "bearer_env";
 export type McpConnectorStatus = "active" | "error" | "disabled";
-export type McpToolStatus = "active" | "disabled";
+export type McpToolStatus = "active" | "pending_review" | "disabled";
 
 export type McpConnectorRecord = {
   id: string;

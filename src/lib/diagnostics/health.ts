@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
-import { ensureDatabaseSchema, getSql, getStorageBackend, getVectorStoreStatus, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  getStorageBackend,
+  getVectorStoreStatus,
+  hasDatabaseUrl,
+  runWithDatabaseTenantScope,
+} from "@/lib/db/client";
 import { syncIncidentsFromHealthCheck } from "@/lib/diagnostics/incidents";
 import { getEvalStats } from "@/lib/evaluations/store";
 import { getMemoryStats } from "@/lib/memory/store";
@@ -14,7 +22,7 @@ import { getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 import type { WorkflowRunRecord, WorkflowStats } from "@/lib/workflows/types";
 import { getRunStats } from "@/lib/runs/store";
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import { hasOpenAIKey } from "@/lib/config";
 
@@ -45,6 +53,7 @@ export type RecoveryAction = {
 
 export type SystemHealthRecord = {
   id: string;
+  tenantId: string;
   status: HealthStatus;
   scope: "health" | "diagnostics" | "repair";
   components: HealthComponent[];
@@ -72,6 +81,7 @@ type HealthLedger = {
 };
 
 type DiagnosticsInput = {
+  tenantId?: string;
   repair?: boolean;
   scope?: SystemHealthRecord["scope"];
 };
@@ -83,16 +93,23 @@ const recoveryTerminalFailurePrefixes = [
   "Recovery failed stale workflow after max attempts were exhausted.",
   "Recovery failed workflow after stale fail-after threshold was exceeded.",
 ];
-let healthFileWriteQueue: Promise<void> = Promise.resolve();
-
 export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
+  const tenantId = normalizeTenantId(input.tenantId);
+  return runWithDatabaseTenantScope(tenantId, () =>
+    runSystemDiagnosticsForTenant({ ...input, tenantId }),
+  );
+}
+
+async function runSystemDiagnosticsForTenant(input: DiagnosticsInput) {
   const startedAt = Date.now();
+  const tenantId = normalizeTenantId(input.tenantId);
   const recoveryActions: RecoveryAction[] = [];
 
   if (input.repair) {
     const recovery = await reconcileOperationsRecovery({
       mode: "repair",
       limit: 10,
+      tenantId,
     });
     recoveryActions.push({
       id: "operation_jobs.expired_leases",
@@ -150,19 +167,19 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
       hnswSupported: false,
       error: error instanceof Error ? error.message : "Vector status unavailable.",
     })),
-    getOperationJobStats(),
-    listOperationJobs(100),
-    getWorkflowStats(),
-    listWorkflowRuns(100),
-    listWorkflowPlans(100),
-    getWorkflowPlanNodeExecutionStats(),
-    getWorkflowTriggerStats(),
-    getEvalStats(),
-    getToolExecutionStats(),
-    getRunStats(),
-    getMemoryStats(),
-    getMcpConnectorStats(),
-    getOpenApiConnectorStats(),
+    getOperationJobStats({ tenantId }),
+    listOperationJobs(100, { tenantId }),
+    getWorkflowStats({ tenantId }),
+    listWorkflowRuns(100, { tenantId }),
+    listWorkflowPlans(100, { tenantId }),
+    getWorkflowPlanNodeExecutionStats({ tenantId }),
+    getWorkflowTriggerStats({ tenantId }),
+    getEvalStats({ tenantId }),
+    getToolExecutionStats({ tenantId }),
+    getRunStats({ tenantId }),
+    getMemoryStats({ tenantId }),
+    getMcpConnectorStats({ tenantId }),
+    getOpenApiConnectorStats({ tenantId }),
   ]);
 
   const workflowHealth = summarizeWorkflowHealth(workflows, workflowRows);
@@ -349,6 +366,7 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
   };
   const record: SystemHealthRecord = {
     id: randomUUID(),
+    tenantId,
     status: overallStatus(components),
     scope: input.scope || (input.repair ? "repair" : "diagnostics"),
     components,
@@ -366,13 +384,18 @@ export async function runSystemDiagnostics(input: DiagnosticsInput = {}) {
   return saved;
 }
 
-export async function getLatestHealthChecks(limit = 20) {
+export async function getLatestHealthChecks(
+  limit = 20,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
   const boundedLimit = Math.min(Math.max(limit, 1), 100);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT *
       FROM omni_system_health_checks
+      WHERE tenant_id = ${tenantId}
       ORDER BY created_at DESC
       LIMIT ${boundedLimit}
     `;
@@ -380,11 +403,13 @@ export async function getLatestHealthChecks(limit = 20) {
   }
 
   const ledger = await readHealthLedger();
-  return ledger.checks.slice(0, boundedLimit);
+  return ledger.checks
+    .filter((check) => healthTenantId(check) === tenantId)
+    .slice(0, boundedLimit);
 }
 
-export async function getHealthStats() {
-  const checks = await getLatestHealthChecks(100);
+export async function getHealthStats(options: { tenantId?: string } = {}) {
+  const checks = await getLatestHealthChecks(100, options);
   const latest = checks[0];
   const byStatus = checks.reduce<Record<string, number>>((acc, check) => {
     acc[check.status] = (acc[check.status] || 0) + 1;
@@ -499,11 +524,11 @@ async function saveHealthCheck(record: SystemHealthRecord) {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_system_health_checks (
-        id, status, scope, components, metrics, incidents, recovery_actions,
+        id, tenant_id, status, scope, components, metrics, incidents, recovery_actions,
         latency_ms, created_at
       )
       VALUES (
-        ${record.id}, ${record.status}, ${record.scope},
+        ${record.id}, ${record.tenantId}, ${record.status}, ${record.scope},
         ${JSON.stringify(record.components)}::jsonb,
         ${JSON.stringify(record.metrics)}::jsonb,
         ${JSON.stringify(record.incidents)}::jsonb,
@@ -522,25 +547,21 @@ async function saveHealthCheck(record: SystemHealthRecord) {
 }
 
 async function readHealthLedger() {
-  return readJsonFile<HealthLedger>(getHealthFile(), { checks: [] });
+  const ledger = await readJsonFile<HealthLedger>(getHealthFile(), { checks: [] });
+  return {
+    checks: ledger.checks.map((check) => ({
+      ...check,
+      tenantId: healthTenantId(check),
+    })),
+  };
 }
 
 async function mutateHealthLedger(mutator: (ledger: HealthLedger) => HealthLedger) {
-  healthFileWriteQueue = healthFileWriteQueue.then(
-    async () => {
-      const ledger = mutator(await readHealthLedger());
-      await writeHealthLedger(ledger);
-    },
-    async () => {
-      const ledger = mutator(await readHealthLedger());
-      await writeHealthLedger(ledger);
-    },
+  await updateJsonFile<HealthLedger>(
+    getHealthFile(),
+    { checks: [] },
+    (ledger) => trimHealthLedger(mutator(ledger)),
   );
-  await healthFileWriteQueue;
-}
-
-async function writeHealthLedger(ledger: HealthLedger) {
-  await writeJsonFile(getHealthFile(), trimHealthLedger(ledger));
 }
 
 function trimHealthLedger(ledger: HealthLedger): HealthLedger {
@@ -552,6 +573,7 @@ function trimHealthLedger(ledger: HealthLedger): HealthLedger {
 function healthCheckFromRow(row: Record<string, unknown>): SystemHealthRecord {
   return {
     id: String(row.id),
+    tenantId: storedTenantId(row.tenant_id ? String(row.tenant_id) : undefined),
     status: normalizeHealthStatus(row.status),
     scope: normalizeScope(row.scope),
     components: parseArray(row.components) as HealthComponent[],
@@ -586,6 +608,23 @@ function parseObject(value: unknown): Record<string, number | string | boolean |
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
+}
+
+function healthTenantId(check: { tenantId?: string }) {
+  return storedTenantId(check.tenantId);
+}
+
+function storedTenantId(value?: string) {
+  return normalizeTenantId(
+    value || process.env.OMNIAGENT_DEFAULT_TENANT || "default",
+  );
 }
 
 function round(value: number) {

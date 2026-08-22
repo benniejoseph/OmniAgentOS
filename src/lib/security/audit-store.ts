@@ -8,10 +8,8 @@ import type {
   SecurityDecision,
   SecurityStats,
 } from "@/lib/security/types";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
-
-let securityFileWriteQueue: Promise<void> = Promise.resolve();
 
 export async function recordSecurityAudit({
   context,
@@ -41,9 +39,9 @@ export async function recordSecurityAudit({
     resourceType,
     resourceId,
     decision,
-    reason,
+    reason: reason ? String(redactSensitive(reason)).slice(0, 2_000) : undefined,
     riskLevel,
-    metadata: (redactSensitive(metadata) || {}) as Record<string, unknown>,
+    metadata: boundedAuditMetadata(metadata),
     createdAt: new Date().toISOString(),
   };
 
@@ -69,6 +67,23 @@ export async function recordSecurityAudit({
     return trimSecurityLedger(ledger);
   });
   return record;
+}
+
+function boundedAuditMetadata(metadata: Record<string, unknown>) {
+  const redacted = (redactSensitive(metadata) || {}) as Record<string, unknown>;
+  try {
+    const serialized = JSON.stringify(redacted);
+    if (serialized.length <= 64_000) {
+      return redacted;
+    }
+    return {
+      truncated: true,
+      originalCharacters: serialized.length,
+      keys: Object.keys(redacted).slice(0, 50),
+    };
+  } catch {
+    return { invalidMetadata: true };
+  }
 }
 
 export async function listSecurityAudits({
@@ -124,21 +139,11 @@ async function readSecurityLedger() {
 }
 
 async function mutateSecurityLedger(mutator: (ledger: SecurityAuditLedger) => SecurityAuditLedger) {
-  securityFileWriteQueue = securityFileWriteQueue.then(
-    async () => {
-      const ledger = mutator(await readSecurityLedger());
-      await writeSecurityLedger(ledger);
-    },
-    async () => {
-      const ledger = mutator(await readSecurityLedger());
-      await writeSecurityLedger(ledger);
-    },
+  await updateJsonFile<SecurityAuditLedger>(
+    getSecurityFile(),
+    { records: [] },
+    (ledger) => trimSecurityLedger(mutator(ledger)),
   );
-  await securityFileWriteQueue;
-}
-
-async function writeSecurityLedger(ledger: SecurityAuditLedger) {
-  await writeJsonFile(getSecurityFile(), trimSecurityLedger(ledger));
 }
 
 function trimSecurityLedger(ledger: SecurityAuditLedger): SecurityAuditLedger {

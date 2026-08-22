@@ -1,4 +1,10 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  jsonBodyErrorResponse,
+  parseBoundedInteger,
+  parseJsonBody,
+} from "@/lib/http/body";
 import {
   getMemoryGraphStats,
   listMemoryGraphEdges,
@@ -9,24 +15,29 @@ import {
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const rebuildSchema = z.object({
   source: z.string().min(1).max(80).optional(),
   memoryLimit: z.number().int().min(1).max(2000).optional(),
   traceLimit: z.number().int().min(1).max(1000).optional(),
-});
+}).strict();
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const url = new URL(request.url);
-  const query = url.searchParams.get("q")?.trim();
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
+  const query = url.searchParams.get("q")?.trim().slice(0, 4_000);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, {
+    max: 100,
+  });
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read",
       resourceType: "memory_graph",
-      metadata: query ? { query, limit } : { limit },
+      metadata: query ? { queryLength: query.length, limit } : { limit },
     });
   } catch (error) {
     return forbiddenResponse(error);
@@ -34,22 +45,30 @@ export async function GET(request: Request) {
 
   if (query) {
     return Response.json({
-      results: await searchMemoryGraph(query, { limit: Math.min(limit, 24) }),
-      stats: await getMemoryGraphStats(),
+      results: await searchMemoryGraph(query, {
+        tenantId: context.tenantId,
+        limit: Math.min(limit, 24),
+      }),
+      stats: await getMemoryGraphStats({ tenantId: context.tenantId }),
     });
   }
 
   const [nodes, edges, stats] = await Promise.all([
-    listMemoryGraphNodes(limit),
-    listMemoryGraphEdges(limit * 2),
-    getMemoryGraphStats(),
+    listMemoryGraphNodes(limit, { tenantId: context.tenantId }),
+    listMemoryGraphEdges(limit * 2, { tenantId: context.tenantId }),
+    getMemoryGraphStats({ tenantId: context.tenantId }),
   ]);
 
   return Response.json({ nodes, edges, stats });
 }
 
-export async function POST(request: Request) {
-  const body = await request.json().catch(() => ({}));
+async function POSTHandler(request: Request) {
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
   const parsed = rebuildSchema.safeParse(body);
 
   if (!parsed.success) {
@@ -59,18 +78,24 @@ export async function POST(request: Request) {
     );
   }
 
+  let context;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "write.memory",
       resourceType: "memory_graph",
-      metadata: parsed.data,
+      metadata: {
+        source: parsed.data.source,
+        memoryLimit: parsed.data.memoryLimit,
+        traceLimit: parsed.data.traceLimit,
+      },
     });
   } catch (error) {
     return forbiddenResponse(error);
   }
 
   const result = await rebuildMemoryGraph({
+    tenantId: context.tenantId,
     source: parsed.data.source || "api",
     memoryLimit: parsed.data.memoryLimit,
     traceLimit: parsed.data.traceLimit,

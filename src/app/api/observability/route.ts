@@ -1,4 +1,10 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  jsonBodyErrorResponse,
+  parseBoundedInteger,
+  parseJsonBody,
+} from "@/lib/http/body";
 import {
   createRequestTelemetry,
   getObservabilityStats,
@@ -11,6 +17,8 @@ import {
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const levels = ["info", "warn", "error"] as const;
 const categories = ["api", "workflow", "alert", "diagnostics", "evaluation", "connector", "security", "system"] as const;
@@ -22,17 +30,21 @@ const markerSchema = z.object({
   message: z.string().min(1).max(240).optional(),
   correlationId: z.string().min(1).max(200).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
-});
+}).strict();
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "observability");
   const url = new URL(request.url);
   const level = normalizeLevel(url.searchParams.get("level"));
   const category = normalizeCategory(url.searchParams.get("category"));
-  const correlationId = url.searchParams.get("correlationId") || undefined;
-  const route = url.searchParams.get("route") || undefined;
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), 200);
+  const correlationId =
+    url.searchParams.get("correlationId")?.trim().slice(0, 200) || undefined;
+  const route =
+    url.searchParams.get("route")?.trim().slice(0, 500) || undefined;
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 50, {
+    max: 200,
+  });
 
   let context;
   try {
@@ -74,10 +86,16 @@ export async function GET(request: Request) {
   return Response.json({ events, stats });
 }
 
-export async function POST(request: Request) {
+async function POSTHandler(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "observability");
-  const parsed = markerSchema.safeParse(await request.json().catch(() => ({})));
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
+  const parsed = markerSchema.safeParse(body);
 
   if (!parsed.success) {
     return Response.json(
@@ -92,7 +110,13 @@ export async function POST(request: Request) {
       request,
       action: "manage.workflow",
       resourceType: "observability",
-      metadata: parsed.data,
+      metadata: {
+        action: parsed.data.action,
+        category: parsed.data.category,
+        level: parsed.data.level,
+        hasMessage: Boolean(parsed.data.message),
+        metadataKeys: Object.keys(parsed.data.metadata || {}).slice(0, 50),
+      },
     });
   } catch (error) {
     return forbiddenResponse(error);

@@ -1,3 +1,4 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import { foldTrustProfile } from "@/lib/events/projections";
 import { listStreamEvents } from "@/lib/events/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -5,8 +6,9 @@ import { listTrustProfiles } from "@/lib/trust/ledger";
 import { graduationThreshold, isGraduatedAutonomyEnabled } from "@/lib/trust/policy";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   let context;
   try {
     context = await authorizeRequest({
@@ -21,7 +23,8 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   // ?replay=<actionClass> rebuilds the profile by folding its event stream —
   // verifiable proof that the stored profile matches its event history.
-  const replayClass = url.searchParams.get("replay");
+  const replayClass =
+    url.searchParams.get("replay")?.trim().slice(0, 160) || undefined;
   if (replayClass) {
     const events = await listStreamEvents(`trust:${replayClass}`, { tenantId: context.tenantId });
     const replayed = foldTrustProfile(events, { actionClass: replayClass, tenantId: context.tenantId });

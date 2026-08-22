@@ -1,28 +1,34 @@
 import { z } from "zod";
+import { openApiContractReviewSummary } from "@/lib/connectors/contract-review";
 import { importOpenApiSpec, loadOpenApiSpec } from "@/lib/connectors/openapi-importer";
+import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   createOpenApiConnectorRecord,
   getOpenApiConnectorStats,
   listOpenApiConnectors,
+  listOpenApiConnectorsRequiringReview,
   listOpenApiOperations,
   recordOpenApiConnectorError,
   saveOpenApiConnector,
   saveOpenApiImport,
 } from "@/lib/connectors/openapi-store";
-import { validateConnectorSecretEnvName } from "@/lib/security/context";
+import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { assertPublicHttpUrl } from "@/lib/security/network";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
-const envNameSchema = z.string().regex(/^[A-Z0-9_]+$/);
+const envNameSchema = z.string().regex(/^[A-Z0-9_]+$/).max(120);
 
 const registerOpenApiConnectorSchema = z
   .object({
     name: z.string().min(1).max(120),
-    specUrl: z.string().url().optional(),
+    specUrl: z.string().url().max(2048).optional(),
     specText: z.string().min(1).max(2_000_000).optional(),
-    baseUrl: z.string().url().optional(),
+    baseUrl: z.string().url().max(2048).optional(),
     authType: z.enum(["none", "bearer_env", "api_key_header_env"]).optional(),
     authTokenEnv: envNameSchema.optional(),
     authHeaderName: z.string().min(1).max(80).optional(),
@@ -30,6 +36,7 @@ const registerOpenApiConnectorSchema = z
     approvalRequired: z.boolean().optional(),
     importSpec: z.boolean().optional(),
   })
+  .strict()
   .refine((value) => !value.importSpec || value.specUrl || value.specText, {
     message: "Import requires specUrl or specText.",
     path: ["specUrl"],
@@ -47,7 +54,7 @@ const registerOpenApiConnectorSchema = z
     path: ["authTokenEnv"],
   });
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   let context;
   try {
     context = await authorizeRequest({
@@ -59,14 +66,32 @@ export async function GET(request: Request) {
     return forbiddenResponse(error);
   }
 
-  const [connectors, operations, stats] = await Promise.all([
+  const [recentConnectors, reviewConnectors, operations, stats] =
+    await Promise.all([
     listOpenApiConnectors(20, { tenantId: context.tenantId }),
+    listOpenApiConnectorsRequiringReview({ tenantId: context.tenantId }),
     listOpenApiOperations(undefined, { tenantId: context.tenantId }),
     getOpenApiConnectorStats({ tenantId: context.tenantId }),
   ]);
+  const connectors = [
+    ...new Map(
+      [...reviewConnectors, ...recentConnectors].map((connector) => [
+        connector.id,
+        connector,
+      ]),
+    ).values(),
+  ];
 
   return Response.json({
-    connectors: connectors.map(redactOpenApiConnector),
+    connectors: connectors.map((connector) => ({
+      ...redactOpenApiConnector(connector),
+      review: openApiContractReviewSummary(
+        operations.filter(
+          (operation) => operation.connectorId === connector.id,
+        ),
+        connector,
+      ),
+    })),
     operations,
     stats: {
       ...stats,
@@ -75,10 +100,12 @@ export async function GET(request: Request) {
   });
 }
 
-export async function POST(request: Request) {
-  const body = await request.json().catch(() => null);
-  if (body === null) {
-    return Response.json({ error: "Invalid request", message: "Request body is not valid JSON." }, { status: 400 });
+async function POSTHandler(request: Request) {
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request, 4_100_000);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
   }
   const parsed = registerOpenApiConnectorSchema.safeParse(body);
 
@@ -89,14 +116,22 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!validateConnectorSecretEnvName(parsed.data.authTokenEnv)) {
-    return Response.json(
-      {
-        error: "Invalid connector secret env var",
-        message: "Connector secrets must use OMNIAGENT_CONNECTOR_* or OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST and cannot reference platform secrets.",
+  let context;
+  try {
+    context = await authorizeRequest({
+      request,
+      action: "manage.connector",
+      resourceType: "openapi_connector",
+      metadata: {
+        name: parsed.data.name,
+        hasSpecUrl: Boolean(parsed.data.specUrl),
+        hasInlineSpec: Boolean(parsed.data.specText),
+        hasBaseUrl: Boolean(parsed.data.baseUrl),
+        importSpec: Boolean(parsed.data.importSpec),
       },
-      { status: 400 },
-    );
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   try {
@@ -113,16 +148,19 @@ export async function POST(request: Request) {
     );
   }
 
-  let context;
-  try {
-    context = await authorizeRequest({
-      request,
-      action: "manage.connector",
-      resourceType: "openapi_connector",
-      metadata: body,
+  if (parsed.data.baseUrl) {
+    const secretBinding = evaluateConnectorSecretBinding({
+      envName: parsed.data.authTokenEnv,
+      tenantId: context.tenantId,
+      targetUrl: parsed.data.baseUrl,
+      role: context.role,
     });
-  } catch (error) {
-    return forbiddenResponse(error);
+    if (!secretBinding.allowed) {
+      return Response.json(
+        { error: "Invalid connector secret binding", message: secretBinding.reason },
+        { status: 400 },
+      );
+    }
   }
 
   const connector = await saveOpenApiConnector(
@@ -151,6 +189,15 @@ export async function POST(request: Request) {
       baseUrlOverride: parsed.data.baseUrl,
     });
     await assertPublicHttpUrl(imported.baseUrl, "OpenAPI base URL");
+    const secretBinding = evaluateConnectorSecretBinding({
+      envName: parsed.data.authTokenEnv,
+      tenantId: context.tenantId,
+      targetUrl: imported.baseUrl,
+      role: context.role,
+    });
+    if (!secretBinding.allowed) {
+      throw new Error(secretBinding.reason);
+    }
     const saved = await saveOpenApiImport({
       connector,
       operations: imported.operations,
@@ -158,7 +205,19 @@ export async function POST(request: Request) {
       baseUrl: imported.baseUrl,
       info: imported.info,
     });
-    return Response.json({ ...saved, connector: redactOpenApiConnector(saved.connector) }, { status: 201 });
+    return Response.json(
+      {
+        ...saved,
+        connector: {
+          ...redactOpenApiConnector(saved.connector),
+          review: openApiContractReviewSummary(
+            saved.operations,
+            saved.connector,
+          ),
+        },
+      },
+      { status: 201 },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "OpenAPI import failed.";
     return Response.json(

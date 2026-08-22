@@ -1,7 +1,11 @@
 import type { OpenApiConnectorRecord, OpenApiOperationRecord } from "@/lib/connectors/openapi-types";
+import { assertSafeOpenApiOperationPath } from "@/lib/connectors/openapi-importer";
+import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
+import { readResponseTextLimited } from "@/lib/http/body";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
-import { validateConnectorSecretEnvName } from "@/lib/security/context";
-import { assertPublicHttpUrl } from "@/lib/security/network";
+import { fetchPublicHttpUrl } from "@/lib/security/network";
+import { redactExactSecrets } from "@/lib/security/secret-redaction";
+import type { SecurityRole } from "@/lib/security/types";
 
 type OpenApiToolInput = {
   path?: Record<string, unknown>;
@@ -11,34 +15,55 @@ type OpenApiToolInput = {
 };
 
 const METHODS_WITHOUT_BODY = new Set(["GET", "HEAD"]);
-const MAX_RESPONSE_TEXT = 20_000;
+const MAX_RESPONSE_BYTES = 20_000;
+const MAX_REQUEST_BODY_BYTES = 256_000;
+const MAX_OPERATION_URL_CHARS = 8_192;
 
 export async function callOpenApiOperation({
   connector,
   operation,
   input,
+  idempotencyKey,
+  abortSignal,
+  actorRole,
 }: {
   connector: OpenApiConnectorRecord;
   operation: OpenApiOperationRecord;
   input: Record<string, unknown>;
+  idempotencyKey?: string;
+  abortSignal?: AbortSignal;
+  actorRole?: SecurityRole;
 }) {
+  assertBoundedJson(input, MAX_REQUEST_BODY_BYTES, "OpenAPI operation arguments");
   const normalizedInput = normalizeInput(input);
   const url = buildOperationUrl(connector.baseUrl, operation.path, normalizedInput);
-  await assertPublicHttpUrl(url, "OpenAPI operation URL");
-  const headers = buildHeaders({ connector, operation, input: normalizedInput });
+  assertExactConnectorOrigin(connector.baseUrl, url);
+  const { headers, secretValues } = buildHeaders({
+    connector,
+    operation,
+    input: normalizedInput,
+    targetUrl: url,
+    idempotencyKey,
+    actorRole,
+  });
   const body = buildBody(operation, normalizedInput);
+  if (body && new TextEncoder().encode(body).byteLength > MAX_REQUEST_BODY_BYTES) {
+    throw new Error("OpenAPI request body exceeds the configured byte limit.");
+  }
 
-  const response = await fetch(url, {
+  const response = await fetchPublicHttpUrl(url, {
     method: operation.method,
     headers,
     body,
-    redirect: "manual",
-    signal: AbortSignal.timeout(30_000),
-  });
+    signal: combineSignals(abortSignal, AbortSignal.timeout(30_000)),
+  }, "OpenAPI operation URL");
 
   const contentType = response.headers.get("content-type") || "";
-  const text = await response.text();
-  const outputBody = parseResponseBody(text, contentType);
+  const responseBody = await readResponseTextLimited(response, MAX_RESPONSE_BYTES);
+  const outputBody = redactExactSecrets(
+    parseResponseBody(responseBody.text, contentType, responseBody.truncated),
+    secretValues,
+  );
   if (!response.ok) {
     await recordRuntimeEventSafely({
       level: "error",
@@ -72,7 +97,7 @@ export async function callOpenApiOperation({
       ok: response.ok,
       contentType,
       body: outputBody,
-      truncated: typeof outputBody === "string" && text.length > MAX_RESPONSE_TEXT,
+      truncated: responseBody.truncated,
     },
   };
 }
@@ -86,7 +111,8 @@ function normalizeInput(input: Record<string, unknown>): OpenApiToolInput {
   };
 }
 
-function buildOperationUrl(baseUrl: string, path: string, input: OpenApiToolInput) {
+export function buildOperationUrl(baseUrl: string, path: string, input: OpenApiToolInput) {
+  assertSafeOpenApiOperationPath(path);
   const base = new URL(baseUrl);
   const resolvedPath = path.replace(/\{([^}]+)\}/g, (_match, rawName: string) => {
     const name = rawName.replace(/^\+/, "");
@@ -94,14 +120,20 @@ function buildOperationUrl(baseUrl: string, path: string, input: OpenApiToolInpu
     if (value === undefined || value === null || value === "") {
       throw new Error(`Missing required path parameter: ${name}`);
     }
-    return encodeURIComponent(String(value));
+    const stringValue = String(value);
+    assertSafePathParameterValue(name, stringValue);
+    return encodeURIComponent(stringValue);
   });
   const url = new URL(joinPaths(base.pathname, resolvedPath), base.origin);
+  assertWithinConnectorBasePath(base, url);
 
   for (const [key, value] of Object.entries(input.query || {})) {
     appendSearchParam(url, key, value);
   }
 
+  if (url.toString().length > MAX_OPERATION_URL_CHARS) {
+    throw new Error("OpenAPI operation URL exceeds the configured length limit.");
+  }
   return url.toString();
 }
 
@@ -109,15 +141,23 @@ function buildHeaders({
   connector,
   operation,
   input,
+  targetUrl,
+  idempotencyKey,
+  actorRole,
 }: {
   connector: OpenApiConnectorRecord;
   operation: OpenApiOperationRecord;
   input: OpenApiToolInput;
+  targetUrl: string;
+  idempotencyKey?: string;
+  actorRole?: SecurityRole;
 }) {
   const headers: Record<string, string> = {};
+  const secretValues: string[] = [];
 
   for (const [key, value] of Object.entries(input.headers || {})) {
     if (value !== undefined && value !== null) {
+      assertSafeCallerHeader(key);
       headers[key] = String(value);
     }
   }
@@ -127,28 +167,44 @@ function buildHeaders({
   }
 
   if (connector.authType === "bearer_env") {
-    if (!validateConnectorSecretEnvName(connector.authTokenEnv)) {
-      throw new Error(`Connector auth token env var is not allowed: ${connector.authTokenEnv || "unknown"}`);
-    }
-    const token = connector.authTokenEnv ? process.env[connector.authTokenEnv] : undefined;
+    const envName = connector.authTokenEnv?.trim().toUpperCase();
+    assertConnectorSecretBinding({
+      envName,
+      tenantId: connector.tenantId,
+      targetUrl,
+      role: actorRole,
+    });
+    const token = envName ? process.env[envName] : undefined;
     if (!token) {
       throw new Error(`Missing bearer token env var: ${connector.authTokenEnv || "unknown"}`);
     }
     headers.authorization = `Bearer ${token}`;
+    secretValues.push(token);
   }
 
   if (connector.authType === "api_key_header_env") {
-    if (!validateConnectorSecretEnvName(connector.authTokenEnv)) {
-      throw new Error(`Connector API key env var is not allowed: ${connector.authTokenEnv || "unknown"}`);
-    }
-    const token = connector.authTokenEnv ? process.env[connector.authTokenEnv] : undefined;
+    const envName = connector.authTokenEnv?.trim().toUpperCase();
+    assertConnectorSecretBinding({
+      envName,
+      tenantId: connector.tenantId,
+      targetUrl,
+      role: actorRole,
+    });
+    const token = envName ? process.env[envName] : undefined;
     if (!token) {
       throw new Error(`Missing API key env var: ${connector.authTokenEnv || "unknown"}`);
     }
-    headers[connector.authHeaderName || "x-api-key"] = token;
+    const headerName = connector.authHeaderName || "x-api-key";
+    assertSafeCallerHeader(headerName);
+    headers[headerName] = token;
+    secretValues.push(token);
   }
 
-  return headers;
+  if (idempotencyKey) {
+    headers["idempotency-key"] = normalizeIdempotencyKey(idempotencyKey);
+  }
+
+  return { headers, secretValues };
 }
 
 function buildBody(operation: OpenApiOperationRecord, input: OpenApiToolInput) {
@@ -202,11 +258,11 @@ function appendFormParam(params: URLSearchParams, key: string, value: unknown) {
   params.append(key, String(value));
 }
 
-function parseResponseBody(text: string, contentType: string) {
-  const boundedText = text.length > MAX_RESPONSE_TEXT ? `${text.slice(0, MAX_RESPONSE_TEXT)}...` : text;
-  if (contentType.includes("json")) {
+function parseResponseBody(text: string, contentType: string, truncated: boolean) {
+  const boundedText = truncated ? `${text}… [truncated]` : text;
+  if (contentType.includes("json") && !truncated) {
     try {
-      return JSON.parse(boundedText);
+      return JSON.parse(text);
     } catch {
       return boundedText;
     }
@@ -237,4 +293,80 @@ function isSecretHeader(header: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function assertExactConnectorOrigin(baseUrl: string, operationUrl: string) {
+  const connectorOrigin = new URL(baseUrl).origin;
+  const resolvedOrigin = new URL(operationUrl).origin;
+  if (resolvedOrigin !== connectorOrigin) {
+    throw new Error(
+      `OpenAPI operation resolved outside the connector origin (${resolvedOrigin} !== ${connectorOrigin}).`,
+    );
+  }
+}
+
+function assertWithinConnectorBasePath(baseUrl: URL, operationUrl: URL) {
+  const basePath = baseUrl.pathname.replace(/\/+$/, "");
+  if (
+    basePath &&
+    basePath !== "/" &&
+    operationUrl.pathname !== basePath &&
+    !operationUrl.pathname.startsWith(`${basePath}/`)
+  ) {
+    throw new Error(
+      `OpenAPI operation resolved outside the connector base path (${operationUrl.pathname} is not under ${basePath}).`,
+    );
+  }
+}
+
+function assertSafePathParameterValue(name: string, value: string) {
+  let decoded = value;
+  for (let pass = 0; pass < 2; pass += 1) {
+    try {
+      decoded = decodeURIComponent(decoded);
+    } catch {
+      break;
+    }
+  }
+  if (
+    /[\u0000-\u001f\u007f]/.test(decoded) ||
+    decoded.split(/[\\/]/).some((segment) => segment === "." || segment === "..")
+  ) {
+    throw new Error(`Path parameter ${name} contains a traversal segment.`);
+  }
+}
+
+export function assertSafeCallerHeader(name: string) {
+  const normalized = name.trim().toLowerCase();
+  if (
+    !normalized ||
+    /[\r\n]/.test(name) ||
+    /^(authorization|cookie|host|connection|content-length|transfer-encoding|forwarded|proxy-|sec-|cf-connecting-ip|true-client-ip|x-(?:forwarded-|original-|rewrite-|http-method-override$|method-override$|real-ip$|client-ip$|vercel-))/i.test(normalized)
+  ) {
+    throw new Error(`OpenAPI caller header is not allowed: ${name}`);
+  }
+}
+
+function assertBoundedJson(value: unknown, maxBytes: number, label: string) {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new Error(`${label} must be JSON serializable.`);
+  }
+  if (new TextEncoder().encode(serialized).byteLength > maxBytes) {
+    throw new Error(`${label} exceed the configured byte limit.`);
+  }
+}
+
+function normalizeIdempotencyKey(value: string) {
+  const normalized = value.trim().replace(/[\r\n]/g, "").slice(0, 200);
+  if (!normalized) {
+    throw new Error("Idempotency key must not be empty.");
+  }
+  return normalized;
+}
+
+function combineSignals(signal: AbortSignal | undefined, timeoutSignal: AbortSignal) {
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 }

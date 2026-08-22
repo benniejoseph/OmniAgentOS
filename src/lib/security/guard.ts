@@ -1,6 +1,14 @@
-import { requirePermission, resolveSecurityContext, SecurityPolicyError, securityErrorResponse } from "@/lib/security/context";
+import {
+  redactSensitive,
+  requirePermission,
+  resolveSecurityContext,
+  SecurityPolicyError,
+  securityErrorResponse,
+} from "@/lib/security/context";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
 import type { SecurityContext } from "@/lib/security/types";
+
+const safeRequestMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export async function authorizeRequest({
   request,
@@ -49,6 +57,7 @@ export async function authorizeRequest({
   }
 
   try {
+    assertTrustedSessionMutation(request, context);
     requirePermission(context, action);
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Access denied.";
@@ -90,6 +99,30 @@ export async function authorizeRequest({
   return context;
 }
 
+export function assertTrustedSessionMutation(
+  request: Request,
+  context?: Pick<SecurityContext, "source">,
+) {
+  if (
+    safeRequestMethods.has(request.method.toUpperCase()) ||
+    (context && context.source !== "session")
+  ) {
+    return;
+  }
+
+  const suppliedOrigin = normalizeOrigin(request.headers.get("origin"));
+  const expectedOrigin = trustedApplicationOrigin(request);
+  if (!suppliedOrigin || suppliedOrigin !== expectedOrigin) {
+    throw new SecurityPolicyError(
+      "Cookie-authenticated mutations require the trusted application origin.",
+      403,
+    );
+  }
+  if (request.headers.get("sec-fetch-site") === "cross-site") {
+    throw new SecurityPolicyError("Cross-site mutations are not allowed.", 403);
+  }
+}
+
 export function forbiddenResponse(error: unknown) {
   return securityErrorResponse(error);
 }
@@ -101,11 +134,43 @@ export function securityHeaders(context: SecurityContext) {
   };
 }
 
+function trustedApplicationOrigin(request: Request) {
+  const configured =
+    process.env.NEXT_PUBLIC_APP_URL?.trim() ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL
+      ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+      : process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : undefined);
+  const origin = normalizeOrigin(configured || request.url);
+  if (!origin) {
+    throw new SecurityPolicyError(
+      "The trusted application origin is not configured.",
+      503,
+    );
+  }
+  return origin;
+}
+
+function normalizeOrigin(value?: string | null) {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return new URL(value).origin;
+  } catch {
+    return undefined;
+  }
+}
+
 async function recordAuditSafely(args: Parameters<typeof recordSecurityAudit>[0]) {
   try {
     await recordSecurityAudit(args);
   } catch (error) {
-    console.warn("Security audit write failed.", error instanceof Error ? error.message : error);
+    console.warn(
+      "Security audit write failed.",
+      redactSensitive(error instanceof Error ? error.message : error),
+    );
   }
 }
 

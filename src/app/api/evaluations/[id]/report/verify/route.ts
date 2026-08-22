@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
   getLatestEvalReportSnapshot,
   getReportSigningKeyMetadata,
@@ -10,13 +12,15 @@ import { SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const verifySchema = z.object({
   reportId: z.string().min(1).optional(),
   report: z.unknown().optional(),
-});
+}).strict();
 
-export async function GET(
+async function GETHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
@@ -24,7 +28,8 @@ export async function GET(
   const telemetry = createRequestTelemetry(request, "evaluation-report-verify");
   const { id } = await context.params;
   const url = new URL(request.url);
-  const reportId = url.searchParams.get("reportId") || undefined;
+  const reportId =
+    url.searchParams.get("reportId")?.trim().slice(0, 120) || undefined;
 
   try {
     const securityContext = await authorizeRequest({
@@ -64,14 +69,19 @@ export async function GET(
   }
 }
 
-export async function POST(
+async function POSTHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "evaluation-report-verify");
   const { id } = await context.params;
-  const body = await request.json().catch(() => ({}));
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
   const parsed = verifySchema.safeParse(body);
 
   if (!parsed.success) {

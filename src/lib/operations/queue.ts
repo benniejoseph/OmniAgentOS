@@ -2,6 +2,7 @@ import { listMcpConnectors } from "@/lib/connectors/store";
 import { listOpenApiConnectors } from "@/lib/connectors/openapi-store";
 import { summarizeWorkflowHealth } from "@/lib/diagnostics/health";
 import {
+  getObservabilitySloApprovalPolicyConfig,
   getSloPolicyApprovalProgress,
   listObservabilitySloPolicyChanges,
   type ObservabilitySloPolicyChange,
@@ -9,8 +10,10 @@ import {
 import { getOperationJobStats, listOperationJobs } from "@/lib/operations/job-queue";
 import { inspectOperationsRecovery } from "@/lib/operations/recovery";
 import { listAgentRuns } from "@/lib/runs/store";
+import { publicAgentRun } from "@/lib/runs/public";
 import { redactSensitive } from "@/lib/security/context";
 import { getToolExecutionStats, listPendingToolApprovals, listToolExecutions } from "@/lib/tools/audit-store";
+import { getWorkflowPlanForRun } from "@/lib/workflows/planner";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
 import { getWorkflowStats, listWorkflowRecoveryEvents, listWorkflowRuns } from "@/lib/workflows/store";
 import type { WorkflowRunRecord } from "@/lib/workflows/types";
@@ -57,18 +60,36 @@ export type ApprovalQueueItem =
     };
 
 export async function getApprovalQueue(limit = 25, options: { tenantId?: string } = {}) {
-  const [toolApprovals, workflowRuns, sloPolicyChanges] = await Promise.all([
+  const [
+    toolApprovals,
+    workflowRuns,
+    sloPolicyChanges,
+    sloApprovalPolicy,
+  ] = await Promise.all([
     listPendingToolApprovals(limit, { tenantId: options.tenantId }),
     listWorkflowRuns(100, { tenantId: options.tenantId }),
     listObservabilitySloPolicyChanges({ status: "pending", limit, tenantId: options.tenantId }),
+    getObservabilitySloApprovalPolicyConfig(),
   ]);
   const workflowApprovals = workflowRuns
     .filter((run) => run.status === "waiting_approval")
     .slice(0, limit);
+  const workflowApprovalItems = await Promise.all(
+    workflowApprovals.map(async (run) =>
+      workflowApprovalToQueueItem(
+        run,
+        await getWorkflowPlanForRun(run.id, {
+          tenantId: options.tenantId,
+        }),
+      ),
+    ),
+  );
   const items = [
     ...toolApprovals.map(toolApprovalToQueueItem),
-    ...workflowApprovals.map(workflowApprovalToQueueItem),
-    ...sloPolicyChanges.map(sloPolicyChangeToQueueItem),
+    ...workflowApprovalItems,
+    ...sloPolicyChanges.map((change) =>
+      sloPolicyChangeToQueueItem(change, sloApprovalPolicy.breakGlass),
+    ),
   ].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
 
   return {
@@ -105,10 +126,10 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
     listAgentRuns(20, { tenantId: options.tenantId }),
     listMcpConnectors(20, { tenantId: options.tenantId }),
     listOpenApiConnectors(20, { tenantId: options.tenantId }),
-    getOperationJobStats(),
-    listOperationJobs(20),
-    inspectOperationsRecovery({ limit: 10 }),
-    listWorkflowRecoveryEvents(10),
+    getOperationJobStats({ tenantId: options.tenantId }),
+    listOperationJobs(20, { tenantId: options.tenantId }),
+    inspectOperationsRecovery({ limit: 10, tenantId: options.tenantId }),
+    listWorkflowRecoveryEvents(10, { tenantId: options.tenantId }),
   ]);
   const connectorErrors =
     mcpConnectors.filter((connector) => connector.status === "error").length +
@@ -141,7 +162,7 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
     latest: {
       workflows: workflowRuns,
       toolExecutions,
-      agentRuns,
+      agentRuns: agentRuns.map(publicAgentRun),
       operationJobs,
       recoveryEvents,
       connectors: [...mcpConnectors, ...openApiConnectors]
@@ -171,7 +192,30 @@ function toolApprovalToQueueItem(record: ToolExecutionRecord): ApprovalQueueItem
   };
 }
 
-function workflowApprovalToQueueItem(record: WorkflowRunRecord): ApprovalQueueItem {
+function workflowApprovalToQueueItem(
+  record: WorkflowRunRecord,
+  plan: Awaited<ReturnType<typeof getWorkflowPlanForRun>>,
+): ApprovalQueueItem {
+  const review = plan
+    ? {
+        id: plan.id,
+        planner: plan.planner,
+        confidence: plan.confidence,
+        highestRiskLevel: plan.highestRiskLevel,
+        approvalRequired: plan.approvalRequired,
+        acceptanceCriteria: plan.plan.acceptanceCriteria,
+        selectedToolIds: plan.plan.selectedToolIds,
+        connectorTargets: plan.plan.connectorTargets,
+        nodes: plan.plan.nodes.map((node) => ({
+          id: node.id,
+          label: node.label,
+          kind: node.kind,
+          toolIds: node.toolIds,
+          riskLevel: node.riskLevel,
+          dependsOn: node.dependsOn,
+        })),
+      }
+    : { unavailable: true };
   return {
     kind: "workflow",
     id: record.id,
@@ -180,12 +224,20 @@ function workflowApprovalToQueueItem(record: WorkflowRunRecord): ApprovalQueueIt
     riskLevel: 2,
     reason: record.error || "Workflow requires human approval before execution.",
     createdAt: record.updatedAt,
-    input: redactSensitive(record.input || {}) as Record<string, unknown>,
+    input: redactSensitive({
+      ...(record.input || {}),
+      planReview: review,
+    }) as Record<string, unknown>,
     record,
   };
 }
 
-function sloPolicyChangeToQueueItem(record: ObservabilitySloPolicyChange): ApprovalQueueItem {
+function sloPolicyChangeToQueueItem(
+  record: ObservabilitySloPolicyChange,
+  breakGlassPolicy: Awaited<
+    ReturnType<typeof getObservabilitySloApprovalPolicyConfig>
+  >["breakGlass"],
+): ApprovalQueueItem {
   const title = record.afterPolicy?.name || record.beforePolicy?.name || record.policyId;
   const progress = getSloPolicyApprovalProgress(record);
   return {
@@ -209,6 +261,7 @@ function sloPolicyChangeToQueueItem(record: ObservabilitySloPolicyChange): Appro
       afterPolicy: record.afterPolicy,
       rollbackChangeId: record.rollbackChangeId,
       approvalPolicy: record.approvalPolicy,
+      breakGlassPolicy,
       approvalProgress: progress,
     }) as Record<string, unknown>,
     record: {

@@ -1,4 +1,10 @@
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  jsonBodyErrorResponse,
+  parseBoundedInteger,
+  parseJsonBody,
+} from "@/lib/http/body";
 import {
   defaultEvalCases,
   defaultEvaluationMaxSafetyMode,
@@ -13,16 +19,18 @@ import { SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const evalRunSchema = z.object({
   suite: z.string().min(1).max(80).optional(),
-  caseIds: z.array(z.string().min(1)).optional(),
+  caseIds: z.array(z.string().min(1).max(120)).max(200).optional(),
   maxSafetyMode: z.enum(["read_only", "synthetic", "mutation_allowed"]).optional(),
   allowMutation: z.boolean().optional(),
   reason: z.string().min(1).max(500).optional(),
-});
+}).strict();
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   let context;
   try {
     context = await authorizeRequest({
@@ -35,7 +43,9 @@ export async function GET(request: Request) {
   }
 
   const url = new URL(request.url);
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 20), 1), 100);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, {
+    max: 100,
+  });
   return Response.json({
     cases: defaultEvalCases,
     governance: summarizeEvaluationGovernance(defaultEvalCases),
@@ -47,10 +57,15 @@ export async function GET(request: Request) {
   });
 }
 
-export async function POST(request: Request) {
+async function POSTHandler(request: Request) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "evaluation");
-  const body = await request.json().catch(() => ({}));
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
   const parsed = evalRunSchema.safeParse(body);
 
   if (!parsed.success) {
@@ -65,7 +80,13 @@ export async function POST(request: Request) {
       request,
       action: "run.evaluation",
       resourceType: "evaluation",
-      metadata: parsed.data,
+      metadata: {
+        suite: parsed.data.suite,
+        caseCount: parsed.data.caseIds?.length || 0,
+        maxSafetyMode: parsed.data.maxSafetyMode,
+        allowMutation: Boolean(parsed.data.allowMutation),
+        reasonProvided: Boolean(parsed.data.reason),
+      },
     });
     const overrideReason = parsed.data.reason?.trim();
     const overrideEvidence = {

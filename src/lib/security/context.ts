@@ -5,14 +5,35 @@ import { enterDatabaseTenantContext } from "@/lib/db/client";
 import type { RbacRule, SecurityContext, SecurityRole } from "@/lib/security/types";
 
 const roles: SecurityRole[] = ["viewer", "operator", "admin", "system"];
-const sensitiveKeyPattern = /api[_-]?key|token|secret|password|authorization|cookie|connection[_-]?string|database[_-]?url|private[_-]?key/i;
+const sensitiveKeyPattern =
+  /api[_-]?key|token|secret|password|authorization|cookie|connection[_-]?string|database[_-]?url|private[_-]?key/i;
+const nonSecretTokenMetadataKeys = new Set([
+  "input_tokens",
+  "output_tokens",
+  "total_tokens",
+  "max_tokens",
+  "min_tokens",
+  "token_count",
+  "token_limit",
+  "token_budget",
+  "token_estimate",
+  "token_index",
+  "token_type",
+  "token_usage",
+]);
 const forbiddenConnectorSecretNames = new Set([
   "DATABASE_URL",
   "OPENAI_API_KEY",
   "CRON_SECRET",
   "OMNIAGENT_INTERNAL_AUTH_SECRET",
   "OMNIAGENT_REPORT_SIGNING_SECRET",
+  "OMNIAGENT_REPORT_SIGNING_KEYS",
   "OMNIAGENT_BOOTSTRAP_PASSWORD",
+  "OMNIAGENT_BACKUP_DATABASE_URL",
+  "OMNIAGENT_CONNECTOR_SECRET_BINDINGS",
+  "OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST",
+  "OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS",
+  "OMNIAGENT_TRIGGER_SECRET_ALLOWLIST",
   "RESEND_API_KEY",
   "SLACK_WEBHOOK_URL",
 ]);
@@ -68,6 +89,11 @@ export const rbacRules: RbacRule[] = [
     description: "Create users, assign tenant roles, and administer the identity control plane.",
     roles: ["admin", "system"],
   },
+  {
+    action: "manage.security",
+    description: "Run controlled platform security maintenance such as database migrations.",
+    roles: ["system"],
+  },
 ];
 
 export class SecurityPolicyError extends Error {
@@ -97,6 +123,10 @@ export function getSecurityContext(request?: Request): SecurityContext {
 }
 
 export async function resolveSecurityContext(request?: Request): Promise<SecurityContext> {
+  // Seed a mutable fail-closed scope before the first await. The caller's
+  // continuation inherits this object, and the authenticated tenant is filled
+  // in below after the asynchronous session lookup completes.
+  enterDatabaseTenantContext();
   if (getTrustedIdentityHeaders(request).source === "headers") {
     return getSecurityContext(request);
   }
@@ -137,24 +167,70 @@ export function securityErrorResponse(error: unknown) {
 }
 
 export function redactSensitive(value: unknown): unknown {
+  return redactSensitiveValue(value, new WeakSet<object>(), 0);
+}
+
+function redactSensitiveValue(
+  value: unknown,
+  seen: WeakSet<object>,
+  depth: number,
+): unknown {
+  if (depth >= 64) {
+    return "[truncated-depth]";
+  }
   if (Array.isArray(value)) {
-    return value.map(redactSensitive);
+    if (seen.has(value)) {
+      return "[circular]";
+    }
+    seen.add(value);
+    const redacted = value
+      .slice(0, 1_000)
+      .map((item) => redactSensitiveValue(item, seen, depth + 1));
+    if (value.length > redacted.length) {
+      redacted.push(`[truncated ${value.length - redacted.length} items]`);
+    }
+    seen.delete(value);
+    return redacted;
   }
 
   if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+    if (seen.has(value)) {
+      return "[circular]";
+    }
+    seen.add(value);
+    const entries = Object.entries(value as Record<string, unknown>);
+    const redacted = Object.fromEntries(
+      entries.slice(0, 1_000).map(([key, item]) => [
         key,
-        sensitiveKeyPattern.test(key) ? "[redacted]" : redactSensitive(item),
+        isSensitiveKey(key)
+          ? "[redacted]"
+          : redactSensitiveValue(item, seen, depth + 1),
       ]),
     );
+    if (entries.length > 1_000) {
+      redacted.__truncated_fields__ = entries.length - 1_000;
+    }
+    seen.delete(value);
+    return redacted;
   }
 
-  if (typeof value === "string" && looksLikeSecret(value)) {
-    return "[redacted]";
+  if (typeof value === "string") {
+    return redactSensitiveText(value);
   }
 
   return value;
+}
+
+function isSensitiveKey(key: string) {
+  const normalized = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  return (
+    !nonSecretTokenMetadataKeys.has(normalized) &&
+    sensitiveKeyPattern.test(normalized)
+  );
 }
 
 export function validateSecretEnvName(value?: string) {
@@ -180,6 +256,27 @@ export function validateConnectorSecretEnvName(value?: string) {
   }
 
   return connectorSecretAllowlist().has(normalized);
+}
+
+export function validateTriggerSecretEnvName(value?: string) {
+  if (!value) {
+    return true;
+  }
+  const normalized = value.trim().toUpperCase();
+  if (!validateSecretEnvName(normalized) || forbiddenConnectorSecretNames.has(normalized)) {
+    return false;
+  }
+  if (normalized.startsWith("OMNIAGENT_TRIGGER_")) {
+    return true;
+  }
+  if (triggerSecretAllowlist().has(normalized)) {
+    return true;
+  }
+  return (
+    process.env.NODE_ENV !== "production" &&
+    !process.env.VERCEL &&
+    process.env.VERCEL_ENV !== "production"
+  );
 }
 
 function getTrustedIdentityHeaders(request?: Request) {
@@ -230,10 +327,21 @@ function connectorSecretAllowlist() {
   );
 }
 
+function triggerSecretAllowlist() {
+  return new Set(
+    (process.env.OMNIAGENT_TRIGGER_SECRET_ALLOWLIST || "")
+      .split(",")
+      .map((item) => item.trim().toUpperCase())
+      .filter(Boolean),
+  );
+}
+
 export function secretVaultPolicy() {
   return {
-    storage: "Connectors store environment variable names only; secret values stay in Vercel or local env.",
-    allowedEnvNamePattern: "^OMNIAGENT_CONNECTOR_[A-Z0-9_]+$ or names listed in OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST",
+    storage:
+      "Connectors store environment variable names only; use requires an exact tenant-and-origin deployer binding.",
+    allowedEnvNamePattern:
+      "^OMNIAGENT_CONNECTOR_[A-Z0-9_]+$ or names listed in OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST, plus OMNIAGENT_CONNECTOR_SECRET_BINDINGS authorization",
     disallowedPrefixes: ["NEXT_PUBLIC_"],
     disallowedNames: [...forbiddenConnectorSecretNames],
     redactedFields: ["apiKey", "token", "secret", "password", "authorization", "cookie", "databaseUrl"],
@@ -253,10 +361,29 @@ function normalizeActorId(value: string) {
   return value.trim().replace(/[^a-zA-Z0-9_.:@-]/g, "_").slice(0, 160) || "anonymous";
 }
 
-function looksLikeSecret(value: string) {
-  if (value.length < 24) {
-    return false;
-  }
-
-  return /^(sk-|Bearer\s+|eyJ|postgresql:\/\/|mysql:\/\/|mongodb:\/\/)/i.test(value);
+function redactSensitiveText(value: string) {
+  return value
+    .replace(
+      /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi,
+      "[redacted-private-key]",
+    )
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, "Bearer [redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted-api-key]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "[redacted-github-token]")
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{16,}\b/g, "[redacted-slack-token]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[redacted-aws-access-key]")
+    .replace(/\b(?:sk|rk)_live_[A-Za-z0-9]{16,}\b/g, "[redacted-api-key]")
+    .replace(
+      /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+      "[redacted-jwt]",
+    )
+    .replace(/\bhttps?:\/\/[^:\s/@]+:[^@\s/]+@[^\s"'<>]+/gi, "[redacted-credential-url]")
+    .replace(
+      /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s"'<>]+/gi,
+      "[redacted-connection-url]",
+    )
+    .replace(
+      /(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password)\s*[:=]\s*)(["']?)[^\s,;"']{8,}\2/gi,
+      "$1[redacted]",
+    );
 }

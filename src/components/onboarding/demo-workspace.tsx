@@ -7,7 +7,7 @@ import { useMemo, useState } from "react";
 const demoSteps = [
   {
     label: "Goal",
-    title: "Launch enterprise onboarding agent",
+    title: "Launch onboarding agent",
     body: "Capture objective, tenant, actor role, and operating constraints.",
     icon: Play,
   },
@@ -38,7 +38,7 @@ const demoSteps = [
 ];
 
 const sampleSignals = [
-  ["Tenant", "sample-enterprise"],
+  ["Tenant", "sample-tenant"],
   ["Auth", "demo mode"],
   ["Memory", "23 chunks"],
   ["Risk", "approval gated"],
@@ -48,12 +48,17 @@ const sampleSignals = [
 
 export function DemoWorkspace() {
   const [active, setActive] = useState(0);
+  const [started, setStarted] = useState(false);
   const [running, setRunning] = useState(false);
-  const progress = useMemo(() => Math.round(((active + 1) / demoSteps.length) * 100), [active]);
+  const progress = useMemo(
+    () => started ? Math.round(((active + 1) / demoSteps.length) * 100) : 0,
+    [active, started],
+  );
 
   async function runDemo() {
+    setStarted(true);
     setRunning(true);
-    for (let index = active; index < demoSteps.length; index++) {
+    for (let index = 0; index < demoSteps.length; index++) {
       setActive(index);
       await new Promise((resolve) => setTimeout(resolve, 460));
     }
@@ -99,7 +104,7 @@ export function DemoWorkspace() {
             <div className="flex items-center justify-between gap-4 border-b border-line pb-5">
               <div>
                 <p className="text-sm text-muted">Sample run</p>
-                <p className="mt-1 text-2xl font-semibold">Enterprise onboarding agent</p>
+                <p className="mt-1 text-2xl font-semibold">Onboarding agent</p>
               </div>
               <div className="rounded-md border border-line bg-background px-3 py-2 font-mono text-sm text-primary">
                 {progress}%
@@ -111,7 +116,10 @@ export function DemoWorkspace() {
                 <button
                   key={item.label}
                   type="button"
-                  onClick={() => setActive(index)}
+                  onClick={() => {
+                    setStarted(true);
+                    setActive(index);
+                  }}
                   className={index === active ? "bg-primary p-4 text-left text-primary-ink" : "bg-background p-4 text-left transition hover:bg-surface-raised"}
                 >
                   <p className="font-mono text-xs opacity-70">0{index + 1}</p>

@@ -1,0 +1,52 @@
+[
+  {
+    "version": 1,
+    "name": "baseline_tables",
+    "checksum": "bef4d62ae753879f332ffed9ed3a1283506e6424097cd0de98d9063edc865e48"
+  },
+  {
+    "version": 2,
+    "name": "tenant_owned_operational_data",
+    "checksum": "59fbd7625fc9888327b3f0bbccfb43ce2f599c61512c9930a1843a4db3962591"
+  },
+  {
+    "version": 3,
+    "name": "fail_closed_tenant_rls",
+    "checksum": "3ac0d38f4150ddc9611449d4c27dba565a941e4022dd3d5f8a8e839bb0b05a15"
+  },
+  {
+    "version": 4,
+    "name": "platform_safety_controls",
+    "checksum": "3c535bbafde5978d25408688aaa99797205c2b823a4c2a6f50fb835faa992a37"
+  },
+  {
+    "version": 5,
+    "name": "sensitive_data_retention",
+    "checksum": "584b25ba14f84c7ecf74445018707a23684b6a2cb4bb1c43a0caf6fa7f767503"
+  },
+  {
+    "version": 6,
+    "name": "tenant_ownership_reconciliation",
+    "checksum": "423334239e6a0b1c1efe46eb31aa614483b3ea6371989eb1abfd2df3f2b2f42b"
+  },
+  {
+    "version": 7,
+    "name": "durable_memory_graph_rebuilds",
+    "checksum": "3b68ad53643e95a6ee5ef435f48e2be324f4eba12835de3cea3af25dc9a232ea"
+  },
+  {
+    "version": 8,
+    "name": "agent_run_cancellation_retention",
+    "checksum": "5fefba468f9c76dadbaff989c39f72231bb56f022446362ef8efa6534f5c7dfd"
+  },
+  {
+    "version": 9,
+    "name": "memory_graph_generation_leases",
+    "checksum": "87de68f69b55aa7f7d7ce7c9775eb989f06e0ceb69e37bacd3c37a1fe3bebb57"
+  },
+  {
+    "version": 10,
+    "name": "database_identity_and_maintenance_scope",
+    "checksum": "1c654e2740f1a0f9d03753945c95f1207cd84aee6241b15629a17108a8c62d64"
+  }
+]

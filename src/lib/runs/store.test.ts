@@ -2,6 +2,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
+import { listStreamEvents } from "@/lib/events/store";
+import { publicAgentRun } from "@/lib/runs/public";
 import type { AgentRunContinuation } from "@/lib/runs/types";
 
 beforeAll(async () => {
@@ -50,6 +52,7 @@ describe("agent run approval continuations (file mode)", () => {
     // Only the first claim transitions; a concurrent second approval loses.
     expect(await store.markAgentRunResuming(run.id)).toBe(true);
     expect(await store.markAgentRunResuming(run.id)).toBe(false);
+    await store.completeAgentRun(run.id, "resumed safely");
   });
 
   it("clears the continuation when the run reaches a terminal state", async () => {
@@ -69,5 +72,210 @@ describe("agent run approval continuations (file mode)", () => {
     expect(after?.status).toBe("completed");
     expect(after?.continuation).toBeUndefined();
     expect(await store.findAgentRunWaitingForToolApproval("exec-456")).toBeUndefined();
+  });
+
+  it("fails an interrupted resume without replaying approved side effects", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({
+      mode: "orchestrate",
+      prompt: "resume safely",
+      messages: [{ role: "user", content: "resume safely" }],
+    });
+    await store.markAgentRunWaitingForApproval(run.id, {
+      response: "partial",
+      continuation: continuationFor("exec-interrupted"),
+    });
+    expect(await store.markAgentRunResuming(run.id)).toBe(true);
+    expect(
+      await store.repairStuckAgentRuns({
+        tenantId: "default",
+        staleAfterMs: -1,
+      }),
+    ).toBe(1);
+
+    await expect(store.getAgentRun(run.id)).resolves.toMatchObject({
+      status: "failed",
+      error: expect.stringMatching(/side effects were not replayed/i),
+      continuation: undefined,
+    });
+  });
+
+  it("pre-arms durable resume work and preserves old waiting runs", async () => {
+    const store = await import("@/lib/runs/store");
+    const queue = await import("@/lib/operations/job-queue");
+    const waiting = await store.createAgentRun({
+      mode: "orchestrate",
+      prompt: "wait durably",
+      messages: [{ role: "user", content: "wait durably" }],
+    });
+    const parked = await store.markAgentRunWaitingForApproval(waiting.id, {
+      response: "partial",
+      continuation: continuationFor("exec-durable"),
+    });
+    expect(parked.parked).toBe(true);
+    expect(parked.resumeJob).toMatchObject({
+      type: "agent.resume",
+      status: "queued",
+      payload: {
+        agentRunId: waiting.id,
+        executionId: "exec-durable",
+      },
+    });
+
+    for (let index = 0; index < 105; index += 1) {
+      const newer = await store.createAgentRun({
+        mode: "orchestrate",
+        prompt: `newer ${index}`,
+        messages: [{ role: "user", content: `newer ${index}` }],
+      });
+      await store.completeAgentRun(newer.id, "done");
+    }
+
+    await expect(store.getAgentRun(waiting.id)).resolves.toMatchObject({
+      status: "waiting_approval",
+      continuation: {
+        pendingToolCall: { executionId: "exec-durable" },
+      },
+    });
+    expect(
+      (
+        await queue.listOperationJobs(500, {
+          tenantId: "default",
+        })
+      ).some(
+        (job) =>
+          job.type === "agent.resume" &&
+          job.payload.executionId === "exec-durable",
+      ),
+    ).toBe(true);
+  });
+
+  it("defers unresolved approval jobs without consuming retry attempts", async () => {
+    const store = await import("@/lib/runs/store");
+    const resumeQueue = await import("@/lib/orchestration/resume-queue");
+    const queue = await import("@/lib/operations/job-queue");
+    const run = await store.createAgentRun({
+      mode: "orchestrate",
+      prompt: "wait for approval",
+      messages: [{ role: "user", content: "wait for approval" }],
+    });
+    await store.markAgentRunWaitingForApproval(run.id, {
+      response: "partial",
+      continuation: continuationFor("exec-unresolved"),
+    });
+
+    const result = await resumeQueue.processAgentResumeQueue({
+      tenantId: "default",
+      limit: 10,
+    });
+    expect(result.deferred).toBeGreaterThanOrEqual(1);
+    const job = (
+      await queue.listOperationJobs(500, { tenantId: "default" })
+    ).find((item) => item.payload.executionId === "exec-unresolved");
+    expect(job).toMatchObject({ status: "queued", attempt: 0 });
+  });
+
+  it("defers a pre-armed resume job until its continuation write is visible", async () => {
+    const store = await import("@/lib/runs/store");
+    const queue = await import("@/lib/operations/job-queue");
+    const resumeQueue = await import("@/lib/orchestration/resume-queue");
+    const run = await store.createAgentRun({
+      mode: "orchestrate",
+      prompt: "pre-arm crash window",
+      messages: [{ role: "user", content: "pre-arm crash window" }],
+    });
+    const executionId = "exec-prearm-window";
+    const job = await queue.enqueueOperationJob({
+      tenantId: "default",
+      type: "agent.resume",
+      dedupeKey: queue.getAgentResumeJobDedupeKey(executionId),
+      payload: { agentRunId: run.id, executionId },
+    });
+
+    const result = await resumeQueue.processAgentResumeQueue({
+      tenantId: "default",
+      limit: 10,
+    });
+
+    expect(result.deferred).toBeGreaterThanOrEqual(1);
+    await expect(
+      queue.listOperationJobs(500, { tenantId: "default" }),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: job.id,
+          status: "queued",
+          attempt: 0,
+        }),
+      ]),
+    );
+  });
+
+  it("keeps operator cancellation terminal when late work tries to complete", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({
+      mode: "orchestrate",
+      prompt: "cancel authoritatively",
+      messages: [{ role: "user", content: "cancel authoritatively" }],
+    });
+
+    await expect(store.cancelAgentRun(run.id)).resolves.toBe(true);
+    await expect(
+      store.completeAgentRun(run.id, "late completion"),
+    ).resolves.toBe(false);
+    await expect(store.failAgentRun(run.id, "late failure")).resolves.toBe(
+      false,
+    );
+    await expect(store.getAgentRun(run.id)).resolves.toMatchObject({
+      status: "canceled",
+      error: "Canceled by the operator.",
+    });
+  });
+
+  it("keeps completed response text out of the long-lived domain event log", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({
+      mode: "orchestrate",
+      prompt: "privacy check",
+      messages: [{ role: "user", content: "privacy check" }],
+    });
+    await store.appendRunEvent(run.id, {
+      type: "done",
+      response: "sensitive completed response",
+    });
+
+    const [event] = await listStreamEvents(`run:${run.id}`);
+    expect(event.payload).toMatchObject({
+      type: "done",
+      responseLength: 28,
+    });
+    expect(event.payload).not.toHaveProperty("response");
+    expect(event.payload.responseSha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("redacts persisted run text and hides resume internals from API records", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({
+      mode: "orchestrate",
+      prompt: "Use Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+      messages: [
+        { role: "user", content: "password=super-secret-value" },
+      ],
+    });
+    await store.markAgentRunWaitingForApproval(run.id, {
+      response: "Authorization: Bearer anothersecretvalue123",
+      continuation: continuationFor("exec-private"),
+    });
+
+    const stored = await store.getAgentRun(run.id);
+    expect(stored?.prompt).toContain("Bearer [redacted]");
+    expect(stored?.messages[0]?.content).toBe("password=[redacted]");
+    expect(stored?.response).toContain("Bearer [redacted]");
+    expect(publicAgentRun(stored!)).not.toHaveProperty("continuation");
+    expect(publicAgentRun(stored!)).not.toHaveProperty("messages");
+    expect(publicAgentRun(stored!).waitingApproval).toMatchObject({
+      executionId: "exec-private",
+      toolId: "http.request",
+    });
   });
 });

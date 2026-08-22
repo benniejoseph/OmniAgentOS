@@ -1,20 +1,39 @@
-import { after } from "next/server";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   applyObservabilitySloPolicyChange,
   getObservabilitySloPolicyChange,
   rejectObservabilitySloPolicyChange,
 } from "@/lib/observability/slo-policy-store";
-import { rejectAgentRunApproval, resumeAgentRunAfterToolApproval } from "@/lib/orchestration/agent-runner";
-import { getToolExecution, saveToolExecution } from "@/lib/tools/audit-store";
-import { executeGovernedTool, hasRisk3Quorum } from "@/lib/tools/executor";
+import {
+  getAgentResumeJobDedupeKey,
+  wakeOperationJobByDedupeKey,
+} from "@/lib/operations/job-queue";
+import { rejectAgentRunApproval } from "@/lib/orchestration/agent-runner";
+import {
+  approveAndClaimToolExecution,
+  failClaimedToolExecution,
+  getToolExecution,
+  openToolExecutionInput,
+  publicToolExecution,
+  recoverStaleToolExecutionClaim,
+  rejectPendingToolExecution,
+} from "@/lib/tools/audit-store";
+import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { executeGovernedTool } from "@/lib/tools/executor";
 import { RISK3_QUORUM } from "@/lib/tools/types";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
-import { signalWorkflowRun } from "@/lib/workflows/runner";
+import {
+  signalWorkflowRun,
+  WorkflowNotFoundError,
+  WorkflowSignalConflictError,
+} from "@/lib/workflows/runner";
 
 export const runtime = "nodejs";
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const approvalDecisionSchema = z.object({
   kind: z.enum(["tool", "workflow", "slo_policy"]),
@@ -22,14 +41,19 @@ const approvalDecisionSchema = z.object({
   reason: z.string().max(1000).optional(),
   breakGlass: z.boolean().optional(),
   ticket: z.string().max(120).optional(),
-});
+}).strict();
 
-export async function POST(
+async function POSTHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  const body = await request.json().catch(() => ({}));
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
   const parsed = approvalDecisionSchema.safeParse(body);
 
   if (!parsed.success) {
@@ -46,24 +70,52 @@ export async function POST(
         action: "manage.workflow",
         resourceType: "workflow",
         resourceId: id,
-        metadata: parsed.data,
+        metadata: {
+          kind: parsed.data.kind,
+          decision: parsed.data.decision,
+          breakGlass: Boolean(parsed.data.breakGlass),
+          hasReason: Boolean(parsed.data.reason),
+          hasTicket: Boolean(parsed.data.ticket),
+        },
       });
       const signal = parsed.data.decision === "approve" ? "approve" : "cancel";
-      const detail = await signalWorkflowRun(id, signal, { tenantId: securityContext.tenantId });
+      const detail = await signalWorkflowRun(id, signal, {
+        tenantId: securityContext.tenantId,
+        actorId: securityContext.actorId,
+        reason: parsed.data.reason,
+      });
       if (signal === "approve") {
-        const queueJob = await enqueueWorkflowRunTick(id, "workflow_approval");
-        scheduleWorkflowQueueDrain();
+        const queueJob = await enqueueWorkflowRunTick(
+          id,
+          "workflow_approval",
+          undefined,
+          securityContext.tenantId,
+        );
+        scheduleWorkflowQueueDrain(undefined, securityContext.tenantId);
         return Response.json({ ...detail, queueJob });
       }
-      const canceledJobs = await cancelWorkflowRunTick(id, "Workflow approval rejected.");
+      const canceledJobs = await cancelWorkflowRunTick(
+        id,
+        "Workflow approval rejected.",
+        securityContext.tenantId,
+      );
       return Response.json({ ...detail, canceledJobs });
     } catch (error) {
+      if (error instanceof WorkflowNotFoundError) {
+        return Response.json({ error: error.message }, { status: 404 });
+      }
+      if (error instanceof WorkflowSignalConflictError) {
+        return Response.json(
+          { error: "Workflow approval conflict", message: error.message },
+          { status: 409 },
+        );
+      }
       try {
         return forbiddenResponse(error);
       } catch {
         return Response.json(
           { error: error instanceof Error ? error.message : "Workflow approval decision failed." },
-          { status: 404 },
+          { status: 500 },
         );
       }
     }
@@ -94,26 +146,47 @@ export async function POST(
       );
     }
 
-    const result = parsed.data.decision === "approve"
-      ? await applyObservabilitySloPolicyChange(id, {
-          reviewedBy: securityContext.actorId,
-          reviewedRole: securityContext.role,
-          tenantId: securityContext.tenantId,
-          reviewReason: parsed.data.reason,
-          breakGlass: parsed.data.breakGlass,
-          ticket: parsed.data.ticket,
-        })
-      : {
-          change: await rejectObservabilitySloPolicyChange(id, {
+    try {
+      const result = parsed.data.decision === "approve"
+        ? await applyObservabilitySloPolicyChange(id, {
             reviewedBy: securityContext.actorId,
             reviewedRole: securityContext.role,
             tenantId: securityContext.tenantId,
             reviewReason: parsed.data.reason,
-          }),
-          policies: [],
-        };
-
-    return Response.json(result);
+            breakGlass: parsed.data.breakGlass,
+            ticket: parsed.data.ticket,
+          })
+        : {
+            change: await rejectObservabilitySloPolicyChange(id, {
+              reviewedBy: securityContext.actorId,
+              reviewedRole: securityContext.role,
+              tenantId: securityContext.tenantId,
+              reviewReason: parsed.data.reason,
+            }),
+            policies: [],
+          };
+      if (result.change.status === "conflicted") {
+        return Response.json(
+          {
+            ...result,
+            code: "SLO_POLICY_STATE_CONFLICT",
+            message:
+              "The policy changed after this request was created. Review the current policy and submit a new change.",
+          },
+          { status: 409 },
+        );
+      }
+      return Response.json(result, {
+        status: result.change.status === "pending" ? 202 : 200,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "SLO policy decision failed.";
+      return Response.json(
+        { error: "SLO policy approval conflict", message },
+        { status: message.includes("was not found") ? 404 : 409 },
+      );
+    }
   }
 
   let securityContext;
@@ -135,24 +208,40 @@ export async function POST(
   }
 
   if (record.status !== "approval_required") {
+    const recovered = record.status === "executing"
+      ? await recoverStaleToolExecutionClaim(record.id, { tenantId: securityContext.tenantId })
+      : undefined;
     return Response.json(
-      { error: "Tool approval record is not pending.", status: record.status },
+      {
+        error: recovered
+          ? "A stale execution claim was recovered without replaying its side effect."
+          : "Tool approval record is not pending.",
+        status: recovered?.status || record.status,
+        record: recovered ? publicToolExecution(recovered) : undefined,
+      },
       { status: 409 },
     );
   }
 
   if (parsed.data.decision === "reject") {
-    const now = new Date().toISOString();
-    const rejected = await saveToolExecution({
-      ...record,
-      status: "rejected",
-      approvalDecision: "rejected",
-      approvedBy: securityContext.actorId,
-      approvedAt: now,
-      approvalReason: parsed.data.reason,
-      reason: parsed.data.reason ? `Rejected: ${parsed.data.reason}` : "Rejected by operator.",
-      completedAt: now,
+    const rejection = await rejectPendingToolExecution({
+      id: record.id,
+      tenantId: securityContext.tenantId,
+      rejectedBy: securityContext.actorId,
+      reason: parsed.data.reason,
     });
+    if (rejection.outcome !== "rejected" || !rejection.record) {
+      return Response.json(
+        {
+          error: rejection.outcome === "not_found"
+            ? "Tool approval record not found."
+            : "Tool approval record is not pending.",
+          status: rejection.record?.status,
+        },
+        { status: rejection.outcome === "not_found" ? 404 : 409 },
+      );
+    }
+    const rejected = rejection.record;
     // A rejection is a trust signal: it resets the action class's clean streak.
     await recordActionOutcome({
       actionClass: actionClassFor(record.toolId),
@@ -168,7 +257,19 @@ export async function POST(
       tenantId: securityContext.tenantId,
       reason: parsed.data.reason,
     });
-    return Response.json({ record: rejected, result: null, continuation });
+    const resumeJobs = await wakeOperationJobByDedupeKey(
+      getAgentResumeJobDedupeKey(record.id),
+      { tenantId: securityContext.tenantId },
+    );
+    return Response.json({
+      record: publicToolExecution(rejected),
+      result: null,
+      continuation: {
+        ...continuation,
+        scheduled: false,
+        reconciliationJobs: resumeJobs.length,
+      },
+    });
   }
 
   // Risk-3 tools need a quorum of distinct admin approvals before execution.
@@ -186,92 +287,106 @@ export async function POST(
       );
     }
 
-    const approvals = [
-      ...(record.approvals || []).filter((approval) => approval.by !== securityContext.actorId),
+  }
+
+  const claimToken = randomUUID();
+  const claim = await approveAndClaimToolExecution({
+    id: record.id,
+    tenantId: securityContext.tenantId,
+    approvedBy: securityContext.actorId,
+    approvedRole: securityContext.role,
+    approvalReason: parsed.data.reason,
+    claimToken,
+  });
+  if (claim.outcome === "not_found") {
+    return Response.json({ error: "Tool approval record not found." }, { status: 404 });
+  }
+  if (claim.outcome === "conflict" || !claim.record) {
+    const recovered = claim.record?.status === "executing"
+      ? await recoverStaleToolExecutionClaim(record.id, { tenantId: securityContext.tenantId })
+      : undefined;
+    return Response.json(
       {
-        by: securityContext.actorId,
-        role: securityContext.role,
-        at: new Date().toISOString(),
-        reason: parsed.data.reason,
+        error: recovered
+          ? "A stale execution claim was recovered without replaying its side effect."
+          : "Tool approval record is not pending.",
+        status: recovered?.status || claim.record?.status,
+        record: recovered
+          ? publicToolExecution(recovered)
+          : claim.record
+            ? publicToolExecution(claim.record)
+            : undefined,
       },
-    ];
-    const pendingRecord = await saveToolExecution({ ...record, approvals });
-
-    if (!hasRisk3Quorum(pendingRecord)) {
-      return Response.json(
-        {
-          record: pendingRecord,
-          result: null,
-          quorum: {
-            have: approvals.length,
-            need: RISK3_QUORUM,
-            message: `Approval recorded. ${RISK3_QUORUM - approvals.length} more distinct admin approval(s) required.`,
-          },
+      { status: 409 },
+    );
+  }
+  if (claim.outcome === "pending") {
+    const have = new Set(
+      (claim.record.approvals || [])
+        .filter((approval) => approval.role === "admin" || approval.role === "system")
+        .map((approval) => approval.by),
+    ).size;
+    return Response.json(
+      {
+        record: publicToolExecution(claim.record),
+        result: null,
+        quorum: {
+          have,
+          need: RISK3_QUORUM,
+          message: `Approval recorded. ${Math.max(0, RISK3_QUORUM - have)} more distinct admin approval(s) required.`,
         },
-        { status: 202 },
-      );
-    }
+      },
+      { status: 202 },
+    );
+  }
 
-    const quorumResult = await executeGovernedTool({
-      toolId: pendingRecord.toolId,
-      input: pendingRecord.input,
-      dryRun: false,
-      approved: true,
-      context: securityContext,
-      existingRecord: pendingRecord,
-      approvalReason: parsed.data.reason,
+  let approvedInput: Record<string, unknown>;
+  try {
+    approvedInput = openToolExecutionInput(claim.record);
+  } catch {
+    const failed = await failClaimedToolExecution({
+      record: claim.record,
+      claimToken,
+      reason:
+        "Approved execution payload is missing or failed integrity verification. Submit the action again.",
     });
-    const continuation = scheduleAgentRunResume({
-      executionId: pendingRecord.id,
-      toolExecution: quorumResult,
-      tenantId: securityContext.tenantId,
-    });
-    return Response.json({ ...quorumResult, continuation }, {
-      status: quorumResult.record.status === "failed" ? 500 : 200,
-    });
+    return Response.json(
+      {
+        error:
+          "The approved action could not be verified and was not executed. Submit the action again.",
+        record: failed ? publicToolExecution(failed) : undefined,
+      },
+      { status: 409 },
+    );
   }
 
   const result = await executeGovernedTool({
-    toolId: record.toolId,
-    input: record.input,
+    toolId: claim.record.toolId,
+    input: approvedInput,
     dryRun: false,
     approved: true,
     context: securityContext,
-    existingRecord: record,
+    existingRecord: claim.record,
     approvalReason: parsed.data.reason,
+    executionClaimToken: claimToken,
   });
 
-  const continuation = scheduleAgentRunResume({
-    executionId: record.id,
-    toolExecution: result,
-    tenantId: securityContext.tenantId,
-  });
+  const resumeJobs = await wakeOperationJobByDedupeKey(
+    getAgentResumeJobDedupeKey(claim.record.id),
+    { tenantId: securityContext.tenantId },
+  );
+  const continuation = {
+    scheduled: true,
+    status: "queued" as const,
+    resumeJobs: resumeJobs.length,
+  };
 
-  return Response.json({ ...result, continuation }, {
-    status: result.record.status === "failed" ? 500 : 200,
+  // The approval decision and durable execution claim both succeeded even when
+  // the downstream tool reports a failed outcome. Return the record as a
+  // completed decision so clients do not retry the side effect.
+  return Response.json({
+    ...result,
+    record: publicToolExecution(result.record),
+    continuation,
   });
-}
-
-/**
- * The remaining agent run can span many model turns, so it must not block the
- * approver's request (or run into the function timeout mid-stream). after()
- * keeps the function alive past the response while the run continues.
- */
-function scheduleAgentRunResume(input: {
-  executionId: string;
-  toolExecution: { record: Parameters<typeof resumeAgentRunAfterToolApproval>[0]["toolExecution"]["record"]; result?: unknown };
-  tenantId?: string;
-}) {
-  after(async () => {
-    try {
-      const outcome = await resumeAgentRunAfterToolApproval(input);
-      console.log("Agent run resume finished.", JSON.stringify(outcome));
-    } catch (error) {
-      console.error(
-        "Agent run resume crashed.",
-        error instanceof Error ? error.message : error,
-      );
-    }
-  });
-  return { scheduled: true, status: "resuming" as const };
 }

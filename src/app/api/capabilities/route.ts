@@ -1,7 +1,12 @@
 import { hasOpenAIKey } from "@/lib/config";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
-import { getStorageBackend, getVectorStoreStatus, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  getStorageBackend,
+  getVectorStoreStatus,
+  hasDatabaseUrl,
+  withDatabaseRequestScope,
+} from "@/lib/db/client";
 import { getAlertDeliveryStats } from "@/lib/diagnostics/alerts";
 import { getHealthStats } from "@/lib/diagnostics/health";
 import { getIncidentStats } from "@/lib/diagnostics/incidents";
@@ -24,8 +29,9 @@ import { getWorkflowStats } from "@/lib/workflows/store";
 import { getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   let securityContext;
   try {
     securityContext = await resolveSecurityContext(request);
@@ -41,7 +47,7 @@ export async function GET(request: Request) {
     storageBackend: getStorageBackend(),
     vectorStore: await getVectorStoreStatus(),
     memory: await getMemoryStats({ tenantId: securityContext.tenantId }),
-    memoryGraph: await getMemoryGraphStats(),
+    memoryGraph: await getMemoryGraphStats({ tenantId: securityContext.tenantId }),
     knowledge: await getKnowledgeStats({ tenantId: securityContext.tenantId }),
     contextEngine: await getContextEngineStats({ tenantId: securityContext.tenantId }),
     runs: await getRunStats({ tenantId: securityContext.tenantId }),
@@ -50,12 +56,12 @@ export async function GET(request: Request) {
     openApiConnectors: await getOpenApiConnectorStats({ tenantId: securityContext.tenantId }),
     workflows: await getWorkflowStats({ tenantId: securityContext.tenantId }),
     workflowPlans: await getWorkflowPlanStats({ tenantId: securityContext.tenantId }),
-    workflowPlanExecutions: await getWorkflowPlanNodeExecutionStats(),
-    workflowTriggers: await getWorkflowTriggerStats(),
-    operationJobs: await getOperationJobStats(),
-    health: await getHealthStats(),
-    incidents: await getIncidentStats(),
-    alerts: await getAlertDeliveryStats(),
+    workflowPlanExecutions: await getWorkflowPlanNodeExecutionStats({ tenantId: securityContext.tenantId }),
+    workflowTriggers: await getWorkflowTriggerStats({ tenantId: securityContext.tenantId }),
+    operationJobs: await getOperationJobStats({ tenantId: securityContext.tenantId }),
+    health: await getHealthStats({ tenantId: securityContext.tenantId }),
+    incidents: await getIncidentStats({ tenantId: securityContext.tenantId }),
+    alerts: await getAlertDeliveryStats({ tenantId: securityContext.tenantId }),
     observability: await getObservabilityStats({ tenantId: securityContext.tenantId }),
     observabilitySlo: await getObservabilitySloSnapshot({ tenantId: securityContext.tenantId }),
     evaluations: await getEvalStats({ tenantId: securityContext.tenantId }),

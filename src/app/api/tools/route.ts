@@ -1,11 +1,13 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
 import { getGovernedTools } from "@/lib/tools/registry";
 import { listMcpGovernedTools, listOpenApiGovernedTools } from "@/lib/connectors/governed-tools";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   let context;
   try {
     context = await authorizeRequest({

@@ -1,31 +1,37 @@
 import { z } from "zod";
 import { discoverMcpTools } from "@/lib/connectors/mcp-client";
+import { mcpContractReviewSummary } from "@/lib/connectors/contract-review";
+import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   createMcpConnectorRecord,
   getMcpConnectorStats,
   listMcpConnectors,
+  listMcpConnectorsRequiringReview,
   listMcpTools,
   recordMcpConnectorError,
   saveMcpConnector,
   saveMcpDiscovery,
 } from "@/lib/connectors/store";
-import { validateConnectorSecretEnvName } from "@/lib/security/context";
+import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
+import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { assertPublicHttpUrl } from "@/lib/security/network";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 
 const registerConnectorSchema = z.object({
   name: z.string().min(1).max(120),
-  endpoint: z.string().url(),
+  endpoint: z.string().url().max(2048),
   authType: z.enum(["none", "bearer_env"]).optional(),
-  authTokenEnv: z.string().regex(/^[A-Z0-9_]+$/).optional(),
+  authTokenEnv: z.string().regex(/^[A-Z0-9_]+$/).max(120).optional(),
   defaultRiskLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
   approvalRequired: z.boolean().optional(),
   discover: z.boolean().optional(),
-});
+}).strict();
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   let context;
   try {
     context = await authorizeRequest({
@@ -37,14 +43,29 @@ export async function GET(request: Request) {
     return forbiddenResponse(error);
   }
 
-  const [connectors, tools, stats] = await Promise.all([
+  const [recentConnectors, reviewConnectors, tools, stats] = await Promise.all([
     listMcpConnectors(20, { tenantId: context.tenantId }),
+    listMcpConnectorsRequiringReview({ tenantId: context.tenantId }),
     listMcpTools(undefined, { tenantId: context.tenantId }),
     getMcpConnectorStats({ tenantId: context.tenantId }),
   ]);
+  const connectors = [
+    ...new Map(
+      [...reviewConnectors, ...recentConnectors].map((connector) => [
+        connector.id,
+        connector,
+      ]),
+    ).values(),
+  ];
 
   return Response.json({
-    connectors: connectors.map(redactMcpConnector),
+    connectors: connectors.map((connector) => ({
+      ...redactMcpConnector(connector),
+      review: mcpContractReviewSummary(
+        tools.filter((tool) => tool.connectorId === connector.id),
+        connector,
+      ),
+    })),
     tools,
     stats: {
       ...stats,
@@ -53,10 +74,12 @@ export async function GET(request: Request) {
   });
 }
 
-export async function POST(request: Request) {
-  const body = await request.json().catch(() => null);
-  if (body === null) {
-    return Response.json({ error: "Invalid request", message: "Request body is not valid JSON." }, { status: 400 });
+async function POSTHandler(request: Request) {
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
   }
   const parsed = registerConnectorSchema.safeParse(body);
 
@@ -66,15 +89,30 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-
-  if (!validateConnectorSecretEnvName(parsed.data.authTokenEnv)) {
+  if ((parsed.data.authType || "none") === "bearer_env" && !parsed.data.authTokenEnv) {
     return Response.json(
-      {
-        error: "Invalid connector secret env var",
-        message: "Connector secrets must use OMNIAGENT_CONNECTOR_* or OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST and cannot reference platform secrets.",
-      },
+      { error: "Invalid MCP connector request", message: "Bearer auth requires authTokenEnv." },
       { status: 400 },
     );
+  }
+
+  let context;
+  try {
+    context = await authorizeRequest({
+      request,
+      action: "manage.connector",
+      resourceType: "mcp_connector",
+      metadata: {
+        name: parsed.data.name,
+        authType: parsed.data.authType || "none",
+        hasSecretBinding: Boolean(parsed.data.authTokenEnv),
+        defaultRiskLevel: parsed.data.defaultRiskLevel ?? 2,
+        approvalRequired: parsed.data.approvalRequired ?? true,
+        discover: Boolean(parsed.data.discover),
+      },
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   try {
@@ -86,16 +124,17 @@ export async function POST(request: Request) {
     );
   }
 
-  let context;
-  try {
-    context = await authorizeRequest({
-      request,
-      action: "manage.connector",
-      resourceType: "mcp_connector",
-      metadata: body,
-    });
-  } catch (error) {
-    return forbiddenResponse(error);
+  const secretBinding = evaluateConnectorSecretBinding({
+    envName: parsed.data.authTokenEnv,
+    tenantId: context.tenantId,
+    targetUrl: parsed.data.endpoint,
+    role: context.role,
+  });
+  if (!secretBinding.allowed) {
+    return Response.json(
+      { error: "Invalid connector secret binding", message: secretBinding.reason },
+      { status: 400 },
+    );
   }
 
   const connector = await saveMcpConnector(
@@ -115,7 +154,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const discovery = await discoverMcpTools(connector);
+    const discovery = await discoverMcpTools(connector, { actorRole: context.role });
     const saved = await saveMcpDiscovery({
       connector,
       tools: discovery.tools,
@@ -123,7 +162,16 @@ export async function POST(request: Request) {
       instructions: discovery.instructions,
       serverVersion: discovery.serverVersion,
     });
-    return Response.json({ ...saved, connector: redactMcpConnector(saved.connector) }, { status: 201 });
+    return Response.json(
+      {
+        ...saved,
+        connector: {
+          ...redactMcpConnector(saved.connector),
+          review: mcpContractReviewSummary(saved.tools, saved.connector),
+        },
+      },
+      { status: 201 },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "MCP discovery failed.";
     return Response.json(

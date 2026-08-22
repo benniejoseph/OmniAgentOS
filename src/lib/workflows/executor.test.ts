@@ -46,4 +46,36 @@ describe("workflow executor dry-run policy", () => {
       }),
     ).toBe(false);
   });
+
+  it("preserves an explicit dry-run node after workflow approval", () => {
+    expect(
+      shouldDryRunWorkflowTool({
+        toolId: connectorTool.id,
+        tool: connectorTool,
+        node: {
+          ...node,
+          policy: "dry_run",
+        },
+        workflowApproved: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps risk-3 tools in preview mode after a single workflow approval", () => {
+    expect(
+      shouldDryRunWorkflowTool({
+        toolId: connectorTool.id,
+        tool: {
+          ...connectorTool,
+          riskLevel: 3,
+          reversible: false,
+        },
+        node: {
+          ...node,
+          riskLevel: 3,
+        },
+        workflowApproved: true,
+      }),
+    ).toBe(true);
+  });
 });

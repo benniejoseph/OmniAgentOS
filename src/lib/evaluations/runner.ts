@@ -1,7 +1,12 @@
 import { hasOpenAIKey } from "@/lib/config";
 import { hashPassword, verifyPassword } from "@/lib/auth/crypto";
 import { isAuthEnforced } from "@/lib/auth/store";
-import { enterDatabaseTenantContext, getDatabaseTenantContext, getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  getDatabaseTenantContext,
+  getStorageBackend,
+  hasDatabaseUrl,
+  runWithDatabaseTenantScope,
+} from "@/lib/db/client";
 import {
   createAlertWebhookSignature,
   dispatchAlertDeliveries,
@@ -65,7 +70,12 @@ import { executeDynamicWorkflowPlan, getWorkflowPlanNodeExecutionStats } from "@
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats } from "@/lib/workflows/planner";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
 import { createWorkflowRun, getWorkflowRunDetail, listWorkflowRuns, updateWorkflowRun, updateWorkflowStep } from "@/lib/workflows/store";
-import { createWorkflowTrigger, dispatchWorkflowTrigger, getWorkflowTriggerStats } from "@/lib/workflows/triggers";
+import {
+  createWorkflowTrigger,
+  dispatchWorkflowTrigger,
+  getWorkflowTriggerStats,
+  signWorkflowTriggerPayload,
+} from "@/lib/workflows/triggers";
 import {
   completeEvalRun,
   createEvalRun,
@@ -756,62 +766,73 @@ export async function runEvaluationSuite({
   tenantId?: string;
 } = {}) {
   const cases = defaultEvalCases.filter((item) => !caseIds?.length || caseIds.includes(item.id));
-  const run = await createEvalRun({ suite, total: cases.length, tenantId });
-  const savedResults: EvalResultRecord[] = [];
+  const runTenantId =
+    tenantId ||
+    getDatabaseTenantContext() ||
+    process.env.OMNIAGENT_DEFAULT_TENANT ||
+    "default";
+  return runWithDatabaseTenantScope(runTenantId, async () => {
+    const run = await createEvalRun({
+      suite,
+      total: cases.length,
+      tenantId: runTenantId,
+    });
+    const savedResults: EvalResultRecord[] = [];
 
-  try {
-    for (const evalCase of cases) {
-      const startedAt = Date.now();
-      try {
-        const result = await runEvalCase(evalCase);
-        const latencyMs = Date.now() - startedAt;
-        savedResults.push(
-          await saveEvalResult({
-            tenantId: run.tenantId,
-            evalRunId: run.id,
-            caseId: evalCase.id,
-            caseName: evalCase.name,
-            caseType: evalCase.type,
-            status: result.status,
-            score: clampScore(result.score),
-            latencyMs,
-            estimatedCostUsd: result.estimatedCostUsd || estimateCost(evalCase, result.output),
-            input: evalCase.input,
-            output: result.output,
-          }),
-        );
-      } catch (error) {
-        const latencyMs = Date.now() - startedAt;
-        savedResults.push(
-          await saveEvalResult({
-            tenantId: run.tenantId,
-            evalRunId: run.id,
-            caseId: evalCase.id,
-            caseName: evalCase.name,
-            caseType: evalCase.type,
-            status: "fail",
-            score: 0,
-            latencyMs,
-            estimatedCostUsd: estimateCost(evalCase, { error: String(error) }),
-            input: evalCase.input,
-            error: error instanceof Error ? error.message : "Evaluation case failed.",
-          }),
-        );
+    try {
+      for (const evalCase of cases) {
+        const startedAt = Date.now();
+        try {
+          const result = await runEvalCase(evalCase);
+          const latencyMs = Date.now() - startedAt;
+          savedResults.push(
+            await saveEvalResult({
+              tenantId: runTenantId,
+              evalRunId: run.id,
+              caseId: evalCase.id,
+              caseName: evalCase.name,
+              caseType: evalCase.type,
+              status: result.status,
+              score: clampScore(result.score),
+              latencyMs,
+              estimatedCostUsd: result.estimatedCostUsd || estimateCost(evalCase, result.output),
+              input: evalCase.input,
+              output: result.output,
+            }),
+          );
+        } catch (error) {
+          const latencyMs = Date.now() - startedAt;
+          savedResults.push(
+            await saveEvalResult({
+              tenantId: runTenantId,
+              evalRunId: run.id,
+              caseId: evalCase.id,
+              caseName: evalCase.name,
+              caseType: evalCase.type,
+              status: "fail",
+              score: 0,
+              latencyMs,
+              estimatedCostUsd: estimateCost(evalCase, { error: String(error) }),
+              input: evalCase.input,
+              error: error instanceof Error ? error.message : "Evaluation case failed.",
+            }),
+          );
+        }
       }
+
+      const summary = summarizeResults(savedResults, cases.length);
+      if (summary.failed > 0) {
+        await failEvalRun(run.id, summary, `${summary.failed} evaluation case(s) failed.`);
+      } else {
+        await completeEvalRun(run.id, summary);
+      }
+    } catch (error) {
+      const summary = summarizeResults(savedResults, cases.length);
+      await failEvalRun(run.id, summary, error instanceof Error ? error.message : "Evaluation suite failed.");
     }
 
-    const summary = summarizeResults(savedResults, cases.length);
-    if (summary.failed > 0) {
-      await failEvalRun(run.id, summary, `${summary.failed} evaluation case(s) failed.`);
-    } else {
-      await completeEvalRun(run.id, summary);
-    }
-  } catch (error) {
-    const summary = summarizeResults(savedResults, cases.length);
-    await failEvalRun(run.id, summary, error instanceof Error ? error.message : "Evaluation suite failed.");
-  }
-
-  return getEvalRunDetail(run.id, { tenantId: run.tenantId });
+    return getEvalRunDetail(run.id, { tenantId: runTenantId });
+  });
 }
 
 async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
@@ -1264,7 +1285,9 @@ async function evaluatePlanExecutor(evalCase: EvalCaseDefinition): Promise<CaseR
     throw new Error("Dynamic plan execution summary was not produced.");
   }
 
-  const stats = await getWorkflowPlanNodeExecutionStats();
+  const stats = await getWorkflowPlanNodeExecutionStats({
+    tenantId: executionDetail.run.tenantId,
+  });
   const checks = {
     completedNodes: summary.completedNodes >= Number(evalCase.expected.minCompletedNodes || 1),
     toolExecutions: summary.toolExecutions >= Number(evalCase.expected.minToolExecutions || 1),
@@ -1313,10 +1336,13 @@ async function evaluateWebhookTriggers(evalCase: EvalCaseDefinition): Promise<Ca
   const eventType = String(evalCase.input.eventType || "workflow.event");
   const source = String(evalCase.input.source || "evaluation-webhook");
   const summary = String(evalCase.input.summary || "Evaluate webhook trigger dispatch.");
+  const evaluationSecretEnv = "OMNIAGENT_TRIGGER_EVALUATION_SECRET";
+  const evaluationSecret = process.env[evaluationSecretEnv]?.trim();
   const trigger = await createWorkflowTrigger({
     name: "Evaluation webhook trigger",
     source,
-    authMode: "none",
+    authMode: evaluationSecret ? "hmac_sha256" : "none",
+    secretEnvVar: evaluationSecret ? evaluationSecretEnv : undefined,
     goalTemplate: "Handle {{event.type}} from {{event.source}}: {{payload.summary}}",
     workflowMode: "orchestrate",
     requireApproval: false,
@@ -1330,11 +1356,20 @@ async function evaluateWebhookTriggers(evalCase: EvalCaseDefinition): Promise<Ca
     summary,
     payloadId: `eval-${Date.now()}`,
   });
+  const signed = evaluationSecret
+    ? signWorkflowTriggerPayload({ secret: evaluationSecret, bodyText })
+    : undefined;
   const dispatch = await dispatchWorkflowTrigger({
     triggerId: trigger.id,
     bodyText,
     headers: {
       "x-event-type": eventType,
+      ...(signed
+        ? {
+            "x-omni-timestamp": signed.timestamp,
+            "x-omni-signature": signed.signature,
+          }
+        : {}),
     },
   });
   const stats = await getWorkflowTriggerStats();
@@ -1413,7 +1448,6 @@ function evaluateSecurityControls(): CaseResult {
 }
 
 async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<CaseResult> {
-  const previousTenant = getDatabaseTenantContext();
   const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const tenantA = `eval_isolation_a_${suffix}`;
   const tenantB = `eval_isolation_b_${suffix}`;
@@ -1421,7 +1455,6 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
   const markerB = `tenant-b-marker-${suffix}`;
   const correlationId = `eval-tenant-isolation-${suffix}`;
 
-  try {
     const memoryA = await withDatabaseTenant(tenantA, () =>
       saveMemory({
         tenantId: tenantA,
@@ -1590,19 +1623,10 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
         databaseConfigured: hasDatabaseUrl(),
       },
     };
-  } finally {
-    enterDatabaseTenantContext(previousTenant);
-  }
 }
 
 async function withDatabaseTenant<T>(tenantId: string, operation: () => Promise<T>) {
-  const previousTenant = getDatabaseTenantContext();
-  enterDatabaseTenantContext(tenantId);
-  try {
-    return await operation();
-  } finally {
-    enterDatabaseTenantContext(previousTenant);
-  }
+  return runWithDatabaseTenantScope(tenantId, operation);
 }
 
 async function evaluateIdentityControls(): Promise<CaseResult> {
@@ -2013,6 +2037,7 @@ async function evaluateIncidentManagement(evalCase: EvalCaseDefinition): Promise
 
   if (targetIncident) {
     const acknowledgement = await acknowledgeIncident(targetIncident.id, {
+      tenantId: targetIncident.tenantId,
       actorId,
       reason: "Evaluation acknowledgement smoke.",
       metadata: { caseId: evalCase.id },
@@ -2022,6 +2047,7 @@ async function evaluateIncidentManagement(evalCase: EvalCaseDefinition): Promise
     );
     const playbookResult = playbookId
       ? await runIncidentPlaybook({
+          tenantId: targetIncident.tenantId,
           incidentId: targetIncident.id,
           playbookId,
           actorId,
@@ -2780,13 +2806,16 @@ async function evaluateSloApprovalPolicyAdmin(evalCase: EvalCaseDefinition): Pro
   const policyId = `${String(evalCase.input.policyPrefix || "eval_approval_policy_admin")}_${Date.now()}`;
   const breakGlassPolicyId = `${policyId}_break_glass`;
   let restored = false;
+  let evaluationPolicyVersion: number | undefined;
 
   try {
     const customPolicy = createEvaluationApprovalPolicyConfig(originalPolicy);
     const savedPolicy = await saveObservabilitySloApprovalPolicyConfig(customPolicy, {
       changedBy: "evaluation",
       changeReason: "Evaluation custom SLO approval policy administration update.",
+      expectedVersion: originalPolicy.version,
     });
+    evaluationPolicyVersion = savedPolicy.version;
     const versionsAfterSave = await listObservabilitySloApprovalPolicyVersions({ limit: 10 });
     const baselinePolicy: ObservabilitySloPolicy = {
       id: policyId,
@@ -2859,6 +2888,7 @@ async function evaluateSloApprovalPolicyAdmin(evalCase: EvalCaseDefinition): Pro
     const restoredPolicy = await saveObservabilitySloApprovalPolicyConfig(originalPolicy, {
       changedBy: "evaluation",
       changeReason: "Restore original SLO approval policy after evaluation.",
+      expectedVersion: savedPolicy.version,
     });
     restored = true;
     const registry = getCapabilityRegistry();
@@ -2936,6 +2966,7 @@ async function evaluateSloApprovalPolicyAdmin(evalCase: EvalCaseDefinition): Pro
       await saveObservabilitySloApprovalPolicyConfig(originalPolicy, {
         changedBy: "evaluation",
         changeReason: "Restore original SLO approval policy after interrupted evaluation.",
+        expectedVersion: evaluationPolicyVersion,
       }).catch(() => undefined);
     }
     await deleteObservabilitySloPolicy(policyId).catch(() => undefined);

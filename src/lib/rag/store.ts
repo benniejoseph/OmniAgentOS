@@ -1,7 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
+} from "@/lib/db/client";
 import { getDataPath } from "@/lib/storage/paths";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import { redactSensitive } from "@/lib/security/context";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
 import type {
   KnowledgeChunk,
@@ -10,6 +16,8 @@ import type {
   KnowledgeSearchResult,
   KnowledgeSourceType,
 } from "@/lib/rag/types";
+
+type RagSqlClient = ReturnType<typeof getSql>;
 
 type CreateKnowledgeDocumentInput = {
   tenantId?: string;
@@ -35,49 +43,67 @@ type SearchKnowledgeOptions = {
 
 export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInput) {
   const now = new Date().toISOString();
-  const tags = normalizeTags(["rag", ...(input.tags || [])]);
-  const source = input.source?.trim() || "manual";
+  const safeTitle = String(redactSensitive(input.title.trim())).slice(0, 240);
+  const safeContent = String(redactSensitive(input.content)).slice(0, 900_000);
+  const tags = normalizeTags(
+    ["rag", ...(input.tags || [])].map((tag) =>
+      String(redactSensitive(tag)),
+    ),
+  );
+  const source =
+    String(redactSensitive(input.source?.trim() || "manual")).slice(0, 2_000);
   const tenantId = normalizeTenantId(input.tenantId);
   const document: KnowledgeDocument = {
     id: randomUUID(),
     tenantId,
-    title: input.title.trim(),
+    title: safeTitle,
     source,
     sourceType: input.sourceType || inferSourceType(source),
     tags,
-    contentHash: hashContent(input.content),
+    contentHash: hashContent(safeContent),
     chunkCount: input.chunks.length,
-    totalCharacters: input.content.length,
-    metadata: input.metadata || {},
+    totalCharacters: safeContent.length,
+    metadata: redactSensitive(input.metadata || {}) as Record<string, unknown>,
     createdAt: now,
     updatedAt: now,
   };
-  const chunks: KnowledgeChunk[] = input.chunks.map((chunk) => ({
-    id: randomUUID(),
-    tenantId,
-    documentId: document.id,
-    chunkIndex: chunk.index,
-    title: input.chunks.length > 1 ? `${document.title} (${chunk.index + 1}/${input.chunks.length})` : document.title,
-    content: chunk.content,
-    tags,
-    source,
-    tokenEstimate: estimateTokens(chunk.content),
-    characterCount: chunk.content.length,
-    embedding: chunk.embedding,
-    metadata: { documentTitle: document.title },
-    createdAt: now,
-    updatedAt: now,
-  }));
+  const chunks: KnowledgeChunk[] = input.chunks.map((chunk) => {
+    const safeChunkContent = String(redactSensitive(chunk.content));
+    return {
+      id: randomUUID(),
+      tenantId,
+      documentId: document.id,
+      chunkIndex: chunk.index,
+      title:
+        input.chunks.length > 1
+          ? `${document.title} (${chunk.index + 1}/${input.chunks.length})`
+          : document.title,
+      content: safeChunkContent,
+      tags,
+      source,
+      tokenEstimate: estimateTokens(safeChunkContent),
+      characterCount: safeChunkContent.length,
+      embedding:
+        safeChunkContent === chunk.content ? chunk.embedding : undefined,
+      metadata: { documentTitle: document.title },
+      createdAt: now,
+      updatedAt: now,
+    };
+  });
 
   if (hasDatabaseUrl()) {
     await insertKnowledgeDocumentDb(document, chunks);
     return { document, chunks };
   }
 
-  const ledger = await readKnowledgeLedger();
-  ledger.documents.unshift(document);
-  ledger.chunks.unshift(...chunks);
-  await writeKnowledgeLedger(ledger);
+  await updateJsonFile<KnowledgeLedger>(
+    getKnowledgeFile(),
+    { documents: [], chunks: [] },
+    (ledger) => ({
+      documents: [document, ...ledger.documents].slice(0, 100),
+      chunks: [...chunks, ...ledger.chunks].slice(0, 1200),
+    }),
+  );
   return { document, chunks };
 }
 
@@ -97,7 +123,10 @@ export async function listKnowledgeDocuments(limit = 20, options: { tenantId?: s
   }
 
   const ledger = await readKnowledgeLedger();
-  return ledger.documents.filter((document) => normalizeTenantId(document.tenantId) === tenantId).slice(0, limit);
+  return ledger.documents
+    .filter((document) => normalizeTenantId(document.tenantId) === tenantId)
+    .slice(0, limit)
+    .map(sanitizeKnowledgeDocument);
 }
 
 export async function listKnowledgeChunks(limit = 20, options: { tenantId?: string } = {}) {
@@ -116,7 +145,10 @@ export async function listKnowledgeChunks(limit = 20, options: { tenantId?: stri
   }
 
   const ledger = await readKnowledgeLedger();
-  return ledger.chunks.filter((chunk) => normalizeTenantId(chunk.tenantId) === tenantId).slice(0, limit);
+  return ledger.chunks
+    .filter((chunk) => normalizeTenantId(chunk.tenantId) === tenantId)
+    .slice(0, limit)
+    .map(sanitizeKnowledgeChunk);
 }
 
 export async function searchKnowledge(
@@ -131,8 +163,12 @@ export async function searchKnowledge(
 
   const ledger = await readKnowledgeLedger();
   const tenantId = normalizeTenantId(options.tenantId);
-  const documents = ledger.documents.filter((document) => normalizeTenantId(document.tenantId) === tenantId);
-  const chunks = ledger.chunks.filter((chunk) => normalizeTenantId(chunk.tenantId) === tenantId);
+  const documents = ledger.documents
+    .filter((document) => normalizeTenantId(document.tenantId) === tenantId)
+    .map(sanitizeKnowledgeDocument);
+  const chunks = ledger.chunks
+    .filter((chunk) => normalizeTenantId(chunk.tenantId) === tenantId)
+    .map(sanitizeKnowledgeChunk);
   const documentsById = new Map(documents.map((document) => [document.id, document]));
   return rankChunksInMemory(chunks, documentsById, query, options).slice(0, limit);
 }
@@ -178,43 +214,46 @@ export async function getKnowledgeStats(options: { tenantId?: string } = {}) {
 async function insertKnowledgeDocumentDb(document: KnowledgeDocument, chunks: KnowledgeChunk[]) {
   await ensureDatabaseSchema();
   const sql = getSql();
-
-  await sql`
-    INSERT INTO omni_knowledge_documents (
-      id, tenant_id, title, source, source_type, tags, content_hash, chunk_count, total_characters, metadata, created_at, updated_at
-    )
-    VALUES (
-      ${document.id}, ${document.tenantId}, ${document.title}, ${document.source}, ${document.sourceType}, ${document.tags},
-      ${document.contentHash}, ${document.chunkCount}, ${document.totalCharacters}, ${JSON.stringify(document.metadata)}::jsonb,
-      ${document.createdAt}, ${document.updatedAt}
-    )
-  `;
-
-  for (const chunk of chunks) {
-    const embeddingJson = chunk.embedding ? JSON.stringify(chunk.embedding) : null;
-    await sql`
-      INSERT INTO omni_knowledge_chunks (
-        id, tenant_id, document_id, chunk_index, title, content, tags, source, token_estimate,
-        character_count, embedding, metadata, created_at, updated_at
+  await sql.transaction(async (transaction: RagSqlClient) => {
+    await transaction`
+      INSERT INTO omni_knowledge_documents (
+        id, tenant_id, title, source, source_type, tags, content_hash, chunk_count, total_characters, metadata, created_at, updated_at
       )
       VALUES (
-        ${chunk.id}, ${chunk.tenantId}, ${chunk.documentId}, ${chunk.chunkIndex}, ${chunk.title}, ${chunk.content}, ${chunk.tags},
-        ${chunk.source}, ${chunk.tokenEstimate}, ${chunk.characterCount}, ${embeddingJson}::jsonb,
-        ${JSON.stringify(chunk.metadata)}::jsonb, ${chunk.createdAt}, ${chunk.updatedAt}
+        ${document.id}, ${document.tenantId}, ${document.title}, ${document.source}, ${document.sourceType}, ${document.tags},
+        ${document.contentHash}, ${document.chunkCount}, ${document.totalCharacters}, ${JSON.stringify(document.metadata)}::jsonb,
+        ${document.createdAt}, ${document.updatedAt}
       )
     `;
-    await updateChunkVector(chunk.id, chunk.embedding);
+
+    for (const chunk of chunks) {
+      const embeddingJson = chunk.embedding ? JSON.stringify(chunk.embedding) : null;
+      await transaction`
+        INSERT INTO omni_knowledge_chunks (
+          id, tenant_id, document_id, chunk_index, title, content, tags, source, token_estimate,
+          character_count, embedding, metadata, created_at, updated_at
+        )
+        VALUES (
+          ${chunk.id}, ${chunk.tenantId}, ${chunk.documentId}, ${chunk.chunkIndex}, ${chunk.title}, ${chunk.content}, ${chunk.tags},
+          ${chunk.source}, ${chunk.tokenEstimate}, ${chunk.characterCount}, ${embeddingJson}::jsonb,
+          ${JSON.stringify(chunk.metadata)}::jsonb, ${chunk.createdAt}, ${chunk.updatedAt}
+        )
+      `;
+    }
+  });
+  for (const chunk of chunks) {
+    await updateChunkVector(sql, chunk.id, chunk.embedding);
   }
 }
 
-async function updateChunkVector(chunkId: string, embedding?: number[]) {
+async function updateChunkVector(sql: RagSqlClient, chunkId: string, embedding?: number[]) {
   const vector = toVectorLiteral(embedding);
   if (!vector) {
     return;
   }
 
   try {
-    await getSql()`
+    await sql`
       UPDATE omni_knowledge_chunks
       SET embedding_vector = ${vector}::vector
       WHERE id = ${chunkId}
@@ -442,7 +481,7 @@ function knowledgeResultFromRow(row: Record<string, unknown>): KnowledgeSearchRe
 }
 
 function documentFromRow(row: Record<string, unknown>): KnowledgeDocument {
-  return {
+  return sanitizeKnowledgeDocument({
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
     title: String(row.title || ""),
@@ -455,11 +494,11 @@ function documentFromRow(row: Record<string, unknown>): KnowledgeDocument {
     metadata: parseMetadata(row.metadata),
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
-  };
+  });
 }
 
 function chunkFromRow(row: Record<string, unknown>): KnowledgeChunk {
-  return {
+  return sanitizeKnowledgeChunk({
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
     documentId: String(row.document_id),
@@ -474,18 +513,38 @@ function chunkFromRow(row: Record<string, unknown>): KnowledgeChunk {
     metadata: parseMetadata(row.metadata),
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
+  });
+}
+
+function sanitizeKnowledgeDocument(
+  document: KnowledgeDocument,
+): KnowledgeDocument {
+  return {
+    ...document,
+    title: String(redactSensitive(document.title)).slice(0, 240),
+    source: String(redactSensitive(document.source)).slice(0, 2_000),
+    tags: normalizeTags(
+      document.tags.map((tag) => String(redactSensitive(tag))),
+    ),
+    metadata: redactSensitive(document.metadata) as Record<string, unknown>,
+  };
+}
+
+function sanitizeKnowledgeChunk(chunk: KnowledgeChunk): KnowledgeChunk {
+  return {
+    ...chunk,
+    title: String(redactSensitive(chunk.title)).slice(0, 280),
+    content: String(redactSensitive(chunk.content)),
+    tags: normalizeTags(
+      chunk.tags.map((tag) => String(redactSensitive(tag))),
+    ),
+    source: String(redactSensitive(chunk.source)).slice(0, 2_000),
+    metadata: redactSensitive(chunk.metadata) as Record<string, unknown>,
   };
 }
 
 async function readKnowledgeLedger() {
   return readJsonFile<KnowledgeLedger>(getKnowledgeFile(), { documents: [], chunks: [] });
-}
-
-async function writeKnowledgeLedger(ledger: KnowledgeLedger) {
-  await writeJsonFile(getKnowledgeFile(), {
-    documents: ledger.documents.slice(0, 100),
-    chunks: ledger.chunks.slice(0, 1200),
-  });
 }
 
 function getKnowledgeFile() {
@@ -552,7 +611,10 @@ function filterKnowledgeResultsByTags(results: KnowledgeSearchResult[], tags?: s
 }
 
 function normalizeTenantId(value?: string) {
-  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default";
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
 }
 
 function tokenize(value: string) {

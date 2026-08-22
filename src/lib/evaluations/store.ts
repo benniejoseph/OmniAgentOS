@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
+} from "@/lib/db/client";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type {
   EvalLedger,
@@ -12,8 +17,6 @@ import type {
   EvalRunSummary,
   EvalStats,
 } from "@/lib/evaluations/types";
-
-let evalFileWriteQueue: Promise<void> = Promise.resolve();
 
 type TenantScopedOptions = {
   tenantId?: string;
@@ -364,21 +367,11 @@ async function readEvalLedger() {
 }
 
 async function mutateEvalLedger(mutator: (ledger: EvalLedger) => EvalLedger) {
-  evalFileWriteQueue = evalFileWriteQueue.then(
-    async () => {
-      const ledger = mutator(await readEvalLedger());
-      await writeEvalLedger(ledger);
-    },
-    async () => {
-      const ledger = mutator(await readEvalLedger());
-      await writeEvalLedger(ledger);
-    },
+  await updateJsonFile<EvalLedger>(
+    getEvalFile(),
+    { runs: [], results: [], reports: [] },
+    (ledger) => trimEvalLedger(mutator(ledger)),
   );
-  await evalFileWriteQueue;
-}
-
-async function writeEvalLedger(ledger: EvalLedger) {
-  await writeJsonFile(getEvalFile(), trimEvalLedger(ledger));
 }
 
 function trimEvalLedger(ledger: EvalLedger): EvalLedger {
@@ -458,7 +451,7 @@ function normalizeDate(value: unknown) {
 }
 
 function normalizeTenantId(value?: string) {
-  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
     .trim()
     .replace(/[^a-zA-Z0-9_.:-]/g, "_")
     .slice(0, 120) || "default";

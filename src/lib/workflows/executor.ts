@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
-import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
+import {
+  ensureDatabaseSchema,
+  getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
+} from "@/lib/db/client";
+import { redactSensitive } from "@/lib/security/context";
+import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { getGovernedTool } from "@/lib/tools/registry";
@@ -40,9 +46,11 @@ type ToolExecutionSummary = {
   result?: unknown;
 };
 
-let nodeExecutionFileWriteQueue: Promise<void> = Promise.resolve();
-
-export async function executeDynamicWorkflowPlan(detail: WorkflowRunDetail): Promise<WorkflowPlanExecutionSummary | null> {
+export async function executeDynamicWorkflowPlan(
+  detail: WorkflowRunDetail,
+  options: { abortSignal?: AbortSignal } = {},
+): Promise<WorkflowPlanExecutionSummary | null> {
+  throwIfAborted(options.abortSignal);
   const parsedPlan = parseWorkflowPlanOutput(stepOutput(detail, "plan"));
   if (!parsedPlan) {
     return null;
@@ -59,6 +67,7 @@ export async function executeDynamicWorkflowPlan(detail: WorkflowRunDetail): Pro
   const nodeExecutions: WorkflowPlanNodeExecutionRecord[] = [];
 
   for (const node of sortedNodes) {
+    throwIfAborted(options.abortSignal);
     const existing = existingByNode.get(node.id);
     if (existing && isReusableNodeExecution(existing)) {
       recordsByNode.set(node.id, existing);
@@ -115,6 +124,7 @@ export async function executeDynamicWorkflowPlan(detail: WorkflowRunDetail): Pro
         dependencyRecords: node.dependsOn
           .map((dependencyId) => recordsByNode.get(dependencyId))
           .filter((record): record is WorkflowPlanNodeExecutionRecord => Boolean(record)),
+        abortSignal: options.abortSignal,
       });
       const record = await saveWorkflowPlanNodeExecution({
         ...baseNodeExecutionRecord({ detail, planId: parsedPlan.id, node, existing: runningRecord }),
@@ -137,6 +147,22 @@ export async function executeDynamicWorkflowPlan(detail: WorkflowRunDetail): Pro
         toolExecutionIds: record.toolExecutionIds,
       });
     } catch (error) {
+      if (options.abortSignal?.aborted) {
+        await saveWorkflowPlanNodeExecution({
+          ...baseNodeExecutionRecord({ detail, planId: parsedPlan.id, node, existing: runningRecord }),
+          status: "pending",
+          error: undefined,
+          startedAt: undefined,
+          completedAt: undefined,
+        });
+        await appendWorkflowEvent(detail.run.id, "workflow.plan_node.interrupted", {
+          planId: parsedPlan.id,
+          nodeId: node.id,
+        });
+        throw options.abortSignal.reason instanceof Error
+          ? options.abortSignal.reason
+          : new DOMException("Workflow plan execution was aborted.", "AbortError");
+      }
       const message = error instanceof Error ? error.message : "Plan node execution failed.";
       const record = await saveWorkflowPlanNodeExecution({
         ...baseNodeExecutionRecord({ detail, planId: parsedPlan.id, node, existing: runningRecord }),
@@ -172,7 +198,11 @@ export async function executeDynamicWorkflowPlan(detail: WorkflowRunDetail): Pro
   return summary;
 }
 
-export async function listWorkflowPlanNodeExecutions(limit = 100) {
+export async function listWorkflowPlanNodeExecutions(
+  limit = 100,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
   const boundedLimit = Math.min(Math.max(limit, 1), 500);
 
   if (hasDatabaseUrl()) {
@@ -180,6 +210,7 @@ export async function listWorkflowPlanNodeExecutions(limit = 100) {
     const rows = await getSql()`
       SELECT *
       FROM omni_workflow_node_executions
+      WHERE tenant_id = ${tenantId}
       ORDER BY updated_at DESC
       LIMIT ${boundedLimit}
     `;
@@ -187,7 +218,9 @@ export async function listWorkflowPlanNodeExecutions(limit = 100) {
   }
 
   const ledger = await readNodeExecutionLedger();
-  return ledger.records.slice(0, boundedLimit);
+  return ledger.records
+    .filter((record) => normalizeTenantId(record.tenantId) === tenantId)
+    .slice(0, boundedLimit);
 }
 
 export async function listWorkflowPlanNodeExecutionsForRun(workflowRunId: string, limit = 100) {
@@ -211,8 +244,10 @@ export async function listWorkflowPlanNodeExecutionsForRun(workflowRunId: string
     .slice(0, boundedLimit);
 }
 
-export async function getWorkflowPlanNodeExecutionStats(): Promise<WorkflowPlanNodeExecutionStats> {
-  const records = await listWorkflowPlanNodeExecutions(500);
+export async function getWorkflowPlanNodeExecutionStats(
+  options: { tenantId?: string } = {},
+): Promise<WorkflowPlanNodeExecutionStats> {
+  const records = await listWorkflowPlanNodeExecutions(500, options);
   const byStatus = records.reduce<Record<string, number>>((acc, record) => {
     acc[record.status] = (acc[record.status] || 0) + 1;
     return acc;
@@ -262,12 +297,14 @@ async function executePlanNode({
   planId,
   node,
   dependencyRecords,
+  abortSignal,
 }: {
   detail: WorkflowRunDetail;
   plan: WorkflowDynamicPlan;
   planId: string;
   node: WorkflowPlanNode;
   dependencyRecords: WorkflowPlanNodeExecutionRecord[];
+  abortSignal?: AbortSignal;
 }): Promise<{
   status: WorkflowPlanNodeExecutionStatus;
   output: Record<string, unknown>;
@@ -291,12 +328,13 @@ async function executePlanNode({
   }
 
   for (const toolId of node.toolIds.slice(0, 6)) {
+    throwIfAborted(abortSignal);
     const tool = await getToolDefinition(toolId, { tenantId: detail.run.tenantId });
     const workflowApproved = Boolean(detail.run.approvedAt);
     const dryRun = shouldDryRunWorkflowTool({ toolId, tool, node, workflowApproved });
     const execution = await executeGovernedTool({
       toolId,
-      input: buildToolInput({ detail, plan, planId, node, toolId, dependencyRecords }),
+      input: buildToolInput({ detail, plan, planId, node, toolId }),
       dryRun,
       approved: workflowApproved && !dryRun,
       context: {
@@ -308,6 +346,8 @@ async function executePlanNode({
       approvalReason: detail.run.approvedAt
         ? `Workflow ${detail.run.id} was approved before plan-node execution.`
         : undefined,
+      abortSignal,
+      idempotencyKey: `workflow:${detail.run.id}:plan:${planId}:node:${node.id}:tool:${toolId}`,
     });
     toolExecutions.push({
       id: execution.record.id,
@@ -321,7 +361,9 @@ async function executePlanNode({
     });
   }
 
-  const failed = toolExecutions.find((tool) => tool.status === "failed");
+  const failed = toolExecutions.find(
+    (tool) => tool.status === "failed" || tool.status === "executing",
+  );
   const blocked = toolExecutions.find((tool) => tool.status === "blocked");
   const waitingApproval = toolExecutions.find((tool) => tool.status === "approval_required");
   const status: WorkflowPlanNodeExecutionStatus = failed
@@ -344,7 +386,13 @@ async function executePlanNode({
       dryRunOnly: toolExecutions.length > 0 && toolExecutions.every((tool) => tool.dryRun),
     },
     toolExecutions,
-    error: failed?.reason || blocked?.reason || waitingApproval?.reason,
+    error:
+      failed?.reason ||
+      (failed?.status === "executing"
+        ? "A prior execution has no terminal result; the side effect was not replayed."
+        : undefined) ||
+      blocked?.reason ||
+      waitingApproval?.reason,
   };
 }
 
@@ -373,8 +421,15 @@ export function shouldDryRunWorkflowTool({
     return true;
   }
 
+  if (node.policy === "dry_run" || node.policy === "manual") {
+    return true;
+  }
+
   if (workflowApproved) {
-    return false;
+    // A workflow gate records one plan approval. It cannot satisfy the
+    // independent two-admin quorum required for risk-3 tool execution, so keep
+    // those calls as previews instead of creating detached approval records.
+    return tool.riskLevel >= 3;
   }
 
   if (node.policy !== "auto" || node.approvalRequired || node.riskLevel >= 2 || tool.approvalRequired || tool.riskLevel >= 1) {
@@ -398,14 +453,12 @@ function buildToolInput({
   planId,
   node,
   toolId,
-  dependencyRecords,
 }: {
   detail: WorkflowRunDetail;
   plan: WorkflowDynamicPlan;
   planId: string;
   node: WorkflowPlanNode;
   toolId: string;
-  dependencyRecords: WorkflowPlanNodeExecutionRecord[];
 }): Record<string, unknown> {
   const query = compactText([
     detail.run.goal,
@@ -413,6 +466,23 @@ function buildToolInput({
     node.description,
     node.acceptanceCriteria.join(" "),
   ], 1400);
+  const plannedInput = node.toolInputs?.find(
+    (toolInput) => toolInput.toolId === toolId,
+  );
+  if (plannedInput) {
+    if (Buffer.byteLength(plannedInput.inputJson, "utf8") > 64_000) {
+      throw new Error(`Planned input for ${toolId} exceeds 64,000 bytes.`);
+    }
+    try {
+      const parsed: unknown = JSON.parse(plannedInput.inputJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // The explicit error below keeps malformed reviewed plans fail-closed.
+    }
+    throw new Error(`Planned input for ${toolId} is not a JSON object.`);
+  }
 
   if (toolId === "memory.search" || toolId === "knowledge.search") {
     return { query, limit: 5 };
@@ -462,22 +532,9 @@ function buildToolInput({
     };
   }
 
-  return {
-    goal: detail.run.goal,
-    workflowRunId: detail.run.id,
-    planId,
-    nodeId: node.id,
-    nodeLabel: node.label,
-    nodeDescription: node.description,
-    acceptanceCriteria: node.acceptanceCriteria,
-    expectedOutputs: node.expectedOutputs,
-    connectorTargets: node.connectorTargets,
-    dependencyOutputs: dependencyRecords.map((record) => ({
-      nodeId: record.nodeId,
-      status: record.status,
-      output: record.output,
-    })),
-  };
+  throw new Error(
+    `Workflow plan ${planId} is missing reviewed input for ${toolId} on node ${node.id}.`,
+  );
 }
 
 function buildNodeArtifact({
@@ -505,12 +562,12 @@ function buildNodeArtifact({
 }
 
 async function saveWorkflowPlanNodeExecution(record: WorkflowPlanNodeExecutionRecord) {
-  const nextRecord = {
+  const nextRecord = sanitizeWorkflowPlanNodeExecution({
     ...record,
     tenantId: normalizeTenantId(record.tenantId),
     toolExecutionIds: record.toolExecutionIds || [],
     updatedAt: new Date().toISOString(),
-  };
+  });
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -700,35 +757,41 @@ function stepOutput(detail: WorkflowRunDetail, stepKey: string) {
 }
 
 async function readNodeExecutionLedger() {
-  return readJsonFile<WorkflowNodeExecutionLedger>(getNodeExecutionFile(), { records: [] });
+  const ledger = await readJsonFile<WorkflowNodeExecutionLedger>(
+    getNodeExecutionFile(),
+    { records: [] },
+  );
+  return {
+    records: ledger.records.map(sanitizeWorkflowPlanNodeExecution),
+  };
 }
 
 async function mutateNodeExecutionLedger(mutator: (ledger: WorkflowNodeExecutionLedger) => WorkflowNodeExecutionLedger) {
-  nodeExecutionFileWriteQueue = nodeExecutionFileWriteQueue.then(
-    async () => {
-      const ledger = mutator(await readNodeExecutionLedger());
-      await writeNodeExecutionLedger(ledger);
-    },
-    async () => {
-      const ledger = mutator(await readNodeExecutionLedger());
-      await writeNodeExecutionLedger(ledger);
-    },
+  await updateJsonFile<WorkflowNodeExecutionLedger>(
+    getNodeExecutionFile(),
+    { records: [] },
+    (ledger) => trimNodeExecutionLedger(mutator(ledger)),
   );
-  await nodeExecutionFileWriteQueue;
-}
-
-async function writeNodeExecutionLedger(ledger: WorkflowNodeExecutionLedger) {
-  await writeJsonFile(getNodeExecutionFile(), trimNodeExecutionLedger(ledger));
 }
 
 function trimNodeExecutionLedger(ledger: WorkflowNodeExecutionLedger): WorkflowNodeExecutionLedger {
+  const durable = ledger.records.filter(
+    (record) => record.status === "pending" ||
+      record.status === "running" ||
+      record.status === "waiting_approval",
+  );
+  const terminal = ledger.records.filter(
+    (record) => record.status !== "pending" &&
+      record.status !== "running" &&
+      record.status !== "waiting_approval",
+  );
   return {
-    records: ledger.records.slice(0, 1000),
+    records: [...durable, ...terminal.slice(0, Math.max(0, 1000 - durable.length))],
   };
 }
 
 function workflowPlanNodeExecutionFromRow(row: Record<string, unknown>): WorkflowPlanNodeExecutionRecord {
-  return {
+  return sanitizeWorkflowPlanNodeExecution({
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
     workflowRunId: String(row.workflow_run_id),
@@ -748,6 +811,21 @@ function workflowPlanNodeExecutionFromRow(row: Record<string, unknown>): Workflo
     completedAt: row.completed_at ? normalizeDate(row.completed_at) : undefined,
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
+  });
+}
+
+function sanitizeWorkflowPlanNodeExecution(
+  record: WorkflowPlanNodeExecutionRecord,
+): WorkflowPlanNodeExecutionRecord {
+  return {
+    ...record,
+    input: redactSensitive(record.input) as Record<string, unknown>,
+    output: record.output
+      ? (redactSensitive(record.output) as Record<string, unknown>)
+      : undefined,
+    error: record.error
+      ? String(redactSensitive(record.error)).slice(0, 2_000)
+      : undefined,
   };
 }
 
@@ -768,7 +846,7 @@ function normalizeDate(value: unknown) {
 }
 
 function normalizeTenantId(value?: string) {
-  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+  return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
     .trim()
     .replace(/[^a-zA-Z0-9_.:-]/g, "_")
     .slice(0, 120) || "default";
@@ -793,4 +871,12 @@ function compactText(parts: string[], limit: number) {
 
 function getNodeExecutionFile() {
   return getDataPath("workflow-node-executions.json");
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new DOMException("Workflow plan execution was aborted.", "AbortError");
+  }
 }

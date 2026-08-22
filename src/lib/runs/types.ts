@@ -1,6 +1,12 @@
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 
-export type RunStatus = "running" | "waiting_approval" | "resuming" | "completed" | "failed";
+export type RunStatus =
+  | "running"
+  | "waiting_approval"
+  | "resuming"
+  | "completed"
+  | "failed"
+  | "canceled";
 
 export type AgentRunContinuation = {
   /** Full conversation array for ZDR-safe resume (replaces previousResponseId). */
@@ -22,6 +28,7 @@ export type AgentRunContinuation = {
     role: "viewer" | "operator" | "admin" | "system";
   };
   createdAt: string;
+  resumeClaimedAt?: string;
 };
 
 export type AgentRunRecord = {

@@ -1,3 +1,5 @@
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import { parseBoundedInteger } from "@/lib/http/body";
 import {
   getIncidentAlertTargets,
   getIncidentPlaybooks,
@@ -8,12 +10,15 @@ import {
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const startedAt = Date.now();
   const url = new URL(request.url);
   const status = normalizeStatus(url.searchParams.get("status"));
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 25), 1), 100);
+  const limit = parseBoundedInteger(url.searchParams.get("limit"), 25, {
+    max: 100,
+  });
   console.log(JSON.stringify({
     level: "info",
     msg: "start",
@@ -24,8 +29,9 @@ export async function GET(request: Request) {
     limit,
   }));
 
+  let context: Awaited<ReturnType<typeof authorizeRequest>>;
   try {
-    await authorizeRequest({
+    context = await authorizeRequest({
       request,
       action: "read.security",
       resourceType: "incident",
@@ -45,8 +51,8 @@ export async function GET(request: Request) {
 
   try {
     const [incidents, stats] = await Promise.all([
-      listIncidents({ status, limit }),
-      getIncidentStats(),
+      listIncidents({ tenantId: context.tenantId, status, limit }),
+      getIncidentStats({ tenantId: context.tenantId }),
     ]);
     console.log(JSON.stringify({
       level: "info",

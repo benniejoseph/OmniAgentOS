@@ -1,24 +1,33 @@
 import { z } from "zod";
-import { deleteOpenApiConnector, updateOpenApiConnector } from "@/lib/connectors/openapi-store";
+import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
+import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  deleteOpenApiConnector,
+  getOpenApiConnector,
+  updateOpenApiConnector,
+} from "@/lib/connectors/openapi-store";
+import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
-import { validateConnectorSecretEnvName } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { assertPublicHttpUrl } from "@/lib/security/network";
 
 export const runtime = "nodejs";
+export const PATCH = withDatabaseRequestScope(PATCHHandler);
+export const DELETE = withDatabaseRequestScope(DELETEHandler);
 
 const updateOpenApiConnectorSchema = z
   .object({
     name: z.string().min(1).max(120).optional(),
-    specUrl: z.string().url().nullable().optional(),
-    baseUrl: z.string().url().optional(),
+    specUrl: z.string().url().max(2048).nullable().optional(),
+    baseUrl: z.string().url().max(2048).optional(),
     authType: z.enum(["none", "bearer_env", "api_key_header_env"]).optional(),
-    authTokenEnv: z.string().regex(/^[A-Z0-9_]+$/).nullable().optional(),
+    authTokenEnv: z.string().regex(/^[A-Z0-9_]+$/).max(120).nullable().optional(),
     authHeaderName: z.string().min(1).max(80).nullable().optional(),
     status: z.enum(["active", "error", "disabled"]).optional(),
     defaultRiskLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
     approvalRequired: z.boolean().optional(),
   })
+  .strict()
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one connector field is required.",
   })
@@ -36,14 +45,19 @@ const updateOpenApiConnectorSchema = z
     },
   );
 
-export async function PATCH(
+async function PATCHHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "openapi_connector");
   const { id } = await context.params;
-  const body = await request.json().catch(() => ({}));
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
   const parsed = updateOpenApiConnectorSchema.safeParse(body);
 
   if (!parsed.success) {
@@ -53,14 +67,20 @@ export async function PATCH(
     );
   }
 
-  if (!validateConnectorSecretEnvName(parsed.data.authTokenEnv || undefined)) {
-    return Response.json(
-      {
-        error: "Invalid connector secret env var",
-        message: "Connector secrets must use OMNIAGENT_CONNECTOR_* or OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST and cannot reference platform secrets.",
+  let securityContext;
+  try {
+    securityContext = await authorizeRequest({
+      request,
+      action: "manage.connector",
+      resourceType: "openapi_connector",
+      resourceId: id,
+      metadata: {
+        changedFields: Object.keys(parsed.data),
+        hasSecretBinding: typeof parsed.data.authTokenEnv === "string",
       },
-      { status: 400 },
-    );
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
 
   try {
@@ -77,20 +97,53 @@ export async function PATCH(
     );
   }
 
-  let securityContext;
   try {
-    securityContext = await authorizeRequest({
-      request,
-      action: "manage.connector",
-      resourceType: "openapi_connector",
-      resourceId: id,
-      metadata: body,
+    const existing = await getOpenApiConnector(id, { tenantId: securityContext.tenantId });
+    if (!existing) {
+      return Response.json({ error: "OpenAPI connector not found." }, { status: 404 });
+    }
+    if (parsed.data.status === "active" && !existing.lastImportedAt) {
+      return Response.json(
+        {
+          error: "OpenAPI connector review required.",
+          message:
+            "Import this connector's operations before activating its reviewed contract.",
+        },
+        { status: 409 },
+      );
+    }
+    const nextAuthType = parsed.data.authType || existing.authType;
+    const nextEnvName = parsed.data.authTokenEnv === null
+      ? undefined
+      : parsed.data.authTokenEnv || existing.authTokenEnv;
+    const nextHeaderName = parsed.data.authHeaderName === null
+      ? undefined
+      : parsed.data.authHeaderName || existing.authHeaderName;
+    if (nextAuthType !== "none" && !nextEnvName) {
+      return Response.json(
+        { error: "Invalid OpenAPI connector update", message: "Connector auth requires authTokenEnv." },
+        { status: 400 },
+      );
+    }
+    if (nextAuthType === "api_key_header_env" && !nextHeaderName) {
+      return Response.json(
+        { error: "Invalid OpenAPI connector update", message: "API key auth requires authHeaderName." },
+        { status: 400 },
+      );
+    }
+    const secretBinding = evaluateConnectorSecretBinding({
+      envName: nextAuthType === "none" ? undefined : nextEnvName,
+      tenantId: securityContext.tenantId,
+      targetUrl: parsed.data.baseUrl || existing.baseUrl,
+      role: securityContext.role,
     });
-  } catch (error) {
-    return forbiddenResponse(error);
-  }
+    if (!secretBinding.allowed) {
+      return Response.json(
+        { error: "Invalid connector secret binding", message: secretBinding.reason },
+        { status: 400 },
+      );
+    }
 
-  try {
     const connector = await updateOpenApiConnector(
       id,
       {
@@ -148,7 +201,7 @@ export async function PATCH(
   }
 }
 
-export async function DELETE(
+async function DELETEHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {

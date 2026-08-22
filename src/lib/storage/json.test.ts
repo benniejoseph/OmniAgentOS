@@ -1,8 +1,13 @@
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { readJsonFile, updateJsonFile, writeJsonFile } from "@/lib/storage/json";
+
+const execFileAsync = promisify(execFile);
 
 async function tempFile(name = "store.json") {
   const dir = await mkdtemp(path.join(tmpdir(), "omni-json-"));
@@ -41,5 +46,56 @@ describe("json storage", () => {
 
     const result = JSON.parse(await readFile(file, "utf8")) as { count: number };
     expect(result.count).toBe(50);
+  });
+
+  it("uses private directory and file permissions", async () => {
+    const file = await tempFile();
+    await writeJsonFile(file, { private: true });
+    expect((await stat(path.dirname(file))).mode & 0o777).toBe(0o700);
+    expect((await stat(file)).mode & 0o777).toBe(0o600);
+  });
+
+  it("serializes updates across separate processes", async () => {
+    const file = await tempFile("cross-process.json");
+    await writeJsonFile(file, { count: 0 });
+    const moduleUrl = pathToFileURL(path.resolve(process.cwd(), "src/lib/storage/json.ts")).href;
+    const script = [
+      `import { updateJsonFile } from ${JSON.stringify(moduleUrl)};`,
+      `const file = ${JSON.stringify(file)};`,
+      "for (let index = 0; index < 20; index += 1) {",
+      "  await updateJsonFile(file, { count: 0 }, (current) => ({ count: current.count + 1 }));",
+      "}",
+    ].join("\n");
+
+    await Promise.all(
+      Array.from({ length: 4 }, () =>
+        execFileAsync(process.execPath, [
+          "--experimental-strip-types",
+          "--input-type=module",
+          "--eval",
+          script,
+        ]),
+      ),
+    );
+
+    expect(await readJsonFile(file, { count: 0 })).toEqual({ count: 80 });
+  });
+
+  it("recovers an abandoned stale process lock", async () => {
+    const file = await tempFile("stale-lock.json");
+    await writeJsonFile(file, { count: 0 });
+    const lockPath = `${file}.lock`;
+    await mkdir(lockPath, { mode: 0o700 });
+    await writeFile(
+      path.join(lockPath, "owner.json"),
+      JSON.stringify({ pid: 99_999_999, token: "abandoned" }),
+      { mode: 0o600 },
+    );
+    const staleAt = new Date(Date.now() - 60_000);
+    await utimes(lockPath, staleAt, staleAt);
+
+    await expect(
+      updateJsonFile(file, { count: 0 }, (current) => ({ count: current.count + 1 })),
+    ).resolves.toEqual({ count: 1 });
   });
 });

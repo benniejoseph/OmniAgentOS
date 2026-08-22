@@ -6,15 +6,17 @@ import {
 import { runSystemDiagnostics } from "@/lib/diagnostics/health";
 
 export async function runIncidentPlaybook({
+  tenantId,
   incidentId,
   playbookId,
   actorId,
 }: {
+  tenantId: string;
   incidentId: string;
   playbookId: string;
   actorId: string;
 }) {
-  const incident = await getIncident(incidentId);
+  const incident = await getIncident(incidentId, { tenantId });
   if (!incident) {
     return null;
   }
@@ -26,6 +28,7 @@ export async function runIncidentPlaybook({
 
   if (playbook.automation === "manual") {
     const event = await recordIncidentEvent({
+      tenantId,
       incidentId,
       type: "playbook_run",
       actorId,
@@ -40,10 +43,11 @@ export async function runIncidentPlaybook({
   }
 
   const check = playbook.automation === "diagnostics_repair"
-    ? await runSystemDiagnostics({ scope: "repair", repair: true })
-    : await runSystemDiagnostics({ scope: "diagnostics" });
+    ? await runSystemDiagnostics({ scope: "repair", repair: true, tenantId })
+    : await runSystemDiagnostics({ scope: "diagnostics", tenantId });
   const completedRecoveries = check.recoveryActions.filter((action) => action.status === "completed").length;
   const event = await recordIncidentEvent({
+    tenantId,
     incidentId,
     type: "playbook_run",
     actorId,

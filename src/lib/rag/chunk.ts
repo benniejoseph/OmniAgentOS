@@ -34,6 +34,10 @@ export function chunkText(input: string, maxChars = 1200, overlapChars = 160): T
       continue;
     }
 
+    // A long paragraph is emitted directly below. Do not leave the overlap
+    // tail from the preceding chunk in `current`, or it will be emitted again
+    // as a standalone duplicate after the long paragraph.
+    current = "";
     const step = Math.max(1, maxChars - boundedOverlap);
     for (let i = 0; i < paragraph.length; i += step) {
       chunks.push({
