@@ -615,17 +615,10 @@ export async function getMaintenanceDatabaseRoleSafety() {
       sameDatabase: false,
     };
   }
-  const [runtimeIdentity, maintenanceState] = await Promise.all([
-    readDatabaseIdentity(getRawPg()),
-    (async () => {
-      const maintenancePg = getRawMaintenancePg();
-      const identity = await readDatabaseIdentity(maintenancePg);
-      const role = await readRuntimeDatabaseRoleSafety(maintenancePg);
-      return { identity, role };
-    })(),
-  ]);
-  const maintenanceIdentity = maintenanceState.identity;
-  const role = maintenanceState.role;
+  const runtimeIdentity = await readDatabaseIdentity(getRawPg());
+  const maintenancePg = getRawMaintenancePg();
+  const maintenanceIdentity = await readDatabaseIdentity(maintenancePg);
+  const role = await readRuntimeDatabaseRoleSafety(maintenancePg);
   const sameDatabase = Boolean(
     runtimeIdentity &&
       maintenanceIdentity &&
@@ -679,24 +672,11 @@ async function assertMaintenanceDatabaseRoleSafety(runtimePg: postgres.Sql) {
       "OMNIAGENT_MAINTENANCE_DATABASE_URL is required in production for audited all-tenant and opaque-identity database work.",
     );
   }
+  const runtimeIdentity = await readDatabaseIdentity(runtimePg);
+  const runtimeRole = await readRuntimeDatabaseRoleSafety(runtimePg);
   const maintenancePg = getRawMaintenancePg();
-  const [runtimeState, maintenanceState] =
-    await Promise.all([
-      (async () => {
-        const identity = await readDatabaseIdentity(runtimePg);
-        const role = await readRuntimeDatabaseRoleSafety(runtimePg);
-        return { identity, role };
-      })(),
-      (async () => {
-        const identity = await readDatabaseIdentity(maintenancePg);
-        const role = await readRuntimeDatabaseRoleSafety(maintenancePg);
-        return { identity, role };
-      })(),
-    ]);
-  const runtimeIdentity = runtimeState.identity;
-  const runtimeRole = runtimeState.role;
-  const maintenanceIdentity = maintenanceState.identity;
-  const maintenanceRole = maintenanceState.role;
+  const maintenanceIdentity = await readDatabaseIdentity(maintenancePg);
+  const maintenanceRole = await readRuntimeDatabaseRoleSafety(maintenancePg);
   if (
     !runtimeIdentity ||
     !maintenanceIdentity ||

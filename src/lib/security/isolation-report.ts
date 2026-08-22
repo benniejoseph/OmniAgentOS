@@ -95,42 +95,40 @@ export async function getTenantIsolationReport(tenantId: string): Promise<Tenant
   const sql = getSql();
   const placeholders = expectedTables.map((_, index) => `$${index + 1}`).join(", ");
 
-  const [catalogRows, columnRows, policyRows, latestEval] = await Promise.all([
-    sql.query(
-      `
-        SELECT c.relname AS table_name,
-               c.relrowsecurity AS rls_enabled,
-               c.relforcerowsecurity AS force_rls
-        FROM pg_class c
-        INNER JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = current_schema()
-          AND c.relkind = 'r'
-          AND c.relname IN (${placeholders})
-      `,
-      expectedTables,
-    ),
-    sql.query(
-      `
-        SELECT table_name
-        FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND column_name = 'tenant_id'
-          AND table_name IN (${placeholders})
-      `,
-      expectedTables,
-    ),
-    sql.query(
-      `
-        SELECT tablename AS table_name
-        FROM pg_policies
-        WHERE schemaname = current_schema()
-          AND policyname = 'omni_tenant_isolation'
-          AND tablename IN (${placeholders})
-      `,
-      expectedTables,
-    ),
-    latestDatabaseTenantIsolationEval(),
-  ]);
+  const catalogRows = await sql.query(
+    `
+      SELECT c.relname AS table_name,
+             c.relrowsecurity AS rls_enabled,
+             c.relforcerowsecurity AS force_rls
+      FROM pg_class c
+      INNER JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = current_schema()
+        AND c.relkind = 'r'
+        AND c.relname IN (${placeholders})
+    `,
+    expectedTables,
+  );
+  const columnRows = await sql.query(
+    `
+      SELECT table_name
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND column_name = 'tenant_id'
+        AND table_name IN (${placeholders})
+    `,
+    expectedTables,
+  );
+  const policyRows = await sql.query(
+    `
+      SELECT tablename AS table_name
+      FROM pg_policies
+      WHERE schemaname = current_schema()
+        AND policyname = 'omni_tenant_isolation'
+        AND tablename IN (${placeholders})
+    `,
+    expectedTables,
+  );
+  const latestEval = await latestDatabaseTenantIsolationEval();
 
   const catalogByTable = new Map(catalogRows.map((row) => [String(row.table_name), row]));
   const tenantColumnTables = new Set(columnRows.map((row) => String(row.table_name)));

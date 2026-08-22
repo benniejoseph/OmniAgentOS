@@ -81,28 +81,22 @@ const advisorySloPolicyIds = new Set([
 export async function getReleaseEvidenceReport(tenantId: string): Promise<ReleaseEvidenceReport> {
   const checkedAt = new Date().toISOString();
   const deployment = getDeploymentEvidence();
-  const [
-    tenantIsolation,
-    observabilitySlo,
-    databaseRole,
-    maintenanceDatabaseRole,
-    openAi,
-    workerHeartbeat,
-  ] = await Promise.all([
-    getTenantIsolationReport(tenantId),
-    getObservabilitySloSnapshot({ tenantId }),
-    getRuntimeDatabaseRoleSafety(),
-    getMaintenanceDatabaseRoleSafety(),
-    deployment.environment === "production"
-      ? getOpenAIReadiness()
-      : Promise.resolve({
-          configured: hasOpenAIKey(),
-          reachable: hasOpenAIKey(),
-          model: process.env.OMNIAGENT_AGENT_MODEL || "configured model",
-          checkedAt,
-        }),
-    getLatestWorkerHeartbeat(),
-  ]);
+  // The runtime and maintenance clients intentionally use one connection each.
+  // Keep release checks ordered so nested tenant-scoped transactions cannot
+  // reserve both pools and wait on one another under production load.
+  const tenantIsolation = await getTenantIsolationReport(tenantId);
+  const observabilitySlo = await getObservabilitySloSnapshot({ tenantId });
+  const databaseRole = await getRuntimeDatabaseRoleSafety();
+  const maintenanceDatabaseRole = await getMaintenanceDatabaseRoleSafety();
+  const openAi = deployment.environment === "production"
+    ? await getOpenAIReadiness()
+    : {
+        configured: hasOpenAIKey(),
+        reachable: hasOpenAIKey(),
+        model: process.env.OMNIAGENT_AGENT_MODEL || "configured model",
+        checkedAt,
+      };
+  const workerHeartbeat = await getLatestWorkerHeartbeat();
 
   const criticalBlockingBreaches = observabilitySlo.breaches.filter(
     (breach) => breach.severity === "critical" && !advisorySloPolicyIds.has(breach.policy.id),
