@@ -1,4 +1,4 @@
-app = "omniagent-worker"
+app = "omniagent-os-worker"
 primary_region = "sin"
 kill_signal = "SIGTERM"
 kill_timeout = "15s"
