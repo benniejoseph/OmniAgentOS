@@ -4,6 +4,7 @@ import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observab
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 export const GET = withDatabaseRequestScope(GETHandler);
 
 async function GETHandler(request: Request) {

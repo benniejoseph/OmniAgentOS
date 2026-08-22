@@ -1,5 +1,5 @@
 const DEFAULT_TIMEOUT_MS = 15_000;
-const MAX_TIMEOUT_MS = 120_000;
+const MAX_TIMEOUT_MS = 300_000;
 
 export function getSmokeBaseUrl() {
   const value = process.env.BASE_URL?.trim();

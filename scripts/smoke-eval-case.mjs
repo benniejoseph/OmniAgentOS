@@ -51,6 +51,16 @@ if (failures.length) {
 }
 
 async function resolveAuthHeaders() {
+  if (internalSecret) {
+    return {
+      ...syntheticHeaders,
+      "x-omni-internal-auth": internalSecret,
+      "x-omni-tenant-id": process.env.SMOKE_TENANT_ID || "production_smoke",
+      "x-omni-user-id": process.env.SMOKE_ACTOR_ID || "production-smoke",
+      "x-omni-user-role": "admin",
+    };
+  }
+
   if (email && password) {
     const login = await request("/api/auth/login", {
       method: "POST",
@@ -65,16 +75,6 @@ async function resolveAuthHeaders() {
     const cookie = (login.headers.get("set-cookie") || "").split(";")[0];
     checks.push(assert(Boolean(cookie), "session cookie returned", "missing session cookie"));
     return cookie ? { cookie, origin: baseUrl, ...syntheticHeaders } : undefined;
-  }
-
-  if (internalSecret) {
-    return {
-      ...syntheticHeaders,
-      "x-omni-internal-auth": internalSecret,
-      "x-omni-tenant-id": process.env.SMOKE_TENANT_ID || "production_smoke",
-      "x-omni-user-id": process.env.SMOKE_ACTOR_ID || "production-smoke",
-      "x-omni-user-role": "admin",
-    };
   }
 
   return undefined;

@@ -253,6 +253,13 @@ async function POSTHandler(request: Request) {
       if (!revisionCheck.accepted) {
         return workerRevisionErrorResponse(revisionCheck);
       }
+      const workerHeartbeat = await recordWorkerHeartbeat({
+        instanceId:
+          request.headers.get("x-omni-worker-instance") ||
+          context.actorId,
+        revision:
+          request.headers.get("x-omni-worker-revision") || undefined,
+      });
       const scheduled = await runAllTenantScheduledWork({
         trigger: "dedicated_worker",
         actorId: context.actorId,
@@ -264,13 +271,6 @@ async function POSTHandler(request: Request) {
         alertDispatchLimit: parsed.data.alertDispatchLimit || ALERT_SCHEDULER_DISPATCH_LIMIT,
         tenantCursor: parsed.data.tenantCursor,
         maintenanceTenantLimit: parsed.data.maintenanceTenantLimit || 25,
-      });
-      const workerHeartbeat = await recordWorkerHeartbeat({
-        instanceId:
-          request.headers.get("x-omni-worker-instance") ||
-          context.actorId,
-        revision:
-          request.headers.get("x-omni-worker-revision") || undefined,
       });
       await recordRuntimeEventSafely({
         category: "workflow",
