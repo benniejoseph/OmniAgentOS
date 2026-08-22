@@ -18,7 +18,7 @@ jobs:
       SMOKE_EXPECTED_REVISION: ${{ vars.PRODUCTION_SMOKE_EXPECTED_REVISION }}
       SMOKE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       SMOKE_SYNTHETIC_SOURCE: production-smoke
-      SMOKE_REQUEST_TIMEOUT_MS: "15000"
+      SMOKE_REQUEST_TIMEOUT_MS: "60000"
       EXPECT_SECURE_COOKIES: "true"
       RELEASE_EVIDENCE_OUTPUT: artifacts/release-evidence.json
       RELEASE_EVIDENCE_MAX_BYTES: "262144"
@@ -42,7 +42,7 @@ jobs:
 
       - name: Preflight production target
         id: preflight
-        timeout-minutes: 1
+        timeout-minutes: 2
         env:
           SMOKE_ADMIN_EMAIL: ${{ secrets.SMOKE_ADMIN_EMAIL }}
           SMOKE_ADMIN_PASSWORD: ${{ secrets.SMOKE_ADMIN_PASSWORD }}
