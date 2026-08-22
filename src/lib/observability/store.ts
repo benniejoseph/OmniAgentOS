@@ -204,6 +204,7 @@ export async function listObservabilityEvents({
   route,
   tenantId,
   limit = 50,
+  sql: providedSql,
 }: {
   level?: ObservabilityLevel | "all";
   category?: ObservabilityCategory | "all";
@@ -214,11 +215,14 @@ export async function listObservabilityEvents({
   route?: string;
   tenantId?: string;
   limit?: number;
+  sql?: ReturnType<typeof getSql>;
 } = {}) {
   const boundedLimit = Math.min(Math.max(limit, 1), 200);
 
   if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
+    if (!providedSql) {
+      await ensureDatabaseSchema();
+    }
     const filters: string[] = [];
     const params: Array<string | number> = [];
     if (level && level !== "all") {
@@ -251,10 +255,10 @@ export async function listObservabilityEvents({
     }
     if (tenantId) {
       params.push(normalizeTenantId(tenantId));
-      filters.push(`COALESCE(tenant_id, 'default') = $${params.length}`);
+      filters.push(`tenant_id = $${params.length}`);
     }
     params.push(boundedLimit);
-    const rows = await getSql().query(
+    const rows = await (providedSql || getSql()).query(
       `
         SELECT *
         FROM omni_observability_events
@@ -280,8 +284,17 @@ export async function listObservabilityEvents({
     .slice(0, boundedLimit);
 }
 
-export async function getObservabilityStats(options: { tenantId?: string } = {}): Promise<ObservabilityStats> {
-  const events = await listObservabilityEvents({ limit: 500, tenantId: options.tenantId });
+export async function getObservabilityStats(
+  options: {
+    tenantId?: string;
+    sql?: ReturnType<typeof getSql>;
+  } = {},
+): Promise<ObservabilityStats> {
+  const events = await listObservabilityEvents({
+    limit: 500,
+    tenantId: options.tenantId,
+    sql: options.sql,
+  });
   const sloEvents = events.filter((event) => !isSloExcludedEvent(event));
   const durations = sloEvents
     .map((event) => event.durationMs)

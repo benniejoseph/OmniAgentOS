@@ -1,6 +1,9 @@
 import { enqueueAlertDeliveriesForIncident, type AlertDeliveryRecord } from "@/lib/diagnostics/alerts";
 import {
+  ensureDatabaseSchema,
   getDatabaseTenantContext,
+  getSql,
+  hasDatabaseUrl,
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
 import {
@@ -87,10 +90,33 @@ async function getObservabilitySloSnapshotForTenant({
   policies?: ObservabilitySloPolicy[];
   tenantId: string;
 }): Promise<ObservabilitySloSnapshot> {
-  const stats = await getObservabilityStats({ tenantId });
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction((sql: ReturnType<typeof getSql>) =>
+      buildObservabilitySloSnapshot({
+        policies,
+        tenantId,
+        sql,
+      })
+    ) as Promise<ObservabilitySloSnapshot>;
+  }
+  return buildObservabilitySloSnapshot({ policies, tenantId });
+}
+
+async function buildObservabilitySloSnapshot({
+  policies,
+  tenantId,
+  sql,
+}: {
+  policies?: ObservabilitySloPolicy[];
+  tenantId: string;
+  sql?: ReturnType<typeof getSql>;
+}): Promise<ObservabilitySloSnapshot> {
+  const stats = await getObservabilityStats({ tenantId, sql });
   const enabledPolicies = (policies || await listObservabilitySloPolicies({
     tenantId,
     includeDisabled: false,
+    sql,
   }))
     .filter((policy) => policy.enabled);
   const evaluations = enabledPolicies.map((policy) => evaluateSloPolicy(policy, stats));

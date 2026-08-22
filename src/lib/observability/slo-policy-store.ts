@@ -574,31 +574,46 @@ export async function resetObservabilitySloApprovalPolicyConfig({
 export async function listObservabilitySloPolicies({
   tenantId: requestedTenantId,
   includeDisabled = true,
+  sql: providedSql,
 }: {
   tenantId?: string;
   includeDisabled?: boolean;
+  sql?: ReturnType<typeof getSql>;
 } = {}) {
   const tenantId = normalizeTenantId(requestedTenantId);
-  await ensureDefaultSloPolicies({ tenantId });
 
   if (hasDatabaseUrl()) {
-    const rows = includeDisabled
-      ? await getSql()`
-          SELECT *
-          FROM omni_observability_slo_policies
-          WHERE tenant_id = ${tenantId}
-          ORDER BY updated_at DESC, id ASC
-        `
-      : await getSql()`
-          SELECT *
-          FROM omni_observability_slo_policies
-          WHERE tenant_id = ${tenantId}
-            AND enabled = TRUE
-          ORDER BY updated_at DESC, id ASC
-        `;
-    return rows.map(sloPolicyFromRow);
+    const readPolicies = async (sql: ReturnType<typeof getSql>) => {
+      const selectPolicies = () => sql`
+        SELECT *
+        FROM omni_observability_slo_policies
+        WHERE tenant_id = ${tenantId}
+        ORDER BY updated_at DESC, id ASC
+      `;
+      let rows = await selectPolicies();
+      const existingIds = new Set(
+        rows.map((row) => sloPolicyFromRow(row).id),
+      );
+      const defaultsMissing = getDefaultObservabilitySloPolicies()
+        .some((policy) => !existingIds.has(policy.id));
+      if (defaultsMissing) {
+        await ensureDefaultSloPolicies({ tenantId, sql });
+        rows = await selectPolicies();
+      }
+      return rows
+        .map(sloPolicyFromRow)
+        .filter((policy) => includeDisabled || policy.enabled);
+    };
+    if (providedSql) {
+      return readPolicies(providedSql);
+    }
+    await ensureDatabaseSchema();
+    return getSql().transaction(readPolicies) as Promise<
+      ObservabilitySloPolicy[]
+    >;
   }
 
+  await ensureDefaultSloPolicies({ tenantId });
   const ledger = await readSloPolicyLedger();
   return ledger.policies
     .filter((policy) => normalizeTenantId(policy.tenantId) === tenantId)
@@ -1232,12 +1247,14 @@ export function getSloPolicyApprovalProgress(change: ObservabilitySloPolicyChang
 }
 
 async function ensureDefaultSloPolicies(
-  options: { tenantId?: string } = {},
+  options: {
+    tenantId?: string;
+    sql?: ReturnType<typeof getSql>;
+  } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    const seedPolicies = async (sql: ReturnType<typeof getSql>) => {
       await lockSloPolicyResource(sql, tenantId, "defaults");
       for (const policy of getDefaultObservabilitySloPolicies()) {
         await insertDefaultPolicy(
@@ -1245,7 +1262,13 @@ async function ensureDefaultSloPolicies(
           sql,
         );
       }
-    });
+    };
+    if (options.sql) {
+      await seedPolicies(options.sql);
+      return;
+    }
+    await ensureDatabaseSchema();
+    await getSql().transaction(seedPolicies);
     return;
   }
 
