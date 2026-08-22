@@ -902,7 +902,15 @@ function selectToolIds(goal: string, candidates: PlannerToolCandidate[]) {
     if (selected.size >= 8) {
       break;
     }
-    if (candidate.score >= 0.25 && candidate.status === "active") {
+    const hasDeterministicInput =
+      toolsWithDerivedWorkflowInput.has(candidate.id) ||
+      (candidate.id === "http.request" &&
+        /https?:\/\/[^\s<>"']+/i.test(goal));
+    if (
+      candidate.score >= 0.25 &&
+      candidate.status === "active" &&
+      hasDeterministicInput
+    ) {
       selected.add(candidate.id);
     }
   }
