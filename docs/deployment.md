@@ -24,6 +24,7 @@ Production always enables auth even when `OMNIAGENT_AUTH_ENABLED=false`. Vercel 
 `.env.example` is the complete copyable reference. Runtime groups are:
 
 - Models and retrieval: `OPENAI_AGENT_MODEL`, `OPENAI_WEB_SEARCH_MODEL`, `OPENAI_EMBEDDING_MODEL`, `OPENAI_EMBEDDING_DIMENSIONS`, and `OMNIAGENT_WEB_SEARCH_TIMEOUT_MS`.
+- Database concurrency: `OMNIAGENT_DATABASE_POOL_MAX` bounds each process's runtime and maintenance pools. Production defaults to 4 so overlapping requests cannot be starved by a long workflow tick; size it against the upstream pooler's connection budget.
 - Agent limits: `OMNIAGENT_AGENT_MAX_TOOL_STEPS`, `OMNIAGENT_AGENT_MAX_MESSAGE_CHARS`, `OMNIAGENT_AGENT_MAX_MESSAGES`, `OMNIAGENT_AGENT_RUNS_PER_MINUTE`, `OMNIAGENT_AGENT_REASONING_EFFORT`, and `OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS`.
 - Workflow limits: `OMNIAGENT_QUEUE_LEASE_SECONDS`, `OMNIAGENT_WORKFLOW_DRAIN_LIMIT`, `OMNIAGENT_WORKFLOW_PLANNER_TIMEOUT_MS`, and `OMNIAGENT_WORKFLOW_EXECUTOR_TIMEOUT_MS`.
 - Identity: `OMNIAGENT_DEFAULT_TENANT`, `OMNIAGENT_DEFAULT_ACTOR`, `OMNIAGENT_DEFAULT_ROLE`, `OMNIAGENT_SESSION_DAYS`, bootstrap name/tenant, and auth mode.

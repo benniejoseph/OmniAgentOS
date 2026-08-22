@@ -104,6 +104,16 @@ export function hasMaintenanceDatabaseUrl() {
   return Boolean(process.env.OMNIAGENT_MAINTENANCE_DATABASE_URL?.trim());
 }
 
+export function getDatabasePoolMax() {
+  const configured = Number(process.env.OMNIAGENT_DATABASE_POOL_MAX);
+  if (Number.isInteger(configured) && configured > 0) {
+    return Math.min(configured, 20);
+  }
+  // Production runtimes can serve overlapping requests in one process. A
+  // single connection lets a long workflow tick starve unrelated reads.
+  return process.env.NODE_ENV === "production" ? 4 : 1;
+}
+
 export async function closeDatabaseClient() {
   if (sqlClient) {
     await sqlClient.end({ timeout: 5 });
@@ -747,7 +757,7 @@ function createPostgresClient(databaseUrl: string, label: string) {
   return postgres(databaseUrl, {
     prepare: false, // required for Supabase transaction-mode pooler (Supavisor)
     ssl: databaseSslConfiguration(databaseUrl, label),
-    max: 1,
+    max: getDatabasePoolMax(),
     idle_timeout: 20,
     connect_timeout: 10,
     // Under prepare:false (required by the pooler) the driver returns json/jsonb

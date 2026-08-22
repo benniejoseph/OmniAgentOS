@@ -2,11 +2,33 @@ import { describe, expect, it, vi } from "vitest";
 import {
   databaseSchemaMigrations,
   enterDatabaseTenantContext,
+  getDatabasePoolMax,
   getDatabaseTenantContext,
   getPendingSchemaMigrationVersions,
   validateSchemaMigrationMarkers,
   withDatabaseRequestScope,
 } from "@/lib/db/client";
+
+describe("database pool sizing", () => {
+  it("allows overlapping production requests without unbounded connections", () => {
+    try {
+      vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "");
+      vi.stubEnv("NODE_ENV", "test");
+      expect(getDatabasePoolMax()).toBe(1);
+
+      vi.stubEnv("NODE_ENV", "production");
+      expect(getDatabasePoolMax()).toBe(4);
+
+      vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "8");
+      expect(getDatabasePoolMax()).toBe(8);
+
+      vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "200");
+      expect(getDatabasePoolMax()).toBe(20);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 describe("ordered database schema versions", () => {
   it("declares unique, strictly increasing versions", () => {

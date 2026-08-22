@@ -37,7 +37,7 @@ afterEach(() => {
 });
 
 describe("release evidence", () => {
-  it("serializes collectors that share single-connection database pools", async () => {
+  it("serializes collectors to keep shared database pool pressure bounded", async () => {
     const revision = "release-revision";
     vi.stubEnv("VERCEL", "1");
     vi.stubEnv("VERCEL_ENV", "production");

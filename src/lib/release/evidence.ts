@@ -81,9 +81,9 @@ const advisorySloPolicyIds = new Set([
 export async function getReleaseEvidenceReport(tenantId: string): Promise<ReleaseEvidenceReport> {
   const checkedAt = new Date().toISOString();
   const deployment = getDeploymentEvidence();
-  // The runtime and maintenance clients intentionally use one connection each.
-  // Keep release checks ordered so nested tenant-scoped transactions cannot
-  // reserve both pools and wait on one another under production load.
+  // Keep release checks ordered to minimize pool pressure and ensure one
+  // collector cannot reserve runtime and maintenance connections while another
+  // collector waits for them under production load.
   const tenantIsolation = await getTenantIsolationReport(tenantId);
   const observabilitySlo = await getObservabilitySloSnapshot({ tenantId });
   const databaseRole = await getRuntimeDatabaseRoleSafety();
