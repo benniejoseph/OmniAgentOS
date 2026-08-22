@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, readFile, stat, writeFile } from "node:fs/promises";
+import { access, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
@@ -55,48 +55,16 @@ await access(backupInput);
 const manifestPath = `${backupInput}.manifest.json`;
 const backupManifest = await readAndVerifyManifest(manifestPath, backupInput);
 const backupMigrations = backupManifest.schemaMigrations;
-const latestSchemaVersion = backupMigrations.at(-1).version;
+const latestSchemaVersion = backupMigrations.at(-1)?.version || 0;
 const expectedMigrationPredicate = backupMigrations
   .map(
     (migration) =>
       `(version = ${migration.version} AND name = ${sqlLiteral(migration.name)} ` +
       `AND checksum = ${sqlLiteral(migration.checksum)})`,
   )
-  .join(" OR ");
-const expectedTableRowCounts = backupManifest.tableRowCounts;
-const expectedTableNames = Object.keys(expectedTableRowCounts).sort();
-const expectedForcedRlsTables = backupManifest.forcedRlsTables;
-const restoredTableRowCountsExpression = tableRowCountsSql(
-  expectedTableRowCounts,
-);
-const restoredDatabaseIdentityExpression = backupManifest.sourceDatabaseIdentity
-  .omniDatabaseId
-  ? "(SELECT id FROM omni_database_identity WHERE singleton = TRUE)"
-  : "NULL";
-const startedAt = new Date();
-const restoreEnvironment = postgresEnvironment(restoreUrl);
-
-try {
-  await run("pg_restore", [
-    "--exit-on-error",
-    "--clean",
-    "--if-exists",
-    "--no-owner",
-    "--no-acl",
-    "--dbname",
-    restoreEnvironment.PGDATABASE,
-    backupInput,
-  ], restoreEnvironment);
-
-  const validationText = await runCapture("psql", [
-    "--no-psqlrc",
-    "--tuples-only",
-    "--no-align",
-    "--set",
-    "ON_ERROR_STOP=1",
-    "--command",
-    `
-      SELECT json_build_object(
+  .join(" OR ") || "FALSE";
+const migrationValidationFields = backupMigrations.length
+  ? `
         'migrationCount', (
           SELECT COUNT(*)::int
           FROM omni_schema_version
@@ -117,7 +85,79 @@ try {
           FROM omni_schema_version
           WHERE version IS NOT NULL
             AND NOT (${expectedMigrationPredicate})
+        )`
+  : `
+        'migrationCount', 0,
+        'latestMigration', 0,
+        'validMigrationCount', 0,
+        'unknownOrChangedMigrationCount', 0,
+        'legacyMigrationColumns', (
+          SELECT COALESCE(
+            json_agg(column_name ORDER BY ordinal_position),
+            '[]'::json
+          )
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'omni_schema_version'
         ),
+        'legacyMigrationRows', (
+          SELECT COUNT(*)::int FROM omni_schema_version
+        )`;
+const expectedTableRowCounts = backupManifest.tableRowCounts;
+const expectedTableNames = Object.keys(expectedTableRowCounts).sort();
+const expectedForcedRlsTables = backupManifest.forcedRlsTables;
+const restoredTableRowCountsExpression = tableRowCountsSql(
+  expectedTableRowCounts,
+);
+const restoredDatabaseIdentityExpression = backupManifest.sourceDatabaseIdentity
+  .omniDatabaseId
+  ? "(SELECT id FROM omni_database_identity WHERE singleton = TRUE)"
+  : "NULL";
+const startedAt = new Date();
+const restoreEnvironment = postgresEnvironment(restoreUrl);
+const restoreListPath = `${backupInput}.restore-list-${process.pid}`;
+const archiveList = await runCapture(
+  "pg_restore",
+  ["--list", backupInput],
+  process.env,
+);
+const restoreList = archiveList
+  .split("\n")
+  .map((line) =>
+    / SCHEMA - public /.test(line) || / COMMENT - SCHEMA public /.test(line)
+      ? `; excluded ${line}`
+      : line,
+  )
+  .join("\n");
+await writeFile(restoreListPath, restoreList, {
+  encoding: "utf8",
+  mode: 0o600,
+});
+
+try {
+  await run("pg_restore", [
+    "--exit-on-error",
+    "--clean",
+    "--if-exists",
+    "--no-owner",
+    "--no-acl",
+    "--use-list",
+    restoreListPath,
+    "--dbname",
+    restoreEnvironment.PGDATABASE,
+    backupInput,
+  ], restoreEnvironment);
+
+  const validationText = await runCapture("psql", [
+    "--no-psqlrc",
+    "--tuples-only",
+    "--no-align",
+    "--set",
+    "ON_ERROR_STOP=1",
+    "--command",
+    `
+      SELECT json_build_object(
+        ${migrationValidationFields},
         'forcedRlsTableCount', (
           SELECT COUNT(*)::int
           FROM pg_class
@@ -155,14 +195,17 @@ try {
     `,
   ], restoreEnvironment);
   const validation = JSON.parse(validationText.trim());
-  if (
-    validation.migrationCount !== backupMigrations.length ||
-    validation.latestMigration !== latestSchemaVersion ||
-    validation.validMigrationCount !== backupMigrations.length ||
-    validation.unknownOrChangedMigrationCount !== 0
-  ) {
+  const migrationMarkersValid = backupMigrations.length
+    ? validation.migrationCount === backupMigrations.length &&
+      validation.latestMigration === latestSchemaVersion &&
+      validation.validMigrationCount === backupMigrations.length &&
+      validation.unknownOrChangedMigrationCount === 0
+    : JSON.stringify(validation.legacyMigrationColumns) ===
+        JSON.stringify(["applied_at"]) &&
+      validation.legacyMigrationRows >= 1;
+  if (!migrationMarkersValid) {
     throw new Error(
-      "Restored database migration markers do not match this release.",
+      "Restored database migration markers do not match the backup.",
     );
   }
   if (
@@ -215,6 +258,7 @@ try {
     encoding: "utf8",
     mode: 0o600,
   });
+  await rm(restoreListPath, { force: true });
   console.log(JSON.stringify({
     level: "info",
     message: "Database restore drill passed.",
@@ -222,6 +266,7 @@ try {
     validation,
   }));
 } catch (error) {
+  await rm(restoreListPath, { force: true });
   fail(error instanceof Error ? error.message : "Database restore drill failed.");
 }
 
@@ -260,7 +305,6 @@ async function readAndVerifyManifest(manifestPath, backupFile) {
 function isSchemaMigrationPrefix(value) {
   return (
     Array.isArray(value) &&
-    value.length > 0 &&
     value.length <= schemaMigrations.length &&
     JSON.stringify(value) ===
       JSON.stringify(schemaMigrations.slice(0, value.length))

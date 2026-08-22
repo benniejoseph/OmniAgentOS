@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import postgres from "postgres";
 
 const schemaMigrations = JSON.parse(
   await readFile(new URL("../schema-migrations.json", import.meta.url), "utf8"),
@@ -55,27 +56,38 @@ try {
   const sourceForcedRlsTables = await readDatabaseForcedRlsTables(
     backupDatabaseUrl,
   );
-  const sourceTableRowCounts = await readDatabaseTableRowCounts(
-    backupDatabaseUrl,
-  );
-  await run("pg_dump", [
-    "--format=custom",
-    "--compress=9",
-    "--no-owner",
-    "--no-acl",
-    "--file",
-    temporaryOutput,
-  ], postgresEnvironment(backupDatabaseUrl));
-  const postDumpTableRowCounts = await readDatabaseTableRowCounts(
-    backupDatabaseUrl,
-  );
-  if (
-    JSON.stringify(sourceTableRowCounts) !==
-    JSON.stringify(postDumpTableRowCounts)
-  ) {
-    throw new Error(
-      "Database row counts changed while the backup was captured; retry from a stable source snapshot.",
+  const snapshotClient = postgres(backupDatabaseUrl, {
+    max: 1,
+    connect_timeout: 30,
+    idle_timeout: 0,
+    ssl: "require",
+  });
+  let sourceTableRowCounts;
+  try {
+    await snapshotClient.begin(
+      "ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      async (sql) => {
+        const [snapshot] =
+          await sql`SELECT pg_export_snapshot() AS snapshot_id`;
+        sourceTableRowCounts = await readDatabaseTableRowCountsFromSql(sql);
+        await run("pg_dump", [
+          "--format=custom",
+          "--compress=9",
+          "--schema=public",
+          "--no-owner",
+          "--no-acl",
+          "--snapshot",
+          snapshot.snapshot_id,
+          "--file",
+          temporaryOutput,
+        ], postgresEnvironment(backupDatabaseUrl));
+      },
     );
+  } finally {
+    await snapshotClient.end({ timeout: 5 });
+  }
+  if (!sourceTableRowCounts) {
+    throw new Error("Database snapshot row counts were not captured.");
   }
   await chmod(temporaryOutput, 0o600);
   await rename(temporaryOutput, output);
@@ -150,6 +162,62 @@ async function assertBackupRole(value) {
 }
 
 async function readDatabaseSchemaState(value) {
+  const environment = postgresEnvironment(value);
+  const columnsOutput = await runCapture(
+    "psql",
+    [
+      "--no-psqlrc",
+      "--tuples-only",
+      "--no-align",
+      "--set",
+      "ON_ERROR_STOP=1",
+      "--command",
+      `
+        SELECT COALESCE(
+          json_agg(column_name ORDER BY ordinal_position),
+          '[]'::json
+        )::text
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'omni_schema_version';
+      `,
+    ],
+    environment,
+  );
+  const columns = JSON.parse(columnsOutput.trim());
+  if (
+    JSON.stringify(columns) === JSON.stringify(["applied_at"])
+  ) {
+    const markerCount = Number(
+      (
+        await runCapture(
+          "psql",
+          [
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--command",
+            "SELECT COUNT(*)::int FROM omni_schema_version",
+          ],
+          environment,
+        )
+      ).trim(),
+    );
+    if (markerCount < 1) {
+      throw new Error("The legacy database migration marker is empty.");
+    }
+    return [];
+  }
+  if (
+    !Array.isArray(columns) ||
+    !["version", "name", "checksum", "applied_at"].every((column) =>
+      columns.includes(column),
+    )
+  ) {
+    throw new Error("Database migration marker columns are not recognized.");
+  }
   const output = await runCapture(
     "psql",
     [
@@ -174,13 +242,12 @@ async function readDatabaseSchemaState(value) {
         FROM omni_schema_version;
       `,
     ],
-    postgresEnvironment(value),
+    environment,
   );
   const state = JSON.parse(output.trim());
   const expectedPrefix = schemaMigrations.slice(0, state.length);
   if (
     !Array.isArray(state) ||
-    state.length < 1 ||
     state.length > schemaMigrations.length ||
     JSON.stringify(state) !== JSON.stringify(expectedPrefix)
   ) {
@@ -310,30 +377,15 @@ async function readLiveDatabaseIdentity(value) {
   };
 }
 
-async function readDatabaseTableRowCounts(value) {
-  const environment = postgresEnvironment(value);
-  const tableText = await runCapture(
-    "psql",
-    [
-      "--no-psqlrc",
-      "--tuples-only",
-      "--no-align",
-      "--set",
-      "ON_ERROR_STOP=1",
-      "--command",
-      `
-        SELECT COALESCE(
-          json_agg(tablename ORDER BY tablename),
-          '[]'::json
-        )::text
-        FROM pg_tables
-        WHERE schemaname = 'public'
-          AND tablename LIKE 'omni_%';
-      `,
-    ],
-    environment,
-  );
-  const tableNames = JSON.parse(tableText.trim());
+async function readDatabaseTableRowCountsFromSql(sql) {
+  const tableRows = await sql`
+    SELECT tablename
+    FROM pg_tables
+    WHERE schemaname = 'public'
+      AND tablename LIKE 'omni_%'
+    ORDER BY tablename
+  `;
+  const tableNames = tableRows.map((row) => row.tablename);
   if (
     !Array.isArray(tableNames) ||
     !tableNames.length ||
@@ -341,29 +393,14 @@ async function readDatabaseTableRowCounts(value) {
   ) {
     throw new Error("Unable to build a safe OmniAgent table inventory.");
   }
-  const fields = tableNames.flatMap((name) => [
-    sqlLiteral(name),
-    `(SELECT COUNT(*)::text FROM ${quoteIdentifier(name)})`,
-  ]);
-  const countText = await runCapture(
-    "psql",
-    [
-      "--no-psqlrc",
-      "--tuples-only",
-      "--no-align",
-      "--set",
-      "ON_ERROR_STOP=1",
-      "--command",
-      `SELECT json_build_object(${fields.join(", ")})::text`,
-    ],
-    environment,
-  );
-  const counts = JSON.parse(countText.trim());
-  return Object.fromEntries(
-    Object.entries(counts).sort(([left], [right]) =>
-      left.localeCompare(right),
-    ),
-  );
+  const counts = {};
+  for (const tableName of tableNames) {
+    const [row] = await sql.unsafe(
+      `SELECT COUNT(*)::text AS count FROM ${quoteIdentifier(tableName)}`,
+    );
+    counts[tableName] = row.count;
+  }
+  return counts;
 }
 
 async function readDatabaseForcedRlsTables(value) {
@@ -422,10 +459,6 @@ function databaseIdentity(value) {
   return `${url.hostname.toLowerCase()}:${url.port || "5432"}/${decodeURIComponent(
     url.pathname.replace(/^\//, ""),
   ).toLowerCase()}`;
-}
-
-function sqlLiteral(value) {
-  return `'${String(value).replaceAll("'", "''")}'`;
 }
 
 function quoteIdentifier(value) {
