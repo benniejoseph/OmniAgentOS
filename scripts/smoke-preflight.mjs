@@ -49,7 +49,7 @@ if (expectedRevision && healthBody.revision !== expectedRevision) {
   );
 }
 
-const cron = await smokeFetch(baseUrl, "/api/workflows/tick", {
+const cron = await smokeFetch(baseUrl, "/api/workflows/tick?probe=auth", {
   headers: {
     authorization: `Bearer ${cronSecret}`,
     "x-omni-synthetic-auth": internalSecret,

@@ -19,10 +19,10 @@ const instanceId =
 const tenantId = process.env.OMNIAGENT_DEFAULT_TENANT || "default";
 const intervalMs = normalizePositiveInteger(process.env.OMNIAGENT_WORKER_INTERVAL_MS, 5_000);
 const requestTimeoutMs = Math.min(
-  normalizePositiveInteger(process.env.OMNIAGENT_WORKER_REQUEST_TIMEOUT_MS, 120_000),
+  normalizePositiveInteger(process.env.OMNIAGENT_WORKER_REQUEST_TIMEOUT_MS, 300_000),
   300_000,
 );
-const limit = Math.min(normalizePositiveInteger(process.env.OMNIAGENT_WORKER_LIMIT, 5), 10);
+const limit = Math.min(normalizePositiveInteger(process.env.OMNIAGENT_WORKER_LIMIT, 1), 10);
 const enableSlo = process.env.OMNIAGENT_WORKER_SLO !== "false";
 const enableAlerts = process.env.OMNIAGENT_WORKER_ALERTS !== "false";
 const enableRetention = process.env.OMNIAGENT_WORKER_RETENTION !== "false";

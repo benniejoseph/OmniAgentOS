@@ -67,6 +67,8 @@ async function runCronTick(request: Request, context: SecurityContext) {
   const startedAt = Date.now();
   const telemetry = createRequestTelemetry(request, "cron-tick");
   const cronSecret = process.env.CRON_SECRET?.trim();
+  const authenticationProbe =
+    new URL(request.url).searchParams.get("probe") === "auth";
 
   if (!cronSecret) {
     await recordSecurityAudit({
@@ -95,6 +97,14 @@ async function runCronTick(request: Request, context: SecurityContext) {
     });
 
     return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (authenticationProbe) {
+    return Response.json({
+      status: "ok",
+      trigger: "vercel_cron",
+      probe: "auth",
+    });
   }
 
   try {
@@ -415,7 +425,7 @@ async function runAllTenantScheduledWork({
   const [queue, agentResumes, memoryGraphRebuilds] = await Promise.all([
     processAllTenantWorkflowQueues({ limit: queueLimit }),
     processAllTenantAgentResumeQueues({ limit: queueLimit }),
-    processPendingMemoryGraphRebuilds({ limit: 5 }),
+    processPendingMemoryGraphRebuilds({ limit: 1 }),
   ]);
   const page = await listMaintenanceTenantIds({
     after: tenantCursor,
