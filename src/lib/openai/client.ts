@@ -61,15 +61,28 @@ export async function getOpenAIReadiness(
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    Math.min(Math.max(options.timeoutMs ?? 5_000, 1_000), 15_000),
+  const timeoutMs = Math.min(
+    Math.max(options.timeoutMs ?? 5_000, 1_000),
+    15_000,
   );
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   let result: OpenAIReadiness;
   try {
-    await getOpenAIClient().models.retrieve(AGENT_MODEL, {
-      signal: controller.signal,
-    });
+    const timeoutError = new Error("OpenAI readiness probe timed out.");
+    timeoutError.name = "AbortError";
+    await Promise.race([
+      getOpenAIClient().models.retrieve(AGENT_MODEL, {
+        signal: controller.signal,
+        maxRetries: 0,
+        timeout: timeoutMs,
+      }),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(timeoutError);
+        }, timeoutMs);
+      }),
+    ]);
     result = {
       configured: true,
       reachable: true,
@@ -89,7 +102,9 @@ export async function getOpenAIReadiness(
         : "OpenAI readiness probe failed.",
     };
   } finally {
-    clearTimeout(timeout);
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
   readinessCache = { checkedAt: now, result };
   return result;
