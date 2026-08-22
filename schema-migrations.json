@@ -48,5 +48,10 @@
     "version": 10,
     "name": "database_identity_and_maintenance_scope",
     "checksum": "1c654e2740f1a0f9d03753945c95f1207cd84aee6241b15629a17108a8c62d64"
+  },
+  {
+    "version": 11,
+    "name": "native_jsonb_parameter_storage",
+    "checksum": "156b1b7a862d309ff93af3c8645f249f347baacd263c590244c455c293870c42"
   }
 ]

@@ -40,6 +40,9 @@ serving traffic. Migrations run under a transaction-scoped advisory lock:
 10. `database_identity_and_maintenance_scope` gives the database a durable
     logical identity and routes audited all-tenant maintenance through a
     dedicated role.
+11. `native_jsonb_parameter_storage` converts legacy double-encoded JSONB
+    values back to native objects and arrays before the corrected writers
+    begin serving traffic.
 
 Before the canary, inventory rows that still use the legacy `default` tenant.
 Assigning real ownership is an operator migration decision; do not expose a

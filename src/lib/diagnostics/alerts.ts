@@ -885,8 +885,8 @@ async function saveAlertDelivery(record: AlertDeliveryRecord) {
       VALUES (
         ${record.id}, ${record.tenantId}, ${record.incidentId}, ${record.incidentEventId || null},
         ${record.targetId}, ${record.channel}, ${record.status}, ${record.severity},
-        ${storageDedupeKey(record.tenantId, record.dedupeKey)}, ${JSON.stringify(record.payload)}::jsonb,
-        ${JSON.stringify(record.response || null)}::jsonb, ${record.attempt},
+        ${storageDedupeKey(record.tenantId, record.dedupeKey)}, ${record.payload}::jsonb,
+        ${record.response || null}::jsonb, ${record.attempt},
         ${record.maxAttempts}, ${record.runAt}, ${record.lockedAt || null},
         ${record.leaseOwner || null}, ${record.leaseExpiresAt || null},
         ${record.lastError || null}, ${record.createdAt}, ${record.updatedAt},
@@ -1067,8 +1067,8 @@ async function updateAlertDelivery(
     const rows = await getSql()`
       UPDATE omni_alert_deliveries
       SET status = COALESCE(${patch.status || null}, status),
-          payload = COALESCE(${patch.payload ? JSON.stringify(patch.payload) : null}::jsonb, payload),
-          response = ${patch.response === undefined ? null : JSON.stringify(patch.response)}::jsonb,
+          payload = COALESCE(${patch.payload || null}::jsonb, payload),
+          response = ${patch.response ?? null}::jsonb,
           run_at = COALESCE(${patch.runAt || null}, run_at),
           locked_at = ${patch.lockedAt || null},
           lease_owner = ${patch.leaseOwner || null},

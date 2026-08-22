@@ -379,6 +379,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[9],
       up: ensureDatabaseIdentity,
     },
+    {
+      ...databaseSchemaMigrations[10],
+      up: normalizeLegacyJsonbStorage,
+    },
   ];
 }
 
@@ -2328,6 +2332,66 @@ async function ensureDatabaseIdentity(sql: SqlClient) {
       )
     )
     ON CONFLICT (singleton) DO NOTHING
+  `;
+}
+
+async function normalizeLegacyJsonbStorage(sql: SqlClient) {
+  await sql`
+    CREATE OR REPLACE FUNCTION pg_temp.omni_decode_legacy_jsonb(value JSONB)
+    RETURNS JSONB
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      decoded JSONB;
+    BEGIN
+      IF value IS NULL OR jsonb_typeof(value) <> 'string' THEN
+        RETURN value;
+      END IF;
+      BEGIN
+        decoded := (value #>> '{}')::jsonb;
+        RETURN decoded;
+      EXCEPTION WHEN OTHERS THEN
+        RETURN value;
+      END;
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    DECLARE
+      json_column RECORD;
+    BEGIN
+      FOR json_column IN
+        SELECT table_schema, table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name LIKE 'omni\_%' ESCAPE '\'
+          AND data_type = 'jsonb'
+        ORDER BY table_name, ordinal_position
+      LOOP
+        EXECUTE format(
+          'UPDATE %I.%I SET %I = pg_temp.omni_decode_legacy_jsonb(%I) ' ||
+          'WHERE jsonb_typeof(%I) = ''string''',
+          json_column.table_schema,
+          json_column.table_name,
+          json_column.column_name,
+          json_column.column_name,
+          json_column.column_name
+        );
+      END LOOP;
+    END
+    $migration$
+  `;
+  await sql`
+    UPDATE omni_operation_jobs
+    SET payload =
+      pg_temp.omni_decode_legacy_jsonb(payload -> 0) ||
+      (payload -> 1)
+    WHERE jsonb_typeof(payload) = 'array'
+      AND jsonb_array_length(payload) = 2
+      AND jsonb_typeof(pg_temp.omni_decode_legacy_jsonb(payload -> 0)) = 'object'
+      AND jsonb_typeof(payload -> 1) = 'object'
+      AND payload -> 1 ? '__rerunRequested'
   `;
 }
 

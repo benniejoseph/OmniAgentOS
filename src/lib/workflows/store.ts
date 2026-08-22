@@ -85,7 +85,7 @@ export async function createWorkflowRun(
           )
           VALUES (
             ${run.id}, ${run.tenantId}, ${run.workflowType}, ${run.status}, ${run.goal},
-            ${JSON.stringify(run.input)}::jsonb, ${run.currentStep || null}, ${run.attempt},
+            ${run.input}::jsonb, ${run.currentStep || null}, ${run.attempt},
             ${run.maxAttempts}, ${run.approvalRequired}, ${run.createdAt}, ${run.updatedAt}
           )
           ON CONFLICT (id) DO NOTHING
@@ -103,7 +103,7 @@ export async function createWorkflowRun(
             VALUES (
               ${step.id}, ${tenantId}, ${step.workflowRunId}, ${step.stepKey},
               ${step.label}, ${step.status}, ${step.attempt}, ${step.maxAttempts},
-              ${JSON.stringify(step.input)}::jsonb, ${step.createdAt}, ${step.updatedAt}
+              ${step.input}::jsonb, ${step.createdAt}, ${step.updatedAt}
             )
             ON CONFLICT (workflow_run_id, step_key) DO NOTHING
           `;
@@ -120,7 +120,7 @@ export async function createWorkflowRun(
           )
           VALUES (
             ${event.id}, ${tenantId}, ${event.workflowRunId}, ${event.type},
-            ${JSON.stringify(event.payload)}::jsonb, ${event.createdAt}
+            ${event.payload}::jsonb, ${event.createdAt}
           )
         `;
         return true;
@@ -264,7 +264,7 @@ export async function updateWorkflowRun(
       SET workflow_type = ${nextRun.workflowType},
           status = ${nextRun.status},
           goal = ${nextRun.goal},
-          input = ${JSON.stringify(nextRun.input || {})}::jsonb,
+          input = ${nextRun.input || {}}::jsonb,
           current_step = ${nextRun.currentStep || null},
           attempt = ${nextRun.attempt},
           max_attempts = ${nextRun.maxAttempts},
@@ -273,7 +273,7 @@ export async function updateWorkflowRun(
           paused_at = ${nextRun.pausedAt || null},
           canceled_at = ${nextRun.canceledAt || null},
           error = ${nextRun.error || null},
-          result = ${JSON.stringify(nextRun.result || null)}::jsonb,
+          result = ${nextRun.result || null}::jsonb,
           updated_at = ${nextRun.updatedAt},
           completed_at = ${nextRun.completedAt || null}
       WHERE id = ${runId}
@@ -336,7 +336,7 @@ export async function transitionWorkflowRun(
       SET workflow_type = ${nextRun.workflowType},
           status = ${nextRun.status},
           goal = ${nextRun.goal},
-          input = ${JSON.stringify(nextRun.input || {})}::jsonb,
+          input = ${nextRun.input || {}}::jsonb,
           current_step = ${nextRun.currentStep || null},
           attempt = ${nextRun.attempt},
           max_attempts = ${nextRun.maxAttempts},
@@ -345,7 +345,7 @@ export async function transitionWorkflowRun(
           paused_at = ${nextRun.pausedAt || null},
           canceled_at = ${nextRun.canceledAt || null},
           error = ${nextRun.error || null},
-          result = ${JSON.stringify(nextRun.result || null)}::jsonb,
+          result = ${nextRun.result || null}::jsonb,
           updated_at = ${nextRun.updatedAt},
           completed_at = ${nextRun.completedAt || null}
       WHERE id = ${runId}
@@ -736,7 +736,7 @@ export async function approveWorkflowRun(
         const steps = await sql`
           UPDATE omni_workflow_steps
           SET status = 'completed',
-              output = ${JSON.stringify({ approvedAt })}::jsonb,
+              output = ${{ approvedAt }}::jsonb,
               completed_at = ${approvedAt},
               updated_at = ${approvedAt}
           WHERE workflow_run_id = ${runId}
@@ -806,8 +806,8 @@ export async function saveWorkflowStep(step: WorkflowStepRecord) {
       VALUES (
         ${nextStep.id}, ${tenantId}, ${nextStep.workflowRunId}, ${nextStep.stepKey}, ${nextStep.label},
         ${nextStep.status}, ${nextStep.attempt}, ${nextStep.maxAttempts},
-        ${JSON.stringify(nextStep.input || {})}::jsonb,
-        ${JSON.stringify(nextStep.output || null)}::jsonb, ${nextStep.error || null},
+        ${nextStep.input || {}}::jsonb,
+        ${nextStep.output || null}::jsonb, ${nextStep.error || null},
         ${nextStep.startedAt || null}, ${nextStep.completedAt || null},
         ${nextStep.createdAt}, ${nextStep.updatedAt}
       )
@@ -895,8 +895,8 @@ export async function updateWorkflowStepForRunFence(
           status = ${nextStep.status},
           attempt = ${nextStep.attempt},
           max_attempts = ${nextStep.maxAttempts},
-          input = ${JSON.stringify(nextStep.input || {})}::jsonb,
-          output = ${JSON.stringify(nextStep.output || null)}::jsonb,
+          input = ${nextStep.input || {}}::jsonb,
+          output = ${nextStep.output || null}::jsonb,
           error = ${nextStep.error || null},
           started_at = ${nextStep.startedAt || null},
           completed_at = ${nextStep.completedAt || null},
@@ -970,7 +970,7 @@ export async function appendWorkflowEvent(
     record = createWorkflowEventRecord(runId, type, payload, tenantId);
     await getSql()`
       INSERT INTO omni_workflow_events (id, tenant_id, workflow_run_id, type, payload, created_at)
-      VALUES (${record.id}, ${tenantId}, ${record.workflowRunId}, ${record.type}, ${JSON.stringify(record.payload)}::jsonb, ${record.createdAt})
+      VALUES (${record.id}, ${tenantId}, ${record.workflowRunId}, ${record.type}, ${record.payload}::jsonb, ${record.createdAt})
     `;
     return record;
   }

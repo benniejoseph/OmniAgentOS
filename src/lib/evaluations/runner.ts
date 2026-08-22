@@ -1454,7 +1454,10 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
   const markerA = `tenant-a-marker-${suffix}`;
   const markerB = `tenant-b-marker-${suffix}`;
   const correlationId = `eval-tenant-isolation-${suffix}`;
+  let workflowA: Awaited<ReturnType<typeof createWorkflowRun>> | undefined;
+  let workflowB: Awaited<ReturnType<typeof createWorkflowRun>> | undefined;
 
+  try {
     const memoryA = await withDatabaseTenant(tenantA, () =>
       saveMemory({
         tenantId: tenantA,
@@ -1525,7 +1528,7 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
       ),
     );
 
-    const workflowA = await withDatabaseTenant(tenantA, () =>
+    workflowA = await withDatabaseTenant(tenantA, () =>
       createWorkflowRun({
         tenantId: tenantA,
         goal: `Tenant A isolation workflow ${markerA}`,
@@ -1535,7 +1538,7 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
         metadata: { source: "evaluation", caseId: evalCase.id, marker: markerA },
       }),
     );
-    const workflowB = await withDatabaseTenant(tenantB, () =>
+    workflowB = await withDatabaseTenant(tenantB, () =>
       createWorkflowRun({
         tenantId: tenantB,
         goal: `Tenant B isolation workflow ${markerB}`,
@@ -1545,6 +1548,8 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
         metadata: { source: "evaluation", caseId: evalCase.id, marker: markerB },
       }),
     );
+    const workflowAId = workflowA.run.id;
+    const workflowBId = workflowB.run.id;
 
     const eventA = await withDatabaseTenant(tenantA, () =>
       recordRuntimeEvent({
@@ -1578,7 +1583,7 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
       withDatabaseTenant(tenantB, () => listMcpConnectors(50, { tenantId: tenantB })),
       withDatabaseTenant(tenantB, () => listOpenApiConnectors(50, { tenantId: tenantB })),
       withDatabaseTenant(tenantB, () => listWorkflowRuns(50, { tenantId: tenantB })),
-      withDatabaseTenant(tenantB, () => getWorkflowRunDetail(workflowA.run.id, { tenantId: tenantB })),
+      withDatabaseTenant(tenantB, () => getWorkflowRunDetail(workflowAId, { tenantId: tenantB })),
       withDatabaseTenant(tenantB, () => listObservabilityEvents({ correlationId, tenantId: tenantB, limit: 20 })),
     ]);
 
@@ -1593,8 +1598,8 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
       tenantBDoesNotSeeTenantAMcpConnector: !tenantBMcpConnectors.some((connector) => connector.id === mcpA.id),
       tenantBSeesOwnOpenApiConnector: tenantBOpenApiConnectors.some((connector) => connector.id === openApiB.id),
       tenantBDoesNotSeeTenantAOpenApiConnector: !tenantBOpenApiConnectors.some((connector) => connector.id === openApiA.id),
-      tenantBSeesOwnWorkflow: tenantBWorkflowRuns.some((run) => run.id === workflowB.run.id),
-      tenantBDoesNotListTenantAWorkflow: !tenantBWorkflowRuns.some((run) => run.id === workflowA.run.id),
+      tenantBSeesOwnWorkflow: tenantBWorkflowRuns.some((run) => run.id === workflowBId),
+      tenantBDoesNotListTenantAWorkflow: !tenantBWorkflowRuns.some((run) => run.id === workflowAId),
       tenantBCannotGetTenantAWorkflowDetail: tenantBWorkflowDetailForA === null,
       tenantBDoesNotSeeTenantAObservabilityEvent: tenantBEventsForA.length === 0,
       tenantAEventPersisted: Boolean(eventA.id),
@@ -1615,14 +1620,40 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
           mcpB: mcpB.id,
           openApiA: openApiA.id,
           openApiB: openApiB.id,
-          workflowA: workflowA.run.id,
-          workflowB: workflowB.run.id,
+          workflowA: workflowAId,
+          workflowB: workflowBId,
           eventA: eventA.id,
         },
         storageBackend: getStorageBackend(),
         databaseConfigured: hasDatabaseUrl(),
       },
     };
+  } finally {
+    const workflowAId = workflowA?.run.id;
+    const workflowBId = workflowB?.run.id;
+    await Promise.all([
+      workflowAId
+        ? withDatabaseTenant(tenantA, async () => {
+            await signalWorkflowRun(workflowAId, "cancel").catch(() => undefined);
+            await cancelWorkflowRunTick(
+              workflowAId,
+              "Tenant-isolation evaluation cleanup.",
+              tenantA,
+            ).catch(() => undefined);
+          })
+        : Promise.resolve(),
+      workflowBId
+        ? withDatabaseTenant(tenantB, async () => {
+            await signalWorkflowRun(workflowBId, "cancel").catch(() => undefined);
+            await cancelWorkflowRunTick(
+              workflowBId,
+              "Tenant-isolation evaluation cleanup.",
+              tenantB,
+            ).catch(() => undefined);
+          })
+        : Promise.resolve(),
+    ]);
+  }
 }
 
 async function withDatabaseTenant<T>(tenantId: string, operation: () => Promise<T>) {

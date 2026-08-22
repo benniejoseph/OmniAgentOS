@@ -98,8 +98,8 @@ export async function saveEvalResult(result: Omit<EvalResultRecord, "id" | "crea
       VALUES (
         ${record.id}, ${record.tenantId}, ${record.evalRunId}, ${record.caseId}, ${record.caseName},
         ${record.caseType}, ${record.status}, ${record.score}, ${record.latencyMs},
-        ${record.estimatedCostUsd}, ${JSON.stringify(record.input || {})}::jsonb,
-        ${JSON.stringify(record.output || null)}::jsonb, ${record.error || null},
+        ${record.estimatedCostUsd}, ${record.input || {}}::jsonb,
+        ${record.output || null}::jsonb, ${record.error || null},
         ${record.createdAt}
       )
     `;
@@ -215,8 +215,8 @@ export async function saveEvalReportSnapshot(snapshot: Omit<EvalReportSnapshot, 
       )
       VALUES (
         ${record.id}, ${record.evalRunId}, ${record.format}, ${record.reportVersion},
-        ${JSON.stringify(record.report)}::jsonb,
-        ${JSON.stringify(record.signature)}::jsonb,
+        ${record.report}::jsonb,
+        ${record.signature}::jsonb,
         ${record.tenantId || null}, ${record.createdBy || null}, ${record.createdAt}
       )
     `;

@@ -531,9 +531,9 @@ async function saveRetrievalTrace(
         id, tenant_id, query, profile, result_count, selected_count, latency_ms, results, created_at
       )
       VALUES (
-        ${record.id}, ${record.tenantId}, ${record.query}, ${JSON.stringify(record.profile)}::jsonb,
+        ${record.id}, ${record.tenantId}, ${record.query}, ${record.profile}::jsonb,
         ${record.resultCount}, ${record.selectedCount}, ${record.latencyMs},
-        ${JSON.stringify(record.results)}::jsonb, ${record.createdAt}
+        ${record.results}::jsonb, ${record.createdAt}
       )
     `;
     return record;

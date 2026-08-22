@@ -42,12 +42,12 @@ export async function recordWorkerHeartbeat(input: {
             'system',
             'healthy',
             'worker_heartbeat',
-            ${JSON.stringify([{
+            ${[{
               name: "dedicated_worker",
               status: "healthy",
               instanceId: heartbeat.instanceId,
               revision: heartbeat.revision,
-            }])}::jsonb,
+            }]}::jsonb,
             '{}'::jsonb,
             '[]'::jsonb,
             '[]'::jsonb,

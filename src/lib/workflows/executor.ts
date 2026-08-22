@@ -582,8 +582,8 @@ async function saveWorkflowPlanNodeExecution(record: WorkflowPlanNodeExecutionRe
         ${nextRecord.nodeId}, ${nextRecord.nodeLabel}, ${nextRecord.nodeKind},
         ${nextRecord.status}, ${nextRecord.policy}, ${nextRecord.riskLevel},
         ${nextRecord.approvalRequired}, ${nextRecord.toolExecutionIds},
-        ${JSON.stringify(nextRecord.input || {})}::jsonb,
-        ${JSON.stringify(nextRecord.output || null)}::jsonb,
+        ${nextRecord.input || {}}::jsonb,
+        ${nextRecord.output || null}::jsonb,
         ${nextRecord.error || null}, ${nextRecord.startedAt || null},
         ${nextRecord.completedAt || null}, ${nextRecord.createdAt}, ${nextRecord.updatedAt}
       )

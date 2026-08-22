@@ -93,7 +93,7 @@ export async function saveMemory(input: CreateMemoryInput) {
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const embeddingJson = record.embedding ? JSON.stringify(record.embedding) : null;
+    const embeddingJson = record.embedding || null;
     const rows = await getSql()`
       INSERT INTO omni_memories (
         id, tenant_id, type, title, content, tags, scope, source, importance, embedding, created_at, updated_at

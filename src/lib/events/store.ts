@@ -68,7 +68,7 @@ export async function appendDomainEvent(input: AppendDomainEventInput): Promise<
       INSERT INTO omni_events (id, stream_id, type, tenant_id, actor_id, payload, causation_id, correlation_id, at)
       VALUES (
         ${event.id}, ${event.streamId}, ${event.type}, ${event.tenantId}, ${event.actorId},
-        ${JSON.stringify(event.payload)}::jsonb, ${event.causationId || null}, ${event.correlationId || null}, ${event.at}
+        ${event.payload}::jsonb, ${event.causationId || null}, ${event.correlationId || null}, ${event.at}
       )
       RETURNING seq
     `;

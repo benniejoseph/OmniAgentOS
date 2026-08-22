@@ -100,7 +100,7 @@ export async function enqueueOperationJob(
           max_attempts, run_at, created_at, updated_at
         )
         VALUES (
-          ${job.id}, ${tenantId}, ${job.type}, ${job.status}, ${JSON.stringify(job.payload)}::jsonb,
+          ${job.id}, ${tenantId}, ${job.type}, ${job.status}, ${job.payload}::jsonb,
           ${storageDedupeKey(tenantId, job.dedupeKey!)}, ${job.priority}, ${job.attempt}, ${job.maxAttempts},
           ${job.runAt}, ${job.createdAt}, ${job.updatedAt}
         )
@@ -171,7 +171,7 @@ export async function enqueueOperationJob(
         max_attempts, run_at, created_at, updated_at
       )
       VALUES (
-        ${job.id}, ${tenantId}, ${job.type}, ${job.status}, ${JSON.stringify(job.payload)}::jsonb,
+        ${job.id}, ${tenantId}, ${job.type}, ${job.status}, ${job.payload}::jsonb,
         ${job.dedupeKey || null}, ${job.priority}, ${job.attempt}, ${job.maxAttempts},
         ${job.runAt}, ${job.createdAt}, ${job.updatedAt}
       )

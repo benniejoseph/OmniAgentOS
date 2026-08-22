@@ -100,7 +100,7 @@ while (!shuttingDown) {
           alerts: enableAlerts,
           scope: "all_tenants",
           tenantCursor,
-          maintenanceTenantLimit: 25,
+          maintenanceTenantLimit: limit,
         }),
         redirect: "error",
         signal: controller.signal,

@@ -106,8 +106,8 @@ export async function saveMcpConnector(connector: McpConnectorRecord) {
         ${record.id}, ${record.tenantId}, ${record.name}, ${record.endpoint}, ${record.transport},
         ${record.authType}, ${record.authTokenEnv || null}, ${record.status},
         ${record.defaultRiskLevel}, ${record.approvalRequired}, ${record.toolCount},
-        ${JSON.stringify(record.capabilities || {})}::jsonb, ${record.instructions || null},
-        ${JSON.stringify(record.serverVersion || null)}::jsonb,
+        ${record.capabilities || {}}::jsonb, ${record.instructions || null},
+        ${record.serverVersion || null}::jsonb,
         ${record.lastDiscoveredAt || null}, ${record.lastError || null},
         ${record.createdAt}, ${record.updatedAt}
       )
@@ -531,9 +531,9 @@ export async function saveMcpTool(tool: McpToolRecord) {
       VALUES (
         ${record.id}, ${record.tenantId}, ${record.connectorId}, ${record.connectorName}, ${record.name},
         ${record.title || null}, ${record.description || null},
-        ${JSON.stringify(record.inputSchema || {})}::jsonb,
-        ${JSON.stringify(record.outputSchema || null)}::jsonb,
-        ${JSON.stringify(record.annotations || null)}::jsonb,
+        ${record.inputSchema || {}}::jsonb,
+        ${record.outputSchema || null}::jsonb,
+        ${record.annotations || null}::jsonb,
         ${record.riskLevel}, ${record.approvalRequired}, ${record.status},
         ${record.createdAt}, ${record.updatedAt}
       )

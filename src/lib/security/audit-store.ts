@@ -56,7 +56,7 @@ export async function recordSecurityAudit({
         ${record.id}, ${record.tenantId}, ${record.actorId}, ${record.actorRole},
         ${record.action}, ${record.resourceType}, ${record.resourceId || null},
         ${record.decision}, ${record.reason || null}, ${record.riskLevel ?? null},
-        ${JSON.stringify(record.metadata || {})}::jsonb, ${record.createdAt}
+        ${record.metadata || {}}::jsonb, ${record.createdAt}
       )
     `;
     return record;

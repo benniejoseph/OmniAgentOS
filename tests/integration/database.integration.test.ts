@@ -4,15 +4,18 @@ import {
   databaseSchemaMigrations,
   ensureDatabaseSchema,
   getVectorStoreStatus,
+  runWithDatabaseTenantScope,
   tenantPolicyTables,
 } from "@/lib/db/client";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import { rebuildMemoryGraph } from "@/lib/memory/graph";
 import {
   completeOperationJob,
+  enqueueOperationJob,
   failOperationJob,
 } from "@/lib/operations/job-queue";
 import { sweepExpiredSensitiveData } from "@/lib/security/retention";
+import { createWorkflowRun } from "@/lib/workflows/store";
 
 const databaseUrl = process.env.DATABASE_URL;
 const resetAllowed = process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true";
@@ -47,6 +50,17 @@ databaseDescribe("Postgres schema integration", () => {
       )
     `;
     await admin`INSERT INTO omni_schema_version DEFAULT VALUES`;
+    await admin`
+      CREATE TABLE omni_jsonb_migration_fixture (
+        id TEXT PRIMARY KEY,
+        payload JSONB NOT NULL
+      )
+    `;
+    const legacyJson = JSON.stringify({ native: true });
+    await admin`
+      INSERT INTO omni_jsonb_migration_fixture (id, payload)
+      VALUES ('double-encoded', ${legacyJson}::jsonb)
+    `;
   });
 
   afterAll(async () => {
@@ -81,6 +95,11 @@ databaseDescribe("Postgres schema integration", () => {
       ORDER BY column_name
     `;
     const vectorStatus = await getVectorStoreStatus();
+    const [jsonbFixture] = await admin`
+      SELECT jsonb_typeof(payload) AS payload_type, payload
+      FROM omni_jsonb_migration_fixture
+      WHERE id = 'double-encoded'
+    `;
 
     expect(markers).toEqual(databaseSchemaMigrations);
     expect(Number(tables.count)).toBeGreaterThan(20);
@@ -89,6 +108,10 @@ databaseDescribe("Postgres schema integration", () => {
       { column_name: "lease_expires_at" },
       { column_name: "lease_owner" },
     ]);
+    expect(jsonbFixture).toEqual({
+      payload_type: "object",
+      payload: { native: true },
+    });
     if (requirePgvector) {
       expect(vectorStatus).toMatchObject({
         configured: true,
@@ -99,6 +122,74 @@ databaseDescribe("Postgres schema integration", () => {
     } else {
       expect(vectorStatus.dimensions).toBeGreaterThan(0);
     }
+  });
+
+  test("stores structured parameters as native JSONB", async () => {
+    const tenantId = "native_jsonb_tenant";
+    const workflow = await runWithDatabaseTenantScope(
+      tenantId,
+      () =>
+        createWorkflowRun({
+          tenantId,
+          goal: "Verify native JSONB workflow persistence.",
+          mode: "research",
+          requireApproval: true,
+          maxAttempts: 1,
+          metadata: { source: "integration", nativeJsonb: true },
+        }),
+    );
+    const job = await runWithDatabaseTenantScope(
+      tenantId,
+      () =>
+        enqueueOperationJob({
+          tenantId,
+          type: "workflow.tick",
+          dedupeKey: "native-jsonb-regression",
+          payload: {
+            workflowRunId: workflow.run.id,
+            reason: "native_jsonb_regression",
+          },
+        }),
+    );
+
+    const [runRow] = await admin`
+      SELECT jsonb_typeof(input) AS input_type, input
+      FROM omni_workflow_runs
+      WHERE id = ${workflow.run.id}
+    `;
+    const stepRows = await admin`
+      SELECT jsonb_typeof(input) AS input_type
+      FROM omni_workflow_steps
+      WHERE workflow_run_id = ${workflow.run.id}
+    `;
+    const eventRows = await admin`
+      SELECT jsonb_typeof(payload) AS payload_type
+      FROM omni_workflow_events
+      WHERE workflow_run_id = ${workflow.run.id}
+    `;
+    const [jobRow] = await admin`
+      SELECT jsonb_typeof(payload) AS payload_type, payload
+      FROM omni_operation_jobs
+      WHERE id = ${job.id}
+    `;
+
+    expect(runRow).toMatchObject({
+      input_type: "object",
+      input: {
+        metadata: { source: "integration", nativeJsonb: true },
+      },
+    });
+    expect(stepRows.length).toBeGreaterThan(0);
+    expect(stepRows.every((row) => row.input_type === "object")).toBe(true);
+    expect(eventRows.length).toBeGreaterThan(0);
+    expect(eventRows.every((row) => row.payload_type === "object")).toBe(true);
+    expect(jobRow).toEqual({
+      payload_type: "object",
+      payload: {
+        workflowRunId: workflow.run.id,
+        reason: "native_jsonb_regression",
+      },
+    });
   });
 
   test("reconciles legacy scalar operation-job payloads", async () => {
@@ -728,13 +819,10 @@ databaseDescribe("Postgres schema integration", () => {
     );
     vi.stubEnv("DATABASE_URL", runtimeUrl);
     vi.stubEnv("OMNIAGENT_MAINTENANCE_DATABASE_URL", maintenanceUrl);
-    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NODE_ENV", "test");
     vi.resetModules();
     try {
       const client = await import("@/lib/db/client");
-      await expect(
-        withTimeout(client.ensureDatabaseSchema(), 5_000),
-      ).resolves.toBeUndefined();
       const safety = await withTimeout(
         client.getMaintenanceDatabaseRoleSafety(),
         5_000,

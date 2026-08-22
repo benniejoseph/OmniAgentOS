@@ -482,7 +482,7 @@ export async function saveObservabilitySloApprovalPolicyConfig(
         )
         VALUES (
           ${version.id}, ${version.policyId}, ${version.version},
-          ${JSON.stringify(version.policy)}::jsonb, ${version.changedBy || null},
+          ${version.policy}::jsonb, ${version.changedBy || null},
           ${version.changeReason || null}, ${version.previousHash || null},
           ${version.evidenceHash}, ${version.createdAt}
         )
@@ -490,9 +490,9 @@ export async function saveObservabilitySloApprovalPolicyConfig(
       const updated = await sql`
         UPDATE omni_observability_slo_approval_policies
         SET version = ${record.version},
-            rules = ${JSON.stringify(record.rules)}::jsonb,
-            break_glass = ${JSON.stringify(record.breakGlass)}::jsonb,
-            metadata = ${JSON.stringify(record.metadata)}::jsonb,
+            rules = ${record.rules}::jsonb,
+            break_glass = ${record.breakGlass}::jsonb,
+            metadata = ${record.metadata}::jsonb,
             updated_by = ${record.updatedBy || null},
             update_reason = ${record.updateReason || null},
             evidence_hash = ${record.evidenceHash},
@@ -1281,7 +1281,7 @@ async function insertDefaultPolicy(
       ${policy.comparator}, ${policy.warningThreshold}, ${policy.criticalThreshold},
       ${policy.warningSeverity}, ${policy.criticalSeverity}, ${policy.unit},
       ${policy.componentId}, ${policy.enabled}, ${policy.alertTargetIds},
-      ${policy.suppressionMinutes}, ${JSON.stringify(policy.metadata)}::jsonb,
+      ${policy.suppressionMinutes}, ${policy.metadata}::jsonb,
       ${policy.createdAt}, ${policy.updatedAt}
     )
     ON CONFLICT (id) DO NOTHING
@@ -1316,8 +1316,8 @@ async function seedDefaultSloApprovalPolicyConfigWithSql(
       updated_by, update_reason, evidence_hash, created_at, updated_at
     )
     VALUES (
-      ${policy.id}, ${policy.version}, ${JSON.stringify(policy.rules)}::jsonb,
-      ${JSON.stringify(policy.breakGlass)}::jsonb, ${JSON.stringify(policy.metadata)}::jsonb,
+      ${policy.id}, ${policy.version}, ${policy.rules}::jsonb,
+      ${policy.breakGlass}::jsonb, ${policy.metadata}::jsonb,
       ${policy.updatedBy || null}, ${policy.updateReason || null}, ${policy.evidenceHash},
       ${policy.createdAt}, ${policy.updatedAt}
     )
@@ -1330,7 +1330,7 @@ async function seedDefaultSloApprovalPolicyConfigWithSql(
     )
     VALUES (
       ${version.id}, ${version.policyId}, ${version.version},
-      ${JSON.stringify(version.policy)}::jsonb, ${version.changedBy || null},
+      ${version.policy}::jsonb, ${version.changedBy || null},
       ${version.changeReason || null}, ${version.previousHash || null},
       ${version.evidenceHash}, ${version.createdAt}
     )
@@ -1472,13 +1472,13 @@ async function saveObservabilitySloPolicyChange(
         ${record.id}, ${record.policyId}, ${record.action}, ${record.status},
         ${record.riskLevel}, ${record.tenantId || null}, ${record.requestedBy || null},
         ${record.reviewedBy || null}, ${record.reason || null}, ${record.reviewReason || null},
-        ${JSON.stringify(record.beforePolicy || null)}::jsonb,
-        ${JSON.stringify(record.afterPolicy || null)}::jsonb,
+        ${record.beforePolicy || null}::jsonb,
+        ${record.afterPolicy || null}::jsonb,
         ${record.rollbackChangeId || null},
-        ${JSON.stringify(record.approvalPolicy)}::jsonb,
-        ${JSON.stringify(record.approvals)}::jsonb,
+        ${record.approvalPolicy}::jsonb,
+        ${record.approvals}::jsonb,
         ${record.evidenceHash},
-        ${JSON.stringify(record.metadata)}::jsonb,
+        ${record.metadata}::jsonb,
         ${record.createdAt}, ${record.updatedAt}, ${record.reviewedAt || null},
         ${record.appliedAt || null}
       )
@@ -1537,7 +1537,7 @@ async function saveObservabilitySloPolicyWithSql(
       ${record.warningThreshold}, ${record.criticalThreshold},
       ${record.warningSeverity}, ${record.criticalSeverity}, ${record.unit},
       ${record.componentId}, ${record.enabled}, ${record.alertTargetIds},
-      ${record.suppressionMinutes}, ${JSON.stringify(record.metadata)}::jsonb,
+      ${record.suppressionMinutes}, ${record.metadata}::jsonb,
       ${record.createdAt}, ${record.updatedAt}
     )
     ON CONFLICT (id) DO UPDATE SET

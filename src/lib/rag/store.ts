@@ -221,13 +221,13 @@ async function insertKnowledgeDocumentDb(document: KnowledgeDocument, chunks: Kn
       )
       VALUES (
         ${document.id}, ${document.tenantId}, ${document.title}, ${document.source}, ${document.sourceType}, ${document.tags},
-        ${document.contentHash}, ${document.chunkCount}, ${document.totalCharacters}, ${JSON.stringify(document.metadata)}::jsonb,
+        ${document.contentHash}, ${document.chunkCount}, ${document.totalCharacters}, ${document.metadata}::jsonb,
         ${document.createdAt}, ${document.updatedAt}
       )
     `;
 
     for (const chunk of chunks) {
-      const embeddingJson = chunk.embedding ? JSON.stringify(chunk.embedding) : null;
+      const embeddingJson = chunk.embedding || null;
       await transaction`
         INSERT INTO omni_knowledge_chunks (
           id, tenant_id, document_id, chunk_index, title, content, tags, source, token_estimate,
@@ -236,7 +236,7 @@ async function insertKnowledgeDocumentDb(document: KnowledgeDocument, chunks: Kn
         VALUES (
           ${chunk.id}, ${chunk.tenantId}, ${chunk.documentId}, ${chunk.chunkIndex}, ${chunk.title}, ${chunk.content}, ${chunk.tags},
           ${chunk.source}, ${chunk.tokenEstimate}, ${chunk.characterCount}, ${embeddingJson}::jsonb,
-          ${JSON.stringify(chunk.metadata)}::jsonb, ${chunk.createdAt}, ${chunk.updatedAt}
+          ${chunk.metadata}::jsonb, ${chunk.createdAt}, ${chunk.updatedAt}
         )
       `;
     }

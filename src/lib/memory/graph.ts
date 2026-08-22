@@ -827,7 +827,7 @@ async function upsertGraphNode(
       ${node.id}, ${node.tenantId}, ${node.kind}, ${node.label},
       ${storageGraphSlug(node.tenantId, node.slug)}, ${node.aliases},
       ${node.summary}, ${node.weight}, ${node.sourceCount}, ${node.memoryIds},
-      ${node.traceIds}, ${node.tags}, ${JSON.stringify(node.metadata)}::jsonb,
+      ${node.traceIds}, ${node.tags}, ${node.metadata}::jsonb,
       ${node.createdAt}, ${node.updatedAt}
     )
     ON CONFLICT (id) DO UPDATE SET
@@ -858,7 +858,7 @@ async function upsertGraphEdge(
     VALUES (
       ${edge.id}, ${edge.tenantId}, ${edge.sourceNodeId}, ${edge.targetNodeId}, ${edge.relation},
       ${edge.weight}, ${edge.evidenceCount}, ${edge.memoryIds}, ${edge.traceIds},
-      ${JSON.stringify(edge.metadata)}::jsonb, ${edge.createdAt}, ${edge.updatedAt}
+      ${edge.metadata}::jsonb, ${edge.createdAt}, ${edge.updatedAt}
     )
     ON CONFLICT (id) DO UPDATE SET
       weight = GREATEST(omni_memory_graph_edges.weight, EXCLUDED.weight),
@@ -879,7 +879,7 @@ async function insertGraphNode(node: MemoryGraphNode, sql: GraphSqlClient = getS
       ${node.id}, ${node.tenantId}, ${node.kind}, ${node.label},
       ${storageGraphSlug(node.tenantId, node.slug)}, ${node.aliases},
       ${node.summary}, ${node.weight}, ${node.sourceCount}, ${node.memoryIds},
-      ${node.traceIds}, ${node.tags}, ${JSON.stringify(node.metadata)}::jsonb,
+      ${node.traceIds}, ${node.tags}, ${node.metadata}::jsonb,
       ${node.createdAt}, ${node.updatedAt}
     )
   `;
@@ -894,7 +894,7 @@ async function insertGraphEdge(edge: MemoryGraphEdge, sql: GraphSqlClient = getS
     VALUES (
       ${edge.id}, ${edge.tenantId}, ${edge.sourceNodeId}, ${edge.targetNodeId}, ${edge.relation},
       ${edge.weight}, ${edge.evidenceCount}, ${edge.memoryIds}, ${edge.traceIds},
-      ${JSON.stringify(edge.metadata)}::jsonb, ${edge.createdAt}, ${edge.updatedAt}
+      ${edge.metadata}::jsonb, ${edge.createdAt}, ${edge.updatedAt}
     )
   `;
 }

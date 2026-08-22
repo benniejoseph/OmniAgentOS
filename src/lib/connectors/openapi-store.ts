@@ -121,7 +121,7 @@ export async function saveOpenApiConnector(connector: OpenApiConnectorRecord) {
         ${record.specHash || null}, ${record.baseUrl}, ${record.authType},
         ${record.authTokenEnv || null}, ${record.authHeaderName || null},
         ${record.status}, ${record.defaultRiskLevel}, ${record.approvalRequired},
-        ${record.operationCount}, ${JSON.stringify(record.info || {})}::jsonb,
+        ${record.operationCount}, ${record.info || {}}::jsonb,
         ${record.lastImportedAt || null}, ${record.lastError || null},
         ${record.createdAt}, ${record.updatedAt}
       )
@@ -560,7 +560,7 @@ export async function saveOpenApiOperation(operation: OpenApiOperationRecord) {
         ${record.id}, ${record.tenantId}, ${record.connectorId}, ${record.connectorName},
         ${record.operationId}, ${record.method}, ${record.path},
         ${record.summary || null}, ${record.description || null},
-        ${JSON.stringify(record.inputSchema || {})}::jsonb,
+        ${record.inputSchema || {}}::jsonb,
         ${record.requestContentType || null}, ${record.responseContentTypes},
         ${record.riskLevel}, ${record.approvalRequired}, ${record.status},
         ${record.createdAt}, ${record.updatedAt}

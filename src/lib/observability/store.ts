@@ -152,7 +152,7 @@ export async function recordRuntimeEvent(input: {
           ${record.durationMs ?? null}, ${record.requestId || null}, ${record.correlationId},
           ${record.tenantId}, ${record.actorId || null},
           ${record.resourceType || null}, ${record.resourceId || null},
-          ${record.message}, ${JSON.stringify(record.metadata)}::jsonb, ${record.createdAt}
+          ${record.message}, ${record.metadata}::jsonb, ${record.createdAt}
         )
       `);
     return record;

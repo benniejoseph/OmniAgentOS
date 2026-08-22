@@ -381,7 +381,7 @@ async function saveWorkflowTrigger(record: WorkflowTriggerRecord) {
         ${record.id}, ${record.tenantId}, ${record.name}, ${record.source}, ${record.status},
         ${record.authMode}, ${record.secretEnvVar || null}, ${record.goalTemplate},
         ${record.workflowMode}, ${record.requireApproval},
-        ${JSON.stringify(record.metadata || {})}::jsonb,
+        ${record.metadata || {}}::jsonb,
         ${record.triggerCount}, ${record.failureCount}, ${record.lastTriggeredAt || null},
         ${record.createdAt}, ${record.updatedAt}
       )
@@ -449,8 +449,8 @@ async function claimWorkflowTriggerDelivery(record: WorkflowTriggerEventRecord) 
         ${record.signatureDigest || null}, ${record.status}, ${record.source},
         ${record.eventType || null}, ${record.signatureVerified},
         ${record.workflowRunId || null}, ${record.queueJobId || null},
-        ${JSON.stringify(record.payload || {})}::jsonb,
-        ${JSON.stringify(record.headers || {})}::jsonb,
+        ${record.payload || {}}::jsonb,
+        ${record.headers || {}}::jsonb,
         ${record.error || null}, ${record.receivedAt}
       )
       ON CONFLICT (tenant_id, trigger_id, delivery_key)
@@ -544,8 +544,8 @@ async function saveWorkflowTriggerEvent(record: WorkflowTriggerEventRecord) {
         ${record.status}, ${record.source},
         ${record.eventType || null}, ${record.signatureVerified},
         ${record.workflowRunId || null}, ${record.queueJobId || null},
-        ${JSON.stringify(record.payload || {})}::jsonb,
-        ${JSON.stringify(record.headers || {})}::jsonb,
+        ${record.payload || {}}::jsonb,
+        ${record.headers || {}}::jsonb,
         ${record.error || null}, ${record.receivedAt}
       )
       ON CONFLICT (id) DO UPDATE SET

@@ -796,7 +796,7 @@ async function saveWorkflowPlan(record: WorkflowPlanRecord) {
       VALUES (
         ${planRecord.id}, ${planRecord.tenantId}, ${planRecord.workflowRunId || null}, ${planRecord.goal},
         ${planRecord.status}, ${planRecord.planner}, ${planRecord.model},
-        ${JSON.stringify(planRecord.plan)}::jsonb, ${JSON.stringify(planRecord.validation)}::jsonb,
+        ${planRecord.plan}::jsonb, ${planRecord.validation}::jsonb,
         ${planRecord.contextTraceId || null}, ${planRecord.highestRiskLevel},
         ${planRecord.approvalRequired}, ${planRecord.confidence}, ${planRecord.error || null},
         ${planRecord.createdAt}, ${planRecord.updatedAt}

@@ -728,7 +728,7 @@ export async function recordIncidentEvent(input: {
       )
       VALUES (
         ${event.id}, ${tenantId}, ${event.incidentId}, ${event.type}, ${event.actorId || null},
-        ${event.message}, ${JSON.stringify(event.metadata)}::jsonb, ${event.createdAt}
+        ${event.message}, ${event.metadata}::jsonb, ${event.createdAt}
       )
     `;
     return event;
@@ -781,8 +781,8 @@ async function saveIncident(record: IncidentRecord) {
         ${record.acknowledgedAt || null}, ${record.acknowledgedBy || null},
         ${record.acknowledgementReason || null}, ${record.resolvedAt || null},
         ${record.resolvedBy || null}, ${record.resolution || null},
-        ${JSON.stringify(record.alertTargets)}::jsonb, ${record.playbookIds},
-        ${JSON.stringify(record.metadata)}::jsonb, ${record.createdAt}, ${record.updatedAt}
+        ${record.alertTargets}::jsonb, ${record.playbookIds},
+        ${record.metadata}::jsonb, ${record.createdAt}, ${record.updatedAt}
       )
       ON CONFLICT (id) DO UPDATE SET
         tenant_id = EXCLUDED.tenant_id,

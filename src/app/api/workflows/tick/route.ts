@@ -117,7 +117,7 @@ async function runCronTick(request: Request, context: SecurityContext) {
       enableAlerts: true,
       alertQueueLimit: ALERT_SCHEDULER_QUEUE_LIMIT,
       alertDispatchLimit: ALERT_SCHEDULER_DISPATCH_LIMIT,
-      maintenanceTenantLimit: 100,
+      maintenanceTenantLimit: cronTickLimit,
     });
     await recordSecurityAudit({
       context,

@@ -529,10 +529,10 @@ async function saveHealthCheck(record: SystemHealthRecord) {
       )
       VALUES (
         ${record.id}, ${record.tenantId}, ${record.status}, ${record.scope},
-        ${JSON.stringify(record.components)}::jsonb,
-        ${JSON.stringify(record.metrics)}::jsonb,
-        ${JSON.stringify(record.incidents)}::jsonb,
-        ${JSON.stringify(record.recoveryActions)}::jsonb,
+        ${record.components}::jsonb,
+        ${record.metrics}::jsonb,
+        ${record.incidents}::jsonb,
+        ${record.recoveryActions}::jsonb,
         ${record.latencyMs}, ${record.createdAt}
       )
     `;

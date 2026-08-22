@@ -43,7 +43,7 @@ export async function createAgentRun(input: {
         id, tenant_id, mode, status, prompt, messages, model, memory_context_count, started_at
       )
       VALUES (
-        ${run.id}, ${run.tenantId}, ${run.mode}, ${run.status}, ${run.prompt}, ${JSON.stringify(run.messages)}::jsonb,
+        ${run.id}, ${run.tenantId}, ${run.mode}, ${run.status}, ${run.prompt}, ${run.messages}::jsonb,
         ${run.model || null}, ${run.memoryContextCount}, ${run.startedAt}
       )
     `;
@@ -86,7 +86,7 @@ export async function appendRunEvent(runId: string, event: AgentEvent) {
     record.tenantId = tenantId;
     await getSql()`
       INSERT INTO omni_agent_events (id, tenant_id, run_id, type, payload, created_at)
-      VALUES (${record.id}, ${tenantId}, ${record.runId}, ${record.type}, ${JSON.stringify(record.payload)}::jsonb, ${record.createdAt})
+      VALUES (${record.id}, ${tenantId}, ${record.runId}, ${record.type}, ${record.payload}::jsonb, ${record.createdAt})
     `;
     return record;
   }
@@ -257,7 +257,7 @@ export async function markAgentRunWaitingForApproval(
           UPDATE omni_agent_runs
           SET status = 'waiting_approval',
               response = ${values.response ? safeRunText(values.response, 100_000) : null},
-              continuation = ${JSON.stringify(values.continuation)}::jsonb,
+              continuation = ${values.continuation}::jsonb,
               completed_at = NULL
           WHERE id = ${runId}
             AND tenant_id = ${tenantId}

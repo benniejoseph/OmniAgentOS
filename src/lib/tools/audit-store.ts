@@ -70,10 +70,10 @@ export async function claimIdempotentToolExecution(
           ${record.id}, ${record.toolId}, ${record.toolName},
           ${record.riskLevel}, ${record.status}, ${record.dryRun},
           ${record.approvalRequired}, ${record.tenantId || null},
-          ${record.actorId || null}, ${JSON.stringify(record.input)}::jsonb,
-          ${JSON.stringify(record.output ?? null)}::jsonb,
+          ${record.actorId || null}, ${record.input}::jsonb,
+          ${record.output ?? null}::jsonb,
           ${record.reason || null}, ${record.approvalDecision || null},
-          ${record.approvals ? JSON.stringify(record.approvals) : null}::jsonb,
+          ${record.approvals || null}::jsonb,
           ${record.approvedBy || null}, ${record.approvedAt || null},
           ${record.approvalReason || null}, ${record.createdAt},
           ${record.completedAt || null}
@@ -767,9 +767,9 @@ async function writeToolExecutionDb(sql: SqlClient, record: ToolExecutionRecord)
     VALUES (
       ${record.id}, ${record.toolId}, ${record.toolName}, ${record.riskLevel}, ${record.status},
       ${record.dryRun}, ${record.approvalRequired}, ${record.tenantId || null}, ${record.actorId || null},
-      ${JSON.stringify(record.input)}::jsonb, ${JSON.stringify(record.output ?? null)}::jsonb,
+      ${record.input}::jsonb, ${record.output ?? null}::jsonb,
       ${record.reason || null}, ${record.approvalDecision || null},
-      ${record.approvals ? JSON.stringify(record.approvals) : null}::jsonb, ${record.approvedBy || null},
+      ${record.approvals || null}::jsonb, ${record.approvedBy || null},
       ${record.approvedAt || null}, ${record.approvalReason || null}, ${record.createdAt},
       ${record.completedAt || null}
     )
