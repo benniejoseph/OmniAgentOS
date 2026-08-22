@@ -8,6 +8,10 @@ import {
 } from "@/lib/db/client";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import { rebuildMemoryGraph } from "@/lib/memory/graph";
+import {
+  completeOperationJob,
+  failOperationJob,
+} from "@/lib/operations/job-queue";
 import { sweepExpiredSensitiveData } from "@/lib/security/retention";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -95,6 +99,48 @@ databaseDescribe("Postgres schema integration", () => {
     } else {
       expect(vectorStatus.dimensions).toBeGreaterThan(0);
     }
+  });
+
+  test("reconciles legacy scalar operation-job payloads", async () => {
+    await admin`
+      INSERT INTO omni_operation_jobs (
+        id, tenant_id, type, status, payload, attempt, max_attempts,
+        run_at, locked_at, lease_owner, lease_expires_at
+      )
+      VALUES
+        (
+          'legacy-scalar-complete', 'legacy_job_tenant', 'workflow.tick',
+          'running', '"legacy"'::jsonb, 1, 1, NOW(), NOW(),
+          'legacy-complete-owner', NOW() + INTERVAL '5 minutes'
+        ),
+        (
+          'legacy-scalar-fail', 'legacy_job_tenant', 'workflow.tick',
+          'running', '42'::jsonb, 1, 1, NOW(), NOW(),
+          'legacy-fail-owner', NOW() + INTERVAL '5 minutes'
+        )
+    `;
+
+    const completed = await completeOperationJob(
+      "legacy-scalar-complete",
+      "legacy-complete-owner",
+      "legacy_job_tenant",
+    );
+    const failed = await failOperationJob(
+      "legacy-scalar-fail",
+      "Legacy payload cannot execute.",
+      "legacy-fail-owner",
+      "legacy_job_tenant",
+    );
+
+    expect(completed).toMatchObject({
+      status: "completed",
+      payload: {},
+    });
+    expect(failed).toMatchObject({
+      status: "failed",
+      payload: {},
+      lastError: "Legacy payload cannot execute.",
+    });
   });
 
   test("rebuilds a tenant graph without requesting a second pool connection", async () => {

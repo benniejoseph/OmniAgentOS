@@ -382,7 +382,11 @@ export async function completeOperationJob(jobId: string, leaseOwner?: string, r
             WHEN payload->>'__rerunRequested' = 'true' THEN 'queued'
             ELSE 'completed'
           END,
-          payload = payload - '__rerunRequested',
+          payload = CASE
+            WHEN jsonb_typeof(payload) = 'object'
+            THEN payload - '__rerunRequested'
+            ELSE '{}'::jsonb
+          END,
           attempt = CASE
             WHEN payload->>'__rerunRequested' = 'true' THEN 0
             ELSE attempt
@@ -467,7 +471,11 @@ export async function failOperationJob(
             WHEN attempt < max_attempts THEN 'queued'
             ELSE 'failed'
           END,
-          payload = payload - '__rerunRequested',
+          payload = CASE
+            WHEN jsonb_typeof(payload) = 'object'
+            THEN payload - '__rerunRequested'
+            ELSE '{}'::jsonb
+          END,
           attempt = CASE
             WHEN payload->>'__rerunRequested' = 'true' THEN 0
             ELSE attempt
