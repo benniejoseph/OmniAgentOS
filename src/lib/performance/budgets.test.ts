@@ -34,6 +34,7 @@ describe("frontend performance budgets", () => {
       sessionP95Ms: 300,
       releaseApiP95Ms: 1_500,
       dashboardUsableMs: 1_500,
+      releaseDashboardUsableMs: 2_500,
       firstSseStatusMs: 1_000,
       completionVisibilityMs: 1_000,
       workflowPickupP95Ms: 10_000,
@@ -69,7 +70,8 @@ describe("frontend performance budgets", () => {
     expect(previewBenchmark).toContain("serverP95BudgetMs");
     expect(previewBenchmark).toContain("parseServerDuration");
     expect(dashboardBenchmark).toContain('path: "/app"');
-    expect(dashboardBenchmark).toContain("budgets.dashboardUsableMs");
+    expect(dashboardBenchmark).toContain("budgets.releaseDashboardUsableMs");
+    expect(dashboardBenchmark).toContain("serverP95BudgetMs");
     expect(deployment).toContain('["promote", stagedBaseUrl, "--yes"]');
     expect(healthBadge).toContain("/api/health?public=1");
     expect(healthBadge).toContain('cache: "force-cache"');

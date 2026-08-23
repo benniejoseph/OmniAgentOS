@@ -64,7 +64,13 @@ try {
   for (let index = 0; index < samples; index += 1) {
     measurements.push(await measureDashboard(page));
   }
-  const durations = measurements.sort((left, right) => left - right);
+  const durations = measurements
+    .map((measurement) => measurement.durationMs)
+    .sort((left, right) => left - right);
+  const serverDurations = measurements
+    .map((measurement) => measurement.serverDurationMs)
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
   const result = {
     name: "dashboard-usable",
     path: "/app",
@@ -72,11 +78,18 @@ try {
     p50Ms: percentile(durations, 0.5),
     p95Ms: percentile(durations, 0.95),
     maxMs: Math.round(durations.at(-1) || 0),
-    budgetMs: budgets.dashboardUsableMs,
+    budgetMs: budgets.releaseDashboardUsableMs,
+    serverP95Ms: serverDurations.length
+      ? percentile(serverDurations, 0.95)
+      : undefined,
+    serverP95BudgetMs: budgets.authenticatedReadP95Ms,
   };
-  result.passed = result.p95Ms <= result.budgetMs;
+  result.passed =
+    result.p95Ms <= result.budgetMs &&
+    result.serverP95Ms !== undefined &&
+    result.serverP95Ms <= result.serverP95BudgetMs;
   console.log(
-    `${result.passed ? "PASS" : "FAIL"} ${result.name}: p50=${result.p50Ms}ms p95=${result.p95Ms}ms budget=${result.budgetMs}ms`,
+    `${result.passed ? "PASS" : "FAIL"} ${result.name}: p50=${result.p50Ms}ms p95=${result.p95Ms}ms budget=${result.budgetMs}ms; server p95=${result.serverP95Ms ?? "missing"}ms budget=${result.serverP95BudgetMs}ms`,
   );
   const output = process.env.BENCHMARK_DASHBOARD_OUTPUT?.trim();
   if (output) {
@@ -122,7 +135,20 @@ async function measureDashboard(page) {
   await page
     .getByRole("status", { name: "Loading runs" })
     .waitFor({ state: "hidden" });
-  return performance.now() - startedAt;
+  const serverTiming = await response.headerValue("server-timing");
+  return {
+    durationMs: performance.now() - startedAt,
+    serverDurationMs: parseServerDuration(serverTiming),
+    serverTiming: serverTiming || undefined,
+  };
+}
+
+function parseServerDuration(header) {
+  const match = String(header || "").match(
+    /(?:^|,)\s*total;dur=([0-9]+(?:\.[0-9]+)?)/i,
+  );
+  const duration = Number(match?.[1]);
+  return Number.isFinite(duration) ? duration : undefined;
 }
 
 function percentile(sorted, quantile) {
