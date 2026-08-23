@@ -45,10 +45,21 @@ describe("paired production deployment", () => {
   });
 
   it("rejects untracked drift and polls asynchronous evaluation smoke jobs", async () => {
-    const [deployScript, evaluationSmoke, workerScript, workerImage] =
+    const [
+      deployScript,
+      evaluationSmoke,
+      securitySmoke,
+      previewBenchmark,
+      dashboardBenchmark,
+      workerScript,
+      workerImage,
+    ] =
       await Promise.all([
         readFile("scripts/deploy-production.mjs", "utf8"),
         readFile("scripts/smoke-eval-case.mjs", "utf8"),
+        readFile("scripts/smoke-security.mjs", "utf8"),
+        readFile("scripts/benchmark-preview.mjs", "utf8"),
+        readFile("scripts/benchmark-dashboard.mjs", "utf8"),
         readFile("scripts/worker.mjs", "utf8"),
         readFile("Dockerfile.worker", "utf8"),
       ]);
@@ -59,6 +70,11 @@ describe("paired production deployment", () => {
     expect(deployScript).toContain("previousWorkerImage");
     expect(deployScript).toContain("previousVercelDeployment");
     expect(deployScript).not.toContain('"cron secret"');
+    expect(deployScript).toContain("SMOKE_SESSION_OUTPUT");
+    expect(deployScript).toContain("BENCHMARK_SESSION_FILE");
+    expect(securitySmoke).toContain("SMOKE_SESSION_OUTPUT");
+    expect(previewBenchmark).toContain("BENCHMARK_SESSION_FILE");
+    expect(dashboardBenchmark).toContain("BENCHMARK_SESSION_FILE");
     expect(evaluationSmoke).toContain("response.status === 202");
     expect(evaluationSmoke).toContain("waitForEvaluationJob");
     expect(evaluationSmoke).toContain("/api/operations/jobs/");

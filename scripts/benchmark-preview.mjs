@@ -27,7 +27,10 @@ const password =
   process.env.SMOKE_ADMIN_PASSWORD ||
   process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
 
-const cookie = email && password ? await signIn(email, password) : undefined;
+const reusableCookie = await readSessionCookie();
+const cookie =
+  reusableCookie ||
+  (email && password ? await signIn(email, password) : undefined);
 const availableTargets = [
   {
     name: "landing",
@@ -164,6 +167,26 @@ async function signIn(loginEmail, loginPassword) {
     failSmoke("benchmark login did not return a session cookie.");
   }
   return setCookie.split(";", 1)[0];
+}
+
+async function readSessionCookie() {
+  const sessionFile = process.env.BENCHMARK_SESSION_FILE?.trim();
+  if (!sessionFile) {
+    return undefined;
+  }
+  let cookie;
+  try {
+    cookie = (await readFile(sessionFile, "utf8")).trim();
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+  if (!/^[^=;\s]+=[^;\r\n]+$/.test(cookie)) {
+    failSmoke("benchmark session file did not contain a valid cookie.");
+  }
+  return cookie;
 }
 
 async function requestTarget(target) {

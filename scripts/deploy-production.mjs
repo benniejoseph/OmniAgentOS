@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const VERCEL_ORG_ID = "team_hFIwf5wwfzIn2I1WDZwY8pAv";
 const VERCEL_PROJECT_ID = "prj_BF3Uy9PhUUitqFAeA0g0LafaL4co";
@@ -235,23 +238,36 @@ async function getCurrentVercelDeployment(productionBaseUrl) {
 }
 
 async function runVerificationCommands(baseUrl) {
+  const sessionDirectory = await mkdtemp(
+    path.join(tmpdir(), "omniagent-release-session-"),
+  );
+  const sessionFile = path.join(sessionDirectory, "session-cookie");
   const environment = {
     ...smokeEnvironment,
     BASE_URL: baseUrl,
+    BENCHMARK_SESSION_FILE: sessionFile,
     SMOKE_DRIVE_BACKGROUND_QUEUE: "true",
     SMOKE_REQUEST_TIMEOUT_MS: "300000",
+    SMOKE_SESSION_OUTPUT: sessionFile,
   };
-  await run("npm", ["run", "test:production-smoke"], { environment });
-  await run("npm", ["run", "benchmark:preview"], { environment });
-  await run("npm", ["run", "benchmark:dashboard"], { environment });
+  try {
+    await run("npm", ["run", "test:production-smoke"], { environment });
+    await run("npm", ["run", "benchmark:preview"], { environment });
+    await run("npm", ["run", "benchmark:dashboard"], { environment });
+  } finally {
+    await rm(sessionDirectory, { recursive: true, force: true });
+  }
 }
 
 function printVerificationCommands(baseUrl) {
+  const sessionFile = "/tmp/omniagent-release-session/session-cookie";
   const environment = {
     ...smokeEnvironment,
     BASE_URL: baseUrl,
+    BENCHMARK_SESSION_FILE: sessionFile,
     SMOKE_DRIVE_BACKGROUND_QUEUE: "true",
     SMOKE_REQUEST_TIMEOUT_MS: "300000",
+    SMOKE_SESSION_OUTPUT: sessionFile,
   };
   printDryRun("npm", ["run", "test:production-smoke"], environment);
   printDryRun("npm", ["run", "benchmark:preview"], environment);

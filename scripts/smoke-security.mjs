@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { failSmoke, getSmokeBaseUrl, smokeFetch } from "./smoke-helpers.mjs";
 
 const baseUrl = getSmokeBaseUrl();
@@ -76,6 +77,13 @@ if (email && password) {
   }
 
   const cookie = setCookie.split(";")[0];
+  const sessionOutput = process.env.SMOKE_SESSION_OUTPUT?.trim();
+  if (login.status === 200 && cookie && sessionOutput) {
+    await writeFile(sessionOutput, `${cookie}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+  }
   const authHeaders = {
     "content-type": "application/json",
     cookie,

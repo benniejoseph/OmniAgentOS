@@ -23,9 +23,10 @@ const password =
   process.env.BENCHMARK_PASSWORD ||
   process.env.SMOKE_ADMIN_PASSWORD ||
   process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
-if (!email || !password) {
+const reusableCookie = await readSessionCookie();
+if (!reusableCookie && (!email || !password)) {
   failSmoke(
-    "dashboard benchmark requires BENCHMARK_EMAIL/BENCHMARK_PASSWORD or smoke administrator credentials.",
+    "dashboard benchmark requires a reusable session or administrator credentials.",
   );
 }
 
@@ -44,16 +45,27 @@ try {
         }
       : undefined,
   });
-  const login = await context.request.post(`${baseUrl}/api/auth/login`, {
-    data: { email, password },
-    headers: bypassSecret
-      ? {
-          "x-vercel-protection-bypass": bypassSecret,
-        }
-      : undefined,
-  });
-  if (!login.ok()) {
-    failSmoke(`dashboard benchmark login failed with status ${login.status()}.`);
+  if (reusableCookie) {
+    const separator = reusableCookie.indexOf("=");
+    await context.addCookies([
+      {
+        name: reusableCookie.slice(0, separator),
+        value: reusableCookie.slice(separator + 1),
+        url: baseUrl,
+      },
+    ]);
+  } else {
+    const login = await context.request.post(`${baseUrl}/api/auth/login`, {
+      data: { email, password },
+      headers: bypassSecret
+        ? {
+            "x-vercel-protection-bypass": bypassSecret,
+          }
+        : undefined,
+    });
+    if (!login.ok()) {
+      failSmoke(`dashboard benchmark login failed with status ${login.status()}.`);
+    }
   }
 
   const page = await context.newPage();
@@ -141,6 +153,26 @@ async function measureDashboard(page) {
     serverDurationMs: parseServerDuration(serverTiming),
     serverTiming: serverTiming || undefined,
   };
+}
+
+async function readSessionCookie() {
+  const sessionFile = process.env.BENCHMARK_SESSION_FILE?.trim();
+  if (!sessionFile) {
+    return undefined;
+  }
+  let cookie;
+  try {
+    cookie = (await readFile(sessionFile, "utf8")).trim();
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+  if (!/^[^=;\s]+=[^;\r\n]+$/.test(cookie)) {
+    failSmoke("dashboard benchmark session file did not contain a valid cookie.");
+  }
+  return cookie;
 }
 
 function parseServerDuration(header) {
