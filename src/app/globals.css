@@ -187,6 +187,10 @@ summary:focus-visible,
   outline-offset: 3px;
 }
 
+.inverse-focus a:focus-visible {
+  outline: 3px solid var(--background);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

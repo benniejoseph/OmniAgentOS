@@ -46,6 +46,36 @@ describe("frontend performance budgets", () => {
     ).rejects.toThrow();
   });
 
+  it("keeps inverted CTA link focus visible in both themes", async () => {
+    const [cta, styles] = await Promise.all([
+      readFile(
+        path.resolve("src/components/marketing/landing-cta.tsx"),
+        "utf8",
+      ),
+      readFile(path.resolve("src/app/globals.css"), "utf8"),
+    ]);
+
+    expect(cta).toContain(
+      'className="inverse-focus border-t border-line bg-foreground text-background"',
+    );
+    expect(cta.match(/<Link/g)).toHaveLength(2);
+
+    const inverseFocusRule = styles.match(
+      /\.inverse-focus a:focus-visible\s*\{([^}]*)\}/,
+    )?.[1];
+    expect(inverseFocusRule).toContain(
+      "outline: 3px solid var(--background);",
+    );
+    expect(inverseFocusRule).not.toContain("!important");
+    expect(styles).toContain("a:focus-visible,");
+    expect(styles.match(/:root\s*\{([^}]*)\}/)?.[1]).toContain(
+      "--background:",
+    );
+    expect(
+      styles.match(/:root\[data-theme="dark"\]\s*\{([^}]*)\}/)?.[1],
+    ).toContain("--background:");
+  });
+
   it("records the release budgets used by preview verification", () => {
     expect(budgets).toMatchObject({
       authenticatedReadP95Ms: 500,

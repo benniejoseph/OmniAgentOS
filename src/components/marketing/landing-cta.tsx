@@ -4,7 +4,7 @@ import { marketingActions } from "@/lib/marketing-content";
 
 export function PrivateWorkspaceCta() {
   return (
-    <section className="border-t border-line bg-foreground text-background">
+    <section className="inverse-focus border-t border-line bg-foreground text-background">
       <div className="mx-auto flex max-w-7xl flex-col gap-8 px-4 py-16 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
         <div>
           <h2 className="text-3xl font-semibold tracking-[-0.04em]">
