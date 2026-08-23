@@ -81,6 +81,16 @@ if (email && password) {
     cookie,
     origin: baseUrl,
   };
+  const validationHeaders = internalSecret
+    ? {
+        "content-type": "application/json",
+        origin: baseUrl,
+        "x-omni-internal-auth": internalSecret,
+        "x-omni-tenant-id": process.env.SMOKE_TENANT_ID || "production_smoke",
+        "x-omni-user-id": process.env.SMOKE_ACTOR_ID || "production-smoke",
+        "x-omni-user-role": "admin",
+      }
+    : authHeaders;
   const authenticatedRead = await request("/api/memory?limit=1", { headers: { cookie } });
   checks.push(assert(authenticatedRead.status === 200, "authenticated memory read succeeds", `expected 200, got ${authenticatedRead.status}`));
 
@@ -104,7 +114,7 @@ if (email && password) {
 
   const forbiddenSecret = await request("/api/connectors", {
     method: "POST",
-    headers: authHeaders,
+    headers: validationHeaders,
     body: JSON.stringify({
       name: "Smoke forbidden secret",
       endpoint: "https://example.com/mcp",
@@ -117,7 +127,7 @@ if (email && password) {
 
   const privateEndpoint = await request("/api/connectors", {
     method: "POST",
-    headers: authHeaders,
+    headers: validationHeaders,
     body: JSON.stringify({
       name: "Smoke private endpoint",
       endpoint: "http://127.0.0.1:9999/mcp",
