@@ -363,6 +363,10 @@ test("public signup redirects to private login and intake is closed", async ({
   });
   expect(response.status()).toBe(404);
 
+  const signupResponse = await request.get("/signup", { maxRedirects: 0 });
+  expect(signupResponse.status()).toBe(308);
+  expect(signupResponse.headers()["location"]).toBe("/login");
+
   await page.goto("/signup");
   await expect(page).toHaveURL(/\/login$/);
   await expect(page.getByLabel("Email address")).toBeVisible();
