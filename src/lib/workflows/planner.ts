@@ -224,6 +224,54 @@ export async function getWorkflowPlanForRun(workflowRunId: string, options: Tena
   ) || null;
 }
 
+export async function getWorkflowPlansForRuns(
+  workflowRunIds: string[],
+  options: TenantScopedOptions = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const uniqueRunIds = [...new Set(workflowRunIds.filter(Boolean))].slice(
+    0,
+    100,
+  );
+  if (!uniqueRunIds.length) {
+    return new Map<string, WorkflowPlanRecord>();
+  }
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT DISTINCT ON (workflow_run_id) *
+      FROM omni_workflow_plans
+      WHERE workflow_run_id = ANY(${uniqueRunIds}::text[])
+        AND tenant_id = ${tenantId}
+      ORDER BY workflow_run_id, created_at DESC
+    `;
+    return new Map(
+      rows.map((row) => {
+        const plan = workflowPlanFromRow(row);
+        return [String(plan.workflowRunId), plan] as const;
+      }),
+    );
+  }
+
+  const requested = new Set(uniqueRunIds);
+  const ledger = await readWorkflowPlanLedger();
+  const plans = new Map<string, WorkflowPlanRecord>();
+  for (const plan of ledger.plans) {
+    const runId = plan.workflowRunId;
+    if (
+      !runId ||
+      !requested.has(runId) ||
+      plans.has(runId) ||
+      normalizeTenantId(plan.tenantId) !== tenantId
+    ) {
+      continue;
+    }
+    plans.set(runId, plan);
+  }
+  return plans;
+}
+
 export async function getWorkflowPlanById(
   planId: string,
   options: TenantScopedOptions = {},

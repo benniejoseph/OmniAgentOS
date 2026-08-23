@@ -9,6 +9,7 @@ import {
 } from "@/lib/db/client";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import { rebuildMemoryGraph } from "@/lib/memory/graph";
+import { saveMemories } from "@/lib/memory/store";
 import {
   completeOperationJob,
   enqueueOperationJob,
@@ -122,6 +123,44 @@ databaseDescribe("Postgres schema integration", () => {
     } else {
       expect(vectorStatus.dimensions).toBeGreaterThan(0);
     }
+  });
+
+  test("returns newly inserted and replayed bulk memories", async () => {
+    const tenantId = "bulk_memory_tenant";
+    const input = [
+      {
+        id: "bulk-memory-one",
+        tenantId,
+        title: "First bulk memory",
+        content: "First integration memory.",
+      },
+      {
+        id: "bulk-memory-two",
+        tenantId,
+        title: "Second bulk memory",
+        content: "Second integration memory.",
+      },
+    ];
+    const first = await runWithDatabaseTenantScope(
+      tenantId,
+      () => saveMemories(input),
+    );
+    const replayed = await runWithDatabaseTenantScope(
+      tenantId,
+      () =>
+        saveMemories(
+          input.map((memory) => ({
+            ...memory,
+            title: "A replay must not overwrite",
+          })),
+        ),
+    );
+
+    expect(first.map((memory) => memory.id)).toEqual([
+      "bulk-memory-one",
+      "bulk-memory-two",
+    ]);
+    expect(replayed).toEqual(first);
   });
 
   test("stores structured parameters as native JSONB", async () => {

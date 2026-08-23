@@ -1,4 +1,10 @@
 import { randomUUID } from "node:crypto";
+import {
+  WORKFLOW_PLAN_MAX_COST_UNITS,
+  WORKFLOW_PLAN_MAX_TOOL_CALLS,
+  WORKFLOW_PLAN_MAX_WALL_CLOCK_MS,
+  WORKFLOW_PLAN_NODES_PER_TICK,
+} from "@/lib/config";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import {
   ensureDatabaseSchema,
@@ -44,7 +50,86 @@ type ToolExecutionSummary = {
   riskLevel: number;
   reason?: string;
   result?: unknown;
+  costUnits: number;
 };
+
+export type WorkflowExecutionBudget = {
+  startedAt: number;
+  maxWallClockMs: number;
+  maxToolCalls: number;
+  maxCostUnits: number;
+  toolCalls: number;
+  costUnits: number;
+};
+
+export function createWorkflowExecutionBudget(
+  input: Partial<
+    Pick<
+      WorkflowExecutionBudget,
+      "startedAt" | "maxWallClockMs" | "maxToolCalls" | "maxCostUnits"
+      | "toolCalls" | "costUnits"
+    >
+  > = {},
+): WorkflowExecutionBudget {
+  return {
+    startedAt: input.startedAt ?? Date.now(),
+    maxWallClockMs: input.maxWallClockMs ?? WORKFLOW_PLAN_MAX_WALL_CLOCK_MS,
+    maxToolCalls: input.maxToolCalls ?? WORKFLOW_PLAN_MAX_TOOL_CALLS,
+    maxCostUnits: input.maxCostUnits ?? WORKFLOW_PLAN_MAX_COST_UNITS,
+    toolCalls: input.toolCalls ?? 0,
+    costUnits: input.costUnits ?? 0,
+  };
+}
+
+export function reserveWorkflowToolBudget({
+  budget,
+  tool,
+  dryRun,
+  now = Date.now(),
+}: {
+  budget: WorkflowExecutionBudget;
+  tool?: ToolDefinition;
+  dryRun: boolean;
+  now?: number;
+}) {
+  if (now - budget.startedAt >= budget.maxWallClockMs) {
+    throw new Error(
+      `Workflow plan exceeded its ${budget.maxWallClockMs}ms wall-clock budget.`,
+    );
+  }
+  const costUnits = workflowToolCostUnits(tool, dryRun);
+  if (budget.toolCalls + 1 > budget.maxToolCalls) {
+    throw new Error(
+      `Workflow plan exceeded its ${budget.maxToolCalls}-call tool budget.`,
+    );
+  }
+  if (budget.costUnits + costUnits > budget.maxCostUnits) {
+    throw new Error(
+      `Workflow plan exceeded its ${budget.maxCostUnits}-unit cost budget.`,
+    );
+  }
+  budget.toolCalls += 1;
+  budget.costUnits += costUnits;
+}
+
+export function workflowToolCostUnits(
+  tool: ToolDefinition | undefined,
+  dryRun: boolean,
+) {
+  if (dryRun) {
+    return 1;
+  }
+  if (!tool) {
+    return 1;
+  }
+  if (tool.category === "mcp" || tool.category === "openapi" || tool.category === "connector") {
+    return 5;
+  }
+  if (tool.category === "web") {
+    return 4;
+  }
+  return 1;
+}
 
 export async function executeDynamicWorkflowPlan(
   detail: WorkflowRunDetail,
@@ -58,22 +143,44 @@ export async function executeDynamicWorkflowPlan(
 
   const sortedNodes = topologicalSort(parsedPlan.plan.nodes);
   const priorRecords = await listWorkflowPlanNodeExecutionsForRun(detail.run.id, 250);
+  const planRecords = priorRecords.filter(
+    (record) => record.planId === parsedPlan.id,
+  );
   const existingByNode = new Map(
-    priorRecords
-      .filter((record) => record.planId === parsedPlan.id)
-      .map((record) => [record.nodeId, record]),
+    planRecords.map((record) => [record.nodeId, record]),
+  );
+  const priorToolExecutions = planRecords.flatMap((record) =>
+    parseToolSummaries(record.output)
   );
   const recordsByNode = new Map<string, WorkflowPlanNodeExecutionRecord>();
   const nodeExecutions: WorkflowPlanNodeExecutionRecord[] = [];
+  const toolCache = new Map<string, Promise<ToolDefinition | undefined>>();
+  const priorElapsedMs = workflowPlanElapsedMs(planRecords);
+  const budget = createWorkflowExecutionBudget({
+    startedAt: Date.now() - priorElapsedMs,
+    toolCalls: priorToolExecutions.length,
+    costUnits: priorToolExecutions.reduce(
+      (total, execution) => total + execution.costUnits,
+      0,
+    ),
+  });
+  let processedNodes = 0;
+  let hasPendingNodes = false;
 
   for (const node of sortedNodes) {
     throwIfAborted(options.abortSignal);
+    assertWorkflowWallClockBudget(budget);
     const existing = existingByNode.get(node.id);
     if (existing && isReusableNodeExecution(existing)) {
       recordsByNode.set(node.id, existing);
       nodeExecutions.push(existing);
       continue;
     }
+    if (processedNodes >= WORKFLOW_PLAN_NODES_PER_TICK) {
+      hasPendingNodes = true;
+      continue;
+    }
+    processedNodes += 1;
 
     const blockedDependencies = node.dependsOn
       .map((dependencyId) => recordsByNode.get(dependencyId))
@@ -125,6 +232,8 @@ export async function executeDynamicWorkflowPlan(
           .map((dependencyId) => recordsByNode.get(dependencyId))
           .filter((record): record is WorkflowPlanNodeExecutionRecord => Boolean(record)),
         abortSignal: options.abortSignal,
+        toolCache,
+        budget,
       });
       const record = await saveWorkflowPlanNodeExecution({
         ...baseNodeExecutionRecord({ detail, planId: parsedPlan.id, node, existing: runningRecord }),
@@ -185,15 +294,27 @@ export async function executeDynamicWorkflowPlan(
     workflowRunId: detail.run.id,
     planId: parsedPlan.id,
     nodeExecutions,
+    totalNodes: sortedNodes.length,
+    hasPendingNodes,
+    budget,
   });
-  await appendWorkflowEvent(detail.run.id, "workflow.plan_execution.completed", {
+  await appendWorkflowEvent(
+    detail.run.id,
+    summary.status === "running"
+      ? "workflow.plan_execution.progress"
+      : "workflow.plan_execution.completed",
+    {
     planId: parsedPlan.id,
     status: summary.status,
     completedNodes: summary.completedNodes,
     toolExecutions: summary.toolExecutions,
     dryRunTools: summary.dryRunTools,
     executedTools: summary.executedTools,
-  });
+    toolCalls: budget.toolCalls,
+    costUnits: budget.costUnits,
+    elapsedMs: summary.elapsedMs,
+    },
+  );
 
   return summary;
 }
@@ -298,6 +419,8 @@ async function executePlanNode({
   node,
   dependencyRecords,
   abortSignal,
+  toolCache,
+  budget,
 }: {
   detail: WorkflowRunDetail;
   plan: WorkflowDynamicPlan;
@@ -305,6 +428,8 @@ async function executePlanNode({
   node: WorkflowPlanNode;
   dependencyRecords: WorkflowPlanNodeExecutionRecord[];
   abortSignal?: AbortSignal;
+  toolCache: Map<string, Promise<ToolDefinition | undefined>>;
+  budget: WorkflowExecutionBudget;
 }): Promise<{
   status: WorkflowPlanNodeExecutionStatus;
   output: Record<string, unknown>;
@@ -327,11 +452,38 @@ async function executePlanNode({
     };
   }
 
-  for (const toolId of node.toolIds.slice(0, 6)) {
+  const workflowApproved = Boolean(detail.run.approvedAt);
+  const plannedTools = (await Promise.all(
+    node.toolIds.slice(0, 6).map(async (toolId) => ({
+      toolId,
+      tool: await getCachedToolDefinition(toolCache, toolId, {
+        tenantId: detail.run.tenantId,
+      }),
+    })),
+  )).map(({ toolId, tool }) => ({
+    toolId,
+    tool,
+    dryRun: shouldDryRunWorkflowTool({
+      toolId,
+      tool,
+      node,
+      workflowApproved,
+    }),
+  }));
+  for (const { tool, dryRun } of plannedTools) {
+    reserveWorkflowToolBudget({ budget, tool, dryRun });
+  }
+  const executeTool = async ({
+    toolId,
+    tool,
+    dryRun,
+  }: {
+    toolId: string;
+    tool?: ToolDefinition;
+    dryRun: boolean;
+  }): Promise<ToolExecutionSummary> => {
     throwIfAborted(abortSignal);
-    const tool = await getToolDefinition(toolId, { tenantId: detail.run.tenantId });
-    const workflowApproved = Boolean(detail.run.approvedAt);
-    const dryRun = shouldDryRunWorkflowTool({ toolId, tool, node, workflowApproved });
+    const executionSignal = workflowBudgetAbortSignal(budget, abortSignal);
     const execution = await executeGovernedTool({
       toolId,
       input: buildToolInput({ detail, plan, planId, node, toolId }),
@@ -346,10 +498,10 @@ async function executePlanNode({
       approvalReason: detail.run.approvedAt
         ? `Workflow ${detail.run.id} was approved before plan-node execution.`
         : undefined,
-      abortSignal,
+      abortSignal: executionSignal,
       idempotencyKey: `workflow:${detail.run.id}:plan:${planId}:node:${node.id}:tool:${toolId}`,
     });
-    toolExecutions.push({
+    return {
       id: execution.record.id,
       toolId: execution.record.toolId,
       status: execution.record.status,
@@ -358,7 +510,19 @@ async function executePlanNode({
       riskLevel: execution.record.riskLevel,
       reason: execution.record.reason,
       result: execution.result,
-    });
+      costUnits: workflowToolCostUnits(tool, dryRun),
+    };
+  };
+
+  if (
+    plannedTools.length > 1 &&
+    plannedTools.every(({ tool }) => isIndependentReadOnlyTool(tool))
+  ) {
+    toolExecutions.push(...await Promise.all(plannedTools.map(executeTool)));
+  } else {
+    for (const plannedTool of plannedTools) {
+      toolExecutions.push(await executeTool(plannedTool));
+    }
   }
 
   const failed = toolExecutions.find(
@@ -404,6 +568,53 @@ async function getToolDefinition(
     await getMcpGovernedTool(toolId, options) ||
     await getOpenApiGovernedTool(toolId, options) ||
     undefined;
+}
+
+function getCachedToolDefinition(
+  cache: Map<string, Promise<ToolDefinition | undefined>>,
+  toolId: string,
+  options: { tenantId?: string },
+) {
+  const cacheKey = `${normalizeTenantId(options.tenantId)}:${toolId}`;
+  let pending = cache.get(cacheKey);
+  if (!pending) {
+    pending = getToolDefinition(toolId, options);
+    cache.set(cacheKey, pending);
+  }
+  return pending;
+}
+
+export function isIndependentReadOnlyTool(tool: ToolDefinition | undefined) {
+  return Boolean(
+    tool &&
+      tool.riskLevel === 0 &&
+      !tool.approvalRequired &&
+      ["memory", "knowledge", "runs", "web"].includes(tool.category) &&
+      !["memory.write", "knowledge.ingest"].includes(tool.id),
+  );
+}
+
+function assertWorkflowWallClockBudget(
+  budget: WorkflowExecutionBudget,
+  now = Date.now(),
+) {
+  if (now - budget.startedAt >= budget.maxWallClockMs) {
+    throw new Error(
+      `Workflow plan exceeded its ${budget.maxWallClockMs}ms wall-clock budget.`,
+    );
+  }
+}
+
+function workflowBudgetAbortSignal(
+  budget: WorkflowExecutionBudget,
+  signal?: AbortSignal,
+) {
+  const remaining = Math.max(
+    1,
+    budget.maxWallClockMs - (Date.now() - budget.startedAt),
+  );
+  const timeoutSignal = AbortSignal.timeout(remaining);
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 }
 
 export function shouldDryRunWorkflowTool({
@@ -656,10 +867,16 @@ function summarizePlanExecution({
   workflowRunId,
   planId,
   nodeExecutions,
+  totalNodes,
+  hasPendingNodes,
+  budget,
 }: {
   workflowRunId: string;
   planId: string;
   nodeExecutions: WorkflowPlanNodeExecutionRecord[];
+  totalNodes: number;
+  hasPendingNodes: boolean;
+  budget: WorkflowExecutionBudget;
 }): WorkflowPlanExecutionSummary {
   const toolSummaries = nodeExecutions.flatMap((record) => parseToolSummaries(record.output));
   const failedNodes = nodeExecutions.filter((record) => record.status === "failed").length;
@@ -667,19 +884,21 @@ function summarizePlanExecution({
   const waitingApprovalNodes = nodeExecutions.filter((record) => record.status === "waiting_approval").length;
   const skippedNodes = nodeExecutions.filter((record) => record.status === "skipped").length;
   const highestRiskLevel = toRiskLevel(Math.max(0, ...nodeExecutions.map((record) => record.riskLevel)));
-  const status = failedNodes
-    ? "failed"
-    : blockedNodes
-      ? "blocked"
-      : waitingApprovalNodes
-        ? "waiting_approval"
-        : "completed";
+  const status = hasPendingNodes
+    ? "running"
+    : failedNodes
+      ? "failed"
+      : blockedNodes
+        ? "blocked"
+        : waitingApprovalNodes
+          ? "waiting_approval"
+          : "completed";
 
   return {
     workflowRunId,
     planId,
     status,
-    totalNodes: nodeExecutions.length,
+    totalNodes,
     completedNodes: nodeExecutions.filter((record) => record.status === "completed").length,
     blockedNodes,
     failedNodes,
@@ -689,9 +908,29 @@ function summarizePlanExecution({
     dryRunTools: toolSummaries.filter((tool) => tool.dryRun).length,
     executedTools: toolSummaries.filter((tool) => !tool.dryRun && tool.status === "executed").length,
     approvalRequiredTools: toolSummaries.filter((tool) => tool.approvalRequired).length,
+    toolCalls: budget.toolCalls,
+    costUnits: budget.costUnits,
+    elapsedMs: Math.max(0, Date.now() - budget.startedAt),
     highestRiskLevel,
     nodeExecutions,
   };
+}
+
+export function workflowPlanElapsedMs(
+  records: readonly WorkflowPlanNodeExecutionRecord[],
+) {
+  return records.reduce((total, record) => {
+    const startedAt = Date.parse(record.startedAt || "");
+    const completedAt = Date.parse(record.completedAt || record.updatedAt);
+    if (
+      !Number.isFinite(startedAt) ||
+      !Number.isFinite(completedAt) ||
+      completedAt <= startedAt
+    ) {
+      return total;
+    }
+    return total + (completedAt - startedAt);
+  }, 0);
 }
 
 function topologicalSort(nodes: WorkflowPlanNode[]) {
@@ -745,6 +984,19 @@ function parseToolSummaries(output: Record<string, unknown> | undefined): ToolEx
       riskLevel: Number(item.riskLevel || 0),
       reason: item.reason ? String(item.reason) : undefined,
       result: item.result,
+      costUnits: Math.max(
+        1,
+        Number(
+          item.costUnits ||
+            (item.dryRun
+              ? 1
+              : String(item.toolId || "").startsWith("web.")
+                ? 4
+                : /^(connector|mcp|openapi)\./.test(String(item.toolId || ""))
+                  ? 5
+                  : 1),
+        ),
+      ),
     }));
 }
 

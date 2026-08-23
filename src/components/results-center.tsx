@@ -21,6 +21,10 @@ import {
   toneForResultStatus,
   type ResultTimelineItem,
 } from "@/components/results-utils";
+import {
+  canPerform,
+  useWorkspaceSession,
+} from "@/components/app-shell/session-context";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 
 type JsonRecord = Record<string, unknown>;
@@ -28,13 +32,10 @@ type LoadState = "loading" | "ready" | "error";
 type Tone = "neutral" | "success" | "warning" | "danger";
 
 type ResultsState = {
-  session?: JsonRecord;
   runs?: JsonRecord;
   workflows?: JsonRecord;
   approvals?: JsonRecord;
   evaluations?: JsonRecord;
-  release?: JsonRecord;
-  events?: JsonRecord;
 };
 
 type PrimaryResult = {
@@ -49,6 +50,11 @@ type PrimaryResult = {
 };
 
 export function ResultsCenter() {
+  const {
+    session,
+    status: sessionStatus,
+    role,
+  } = useWorkspaceSession();
   const [data, setData] = useState<ResultsState>({});
   const [state, setState] = useState<LoadState>("loading");
   const [error, setError] = useState<string>();
@@ -56,105 +62,117 @@ export function ResultsCenter() {
   const [selectedResultKey, setSelectedResultKey] = useState<string>();
   const [cancelingRunId, setCancelingRunId] = useState<string>();
   const loadVersionRef = useRef(0);
+  const activeLoadRef = useRef<AbortController | null>(null);
 
   async function load() {
+    if (sessionStatus !== "ready" || !session) {
+      return;
+    }
     const loadVersion = ++loadVersionRef.current;
+    activeLoadRef.current?.abort();
+    const controller = new AbortController();
+    activeLoadRef.current = controller;
     setState("loading");
     setError(undefined);
 
     try {
-      const session = asRecord(await readJson("/api/auth/session"));
-      if (loadVersion !== loadVersionRef.current) {
-        return;
-      }
       if (Boolean(session.authEnabled) && !Boolean(session.authenticated)) {
-        setData({ session });
+        setData({});
         setState("ready");
         setLastRefresh(new Date().toLocaleTimeString());
         return;
       }
 
-      const role = sessionRole(session);
       const requestedResultKey =
         new URL(window.location.href).searchParams.get("run") || undefined;
-      const canManageWorkflow = hasRole(role, ["operator", "admin", "system"]);
-      const canReadSecurity = hasRole(role, ["admin", "system"]);
-      const unavailableForRole = { error: "Operator or admin role required.", items: [], runs: [], events: [] };
-      const securityUnavailable = { error: "Admin role required.", report: undefined, events: [] };
-
-      const [runs, workflows, approvals, evaluations, release, events] = await Promise.all([
-        readJson("/api/runs?limit=10").catch((resourceError) => ({ error: refreshMessage(resourceError), runs: [] })),
-        readJson("/api/workflows?limit=12").catch((resourceError) => ({ error: refreshMessage(resourceError), runs: [] })),
-        canManageWorkflow
-          ? readJson("/api/approvals?limit=12").catch((resourceError) => ({ error: refreshMessage(resourceError), items: [] }))
-          : Promise.resolve(unavailableForRole),
-        readJson("/api/evaluations?limit=8").catch((resourceError) => ({ error: refreshMessage(resourceError), runs: [] })),
-        canReadSecurity
-          ? readJson("/api/release/evidence").catch((resourceError) => ({ error: refreshMessage(resourceError) }))
-          : Promise.resolve(securityUnavailable),
-        canReadSecurity
-          ? readJson("/api/observability?limit=12").catch((resourceError) => ({ error: refreshMessage(resourceError), events: [] }))
-          : Promise.resolve(securityUnavailable),
-      ]);
-      if (loadVersion !== loadVersionRef.current) {
-        return;
-      }
-      const runsPayload = asRecord(runs);
-      const workflowsPayload = asRecord(workflows);
-      if (requestedResultKey?.startsWith("agent:")) {
-        const runId = requestedResultKey.slice("agent:".length);
-        if (
-          runId &&
-          !arrayPath(runsPayload, "runs").some(
-            (run) => stringValue(run.id) === runId,
-          )
-        ) {
-          const direct = asRecord(
-            await readJson(`/api/runs/${encodeURIComponent(runId)}`).catch(
-              () => ({}),
-            ),
-          );
-          const directRun = asRecord(direct.run);
-          if (stringValue(directRun.id) === runId) {
-            runsPayload.runs = [directRun, ...arrayPath(runsPayload, "runs")];
-          }
+      const summaryRequest = readJson(
+        "/api/workspace-summary?limit=12&approvalLimit=12",
+        { signal: controller.signal },
+      ).then(async (payload) => {
+        const summary = asRecord(payload.summary);
+        const runsPayload = workspaceSourcePayload(summary, "runs", "runs");
+        const workflowsPayload = workspaceSourcePayload(
+          summary,
+          "workflows",
+          "runs",
+        );
+        const approvalsPayload = canPerform(role, "manage.workflow")
+          ? workspaceSourcePayload(summary, "approvals", "items")
+          : { error: "Operator or admin role required.", items: [] };
+        await loadSelectedResult(
+          requestedResultKey,
+          runsPayload,
+          workflowsPayload,
+          controller.signal,
+        );
+        if (loadVersion !== loadVersionRef.current || controller.signal.aborted) {
+          return;
         }
-      }
-      if (requestedResultKey?.startsWith("workflow:")) {
-        const runId = requestedResultKey.slice("workflow:".length);
-        if (
-          runId &&
-          !arrayPath(workflowsPayload, "runs").some(
-            (run) => stringValue(run.id) === runId,
-          )
-        ) {
-          const direct = asRecord(
-            await readJson(
-              `/api/workflows/${encodeURIComponent(runId)}`,
-            ).catch(() => ({})),
-          );
-          const directRun = asRecord(direct.run);
-          if (stringValue(directRun.id) === runId) {
-            workflowsPayload.runs = [
-              directRun,
-              ...arrayPath(workflowsPayload, "runs"),
-            ];
-          }
-        }
-      }
-      if (loadVersion !== loadVersionRef.current) {
-        return;
-      }
-
-      setData({
-        session,
-        runs: runsPayload,
-        workflows: workflowsPayload,
-        approvals: asRecord(approvals),
-        evaluations: asRecord(evaluations),
-        release: asRecord(release),
-        events: asRecord(events),
+        setData((current) => ({
+          ...current,
+          runs: retainStalePayload(current.runs, runsPayload, "runs"),
+          workflows: retainStalePayload(
+            current.workflows,
+            workflowsPayload,
+            "runs",
+          ),
+          approvals: retainStalePayload(
+            current.approvals,
+            approvalsPayload,
+            "items",
+          ),
+        }));
       });
+      const evaluationsRequest = readJson("/api/evaluations?limit=8", {
+        signal: controller.signal,
+      })
+        .then((evaluations) => {
+          if (loadVersion !== loadVersionRef.current || controller.signal.aborted) {
+            return;
+          }
+          setData((current) => ({
+            ...current,
+            evaluations: asRecord(evaluations),
+          }));
+        })
+        .catch((resourceError) => {
+          if (controller.signal.aborted || loadVersion !== loadVersionRef.current) {
+            return;
+          }
+          setData((current) => ({
+            ...current,
+            evaluations: retainStalePayload(
+              current.evaluations,
+              { error: refreshMessage(resourceError) },
+              "runs",
+            ),
+          }));
+        });
+
+      const [summaryResult] = await Promise.allSettled([
+        summaryRequest,
+        evaluationsRequest,
+      ]);
+      if (loadVersion !== loadVersionRef.current || controller.signal.aborted) {
+        return;
+      }
+      if (summaryResult.status === "rejected") {
+        const message = refreshMessage(summaryResult.reason);
+        setData((current) => ({
+          ...current,
+          runs: retainStalePayload(current.runs, { error: message }, "runs"),
+          workflows: retainStalePayload(
+            current.workflows,
+            { error: message },
+            "runs",
+          ),
+          approvals: retainStalePayload(
+            current.approvals,
+            { error: message },
+            "items",
+          ),
+        }));
+      }
       setState("ready");
       setLastRefresh(new Date().toLocaleTimeString());
     } catch (loadError) {
@@ -168,10 +186,21 @@ export function ResultsCenter() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void load();
+      if (sessionStatus === "ready") {
+        void load();
+      }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+    // Session changes are the only automatic refresh trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionStatus, session, role]);
+
+  useEffect(
+    () => () => {
+      activeLoadRef.current?.abort();
+    },
+    [],
+  );
 
   useEffect(() => {
     const readSelection = () => {
@@ -193,12 +222,11 @@ export function ResultsCenter() {
     ),
   );
   useLiveRefresh({
-    enabled: state !== "error",
+    enabled: state !== "error" && sessionStatus === "ready",
     onRefresh: load,
     pollIntervalMs: hasActiveWork ? 8_000 : undefined,
   });
   const evaluationRuns = arrayPath(data, "evaluations.runs");
-  const runtimeEvents = arrayPath(data, "events.events");
   const resultTimeline = useMemo(
     () => buildResultTimeline({ agentRuns, workflowRuns, approvalItems }),
     [agentRuns, approvalItems, workflowRuns],
@@ -218,15 +246,13 @@ export function ResultsCenter() {
     },
     [resultSourceError, resultTimeline, selectedResultKey],
   );
-  const signedIn = !Boolean(readPath(data, "session.authEnabled")) || Boolean(readPath(data, "session.authenticated"));
-  const hasLoadedData = Boolean(data.runs || data.workflows || data.approvals || data.evaluations || data.release || data.events);
+  const signedIn = !session?.authEnabled || Boolean(session.authenticated);
+  const hasLoadedData = Boolean(data.runs || data.workflows || data.approvals || data.evaluations);
   const sourceErrors = [
     ["Agent runs", resourceError(data.runs)],
     ["Workflows", resourceError(data.workflows)],
     ["Approvals", resourceError(data.approvals)],
     ["Evaluations", resourceError(data.evaluations)],
-    ["Release evidence", resourceError(data.release)],
-    ["Runtime events", resourceError(data.events)],
   ].filter((entry): entry is [string, string] => Boolean(entry[1]));
 
   function selectResult(key: string) {
@@ -300,9 +326,9 @@ export function ResultsCenter() {
             tone={resourceTone(data.approvals, approvalItems.length ? "warning" : "success")}
           />
           <Metric
-            label="Release gate"
-            value={resourceMetric(state, signedIn, data.release, stringPath(data, "release.report.releaseGate.status", "Unknown"))}
-            tone={resourceTone(data.release, toneForStatus(readPath(data, "release.report.releaseGate.status")))}
+            label="Evaluations"
+            value={resourceMetric(state, signedIn, data.evaluations, evaluationRuns.length.toString())}
+            tone={resourceTone(data.evaluations, evaluationRuns.length ? "success" : "neutral")}
           />
           <Metric label="Updated" value={lastRefresh || (state === "loading" ? "Loading" : "Unknown")} tone="neutral" />
         </div>
@@ -428,7 +454,7 @@ export function ResultsCenter() {
               title: stringValue(run.goal, "Workflow"),
               status: stringValue(run.status, "unknown"),
               meta: workflowMeta(run),
-              body: resultPreview(readPath(run, "result.report") || run.error),
+              body: resultPreview(run.report || run.error),
             }))}
             empty="No workflow results found."
             icon={Workflow}
@@ -467,12 +493,12 @@ export function ResultsCenter() {
           />
         </ResultPanel>
 
-        <ResultPanel title="Evidence trail" description="Release, evaluation, and runtime evidence used to trust the result.">
+        <ResultPanel title="Evidence trail" description="Open focused admin views for release and runtime evidence without slowing result loading.">
           <div className="grid gap-3 md:grid-cols-3">
             <EvidenceBox
               label="Release"
-              value={resourceMetric(state, signedIn, data.release, stringPath(data, "release.report.releaseGate.status", "Unknown"))}
-              tone={resourceError(data.release) ? "neutral" : toneForStatus(readPath(data, "release.report.releaseGate.status"))}
+              value="Open release gate"
+              tone="neutral"
               href="/app/evaluations"
             />
             <EvidenceBox
@@ -483,8 +509,8 @@ export function ResultsCenter() {
             />
             <EvidenceBox
               label="Runtime"
-              value={resourceMetric(state, signedIn, data.events, `${runtimeEvents.length} events`)}
-              tone={resourceError(data.events) ? "neutral" : runtimeEvents.some((event) => stringValue(event.level) === "error") ? "danger" : "neutral"}
+              value="Open monitoring"
+              tone="neutral"
               href="/app/observability"
             />
           </div>
@@ -731,6 +757,92 @@ class HttpError extends Error {
   }
 }
 
+async function loadSelectedResult(
+  requestedResultKey: string | undefined,
+  runsPayload: JsonRecord,
+  workflowsPayload: JsonRecord,
+  signal: AbortSignal,
+) {
+  if (requestedResultKey?.startsWith("agent:")) {
+    const runId = requestedResultKey.slice("agent:".length);
+    if (
+      runId &&
+      !arrayPath(runsPayload, "runs").some(
+        (run) => stringValue(run.id) === runId,
+      )
+    ) {
+      const direct = asRecord(
+        await readJson(`/api/runs/${encodeURIComponent(runId)}`, {
+          signal,
+        }).catch(() => ({})),
+      );
+      const directRun = asRecord(direct.run);
+      if (stringValue(directRun.id) === runId) {
+        runsPayload.runs = [directRun, ...arrayPath(runsPayload, "runs")];
+      }
+    }
+  }
+  if (requestedResultKey?.startsWith("workflow:")) {
+    const runId = requestedResultKey.slice("workflow:".length);
+    if (
+      runId &&
+      !arrayPath(workflowsPayload, "runs").some(
+        (run) => stringValue(run.id) === runId,
+      )
+    ) {
+      const direct = asRecord(
+        await readJson(`/api/workflows/${encodeURIComponent(runId)}`, {
+          signal,
+        }).catch(() => ({})),
+      );
+      const directRun = asRecord(direct.run);
+      if (stringValue(directRun.id) === runId) {
+        workflowsPayload.runs = [
+          directRun,
+          ...arrayPath(workflowsPayload, "runs"),
+        ];
+      }
+    }
+  }
+}
+
+function workspaceSourcePayload(
+  summary: JsonRecord,
+  sourceKey: "runs" | "workflows" | "approvals",
+  dataKey: "runs" | "items",
+) {
+  const source = asRecord(readPath(summary, `sources.${sourceKey}`));
+  if (source.status === "ready") {
+    return {
+      [dataKey]: Array.isArray(source.data) ? source.data : [],
+    };
+  }
+  return {
+    error: stringValue(source.error, "Resource unavailable."),
+    [dataKey]: [],
+  };
+}
+
+function retainStalePayload(
+  current: JsonRecord | undefined,
+  next: JsonRecord,
+  dataKey: "runs" | "items",
+) {
+  if (
+    next.error &&
+    current &&
+    Array.isArray(current[dataKey]) &&
+    current[dataKey].length
+  ) {
+    return {
+      ...current,
+      error: next.error,
+      stale: true,
+    };
+  }
+  return next;
+}
+
 async function readJson(path: string, init: RequestInit = {}) {
   const response = await fetch(path, {
     ...init,
@@ -749,14 +861,6 @@ async function readJson(path: string, init: RequestInit = {}) {
 
 function refreshMessage(error: unknown) {
   return error instanceof Error ? error.message : "Resource unavailable.";
-}
-
-function sessionRole(session: JsonRecord) {
-  return stringValue(readPath(session, "context.role") || readPath(session, "membership.role"), "viewer");
-}
-
-function hasRole(role: string, allowed: string[]) {
-  return allowed.includes(role);
 }
 
 function workflowMeta(run: JsonRecord) {

@@ -1,34 +1,43 @@
 import { embedTexts } from "@/lib/openai/client";
 import { chunkText } from "@/lib/rag/chunk";
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
-import { saveMemory, searchMemories } from "@/lib/memory/store";
+import { saveMemories, searchMemories } from "@/lib/memory/store";
 import type { MemorySearchResult } from "@/lib/memory/types";
 import { createKnowledgeDocument, searchKnowledge } from "@/lib/rag/store";
 import type { KnowledgeSearchResult, KnowledgeSourceType } from "@/lib/rag/types";
 import { redactSensitive } from "@/lib/security/context";
 
 export async function ingestTextDocument({
+  idempotencyKey,
   tenantId,
   title,
   content,
   source = "ingest",
   sourceType = "text",
   tags = [],
+  abortSignal,
 }: {
+  idempotencyKey?: string;
   tenantId?: string;
   title: string;
   content: string;
   source?: string;
   sourceType?: KnowledgeSourceType;
   tags?: string[];
+  abortSignal?: AbortSignal;
 }) {
   const safeTitle = String(redactSensitive(title)).slice(0, 240);
   const safeContent = String(redactSensitive(content)).slice(0, 900_000);
   const safeSource = String(redactSensitive(source)).slice(0, 2_000);
   const safeTags = tags.map((tag) => String(redactSensitive(tag))).slice(0, 50);
   const chunks = chunkText(safeContent);
-  const embeddings = await embedTexts(chunks.map((chunk) => chunk.content));
+  const embeddings = await embedTexts(
+    chunks.map((chunk) => chunk.content),
+    abortSignal,
+  );
+  abortSignal?.throwIfAborted();
   const knowledge = await createKnowledgeDocument({
+    idempotencyKey,
     tenantId,
     title: safeTitle,
     content: safeContent,
@@ -40,25 +49,28 @@ export async function ingestTextDocument({
       embedding: embeddings?.[chunk.index],
     })),
   });
+  abortSignal?.throwIfAborted();
 
-  const records = [];
-  for (const chunk of chunks) {
-    records.push(
-      await saveMemory({
-        tenantId,
-        type: "knowledge",
-        title: chunks.length > 1
+  const records = await saveMemories(
+    chunks.map((chunk) => ({
+      id: idempotencyKey
+        ? `${knowledge.document.id}_memory_${chunk.index}`
+        : undefined,
+      tenantId,
+      type: "knowledge",
+      title:
+        chunks.length > 1
           ? `${safeTitle} (${chunk.index + 1}/${chunks.length})`
           : safeTitle,
-        content: chunk.content,
-        source: safeSource,
-        tags: ["rag", ...safeTags],
-        scope: "workspace",
-        importance: 0.72,
-        embedding: embeddings?.[chunk.index],
-      }),
-    );
-  }
+      content: chunk.content,
+      source: safeSource,
+      tags: ["rag", ...safeTags],
+      scope: "workspace",
+      importance: 0.72,
+      embedding: embeddings?.[chunk.index],
+    })),
+  );
+  abortSignal?.throwIfAborted();
   await indexMemoryGraphRecords(records, "knowledge.ingest");
 
   return {

@@ -179,6 +179,155 @@ export async function listWorkflowRuns(limit = 20, options: { tenantId?: string 
   return ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId).slice(0, limit);
 }
 
+export async function listWorkflowRunSummaries(
+  limit = 20,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const boundedLimit = Math.min(Math.max(limit, 1), 50);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT
+        id, tenant_id, workflow_type, status, goal,
+        '{}'::jsonb AS input,
+        current_step, attempt, max_attempts, approval_required, error,
+        CASE
+          WHEN jsonb_typeof(result -> 'report') = 'string'
+          THEN jsonb_build_object('report', result -> 'report')
+          ELSE NULL
+        END AS result,
+        created_at, updated_at, completed_at
+      FROM omni_workflow_runs
+      WHERE tenant_id = ${tenantId}
+      ORDER BY updated_at DESC
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map(workflowRunFromRow);
+  }
+
+  const ledger = await readWorkflowLedger();
+  return ledger.runs
+    .filter((run) => normalizeTenantId(run.tenantId) === tenantId)
+    .slice(0, boundedLimit);
+}
+
+export async function listWorkflowRunsByStatus(
+  status: WorkflowRunStatus,
+  limit = 20,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const boundedLimit = Math.min(Math.max(limit, 1), 100);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT
+        id, tenant_id, workflow_type, status, goal, input, current_step,
+        attempt, max_attempts, approval_required, approved_at, paused_at,
+        canceled_at, error, result, created_at, updated_at, completed_at
+      FROM omni_workflow_runs
+      WHERE tenant_id = ${tenantId}
+        AND status = ${status}
+      ORDER BY updated_at DESC
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map(workflowRunFromRow);
+  }
+
+  const ledger = await readWorkflowLedger();
+  return ledger.runs
+    .filter(
+      (run) =>
+        normalizeTenantId(run.tenantId) === tenantId &&
+        run.status === status,
+    )
+    .slice(0, boundedLimit);
+}
+
+export async function listRunnableWorkflowRuns(
+  limit = 50,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const boundedLimit = Math.min(Math.max(limit, 1), 500);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT
+        id, tenant_id, workflow_type, status, goal, input, current_step,
+        attempt, max_attempts, approval_required, approved_at, paused_at,
+        canceled_at, error, result, created_at, updated_at, completed_at
+      FROM omni_workflow_runs
+      WHERE tenant_id = ${tenantId}
+        AND status = 'queued'
+      ORDER BY created_at ASC
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map(workflowRunFromRow);
+  }
+
+  const ledger = await readWorkflowLedger();
+  return ledger.runs
+    .filter(
+      (run) =>
+        normalizeTenantId(run.tenantId) === tenantId &&
+        run.status === "queued",
+    )
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .slice(0, boundedLimit);
+}
+
+export async function getWorkflowRunStatus(
+  runId: string,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT id, status, current_step, error, updated_at, completed_at
+      FROM omni_workflow_runs
+      WHERE id = ${runId}
+        AND tenant_id = ${tenantId}
+      LIMIT 1
+    `;
+    const row = rows[0];
+    return row
+      ? {
+          id: String(row.id),
+          status: String(row.status) as WorkflowRunStatus,
+          currentStep: row.current_step
+            ? (String(row.current_step) as WorkflowStepKey)
+            : undefined,
+          error: row.error ? String(row.error) : undefined,
+          updatedAt: normalizeDate(row.updated_at),
+          completedAt: row.completed_at
+            ? normalizeDate(row.completed_at)
+            : undefined,
+        }
+      : null;
+  }
+
+  const ledger = await readWorkflowLedger();
+  const run = ledger.runs.find(
+    (candidate) =>
+      candidate.id === runId &&
+      normalizeTenantId(candidate.tenantId) === tenantId,
+  );
+  return run
+    ? {
+        id: run.id,
+        status: run.status,
+        currentStep: run.currentStep,
+        error: run.error,
+        updatedAt: run.updatedAt,
+        completedAt: run.completedAt,
+      }
+    : null;
+}
+
 export async function getWorkflowRunDetail(runId: string, options: { tenantId?: string } = {}): Promise<WorkflowRunDetail | null> {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();

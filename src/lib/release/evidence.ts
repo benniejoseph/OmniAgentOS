@@ -5,7 +5,8 @@ import {
 } from "@/lib/db/client";
 import { getObservabilitySloSnapshot } from "@/lib/observability/slo-monitor";
 import { getOpenAIReadiness } from "@/lib/openai/client";
-import { getLatestWorkerHeartbeat } from "@/lib/operations/worker-heartbeat";
+import { getLatestWorkerHeartbeats } from "@/lib/operations/worker-heartbeat";
+import { WORKER_PROTOCOL_VERSION } from "@/lib/operations/worker-request";
 import { getTenantIsolationReport, type TenantIsolationReport } from "@/lib/security/isolation-report";
 
 export type ReleaseEvidenceGateStatus = "pass" | "warn" | "fail";
@@ -77,8 +78,48 @@ const advisorySloPolicyIds = new Set([
   "auth_failure_pressure",
   "security_policy_blocks",
 ]);
+const releaseEvidenceCache = new Map<
+  string,
+  { expiresAt: number; report: ReleaseEvidenceReport }
+>();
+const releaseEvidenceInFlight = new Map<
+  string,
+  Promise<ReleaseEvidenceReport>
+>();
 
-export async function getReleaseEvidenceReport(tenantId: string): Promise<ReleaseEvidenceReport> {
+export async function getReleaseEvidenceReport(
+  tenantId: string,
+  options: { force?: boolean } = {},
+): Promise<ReleaseEvidenceReport> {
+  const inFlight = releaseEvidenceInFlight.get(tenantId);
+  if (inFlight) {
+    return inFlight;
+  }
+  const cached = releaseEvidenceCache.get(tenantId);
+  if (!options.force && cached && cached.expiresAt > Date.now()) {
+    return cached.report;
+  }
+
+  const collection = collectReleaseEvidenceReport(tenantId)
+    .then((report) => {
+      releaseEvidenceCache.set(tenantId, {
+        expiresAt: Date.now() + releaseEvidenceTtlMs(),
+        report,
+      });
+      return report;
+    })
+    .finally(() => {
+      if (releaseEvidenceInFlight.get(tenantId) === collection) {
+        releaseEvidenceInFlight.delete(tenantId);
+      }
+    });
+  releaseEvidenceInFlight.set(tenantId, collection);
+  return collection;
+}
+
+async function collectReleaseEvidenceReport(
+  tenantId: string,
+): Promise<ReleaseEvidenceReport> {
   const checkedAt = new Date().toISOString();
   const deployment = getDeploymentEvidence();
   // Keep release checks ordered to minimize pool pressure and ensure one
@@ -96,7 +137,7 @@ export async function getReleaseEvidenceReport(tenantId: string): Promise<Releas
         model: process.env.OMNIAGENT_AGENT_MODEL || "configured model",
         checkedAt,
       };
-  const workerHeartbeat = await getLatestWorkerHeartbeat();
+  const workerHeartbeats = await getLatestWorkerHeartbeats();
 
   const criticalBlockingBreaches = observabilitySlo.breaches.filter(
     (breach) => breach.severity === "critical" && !advisorySloPolicyIds.has(breach.policy.id),
@@ -105,18 +146,38 @@ export async function getReleaseEvidenceReport(tenantId: string): Promise<Releas
     process.env.OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS,
     420_000,
   );
-  const workerHeartbeatAgeMs = workerHeartbeat
-    ? Date.now() - Date.parse(workerHeartbeat.recordedAt)
-    : Number.POSITIVE_INFINITY;
-  const workerRevisionMatches = Boolean(
-    workerHeartbeat?.revision &&
-      deployment.commitSha &&
-      workerHeartbeat.revision === deployment.commitSha,
+  const expectedWorkerProtocol =
+    process.env.OMNIAGENT_WORKER_PROTOCOL_VERSION?.trim() ||
+    WORKER_PROTOCOL_VERSION;
+  const requiredWorkerLanes = ["fast", "background", "maintenance"] as const;
+  const workerLaneReadiness = requiredWorkerLanes.map((lane) => {
+    const heartbeat = workerHeartbeats.find((item) => item.lane === lane);
+    const ageMs = heartbeat
+      ? Date.now() - Date.parse(heartbeat.recordedAt)
+      : Number.POSITIVE_INFINITY;
+    return {
+      lane,
+      heartbeat,
+      ageMs,
+      protocolMatches: heartbeat?.protocol === expectedWorkerProtocol,
+      revisionMatches: Boolean(
+        heartbeat?.revision &&
+          deployment.commitSha &&
+          heartbeat.revision === deployment.commitSha,
+      ),
+      ready:
+        Number.isFinite(ageMs) &&
+        ageMs <= workerHeartbeatMaxAgeMs &&
+        heartbeat?.protocol === expectedWorkerProtocol,
+    };
+  });
+  const workerProtocolMatches = workerLaneReadiness.every(
+    (item) => item.protocolMatches,
   );
-  const workerReady =
-    Number.isFinite(workerHeartbeatAgeMs) &&
-    workerHeartbeatAgeMs <= workerHeartbeatMaxAgeMs &&
-    workerRevisionMatches;
+  const workerRevisionMatches = workerLaneReadiness.every(
+    (item) => item.revisionMatches,
+  );
+  const workerReady = workerLaneReadiness.every((item) => item.ready);
 
   const gates: ReleaseEvidenceGate[] = [
     {
@@ -191,15 +252,18 @@ export async function getReleaseEvidenceReport(tenantId: string): Promise<Releas
       name: "Dedicated worker readiness",
       status: workerReady ? "pass" : "fail",
       summary: workerReady
-        ? "Dedicated worker heartbeat is fresh and matches the web release revision."
-        : "Dedicated worker heartbeat is missing, stale, or running a different release revision.",
+        ? "Dedicated worker heartbeat is fresh and uses a compatible worker protocol."
+        : "Dedicated worker heartbeat is missing, stale, or uses an unsupported protocol.",
       details: {
+        expectedProtocol: expectedWorkerProtocol,
         expectedRevision: deployment.commitSha,
-        heartbeat: workerHeartbeat,
-        ageMs: Number.isFinite(workerHeartbeatAgeMs)
-          ? workerHeartbeatAgeMs
-          : undefined,
+        heartbeats: workerHeartbeats,
+        lanes: workerLaneReadiness.map((item) => ({
+          ...item,
+          ageMs: Number.isFinite(item.ageMs) ? item.ageMs : undefined,
+        })),
         maxAgeMs: workerHeartbeatMaxAgeMs,
+        protocolMatches: workerProtocolMatches,
         revisionMatches: workerRevisionMatches,
       },
     },
@@ -323,6 +387,13 @@ export async function getReleaseEvidenceReport(tenantId: string): Promise<Releas
     },
     recommendations: buildReleaseRecommendations(gates, tenantIsolation.recommendations),
   };
+}
+
+function releaseEvidenceTtlMs() {
+  return normalizePositiveInteger(
+    process.env.OMNIAGENT_RELEASE_EVIDENCE_TTL_MS,
+    30_000,
+  );
 }
 
 function getDeploymentEvidence(): ReleaseEvidenceReport["deployment"] {

@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -88,5 +88,31 @@ describe("auth identity creation (file mode)", () => {
         tenant: { id: tenantId },
       },
     });
+  });
+
+  it("resolves a fresh session without provisioning changed bootstrap credentials", async () => {
+    const auth = await import("@/lib/auth/store");
+    process.env.OMNIAGENT_BOOTSTRAP_EMAIL = "bootstrap-session@example.com";
+    process.env.OMNIAGENT_BOOTSTRAP_PASSWORD = "bootstrap session password";
+    process.env.OMNIAGENT_DEFAULT_TENANT = "tenant-session-bootstrap";
+    const authenticated = await auth.authenticatePassword({
+      email: process.env.OMNIAGENT_BOOTSTRAP_EMAIL,
+      password: process.env.OMNIAGENT_BOOTSTRAP_PASSWORD,
+    });
+    expect(authenticated).not.toBeNull();
+
+    const authFile = path.join(process.env.OMNIAGENT_DATA_DIR!, "auth.json");
+    const before = await readFile(authFile, "utf8");
+    process.env.OMNIAGENT_BOOTSTRAP_EMAIL = "should-not-be-provisioned@example.com";
+    process.env.OMNIAGENT_BOOTSTRAP_PASSWORD = "unused bootstrap password";
+    process.env.OMNIAGENT_DEFAULT_TENANT = "tenant-not-provisioned";
+
+    await expect(
+      auth.getSessionIdentity(authenticated?.token),
+    ).resolves.toMatchObject({
+      user: { email: "bootstrap-session@example.com" },
+      tenant: { id: "tenant-session-bootstrap" },
+    });
+    await expect(readFile(authFile, "utf8")).resolves.toBe(before);
   });
 });

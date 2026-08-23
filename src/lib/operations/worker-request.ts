@@ -1,64 +1,70 @@
-export type WorkerRevisionCheck =
+export const WORKER_PROTOCOL_VERSION = "1";
+
+export type WorkerCompatibilityCheck =
   | {
       accepted: true;
-      expectedRevision?: string;
+      expectedProtocol: string;
+      providedProtocol: string;
+      activeRevision?: string;
       providedRevision?: string;
     }
   | {
       accepted: false;
-      expectedRevision?: string;
+      expectedProtocol: string;
+      providedProtocol?: string;
+      activeRevision?: string;
       providedRevision?: string;
-      status: 409 | 503;
+      status: 409;
       message: string;
     };
 
-export function checkWorkerRevision(request: Request): WorkerRevisionCheck {
-  const expectedRevision =
+export function checkWorkerCompatibility(
+  request: Request,
+): WorkerCompatibilityCheck {
+  const expectedProtocol =
+    process.env.OMNIAGENT_WORKER_PROTOCOL_VERSION?.trim() ||
+    WORKER_PROTOCOL_VERSION;
+  const providedProtocol =
+    request.headers.get("x-omni-worker-protocol")?.trim() || undefined;
+  const activeRevision =
     process.env.OMNIAGENT_RELEASE_SHA?.trim() ||
     process.env.VERCEL_GIT_COMMIT_SHA?.trim() ||
     undefined;
   const providedRevision =
     request.headers.get("x-omni-worker-revision")?.trim() || undefined;
 
-  if (!expectedRevision) {
-    if (process.env.NODE_ENV === "production") {
-      return {
-        accepted: false,
-        providedRevision,
-        status: 503,
-        message:
-          "The web release revision is unavailable; worker mutations are disabled.",
-      };
-    }
-    return { accepted: true, providedRevision };
-  }
-
-  if (providedRevision !== expectedRevision) {
+  if (providedProtocol !== expectedProtocol) {
     return {
       accepted: false,
-      expectedRevision,
+      expectedProtocol,
+      providedProtocol,
+      activeRevision,
       providedRevision,
       status: 409,
       message:
-        "The worker revision does not match the active web release. Deploy matching revisions before retrying.",
+        "The worker protocol is missing or unsupported. Deploy a compatible worker before retrying.",
     };
   }
 
   return {
     accepted: true,
-    expectedRevision,
+    expectedProtocol,
+    providedProtocol,
+    activeRevision,
     providedRevision,
   };
 }
 
-export function workerRevisionErrorResponse(
-  check: Extract<WorkerRevisionCheck, { accepted: false }>,
+export function workerCompatibilityErrorResponse(
+  check: Extract<WorkerCompatibilityCheck, { accepted: false }>,
 ) {
   return Response.json(
     {
-      error: "Worker revision rejected",
+      error: "Worker protocol rejected",
       message: check.message,
-      expectedRevision: check.expectedRevision,
+      expectedProtocol: check.expectedProtocol,
+      providedProtocol: check.providedProtocol,
+      activeRevision: check.activeRevision,
       providedRevision: check.providedRevision,
     },
     { status: check.status },

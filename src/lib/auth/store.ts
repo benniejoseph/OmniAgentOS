@@ -184,11 +184,9 @@ export async function getSessionIdentity(token?: string): Promise<AuthSessionIde
 }
 
 async function getSessionIdentityInScope(token: string): Promise<AuthSessionIdentity | null> {
-  await ensureBootstrapIdentityInScope();
   const tokenHash = hashSessionToken(token);
 
   if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT
         sessions.id as session_id,

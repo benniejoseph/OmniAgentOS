@@ -23,7 +23,9 @@ async function GETHandler(request: Request) {
   }
 
   try {
-    const report = await getReleaseEvidenceReport(context.tenantId);
+    const force =
+      new URL(request.url).searchParams.get("refresh") === "true";
+    const report = await getReleaseEvidenceReport(context.tenantId, { force });
     await recordRuntimeEventSafely({
       category: "api",
       action: "release.evidence.read",
@@ -45,7 +47,10 @@ async function GETHandler(request: Request) {
         ...telemetry.syntheticMetadata,
       },
     });
-    return Response.json({ report });
+    return Response.json(
+      { report },
+      { headers: { "cache-control": "private, no-store" } },
+    );
   } catch (error) {
     await recordRuntimeEventSafely({
       level: "error",

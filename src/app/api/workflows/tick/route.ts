@@ -25,10 +25,14 @@ import {
   getOperationJobStats,
   listMaintenanceTenantIds,
 } from "@/lib/operations/job-queue";
+import {
+  processAllTenantBackgroundOperationQueues,
+  processBackgroundOperationQueue,
+} from "@/lib/operations/background-jobs";
 import { recordWorkerHeartbeat } from "@/lib/operations/worker-heartbeat";
 import {
-  checkWorkerRevision,
-  workerRevisionErrorResponse,
+  checkWorkerCompatibility,
+  workerCompatibilityErrorResponse,
 } from "@/lib/operations/worker-request";
 import { recoverStaleToolExecutionClaims } from "@/lib/tools/audit-store";
 import {
@@ -50,6 +54,8 @@ const tickSchema = z.object({
   alertQueueLimit: z.number().int().min(1).max(50).optional(),
   alertDispatchLimit: z.number().int().min(1).max(50).optional(),
   scope: z.enum(["tenant", "all_tenants"]).optional(),
+  lane: z.enum(["fast", "background", "maintenance", "all"]).optional(),
+  timeBudgetMs: z.number().int().min(1_000).max(240_000).optional(),
   tenantCursor: z.string().min(1).max(120).optional(),
   maintenanceTenantLimit: z.number().int().min(1).max(100).optional(),
 }).strict();
@@ -109,6 +115,7 @@ async function runCronTick(request: Request, context: SecurityContext) {
 
   try {
     const scheduled = await runAllTenantScheduledWork({
+      lane: "all",
       trigger: "vercel_cron",
       actorId: context.actorId,
       correlationId: telemetry.correlationId,
@@ -118,6 +125,7 @@ async function runCronTick(request: Request, context: SecurityContext) {
       alertQueueLimit: ALERT_SCHEDULER_QUEUE_LIMIT,
       alertDispatchLimit: ALERT_SCHEDULER_DISPATCH_LIMIT,
       maintenanceTenantLimit: cronTickLimit,
+      timeBudgetMs: 240_000,
     });
     await recordSecurityAudit({
       context,
@@ -228,6 +236,12 @@ async function POSTHandler(request: Request) {
       { status: 400 },
     );
   }
+  if (parsed.data.scope === "all_tenants") {
+    const compatibility = checkWorkerCompatibility(request);
+    if (!compatibility.accepted) {
+      return workerCompatibilityErrorResponse(compatibility);
+    }
+  }
 
   try {
     const context = await authorizeRequest({
@@ -240,6 +254,7 @@ async function POSTHandler(request: Request) {
         slo: Boolean(parsed.data.slo),
         alerts: Boolean(parsed.data.alerts),
         hasTenantCursor: Boolean(parsed.data.tenantCursor),
+        lane: parsed.data.lane || "all",
       },
     });
     if (parsed.data.scope === "all_tenants") {
@@ -249,18 +264,9 @@ async function POSTHandler(request: Request) {
           { status: 403 },
         );
       }
-      const revisionCheck = checkWorkerRevision(request);
-      if (!revisionCheck.accepted) {
-        return workerRevisionErrorResponse(revisionCheck);
-      }
-      const workerHeartbeat = await recordWorkerHeartbeat({
-        instanceId:
-          request.headers.get("x-omni-worker-instance") ||
-          context.actorId,
-        revision:
-          request.headers.get("x-omni-worker-revision") || undefined,
-      });
+      const lane = parsed.data.lane || "all";
       const scheduled = await runAllTenantScheduledWork({
+        lane,
         trigger: "dedicated_worker",
         actorId: context.actorId,
         correlationId: telemetry.correlationId,
@@ -271,7 +277,21 @@ async function POSTHandler(request: Request) {
         alertDispatchLimit: parsed.data.alertDispatchLimit || ALERT_SCHEDULER_DISPATCH_LIMIT,
         tenantCursor: parsed.data.tenantCursor,
         maintenanceTenantLimit: parsed.data.maintenanceTenantLimit || 25,
+        timeBudgetMs: parsed.data.timeBudgetMs || 240_000,
       });
+      const workerInstance = request.headers.get(
+        "x-omni-worker-instance",
+      );
+      const workerHeartbeat = workerInstance
+        ? await recordWorkerHeartbeat({
+            instanceId: workerInstance,
+            lane,
+            protocol:
+              request.headers.get("x-omni-worker-protocol") || undefined,
+            revision:
+              request.headers.get("x-omni-worker-revision") || undefined,
+          })
+        : undefined;
       await recordRuntimeEventSafely({
         category: "workflow",
         action: "workflow_tick.system",
@@ -286,8 +306,8 @@ async function POSTHandler(request: Request) {
         resourceType: "workflow_queue",
         message: "System workflow queue and tenant maintenance tick completed.",
         metadata: {
-          workflowLeased: scheduled.queue.leased,
-          workflowCompleted: scheduled.queue.completed,
+          workflowLeased: scheduled.queue?.leased || 0,
+          workflowCompleted: scheduled.queue?.completed || 0,
           maintenanceTenants: scheduled.maintenanceTenantIds.length,
           hasMoreTenants: Boolean(scheduled.nextTenantCursor),
         },
@@ -295,16 +315,24 @@ async function POSTHandler(request: Request) {
       return Response.json({
         ...scheduled,
         workerHeartbeat,
-        count: scheduled.queue.leased,
+        count:
+          scheduled.queue?.leased ||
+          scheduled.backgroundJobs?.leased ||
+          0,
       });
     }
-    const [queue, agentResumes, recoveredToolClaims] = await Promise.all([
+    const [queue, agentResumes, backgroundJobs, recoveredToolClaims] =
+      await Promise.all([
       processWorkflowQueue({
         limit: parsed.data.limit || 5,
         tenantId: context.tenantId,
       }),
       processAgentResumeQueue({
         limit: parsed.data.limit || 5,
+        tenantId: context.tenantId,
+      }),
+      processBackgroundOperationQueue({
+        limit: Math.min(parsed.data.limit || 3, 3),
         tenantId: context.tenantId,
       }),
       recoverStaleToolExecutionClaims({
@@ -368,6 +396,7 @@ async function POSTHandler(request: Request) {
     return Response.json({
       queue,
       agentResumes,
+      backgroundJobs,
       recoveredToolClaims,
       slo,
       alerts,
@@ -400,6 +429,7 @@ async function POSTHandler(request: Request) {
 }
 
 async function runAllTenantScheduledWork({
+  lane,
   trigger,
   actorId,
   correlationId,
@@ -410,7 +440,9 @@ async function runAllTenantScheduledWork({
   alertDispatchLimit,
   tenantCursor,
   maintenanceTenantLimit,
+  timeBudgetMs,
 }: {
+  lane: "fast" | "background" | "maintenance" | "all";
   trigger: string;
   actorId: string;
   correlationId: string;
@@ -421,21 +453,68 @@ async function runAllTenantScheduledWork({
   alertDispatchLimit: number;
   tenantCursor?: string;
   maintenanceTenantLimit: number;
+  timeBudgetMs: number;
 }) {
-  const [queue, agentResumes, memoryGraphRebuilds] = await Promise.all([
-    processAllTenantWorkflowQueues({ limit: queueLimit }),
-    processAllTenantAgentResumeQueues({ limit: queueLimit }),
-    processPendingMemoryGraphRebuilds({ limit: 1 }),
+  const boundedBudgetMs = Math.min(Math.max(timeBudgetMs, 1_000), 240_000);
+  const deadlineAt = Date.now() + boundedBudgetMs;
+  const runFast = lane === "fast" || lane === "all";
+  const runBackground = lane === "background" || lane === "all";
+  const runMaintenance = lane === "maintenance" || lane === "all";
+  const [queue, agentResumes, backgroundJobs] = await Promise.all([
+    runFast
+      ? processAllTenantWorkflowQueues({
+          limit: queueLimit,
+          timeBudgetMs: boundedBudgetMs,
+        })
+      : Promise.resolve({
+          requested: 0,
+          leased: 0,
+          completed: 0,
+          failed: 0,
+          stale: 0,
+          requeued: 0,
+          jobs: [],
+          tenantIds: [],
+          tenantResults: [],
+        }),
+    runFast
+      ? processAllTenantAgentResumeQueues({
+          limit: queueLimit,
+          timeBudgetMs: boundedBudgetMs,
+        })
+      : Promise.resolve({
+          tenantIds: [],
+          tenantResults: [],
+          leased: 0,
+          completed: 0,
+          deferred: 0,
+          failed: 0,
+        }),
+    runBackground
+      ? processAllTenantBackgroundOperationQueues({
+          limit: Math.min(queueLimit, 3),
+          timeBudgetMs: boundedBudgetMs,
+        })
+      : Promise.resolve({
+          tenantIds: [],
+          leased: 0,
+          completed: 0,
+          failed: 0,
+          jobs: [],
+        }),
   ]);
-  const page = await listMaintenanceTenantIds({
-    after: tenantCursor,
-    limit: Math.min(maintenanceTenantLimit + 1, 101),
-  });
-  const maintenanceTenantIds = page.slice(0, maintenanceTenantLimit);
-  const nextTenantCursor =
-    page.length > maintenanceTenantLimit
-      ? maintenanceTenantIds.at(-1)
-      : undefined;
+  const [memoryGraphRebuilds, page] =
+    runMaintenance && Date.now() < deadlineAt
+    ? await Promise.all([
+        processPendingMemoryGraphRebuilds({ limit: 1 }),
+        listMaintenanceTenantIds({
+          after: tenantCursor,
+          limit: Math.min(maintenanceTenantLimit + 1, 101),
+        }),
+      ])
+    : [undefined, [] as string[]];
+  const maintenanceCandidates = page.slice(0, maintenanceTenantLimit);
+  const maintenanceTenantIds: string[] = [];
   const maintenance: Array<{
     tenantId: string;
     agentRunsRepaired: number;
@@ -444,44 +523,45 @@ async function runAllTenantScheduledWork({
     alerts?: Awaited<ReturnType<typeof runScheduledAlertDispatch>>;
   }> = [];
 
-  for (const tenantId of maintenanceTenantIds) {
+  for (const tenantId of maintenanceCandidates) {
+    if (Date.now() >= deadlineAt) {
+      break;
+    }
     maintenance.push(
-      await runWithDatabaseTenantScope(tenantId, async () => ({
-        tenantId,
-        agentRunsRepaired: await repairStuckAgentRuns({ tenantId }),
-        toolClaimsRecovered: (
-          await recoverStaleToolExecutionClaims({ tenantId })
-        ).length,
-        slo: enableSlo
-          ? await runObservabilitySloMonitor({
-              trigger,
-              tenantId,
-              actorId,
-              correlationId,
-              queueAlerts: !enableAlerts,
-            })
-          : undefined,
-        alerts: enableAlerts
-          ? await runScheduledAlertDispatch({
-              trigger,
-              tenantId,
-              queueLimit: alertQueueLimit,
-              dispatchLimit: alertDispatchLimit,
-            })
-          : undefined,
-      })),
+      await runWithDatabaseTenantScope(tenantId, () =>
+        runTenantMaintenance({
+          tenantId,
+          trigger,
+          actorId,
+          correlationId,
+          enableSlo,
+          enableAlerts,
+          alertQueueLimit,
+          alertDispatchLimit,
+          deadlineAt,
+        }),
+      ),
     );
+    maintenanceTenantIds.push(tenantId);
   }
+  const hasMoreMaintenanceTenants =
+    maintenanceTenantIds.length < maintenanceCandidates.length ||
+    page.length > maintenanceTenantLimit;
+  const nextTenantCursor = hasMoreMaintenanceTenants
+    ? maintenanceTenantIds.at(-1) || tenantCursor
+    : undefined;
 
   return {
     scope: "all_tenants" as const,
+    lane,
     queue,
     agentResumes,
+    backgroundJobs,
     memoryGraphRebuilds,
     maintenanceTenantIds,
     nextTenantCursor,
     maintenance,
-    slo: enableSlo
+    slo: runMaintenance && enableSlo
       ? {
           healthy: maintenance.every((item) => item.slo?.healthy !== false),
           breaches: maintenance.flatMap((item) => item.slo?.breaches || []),
@@ -490,7 +570,7 @@ async function runAllTenantScheduledWork({
           ),
         }
       : undefined,
-    alerts: enableAlerts
+    alerts: runMaintenance && enableAlerts
       ? {
           enqueued: maintenance.flatMap((item) => item.alerts?.enqueued || []),
           dispatch: {
@@ -513,6 +593,66 @@ async function runAllTenantScheduledWork({
         }
       : undefined,
   };
+}
+
+async function runTenantMaintenance({
+  tenantId,
+  trigger,
+  actorId,
+  correlationId,
+  enableSlo,
+  enableAlerts,
+  alertQueueLimit,
+  alertDispatchLimit,
+  deadlineAt,
+}: {
+  tenantId: string;
+  trigger: string;
+  actorId: string;
+  correlationId: string;
+  enableSlo: boolean;
+  enableAlerts: boolean;
+  alertQueueLimit: number;
+  alertDispatchLimit: number;
+  deadlineAt: number;
+}) {
+  const result: {
+    tenantId: string;
+    agentRunsRepaired: number;
+    toolClaimsRecovered: number;
+    slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
+    alerts?: Awaited<ReturnType<typeof runScheduledAlertDispatch>>;
+  } = {
+    tenantId,
+    agentRunsRepaired: 0,
+    toolClaimsRecovered: 0,
+  };
+  if (Date.now() < deadlineAt) {
+    result.agentRunsRepaired = await repairStuckAgentRuns({ tenantId });
+  }
+  if (Date.now() < deadlineAt) {
+    result.toolClaimsRecovered = (
+      await recoverStaleToolExecutionClaims({ tenantId })
+    ).length;
+  }
+  if (enableSlo && Date.now() < deadlineAt) {
+    result.slo = await runObservabilitySloMonitor({
+      trigger,
+      tenantId,
+      actorId,
+      correlationId,
+      queueAlerts: !enableAlerts,
+    });
+  }
+  if (enableAlerts && Date.now() < deadlineAt) {
+    result.alerts = await runScheduledAlertDispatch({
+      trigger,
+      tenantId,
+      queueLimit: alertQueueLimit,
+      dispatchLimit: alertDispatchLimit,
+    });
+  }
+  return result;
 }
 
 function getCronSecurityContext(): SecurityContext {

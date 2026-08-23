@@ -23,6 +23,9 @@ export type RetentionPolicy = {
   toolPayloadDays: number;
   domainEventDays: number;
   observabilityDays: number;
+  healthHistoryDays: number;
+  evaluationHistoryDays: number;
+  graphBuildHistoryDays: number;
   securityAuditDays: number;
 };
 
@@ -49,6 +52,9 @@ export type RetentionSweepResult = {
     toolExecutions: number;
     domainEvents: number;
     observabilityEvents: number;
+    healthChecks: number;
+    evaluationRuns: number;
+    graphBuilds: number;
     securityAudits: number;
   };
   batchLimit: number;
@@ -71,6 +77,9 @@ export function getRetentionPolicy(): RetentionPolicy {
     toolPayloadDays: retentionDays("OMNIAGENT_RETENTION_TOOL_DAYS", 90),
     domainEventDays: retentionDays("OMNIAGENT_RETENTION_EVENT_DAYS", 90),
     observabilityDays: retentionDays("OMNIAGENT_RETENTION_OBSERVABILITY_DAYS", 30),
+    healthHistoryDays: retentionDays("OMNIAGENT_RETENTION_HEALTH_DAYS", 30),
+    evaluationHistoryDays: retentionDays("OMNIAGENT_RETENTION_EVALUATION_DAYS", 90),
+    graphBuildHistoryDays: retentionDays("OMNIAGENT_RETENTION_GRAPH_BUILD_DAYS", 30),
     securityAuditDays: retentionDays("OMNIAGENT_RETENTION_SECURITY_DAYS", 365),
   };
 }
@@ -136,6 +145,9 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
   const toolCutoff = cutoff(policy.toolPayloadDays);
   const eventCutoff = cutoff(policy.domainEventDays);
   const observabilityCutoff = cutoff(policy.observabilityDays);
+  const healthCutoff = cutoff(policy.healthHistoryDays);
+  const evaluationCutoff = cutoff(policy.evaluationHistoryDays);
+  const graphBuildCutoff = cutoff(policy.graphBuildHistoryDays);
   const securityCutoff = cutoff(policy.securityAuditDays);
 
   const result = await sql.transaction(async (transaction: ReturnType<typeof getSql>) => {
@@ -839,6 +851,100 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
           WHERE target.ctid = expired.ctid
           RETURNING target.id
         `;
+    const healthChecks = tenantId
+      ? await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_system_health_checks
+            WHERE tenant_id = ${tenantId}
+              AND created_at < ${healthCutoff}::timestamptz
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          DELETE FROM omni_system_health_checks target
+          USING expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `
+      : await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_system_health_checks
+            WHERE created_at < ${healthCutoff}::timestamptz
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          DELETE FROM omni_system_health_checks target
+          USING expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `;
+    const evaluationRuns = tenantId
+      ? await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_eval_runs
+            WHERE tenant_id = ${tenantId}
+              AND status IN ('completed', 'failed')
+              AND COALESCE(completed_at, updated_at) < ${evaluationCutoff}::timestamptz
+            ORDER BY COALESCE(completed_at, updated_at) ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          DELETE FROM omni_eval_runs target
+          USING expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `
+      : await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_eval_runs
+            WHERE status IN ('completed', 'failed')
+              AND COALESCE(completed_at, updated_at) < ${evaluationCutoff}::timestamptz
+            ORDER BY COALESCE(completed_at, updated_at) ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          DELETE FROM omni_eval_runs target
+          USING expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `;
+    const graphBuilds = tenantId
+      ? await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_memory_graph_builds
+            WHERE tenant_id = ${tenantId}
+              AND status IN ('completed', 'failed')
+              AND created_at < ${graphBuildCutoff}::timestamptz
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          DELETE FROM omni_memory_graph_builds target
+          USING expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `
+      : await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_memory_graph_builds
+            WHERE status IN ('completed', 'failed')
+              AND created_at < ${graphBuildCutoff}::timestamptz
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          DELETE FROM omni_memory_graph_builds target
+          USING expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `;
     const securityAudits = tenantId
       ? await transaction`
           WITH expired AS (
@@ -890,6 +996,9 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
         toolExecutions: toolExecutions.length,
         domainEvents: domainEvents.length,
         observabilityEvents: observabilityEvents.length,
+        healthChecks: healthChecks.length,
+        evaluationRuns: evaluationRuns.length,
+        graphBuilds: graphBuilds.length,
         securityAudits: securityAudits.length,
       },
     };
@@ -1110,6 +1219,9 @@ function emptyDeletedCounts(): RetentionSweepResult["deleted"] {
     toolExecutions: 0,
     domainEvents: 0,
     observabilityEvents: 0,
+    healthChecks: 0,
+    evaluationRuns: 0,
+    graphBuilds: 0,
     securityAudits: 0,
   };
 }

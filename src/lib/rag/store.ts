@@ -20,6 +20,7 @@ import type {
 type RagSqlClient = ReturnType<typeof getSql>;
 
 type CreateKnowledgeDocumentInput = {
+  idempotencyKey?: string;
   tenantId?: string;
   title: string;
   content: string;
@@ -53,8 +54,14 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
   const source =
     String(redactSensitive(input.source?.trim() || "manual")).slice(0, 2_000);
   const tenantId = normalizeTenantId(input.tenantId);
+  const documentId = input.idempotencyKey
+    ? `knowledge_${createHash("sha256")
+        .update(`${tenantId}:${input.idempotencyKey}`)
+        .digest("hex")
+        .slice(0, 40)}`
+    : randomUUID();
   const document: KnowledgeDocument = {
-    id: randomUUID(),
+    id: documentId,
     tenantId,
     title: safeTitle,
     source,
@@ -70,7 +77,9 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
   const chunks: KnowledgeChunk[] = input.chunks.map((chunk) => {
     const safeChunkContent = String(redactSensitive(chunk.content));
     return {
-      id: randomUUID(),
+      id: input.idempotencyKey
+        ? `${documentId}_chunk_${chunk.index}`
+        : randomUUID(),
       tenantId,
       documentId: document.id,
       chunkIndex: chunk.index,
@@ -100,8 +109,15 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
     getKnowledgeFile(),
     { documents: [], chunks: [] },
     (ledger) => ({
-      documents: [document, ...ledger.documents].slice(0, 100),
-      chunks: [...chunks, ...ledger.chunks].slice(0, 1200),
+      documents: ledger.documents.some((item) => item.id === document.id)
+        ? ledger.documents
+        : [document, ...ledger.documents].slice(0, 100),
+      chunks: [
+        ...chunks.filter(
+          (chunk) => !ledger.chunks.some((item) => item.id === chunk.id),
+        ),
+        ...ledger.chunks,
+      ].slice(0, 1200),
     }),
   );
   return { document, chunks };
@@ -214,6 +230,22 @@ export async function getKnowledgeStats(options: { tenantId?: string } = {}) {
 async function insertKnowledgeDocumentDb(document: KnowledgeDocument, chunks: KnowledgeChunk[]) {
   await ensureDatabaseSchema();
   const sql = getSql();
+  const chunkPayload = chunks.map((chunk) => ({
+    id: chunk.id,
+    tenant_id: chunk.tenantId,
+    document_id: chunk.documentId,
+    chunk_index: chunk.chunkIndex,
+    title: chunk.title,
+    content: chunk.content,
+    tags: chunk.tags,
+    source: chunk.source,
+    token_estimate: chunk.tokenEstimate,
+    character_count: chunk.characterCount,
+    embedding: chunk.embedding || null,
+    metadata: chunk.metadata,
+    created_at: chunk.createdAt,
+    updated_at: chunk.updatedAt,
+  }));
   await sql.transaction(async (transaction: RagSqlClient) => {
     await transaction`
       INSERT INTO omni_knowledge_documents (
@@ -224,42 +256,62 @@ async function insertKnowledgeDocumentDb(document: KnowledgeDocument, chunks: Kn
         ${document.contentHash}, ${document.chunkCount}, ${document.totalCharacters}, ${document.metadata}::jsonb,
         ${document.createdAt}, ${document.updatedAt}
       )
+      ON CONFLICT (id) DO NOTHING
     `;
 
-    for (const chunk of chunks) {
-      const embeddingJson = chunk.embedding || null;
+    if (chunkPayload.length) {
       await transaction`
         INSERT INTO omni_knowledge_chunks (
           id, tenant_id, document_id, chunk_index, title, content, tags, source, token_estimate,
           character_count, embedding, metadata, created_at, updated_at
         )
-        VALUES (
-          ${chunk.id}, ${chunk.tenantId}, ${chunk.documentId}, ${chunk.chunkIndex}, ${chunk.title}, ${chunk.content}, ${chunk.tags},
-          ${chunk.source}, ${chunk.tokenEstimate}, ${chunk.characterCount}, ${embeddingJson}::jsonb,
-          ${chunk.metadata}::jsonb, ${chunk.createdAt}, ${chunk.updatedAt}
+        SELECT
+          id, tenant_id, document_id, chunk_index, title, content, tags, source,
+          token_estimate, character_count, embedding, metadata, created_at,
+          updated_at
+        FROM jsonb_to_recordset(${chunkPayload}::jsonb) AS input(
+          id text,
+          tenant_id text,
+          document_id text,
+          chunk_index integer,
+          title text,
+          content text,
+          tags text[],
+          source text,
+          token_estimate integer,
+          character_count integer,
+          embedding jsonb,
+          metadata jsonb,
+          created_at timestamptz,
+          updated_at timestamptz
         )
+        ON CONFLICT (id) DO NOTHING
       `;
     }
   });
-  for (const chunk of chunks) {
-    await updateChunkVector(sql, chunk.id, chunk.embedding);
-  }
-}
-
-async function updateChunkVector(sql: RagSqlClient, chunkId: string, embedding?: number[]) {
-  const vector = toVectorLiteral(embedding);
-  if (!vector) {
-    return;
-  }
-
-  try {
-    await sql`
-      UPDATE omni_knowledge_chunks
-      SET embedding_vector = ${vector}::vector
-      WHERE id = ${chunkId}
-    `;
-  } catch {
-    // pgvector is optional; JSON embeddings still support application-side similarity.
+  const vectors = chunks
+    .map((chunk) => {
+      const embedding = toVectorLiteral(chunk.embedding);
+      return embedding ? { id: chunk.id, embedding } : null;
+    })
+    .filter(
+      (item): item is { id: string; embedding: string } => Boolean(item),
+    );
+  if (vectors.length) {
+    try {
+      await sql`
+        UPDATE omni_knowledge_chunks chunk
+        SET embedding_vector = vectors.embedding::vector
+        FROM jsonb_to_recordset(${vectors}::jsonb) AS vectors(
+          id text,
+          embedding text
+        )
+        WHERE chunk.id = vectors.id
+          AND chunk.tenant_id = ${document.tenantId}
+      `;
+    } catch {
+      // pgvector is optional; JSON embeddings still support similarity.
+    }
   }
 }
 

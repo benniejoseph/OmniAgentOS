@@ -74,16 +74,25 @@ export async function processAgentResumeQueue({
 
 export async function processAllTenantAgentResumeQueues({
   limit = 5,
+  timeBudgetMs = 240_000,
 }: {
   limit?: number;
+  timeBudgetMs?: number;
 } = {}) {
   const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 10);
+  const deadline = Date.now() + Math.min(
+    Math.max(Math.round(timeBudgetMs), 1_000),
+    240_000,
+  );
   const tenantIds = await listRunnableAgentResumeTenantIds(boundedLimit);
   const tenantResults: Array<{
     tenantId: string;
     result: AgentResumeQueueResult;
   }> = [];
   for (const tenantId of tenantIds) {
+    if (Date.now() >= deadline) {
+      break;
+    }
     tenantResults.push({
       tenantId,
       result: await processAgentResumeQueue({ tenantId, limit: 1 }),

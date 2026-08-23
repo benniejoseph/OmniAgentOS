@@ -12,6 +12,8 @@ export const GET = withDatabaseRequestScope(GETHandler);
 
 async function GETHandler(request: Request) {
   const startedAt = Date.now();
+  const publicSummary =
+    new URL(request.url).searchParams.get("public") === "1";
   const requestId = request.headers.get("x-vercel-id") || crypto.randomUUID();
   const checkedAt = new Date().toISOString();
   const revision =
@@ -36,7 +38,10 @@ async function GETHandler(request: Request) {
         revision,
         dependencies,
       },
-      { status: production ? 503 : 200 },
+      {
+        status: production ? 503 : 200,
+        headers: healthCacheHeaders(publicSummary),
+      },
     );
   }
 
@@ -56,13 +61,19 @@ async function GETHandler(request: Request) {
           revision,
           dependencies,
         },
-        { status: 503 },
+        {
+          status: 503,
+          headers: healthCacheHeaders(publicSummary),
+        },
       );
     }
     console.log(JSON.stringify({ level: "info", msg: "health ok", ms, route: "/api/health" }));
     return Response.json(
       { status: "healthy", checkedAt, requestId, revision, dependencies },
-      { status: 200 },
+      {
+        status: 200,
+        headers: healthCacheHeaders(publicSummary),
+      },
     );
   } catch (error) {
     const ms = Date.now() - startedAt;
@@ -75,7 +86,18 @@ async function GETHandler(request: Request) {
     }));
     return Response.json(
       { status: "unhealthy", checkedAt, requestId, revision, dependencies },
-      { status: 503 },
+      {
+        status: 503,
+        headers: healthCacheHeaders(publicSummary),
+      },
     );
   }
+}
+
+function healthCacheHeaders(publicSummary: boolean) {
+  return {
+    "cache-control": publicSummary
+      ? "public, s-maxage=30, stale-while-revalidate=300"
+      : "private, no-store",
+  };
 }

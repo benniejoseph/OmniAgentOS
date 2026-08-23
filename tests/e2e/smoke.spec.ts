@@ -1,15 +1,134 @@
-import { expect, test, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
+import budgets from "../../performance-budgets.json";
 
 const adminEmail = "playwright-admin@example.invalid";
 const adminPassword = "playwright-local-only-password";
+type BrowserCookie = Awaited<ReturnType<BrowserContext["cookies"]>>[number];
+let cachedSessionCookies: BrowserCookie[] = [];
 
 async function signIn(page: Page) {
-  await page.goto("/login");
-  await page.getByLabel("Email address").fill(adminEmail);
-  await page.locator("#password").fill(adminPassword);
-  await page.getByRole("button", { name: "Sign in" }).click();
+  if (cachedSessionCookies.length) {
+    await page.context().addCookies(cachedSessionCookies);
+    await page.goto("/onboarding");
+    const session = await page.evaluate(async () => {
+      const response = await fetch("/api/auth/session");
+      return (await response.json()) as {
+        authenticated?: boolean;
+      };
+    }) as {
+      authenticated?: boolean;
+    };
+    if (session.authenticated) {
+      return;
+    }
+    cachedSessionCookies = [];
+  }
+  const login = await page.request.post("/api/auth/login", {
+    data: { email: adminEmail, password: adminPassword },
+  });
+  expect(login.ok()).toBeTruthy();
+  await page.goto("/onboarding");
   await expect(page).toHaveURL(/\/onboarding$/);
+  cachedSessionCookies = (await page.context().cookies()).filter(
+    (cookie) => cookie.name === "omniagent_session",
+  );
 }
+
+test("API performance telemetry stays observable and asynchronous", async ({
+  request,
+}) => {
+  const session = await request.get("/api/auth/session");
+  expect(session.ok()).toBeTruthy();
+  expect(session.headers()["server-timing"]).toContain("db;dur=");
+  expect(session.headers()["x-omni-db-queries"]).toMatch(/^\d+$/);
+  expect(session.headers()["x-omni-db-writes"]).toMatch(/^\d+$/);
+
+  const vital = await request.post("/api/observability/web-vitals", {
+    data: {
+      path: "/",
+      metrics: [
+        {
+          id: "lcp-playwright",
+          name: "LCP",
+          value: 420,
+          rating: "good",
+        },
+      ],
+    },
+  });
+  expect(vital.status()).toBe(202);
+});
+
+test("landing stays within desktop and mobile browser budgets", async ({
+  page,
+}) => {
+  type ReportedVital = {
+    name: "CLS" | "FCP" | "INP" | "LCP";
+    value: number;
+  };
+  let reported: ReportedVital[] = [];
+  await page.exposeFunction("recordReportedVitals", (body: string) => {
+    const payload = JSON.parse(body) as {
+      path?: string;
+      metrics?: ReportedVital[];
+    };
+    if (payload.path === "/") {
+      reported.push(...(payload.metrics || []));
+    }
+  });
+  await page.addInitScript(() => {
+    const runtime = window as typeof window & {
+      recordReportedVitals: (body: string) => Promise<void>;
+      __omniagentWebVitalsSampleRate?: number;
+    };
+    runtime.__omniagentWebVitalsSampleRate = 1;
+    const nativeSendBeacon = navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon = (url, data) => {
+      if (
+        String(url).includes("/api/observability/web-vitals") &&
+        typeof data === "string"
+      ) {
+        void runtime.recordReportedVitals(data);
+        return true;
+      }
+      return nativeSendBeacon(url, data);
+    };
+  });
+
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    reported = [];
+    await page.setViewportSize(viewport);
+    await page.goto("/", { waitUntil: "networkidle" });
+    await page.getByRole("button", { name: /^Theme:/ }).click();
+    await page.waitForTimeout(300);
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "hidden",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await expect
+      .poll(() => new Set(reported.map((metric) => metric.name)).size)
+      .toBeGreaterThanOrEqual(4);
+    const vitals = Object.fromEntries(
+      reported.map((metric) => [metric.name, metric.value]),
+    );
+    expect(vitals.LCP).toBeGreaterThan(0);
+    expect(vitals.LCP).toBeLessThanOrEqual(budgets.lcpMs);
+    expect(vitals.INP).toBeLessThanOrEqual(budgets.inpMs);
+    expect(vitals.CLS).toBeLessThanOrEqual(budgets.cls);
+    await page.goto("/login", { waitUntil: "domcontentloaded" });
+  }
+});
 
 test("public and mobile application navigation stay usable", async ({ page }) => {
   await page.goto("/");
@@ -84,10 +203,17 @@ test("agent work streams a clearly labeled fallback into results", async ({ page
   await page
     .getByRole("textbox", { name: /^Task outcome/ })
     .fill("Summarize the release posture without making external changes.");
+  const startedAt = Date.now();
   await page.getByRole("button", { name: "Run task" }).click();
-
   const executionPanel = page.getByRole("tabpanel");
+  await expect(
+    executionPanel.getByText("status", { exact: true }).first(),
+  ).toBeVisible();
+  expect(Date.now() - startedAt).toBeLessThan(budgets.firstSseStatusMs);
   await expect(executionPanel).toContainText("[Simulated response]");
+  expect(Date.now() - startedAt).toBeLessThan(
+    budgets.completionVisibilityMs,
+  );
   await expect(executionPanel).toContainText(
     "OPENAI_API_KEY is not configured, so no model ran.",
   );
@@ -100,6 +226,74 @@ test("agent work streams a clearly labeled fallback into results", async ({ page
   );
   await resultsLink.click();
   await expect(page).toHaveURL(/\/app\/results\?run=agent%3A/);
+});
+
+test("Start avoids admin evidence requests on its critical path", async ({
+  page,
+}) => {
+  await signIn(page);
+  const adminRequests: string[] = [];
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (
+      pathname === "/api/release/evidence" ||
+      pathname === "/api/observability"
+    ) {
+      adminRequests.push(pathname);
+    }
+  });
+
+  await page.goto("/app/command");
+  await expect(
+    page.getByRole("textbox", { name: /^Task outcome/ }),
+  ).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  expect(adminRequests).toEqual([]);
+});
+
+test("workspace summary panels settle independently", async ({ page }) => {
+  await signIn(page);
+  await page.route("**/api/workspace-summary?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        summary: {
+          tenantId: "playwright",
+          generatedAt: new Date().toISOString(),
+          sources: {
+            runs: {
+              status: "ready",
+              data: [
+                {
+                  id: "run-independent",
+                  mode: "research",
+                  status: "completed",
+                  prompt: "Independent panel result",
+                  response: "Loaded while workflows failed.",
+                  startedAt: new Date().toISOString(),
+                  completedAt: new Date().toISOString(),
+                },
+              ],
+            },
+            workflows: {
+              status: "error",
+              error: "Workflow source is temporarily slow.",
+            },
+            approvals: { status: "ready", data: [] },
+          },
+        },
+      }),
+    });
+  });
+
+  await page.goto("/app");
+  await expect(
+    page.getByText("Independent panel result").first(),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Workflow source is temporarily slow."),
+  ).toBeVisible();
 });
 
 test("reviewed workflow plans bind to one visible run", async ({ page }) => {
@@ -202,23 +396,24 @@ test("valid access requests are persisted before success is shown", async ({ pag
   await signIn(page);
   await page.goto("/app/approvals");
   const accessSection = page.getByRole("region", { name: "Workspace access" });
-  await expect(
-    accessSection.getByRole("heading", { name: requestedName }),
-  ).toBeVisible();
-  await accessSection
+  const requestCard = accessSection
+    .locator("article")
+    .filter({ hasText: requestedName });
+  await expect(requestCard).toBeVisible();
+  await requestCard
     .getByLabel(`Review note for ${requestedName}`)
     .fill("Team owner verified.");
-  await accessSection.getByRole("button", { name: "Approve request" }).click();
+  await requestCard.getByRole("button", { name: "Approve request" }).click();
   await expect(page.getByRole("status")).toContainText(
     `Approved ${requestedName}`,
   );
   await expect(
-    accessSection.getByText(
+    requestCard.getByText(
       "Access is approved. Finish creating the workspace identity; this request stays here until provisioning succeeds.",
     ),
   ).toBeVisible();
   await expect(
-    accessSection.getByRole("button", { name: "Resume provisioning" }),
+    requestCard.getByRole("button", { name: "Resume provisioning" }),
   ).toBeVisible();
 
   await page

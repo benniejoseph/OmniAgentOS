@@ -7,6 +7,7 @@ import {
 } from "@/lib/security/context";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
 import type { SecurityContext } from "@/lib/security/types";
+import { measureRequestStage } from "@/lib/observability/request-timing";
 
 const safeRequestMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -27,32 +28,40 @@ export async function authorizeRequest({
 }) {
   let context: SecurityContext;
   try {
-    context = await resolveSecurityContext(request);
+    context = await measureRequestStage("auth", () =>
+      resolveSecurityContext(request)
+    );
   } catch (error) {
     if (!(error instanceof SecurityPolicyError)) {
-      await recordSecuritySystemFailureSafely({
-        request,
-        action,
-        resourceType,
-        resourceId,
-        reason: error instanceof Error ? error.message : "Security context failed.",
-        riskLevel,
-        metadata,
-      });
+      await measureRequestStage("audit", () =>
+        recordSecuritySystemFailureSafely({
+          request,
+          action,
+          resourceType,
+          resourceId,
+          reason:
+            error instanceof Error ? error.message : "Security context failed.",
+          riskLevel,
+          metadata,
+        })
+      );
       throw error;
     }
 
-    await recordSecurityEventSafely({
-      request,
-      action: "security.auth_failed",
-      resourceType,
-      resourceId,
-      decision: "deny",
-      reason: error instanceof Error ? error.message : "Authentication failed.",
-      riskLevel,
-      metadata,
-      statusCode: error instanceof SecurityPolicyError ? error.status : 401,
-    });
+    await measureRequestStage("audit", () =>
+      recordSecurityEventSafely({
+        request,
+        action: "security.auth_failed",
+        resourceType,
+        resourceId,
+        decision: "deny",
+        reason:
+          error instanceof Error ? error.message : "Authentication failed.",
+        riskLevel,
+        metadata,
+        statusCode: error instanceof SecurityPolicyError ? error.status : 401,
+      })
+    );
     throw error;
   }
 
@@ -61,41 +70,45 @@ export async function authorizeRequest({
     requirePermission(context, action);
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Access denied.";
-    await recordAuditSafely({
-      context,
-      action,
-      resourceType,
-      resourceId,
-      decision: "deny",
-      reason,
-      riskLevel,
-      metadata,
-    });
-    await recordSecurityEventSafely({
-      request,
-      context,
-      action: "security.policy_blocked",
-      requestedAction: action,
-      resourceType,
-      resourceId,
-      decision: "deny",
-      reason,
-      riskLevel,
-      metadata,
-      statusCode: error instanceof SecurityPolicyError ? error.status : 403,
+    await measureRequestStage("audit", async () => {
+      await recordAuditSafely({
+        context,
+        action,
+        resourceType,
+        resourceId,
+        decision: "deny",
+        reason,
+        riskLevel,
+        metadata,
+      });
+      await recordSecurityEventSafely({
+        request,
+        context,
+        action: "security.policy_blocked",
+        requestedAction: action,
+        resourceType,
+        resourceId,
+        decision: "deny",
+        reason,
+        riskLevel,
+        metadata,
+        statusCode: error instanceof SecurityPolicyError ? error.status : 403,
+      });
     });
     throw error;
   }
 
-  await recordAuditSafely({
-    context,
-    action,
-    resourceType,
-    resourceId,
-    decision: "allow",
-    riskLevel,
-    metadata,
-  });
+  await measureRequestStage("audit", () =>
+    recordAuditSafely({
+      context,
+      action,
+      resourceType,
+      resourceId,
+      decision: "allow",
+      riskLevel,
+      metadata,
+    })
+  );
   return context;
 }
 

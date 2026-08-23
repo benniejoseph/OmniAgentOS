@@ -549,7 +549,11 @@ function createAlertDelivery({
     channel: target.channel,
     status: "queued",
     severity: incident.severity,
-    dedupeKey: `${incident.id}:${eventId || incident.lastCheckId || incident.updatedAt}:${target.id}`,
+    dedupeKey: createAlertDeliveryDedupeKey({
+      incident,
+      eventId,
+      targetId: target.id,
+    }),
     payload: {
       ...payload,
       target: {
@@ -564,6 +568,33 @@ function createAlertDelivery({
     createdAt: now,
     updatedAt: now,
   };
+}
+
+export function createAlertDeliveryDedupeKey({
+  incident,
+  eventId,
+  targetId,
+  now = Date.now(),
+}: {
+  incident: IncidentRecord;
+  eventId?: string;
+  targetId: string;
+  now?: number;
+}) {
+  if (eventId) {
+    return `${incident.id}:event:${eventId}:${targetId}`;
+  }
+  const configuredSuppression = Number(
+    incident.metadata.suppressionMinutes,
+  );
+  const suppressionMinutes =
+    Number.isFinite(configuredSuppression) && configuredSuppression > 0
+      ? Math.min(configuredSuppression, 24 * 60)
+      : incident.severity === "critical"
+        ? 15
+        : 60;
+  const window = Math.floor(now / (suppressionMinutes * 60 * 1_000));
+  return `${incident.id}:${incident.severity}:window:${window}:${targetId}`;
 }
 
 function createAlertPayload(incident: IncidentRecord, reason?: string): Record<string, unknown> {
@@ -894,23 +925,6 @@ async function saveAlertDelivery(record: AlertDeliveryRecord) {
       )
       ON CONFLICT (dedupe_key) DO UPDATE SET
         payload = EXCLUDED.payload,
-        max_attempts = EXCLUDED.max_attempts,
-        status = CASE
-          WHEN omni_alert_deliveries.status IN ('delivered', 'skipped')
-          THEN omni_alert_deliveries.status
-          WHEN omni_alert_deliveries.status = 'running'
-            AND omni_alert_deliveries.lease_expires_at > NOW()
-          THEN omni_alert_deliveries.status
-          ELSE 'queued'
-        END,
-        run_at = CASE
-          WHEN omni_alert_deliveries.status IN ('delivered', 'skipped')
-          THEN omni_alert_deliveries.run_at
-          WHEN omni_alert_deliveries.status = 'running'
-            AND omni_alert_deliveries.lease_expires_at > NOW()
-          THEN omni_alert_deliveries.run_at
-          ELSE EXCLUDED.run_at
-        END,
         updated_at = NOW()
       RETURNING *
     `;
@@ -925,13 +939,11 @@ async function saveAlertDelivery(record: AlertDeliveryRecord) {
         delivery.dedupeKey === record.dedupeKey,
     );
     if (existing) {
-      const activeLease =
-        existing.status === "running" &&
-        Boolean(existing.leaseExpiresAt) &&
-        Date.parse(existing.leaseExpiresAt || "") > Date.now();
-      saved = ["delivered", "skipped"].includes(existing.status) || activeLease
-        ? existing
-        : { ...existing, payload: record.payload, status: "queued", runAt: record.runAt, updatedAt: new Date().toISOString() };
+      saved = {
+        ...existing,
+        payload: record.payload,
+        updatedAt: new Date().toISOString(),
+      };
       ledger.deliveries = ledger.deliveries.map((delivery) =>
         delivery.id === existing.id && alertTenantId(delivery) === record.tenantId
           ? saved

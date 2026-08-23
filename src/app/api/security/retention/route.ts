@@ -6,8 +6,8 @@ import {
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import {
-  checkWorkerRevision,
-  workerRevisionErrorResponse,
+  checkWorkerCompatibility,
+  workerCompatibilityErrorResponse,
 } from "@/lib/operations/worker-request";
 import {
   getRetentionPolicy,
@@ -57,6 +57,12 @@ async function POSTHandler(request: Request) {
       { status: 400 },
     );
   }
+  if (parsed.data.scope === "all_tenants") {
+    const compatibility = checkWorkerCompatibility(request);
+    if (!compatibility.accepted) {
+      return workerCompatibilityErrorResponse(compatibility);
+    }
+  }
 
   let context: Awaited<ReturnType<typeof authorizeRequest>>;
   try {
@@ -78,13 +84,6 @@ async function POSTHandler(request: Request) {
       { status: 403 },
     );
   }
-  if (parsed.data.scope === "all_tenants") {
-    const revisionCheck = checkWorkerRevision(request);
-    if (!revisionCheck.accepted) {
-      return workerRevisionErrorResponse(revisionCheck);
-    }
-  }
-
   try {
     const result = await sweepExpiredSensitiveData({
       tenantId: context.tenantId,

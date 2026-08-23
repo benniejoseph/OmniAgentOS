@@ -1,15 +1,17 @@
 import { getSessionToken } from "@/lib/auth/session";
-import { getAuthControlPlane, getSessionIdentity, isAuthEnforced, isBootstrapConfigured } from "@/lib/auth/store";
+import { getSessionIdentity, isAuthEnforced, isBootstrapConfigured } from "@/lib/auth/store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { measureRequestStage } from "@/lib/observability/request-timing";
 import { getSecurityContext } from "@/lib/security/context";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 
 async function GETHandler(request: Request) {
-  const identity = await getSessionIdentity(getSessionToken(request));
+  const identity = await measureRequestStage("auth", () =>
+    getSessionIdentity(getSessionToken(request))
+  );
   const authEnabled = isAuthEnforced();
-  const controlPlane = identity ? await getAuthControlPlane({ tenantId: identity.tenant.id }) : undefined;
 
   return Response.json({
     authEnabled,
@@ -19,6 +21,5 @@ async function GETHandler(request: Request) {
     user: identity?.user,
     tenant: identity?.tenant,
     membership: identity?.membership,
-    stats: controlPlane?.stats,
   });
 }

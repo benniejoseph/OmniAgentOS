@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   getRuntimeDatabaseRoleSafety: vi.fn(),
   getMaintenanceDatabaseRoleSafety: vi.fn(),
   getOpenAIReadiness: vi.fn(),
-  getLatestWorkerHeartbeat: vi.fn(),
+  getLatestWorkerHeartbeats: vi.fn(),
 }));
 
 vi.mock("@/lib/config", () => ({
@@ -26,7 +26,7 @@ vi.mock("@/lib/openai/client", () => ({
   getOpenAIReadiness: mocks.getOpenAIReadiness,
 }));
 vi.mock("@/lib/operations/worker-heartbeat", () => ({
-  getLatestWorkerHeartbeat: mocks.getLatestWorkerHeartbeat,
+  getLatestWorkerHeartbeats: mocks.getLatestWorkerHeartbeats,
 }));
 
 import { getReleaseEvidenceReport } from "@/lib/release/evidence";
@@ -39,6 +39,7 @@ afterEach(() => {
 describe("release evidence", () => {
   it("serializes collectors to keep shared database pool pressure bounded", async () => {
     const revision = "release-revision";
+    const workerRevision = "worker-revision";
     vi.stubEnv("VERCEL", "1");
     vi.stubEnv("VERCEL_ENV", "production");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", revision);
@@ -122,13 +123,23 @@ describe("release evidence", () => {
       model: "test-model",
       checkedAt: new Date().toISOString(),
     }));
-    mocks.getLatestWorkerHeartbeat.mockImplementation(collector("heartbeat", {
-      instanceId: "worker",
-      revision,
-      recordedAt: new Date().toISOString(),
-    }));
+    mocks.getLatestWorkerHeartbeats.mockImplementation(
+      collector(
+        "heartbeat",
+        ["fast", "background", "maintenance"].map((lane) => ({
+          instanceId: "worker",
+          lane,
+          protocol: "1",
+          revision: workerRevision,
+          recordedAt: new Date().toISOString(),
+        })),
+      ),
+    );
 
-    const report = await getReleaseEvidenceReport("default");
+    const [report, duplicate] = await Promise.all([
+      getReleaseEvidenceReport("default"),
+      getReleaseEvidenceReport("default"),
+    ]);
 
     expect(maxActive).toBe(1);
     expect(order).toEqual([
@@ -139,6 +150,17 @@ describe("release evidence", () => {
       "openai",
       "heartbeat",
     ]);
+    expect(duplicate.checkedAt).toBe(report.checkedAt);
+    expect(mocks.getTenantIsolationReport).toHaveBeenCalledTimes(1);
     expect(report.releaseGate.approved).toBe(true);
+    expect(
+      report.gates.find((gate) => gate.id === "dedicated_worker"),
+    ).toMatchObject({
+      status: "pass",
+      details: {
+        protocolMatches: true,
+        revisionMatches: false,
+      },
+    });
   });
 });

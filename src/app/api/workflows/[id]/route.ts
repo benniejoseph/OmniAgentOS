@@ -1,5 +1,8 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
-import { getWorkflowRunDetail } from "@/lib/workflows/store";
+import {
+  getWorkflowRunDetail,
+  getWorkflowRunStatus,
+} from "@/lib/workflows/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -22,11 +25,18 @@ async function GETHandler(
     return forbiddenResponse(error);
   }
 
-  const detail = await getWorkflowRunDetail(id, { tenantId: securityContext.tenantId });
+  const statusOnly = new URL(request.url).searchParams.get("view") === "status";
+  const detail = statusOnly
+    ? await getWorkflowRunStatus(id, {
+        tenantId: securityContext.tenantId,
+      })
+    : await getWorkflowRunDetail(id, {
+        tenantId: securityContext.tenantId,
+      });
 
   if (!detail) {
     return Response.json({ error: "Workflow run not found." }, { status: 404 });
   }
 
-  return Response.json(detail);
+  return Response.json(statusOnly ? { run: detail } : detail);
 }

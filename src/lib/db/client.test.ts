@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  applyDatabaseScope,
   databaseSchemaMigrations,
   enterDatabaseTenantContext,
   getDatabasePoolMax,
   getDatabaseTenantContext,
   getPendingSchemaMigrationVersions,
+  isDatabaseMutation,
   validateSchemaMigrationMarkers,
+  verifyDatabaseSchemaWithClient,
   withDatabaseRequestScope,
 } from "@/lib/db/client";
 
@@ -27,6 +30,76 @@ describe("database pool sizing", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("database scope application", () => {
+  it("sets all transaction-local scope values in one statement", async () => {
+    const calls: Array<{ text: string; params: unknown[] }> = [];
+    const sql = ((
+      strings: TemplateStringsArray,
+      ...params: unknown[]
+    ) => {
+      calls.push({ text: strings.join("?"), params });
+      return Promise.resolve([]);
+    }) as Parameters<typeof applyDatabaseScope>[0];
+
+    await applyDatabaseScope(sql, {
+      kind: "tenant",
+      tenantId: "tenant-a",
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].text.match(/set_config/g)).toHaveLength(3);
+    expect(calls[0].params).toEqual(["tenant-a", "false", ""]);
+
+    calls.length = 0;
+    await applyDatabaseScope(sql, {
+      kind: "system",
+      reason: "maintenance",
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].params).toEqual(["", "true", "maintenance"]);
+  });
+});
+
+describe("database timing classification", () => {
+  it("counts direct and CTE-backed writes as mutations", () => {
+    expect(isDatabaseMutation("SELECT 1")).toBe(false);
+    expect(isDatabaseMutation("UPDATE omni_jobs SET status = 'done'")).toBe(
+      true,
+    );
+    expect(
+      isDatabaseMutation(`
+        WITH leased AS (
+          SELECT id FROM omni_jobs FOR UPDATE
+        )
+        UPDATE omni_jobs SET status = 'running'
+        FROM leased
+        WHERE omni_jobs.id = leased.id
+      `),
+    ).toBe(true);
+    expect(
+      isDatabaseMutation(`
+        WITH input AS (SELECT * FROM jsonb_to_recordset($1))
+        INSERT INTO omni_memories SELECT * FROM input
+      `),
+    ).toBe(true);
+    expect(
+      isDatabaseMutation(`
+        WITH notes AS (
+          SELECT 'UPDATE omni_jobs SET status = ''done''' AS message
+        )
+        SELECT * FROM notes
+      `),
+    ).toBe(false);
+    expect(
+      isDatabaseMutation(`
+        WITH notes AS (
+          SELECT 1 /* DELETE FROM omni_jobs */
+        )
+        SELECT * FROM notes -- UPDATE omni_jobs SET status = 'done'
+      `),
+    ).toBe(false);
   });
 });
 
@@ -85,6 +158,23 @@ describe("ordered database schema versions", () => {
         { allowLegacyMissingValues: true },
       ),
     ).toEqual([first.version]);
+  });
+
+  it("verifies every production schema marker in one database query", async () => {
+    let calls = 0;
+    const sql = (() => {
+      calls += 1;
+      return Promise.resolve(
+        databaseSchemaMigrations.map(({ version, name, checksum }) => ({
+          version,
+          name,
+          checksum,
+        })),
+      );
+    }) as Parameters<typeof verifyDatabaseSchemaWithClient>[0];
+
+    await expect(verifyDatabaseSchemaWithClient(sql)).resolves.toBeUndefined();
+    expect(calls).toBe(1);
   });
 
   it("propagates a tenant resolved after an asynchronous lookup to the caller", async () => {

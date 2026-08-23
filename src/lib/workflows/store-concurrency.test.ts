@@ -9,6 +9,32 @@ beforeAll(async () => {
 });
 
 describe("workflow conditional transitions (file mode)", () => {
+  it("returns a tenant-scoped status projection without workflow history", async () => {
+    const store = await import("@/lib/workflows/store");
+    const detail = await store.createWorkflowRun({
+      tenantId: "tenant-status",
+      goal: "Poll only workflow status",
+    });
+
+    await expect(
+      store.getWorkflowRunStatus(detail.run.id, {
+        tenantId: "tenant-status",
+      }),
+    ).resolves.toEqual({
+      id: detail.run.id,
+      status: "queued",
+      currentStep: "preflight",
+      error: undefined,
+      updatedAt: expect.any(String),
+      completedAt: undefined,
+    });
+    await expect(
+      store.getWorkflowRunStatus(detail.run.id, {
+        tenantId: "other-tenant",
+      }),
+    ).resolves.toBeNull();
+  });
+
   it("claims a queued run once and fences stale completion after pause", async () => {
     const store = await import("@/lib/workflows/store");
     const detail = await store.createWorkflowRun({

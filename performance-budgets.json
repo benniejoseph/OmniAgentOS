@@ -1,0 +1,13 @@
+{
+  "authenticatedReadP95Ms": 500,
+  "sessionP95Ms": 300,
+  "landingP95Ms": 1500,
+  "dashboardUsableMs": 1500,
+  "firstSseStatusMs": 1000,
+  "completionVisibilityMs": 1000,
+  "workflowPickupP95Ms": 10000,
+  "lcpMs": 2500,
+  "inpMs": 200,
+  "cls": 0.1,
+  "heroImageMaxBytes": 204800
+}

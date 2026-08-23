@@ -63,8 +63,10 @@ export async function listMemories(options: TenantScopedOptions = {}) {
     .map(sanitizeMemoryRecord);
 }
 
-export async function saveMemory(input: CreateMemoryInput) {
-  const now = new Date().toISOString();
+function memoryRecordFromInput(
+  input: CreateMemoryInput,
+  now: string,
+): MemoryRecord {
   const title = String(redactSensitive(input.title)).slice(0, 240);
   const content = String(redactSensitive(input.content)).slice(0, 200_000);
   const tags = normalizeTags(
@@ -74,9 +76,8 @@ export async function saveMemory(input: CreateMemoryInput) {
     redactSensitive(input.source || "manual"),
   ).slice(0, 2_000);
   const textWasRedacted =
-    title !== input.title ||
-    content !== input.content;
-  const record: MemoryRecord = {
+    title !== input.title || content !== input.content;
+  return {
     id: input.id?.trim().slice(0, 200) || randomUUID(),
     tenantId: normalizeTenantId(input.tenantId),
     type: input.type || "fact",
@@ -90,53 +91,142 @@ export async function saveMemory(input: CreateMemoryInput) {
     updatedAt: now,
     embedding: textWasRedacted ? undefined : input.embedding,
   };
+}
+
+export async function saveMemory(input: CreateMemoryInput) {
+  return (await saveMemories([input]))[0];
+}
+
+export async function saveMemories(inputs: CreateMemoryInput[]) {
+  if (!inputs.length) {
+    return [];
+  }
+  const now = new Date().toISOString();
+  const records = inputs.map((input) => memoryRecordFromInput(input, now));
+  const tenantId = normalizeTenantId(records[0].tenantId);
+  if (
+    records.some(
+      (record) => normalizeTenantId(record.tenantId) !== tenantId,
+    )
+  ) {
+    throw new Error("Bulk memory persistence cannot mix tenants.");
+  }
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const embeddingJson = record.embedding || null;
+    const payload = records.map((record) => ({
+      id: record.id,
+      tenant_id: record.tenantId,
+      type: record.type,
+      title: record.title,
+      content: record.content,
+      tags: record.tags,
+      scope: record.scope,
+      source: record.source,
+      importance: record.importance,
+      embedding: record.embedding || null,
+      created_at: record.createdAt,
+      updated_at: record.updatedAt,
+    }));
     const rows = await getSql()`
-      INSERT INTO omni_memories (
-        id, tenant_id, type, title, content, tags, scope, source, importance, embedding, created_at, updated_at
-      )
-      VALUES (
-        ${record.id}, ${record.tenantId}, ${record.type}, ${record.title}, ${record.content}, ${record.tags},
-        ${record.scope}, ${record.source}, ${record.importance}, ${embeddingJson}::jsonb,
-        ${record.createdAt}, ${record.updatedAt}
-      )
-      ON CONFLICT (id) DO NOTHING
-      RETURNING *
-    `;
-    if (!rows[0]) {
-      const existing = await getSql()`
+      WITH input_rows AS (
         SELECT *
-        FROM omni_memories
-        WHERE id = ${record.id}
-          AND tenant_id = ${record.tenantId}
-        LIMIT 1
-      `;
-      if (!existing[0]) {
-        throw new Error("Memory idempotency key collided with another tenant.");
-      }
-      return memoryFromRow(existing[0]);
+        FROM jsonb_to_recordset(${payload}::jsonb) AS input(
+          id text,
+          tenant_id text,
+          type text,
+          title text,
+          content text,
+          tags text[],
+          scope text,
+          source text,
+          importance double precision,
+          embedding jsonb,
+          created_at timestamptz,
+          updated_at timestamptz
+        )
+      ),
+      inserted AS (
+        INSERT INTO omni_memories (
+          id, tenant_id, type, title, content, tags, scope, source, importance,
+          embedding, created_at, updated_at
+        )
+        SELECT
+          id, tenant_id, type, title, content, tags, scope, source, importance,
+          embedding, created_at, updated_at
+        FROM input_rows
+        ON CONFLICT (id) DO NOTHING
+        RETURNING omni_memories.*, TRUE AS _inserted
+      )
+      SELECT * FROM inserted
+      UNION ALL
+      SELECT memory.*, FALSE AS _inserted
+      FROM input_rows input
+      JOIN omni_memories memory
+        ON memory.id = input.id
+       AND memory.tenant_id = input.tenant_id
+    `;
+    if (rows.length !== records.length) {
+      throw new Error("Memory idempotency key collided with another tenant.");
     }
-    await updateMemoryVector(record.id, record.embedding);
-    return record;
+    const byId = new Map(
+      rows.map((row) => [String(row.id), memoryFromRow(row)]),
+    );
+    const insertedVectors = rows
+      .filter((row) => Boolean(row._inserted))
+      .map((row) => {
+        const record = records.find((item) => item.id === String(row.id));
+        const embedding = toVectorLiteral(record?.embedding);
+        return embedding ? { id: String(row.id), embedding } : null;
+      })
+      .filter(
+        (item): item is { id: string; embedding: string } => Boolean(item),
+      );
+    if (insertedVectors.length) {
+      try {
+        await getSql()`
+          UPDATE omni_memories memory
+          SET embedding_vector = vectors.embedding::vector
+          FROM jsonb_to_recordset(${insertedVectors}::jsonb) AS vectors(
+            id text,
+            embedding text
+          )
+          WHERE memory.id = vectors.id
+            AND memory.tenant_id = ${tenantId}
+        `;
+      } catch {
+        // pgvector is optional; JSON embeddings remain available.
+      }
+    }
+    return records.map((record) => {
+      const saved = byId.get(record.id);
+      if (!saved) {
+        throw new Error("Bulk memory persistence did not return a saved row.");
+      }
+      return saved;
+    });
   }
 
-  let saved = record;
+  const savedById = new Map<string, MemoryRecord>();
   await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) => {
-    const existing = memories.find((memory) => memory.id === record.id);
-    if (existing) {
-      if (normalizeTenantId(existing.tenantId) !== record.tenantId) {
-        throw new Error("Memory idempotency key collided with another tenant.");
+    const next = [...memories];
+    for (const record of records) {
+      const existing = next.find((memory) => memory.id === record.id);
+      if (existing) {
+        if (normalizeTenantId(existing.tenantId) !== record.tenantId) {
+          throw new Error(
+            "Memory idempotency key collided with another tenant.",
+          );
+        }
+        savedById.set(record.id, existing);
+        continue;
       }
-      saved = existing;
-      return memories;
+      next.unshift(record);
+      savedById.set(record.id, record);
     }
-    memories.unshift(record);
-    return memories;
+    return next;
   });
-  return saved;
+  return records.map((record) => savedById.get(record.id) as MemoryRecord);
 }
 
 export async function searchMemories(
@@ -221,23 +311,6 @@ export async function getMemoryStats(options: { tenantId?: string } = {}) {
     byType,
     embedded: memories.filter((memory) => memory.embedding?.length).length,
   };
-}
-
-async function updateMemoryVector(memoryId: string, embedding?: number[]) {
-  const vector = toVectorLiteral(embedding);
-  if (!vector) {
-    return;
-  }
-
-  try {
-    await getSql()`
-      UPDATE omni_memories
-      SET embedding_vector = ${vector}::vector
-      WHERE id = ${memoryId}
-    `;
-  } catch {
-    // pgvector is optional; JSON embeddings still support application-side similarity.
-  }
 }
 
 async function searchMemoriesDb(

@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { getDatabaseTenantContext, hasDatabaseUrl, ensureDatabaseSchema, getSql } from "@/lib/db/client";
-import { appendDomainEventSafely } from "@/lib/events/store";
+import {
+  appendDomainEvent,
+  appendDomainEventSafely,
+} from "@/lib/events/store";
 import {
   enqueueOperationJob,
   getAgentResumeJobDedupeKey,
@@ -57,7 +60,11 @@ export async function createAgentRun(input: {
   return run;
 }
 
-export async function appendRunEvent(runId: string, event: AgentEvent) {
+export async function appendRunEvent(
+  runId: string,
+  event: AgentEvent,
+  options: { tenantId?: string } = {},
+) {
   const redactedEvent = redactSensitive(event) as AgentEvent;
   const record: AgentRunEventRecord = {
     id: randomUUID(),
@@ -73,26 +80,48 @@ export async function appendRunEvent(runId: string, event: AgentEvent) {
   if (event.type === "delta") {
     return record;
   }
-  await appendDomainEventSafely({
+  const domainEvent = {
     streamId: `run:${runId}`,
     type: `run.${event.type}`,
     payload: domainEventPayload(redactedEvent),
     correlationId: runId,
-  });
+  };
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const tenantId = await resolveAgentRunTenantId(runId);
+    const tenantId = options.tenantId
+      ? normalizeTenantId(options.tenantId)
+      : getDatabaseTenantContext() ||
+        (await resolveAgentRunTenantId(runId));
     record.tenantId = tenantId;
-    await getSql()`
-      INSERT INTO omni_agent_events (id, tenant_id, run_id, type, payload, created_at)
-      VALUES (${record.id}, ${tenantId}, ${record.runId}, ${record.type}, ${record.payload}::jsonb, ${record.createdAt})
-    `;
+    await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      await appendDomainEvent(
+        { ...domainEvent, tenantId },
+        { sql },
+      );
+      await sql`
+        INSERT INTO omni_agent_events (id, tenant_id, run_id, type, payload, created_at)
+        VALUES (${record.id}, ${tenantId}, ${record.runId}, ${record.type}, ${record.payload}::jsonb, ${record.createdAt})
+      `;
+    });
     return record;
   }
 
+  await appendDomainEventSafely({
+    ...domainEvent,
+    tenantId: options.tenantId,
+  });
   await updateRunLedger((ledger) => {
-    record.tenantId = normalizeTenantId(ledger.runs.find((run) => run.id === runId)?.tenantId);
+    const runTenantId = normalizeTenantId(
+      ledger.runs.find((run) => run.id === runId)?.tenantId,
+    );
+    if (
+      options.tenantId &&
+      runTenantId !== normalizeTenantId(options.tenantId)
+    ) {
+      throw new Error("Agent run event tenant does not match the run.");
+    }
+    record.tenantId = runTenantId;
     ledger.events.push(record);
     return ledger;
   });
@@ -129,22 +158,33 @@ export async function updateRunContextCount(runId: string, count: number) {
 export async function recordRunConsolidation(
   runId: string,
   result: { count: number; error?: string },
+  options: { tenantId?: string } = {},
 ) {
   const consolidatedAt = new Date().toISOString();
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const tenantId = options.tenantId
+      ? normalizeTenantId(options.tenantId)
+      : await resolveAgentRunTenantId(runId);
     await getSql()`
       UPDATE omni_agent_runs
       SET consolidation_count = ${result.count},
           consolidation_error = ${result.error ? safeRunText(result.error, 2_000) : null},
           consolidated_at = ${consolidatedAt}
       WHERE id = ${runId}
+        AND tenant_id = ${tenantId}
     `;
     return;
   }
 
   await updateFileRun(runId, (run) => {
+    if (
+      options.tenantId &&
+      normalizeTenantId(run.tenantId) !== normalizeTenantId(options.tenantId)
+    ) {
+      throw new Error("Agent run consolidation tenant does not match the run.");
+    }
     run.consolidationCount = result.count;
     run.consolidationError = result.error
       ? safeRunText(result.error, 2_000)
@@ -420,6 +460,33 @@ export async function listAgentRuns(limit = 20, options: { tenantId?: string } =
 
   const ledger = await readRunLedger();
   return ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId).slice(0, limit);
+}
+
+export async function listAgentRunSummaries(
+  limit = 20,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const boundedLimit = Math.min(Math.max(limit, 1), 50);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT
+        id, tenant_id, mode, status, prompt, response, error, continuation,
+        started_at, completed_at
+      FROM omni_agent_runs
+      WHERE tenant_id = ${tenantId}
+      ORDER BY started_at DESC
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map(runFromRow);
+  }
+
+  const ledger = await readRunLedger();
+  return ledger.runs
+    .filter((run) => normalizeTenantId(run.tenantId) === tenantId)
+    .slice(0, boundedLimit);
 }
 
 export async function getRunStats(options: { tenantId?: string } = {}) {

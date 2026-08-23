@@ -48,7 +48,12 @@ type EventLedger = {
 
 const FILE_EVENT_CAP = 5_000;
 
-export async function appendDomainEvent(input: AppendDomainEventInput): Promise<DomainEvent> {
+type EventSqlClient = ReturnType<typeof getSql>;
+
+export async function appendDomainEvent(
+  input: AppendDomainEventInput,
+  options: { sql?: EventSqlClient } = {},
+): Promise<DomainEvent> {
   const event: DomainEvent = {
     id: randomUUID(),
     seq: 0,
@@ -63,8 +68,11 @@ export async function appendDomainEvent(input: AppendDomainEventInput): Promise<
   };
 
   if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    const rows = await getSql()`
+    if (!options.sql) {
+      await ensureDatabaseSchema();
+    }
+    const sql = options.sql || getSql();
+    const rows = await sql`
       INSERT INTO omni_events (id, stream_id, type, tenant_id, actor_id, payload, causation_id, correlation_id, at)
       VALUES (
         ${event.id}, ${event.streamId}, ${event.type}, ${event.tenantId}, ${event.actorId},
@@ -101,9 +109,12 @@ function boundedEventPayload(payload: Record<string, unknown>) {
 }
 
 /** Dual-write helper: the log must never take down the primary write path. */
-export async function appendDomainEventSafely(input: AppendDomainEventInput): Promise<DomainEvent | undefined> {
+export async function appendDomainEventSafely(
+  input: AppendDomainEventInput,
+  options: { sql?: EventSqlClient } = {},
+): Promise<DomainEvent | undefined> {
   try {
-    return await appendDomainEvent(input);
+    return await appendDomainEvent(input, options);
   } catch (error) {
     console.warn("Domain event append failed.", error instanceof Error ? error.message : error);
     return undefined;

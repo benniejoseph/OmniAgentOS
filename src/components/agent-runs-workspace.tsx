@@ -101,6 +101,8 @@ export function AgentRunsWorkspace() {
   const [runAnnouncement, setRunAnnouncement] = useState("Run workspace ready.");
   const [waitingApproval, setWaitingApproval] = useState<Extract<StreamEvent, { type: "waiting_approval" }>>();
   const abortControllerRef = useRef<AbortController | null>(null);
+  const evidenceControllerRef = useRef<AbortController | null>(null);
+  const evidenceVersionRef = useRef(0);
   const pendingDeltasRef = useRef<string[]>([]);
   const deltaFlushTimerRef = useRef<number | null>(null);
 
@@ -187,14 +189,19 @@ export function AgentRunsWorkspace() {
   ]);
 
   useEffect(() => {
-    void refreshEvidence();
+    if (sessionStatus === "ready") {
+      void refreshEvidence();
+    }
     return () => {
       abortControllerRef.current?.abort();
+      evidenceControllerRef.current?.abort();
       if (deltaFlushTimerRef.current !== null) {
         window.clearTimeout(deltaFlushTimerRef.current);
       }
     };
-  }, []);
+    // Session changes are the only automatic evidence refresh trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionStatus, session, role]);
 
   useEffect(() => {
     if (
@@ -204,37 +211,62 @@ export function AgentRunsWorkspace() {
       return;
     }
     let disposed = false;
+    let timer: number | undefined;
+    let controller: AbortController | undefined;
+    const schedule = () => {
+      if (!disposed) {
+        timer = window.setTimeout(() => void poll(), 3_000);
+      }
+    };
     const poll = async () => {
+      if (document.visibilityState !== "visible") {
+        schedule();
+        return;
+      }
+      controller = new AbortController();
       try {
         const next = asRecord(
-          await readJson(`/api/workflows/${encodeURIComponent(activeWorkflowId)}`),
+          await readJson(
+            `/api/workflows/${encodeURIComponent(activeWorkflowId)}?view=status`,
+            { signal: controller.signal },
+          ),
         );
         if (disposed) {
           return;
         }
         setWorkflowSyncError(undefined);
         const nextStatus = stringPath(next, "run.status", "");
-        setWorkflowRun(next);
+        setWorkflowRun((current) => ({
+          ...asRecord(current),
+          run: {
+            ...asRecord(readPath(current, "run")),
+            ...asRecord(next.run),
+          },
+        }));
         if (nextStatus && nextStatus !== activeWorkflowStatus) {
-          await refreshEvidence();
+          void refreshEvidence();
           setRunAnnouncement(`Workflow is now ${nextStatus.replace(/_/g, " ")}.`);
         }
       } catch (pollError) {
-        if (!disposed) {
+        if (!disposed && !controller.signal.aborted) {
           setWorkflowSyncError(
             `Live workflow updates are temporarily unavailable. Retrying automatically. ${refreshMessage(pollError)}`,
           );
         }
+      } finally {
+        schedule();
       }
     };
-    const timer = window.setInterval(() => void poll(), 3_000);
     void poll();
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      controller?.abort();
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
     };
-    // refreshEvidence is intentionally read at poll time; run identity/status
-    // control the lifecycle of this interval.
+    // Run identity and status control the polling lifecycle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorkflowId, activeWorkflowStatus]);
 
   function flushPendingDeltas() {
@@ -270,7 +302,7 @@ export function AgentRunsWorkspace() {
       await readJson(`/api/runs/${encodeURIComponent(runId)}`, {
         method: "DELETE",
       });
-      await refreshEvidence();
+      void refreshEvidence();
       setRunAnnouncement("Agent run canceled.");
     } catch (cancelError) {
       setError(
@@ -428,7 +460,7 @@ export function AgentRunsWorkspace() {
       });
       setWorkflowRun(asRecord(result));
       setActiveTab("execute");
-      await refreshEvidence();
+      void refreshEvidence();
       setRunAnnouncement("Workflow started. Activity and results are available from the workspace navigation.");
     } catch (workflowError) {
       setError(workflowError instanceof Error ? workflowError.message : "Workflow start failed.");
@@ -511,7 +543,7 @@ export function AgentRunsWorkspace() {
         );
       }
       flushPendingDeltas();
-      await refreshEvidence();
+      void refreshEvidence();
     } catch (agentError) {
       if (controller.signal.aborted) {
         setStreamEvents((current) => [
@@ -544,7 +576,7 @@ export function AgentRunsWorkspace() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ limit: 5, slo: true, alerts: false }),
       });
-      await refreshEvidence();
+      void refreshEvidence();
       setActiveTab("evidence");
       setRunAnnouncement("Queue processing finished. Evidence was refreshed.");
     } catch (tickError) {
@@ -556,58 +588,56 @@ export function AgentRunsWorkspace() {
   }
 
   async function refreshEvidence() {
+    if (sessionStatus !== "ready" || !session) {
+      return;
+    }
+    const version = ++evidenceVersionRef.current;
+    evidenceControllerRef.current?.abort();
+    const controller = new AbortController();
+    evidenceControllerRef.current = controller;
     setEvidenceState("loading");
     try {
-      const session = asRecord(await readJson("/api/auth/session"));
       if (Boolean(session.authEnabled) && !Boolean(session.authenticated)) {
         const protectedPayload = {
           error: "Sign in to load protected production evidence.",
           items: [],
           runs: [],
-          events: [],
         };
         setEvidence({
-          session,
           runs: protectedPayload,
           approvals: protectedPayload,
-          release: protectedPayload,
-          events: protectedPayload,
           workflows: protectedPayload,
         });
         setEvidenceState("ready");
         return;
       }
-      const role = sessionRole(session);
-      const canManageWorkflow = hasRole(role, ["operator", "admin", "system"]);
-      const canReadSecurity = hasRole(role, ["admin", "system"]);
-      const unavailableForRole = { error: "Operator or admin role required for this evidence.", items: [], runs: [], events: [] };
-      const securityUnavailable = { error: "Admin role required for release and observability evidence.", items: [], runs: [], events: [] };
-      const [runs, approvals, release, events, workflows] = await Promise.all([
-        readJson("/api/runs?limit=8").catch((refreshError) => ({ error: refreshMessage(refreshError) })),
-        canManageWorkflow
-          ? readJson("/api/approvals?limit=8").catch((refreshError) => ({ error: refreshMessage(refreshError), items: [] }))
-          : Promise.resolve(unavailableForRole),
-        canReadSecurity
-          ? readJson("/api/release/evidence").catch((refreshError) => ({ error: refreshMessage(refreshError) }))
-          : Promise.resolve(securityUnavailable),
-        canReadSecurity
-          ? readJson("/api/observability?limit=12").catch((refreshError) => ({ error: refreshMessage(refreshError), events: [] }))
-          : Promise.resolve(securityUnavailable),
-        readJson("/api/workflows?limit=8").catch((refreshError) => ({ error: refreshMessage(refreshError), runs: [] })),
-      ]);
+      const payload = asRecord(
+        await readJson("/api/workspace-summary?limit=8&approvalLimit=8", {
+          signal: controller.signal,
+        }),
+      );
+      if (controller.signal.aborted || version !== evidenceVersionRef.current) {
+        return;
+      }
+      const summary = asRecord(payload.summary);
       setEvidence({
-        runs,
-        approvals,
-        release,
-        events,
-        workflows,
+        runs: workspaceSourcePayload(summary, "runs", "runs"),
+        approvals: workspaceSourcePayload(summary, "approvals", "items"),
+        workflows: workspaceSourcePayload(summary, "workflows", "runs"),
       });
       setEvidenceState("ready");
     } catch (refreshError) {
+      if (controller.signal.aborted || version !== evidenceVersionRef.current) {
+        return;
+      }
       setEvidenceState("error");
       setEvidence({
         error: refreshMessage(refreshError),
       });
+    } finally {
+      if (evidenceControllerRef.current === controller) {
+        evidenceControllerRef.current = null;
+      }
     }
   }
 
@@ -979,7 +1009,7 @@ export function AgentRunsWorkspace() {
             ) : null}
 
             {activeTab === "evidence" ? (
-              <StagePanel title="Results and evidence" description="Inline result history, approval blockers, release gate, and runtime events. Use the Results page as the final cross-run destination.">
+              <StagePanel title="Results and evidence" description="Inline result history and approval blockers. Open focused admin views only when deeper release or runtime evidence is needed.">
                 <div className="mb-4 flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -1003,12 +1033,12 @@ export function AgentRunsWorkspace() {
                   </Link>
                   <Link href="/app/approvals" className="action-link">Open approvals</Link>
                   <Link href="/app/evaluations" className="action-link">Release evidence</Link>
+                  <Link href="/app/observability" className="action-link">Monitoring</Link>
                 </div>
                 <div className="grid gap-4 lg:grid-cols-2">
                   <EvidenceCard title="Agent answers" rows={runRows.map((item) => evidenceRow(item, "prompt", "status"))} empty="No run records loaded." />
                   <EvidenceCard title="Blocked before result" rows={approvalItems.map((item) => evidenceRow(item, "title", "kind"))} empty="No approvals pending." />
                   <EvidenceCard title="Workflow outcomes" rows={arrayPath(evidence, "workflows.runs").map((item) => evidenceRow(item, "goal", "status"))} empty="No workflows loaded." />
-                  <EvidenceCard title="Runtime events" rows={arrayPath(evidence, "events.events").map((item) => evidenceRow(item, "message", "level"))} empty="No runtime events loaded." />
                 </div>
               </StagePanel>
             ) : null}
@@ -1394,12 +1424,21 @@ function refreshMessage(error: unknown) {
   return error instanceof Error ? error.message : "Resource unavailable.";
 }
 
-function sessionRole(session: JsonRecord) {
-  return stringValue(readPath(session, "context.role") || readPath(session, "membership.role"), "viewer");
-}
-
-function hasRole(role: string, allowed: string[]) {
-  return allowed.includes(role);
+function workspaceSourcePayload(
+  summary: JsonRecord,
+  sourceKey: "runs" | "workflows" | "approvals",
+  dataKey: "runs" | "items",
+) {
+  const source = asRecord(readPath(summary, `sources.${sourceKey}`));
+  if (source.status === "ready") {
+    return {
+      [dataKey]: Array.isArray(source.data) ? source.data : [],
+    };
+  }
+  return {
+    error: stringValue(source.error, "Resource unavailable."),
+    [dataKey]: [],
+  };
 }
 
 function evidenceRow(item: JsonRecord, titleKey: string, statusKey: string) {

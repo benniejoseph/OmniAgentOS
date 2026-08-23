@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -42,7 +43,7 @@ export type DomainConsoleKey =
   | "settings";
 
 type JsonRecord = Record<string, unknown>;
-type FormValue = string | boolean;
+export type FormValue = string | boolean;
 
 type EndpointConfig = {
   key: string;
@@ -85,7 +86,7 @@ type FlowStep = {
   icon: NavIcon;
 };
 
-type ActionField = {
+export type ActionField = {
   name: string;
   label: string;
   type: "text" | "password" | "textarea" | "select" | "checkbox" | "json";
@@ -94,7 +95,7 @@ type ActionField = {
   options?: { label: string; value: string }[];
 };
 
-type DomainAction = {
+export type DomainAction = {
   id: string;
   title: string;
   description: string;
@@ -150,6 +151,25 @@ const openApiAuthOptions = [
 ];
 
 const ActivityIcon = Layers3;
+
+const DomainActionForms = dynamic(
+  () =>
+    import("@/components/app-shell/domain-action-forms").then(
+      (module) => module.DomainActionForms,
+    ),
+  {
+    loading: () => (
+      <div className="space-y-3" role="status" aria-label="Loading action controls">
+        {[0, 1].map((item) => (
+          <div
+            key={item}
+            className="h-28 animate-pulse rounded-md border border-line bg-background"
+          />
+        ))}
+      </div>
+    ),
+  },
+);
 
 const memoryTypeOptions = ["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"].map((value) => ({ label: value, value }));
 const safetyModeOptions = ["read_only", "synthetic", "mutation_allowed"].map((value) => ({ label: value.replace(/_/g, " "), value }));
@@ -1116,11 +1136,15 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
   const [copyResultStatus, setCopyResultStatus] = useState<"copied" | "error">();
   const [runningAction, setRunningAction] = useState<string>();
   const [actionFormVersion, setActionFormVersion] = useState(0);
+  const [advancedControlsOpen, setAdvancedControlsOpen] = useState(false);
   const [actionDefaults, setActionDefaults] = useState<
     Record<string, Record<string, FormValue>>
   >({});
   const [announcement, setAnnouncement] = useState("Workspace ready.");
   const loadController = useRef<AbortController | null>(null);
+  const actionRequestKeys = useRef<
+    Record<string, { signature: string; key: string }>
+  >({});
 
   const data = useMemo(() => {
     return Object.fromEntries(Object.entries(resources).map(([key, value]) => [key, value.data])) as DomainData;
@@ -1248,6 +1272,7 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
     const timer = window.setTimeout(() => {
       setActionDefaults({ "create-user": provisioningDefaults });
       setActionFormVersion((version) => version + 1);
+      setAdvancedControlsOpen(true);
     }, 0);
     return () => window.clearTimeout(timer);
   }, [domain]);
@@ -1282,15 +1307,37 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
     try {
       const body = action.buildPayload?.(values);
       const sendsJson = action.method === "POST" || action.method === "PATCH";
-      const result = await readJson(action.buildPath?.(values) || action.path, {
+      const actionPath = action.buildPath?.(values) || action.path;
+      const requestSignature = JSON.stringify([actionPath, body || {}]);
+      const previousRequest = actionRequestKeys.current[action.id];
+      const requestKey =
+        previousRequest?.signature === requestSignature
+          ? previousRequest.key
+          : crypto.randomUUID();
+      actionRequestKeys.current[action.id] = {
+        signature: requestSignature,
+        key: requestKey,
+      };
+      const result = await readJson(actionPath, {
         method: action.method,
-        headers: sendsJson ? { "content-type": "application/json" } : undefined,
+        headers: sendsJson
+          ? {
+              "content-type": "application/json",
+              "idempotency-key": requestKey,
+            }
+          : undefined,
         body: sendsJson ? JSON.stringify(body || {}) : undefined,
       });
+      delete actionRequestKeys.current[action.id];
+      const jobStatus = stringValue(readPath(result, "job.status"));
+      const jobId = stringValue(readPath(result, "job.id"));
+      const queued = ["queued", "running"].includes(jobStatus);
       setActionResult({
         title: action.title,
         status: "success",
-        message: "Action completed.",
+        message: queued
+          ? `Action queued for background processing${jobId ? ` as ${jobId}` : ""}.`
+          : "Action completed.",
         data: result,
       });
       if (action.id === "create-user") {
@@ -1309,7 +1356,11 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
         return next;
       });
       setActionFormVersion((version) => version + 1);
-      setAnnouncement(`${action.title} completed.`);
+      setAnnouncement(
+        queued
+          ? `${action.title} queued for background processing.`
+          : `${action.title} completed.`,
+      );
       await load();
     } catch (error) {
       setActionResult({
@@ -1583,28 +1634,52 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
 
         <div className="space-y-4">
           <Panel title="Actions" description={config.actions.length ? "Run page-specific operations without leaving this workspace." : "This surface is currently read and review focused."}>
-            <div className="space-y-3">
-              {config.actions.length ? (
-                config.actions.map((action) => (
-                  <ActionForm
-                    key={`${action.id}:${actionFormVersion}`}
-                    action={action}
-                    defaultValues={actionDefaults[action.id]}
-                    loading={runningAction === action.id}
-                    disabledReason={permissionMessage(
-                      workspaceSession,
-                      sessionStatus,
-                      actionPermission(action),
+            {config.actions.length ? (
+              advancedControlsOpen ? (
+                <div className="space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => setAdvancedControlsOpen(false)}
+                    className="inline-flex min-h-10 w-full items-center justify-center rounded-md border border-line bg-background px-3 text-xs font-semibold transition hover:bg-surface-raised"
+                    aria-expanded="true"
+                  >
+                    Hide advanced controls
+                  </button>
+                  <DomainActionForms
+                    key={actionFormVersion}
+                    actions={config.actions}
+                    defaultValues={actionDefaults}
+                    runningAction={runningAction}
+                    disabledReasons={Object.fromEntries(
+                      config.actions.map((action) => [
+                        action.id,
+                        permissionMessage(
+                          workspaceSession,
+                          sessionStatus,
+                          actionPermission(action),
+                        ),
+                      ]),
                     )}
-                    onRun={(values) => void runAction(action, values)}
+                    onRun={(action, values) => void runAction(action, values)}
                   />
-                ))
+                </div>
               ) : (
+                <button
+                  type="button"
+                  onClick={() => setAdvancedControlsOpen(true)}
+                  className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised"
+                  aria-expanded="false"
+                >
+                  Load advanced controls
+                </button>
+              )
+            ) : (
+              <div className="space-y-3">
                 <div className="rounded-md border border-line bg-background p-4 text-sm leading-6 text-muted">
                   Review the live data, then use related workspaces for changes that need stronger guardrails.
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </Panel>
 
           {actionResult ? (
@@ -2007,128 +2082,6 @@ function ApprovalDecisionPanel({
         <div className="rounded-md border border-dashed border-line bg-background p-4 text-sm text-muted">No blocking approvals are waiting.</div>
       )}
     </Panel>
-  );
-}
-
-function ActionForm({
-  action,
-  defaultValues,
-  loading,
-  disabledReason,
-  onRun,
-}: {
-  action: DomainAction;
-  defaultValues?: Record<string, FormValue>;
-  loading: boolean;
-  disabledReason?: string;
-  onRun: (values: Record<string, FormValue>) => void;
-}) {
-  const initialValues = useMemo(() => {
-    const fieldDefaults = Object.fromEntries(
-      action.fields.map((field) => [
-        field.name,
-        field.defaultValue ?? (field.type === "checkbox" ? false : ""),
-      ]),
-    ) as Record<string, FormValue>;
-    return { ...fieldDefaults, ...defaultValues };
-  }, [action.fields, defaultValues]);
-  const [values, setValues] = useState(initialValues);
-
-  return (
-    <form
-      id={action.id}
-      className="rounded-md border border-line bg-background p-3"
-      aria-busy={loading}
-      onSubmit={(event) => {
-        event.preventDefault();
-        onRun(values);
-      }}
-    >
-      <p className="text-sm font-semibold">{action.title}</p>
-      <p className="mt-1 text-xs leading-5 text-muted">{action.description}</p>
-      {disabledReason ? (
-        <p id={`${action.id}-permission`} className="mt-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs leading-5 text-muted">
-          {disabledReason}
-        </p>
-      ) : null}
-      <div className="mt-3 space-y-3">
-        {action.fields.map((field) => (
-          <FieldControl
-            key={field.name}
-            field={field}
-            value={values[field.name]}
-            onChange={(value) => setValues((current) => ({ ...current, [field.name]: value }))}
-          />
-        ))}
-      </div>
-      <button
-        type="submit"
-        disabled={loading || Boolean(disabledReason)}
-        title={disabledReason}
-        aria-describedby={disabledReason ? `${action.id}-permission` : undefined}
-        className="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-ink transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {loading ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
-        Run action
-      </button>
-    </form>
-  );
-}
-
-function FieldControl({
-  field,
-  value,
-  onChange,
-}: {
-  field: ActionField;
-  value: FormValue;
-  onChange: (value: FormValue) => void;
-}) {
-  if (field.type === "checkbox") {
-    return (
-      <label className="flex items-center justify-between gap-3 rounded-md border border-line px-3 py-2 text-xs">
-        <span>{field.label}</span>
-        <input
-          type="checkbox"
-          checked={Boolean(value)}
-          onChange={(event) => onChange(event.currentTarget.checked)}
-          className="size-4 accent-primary"
-        />
-      </label>
-    );
-  }
-
-  const commonClass = "mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm outline-none transition focus:border-primary";
-  return (
-    <label className="block text-xs font-medium text-muted">
-      {field.label}
-      {field.type === "select" ? (
-        <select value={textValue(value)} onChange={(event) => onChange(event.currentTarget.value)} className={commonClass}>
-          {(field.options || []).map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      ) : field.type === "textarea" || field.type === "json" ? (
-        <textarea
-          value={textValue(value)}
-          onChange={(event) => onChange(event.currentTarget.value)}
-          placeholder={field.placeholder}
-          rows={field.type === "json" ? 4 : 5}
-          className={commonClass}
-        />
-      ) : (
-        <input
-          type={field.type === "password" ? "password" : "text"}
-          autoComplete={field.type === "password" ? "new-password" : undefined}
-          value={textValue(value)}
-          onChange={(event) => onChange(event.currentTarget.value)}
-          placeholder={field.placeholder}
-          className={commonClass}
-        />
-      )}
-    </label>
   );
 }
 

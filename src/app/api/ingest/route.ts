@@ -1,19 +1,15 @@
-import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { ingestTextDocument } from "@/lib/rag/retriever";
+import {
+  BackgroundJobIdempotencyConflictError,
+  enqueueKnowledgeIngestJob,
+  knowledgeIngestJobRequestSchema,
+} from "@/lib/operations/background-jobs";
+import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const POST = withDatabaseRequestScope(POSTHandler);
-
-const ingestSchema = z.object({
-  title: z.string().trim().min(1).max(240),
-  content: z.string().min(1).max(900_000),
-  source: z.string().max(2_000).optional(),
-  sourceType: z.enum(["text", "url", "file", "api", "manual"]).optional(),
-  tags: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
-}).strict();
 
 async function POSTHandler(request: Request) {
   let body: unknown;
@@ -22,7 +18,7 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return jsonBodyErrorResponse(error);
   }
-  const parsed = ingestSchema.safeParse(body);
+  const parsed = knowledgeIngestJobRequestSchema.safeParse(body);
 
   if (!parsed.success) {
     return Response.json(
@@ -49,23 +45,35 @@ async function POSTHandler(request: Request) {
     return forbiddenResponse(error);
   }
 
-  const result = await ingestTextDocument({
-    ...parsed.data,
-    tenantId: context.tenantId,
-  });
+  let job;
+  try {
+    job = await enqueueKnowledgeIngestJob({
+      tenantId: context.tenantId,
+      idempotencyKey:
+        request.headers.get("idempotency-key")?.trim().slice(0, 200) ||
+        undefined,
+      request: parsed.data,
+    });
+  } catch (error) {
+    if (error instanceof BackgroundJobIdempotencyConflictError) {
+      return Response.json({ error: error.message }, { status: 409 });
+    }
+    return Response.json(
+      { error: error instanceof Error ? error.message : "Ingestion queue failed." },
+      { status: 500 },
+    );
+  }
   return Response.json(
     {
-      document: result.document,
-      chunks: result.chunks.map(withoutEmbedding),
-      memories: result.memories.map(withoutEmbedding),
-      count: result.chunks.length,
+      job: projectOperationJobStatus(job),
     },
-    { status: 201 },
+    {
+      status: 202,
+      headers: {
+        location: `/api/operations/jobs/${job.id}`,
+        "retry-after": "2",
+        "cache-control": "private, no-store",
+      },
+    },
   );
-}
-
-function withoutEmbedding<T extends { embedding?: number[] }>(record: T) {
-  const publicRecord = { ...record };
-  delete publicRecord.embedding;
-  return publicRecord;
 }

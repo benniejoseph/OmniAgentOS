@@ -233,6 +233,7 @@ async function runObservabilitySloMonitorForTenant({
         threshold: evaluation.threshold,
         margin: evaluation.margin,
         checkedAt: snapshot.checkedAt,
+        suppressionMinutes: evaluation.policy.suppressionMinutes,
         stats: {
           total: snapshot.stats.total,
           routeFailures: snapshot.stats.routeFailures,
@@ -254,7 +255,6 @@ async function runObservabilitySloMonitorForTenant({
     });
     if (queueAlerts && alertDecision.queue) {
       alertDeliveries = await enqueueAlertDeliveriesForIncident(upserted.incident, {
-        eventId: upserted.event.id,
         reason: `observability.slo.${evaluation.policy.id}`,
       });
       queuedAlerts += alertDeliveries.length;

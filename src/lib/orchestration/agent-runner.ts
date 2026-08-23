@@ -1,16 +1,14 @@
 import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_MODEL, AGENT_REASONING_EFFORT, hasOpenAIKey } from "@/lib/config";
 import { listMcpGovernedTools, listOpenApiGovernedTools } from "@/lib/connectors/governed-tools";
-import { consolidateRunMemory } from "@/lib/memory/consolidator";
-import { saveMemory } from "@/lib/memory/store";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import {
-  embedTexts,
   streamResponseTurn,
   type ConversationItem,
   type ResponseFunctionCall,
   type ResponseFunctionTool,
   type ResponseTurnInput,
 } from "@/lib/openai/client";
+import { enqueueMemoryConsolidationJob } from "@/lib/operations/background-jobs";
 import { buildAgentInput, buildAgentInstructions } from "@/lib/orchestration/prompts";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
@@ -23,7 +21,6 @@ import {
   findAgentRunWaitingForToolApproval,
   markAgentRunResuming,
   markAgentRunWaitingForApproval,
-  recordRunConsolidation,
   updateRunContextCount,
 } from "@/lib/runs/store";
 import type { AgentRunContinuation } from "@/lib/runs/types";
@@ -87,7 +84,11 @@ export async function* runAgent(
     lastDeltaFlush = Date.now();
     deltaWriteChain = deltaWriteChain
       .then(async () => {
-        await appendRunEvent(runId, { type: "delta", text: chunk });
+        await appendRunEvent(
+          runId,
+          { type: "delta", text: chunk },
+          { tenantId: request.tenantId },
+        );
       })
       .catch((error: unknown) => {
         console.error(
@@ -118,14 +119,32 @@ export async function* runAgent(
   async function emit(event: AgentEvent) {
     await flushDeltas();
     const safeEvent = redactSensitive(event) as AgentEvent;
-    await appendRunEvent(run.id, safeEvent);
+    await appendRunEvent(run.id, safeEvent, {
+      tenantId: request.tenantId,
+    });
     return safeEvent;
   }
 
   try {
     yield await emit({ type: "run", runId });
     yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
-    const retrieval = await buildContextPack(query, { limit: 8, tenantId: request.tenantId });
+    const useLiveWeb = shouldUseLiveWebSearch(query) && hasOpenAIKey();
+    const retrievalPromise = buildContextPack(query, {
+      limit: 8,
+      tenantId: request.tenantId,
+    });
+    const toolboxPromise = buildAgentToolbox(request.tenantId);
+    const liveWebPromise = useLiveWeb
+      ? runLiveWebSearch({
+          query,
+          contextSize: "low",
+          maxSources: 4,
+          abortSignal,
+        })
+          .then((result) => ({ result }))
+          .catch((error: unknown) => ({ error }))
+      : undefined;
+    const retrieval = await retrievalPromise;
     await updateRunContextCount(run.id, retrieval.results.length);
     yield await emit({
       type: "memory",
@@ -134,21 +153,15 @@ export async function* runAgent(
     });
 
     let liveWebContext = "";
-    if (shouldUseLiveWebSearch(query) && hasOpenAIKey()) {
+    if (useLiveWeb && liveWebPromise) {
       yield await emit({
         type: "status",
         label: "live web search",
         detail: "The request appears to need current information, so OmniAgentOS is searching the web before answering.",
       });
-      try {
-        const liveWeb = await runLiveWebSearch({
-          query,
-          // Keep the injected context compact: 4 sources is plenty of evidence
-          // and keeps the prompt (and cost) small.
-          contextSize: "low",
-          maxSources: 4,
-          abortSignal,
-        });
+      const liveWebOutcome = await liveWebPromise;
+      if ("result" in liveWebOutcome && liveWebOutcome.result) {
+        const liveWeb = liveWebOutcome.result;
         liveWebContext = String(
           redactSensitive(formatLiveWebSearchContext(liveWeb)),
         );
@@ -157,7 +170,8 @@ export async function* runAgent(
           title: "live web sources ready",
           count: liveWeb.sourceCount,
         });
-      } catch (webSearchError) {
+      } else if ("error" in liveWebOutcome) {
+        const webSearchError = liveWebOutcome.error;
         yield await emit({
           type: "status",
           label: "live web unavailable",
@@ -169,9 +183,10 @@ export async function* runAgent(
     // Skip web.search when we already fetched live web context — avoids redundant
     // tool-call loops that blow the 60s Vercel budget. Excluding it from the toolbox
     // filters the OpenAI tool list, the instructions, and the dispatch map together.
-    const toolbox = await buildAgentToolbox(request.tenantId, {
-      excludeToolIds: liveWebContext ? ["web.search"] : [],
-    });
+    const toolbox = filterAgentToolbox(
+      await toolboxPromise,
+      liveWebContext ? ["web.search"] : [],
+    );
     const instructions = buildAgentInstructions({
       mode,
     });
@@ -362,17 +377,25 @@ export async function* runAgent(
       await flushDeltas();
     }
 
-    await maybeConsolidateRunMemory({
+    const completed = await completeAgentRun(run.id, response);
+    if (!completed) {
+      yield await emit({
+        type: "status",
+        label: "Run no longer active",
+        detail:
+          "The run was canceled or finalized before the response could be committed.",
+      });
+      return;
+    }
+    const consolidation = enqueueMemoryConsolidationSafely({
       runId: run.id,
       tenantId: request.tenantId,
       mode,
-      query,
+      prompt: query,
       response,
-      emit,
     });
-
-    await completeAgentRun(run.id, response);
     yield await emit({ type: "done", response });
+    await consolidation;
   } catch (error) {
     if (abortSignal?.aborted) {
       const message = "Agent run canceled after the client stopped the request.";
@@ -726,16 +749,23 @@ async function resumeAgentRunAfterToolApprovalInScope({
     }
 
     await flushDeltas();
-    await maybeConsolidateRunMemory({
+    const completed = await completeAgentRun(run.id, response);
+    if (!completed) {
+      return {
+        resumed: false,
+        reason:
+          "The run was canceled or finalized before the resumed response could be committed.",
+      };
+    }
+    const consolidation = enqueueMemoryConsolidationSafely({
       runId: run.id,
       tenantId: continuation.context.tenantId,
       mode: run.mode,
-      query: run.prompt,
+      prompt: run.prompt,
       response,
-      emit: (event) => appendRunEvent(run.id, event),
     });
-    await completeAgentRun(run.id, response);
     await appendRunEvent(run.id, { type: "done", response });
+    await consolidation;
     return { resumed: true, status: "completed" };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Approved agent run resume failed.";
@@ -743,6 +773,33 @@ async function resumeAgentRunAfterToolApprovalInScope({
     await failAgentRun(run.id, message);
     await appendRunEvent(run.id, { type: "error", message });
     return { resumed: true, status: "failed", error: message };
+  }
+}
+
+async function enqueueMemoryConsolidationSafely(
+  input: Parameters<typeof enqueueMemoryConsolidationJob>[0],
+) {
+  try {
+    await enqueueMemoryConsolidationJob(input);
+  } catch (error) {
+    const message = String(
+      redactSensitive(
+        error instanceof Error
+          ? error.message
+          : "Unknown memory consolidation enqueue error.",
+      ),
+    ).slice(0, 1_000);
+    console.error("Memory consolidation enqueue failed.", message);
+    await appendRunEvent(
+      input.runId,
+      {
+        type: "status",
+        label: "memory consolidation delayed",
+        detail:
+          "The run completed, but durable memory consolidation could not be queued.",
+      },
+      { tenantId: input.tenantId },
+    ).catch(() => undefined);
   }
 }
 
@@ -812,6 +869,29 @@ async function buildAgentToolbox(
       strict: false as const,
     })),
     byFunctionName: new Map(tools.map((entry) => [entry.functionName, entry])),
+  };
+}
+
+function filterAgentToolbox(
+  toolbox: Awaited<ReturnType<typeof buildAgentToolbox>>,
+  excludedToolIds: readonly string[],
+) {
+  if (!excludedToolIds.length) {
+    return toolbox;
+  }
+  const excluded = new Set(excludedToolIds);
+  const tools = toolbox.tools.filter(
+    (entry) => !excluded.has(entry.definition.id),
+  );
+  const allowedFunctionNames = new Set(tools.map((entry) => entry.functionName));
+  return {
+    tools,
+    openAITools: toolbox.openAITools.filter((tool) =>
+      allowedFunctionNames.has(tool.name),
+    ),
+    byFunctionName: new Map(
+      tools.map((entry) => [entry.functionName, entry]),
+    ),
   };
 }
 
@@ -968,67 +1048,6 @@ function toolExecutionStatus(status: ToolExecutionRecord["status"]): "executed" 
       status === "approval_required" ? "approval_required" :
         status === "blocked" ? "blocked" :
           "failed";
-}
-
-async function maybeConsolidateRunMemory({
-  runId,
-  tenantId,
-  mode,
-  query,
-  response,
-  emit,
-}: {
-  runId: string;
-  tenantId?: string;
-  mode: "orchestrate" | "research" | "execute" | "learn";
-  query: string;
-  response: string;
-  emit: (event: AgentEvent) => Promise<unknown>;
-}) {
-  // Skip memory writes for trivial exchanges so the store does not fill with
-  // low-value episodes that dilute retrieval quality.
-  const worthRemembering = query.trim().length >= 12 && response.trim().length >= 280;
-  if (!worthRemembering) {
-    return;
-  }
-
-  const safeQuery = String(redactSensitive(query)).slice(0, 8_000);
-  const safeResponse = String(redactSensitive(response)).slice(0, 24_000);
-  const episodeContent = [`User request: ${safeQuery}`, `Assistant response: ${safeResponse}`].join("\n\n");
-  const embedding = (await embedTexts([episodeContent]))?.[0];
-  await saveMemory({
-    id: `agent_run_${runId}`,
-    tenantId,
-    type: "episode",
-    title: `Agent run: ${safeQuery.slice(0, 72)}`,
-    content: episodeContent,
-    tags: ["agent-run", mode],
-    source: "agent",
-    importance: 0.42,
-    embedding,
-  });
-
-  await emit({
-    type: "status",
-    label: "consolidating memory",
-    detail: "Extracting durable facts, decisions, procedures, preferences, and tasks.",
-  });
-  const consolidation = await consolidateRunMemory({
-    tenantId,
-    runId,
-    mode,
-    prompt: query,
-    response,
-  });
-  await recordRunConsolidation(runId, {
-    count: consolidation.saved.length,
-    error: consolidation.error,
-  });
-  await emit({
-    type: "memory",
-    title: consolidation.error ? "memory consolidation failed" : "memory consolidated",
-    count: consolidation.saved.length,
-  });
 }
 
 function normalizeTenantId(value?: string) {

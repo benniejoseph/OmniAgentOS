@@ -56,4 +56,33 @@ describe("memory persistence safety (file mode)", () => {
       store.listMemories({ tenantId: "tenant-idempotent" }),
     ).resolves.toEqual([first]);
   });
+
+  it("persists an idempotent memory batch in input order", async () => {
+    const store = await import("@/lib/memory/store");
+    const inputs = [
+      {
+        id: "batch-one",
+        tenantId: "tenant-batch",
+        title: "First",
+        content: "First durable memory.",
+      },
+      {
+        id: "batch-two",
+        tenantId: "tenant-batch",
+        title: "Second",
+        content: "Second durable memory.",
+      },
+    ];
+
+    const first = await store.saveMemories(inputs);
+    const replayed = await store.saveMemories(
+      inputs.map((input) => ({ ...input, title: "Must not overwrite" })),
+    );
+
+    expect(first.map((memory) => memory.id)).toEqual([
+      "batch-one",
+      "batch-two",
+    ]);
+    expect(replayed).toEqual(first);
+  });
 });

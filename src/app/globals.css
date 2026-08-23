@@ -49,8 +49,8 @@
   --color-warning: var(--warning);
   --color-danger: var(--danger);
   --color-info: var(--info);
-  --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
 
 html {
@@ -61,7 +61,7 @@ body {
   min-width: 20rem;
   background: var(--background);
   color: var(--foreground);
-  font-family: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   line-height: 1.5;
   text-rendering: optimizeLegibility;
 }
@@ -201,10 +201,6 @@ summary:focus-visible,
   animation: rise-in 900ms cubic-bezier(0.2, 0.8, 0.2, 1) 120ms both;
 }
 
-.animate-drift {
-  animation: drift 12s ease-in-out infinite alternate;
-}
-
 @keyframes rise-in {
   from {
     opacity: 0;
@@ -213,15 +209,6 @@ summary:focus-visible,
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-
-@keyframes drift {
-  from {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  to {
-    transform: translate3d(-1.6%, 1.2%, 0) scale(1.025);
   }
 }
 

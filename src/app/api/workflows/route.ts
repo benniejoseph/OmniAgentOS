@@ -52,12 +52,22 @@ async function GETHandler(request: Request) {
   const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, {
     max: 100,
   });
+  const includeStats = url.searchParams.get("stats") !== "false";
+  const includeQueue = url.searchParams.get("queue") !== "false";
   const [runs, stats, queue] = await Promise.all([
     listWorkflowRuns(limit, { tenantId: context.tenantId }),
-    getWorkflowStats({ tenantId: context.tenantId }),
-    getOperationJobStats({ tenantId: context.tenantId }),
+    includeStats
+      ? getWorkflowStats({ tenantId: context.tenantId })
+      : Promise.resolve(undefined),
+    includeQueue
+      ? getOperationJobStats({ tenantId: context.tenantId })
+      : Promise.resolve(undefined),
   ]);
-  return Response.json({ runs, stats, queue });
+  return Response.json({
+    runs,
+    ...(stats ? { stats } : {}),
+    ...(queue ? { queue } : {}),
+  });
 }
 
 async function POSTHandler(request: Request) {

@@ -39,6 +39,22 @@ export const WORKFLOW_EXECUTOR_TIMEOUT_MS = normalizePositiveInteger(
   process.env.OMNIAGENT_WORKFLOW_EXECUTOR_TIMEOUT_MS,
   10000,
 );
+export const WORKFLOW_PLAN_MAX_TOOL_CALLS = normalizePositiveInteger(
+  process.env.OMNIAGENT_WORKFLOW_PLAN_MAX_TOOL_CALLS,
+  24,
+);
+export const WORKFLOW_PLAN_MAX_COST_UNITS = normalizePositiveInteger(
+  process.env.OMNIAGENT_WORKFLOW_PLAN_MAX_COST_UNITS,
+  64,
+);
+export const WORKFLOW_PLAN_MAX_WALL_CLOCK_MS = normalizePositiveInteger(
+  process.env.OMNIAGENT_WORKFLOW_PLAN_MAX_WALL_CLOCK_MS,
+  60_000,
+);
+export const WORKFLOW_PLAN_NODES_PER_TICK = normalizePositiveInteger(
+  process.env.OMNIAGENT_WORKFLOW_PLAN_NODES_PER_TICK,
+  3,
+);
 
 export function hasOpenAIKey() {
   return Boolean(process.env.OPENAI_API_KEY?.trim());

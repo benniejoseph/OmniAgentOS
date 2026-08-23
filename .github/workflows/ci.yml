@@ -160,6 +160,7 @@ jobs:
     timeout-minutes: 25
     env:
       NEXT_PUBLIC_APP_URL: http://127.0.0.1:3100
+      NEXT_PUBLIC_WEB_VITALS_SAMPLE_RATE: "1"
       OMNIAGENT_ALLOW_DEMO_STORAGE: "true"
       OMNIAGENT_LOCAL_PRODUCTION: "true"
     steps:
@@ -228,6 +229,7 @@ jobs:
           assert config["build"]["dockerfile"] == "Dockerfile.worker"
           assert config["processes"]["worker"] == "node worker.mjs"
           assert config["env"]["OMNIAGENT_WORKER_BASE_URL"].startswith("https://")
+          assert config["env"]["OMNIAGENT_WORKER_PROTOCOL_VERSION"] == "1"
           assert config["env"]["OMNIAGENT_WORKER_SLO"] == "true"
           assert config["env"]["OMNIAGENT_WORKER_ALERTS"] == "true"
           assert config["env"]["OMNIAGENT_WORKER_RETENTION"] == "true"

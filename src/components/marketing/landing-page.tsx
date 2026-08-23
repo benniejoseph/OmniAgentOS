@@ -1,9 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import {
-  AlertTriangle,
   ArrowRight,
-  CheckCircle2,
   CircuitBoard,
   LockKeyhole,
   Network,
@@ -19,27 +17,7 @@ import {
   proofMetrics,
 } from "@/lib/navigation";
 import { PublicHeader } from "@/components/marketing/public-header";
-
-async function fetchHealthStatus(): Promise<"healthy" | "degraded" | "unhealthy" | "unknown"> {
-  try {
-    const baseUrl =
-      process.env.NEXT_PUBLIC_APP_URL ||
-      (process.env.VERCEL_PROJECT_PRODUCTION_URL
-        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-        : "http://localhost:3000");
-    const res = await fetch(`${baseUrl}/api/health`, {
-      next: { revalidate: 60 },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return "unknown";
-    const data = (await res.json()) as { status?: string };
-    const s = data.status;
-    if (s === "healthy" || s === "degraded" || s === "unhealthy") return s;
-    return "unknown";
-  } catch {
-    return "unknown";
-  }
-}
+import { PublicHealthBadge } from "@/components/marketing/public-health-badge";
 
 const workflowSteps = [
   "Goal",
@@ -58,22 +36,19 @@ const governanceControls = [
   "Connector credentials kept server-side",
 ];
 
-export async function LandingPage() {
-  const healthStatus = await fetchHealthStatus();
-  const healthLabel = healthStatus === "unknown" ? "unavailable" : healthStatus;
-
+export function LandingPage() {
   return (
     <main className="min-h-screen overflow-hidden bg-background text-foreground">
       <PublicHeader />
 
       <section className="relative min-h-[calc(100svh-0px)] overflow-hidden pt-16">
         <Image
-          src="/omniagent-command-center.png"
+          src="/omniagent-command-center.webp"
           alt="OmniAgentOS workspace showing task progress, approvals, and result evidence."
           fill
-          priority
+          preload
           sizes="100vw"
-          className="animate-drift object-cover object-[58%_50%] opacity-42 dark:opacity-50"
+          className="object-cover object-[58%_50%] opacity-42 dark:opacity-50"
         />
         <div className="hero-scrim absolute inset-0" />
         <div className="relative z-10 mx-auto flex min-h-[calc(100svh-4rem)] max-w-7xl items-center px-4 pb-16 pt-12 sm:px-6 lg:px-8">
@@ -104,14 +79,8 @@ export async function LandingPage() {
                 <Play size={16} aria-hidden="true" />
               </Link>
             </div>
-            <div className="animate-rise-delay mt-10 inline-flex min-h-12 items-center gap-3 rounded-md border border-white/20 bg-black/35 px-4 text-sm text-white">
-              {healthStatus === "healthy" ? (
-                <CheckCircle2 size={17} className="text-emerald-300" aria-hidden="true" />
-              ) : (
-                <AlertTriangle size={17} className="text-amber-300" aria-hidden="true" />
-              )}
-              <span>Public API health:</span>
-              <strong className="font-mono">{healthLabel}</strong>
+            <div className="animate-rise-delay">
+              <PublicHealthBadge />
             </div>
           </div>
         </div>

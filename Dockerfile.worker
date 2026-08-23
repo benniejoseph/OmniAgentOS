@@ -10,6 +10,6 @@ COPY --chown=node:node scripts/worker.mjs ./worker.mjs
 USER node
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=150s --retries=3 \
-  CMD ["node", "-e", "require('node:fs').stat('/tmp/omniagent-worker-heartbeat',(error,stats)=>{const max=Number(process.env.OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS||420000);process.exit(!error&&Date.now()-stats.mtimeMs<=max?0:1)})"]
+  CMD ["node", "-e", "require('node:fs').readFile('/tmp/omniagent-worker-heartbeat','utf8',(error,data)=>{let healthy=false;try{const lanes=JSON.parse(data);const now=Date.now();const max=Number(process.env.OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS||420000);const inFlightMax=Number(process.env.OMNIAGENT_WORKER_REQUEST_TIMEOUT_MS||300000)+60000;healthy=['fast','background','maintenance'].every((lane)=>{const state=lanes[lane]||{};return state.inFlight?Number.isFinite(state.startedAt)&&now-state.startedAt<=inFlightMax:Number.isFinite(state.lastSuccessAt)&&now-state.lastSuccessAt<=max&&(!state.lastFailureAt||state.lastSuccessAt>=state.lastFailureAt)})}catch{}process.exit(!error&&healthy?0:1)})"]
 
 CMD ["node", "worker.mjs"]

@@ -3,7 +3,7 @@ import { hasOpenAIKey } from "@/lib/config";
 import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
 import type { AgentMode } from "@/lib/orchestration/types";
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
-import { saveMemory } from "@/lib/memory/store";
+import { saveMemories, saveMemory } from "@/lib/memory/store";
 import type { MemoryRecord } from "@/lib/memory/types";
 import { redactSensitive } from "@/lib/security/context";
 
@@ -38,18 +38,69 @@ export type ConsolidationResult = {
   error?: string;
 };
 
-export async function consolidateRunMemory({
+export function shouldConsolidateRunMemory(prompt: string, response: string) {
+  return prompt.trim().length >= 12 && response.trim().length >= 280;
+}
+
+export async function consolidateAgentRunMemory({
   tenantId,
   runId,
   mode,
   prompt,
   response,
+  abortSignal,
 }: {
   tenantId?: string;
   runId: string;
   mode: AgentMode;
   prompt: string;
   response: string;
+  abortSignal?: AbortSignal;
+}) {
+  const safePrompt = safeMemoryText(prompt).slice(0, 8_000);
+  const safeResponse = safeMemoryText(response).slice(0, 24_000);
+  const episodeContent = [
+    `User request: ${safePrompt}`,
+    `Assistant response: ${safeResponse}`,
+  ].join("\n\n");
+  const embedding = (await embedTexts([episodeContent], abortSignal))?.[0];
+  abortSignal?.throwIfAborted();
+  const episode = await saveMemory({
+    id: `agent_run_${runId}`,
+    tenantId,
+    type: "episode",
+    title: `Agent run: ${safePrompt.slice(0, 72)}`,
+    content: episodeContent,
+    tags: ["agent-run", mode],
+    source: "agent",
+    importance: 0.42,
+    embedding,
+  });
+  const consolidation = await consolidateRunMemory({
+    tenantId,
+    runId,
+    mode,
+    prompt: safePrompt,
+    response: safeResponse,
+    abortSignal,
+  });
+  return { episode, consolidation };
+}
+
+export async function consolidateRunMemory({
+  tenantId,
+  runId,
+  mode,
+  prompt,
+  response,
+  abortSignal,
+}: {
+  tenantId?: string;
+  runId: string;
+  mode: AgentMode;
+  prompt: string;
+  response: string;
+  abortSignal?: AbortSignal;
 }): Promise<ConsolidationResult> {
   if (!prompt.trim() || !response.trim()) {
     return { summary: "No run content to consolidate.", saved: [], skipped: true };
@@ -72,13 +123,21 @@ export async function consolidateRunMemory({
         `<untrusted_user_request>\n${escapeUntrustedPromptText(safePrompt)}\n</untrusted_user_request>`,
         `<untrusted_assistant_response>\n${escapeUntrustedPromptText(safeResponse)}\n</untrusted_assistant_response>`,
       ].join("\n\n"),
+      abortSignal,
     });
     const parsed = consolidationSchema.parse(JSON.parse(raw));
     const items = parsed.items
       .map(cleanItem)
       .filter((item) => item.title && item.content)
       .slice(0, 8);
-    const saved = await persistConsolidatedItems({ tenantId, runId, mode, prompt: safePrompt, items });
+    const saved = await persistConsolidatedItems({
+      tenantId,
+      runId,
+      mode,
+      prompt: safePrompt,
+      items,
+      abortSignal,
+    });
 
     return {
       summary: safeMemoryText(parsed.summary).slice(0, 500),
@@ -86,6 +145,9 @@ export async function consolidateRunMemory({
       skipped: false,
     };
   } catch (error) {
+    if (abortSignal?.aborted) {
+      throw abortSignal.reason;
+    }
     return {
       summary: "Memory consolidation failed.",
       saved: [],
@@ -101,18 +163,21 @@ async function persistConsolidatedItems({
   mode,
   prompt,
   items,
+  abortSignal,
 }: {
   tenantId?: string;
   runId: string;
   mode: AgentMode;
   prompt: string;
   items: ConsolidatedItem[];
+  abortSignal?: AbortSignal;
 }) {
   if (!items.length) {
     return [];
   }
 
-  const memoryInputs = items.map((item) => ({
+  const memoryInputs = items.map((item, index) => ({
+    id: `agent_run_${runId}_consolidated_${index}`,
     type: item.type,
     title: item.title,
     content: [
@@ -129,18 +194,18 @@ async function persistConsolidatedItems({
   }));
   const embeddings = await embedTexts(
     memoryInputs.map((item) => `${item.title}\n\n${item.content}`),
+    abortSignal,
   );
+  abortSignal?.throwIfAborted();
 
-  const saved: MemoryRecord[] = [];
-  for (let index = 0; index < memoryInputs.length; index += 1) {
-    saved.push(
-      await saveMemory({
-        ...memoryInputs[index],
-        tenantId,
-        embedding: embeddings?.[index],
-      }),
-    );
-  }
+  const saved: MemoryRecord[] = await saveMemories(
+    memoryInputs.map((input, index) => ({
+      ...input,
+      tenantId,
+      embedding: embeddings?.[index],
+    })),
+  );
+  abortSignal?.throwIfAborted();
   await indexMemoryGraphRecords(saved, "memory.consolidator");
 
   return saved;

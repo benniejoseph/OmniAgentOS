@@ -217,7 +217,7 @@ export async function listObservabilityEvents({
   limit?: number;
   sql?: ReturnType<typeof getSql>;
 } = {}) {
-  const boundedLimit = Math.min(Math.max(limit, 1), 200);
+  const boundedLimit = Math.min(Math.max(limit, 1), 500);
 
   if (hasDatabaseUrl()) {
     if (!providedSql) {
@@ -288,13 +288,220 @@ export async function getObservabilityStats(
   options: {
     tenantId?: string;
     sql?: ReturnType<typeof getSql>;
+    windowHours?: number;
   } = {},
 ): Promise<ObservabilityStats> {
-  const events = await listObservabilityEvents({
-    limit: 500,
-    tenantId: options.tenantId,
-    sql: options.sql,
-  });
+  const windowHours = Math.min(
+    Math.max(Math.round(options.windowHours || 24), 1),
+    24 * 7,
+  );
+  const since = new Date(Date.now() - windowHours * 60 * 60 * 1_000);
+  const tenantId = normalizeTenantId(
+    options.tenantId || getDatabaseTenantContext(),
+  );
+  if (hasDatabaseUrl()) {
+    if (!options.sql) {
+      await ensureDatabaseSchema();
+    }
+    const rows = await (options.sql || getSql()).query(
+      `
+        WITH windowed AS (
+          SELECT events.*,
+            NOT (
+              events.metadata->>'sloExcluded' = 'true'
+              OR (
+                events.metadata->>'synthetic' = 'true'
+                AND NULLIF(events.metadata->>'syntheticSource', '') IS NOT NULL
+              )
+              OR events.action = 'observability.slo_eval_failure_marker'
+              OR events.metadata->>'policyFixture' = 'true'
+              OR (
+                (
+                  events.action IN ('security.auth_failed', 'security.context_failed')
+                  OR events.metadata->>'failureType' = 'security_context_failure'
+                )
+                AND (
+                  events.message LIKE '%omni_tenant_isolation%'
+                  OR events.message LIKE '%tuple concurrently updated%'
+                  OR events.message LIKE '%duplicate key value violates unique constraint%'
+                )
+              )
+              OR (
+                events.metadata ? 'smoke'
+                AND COALESCE(events.metadata->>'smoke', '') NOT IN ('', 'false', '0')
+              )
+            ) AS slo_eligible
+          FROM omni_observability_events AS events
+          WHERE events.tenant_id = $1
+            AND events.created_at >= $2
+        ),
+        eligible AS (
+          SELECT * FROM windowed WHERE slo_eligible
+        )
+        SELECT
+          (SELECT COUNT(*)::int FROM windowed) AS total,
+          (SELECT COUNT(*)::int FROM eligible) AS slo_eligible_events,
+          (SELECT COUNT(*)::int FROM windowed WHERE NOT slo_eligible) AS slo_excluded_events,
+          (
+            SELECT COUNT(*)::int FROM windowed
+            WHERE metadata->>'synthetic' = 'true'
+          ) AS synthetic_events,
+          (
+            SELECT COUNT(*)::int FROM eligible
+            WHERE (
+              metadata->>'failureType' = 'auth_failure'
+              OR action = 'security.auth_failed'
+            )
+              AND NOT (
+                action = 'security.auth_failed'
+                AND status_code = 401
+                AND message = 'Authentication required.'
+                AND route IS DISTINCT FROM '/api/auth/login'
+              )
+          ) AS auth_failures,
+          (
+            SELECT COUNT(*)::int FROM eligible
+            WHERE action = 'security.auth_failed'
+              AND status_code = 401
+              AND message = 'Authentication required.'
+              AND route IS DISTINCT FROM '/api/auth/login'
+          ) AS authentication_challenges,
+          (
+            SELECT COUNT(*)::int FROM eligible
+            WHERE metadata->>'failureType' = 'policy_block'
+              OR action = 'security.policy_blocked'
+          ) AS policy_blocks,
+          (
+            SELECT COUNT(*)::int FROM eligible
+            WHERE metadata->>'failureType' = 'connector_failure'
+              OR (
+                category = 'connector'
+                AND (level = 'error' OR RIGHT(action, 7) = '_failed')
+              )
+          ) AS connector_failures,
+          (
+            SELECT COUNT(*)::int FROM eligible
+            WHERE route IS NOT NULL
+              AND (level = 'error' OR status_code >= 500)
+          ) AS route_failures,
+          (
+            SELECT COUNT(*)::int FROM eligible
+            WHERE level = 'error' OR status_code >= 500
+          ) AS failure_count,
+          (
+            SELECT COUNT(*)::int FROM eligible WHERE route IS NOT NULL
+          ) AS route_count,
+          COALESCE((
+            SELECT ROUND(AVG(duration_ms))::int FROM eligible
+            WHERE duration_ms IS NOT NULL
+          ), 0) AS average_duration_ms,
+          COALESCE((
+            SELECT ROUND(
+              PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms)
+            )::int
+            FROM eligible
+            WHERE duration_ms IS NOT NULL
+          ), 0) AS p95_duration_ms,
+          COALESCE((
+            SELECT jsonb_object_agg(level, count)
+            FROM (
+              SELECT level, COUNT(*)::int AS count
+              FROM windowed GROUP BY level
+            ) AS level_counts
+          ), '{}'::jsonb) AS by_level,
+          COALESCE((
+            SELECT jsonb_object_agg(category, count)
+            FROM (
+              SELECT category, COUNT(*)::int AS count
+              FROM windowed GROUP BY category
+            ) AS category_counts
+          ), '{}'::jsonb) AS by_category,
+          COALESCE((
+            SELECT jsonb_agg(to_jsonb(recent) ORDER BY recent.created_at DESC)
+            FROM (
+              SELECT * FROM windowed
+              ORDER BY created_at DESC
+              LIMIT 10
+            ) AS recent
+          ), '[]'::jsonb) AS latest,
+          COALESCE((
+            SELECT jsonb_agg(to_jsonb(recent_error) ORDER BY recent_error.created_at DESC)
+            FROM (
+              SELECT * FROM eligible
+              WHERE level = 'error' OR status_code >= 500
+              ORDER BY created_at DESC
+              LIMIT 5
+            ) AS recent_error
+          ), '[]'::jsonb) AS recent_errors
+      `,
+      [tenantId, since],
+    );
+    return observabilityStatsFromAggregate(rows[0] || {});
+  }
+
+  const ledger = await readObservabilityLedger();
+  const events = ledger.events.filter(
+    (event) =>
+      normalizeTenantId(event.tenantId) === tenantId &&
+      Date.parse(event.createdAt) >= since.getTime(),
+  );
+  return summarizeObservabilityEvents(events);
+}
+
+function observabilityStatsFromAggregate(
+  row: Record<string, unknown>,
+): ObservabilityStats {
+  const total = Number(row.total || 0);
+  const sloEligibleEvents = Number(row.slo_eligible_events || 0);
+  const failureCount = Number(row.failure_count || 0);
+  const routeCount = Number(row.route_count || 0);
+  const routeFailures = Number(row.route_failures || 0);
+  const errorRate = sloEligibleEvents
+    ? failureCount / sloEligibleEvents
+    : 0;
+  const availability = routeCount
+    ? 1 - routeFailures / routeCount
+    : 1;
+  const p95DurationMs = Number(row.p95_duration_ms || 0);
+  const latest = Array.isArray(row.latest)
+    ? row.latest.map((event) =>
+        observabilityEventFromRow(event as Record<string, unknown>),
+      )
+    : [];
+  const recentErrors = Array.isArray(row.recent_errors)
+    ? row.recent_errors.map((event) =>
+        observabilityEventFromRow(event as Record<string, unknown>),
+      )
+    : [];
+  return {
+    total,
+    sloEligibleEvents,
+    sloExcludedEvents: Number(row.slo_excluded_events || 0),
+    syntheticEvents: Number(row.synthetic_events || 0),
+    byLevel: numericRecord(row.by_level),
+    byCategory: numericRecord(row.by_category),
+    authFailures: Number(row.auth_failures || 0),
+    authenticationChallenges: Number(row.authentication_challenges || 0),
+    policyBlocks: Number(row.policy_blocks || 0),
+    connectorFailures: Number(row.connector_failures || 0),
+    routeFailures,
+    averageDurationMs: Number(row.average_duration_ms || 0),
+    p95DurationMs,
+    latest,
+    recentErrors,
+    slo: {
+      healthy: errorRate <= 0.02 && p95DurationMs <= 8_000,
+      availability,
+      errorRate,
+      errorBudgetRemaining: Math.max(0, 0.02 - errorRate),
+      latencyP95Ms: p95DurationMs,
+    },
+  };
+}
+
+export function summarizeObservabilityEvents(
+  events: ObservabilityEventRecord[],
+): ObservabilityStats {
   const sloEvents = events.filter((event) => !isSloExcludedEvent(event));
   const durations = sloEvents
     .map((event) => event.durationMs)
@@ -449,6 +656,15 @@ function parseObject(value: unknown): Record<string, unknown> | undefined {
   }
 
   return undefined;
+}
+
+function numericRecord(value: unknown) {
+  return Object.fromEntries(
+    Object.entries(parseObject(value) || {}).map(([key, count]) => [
+      key,
+      Number(count || 0),
+    ]),
+  );
 }
 
 function normalizeDate(value: unknown) {

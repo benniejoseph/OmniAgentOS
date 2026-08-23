@@ -46,6 +46,7 @@ export function PublicHeader() {
             <Link
               key={item.href}
               href={item.href}
+              prefetch={item.href === "/demo"}
               aria-current={pathname === item.href ? "page" : undefined}
               className={clsx(
                 "inline-flex min-h-11 items-center rounded-md px-3 text-sm transition",
@@ -97,6 +98,7 @@ export function PublicHeader() {
               <Link
                 key={item.href}
                 href={item.href}
+                prefetch={item.href === "/demo"}
                 aria-current={pathname === item.href ? "page" : undefined}
                 className={clsx(
                   "flex min-h-11 items-center rounded-md px-3 text-sm font-medium",

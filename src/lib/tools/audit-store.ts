@@ -514,7 +514,11 @@ export async function listPendingToolApprovals(limit = 25, options: { tenantId?:
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
-      SELECT *
+      SELECT
+        id, tenant_id, actor_id, tool_id, tool_name, risk_level, status,
+        dry_run, approval_required, input, reason, approval_decision,
+        approvals, approved_by, approved_at, approval_reason, created_at,
+        completed_at
       FROM omni_tool_executions
       WHERE status = 'approval_required'
         AND COALESCE(tenant_id, 'default') = ${tenantId}

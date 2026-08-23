@@ -81,16 +81,21 @@ npm run start
 npm run worker
 ```
 
-The Fly worker image is pinned to Node 24.13.0, contains only the worker script, and runs as the non-root `node` user. Every successful queue tick updates an owner-only heartbeat; the container health check fails when that heartbeat is stale, so a healthy web app cannot mask a wedged worker. `fly.toml` contains only non-secret settings; configure `OMNIAGENT_INTERNAL_AUTH_SECRET` with `fly secrets`. Build every worker from the exact web release commit and inject that immutable revision:
+The Fly worker image is pinned to Node 24.13.0, contains only the worker script, and runs as the non-root `node` user. Every successful queue tick updates an owner-only heartbeat; the container health check fails when that heartbeat is stale, so a healthy web app cannot mask a wedged worker. `fly.toml` contains only non-secret settings; configure `OMNIAGENT_INTERNAL_AUTH_SECRET` with `fly secrets`.
+
+Worker routes fence mutations by `OMNIAGENT_WORKER_PROTOCOL_VERSION`. The Git revision remains in heartbeat and request metadata for diagnostics, but compatible worker and web revisions can deploy independently. Use the paired deployment command from a completely clean working tree. Before changing either platform, it validates the production URL and smoke credentials and captures the current Fly image and Vercel deployment for rollback. It verifies the release, creates an unpromoted production-target Vercel deployment, points the newly deployed Fly worker at that exact canary, runs production smoke plus API and browser dashboard budgets, and only then promotes the canary. This ordering also provides a safe first cutover from revision-fenced workers to protocol-fenced workers. A failed gate restores the previous worker image; a failed post-promotion check restores both releases.
 
 ```bash
-fly deploy --build-arg OMNIAGENT_RELEASE_SHA="$(git rev-parse HEAD)"
+npm run deploy:production
 ```
 
-The worker refuses to start without this value in production, and mutating
-worker routes reject a revision that differs from the web deployment.
+Set `BASE_URL` to the canonical production HTTPS origin and provide the smoke
+credentials, cron/internal secrets, and `RELEASE_EVIDENCE_OUTPUT` described
+below. When deployment protection applies to staged production deployments, set
+`VERCEL_AUTOMATION_BYPASS_SECRET` for the release runner and configure the same
+name as a Fly secret so worker requests can reach the canary.
 
-The worker emits one JSON startup record and one record per tick. It also runs a bounded, all-tenant sensitive-data retention sweep every six hours by default. Alert on:
+The worker emits one JSON startup record and one record per lane tick. Fast workflow and continuation pickup runs every five seconds, durable consolidation/ingestion/evaluation jobs run on an independent background lane, and SLO/alert/recovery maintenance runs every minute. It also runs a bounded, all-tenant sensitive-data retention sweep every six hours by default. Alert on:
 
 - no successful tick for more than twice `OMNIAGENT_WORKER_INTERVAL_MS`;
 - repeated non-2xx tick responses or thrown fetches;
@@ -99,7 +104,7 @@ The worker emits one JSON startup record and one record per tick. It also runs a
 - authentication failures after secret rotation.
 - failed retention sweeps or a sweep that has not succeeded within twice `OMNIAGENT_WORKER_RETENTION_INTERVAL_MS`.
 
-The default script interval is 5 seconds; `fly.toml` intentionally uses 60 seconds. The worker limit is capped at 10. Coordinate interval, limit, lease duration, database capacity, and worker replica count before scaling.
+The fast and background lane defaults are 5 seconds, while maintenance defaults to 60 seconds. `OMNIAGENT_WORKER_LIMIT` is capped at 3 so one tick cannot create unbounded fan-out. Coordinate lane cadence, lease duration, database capacity, and worker replica count before scaling.
 
 `vercel.json` schedules a daily tick as a recovery backstop. A daily-only deployment can leave unattended work waiting up to 24 hours.
 

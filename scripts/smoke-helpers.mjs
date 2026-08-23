@@ -35,11 +35,18 @@ export async function smokeFetch(baseUrl, path, init = {}) {
     MAX_TIMEOUT_MS,
   );
   const method = init.method || "GET";
+  const headers = new Headers(init.headers);
+  const bypassSecret =
+    process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
+  if (bypassSecret) {
+    headers.set("x-vercel-protection-bypass", bypassSecret);
+  }
 
   try {
     return await fetch(`${baseUrl}${path}`, {
       redirect: "manual",
       ...init,
+      headers,
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {

@@ -32,10 +32,12 @@ const emptySummary: EvalRunSummary = {
 };
 
 export async function createEvalRun({
+  id,
   suite,
   total,
   tenantId: rawTenantId,
 }: {
+  id?: string;
   suite: string;
   total: number;
   tenantId?: string;
@@ -43,7 +45,7 @@ export async function createEvalRun({
   const now = new Date().toISOString();
   const tenantId = normalizeTenantId(rawTenantId);
   const run: EvalRunRecord = {
-    id: randomUUID(),
+    id: id?.trim().slice(0, 200) || randomUUID(),
     tenantId,
     suite,
     status: "running",
@@ -58,7 +60,7 @@ export async function createEvalRun({
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`
+    const rows = await getSql()`
       INSERT INTO omni_eval_runs (
         id, tenant_id, suite, status, total, passed, failed, warnings,
         average_latency_ms, estimated_cost_usd, started_at, created_at, updated_at
@@ -69,10 +71,32 @@ export async function createEvalRun({
         ${run.summary.averageLatencyMs}, ${run.summary.estimatedCostUsd},
         ${run.startedAt}, ${run.createdAt}, ${run.updatedAt}
       )
+      ON CONFLICT (id) DO NOTHING
+      RETURNING *
     `;
+    if (!rows[0]) {
+      const existing = await getEvalRunDetail(run.id, { tenantId });
+      if (!existing) {
+        throw new Error(
+          "Evaluation run idempotency key collided with another tenant.",
+        );
+      }
+      return existing.run;
+    }
     return run;
   }
 
+  const existing = (await readEvalLedger()).runs.find(
+    (item) => item.id === run.id,
+  );
+  if (existing) {
+    if (normalizeTenantId(existing.tenantId) !== tenantId) {
+      throw new Error(
+        "Evaluation run idempotency key collided with another tenant.",
+      );
+    }
+    return existing;
+  }
   await mutateEvalLedger((ledger) => {
     ledger.runs.unshift(run);
     return trimEvalLedger(ledger);

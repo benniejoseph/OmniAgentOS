@@ -101,4 +101,60 @@ describe("memory graph tenant isolation (file mode)", () => {
       ),
     ).rejects.toThrow("cannot mix records from different tenants");
   });
+
+  it("keeps graph evidence counters stable when indexing is replayed", async () => {
+    const graph = await import("@/lib/memory/graph");
+    const record = memory("tenant-replay", "memory-replay");
+
+    await graph.indexMemoryGraphRecords([record], "test", {
+      tenantId: "tenant-replay",
+    });
+    const firstNodes = await graph.listMemoryGraphNodes(100, {
+      tenantId: "tenant-replay",
+    });
+    const firstEdges = await graph.listMemoryGraphEdges(100, {
+      tenantId: "tenant-replay",
+    });
+
+    await graph.indexMemoryGraphRecords([record], "test", {
+      tenantId: "tenant-replay",
+    });
+    const replayedNodes = await graph.listMemoryGraphNodes(100, {
+      tenantId: "tenant-replay",
+    });
+    const replayedEdges = await graph.listMemoryGraphEdges(100, {
+      tenantId: "tenant-replay",
+    });
+
+    expect(
+      replayedNodes.map(({ id, sourceCount, memoryIds, traceIds }) => ({
+        id,
+        sourceCount,
+        memoryIds,
+        traceIds,
+      })),
+    ).toEqual(
+      firstNodes.map(({ id, sourceCount, memoryIds, traceIds }) => ({
+        id,
+        sourceCount,
+        memoryIds,
+        traceIds,
+      })),
+    );
+    expect(
+      replayedEdges.map(({ id, evidenceCount, memoryIds, traceIds }) => ({
+        id,
+        evidenceCount,
+        memoryIds,
+        traceIds,
+      })),
+    ).toEqual(
+      firstEdges.map(({ id, evidenceCount, memoryIds, traceIds }) => ({
+        id,
+        evidenceCount,
+        memoryIds,
+        traceIds,
+      })),
+    );
+  });
 });

@@ -1,0 +1,89 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+
+type HealthStatus =
+  | "checking"
+  | "healthy"
+  | "degraded"
+  | "unhealthy"
+  | "unavailable";
+
+export function PublicHealthBadge() {
+  const [status, setStatus] = useState<HealthStatus>("checking");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: number | undefined;
+
+    const load = () => {
+      timer = window.setTimeout(async () => {
+        try {
+          const response = await fetch("/api/health?public=1", {
+            cache: "force-cache",
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            setStatus("unavailable");
+            return;
+          }
+          const data = (await response.json()) as { status?: string };
+          setStatus(
+            data.status === "healthy" ||
+              data.status === "degraded" ||
+              data.status === "unhealthy"
+              ? data.status
+              : "unavailable",
+          );
+        } catch {
+          if (!controller.signal.aborted) {
+            setStatus("unavailable");
+          }
+        }
+      }, 0);
+    };
+
+    if (document.readyState === "complete") {
+      load();
+    } else {
+      window.addEventListener("load", load, { once: true });
+    }
+    return () => {
+      controller.abort();
+      window.removeEventListener("load", load);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, []);
+
+  const Icon =
+    status === "healthy"
+      ? CheckCircle2
+      : status === "checking"
+        ? Loader2
+        : AlertTriangle;
+
+  return (
+    <div
+      className="mt-10 inline-flex min-h-12 min-w-64 items-center gap-3 rounded-md border border-white/20 bg-black/35 px-4 text-sm text-white"
+      role="status"
+      aria-live="polite"
+    >
+      <Icon
+        size={17}
+        className={
+          status === "healthy"
+            ? "text-emerald-300"
+            : status === "checking"
+              ? "animate-spin text-white/70"
+              : "text-amber-300"
+        }
+        aria-hidden="true"
+      />
+      <span>Public API health:</span>
+      <strong className="font-mono">{status}</strong>
+    </div>
+  );
+}

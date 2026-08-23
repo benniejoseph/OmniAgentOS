@@ -91,27 +91,13 @@ export function OnboardingConsole() {
           return;
         }
 
-        const releaseEvidenceExpected = ["admin", "system"].includes(
-          body.membership?.role || "",
-        );
-        const [capabilitiesResult, evidenceResult] = await Promise.allSettled([
-          fetch("/api/capabilities", {
-            cache: "no-store",
-            signal: controller.signal,
-          }),
-          releaseEvidenceExpected
-            ? fetch("/api/release/evidence", {
-                cache: "no-store",
-                signal: controller.signal,
-              })
-            : Promise.resolve(undefined),
-        ]);
+        const capabilitiesResult = await fetch("/api/capabilities", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
         let capabilities: CapabilitiesResponse | undefined;
-        if (
-          capabilitiesResult.status === "fulfilled" &&
-          capabilitiesResult.value.ok
-        ) {
-          capabilities = await capabilitiesResult.value.json() as CapabilitiesResponse;
+        if (capabilitiesResult.ok) {
+          capabilities = await capabilitiesResult.json() as CapabilitiesResponse;
         }
         if (!capabilities) {
           if (!canceled) {
@@ -120,27 +106,8 @@ export function OnboardingConsole() {
           }
           return;
         }
-        let releaseReviewed = false;
-        const releaseEvidenceAvailable =
-          !releaseEvidenceExpected ||
-          (
-            evidenceResult.status === "fulfilled" &&
-            Boolean(evidenceResult.value?.ok)
-          );
-        if (
-          evidenceResult.status === "fulfilled" &&
-          evidenceResult.value?.ok
-        ) {
-          const evidence = await evidenceResult.value.json() as {
-            report?: { releaseGate?: { status?: string; approved?: boolean } };
-          };
-          releaseReviewed =
-            evidence.report?.releaseGate?.status === "passed" &&
-            evidence.report.releaseGate.approved === true;
-        }
-
         if (!canceled) {
-          setCompleted((current) => [
+          setCompleted([
             identityReady,
             Number(capabilities?.memory?.total || 0) +
                 Number(capabilities?.knowledge?.total || 0) >
@@ -151,11 +118,9 @@ export function OnboardingConsole() {
             Number(capabilities?.runs?.total || 0) +
                 Number(capabilities?.workflows?.total || 0) >
               0,
-            releaseReviewed ||
-              Number(capabilities.evaluations?.total || 0) > 0 ||
-              (!releaseEvidenceAvailable && current[4]),
+            Number(capabilities.evaluations?.total || 0) > 0,
           ]);
-          setStatus(releaseEvidenceAvailable ? "ready" : "error");
+          setStatus("ready");
         }
       } catch (error) {
         if (!canceled && !(error instanceof DOMException && error.name === "AbortError")) {

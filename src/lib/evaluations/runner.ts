@@ -760,10 +760,21 @@ export async function runEvaluationSuite({
   suite = "core",
   caseIds,
   tenantId,
+  runId,
+  onProgress,
+  abortSignal,
 }: {
   suite?: string;
   caseIds?: string[];
   tenantId?: string;
+  runId?: string;
+  abortSignal?: AbortSignal;
+  onProgress?: (progress: {
+    completed: number;
+    total: number;
+    caseId: string;
+    status: EvalResultStatus;
+  }) => void | Promise<void>;
 } = {}) {
   const cases = defaultEvalCases.filter((item) => !caseIds?.length || caseIds.includes(item.id));
   const runTenantId =
@@ -772,18 +783,38 @@ export async function runEvaluationSuite({
     process.env.OMNIAGENT_DEFAULT_TENANT ||
     "default";
   return runWithDatabaseTenantScope(runTenantId, async () => {
-    const run = await createEvalRun({
-      suite,
-      total: cases.length,
-      tenantId: runTenantId,
-    });
-    const savedResults: EvalResultRecord[] = [];
+    const existing = runId
+      ? await getEvalRunDetail(runId, { tenantId: runTenantId })
+      : null;
+    if (
+      existing?.run.status === "completed" ||
+      existing?.run.status === "failed"
+    ) {
+      return existing;
+    }
+    const run =
+      existing?.run ||
+      (await createEvalRun({
+        id: runId,
+        suite,
+        total: cases.length,
+        tenantId: runTenantId,
+      }));
+    const savedResults: EvalResultRecord[] = [...(existing?.results || [])];
+    const completedCaseIds = new Set(
+      savedResults.map((result) => result.caseId),
+    );
 
     try {
       for (const evalCase of cases) {
+        abortSignal?.throwIfAborted();
+        if (completedCaseIds.has(evalCase.id)) {
+          continue;
+        }
         const startedAt = Date.now();
         try {
-          const result = await runEvalCase(evalCase);
+          const result = await runEvalCase(evalCase, abortSignal);
+          abortSignal?.throwIfAborted();
           const latencyMs = Date.now() - startedAt;
           savedResults.push(
             await saveEvalResult({
@@ -801,6 +832,9 @@ export async function runEvaluationSuite({
             }),
           );
         } catch (error) {
+          if (abortSignal?.aborted) {
+            throw abortSignal.reason;
+          }
           const latencyMs = Date.now() - startedAt;
           savedResults.push(
             await saveEvalResult({
@@ -818,6 +852,13 @@ export async function runEvaluationSuite({
             }),
           );
         }
+        await onProgress?.({
+          completed: savedResults.length,
+          total: cases.length,
+          caseId: evalCase.id,
+          status: savedResults.at(-1)?.status || "fail",
+        });
+        completedCaseIds.add(evalCase.id);
       }
 
       const summary = summarizeResults(savedResults, cases.length);
@@ -827,6 +868,9 @@ export async function runEvaluationSuite({
         await completeEvalRun(run.id, summary);
       }
     } catch (error) {
+      if (abortSignal?.aborted) {
+        throw abortSignal.reason;
+      }
       const summary = summarizeResults(savedResults, cases.length);
       await failEvalRun(run.id, summary, error instanceof Error ? error.message : "Evaluation suite failed.");
     }
@@ -835,7 +879,11 @@ export async function runEvaluationSuite({
   });
 }
 
-async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+async function runEvalCase(
+  evalCase: EvalCaseDefinition,
+  abortSignal?: AbortSignal,
+): Promise<CaseResult> {
+  abortSignal?.throwIfAborted();
   if (evalCase.id === "system.readiness") {
     return evaluateSystemReadiness();
   }
@@ -853,7 +901,7 @@ async function runEvalCase(evalCase: EvalCaseDefinition): Promise<CaseResult> {
   }
 
   if (evalCase.id === "tool.policy_dry_run") {
-    return evaluateToolPolicy(evalCase);
+    return evaluateToolPolicy(evalCase, abortSignal);
   }
 
   if (evalCase.id === "workflow.lifecycle") {
@@ -1105,11 +1153,15 @@ async function ensureGraphEvalSeedMemory() {
   });
 }
 
-async function evaluateToolPolicy(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+async function evaluateToolPolicy(
+  evalCase: EvalCaseDefinition,
+  abortSignal?: AbortSignal,
+): Promise<CaseResult> {
   const result = await executeGovernedTool({
     toolId: String(evalCase.input.toolId),
     input: (evalCase.input.input || {}) as Record<string, unknown>,
     dryRun: Boolean(evalCase.input.dryRun),
+    abortSignal,
   });
   const pass = result.record.status === evalCase.expected.status && result.record.riskLevel === evalCase.expected.riskLevel;
 

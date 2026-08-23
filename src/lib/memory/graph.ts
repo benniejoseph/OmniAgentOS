@@ -294,12 +294,8 @@ async function indexMemoryGraphRecordsForTenant(
           hashtextextended(${"memory-graph:" + tenantId}, 0)
         )
       `;
-      for (const node of aggregate.nodes.values()) {
-        await upsertGraphNode(node, sql);
-      }
-      for (const edge of aggregate.edges.values()) {
-        await upsertGraphEdge(edge, sql);
-      }
+      await upsertGraphNodes([...aggregate.nodes.values()], sql);
+      await upsertGraphEdges([...aggregate.edges.values()], sql);
       await insertGraphBuild(
         buildRecord({
           tenantId,
@@ -755,14 +751,16 @@ function mergeNode(nodes: Map<string, MemoryGraphNode>, node: MemoryGraphNode) {
     return;
   }
 
+  const memoryIds = unique([...existing.memoryIds, ...node.memoryIds]);
+  const traceIds = unique([...existing.traceIds, ...node.traceIds]);
   nodes.set(node.id, {
     ...existing,
     aliases: unique([...existing.aliases, ...node.aliases]),
     summary: longer(existing.summary, node.summary),
     weight: roundScore(Math.max(existing.weight, node.weight)),
-    sourceCount: existing.sourceCount + node.sourceCount,
-    memoryIds: unique([...existing.memoryIds, ...node.memoryIds]),
-    traceIds: unique([...existing.traceIds, ...node.traceIds]),
+    sourceCount: unique([...memoryIds, ...traceIds]).length,
+    memoryIds,
+    traceIds,
     tags: unique([...existing.tags, ...node.tags]).slice(0, 24),
     updatedAt: node.updatedAt,
   });
@@ -775,12 +773,14 @@ function mergeEdge(edges: Map<string, MemoryGraphEdge>, edge: MemoryGraphEdge) {
     return;
   }
 
+  const memoryIds = unique([...existing.memoryIds, ...edge.memoryIds]);
+  const traceIds = unique([...existing.traceIds, ...edge.traceIds]);
   edges.set(edge.id, {
     ...existing,
     weight: roundScore(Math.max(existing.weight, edge.weight)),
-    evidenceCount: existing.evidenceCount + edge.evidenceCount,
-    memoryIds: unique([...existing.memoryIds, ...edge.memoryIds]),
-    traceIds: unique([...existing.traceIds, ...edge.traceIds]),
+    evidenceCount: unique([...memoryIds, ...traceIds]).length,
+    memoryIds,
+    traceIds,
     updatedAt: edge.updatedAt,
   });
 }
@@ -814,21 +814,54 @@ async function listTraceSeeds(
     .map(traceSeedFromRow);
 }
 
-async function upsertGraphNode(
-  node: MemoryGraphNode,
+async function upsertGraphNodes(
+  nodes: MemoryGraphNode[],
   sql: GraphSqlClient = getSql(),
 ) {
+  if (!nodes.length) {
+    return;
+  }
+  const payload = nodes.map((node) => ({
+    id: node.id,
+    tenant_id: node.tenantId,
+    kind: node.kind,
+    label: node.label,
+    slug: storageGraphSlug(node.tenantId, node.slug),
+    aliases: node.aliases,
+    summary: node.summary,
+    weight: node.weight,
+    source_count: node.sourceCount,
+    memory_ids: node.memoryIds,
+    trace_ids: node.traceIds,
+    tags: node.tags,
+    metadata: node.metadata,
+    created_at: node.createdAt,
+    updated_at: node.updatedAt,
+  }));
   await sql`
     INSERT INTO omni_memory_graph_nodes (
       id, tenant_id, kind, label, slug, aliases, summary, weight, source_count,
       memory_ids, trace_ids, tags, metadata, created_at, updated_at
     )
-    VALUES (
-      ${node.id}, ${node.tenantId}, ${node.kind}, ${node.label},
-      ${storageGraphSlug(node.tenantId, node.slug)}, ${node.aliases},
-      ${node.summary}, ${node.weight}, ${node.sourceCount}, ${node.memoryIds},
-      ${node.traceIds}, ${node.tags}, ${node.metadata}::jsonb,
-      ${node.createdAt}, ${node.updatedAt}
+    SELECT
+      id, tenant_id, kind, label, slug, aliases, summary, weight, source_count,
+      memory_ids, trace_ids, tags, metadata, created_at, updated_at
+    FROM jsonb_to_recordset(${payload}::jsonb) AS input(
+      id text,
+      tenant_id text,
+      kind text,
+      label text,
+      slug text,
+      aliases text[],
+      summary text,
+      weight double precision,
+      source_count integer,
+      memory_ids text[],
+      trace_ids text[],
+      tags text[],
+      metadata jsonb,
+      created_at timestamptz,
+      updated_at timestamptz
     )
     ON CONFLICT (id) DO UPDATE SET
       aliases = ARRAY(SELECT DISTINCT unnest(omni_memory_graph_nodes.aliases || EXCLUDED.aliases)),
@@ -838,7 +871,15 @@ async function upsertGraphNode(
         ELSE omni_memory_graph_nodes.summary
       END,
       weight = GREATEST(omni_memory_graph_nodes.weight, EXCLUDED.weight),
-      source_count = omni_memory_graph_nodes.source_count + EXCLUDED.source_count,
+      source_count = (
+        SELECT COUNT(DISTINCT source.id)::int
+        FROM unnest(
+          omni_memory_graph_nodes.memory_ids ||
+          EXCLUDED.memory_ids ||
+          omni_memory_graph_nodes.trace_ids ||
+          EXCLUDED.trace_ids
+        ) AS source(id)
+      ),
       memory_ids = ARRAY(SELECT DISTINCT unnest(omni_memory_graph_nodes.memory_ids || EXCLUDED.memory_ids)),
       trace_ids = ARRAY(SELECT DISTINCT unnest(omni_memory_graph_nodes.trace_ids || EXCLUDED.trace_ids)),
       tags = ARRAY(SELECT DISTINCT unnest(omni_memory_graph_nodes.tags || EXCLUDED.tags)),
@@ -846,23 +887,60 @@ async function upsertGraphNode(
   `;
 }
 
-async function upsertGraphEdge(
-  edge: MemoryGraphEdge,
+async function upsertGraphEdges(
+  edges: MemoryGraphEdge[],
   sql: GraphSqlClient = getSql(),
 ) {
+  if (!edges.length) {
+    return;
+  }
+  const payload = edges.map((edge) => ({
+    id: edge.id,
+    tenant_id: edge.tenantId,
+    source_node_id: edge.sourceNodeId,
+    target_node_id: edge.targetNodeId,
+    relation: edge.relation,
+    weight: edge.weight,
+    evidence_count: edge.evidenceCount,
+    memory_ids: edge.memoryIds,
+    trace_ids: edge.traceIds,
+    metadata: edge.metadata,
+    created_at: edge.createdAt,
+    updated_at: edge.updatedAt,
+  }));
   await sql`
     INSERT INTO omni_memory_graph_edges (
       id, tenant_id, source_node_id, target_node_id, relation, weight, evidence_count,
       memory_ids, trace_ids, metadata, created_at, updated_at
     )
-    VALUES (
-      ${edge.id}, ${edge.tenantId}, ${edge.sourceNodeId}, ${edge.targetNodeId}, ${edge.relation},
-      ${edge.weight}, ${edge.evidenceCount}, ${edge.memoryIds}, ${edge.traceIds},
-      ${edge.metadata}::jsonb, ${edge.createdAt}, ${edge.updatedAt}
+    SELECT
+      id, tenant_id, source_node_id, target_node_id, relation, weight,
+      evidence_count, memory_ids, trace_ids, metadata, created_at, updated_at
+    FROM jsonb_to_recordset(${payload}::jsonb) AS input(
+      id text,
+      tenant_id text,
+      source_node_id text,
+      target_node_id text,
+      relation text,
+      weight double precision,
+      evidence_count integer,
+      memory_ids text[],
+      trace_ids text[],
+      metadata jsonb,
+      created_at timestamptz,
+      updated_at timestamptz
     )
     ON CONFLICT (id) DO UPDATE SET
       weight = GREATEST(omni_memory_graph_edges.weight, EXCLUDED.weight),
-      evidence_count = omni_memory_graph_edges.evidence_count + EXCLUDED.evidence_count,
+      evidence_count = (
+        SELECT COUNT(DISTINCT source.id)::int
+        FROM unnest(
+          omni_memory_graph_edges.memory_ids ||
+          EXCLUDED.memory_ids ||
+          omni_memory_graph_edges.trace_ids ||
+          EXCLUDED.trace_ids
+        ) AS source(id)
+      ),
       memory_ids = ARRAY(SELECT DISTINCT unnest(omni_memory_graph_edges.memory_ids || EXCLUDED.memory_ids)),
       trace_ids = ARRAY(SELECT DISTINCT unnest(omni_memory_graph_edges.trace_ids || EXCLUDED.trace_ids)),
       updated_at = EXCLUDED.updated_at

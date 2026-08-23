@@ -1,6 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import postgres from "postgres";
 import { PGVECTOR_HNSW_MAX_DIMENSIONS, VECTOR_INDEX_DIMENSIONS } from "@/lib/config";
+import {
+  appendServerTiming,
+  recordDatabaseTiming,
+  runWithRequestTiming,
+} from "@/lib/observability/request-timing";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -244,13 +249,20 @@ export function withDatabaseRequestScope<
 >(
   handler: (...args: TArgs) => TResult | Promise<TResult>,
 ): (...args: TArgs) => Promise<TResult> {
-  return (...args) =>
-    Promise.resolve(
-      databaseScope.run(
+  return (...args) => {
+    const request = args[0] instanceof Request ? args[0] : undefined;
+    return runWithRequestTiming(async () => {
+      const result = await databaseScope.run(
         { kind: "tenant", tenantId: "" },
         () => handler(...args),
-      ),
-    );
+      );
+      return (
+        result instanceof Response
+          ? appendServerTiming(result, request)
+          : result
+      ) as TResult;
+    }, request);
+  };
 }
 
 /**
@@ -532,6 +544,7 @@ export async function migrateDatabaseSchema(
       }
       if (options.verifyRuntimeRole !== false) {
         await assertRuntimeDatabaseRoleSafety(pg);
+        await assertMaintenanceDatabaseRoleSafety(pg);
       }
     })();
   }
@@ -547,21 +560,32 @@ export async function migrateDatabaseSchema(
 }
 
 async function verifyDatabaseSchema() {
-  const pg = getRawPg();
-  const relation = await pg`
-    SELECT to_regclass('public.omni_schema_version')::text AS relation
-  `;
-  if (!relation[0]?.relation) {
-    throw new Error(
-      "Database schema is not initialized. Run the controlled database migration before serving traffic.",
-    );
+  return verifyDatabaseSchemaWithClient(getRawPg());
+}
+
+export async function verifyDatabaseSchemaWithClient(pg: AnyPg) {
+  let appliedRows: Record<string, unknown>[];
+  try {
+    appliedRows = await pg`
+      SELECT version, name, checksum
+      FROM omni_schema_version
+      WHERE version IS NOT NULL
+      ORDER BY version ASC
+    `;
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "42P01"
+    ) {
+      throw new Error(
+        "Database schema is not initialized. Run the controlled database migration before serving traffic.",
+        { cause: error },
+      );
+    }
+    throw error;
   }
-  const appliedRows = await pg`
-    SELECT version, name, checksum
-    FROM omni_schema_version
-    WHERE version IS NOT NULL
-    ORDER BY version ASC
-  `;
   validateSchemaMigrationMarkers(
     appliedRows.map((row) => ({
       version: Number(row.version),
@@ -578,8 +602,6 @@ async function verifyDatabaseSchema() {
         "Run the controlled database migration before serving this release.",
     );
   }
-  await assertRuntimeDatabaseRoleSafety(pg);
-  await assertMaintenanceDatabaseRoleSafety(pg);
 }
 
 async function assertRuntimeDatabaseRoleSafety(pg: postgres.Sql) {
@@ -830,25 +852,42 @@ function wrapPg(pg: AnyPg): SqlClient {
 // Tenant-scoped client: each operation applies the current tenant or explicit
 // system scope with SET LOCAL so pooled connections cannot leak scope.
 function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): SqlClient {
-  function withTenant<T>(fn: (sql: AnyPg) => Promise<T>): Promise<T> {
-    if (scopeAlreadyApplied) {
-      return fn(pg);
+  async function withTenant<T>(
+    fn: (sql: AnyPg) => Promise<T>,
+    mutation = false,
+  ): Promise<T> {
+    const startedAt = performance.now();
+    try {
+      if (scopeAlreadyApplied) {
+        return await fn(pg);
+      }
+      const scope = databaseScope.getStore();
+      return await pg.begin(async (tx: AnyPg) => {
+        await applyDatabaseScope(tx, scope);
+        return fn(tx);
+      });
+    } finally {
+      recordDatabaseTiming(performance.now() - startedAt, mutation);
     }
-    const scope = databaseScope.getStore();
-    return pg.begin(async (tx: AnyPg) => {
-      await applyDatabaseScope(tx, scope);
-      return fn(tx);
-    });
   }
 
   const scoped = ((strings: TemplateStringsArray, ...params: unknown[]) =>
-    withTenant((sql: AnyPg) => sql(strings, ...params))) as unknown as SqlClient;
+    withTenant(
+      (sql: AnyPg) => sql(strings, ...params),
+      isDatabaseMutation(strings.join(" ")),
+    )) as unknown as SqlClient;
 
   scoped.query = (text: string, params?: unknown[]) =>
-    withTenant((sql: AnyPg) => sql.unsafe(text, params ?? []));
+    withTenant(
+      (sql: AnyPg) => sql.unsafe(text, params ?? []),
+      isDatabaseMutation(text),
+    );
 
   scoped.unsafe = (text: string, params?: unknown[]) =>
-    withTenant((sql: AnyPg) => sql.unsafe(text, params ?? []));
+    withTenant(
+      (sql: AnyPg) => sql.unsafe(text, params ?? []),
+      isDatabaseMutation(text),
+    );
 
   // Only callback transactions are safe here. Promise arrays begin executing
   // before pg.begin can apply tenant scope and therefore cannot be atomic.
@@ -867,17 +906,41 @@ function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): Sq
   return scoped;
 }
 
-async function applyDatabaseScope(sql: AnyPg, scope?: DatabaseScope) {
-  if (scope?.kind === "system") {
-    await sql`SELECT set_config('omni.tenant_id', '', true)`;
-    await sql`SELECT set_config('omni.system_scope', 'true', true)`;
-    await sql`SELECT set_config('omni.system_reason', ${scope.reason}, true)`;
-    return;
+export function isDatabaseMutation(statement: string) {
+  const executableSql = statement
+    .replace(
+      /\$([A-Za-z_][A-Za-z0-9_]*)\$[\s\S]*?\$\1\$/g,
+      " ",
+    )
+    .replace(/\$\$[\s\S]*?\$\$/g, " ")
+    .replace(/'(?:''|[^'])*'/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--[^\r\n]*/g, " ");
+  if (
+    /^\s*(?:insert|update|delete|merge|alter|create|drop|truncate|grant|revoke)\b/i.test(
+      executableSql,
+    )
+  ) {
+    return true;
   }
+  return (
+    /^\s*with\b/i.test(executableSql) &&
+    /\b(?:insert\s+into|update\s+[\w".]+|delete\s+from|merge\s+into)\b/i.test(
+      executableSql,
+    )
+  );
+}
 
-  await sql`SELECT set_config('omni.tenant_id', ${scope?.tenantId || ""}, true)`;
-  await sql`SELECT set_config('omni.system_scope', 'false', true)`;
-  await sql`SELECT set_config('omni.system_reason', '', true)`;
+export async function applyDatabaseScope(sql: AnyPg, scope?: DatabaseScope) {
+  const systemScope = scope?.kind === "system";
+  const tenantId = systemScope ? "" : scope?.tenantId || "";
+  const systemReason = systemScope ? scope.reason : "";
+  await sql`
+    SELECT
+      set_config('omni.tenant_id', ${tenantId}, true),
+      set_config('omni.system_scope', ${systemScope ? "true" : "false"}, true),
+      set_config('omni.system_reason', ${systemReason}, true)
+  `;
 }
 
 // ---------------------------------------------------------------------------

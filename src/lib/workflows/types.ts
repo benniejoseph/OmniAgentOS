@@ -139,7 +139,7 @@ export type WorkflowPlanNodeExecutionRecord = {
 export type WorkflowPlanExecutionSummary = {
   workflowRunId: string;
   planId: string;
-  status: "completed" | "waiting_approval" | "blocked" | "failed";
+  status: "running" | "completed" | "waiting_approval" | "blocked" | "failed";
   totalNodes: number;
   completedNodes: number;
   blockedNodes: number;
@@ -150,6 +150,9 @@ export type WorkflowPlanExecutionSummary = {
   dryRunTools: number;
   executedTools: number;
   approvalRequiredTools: number;
+  toolCalls: number;
+  costUnits: number;
+  elapsedMs: number;
   highestRiskLevel: 0 | 1 | 2 | 3;
   nodeExecutions: WorkflowPlanNodeExecutionRecord[];
 };

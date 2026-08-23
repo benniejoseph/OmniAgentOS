@@ -279,6 +279,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
                         <Link
                           key={item.href}
                           href={item.href}
+                          prefetch={primaryNavHrefs.includes(item.href)}
                           onClick={closeMobileNavigation}
                           aria-current={active ? "page" : undefined}
                           className={clsx(
@@ -360,6 +361,7 @@ function NavGroup({ group, pathname }: { group: (typeof appNavGroups)[number]; p
               <Link
                 key={item.href}
                 href={item.href}
+                prefetch={primaryNavHrefs.includes(item.href)}
                 title={item.description}
                 aria-current={active ? "page" : undefined}
                 className={clsx(

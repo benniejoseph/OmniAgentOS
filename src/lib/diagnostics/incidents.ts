@@ -306,7 +306,11 @@ export async function syncIncidentsFromHealthCheck(check: SystemHealthRecord): P
     });
     events.push(observedEvent);
     if (wasResolved || record.severity === "critical") {
-      await enqueueAlertDeliverySafely(record, observedEvent.id, wasResolved ? "incident.reopened" : "incident.observed");
+      await enqueueAlertDeliverySafely(
+        record,
+        wasResolved ? observedEvent.id : undefined,
+        wasResolved ? "incident.reopened" : "incident.observed",
+      );
     }
   }
 
@@ -330,7 +334,11 @@ export async function syncIncidentsFromHealthCheck(check: SystemHealthRecord): P
   return { incidents: changedIncidents, events };
 }
 
-async function enqueueAlertDeliverySafely(incident: IncidentRecord, eventId: string, reason: string) {
+async function enqueueAlertDeliverySafely(
+  incident: IncidentRecord,
+  eventId: string | undefined,
+  reason: string,
+) {
   try {
     const { enqueueAlertDeliveriesForIncident } = await import("@/lib/diagnostics/alerts");
     await enqueueAlertDeliveriesForIncident(incident, { eventId, reason });

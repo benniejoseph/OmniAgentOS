@@ -20,18 +20,16 @@ import {
   canPerform,
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
+import {
+  beginResourceRefresh,
+  settleResourceRefresh,
+  type ResourceState,
+} from "@/components/resource-state";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 
 type JsonRecord = Record<string, unknown>;
-type ResourceStatus = "idle" | "loading" | "ready" | "error" | "unavailable";
 type ResourceKey = "runs" | "workflows" | "approvals" | "incidents";
 type Tone = "neutral" | "success" | "warning" | "danger";
-
-type ResourceState = {
-  status: ResourceStatus;
-  data?: JsonRecord;
-  error?: string;
-};
 
 type ActivityRow = {
   key: string;
@@ -63,6 +61,7 @@ export function DashboardOverview() {
   const [lastRefresh, setLastRefresh] = useState<string>();
   const [announcement, setAnnouncement] = useState("Runs workspace ready.");
   const loadVersionRef = useRef(0);
+  const activeLoadRef = useRef<AbortController | null>(null);
 
   const workspaceAvailable = Boolean(
     session && (!session.authEnabled || session.authenticated),
@@ -79,6 +78,9 @@ export function DashboardOverview() {
       return;
     }
     const loadVersion = ++loadVersionRef.current;
+    activeLoadRef.current?.abort();
+    const controller = new AbortController();
+    activeLoadRef.current = controller;
     if (session.authEnabled && !session.authenticated) {
       setResources({
         runs: { status: "unavailable", error: "Sign in to load agent runs." },
@@ -91,34 +93,80 @@ export function DashboardOverview() {
 
     setAnnouncement("Refreshing runs.");
     setResources((current) => ({
-      runs: { status: "loading", data: current.runs.data },
-      workflows: { status: "loading", data: current.workflows.data },
+      runs: beginResourceRefresh(current.runs),
+      workflows: beginResourceRefresh(current.workflows),
       approvals: canUseInbox
-        ? { status: "loading", data: current.approvals.data }
+        ? beginResourceRefresh(current.approvals)
         : { status: "unavailable", error: "Operator role required for approval items." },
       incidents: canReadIncidents
-        ? { status: "loading", data: current.incidents.data }
+        ? beginResourceRefresh(current.incidents)
         : { status: "unavailable", error: "Admin role required for incident details." },
     }));
 
-    const entries = await Promise.all([
-      loadResource("runs", "/api/runs?limit=16"),
-      loadResource("workflows", "/api/workflows?limit=16"),
-      canUseInbox
-        ? loadResource("approvals", "/api/approvals?limit=12")
-        : Promise.resolve(["approvals", { status: "unavailable", error: "Operator role required for approval items." }] as const),
-      canReadIncidents
-        ? loadResource("incidents", "/api/incidents?status=active&limit=8")
-        : Promise.resolve(["incidents", { status: "unavailable", error: "Admin role required for incident details." }] as const),
-    ]);
-    if (loadVersion !== loadVersionRef.current) {
-      return;
-    }
+    let summaryHadError = false;
+    let incidentsHadError = false;
+    const summaryRequest = readJson(
+      "/api/workspace-summary?limit=16&approvalLimit=12",
+      controller.signal,
+    )
+      .then((payload) => {
+        if (loadVersion !== loadVersionRef.current) return;
+        const summary = asRecord(payload.summary);
+        const runs = summaryResource(summary, "runs");
+        const workflows = summaryResource(summary, "workflows");
+        const approvals = canUseInbox
+          ? summaryResource(summary, "approvals")
+          : {
+              status: "unavailable" as const,
+              error: "Operator role required for approval items.",
+            };
+        summaryHadError = [runs, workflows, approvals].some(
+          (resource) => resource.status === "error",
+        );
+        setResources((current) => {
+          return {
+            ...current,
+            runs: settleResourceRefresh(current.runs, runs),
+            workflows: settleResourceRefresh(current.workflows, workflows),
+            approvals: settleResourceRefresh(current.approvals, approvals),
+          };
+        });
+      })
+      .catch((loadError) => {
+        if (controller.signal.aborted || loadVersion !== loadVersionRef.current) {
+          return;
+        }
+        summaryHadError = true;
+        const failed = resourceErrorState(loadError);
+        setResources((current) => ({
+          ...current,
+          runs: settleResourceRefresh(current.runs, failed),
+          workflows: settleResourceRefresh(current.workflows, failed),
+          approvals: canUseInbox
+            ? settleResourceRefresh(current.approvals, failed)
+            : current.approvals,
+        }));
+      });
+    const incidentsRequest = canReadIncidents
+      ? loadResource(
+          "incidents",
+          "/api/incidents?status=active&limit=8",
+          controller.signal,
+        ).then(([, resource]) => {
+          if (loadVersion !== loadVersionRef.current) return;
+          incidentsHadError = resource.status === "error";
+          setResources((current) => ({
+            ...current,
+            incidents: settleResourceRefresh(current.incidents, resource),
+          }));
+        })
+      : Promise.resolve();
 
-    setResources(Object.fromEntries(entries) as Record<ResourceKey, ResourceState>);
+    await Promise.all([summaryRequest, incidentsRequest]);
+    if (loadVersion !== loadVersionRef.current || controller.signal.aborted) return;
     setLastRefresh(new Date().toLocaleTimeString());
     setAnnouncement(
-      entries.some(([, resource]) => resource.status === "error")
+      summaryHadError || incidentsHadError
         ? "Runs refreshed with unavailable sources."
         : "Runs refreshed.",
     );
@@ -134,6 +182,13 @@ export function DashboardOverview() {
     // Session changes are the only automatic refresh trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionStatus, session, role]);
+
+  useEffect(
+    () => () => {
+      activeLoadRef.current?.abort();
+    },
+    [],
+  );
 
   const activityRows = useMemo(
     () =>
@@ -361,9 +416,13 @@ export function DashboardOverview() {
   );
 }
 
-async function loadResource(key: ResourceKey, path: string) {
+async function loadResource(
+  key: ResourceKey,
+  path: string,
+  signal?: AbortSignal,
+) {
   try {
-    const data = await readJson(path);
+    const data = await readJson(path, signal);
     return [key, { status: "ready", data }] as const;
   } catch (error) {
     return [
@@ -374,6 +433,40 @@ async function loadResource(key: ResourceKey, path: string) {
       },
     ] as const;
   }
+}
+
+function summaryResource(
+  summary: JsonRecord,
+  key: "runs" | "workflows" | "approvals",
+): ResourceState<JsonRecord> {
+  const source = asRecord(readPath(summary, `sources.${key}`));
+  if (source.status === "ready") {
+    return {
+      status: "ready",
+      data: {
+        [key === "approvals" ? "items" : "runs"]: Array.isArray(source.data)
+          ? source.data
+          : [],
+      },
+    };
+  }
+  if (source.status === "restricted") {
+    return {
+      status: "unavailable",
+      error: stringValue(source.error, "This source is unavailable."),
+    };
+  }
+  return {
+    status: "error",
+    error: stringValue(source.error, "This source is unavailable."),
+  };
+}
+
+function resourceErrorState(error: unknown): ResourceState<JsonRecord> {
+  return {
+    status: "error",
+    error: error instanceof Error ? error.message : "Request failed.",
+  };
 }
 
 function mergeActivity(agentRuns: JsonRecord[], workflowRuns: JsonRecord[]) {
@@ -403,7 +496,7 @@ function mergeActivity(agentRuns: JsonRecord[], workflowRuns: JsonRecord[]) {
         time,
         href: "/app/workflows",
         kind: "workflow",
-        result: stringValue(readPath(item, "result.report") || item.error),
+        result: stringValue(item.report || item.error),
       };
     }),
   ].sort((a, b) => b.timestamp - a.timestamp);
@@ -578,10 +671,11 @@ function resourceLabel(key: ResourceKey) {
   return "Incidents";
 }
 
-async function readJson(path: string) {
+async function readJson(path: string, signal?: AbortSignal) {
   const response = await fetch(path, {
     headers: { accept: "application/json" },
     cache: "no-store",
+    signal,
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {

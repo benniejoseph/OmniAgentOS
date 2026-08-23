@@ -121,6 +121,175 @@ describe("operation job queue (file mode)", () => {
     expect(Date.parse(failedOnce?.runAt || "")).toBeGreaterThan(Date.now());
   });
 
+  it("preserves retry attempts and backoff when bootstrap sees a queued dedupe key", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-preserve-backoff";
+    const job = await queue.enqueueOperationJob({
+      tenantId,
+      type: "workflow.tick",
+      dedupeKey: "preserve-backoff",
+      payload: { workflowRunId: "workflow-preserve-backoff" },
+      maxAttempts: 3,
+    });
+    const [leased] = await queue.leaseOperationJobs({
+      tenantId,
+      dedupeKey: job.dedupeKey,
+    });
+    const failed = await queue.failOperationJob(
+      job.id,
+      "transient",
+      leased.leaseOwner,
+      tenantId,
+    );
+
+    const bootstrapped = await queue.enqueueOperationJob({
+      tenantId,
+      type: "workflow.tick",
+      dedupeKey: "preserve-backoff",
+      payload: { workflowRunId: "workflow-preserve-backoff" },
+      maxAttempts: 3,
+    });
+
+    expect(bootstrapped).toMatchObject({
+      id: job.id,
+      status: "queued",
+      attempt: 1,
+      runAt: failed?.runAt,
+    });
+  });
+
+  it("reuses a completed idempotent job without requeueing it", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-idempotent-terminal";
+    const job = await queue.enqueueOperationJob({
+      tenantId,
+      type: "knowledge.ingest",
+      dedupeKey: "ingest:one",
+      payload: { request: { title: "One" } },
+      requeueTerminal: false,
+    });
+    const [leased] = await queue.leaseOperationJobs({
+      tenantId,
+      dedupeKey: job.dedupeKey,
+    });
+    await queue.completeOperationJob(job.id, leased.leaseOwner, tenantId);
+
+    const reused = await queue.enqueueOperationJob({
+      tenantId,
+      type: "knowledge.ingest",
+      dedupeKey: "ingest:one",
+      payload: { request: { title: "One" } },
+      requeueTerminal: false,
+    });
+
+    expect(reused).toMatchObject({
+      id: job.id,
+      status: "completed",
+      attempt: 1,
+    });
+  });
+
+  it("requeues failed idempotent work without rerunning completed work", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-retry-failed-terminal";
+    const input = {
+      tenantId,
+      type: "knowledge.ingest" as const,
+      dedupeKey: "ingest:retry-failed",
+      payload: { request: { title: "Retry failed ingestion" } },
+      maxAttempts: 1,
+      requeueTerminal: false,
+      requeueFailed: true,
+    };
+    const job = await queue.enqueueOperationJob(input);
+    const [leased] = await queue.leaseOperationJobs({
+      tenantId,
+      dedupeKey: input.dedupeKey,
+    });
+    const failed = await queue.failOperationJob(
+      job.id,
+      "terminal failure",
+      leased.leaseOwner,
+      tenantId,
+    );
+    expect(failed?.status).toBe("failed");
+
+    const retried = await queue.enqueueOperationJob(input);
+    expect(retried).toMatchObject({
+      id: job.id,
+      status: "queued",
+      attempt: 0,
+      payload: input.payload,
+    });
+  });
+
+  it("preserves active and completed work for transport-idempotent retries", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-transport-idempotency";
+    const input = {
+      tenantId,
+      type: "evaluation.run" as const,
+      dedupeKey: "evaluation:transport-request",
+      payload: { request: { suite: "core" } },
+      dedupeMode: "idempotent" as const,
+    };
+    const queued = await queue.enqueueOperationJob(input);
+    const [running] = await queue.leaseOperationJobs({
+      tenantId,
+      dedupeKey: input.dedupeKey,
+      owner: "worker-a",
+    });
+
+    const activeRetry = await queue.enqueueOperationJob({
+      ...input,
+      payload: { request: { suite: "replacement" } },
+    });
+    expect(activeRetry).toMatchObject({
+      id: queued.id,
+      status: "running",
+      payload: input.payload,
+    });
+    expect(activeRetry.payload.__rerunRequested).toBeUndefined();
+
+    await queue.completeOperationJob(queued.id, running.leaseOwner, tenantId);
+    const completedRetry = await queue.enqueueOperationJob(input);
+    expect(completedRetry).toMatchObject({
+      id: queued.id,
+      status: "completed",
+    });
+  });
+
+  it("ages older runnable work so sustained priority cannot starve it", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-priority-aging";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-23T00:00:00.000Z"));
+    try {
+      const older = await queue.enqueueOperationJob({
+        tenantId,
+        type: "knowledge.ingest",
+        payload: { request: { title: "older" } },
+        priority: 0,
+      });
+      vi.advanceTimersByTime(11 * 60 * 1_000);
+      await queue.enqueueOperationJob({
+        tenantId,
+        type: "knowledge.ingest",
+        payload: { request: { title: "newer" } },
+        priority: 10,
+      });
+
+      const [leased] = await queue.leaseOperationJobs({
+        tenantId,
+        types: ["knowledge.ingest"],
+        limit: 1,
+      });
+      expect(leased.id).toBe(older.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("redelivers an expired final workflow attempt for terminal reconciliation", async () => {
     const queue = await import("@/lib/operations/job-queue");
     vi.useFakeTimers();

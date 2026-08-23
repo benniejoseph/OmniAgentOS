@@ -13,9 +13,17 @@ import { listAgentRuns } from "@/lib/runs/store";
 import { publicAgentRun } from "@/lib/runs/public";
 import { redactSensitive } from "@/lib/security/context";
 import { getToolExecutionStats, listPendingToolApprovals, listToolExecutions } from "@/lib/tools/audit-store";
-import { getWorkflowPlanForRun } from "@/lib/workflows/planner";
+import {
+  getWorkflowPlanForRun,
+  getWorkflowPlansForRuns,
+} from "@/lib/workflows/planner";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
-import { getWorkflowStats, listWorkflowRecoveryEvents, listWorkflowRuns } from "@/lib/workflows/store";
+import {
+  getWorkflowStats,
+  listWorkflowRecoveryEvents,
+  listWorkflowRuns,
+  listWorkflowRunsByStatus,
+} from "@/lib/workflows/store";
 import type { WorkflowRunRecord } from "@/lib/workflows/types";
 
 export type ApprovalQueueItem =
@@ -67,22 +75,19 @@ export async function getApprovalQueue(limit = 25, options: { tenantId?: string 
     sloApprovalPolicy,
   ] = await Promise.all([
     listPendingToolApprovals(limit, { tenantId: options.tenantId }),
-    listWorkflowRuns(100, { tenantId: options.tenantId }),
+    listWorkflowRunsByStatus("waiting_approval", limit, {
+      tenantId: options.tenantId,
+    }),
     listObservabilitySloPolicyChanges({ status: "pending", limit, tenantId: options.tenantId }),
     getObservabilitySloApprovalPolicyConfig(),
   ]);
-  const workflowApprovals = workflowRuns
-    .filter((run) => run.status === "waiting_approval")
-    .slice(0, limit);
-  const workflowApprovalItems = await Promise.all(
-    workflowApprovals.map(async (run) =>
-      workflowApprovalToQueueItem(
-        run,
-        await getWorkflowPlanForRun(run.id, {
-          tenantId: options.tenantId,
-        }),
-      ),
-    ),
+  const workflowApprovals = workflowRuns.slice(0, limit);
+  const workflowPlans = await getWorkflowPlansForRuns(
+    workflowApprovals.map((run) => run.id),
+    { tenantId: options.tenantId },
+  );
+  const workflowApprovalItems = workflowApprovals.map((run) =>
+    workflowApprovalToQueueItem(run, workflowPlans.get(run.id) || null),
   );
   const items = [
     ...toolApprovals.map(toolApprovalToQueueItem),

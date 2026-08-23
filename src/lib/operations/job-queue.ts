@@ -10,8 +10,22 @@ import {
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
-export type OperationJobType = "workflow.tick" | "agent.resume";
+export type OperationJobType =
+  | "workflow.tick"
+  | "agent.resume"
+  | "memory.consolidate"
+  | "knowledge.ingest"
+  | "evaluation.run";
 export type OperationJobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
+
+export const BACKGROUND_OPERATION_JOB_TYPES = [
+  "memory.consolidate",
+  "knowledge.ingest",
+  "evaluation.run",
+] as const satisfies readonly OperationJobType[];
+
+const OPERATION_PRIORITY_AGING_INTERVAL_MS = 60_000;
+const OPERATION_PRIORITY_AGING_CAP = 100;
 
 export type OperationJobRecord = {
   id: string;
@@ -39,8 +53,40 @@ export type OperationJobStats = {
   runnable: number;
   delayed: number;
   expiredLeases: number;
-  latest: OperationJobRecord[];
+  latest: Array<ReturnType<typeof projectOperationJobStatus>>;
 };
+
+export function projectOperationJobStatus(job: OperationJobRecord) {
+  return {
+    id: job.id,
+    type: job.type,
+    status: job.status,
+    progress: parseObject(job.payload.progress),
+    result: parseObject(job.payload.result),
+    priority: job.priority,
+    attempt: job.attempt,
+    maxAttempts: job.maxAttempts,
+    runAt: job.runAt,
+    lastError: job.lastError,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    completedAt: job.completedAt,
+  };
+}
+
+export function operationJobEffectivePriority(
+  job: Pick<OperationJobRecord, "priority" | "createdAt">,
+  now = Date.now(),
+) {
+  const ageBoost = Math.min(
+    OPERATION_PRIORITY_AGING_CAP,
+    Math.floor(
+      Math.max(0, now - Date.parse(job.createdAt)) /
+        OPERATION_PRIORITY_AGING_INTERVAL_MS,
+    ),
+  );
+  return job.priority + ageBoost;
+}
 
 type OperationJobLedger = {
   jobs: OperationJobRecord[];
@@ -54,11 +100,15 @@ type EnqueueOperationJobInput = {
   priority?: number;
   maxAttempts?: number;
   runAt?: string;
+  requeueTerminal?: boolean;
+  requeueFailed?: boolean;
+  dedupeMode?: "coalesce" | "idempotent";
 };
 
 type LeaseOperationJobInput = {
   tenantId?: string;
   type?: OperationJobType;
+  types?: readonly OperationJobType[];
   dedupeKey?: string;
   limit?: number;
   leaseSeconds?: number;
@@ -94,6 +144,37 @@ export async function enqueueOperationJob(
     const sql = options.sql || getSql();
 
     if (input.dedupeKey) {
+      const dedupeKey = input.dedupeKey;
+      if (input.dedupeMode === "idempotent") {
+        const inserted = await sql`
+          INSERT INTO omni_operation_jobs (
+            id, tenant_id, type, status, payload, dedupe_key, priority, attempt,
+            max_attempts, run_at, created_at, updated_at
+          )
+          VALUES (
+            ${job.id}, ${tenantId}, ${job.type}, ${job.status}, ${job.payload}::jsonb,
+            ${storageDedupeKey(tenantId, dedupeKey)}, ${job.priority},
+            ${job.attempt}, ${job.maxAttempts}, ${job.runAt}, ${job.createdAt},
+            ${job.updatedAt}
+          )
+          ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+          RETURNING *
+        `;
+        if (inserted[0]) {
+          return operationJobFromRow(inserted[0]);
+        }
+        const existing = await sql`
+          SELECT *
+          FROM omni_operation_jobs
+          WHERE dedupe_key = ${storageDedupeKey(tenantId, dedupeKey)}
+            AND tenant_id = ${tenantId}
+          LIMIT 1
+        `;
+        return operationJobFromRow(existing[0]);
+      }
+      const preserveTerminal = input.requeueTerminal === false;
+      const preserveFailed =
+        preserveTerminal && input.requeueFailed !== true;
       const rows = await sql`
         INSERT INTO omni_operation_jobs (
           id, tenant_id, type, status, payload, dedupe_key, priority, attempt,
@@ -124,6 +205,8 @@ export async function enqueueOperationJob(
             WHEN omni_operation_jobs.status = 'running'
               AND omni_operation_jobs.lease_expires_at > NOW()
             THEN omni_operation_jobs.attempt
+            WHEN omni_operation_jobs.status = 'queued'
+            THEN omni_operation_jobs.attempt
             ELSE 0
           END,
           run_at = CASE
@@ -131,7 +214,7 @@ export async function enqueueOperationJob(
               AND omni_operation_jobs.lease_expires_at > NOW()
             THEN omni_operation_jobs.run_at
             WHEN omni_operation_jobs.status = 'queued'
-            THEN LEAST(omni_operation_jobs.run_at, EXCLUDED.run_at)
+            THEN omni_operation_jobs.run_at
             ELSE EXCLUDED.run_at
           END,
           locked_at = CASE
@@ -160,9 +243,29 @@ export async function enqueueOperationJob(
           END,
           completed_at = NULL,
           updated_at = NOW()
+        WHERE NOT (
+          ${preserveTerminal}
+          AND (
+            omni_operation_jobs.status IN ('completed', 'canceled')
+            OR (
+              ${preserveFailed}
+              AND omni_operation_jobs.status = 'failed'
+            )
+          )
+        )
         RETURNING *
       `;
-      return operationJobFromRow(rows[0]);
+      if (rows[0]) {
+        return operationJobFromRow(rows[0]);
+      }
+      const existing = await sql`
+        SELECT *
+        FROM omni_operation_jobs
+        WHERE dedupe_key = ${storageDedupeKey(tenantId, job.dedupeKey!)}
+          AND tenant_id = ${tenantId}
+        LIMIT 1
+      `;
+      return operationJobFromRow(existing[0]);
     }
 
     const rows = await sql`
@@ -187,6 +290,23 @@ export async function enqueueOperationJob(
         (item) => jobTenantId(item) === tenantId && item.dedupeKey === input.dedupeKey,
       );
       if (existing) {
+        if (input.dedupeMode === "idempotent") {
+          saved = existing;
+          return trimJobLedger(ledger);
+        }
+        if (
+          input.requeueTerminal === false &&
+          (
+            ["completed", "canceled"].includes(existing.status) ||
+            (
+              existing.status === "failed" &&
+              input.requeueFailed !== true
+            )
+          )
+        ) {
+          saved = existing;
+          return trimJobLedger(ledger);
+        }
         const activeLease = existing.status === "running" && Date.parse(existing.leaseExpiresAt || "") > Date.now();
         saved = {
           ...existing,
@@ -197,10 +317,13 @@ export async function enqueueOperationJob(
           priority: Math.max(existing.priority, job.priority),
           maxAttempts: job.maxAttempts,
           status: activeLease ? existing.status : "queued",
-          attempt: activeLease ? existing.attempt : 0,
+          attempt:
+            activeLease || existing.status === "queued"
+              ? existing.attempt
+              : 0,
           runAt: activeLease
             ? existing.runAt
-            : existing.status === "queued" && Date.parse(existing.runAt) < Date.parse(runAt)
+            : existing.status === "queued"
               ? existing.runAt
               : runAt,
           lockedAt: activeLease ? existing.lockedAt : undefined,
@@ -232,10 +355,13 @@ export async function leaseOperationJobs(input: LeaseOperationJobInput = {}) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const filters = ["tenant_id = $1", "status = 'queued'", "run_at <= NOW()"];
-    const params: Array<string | number> = [tenantId];
+    const params: unknown[] = [tenantId];
     if (input.type) {
       params.push(input.type);
       filters.push(`type = $${params.length}`);
+    } else if (input.types?.length) {
+      params.push([...new Set(input.types)]);
+      filters.push(`type = ANY($${params.length}::text[])`);
     }
     if (input.dedupeKey) {
       params.push(storageDedupeKey(tenantId, input.dedupeKey));
@@ -254,7 +380,15 @@ export async function leaseOperationJobs(input: LeaseOperationJobInput = {}) {
           SELECT id
           FROM omni_operation_jobs
           WHERE ${filters.join(" AND ")}
-          ORDER BY priority DESC, run_at ASC, created_at ASC
+          ORDER BY (
+            priority +
+            LEAST(
+              ${OPERATION_PRIORITY_AGING_CAP},
+              FLOOR(EXTRACT(EPOCH FROM (NOW() - created_at)) / 60)
+            )
+          ) DESC,
+          run_at ASC,
+          created_at ASC
           LIMIT $${limitParam}
           FOR UPDATE SKIP LOCKED
         )
@@ -276,6 +410,9 @@ export async function leaseOperationJobs(input: LeaseOperationJobInput = {}) {
   }
 
   const nowMs = Date.now();
+  const allowedTypes = input.types?.length
+    ? new Set(input.types)
+    : undefined;
   let leased: OperationJobRecord[] = [];
   await mutateJobLedger((ledger) => {
     const candidates = ledger.jobs
@@ -283,9 +420,12 @@ export async function leaseOperationJobs(input: LeaseOperationJobInput = {}) {
       .filter((job) => job.status === "queued")
       .filter((job) => Date.parse(job.runAt) <= nowMs)
       .filter((job) => !input.type || job.type === input.type)
+      .filter((job) => !allowedTypes || allowedTypes.has(job.type))
       .filter((job) => !input.dedupeKey || job.dedupeKey === input.dedupeKey)
       .sort((left, right) => {
-        const priority = right.priority - left.priority;
+        const priority =
+          operationJobEffectivePriority(right, nowMs) -
+          operationJobEffectivePriority(left, nowMs);
         if (priority !== 0) {
           return priority;
         }
@@ -367,6 +507,63 @@ export async function heartbeatOperationJob(
   return saved;
 }
 
+export async function updateOperationJobPayload(
+  jobId: string,
+  leaseOwner: string,
+  patch: Record<string, unknown>,
+  options: { tenantId?: string } = {},
+) {
+  if (!leaseOwner) {
+    return null;
+  }
+  const tenantId = normalizeTenantId(options.tenantId);
+  const now = new Date().toISOString();
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      UPDATE omni_operation_jobs
+      SET payload = CASE
+            WHEN jsonb_typeof(payload) = 'object'
+            THEN payload || ${patch}::jsonb
+            ELSE ${patch}::jsonb
+          END,
+          updated_at = ${now}
+      WHERE id = ${jobId}
+        AND tenant_id = ${tenantId}
+        AND status = 'running'
+        AND lease_owner = ${leaseOwner}
+        AND lease_expires_at > NOW()
+      RETURNING *
+    `;
+    return rows[0] ? operationJobFromRow(rows[0]) : null;
+  }
+
+  let saved: OperationJobRecord | null = null;
+  await mutateJobLedger((ledger) => {
+    ledger.jobs = ledger.jobs.map((job) => {
+      if (
+        job.id !== jobId ||
+        jobTenantId(job) !== tenantId ||
+        job.status !== "running" ||
+        job.leaseOwner !== leaseOwner ||
+        !job.leaseExpiresAt ||
+        Date.parse(job.leaseExpiresAt) <= Date.now()
+      ) {
+        return job;
+      }
+      saved = {
+        ...job,
+        payload: { ...job.payload, ...patch },
+        updatedAt: now,
+      };
+      return saved;
+    });
+    return trimJobLedger(ledger);
+  });
+  return saved;
+}
+
 export async function completeOperationJob(jobId: string, leaseOwner?: string, requestedTenantId?: string) {
   if (!leaseOwner) {
     return null;
@@ -384,7 +581,12 @@ export async function completeOperationJob(jobId: string, leaseOwner?: string, r
           END,
           payload = CASE
             WHEN jsonb_typeof(payload) = 'object'
-            THEN payload - '__rerunRequested'
+            THEN CASE
+              WHEN type = ANY(${[...BACKGROUND_OPERATION_JOB_TYPES]}::text[])
+                AND payload->>'__rerunRequested' IS DISTINCT FROM 'true'
+              THEN payload - '__rerunRequested' - 'request'
+              ELSE payload - '__rerunRequested'
+            END
             ELSE '{}'::jsonb
           END,
           attempt = CASE
@@ -430,10 +632,13 @@ export async function completeOperationJob(jobId: string, leaseOwner?: string, r
       const rerunRequested = job.payload.__rerunRequested === true;
       const payload = { ...job.payload };
       delete payload.__rerunRequested;
+      const terminalPayload = rerunRequested
+        ? payload
+        : sanitizeTerminalOperationPayload(job.type, payload);
       saved = {
         ...job,
         status: rerunRequested ? "queued" : "completed",
-        payload,
+        payload: terminalPayload,
         attempt: rerunRequested ? 0 : job.attempt,
         runAt: rerunRequested ? completedAt : job.runAt,
         lockedAt: undefined,
@@ -473,7 +678,13 @@ export async function failOperationJob(
           END,
           payload = CASE
             WHEN jsonb_typeof(payload) = 'object'
-            THEN payload - '__rerunRequested'
+            THEN CASE
+              WHEN type = ANY(${[...BACKGROUND_OPERATION_JOB_TYPES]}::text[])
+                AND payload->>'__rerunRequested' IS DISTINCT FROM 'true'
+                AND attempt >= max_attempts
+              THEN payload - '__rerunRequested' - 'request'
+              ELSE payload - '__rerunRequested'
+            END
             ELSE '{}'::jsonb
           END,
           attempt = CASE
@@ -526,9 +737,12 @@ export async function failOperationJob(
       const delaySeconds = Math.min(300, 2 ** Math.max(job.attempt - 1, 0) * 15);
       const payload = { ...job.payload };
       delete payload.__rerunRequested;
+      const terminalPayload = willRetry
+        ? payload
+        : sanitizeTerminalOperationPayload(job.type, payload);
       saved = {
         ...job,
-        payload,
+        payload: terminalPayload,
         attempt: rerunRequested ? 0 : job.attempt,
         status: willRetry ? "queued" : "failed",
         runAt: rerunRequested
@@ -881,6 +1095,40 @@ export async function repairExpiredOperationJobs(
 
 export async function listOperationJobs(
   limit = 20,
+  options: { tenantId?: string; type?: OperationJobType } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = options.type
+      ? await getSql()`
+          SELECT *
+          FROM omni_operation_jobs
+          WHERE tenant_id = ${tenantId}
+            AND type = ${options.type}
+          ORDER BY updated_at DESC
+          LIMIT ${limit}
+        `
+      : await getSql()`
+          SELECT *
+          FROM omni_operation_jobs
+          WHERE tenant_id = ${tenantId}
+          ORDER BY updated_at DESC
+          LIMIT ${limit}
+        `;
+    return rows.map(operationJobFromRow);
+  }
+
+  const ledger = await readJobLedger();
+  return ledger.jobs
+    .filter((job) => jobTenantId(job) === tenantId)
+    .filter((job) => !options.type || job.type === options.type)
+    .map((job) => ({ ...job, tenantId }))
+    .slice(0, limit);
+}
+
+export async function getOperationJob(
+  jobId: string,
   options: { tenantId?: string } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
@@ -889,18 +1137,19 @@ export async function listOperationJobs(
     const rows = await getSql()`
       SELECT *
       FROM omni_operation_jobs
-      WHERE tenant_id = ${tenantId}
-      ORDER BY updated_at DESC
-      LIMIT ${limit}
+      WHERE id = ${jobId}
+        AND tenant_id = ${tenantId}
+      LIMIT 1
     `;
-    return rows.map(operationJobFromRow);
+    return rows[0] ? operationJobFromRow(rows[0]) : null;
   }
 
   const ledger = await readJobLedger();
-  return ledger.jobs
-    .filter((job) => jobTenantId(job) === tenantId)
-    .map((job) => ({ ...job, tenantId }))
-    .slice(0, limit);
+  return (
+    ledger.jobs.find(
+      (job) => job.id === jobId && jobTenantId(job) === tenantId,
+    ) || null
+  );
 }
 
 export async function listRunnableWorkflowTenantIds(limit = 10) {
@@ -995,6 +1244,57 @@ export async function listRunnableAgentResumeTenantIds(limit = 10) {
         .filter(
           (job) =>
             job.type === "agent.resume" &&
+            ((job.status === "queued" && Date.parse(job.runAt) <= now) ||
+              (job.status === "running" &&
+                Date.parse(job.leaseExpiresAt || "") <= now)),
+        )
+        .map(jobTenantId),
+    ),
+  ]
+    .sort()
+    .slice(0, boundedLimit);
+}
+
+export async function listRunnableBackgroundJobTenantIds(limit = 10) {
+  const boundedLimit = Math.min(Math.max(limit, 1), 25);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseSystemScope(
+      "Find tenant-owned background operation work for the dedicated worker.",
+      async () => {
+        const rows = await getSql()`
+          SELECT tenant_id
+          FROM omni_operation_jobs
+          WHERE type = ANY(${[...BACKGROUND_OPERATION_JOB_TYPES]}::text[])
+            AND (
+              (status = 'queued' AND run_at <= NOW())
+              OR (status = 'running' AND lease_expires_at <= NOW())
+            )
+          GROUP BY tenant_id
+          ORDER BY MIN(
+            CASE
+              WHEN status = 'queued' THEN run_at
+              ELSE lease_expires_at
+            END
+          ) ASC, tenant_id ASC
+          LIMIT ${boundedLimit}
+        `;
+        return rows.map((row) => String(row.tenant_id));
+      },
+    );
+  }
+
+  const now = Date.now();
+  const backgroundTypes = new Set<OperationJobType>(
+    BACKGROUND_OPERATION_JOB_TYPES,
+  );
+  const ledger = await readJobLedger();
+  return [
+    ...new Set(
+      ledger.jobs
+        .filter(
+          (job) =>
+            backgroundTypes.has(job.type) &&
             ((job.status === "queued" && Date.parse(job.runAt) <= now) ||
               (job.status === "running" &&
                 Date.parse(job.leaseExpiresAt || "") <= now)),
@@ -1108,7 +1408,9 @@ export async function getOperationJobStats(
       runnable: Number(runnableRows[0]?.count || 0),
       delayed: Number(delayedRows[0]?.count || 0),
       expiredLeases: Number(expiredRows[0]?.count || 0),
-      latest: await listOperationJobs(5, { tenantId }),
+      latest: (await listOperationJobs(5, { tenantId })).map(
+        projectOperationJobStatus,
+      ),
     };
   }
 
@@ -1129,8 +1431,24 @@ export async function getOperationJobStats(
     expiredLeases: jobs.filter(
       (job) => job.status === "running" && job.leaseExpiresAt && Date.parse(job.leaseExpiresAt) <= now,
     ).length,
-    latest: jobs.slice(0, 5),
+    latest: jobs.slice(0, 5).map(projectOperationJobStatus),
   };
+}
+
+function sanitizeTerminalOperationPayload(
+  type: OperationJobType,
+  payload: Record<string, unknown>,
+) {
+  if (
+    !BACKGROUND_OPERATION_JOB_TYPES.includes(
+      type as (typeof BACKGROUND_OPERATION_JOB_TYPES)[number],
+    )
+  ) {
+    return payload;
+  }
+  const sanitized = { ...payload };
+  delete sanitized.request;
+  return sanitized;
 }
 
 function operationJobFromRow(row: Record<string, unknown>): OperationJobRecord {

@@ -59,7 +59,14 @@ async function GETHandler(request: Request) {
   }
 
   const [events, stats] = await Promise.all([
-    listObservabilityEvents({ level, category, correlationId, route, limit, tenantId: context.tenantId }),
+    listObservabilityEvents({
+      level,
+      category,
+      correlationId,
+      route,
+      limit,
+      tenantId: context.tenantId,
+    }),
     getObservabilityStats({ tenantId: context.tenantId }),
   ]);
 

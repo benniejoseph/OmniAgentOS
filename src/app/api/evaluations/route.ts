@@ -11,10 +11,17 @@ import {
   evaluateEvaluationGovernance,
   selectEvaluationCases,
   summarizeEvaluationGovernance,
-  runEvaluationSuite,
 } from "@/lib/evaluations/runner";
 import { getEvalStats, listEvalRuns } from "@/lib/evaluations/store";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
+import {
+  BackgroundJobIdempotencyConflictError,
+  enqueueEvaluationJob,
+} from "@/lib/operations/background-jobs";
+import {
+  listOperationJobs,
+  projectOperationJobStatus,
+} from "@/lib/operations/job-queue";
 import { SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -47,14 +54,23 @@ async function GETHandler(request: Request) {
   const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, {
     max: 100,
   });
+  const [runs, stats, jobs] = await Promise.all([
+    listEvalRuns(limit, { tenantId: context.tenantId }),
+    getEvalStats({ tenantId: context.tenantId }),
+    listOperationJobs(limit, {
+      tenantId: context.tenantId,
+      type: "evaluation.run",
+    }),
+  ]);
   return Response.json({
     cases: defaultEvalCases,
     governance: summarizeEvaluationGovernance(defaultEvalCases),
     defaults: {
       maxSafetyMode: defaultEvaluationMaxSafetyMode(),
     },
-    runs: await listEvalRuns(limit, { tenantId: context.tenantId }),
-    stats: await getEvalStats({ tenantId: context.tenantId }),
+    runs,
+    stats,
+    jobs: jobs.map(projectOperationJobStatus),
   });
 }
 
@@ -159,16 +175,17 @@ async function POSTHandler(request: Request) {
       );
     }
 
-    const detail = await runEvaluationSuite({
-      suite: parsed.data.suite || "core",
-      caseIds: selection.cases.map((evalCase) => evalCase.id),
+    const job = await enqueueEvaluationJob({
       tenantId: context.tenantId,
+      idempotencyKey:
+        request.headers.get("idempotency-key")?.trim().slice(0, 200) ||
+        undefined,
+      request: {
+        suite: parsed.data.suite || "core",
+        caseIds: selection.cases.map((evalCase) => evalCase.id),
+      },
     });
-    if (!detail) {
-      throw new Error("Evaluation run detail unavailable.");
-    }
-
-    const status = detail.run.status === "failed" ? 202 : 201;
+    const status = 202;
     await recordRuntimeEventSafely({
       category: "evaluation",
       action: "evaluation.run",
@@ -181,15 +198,11 @@ async function POSTHandler(request: Request) {
       tenantId: context.tenantId,
       actorId: context.actorId,
       resourceType: "evaluation",
-      resourceId: detail.run.id,
-      message: "Evaluation suite completed.",
+      resourceId: job.id,
+      message: "Evaluation suite queued for background processing.",
       metadata: {
-        suite: detail.run.suite,
-        status: detail.run.status,
-        total: detail.run.summary.total,
-        passed: detail.run.summary.passed,
-        failed: detail.run.summary.failed,
-        warnings: detail.run.summary.warnings,
+        suite: parsed.data.suite || "core",
+        status: job.status,
         caseIds: selection.cases.map((evalCase) => evalCase.id),
         governance: governance.summary,
         maxSafetyMode,
@@ -197,8 +210,25 @@ async function POSTHandler(request: Request) {
         ...telemetry.syntheticMetadata,
       },
     });
-    return Response.json({ ...detail, governance: governance.summary, override: overrideEvidence }, { status });
+    return Response.json(
+      {
+        job: projectOperationJobStatus(job),
+        governance: governance.summary,
+        override: overrideEvidence,
+      },
+      {
+        status,
+        headers: {
+          location: `/api/operations/jobs/${job.id}`,
+          "retry-after": "2",
+          "cache-control": "private, no-store",
+        },
+      },
+    );
   } catch (error) {
+    if (error instanceof BackgroundJobIdempotencyConflictError) {
+      return Response.json({ error: error.message }, { status: 409 });
+    }
     if (!(error instanceof SecurityPolicyError)) {
       await recordRuntimeEventSafely({
         level: "error",

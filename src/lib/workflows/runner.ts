@@ -12,7 +12,7 @@ import {
   approveWorkflowRun,
   appendWorkflowEvent,
   getWorkflowRunDetail,
-  listWorkflowRuns,
+  listRunnableWorkflowRuns,
   transitionWorkflowRun,
   updateWorkflowStep,
   updateWorkflowStepForRunFence,
@@ -134,6 +134,63 @@ export async function tickWorkflowRun(
     }
     const output = await executeStep(stepKey, freshDetail, options.abortSignal);
     throwIfAborted(options.abortSignal);
+    if (
+      stepKey === "execute" &&
+      output &&
+      typeof output === "object" &&
+      "executionPending" in output &&
+      output.executionPending === true
+    ) {
+      const pendingStep = await updateWorkflowStepForRunFence(
+        detail.run.id,
+        stepKey,
+        {
+          status: "pending",
+          attempt: step.attempt,
+          output,
+          startedAt: undefined,
+          completedAt: undefined,
+          error: undefined,
+        },
+        {
+          tenantId: detail.run.tenantId,
+          expectedRunUpdatedAt: runFence,
+        },
+      );
+      if (!pendingStep) {
+        return getWorkflowRunDetail(runId, {
+          tenantId: options.tenantId,
+        }) as Promise<WorkflowRunDetail>;
+      }
+      const requeued = await transitionWorkflowRun(
+        detail.run.id,
+        ["running"],
+        {
+          status: "queued",
+          currentStep: stepKey,
+          error: undefined,
+        },
+        {
+          tenantId: detail.run.tenantId,
+          expectedUpdatedAt: runFence,
+        },
+      );
+      if (requeued) {
+        await appendWorkflowEvent(
+          detail.run.id,
+          "workflow.plan_execution.requeued",
+          {
+            stepKey,
+            completedNodes:
+              (output.planExecution as { completedNodes?: number } | undefined)
+                ?.completedNodes || 0,
+          },
+        );
+      }
+      return getWorkflowRunDetail(runId, {
+        tenantId: options.tenantId,
+      }) as Promise<WorkflowRunDetail>;
+    }
     const beforeCommit = await getWorkflowRunDetail(runId, { tenantId: options.tenantId });
     if (!beforeCommit) {
       throw new Error("Workflow run disappeared before step completion could be committed.");
@@ -340,10 +397,7 @@ export async function tickWorkflowRun(
 }
 
 export async function tickQueuedWorkflows(limit = 5) {
-  const runs = await listWorkflowRuns(50);
-  const candidates = runs
-    .filter((run) => run.status === "queued")
-    .slice(0, limit);
+  const candidates = await listRunnableWorkflowRuns(limit);
   const results = [];
   for (const run of candidates) {
     results.push(await tickWorkflowRun(run.id));
@@ -737,6 +791,15 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const planOutput = stepOutput(detail, "plan");
   const planExecution = await executeDynamicWorkflowPlan(detail, { abortSignal });
+  if (planExecution?.status === "running") {
+    return {
+      executionPending: true,
+      deliverable: "Workflow plan execution is continuing in resumable queue deliveries.",
+      response: `${planExecution.completedNodes} of ${planExecution.totalNodes} plan nodes are complete.`,
+      nextAction: "Continue processing the next DAG-ready plan nodes.",
+      planExecution,
+    };
+  }
   const fallback = buildExecutionFallback(detail, planExecution);
   const instructions = buildAgentInstructions({
     mode: detail.run.input.mode || "orchestrate",

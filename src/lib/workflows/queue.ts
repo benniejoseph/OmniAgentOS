@@ -7,6 +7,7 @@ import {
 import {
   cancelOperationJobByDedupeKey,
   completeOperationJob,
+  deferOperationJob,
   enqueueOperationJob,
   failOperationJob,
   heartbeatOperationJob,
@@ -18,7 +19,7 @@ import { tickWorkflowRun } from "@/lib/workflows/runner";
 import {
   appendWorkflowEvent,
   failWorkflowRunForQueueExhaustion,
-  listWorkflowRuns,
+  listRunnableWorkflowRuns,
   reclaimWorkflowRunForQueueDelivery,
 } from "@/lib/workflows/store";
 import type { WorkflowRunDetail } from "@/lib/workflows/types";
@@ -28,6 +29,7 @@ type ProcessWorkflowQueueInput = {
   workflowRunId?: string;
   bootstrapQueuedRuns?: boolean;
   tenantId?: string;
+  abortSignal?: AbortSignal;
 };
 
 type WorkflowQueueJobResult = {
@@ -104,10 +106,7 @@ export async function cancelWorkflowRunTick(
 }
 
 export async function enqueueRunnableWorkflowRuns(limit = 50, options: { tenantId?: string } = {}) {
-  const runs = await listWorkflowRuns(Math.max(limit, 50), options);
-  const runnable = runs
-    .filter((run) => runnableWorkflowStatuses.has(run.status))
-    .slice(0, limit);
+  const runnable = await listRunnableWorkflowRuns(limit, options);
   const jobs = [];
   for (const run of runnable) {
     jobs.push(await enqueueWorkflowRunTick(
@@ -134,9 +133,15 @@ export function processWorkflowQueue(
 }
 
 export async function processAllTenantWorkflowQueues(
-  input: { limit?: number } = {},
+  input: { limit?: number; timeBudgetMs?: number } = {},
 ): Promise<AllTenantWorkflowQueueResult> {
   const limit = Math.min(Math.max(input.limit || WORKFLOW_DRAIN_LIMIT, 1), 10);
+  const deadlineSignal = AbortSignal.timeout(
+    Math.min(
+      Math.max(Math.round(input.timeBudgetMs || 240_000), 1_000),
+      240_000,
+    ),
+  );
   const tenantIds = await listRunnableWorkflowTenantIds(limit);
   const tenantResults: AllTenantWorkflowQueueResult["tenantResults"] = [];
   const jobs: WorkflowQueueJobResult[] = [];
@@ -144,15 +149,19 @@ export async function processAllTenantWorkflowQueues(
   let activeTenantIds = tenantIds;
 
   while (remaining > 0 && activeTenantIds.length) {
+    if (deadlineSignal.aborted) {
+      break;
+    }
     const nextActive: string[] = [];
     for (const tenantId of activeTenantIds) {
-      if (remaining <= 0) {
+      if (remaining <= 0 || deadlineSignal.aborted) {
         break;
       }
       const result = await processWorkflowQueue({
         tenantId,
         limit: 1,
         bootstrapQueuedRuns: true,
+        abortSignal: deadlineSignal,
       });
       tenantResults.push({ tenantId, result });
       jobs.push(...result.jobs);
@@ -184,6 +193,7 @@ async function processWorkflowQueueInScope(
   input: ProcessWorkflowQueueInput,
 ): Promise<WorkflowQueueResult> {
   const limit = Math.min(Math.max(input.limit || WORKFLOW_DRAIN_LIMIT, 1), 10);
+  input.abortSignal?.throwIfAborted();
 
   if (input.workflowRunId) {
     await enqueueWorkflowRunTick(
@@ -206,6 +216,24 @@ async function processWorkflowQueueInScope(
   const results: WorkflowQueueJobResult[] = [];
 
   for (const job of jobs) {
+    if (input.abortSignal?.aborted) {
+      const deferred = await deferOperationJob(
+        job.id,
+        job.leaseOwner || "",
+        {
+          tenantId: job.tenantId,
+          delaySeconds: 1,
+          reason: "Workflow queue tick reached its execution deadline.",
+        },
+      );
+      results.push({
+        job: deferred || job,
+        status: "stale",
+        requeued: deferred || undefined,
+        error: "Workflow queue tick reached its execution deadline.",
+      });
+      continue;
+    }
     const workflowRunId = String(job.payload.workflowRunId || "");
     if (!workflowRunId) {
       const error = "Workflow queue job is missing workflowRunId.";
@@ -218,6 +246,7 @@ async function processWorkflowQueueInScope(
       continue;
     }
 
+    let leaseLost = false;
     try {
       await appendWorkflowEvent(workflowRunId, "workflow.queue.leased", {
         jobId: job.id,
@@ -225,7 +254,6 @@ async function processWorkflowQueueInScope(
         leaseExpiresAt: job.leaseExpiresAt,
       }).catch(() => undefined);
       const controller = new AbortController();
-      let leaseLost = false;
       let heartbeatChain = Promise.resolve();
       const heartbeat = async () => {
         try {
@@ -335,9 +363,12 @@ async function processWorkflowQueueInScope(
       }, Math.max(1_000, Math.min(5_000, Math.floor(OPERATION_QUEUE_LEASE_SECONDS * 1_000 / 3))));
       let detail: WorkflowRunDetail;
       try {
+        const executionSignal = input.abortSignal
+          ? AbortSignal.any([controller.signal, input.abortSignal])
+          : controller.signal;
         detail = await tickWorkflowRun(workflowRunId, {
           tenantId: job.tenantId,
-          abortSignal: controller.signal,
+          abortSignal: executionSignal,
         });
       } finally {
         clearInterval(heartbeatTimer);
@@ -381,6 +412,25 @@ async function processWorkflowQueueInScope(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Workflow queue job failed.";
+      if (input.abortSignal?.aborted && !leaseLost) {
+        const deferred = await deferOperationJob(
+          job.id,
+          job.leaseOwner || "",
+          {
+            tenantId: job.tenantId,
+            delaySeconds: 1,
+            reason: "Workflow queue tick reached its execution deadline.",
+          },
+        );
+        results.push({
+          job: deferred || job,
+          workflowRunId,
+          status: "stale",
+          requeued: deferred || undefined,
+          error: message,
+        });
+        continue;
+      }
       if (job.attempt >= job.maxAttempts) {
         await failWorkflowRunForQueueExhaustion(workflowRunId, {
           tenantId: job.tenantId,
