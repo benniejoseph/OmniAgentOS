@@ -4,25 +4,43 @@ import { describe, expect, it } from "vitest";
 import budgets from "../../../performance-budgets.json";
 
 describe("frontend performance budgets", () => {
-  it("keeps the LCP hero compact, modern, and non-animated", async () => {
+  it("keeps the LCP hero compact, modern, and server-rendered", async () => {
     const root = path.resolve(".");
-    const hero = path.join(
+    const heroAsset = path.join(
       root,
       "public",
       "omniagent-command-center.webp",
     );
-    const [metadata, landing] = await Promise.all([
-      stat(hero),
+    const [metadata, hero, landing] = await Promise.all([
+      stat(heroAsset),
       readFile(
-        path.join(root, "src/components/marketing/landing-page.tsx"),
+        path.join(
+          root,
+          "src",
+          "components",
+          "marketing",
+          "landing-hero.tsx",
+        ),
+        "utf8",
+      ),
+      readFile(
+        path.join(
+          root,
+          "src",
+          "components",
+          "marketing",
+          "landing-page.tsx",
+        ),
         "utf8",
       ),
     ]);
 
     expect(metadata.size).toBeLessThanOrEqual(budgets.heroImageMaxBytes);
-    expect(landing).toContain('src="/omniagent-command-center.webp"');
-    expect(landing).toContain("preload");
-    expect(landing).not.toContain("animate-drift");
+    expect(hero).toContain('src="/omniagent-command-center.webp"');
+    expect(hero).toContain("preload");
+    expect(hero).toContain("sizes=");
+    expect(hero).not.toContain("animate-drift");
+    expect(landing).not.toContain('"use client"');
     await expect(
       stat(path.join(root, "public", "omniagent-command-center.png")),
     ).rejects.toThrow();

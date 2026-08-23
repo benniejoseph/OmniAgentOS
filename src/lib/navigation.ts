@@ -450,84 +450,11 @@ export const productPages: Record<string, ProductPage> = {
   },
 };
 
-export const platformPillars = [
-  {
-    title: "Orchestrate anything",
-    body: "Turn goals into plans, workflows, queue jobs, approvals, and verifiable outcomes.",
-    icon: Workflow,
-  },
-  {
-    title: "Remember precisely",
-    body: "Persist long-lived memory, source-backed RAG, and graph context with provenance.",
-    icon: Brain,
-  },
-  {
-    title: "Connect safely",
-    body: "Use MCP and OpenAPI connectors with risk policy, network controls, and secret redaction.",
-    icon: Cable,
-  },
-  {
-    title: "Inspect runtime state",
-    body: "Monitor SLOs, incidents, diagnostics, release evidence, and signed evaluation reports.",
-    icon: ShieldCheck,
-  },
-];
-
 export const proofMetrics = [
   { label: "Core workspaces", value: "4" },
   { label: "Agent modes", value: "4" },
   { label: "Accessibility target", value: "AA" },
   { label: "Risk levels", value: "0-3" },
-];
-
-
-export const orchestrationJourney = [
-  {
-    title: "The operator submits a goal",
-    body: "The operator submits a goal and OmniAgentOS routes it through policy, context retrieval, and planning before any side effect is possible.",
-    signals: ["mode", "actor", "tenant"],
-  },
-  {
-    title: "Context is assembled",
-    body: "Memory, RAG chunks, graph nodes, run history, and tool catalogs are merged into a bounded context package for the model.",
-    signals: ["RAG", "graph", "ledger"],
-  },
-  {
-    title: "Work becomes durable",
-    body: "Plans become workflow nodes and operation jobs, so long-running work can be ticked, approved, retried, or recovered.",
-    signals: ["queue", "approval", "recovery"],
-  },
-  {
-    title: "Evidence closes the loop",
-    body: "Every result feeds observability, evaluation reports, release gates, and the long-term memory layer.",
-    signals: ["SLO", "eval", "release"],
-  },
-];
-
-export const capabilityMatrix = [
-  ["Memory", "Long-lived facts, decisions, source context, and graph recall."],
-  ["RAG", "Hybrid retrieval across chunks, embeddings, text search, and traces."],
-  ["Workflows", "Durable plans, queue leases, approvals, retries, and operator ticks."],
-  ["Connectors", "MCP and OpenAPI ingestion with policy and network controls."],
-  ["Tools", "Risk-ranked execution with dry runs, approvals, and full audit trails."],
-  ["Observability", "Runtime events, incidents, SLO policy, alerts, and diagnostics."],
-  ["Evaluations", "Regression cases, signed reports, release gates, and CI smoke."],
-  ["Security", "Auth, tenant-scoped database access, forced RLS, and audit evidence."],
-];
-
-export const operatingModes = [
-  {
-    label: "Builder",
-    value: "Design agent workflows with memory, tools, and verification from one workspace.",
-  },
-  {
-    label: "Operator",
-    value: "Monitor active work, release gates, SLO pressure, approvals, and incidents.",
-  },
-  {
-    label: "Governance",
-    value: "Inspect tenant isolation, tool risk, eval reports, connector safety, and audit logs.",
-  },
 ];
 
 export const marketingPages = {

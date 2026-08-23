@@ -67,7 +67,7 @@ export function PublicHealthBadge() {
 
   return (
     <div
-      className="mt-10 inline-flex min-h-12 min-w-64 items-center gap-3 rounded-md border border-white/20 bg-black/35 px-4 text-sm text-white"
+      className="mt-6 inline-flex min-h-12 max-w-full items-center gap-3 rounded-md border border-line bg-surface px-4 text-sm text-muted"
       role="status"
       aria-live="polite"
     >
@@ -75,15 +75,19 @@ export function PublicHealthBadge() {
         size={17}
         className={
           status === "healthy"
-            ? "text-emerald-300"
+            ? "text-success"
             : status === "checking"
-              ? "animate-spin text-white/70"
-              : "text-amber-300"
+              ? "animate-spin text-muted"
+              : status === "degraded"
+                ? "text-warning"
+                : status === "unhealthy"
+                  ? "text-danger"
+                  : "text-muted"
         }
         aria-hidden="true"
       />
-      <span>Public API health:</span>
-      <strong className="font-mono">{status}</strong>
+      <span>System health:</span>
+      <strong className="font-mono text-foreground">{status}</strong>
     </div>
   );
 }

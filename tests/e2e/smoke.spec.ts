@@ -130,6 +130,79 @@ test("landing stays within desktop and mobile browser budgets", async ({
   }
 });
 
+test("homepage presents the private owner operating story responsively", async ({
+  page,
+}) => {
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+    { width: 320, height: 700 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/");
+
+    if (viewport.width === 1440) {
+      await page.keyboard.press("Tab");
+      await expect(
+        page.getByRole("link", { name: "Skip to content" }),
+      ).toBeFocused();
+    }
+
+    await expect(
+      page.getByRole("heading", {
+        level: 1,
+        name: "Give agents goals. Keep the controls.",
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", {
+        name: "From goal to evidence, one connected flow.",
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", {
+        name: "Designed like an operations desk, not a chatbot.",
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", {
+        name: "Private by design. Observable by default.",
+      }),
+    ).toBeVisible();
+
+    const hasHorizontalOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    );
+    expect(hasHorizontalOverflow).toBe(false);
+  }
+
+  for (const preference of ["light", "dark"] as const) {
+    await page.evaluate((theme) => {
+      window.localStorage.setItem("omniagent-theme", theme);
+    }, preference);
+    await page.reload();
+    await expect(page.locator("html")).toHaveAttribute(
+      "data-theme",
+      preference,
+    );
+    await expect(
+      page.getByRole("heading", {
+        level: 1,
+        name: "Give agents goals. Keep the controls.",
+      }),
+    ).toBeVisible();
+  }
+
+  const firstQuestion = page
+    .locator("summary")
+    .filter({ hasText: "What can OmniAgent do?" });
+  await firstQuestion.focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByText("It turns a goal into planned, observable work"),
+  ).toBeVisible();
+});
+
 test("public and mobile application navigation stay usable", async ({ page }) => {
   await page.goto("/");
   const publicNavigation = page.getByRole("navigation", {
