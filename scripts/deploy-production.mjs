@@ -7,6 +7,7 @@ import path from "node:path";
 
 const VERCEL_ORG_ID = "team_hFIwf5wwfzIn2I1WDZwY8pAv";
 const VERCEL_PROJECT_ID = "prj_BF3Uy9PhUUitqFAeA0g0LafaL4co";
+const VERCEL_SCOPE = "benniejosephs-projects";
 const dryRun = process.argv.includes("--dry-run");
 const flyApp = process.env.FLY_APP?.trim() || "omniagent-os-worker";
 const revision =
@@ -31,13 +32,17 @@ if (dryRun) {
   printDryRun("npm", ["run", "verify"]);
   printDryRun(
     "vercel",
-    ["deploy", "--prod", "--skip-domain", "--yes"],
+    ["deploy", "--prod", "--skip-domain", "--yes", "--scope", VERCEL_SCOPE],
     vercelEnvironment,
   );
   const staged = "https://staged-deployment.example";
   printDryRun("fly", workerDeployArgs(staged));
   printVerificationCommands(staged);
-  printDryRun("vercel", ["promote", staged, "--yes"], vercelEnvironment);
+  printDryRun(
+    "vercel",
+    ["promote", staged, "--yes", "--scope", VERCEL_SCOPE],
+    vercelEnvironment,
+  );
   printDryRun(
     "npm",
     ["run", "smoke:preflight"],
@@ -73,7 +78,7 @@ try {
   await run("npm", ["run", "verify"]);
   const deploymentOutput = await capture(
     "vercel",
-    ["deploy", "--prod", "--skip-domain", "--yes"],
+    ["deploy", "--prod", "--skip-domain", "--yes", "--scope", VERCEL_SCOPE],
     { environment: vercelEnvironment, echo: true },
   );
   const stagedBaseUrl = deploymentUrlFromOutput(deploymentOutput);
@@ -83,7 +88,7 @@ try {
 
   await run(
     "vercel",
-    ["promote", stagedBaseUrl, "--yes"],
+    ["promote", stagedBaseUrl, "--yes", "--scope", VERCEL_SCOPE],
     { environment: vercelEnvironment },
   );
   vercelPromoted = true;
@@ -98,7 +103,13 @@ try {
   if (vercelPromoted) {
     await run(
       "vercel",
-      ["promote", previousVercelDeployment, "--yes"],
+      [
+        "promote",
+        previousVercelDeployment,
+        "--yes",
+        "--scope",
+        VERCEL_SCOPE,
+      ],
       { environment: vercelEnvironment },
     ).catch((rollbackError) => {
       rollbackErrors.push(`Vercel rollback failed: ${errorMessage(rollbackError)}`);
@@ -218,7 +229,13 @@ async function getCurrentWorkerImage() {
 async function getCurrentVercelDeployment(productionBaseUrl) {
   const output = await capture(
     "vercel",
-    ["inspect", productionBaseUrl, "--format=json"],
+    [
+      "inspect",
+      productionBaseUrl,
+      "--format=json",
+      "--scope",
+      VERCEL_SCOPE,
+    ],
     { environment: vercelEnvironment },
   );
   let deployment;

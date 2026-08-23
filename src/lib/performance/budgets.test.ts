@@ -72,7 +72,9 @@ describe("frontend performance budgets", () => {
     expect(dashboardBenchmark).toContain('path: "/app"');
     expect(dashboardBenchmark).toContain("budgets.releaseDashboardUsableMs");
     expect(dashboardBenchmark).toContain("serverP95BudgetMs");
-    expect(deployment).toContain('["promote", stagedBaseUrl, "--yes"]');
+    expect(deployment).toContain(
+      '["promote", stagedBaseUrl, "--yes", "--scope", VERCEL_SCOPE]',
+    );
     expect(healthBadge).toContain("/api/health?public=1");
     expect(healthBadge).toContain('cache: "force-cache"');
   });

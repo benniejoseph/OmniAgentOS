@@ -67,6 +67,7 @@ describe("paired production deployment", () => {
     expect(deployScript).toContain('"--porcelain"');
     expect(deployScript).not.toContain("--untracked-files=no");
     expect(deployScript).toContain('"--skip-domain"');
+    expect(deployScript).toContain('"--scope", VERCEL_SCOPE');
     expect(deployScript).toContain("previousWorkerImage");
     expect(deployScript).toContain("previousVercelDeployment");
     expect(deployScript).not.toContain('"cron secret"');
