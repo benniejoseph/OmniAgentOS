@@ -15,7 +15,6 @@ const missing = [
   ["administrator email", email],
   ["administrator password", password],
   ["internal smoke secret", internalSecret],
-  ["cron secret", cronSecret],
   ["release evidence output path", evidenceOutput],
   ...(!isLoopback ? [["expected deployment revision", expectedRevision]] : []),
 ].filter(([, value]) => !value).map(([label]) => label);
@@ -49,23 +48,49 @@ if (expectedRevision && healthBody.revision !== expectedRevision) {
   );
 }
 
-const cron = await smokeFetch(baseUrl, "/api/workflows/tick?probe=auth", {
-  headers: {
-    authorization: `Bearer ${cronSecret}`,
-    "x-omni-synthetic-auth": internalSecret,
-    "x-omni-synthetic-source":
-      process.env.SMOKE_SYNTHETIC_SOURCE || "production-smoke",
-    "x-omni-slo-excluded": "true",
-    "x-omni-correlation-id": `production-smoke:cron:${process.env.SMOKE_RUN_ID || Date.now()}`,
-  },
-});
-const cronBody = await cron.json().catch(() => ({}));
-if (cron.status !== 200 || cronBody.trigger !== "vercel_cron") {
-  failSmoke(
-    `authenticated cron preflight failed with status ${cron.status}: ${String(cronBody.error || "unexpected response")}.`,
+const syntheticHeaders = {
+  "x-omni-synthetic-auth": internalSecret,
+  "x-omni-synthetic-source":
+    process.env.SMOKE_SYNTHETIC_SOURCE || "production-smoke",
+  "x-omni-slo-excluded": "true",
+  "x-omni-correlation-id": `production-smoke:cron:${process.env.SMOKE_RUN_ID || Date.now()}`,
+};
+let cronCheck = "configuration";
+if (cronSecret) {
+  const cron = await smokeFetch(baseUrl, "/api/workflows/tick?probe=auth", {
+    headers: {
+      authorization: `Bearer ${cronSecret}`,
+      ...syntheticHeaders,
+    },
+  });
+  const cronBody = await cron.json().catch(() => ({}));
+  if (cron.status !== 200 || cronBody.trigger !== "vercel_cron") {
+    failSmoke(
+      `authenticated cron preflight failed with status ${cron.status}: ${String(cronBody.error || "unexpected response")}.`,
+    );
+  }
+  cronCheck = "authentication";
+} else {
+  const evidence = await smokeFetch(baseUrl, "/api/release/evidence", {
+    headers: {
+      ...syntheticHeaders,
+      "x-omni-internal-auth": internalSecret,
+      "x-omni-tenant-id": process.env.SMOKE_TENANT_ID || "production_smoke",
+      "x-omni-user-id": process.env.SMOKE_ACTOR_ID || "production-smoke",
+      "x-omni-user-role": "admin",
+    },
+  });
+  const evidenceBody = await evidence.json().catch(() => ({}));
+  const cronGate = evidenceBody?.report?.gates?.find(
+    (gate) => gate?.id === "cron_auth",
   );
+  if (evidence.status !== 200 || cronGate?.status !== "pass") {
+    failSmoke(
+      `cron configuration preflight failed with status ${evidence.status}: ${String(evidenceBody?.error || cronGate?.summary || "missing cron gate")}.`,
+    );
+  }
 }
 
 console.log(
-  `PASS production smoke preflight - ${baseUrl} is healthy at revision ${healthBody.revision || "local"} and cron authentication succeeded`,
+  `PASS production smoke preflight - ${baseUrl} is healthy at revision ${healthBody.revision || "local"} and cron ${cronCheck} succeeded`,
 );

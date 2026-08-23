@@ -5,7 +5,6 @@ const caseId = process.env.SMOKE_EVAL_CASE_ID || "security.tenant_isolation";
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
 const password = process.env.SMOKE_ADMIN_PASSWORD || process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
 const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
-const cronSecret = process.env.SMOKE_CRON_SECRET || process.env.CRON_SECRET;
 const syntheticHeaders = createSyntheticHeaders("eval");
 const evaluationRequestId =
   process.env.SMOKE_RUN_ID ||
@@ -169,21 +168,39 @@ async function waitForEvaluationJob(path) {
 }
 
 async function driveBackgroundQueue() {
-  if (!cronSecret || !internalSecret) {
+  if (!internalSecret) {
     checks.push(
       assert(
         false,
         "staged background queue credentials available",
-        "SMOKE_CRON_SECRET and SMOKE_INTERNAL_AUTH_SECRET are required",
+        "SMOKE_INTERNAL_AUTH_SECRET is required",
       ),
     );
     return;
   }
   const response = await request("/api/workflows/tick", {
+    method: "POST",
     headers: {
-      authorization: `Bearer ${cronSecret}`,
-      "x-omni-synthetic-auth": internalSecret,
+      "content-type": "application/json",
+      "x-omni-internal-auth": internalSecret,
+      "x-omni-tenant-id": "production_smoke",
+      "x-omni-user-id": "production-smoke",
+      "x-omni-user-role": "system",
+      "x-omni-worker-instance": "production-smoke",
+      "x-omni-worker-protocol":
+        process.env.OMNIAGENT_WORKER_PROTOCOL_VERSION || "1",
+      ...(process.env.SMOKE_EXPECTED_REVISION
+        ? { "x-omni-worker-revision": process.env.SMOKE_EXPECTED_REVISION }
+        : {}),
     },
+    body: JSON.stringify({
+      scope: "all_tenants",
+      lane: "background",
+      limit: 1,
+      timeBudgetMs: 240_000,
+      slo: false,
+      alerts: false,
+    }),
   });
   const json = await readJson(response);
   checks.push(

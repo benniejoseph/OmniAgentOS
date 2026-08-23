@@ -90,8 +90,11 @@ npm run deploy:production
 ```
 
 Set `BASE_URL` to the canonical production HTTPS origin and provide the smoke
-credentials, cron/internal secrets, and `RELEASE_EVIDENCE_OUTPUT` described
-below. When deployment protection applies to staged production deployments, set
+credentials, internal secret, and `RELEASE_EVIDENCE_OUTPUT` described below.
+When the platform exposes `CRON_SECRET` to the release runner, preflight probes
+that credential directly; for write-only platform secrets it verifies the
+promoted deployment's `cron_auth` release gate instead. When deployment
+protection applies to staged production deployments, set
 `VERCEL_AUTOMATION_BYPASS_SECRET` for the release runner and configure the same
 name as a Fly secret so worker requests can reach the canary.
 

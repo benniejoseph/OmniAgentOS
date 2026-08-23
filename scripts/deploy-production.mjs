@@ -146,10 +146,6 @@ function validateReleaseConfiguration() {
       process.env.SMOKE_INTERNAL_AUTH_SECRET ||
         process.env.OMNIAGENT_INTERNAL_AUTH_SECRET,
     ],
-    [
-      "cron secret",
-      process.env.SMOKE_CRON_SECRET || process.env.CRON_SECRET,
-    ],
     ["RELEASE_EVIDENCE_OUTPUT", process.env.RELEASE_EVIDENCE_OUTPUT],
   ];
   const missing = required

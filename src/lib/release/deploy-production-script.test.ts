@@ -58,9 +58,13 @@ describe("paired production deployment", () => {
     expect(deployScript).toContain('"--skip-domain"');
     expect(deployScript).toContain("previousWorkerImage");
     expect(deployScript).toContain("previousVercelDeployment");
+    expect(deployScript).not.toContain('"cron secret"');
     expect(evaluationSmoke).toContain("response.status === 202");
     expect(evaluationSmoke).toContain("waitForEvaluationJob");
     expect(evaluationSmoke).toContain("/api/operations/jobs/");
+    expect(evaluationSmoke).toContain('"x-omni-internal-auth"');
+    expect(evaluationSmoke).toContain('"x-omni-worker-protocol"');
+    expect(evaluationSmoke).toContain('method: "POST"');
     expect(workerScript).toContain('recordLaneState(lane, "running"');
     expect(workerImage).toContain("['fast','background','maintenance'].every");
   });
