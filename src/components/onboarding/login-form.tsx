@@ -106,7 +106,9 @@ export function LoginForm() {
         <div className="grid size-12 place-items-center rounded-md bg-primary/12 text-primary">
           <ShieldCheck size={22} aria-hidden="true" />
         </div>
-        <h2 className="mt-8 text-3xl font-semibold tracking-normal">Authentication is disabled locally.</h2>
+        <h1 className="mt-8 text-3xl font-semibold tracking-normal">
+          Local development mode
+        </h1>
         <p className="mt-4 text-sm leading-6 text-muted">
           Open the workspace directly. Controls follow the local role configured for this environment.
         </p>

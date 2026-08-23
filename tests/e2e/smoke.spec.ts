@@ -254,6 +254,12 @@ test("local bootstrap authentication rejects bad credentials and signs in", asyn
   await expect(
     page.getByRole("heading", { name: "Welcome back" }),
   ).toBeVisible();
+  const desktopHomeLink = page.getByRole("link", {
+    name: "OmniAgentOS home",
+  });
+  const desktopHomeLinkBox = await desktopHomeLink.boundingBox();
+  expect(desktopHomeLinkBox).not.toBeNull();
+  expect(desktopHomeLinkBox?.height).toBeGreaterThanOrEqual(44);
   await page.getByLabel("Email address").fill(adminEmail);
   await page.locator("#password").fill("incorrect-password");
   await page.getByRole("button", { name: "Sign in" }).click();
@@ -264,6 +270,32 @@ test("local bootstrap authentication rejects bad credentials and signs in", asyn
   await page.locator("#password").fill(adminPassword);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/onboarding$/);
+});
+
+test("local development login keeps a level-one heading and direct workspace action", async ({
+  page,
+}) => {
+  await page.route("**/api/auth/session", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authEnabled: false,
+        authenticated: false,
+      }),
+    });
+  });
+  await page.goto("/login");
+
+  await expect(
+    page.getByRole("heading", {
+      level: 1,
+      name: "Local development mode",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open workspace" }),
+  ).toHaveAttribute("href", "/app");
 });
 
 test("private login is form-first, theme-aware, and rate-limit safe", async ({
@@ -305,10 +337,15 @@ test("private login is form-first, theme-aware, and rate-limit safe", async ({
     changedPreference || "system",
   );
 
-  const hasHorizontalOverflow = await page.evaluate(
-    () => document.documentElement.scrollWidth > window.innerWidth,
-  );
-  expect(hasHorizontalOverflow).toBe(false);
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(page.getByTestId("auth-story")).toBeHidden();
+    await expect(page.getByTestId("login-form")).toBeVisible();
+    const hasHorizontalOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    );
+    expect(hasHorizontalOverflow).toBe(false);
+  }
 
   await page.getByLabel("Email address").fill(adminEmail);
   await page

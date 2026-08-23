@@ -49,7 +49,7 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
             <div>
               <Link
                 href="/"
-                className="inline-flex items-center gap-3 font-semibold tracking-tight"
+                className="inline-flex min-h-11 items-center gap-3 font-semibold tracking-tight"
                 aria-label="OmniAgentOS home"
               >
                 <span className="grid size-10 place-items-center rounded-md bg-primary text-primary-ink">
