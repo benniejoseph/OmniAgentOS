@@ -15,8 +15,8 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 ## Public and authentication routes
 
 - `GET /api/health`: public liveness/readiness summary. Returns 200 for healthy or local degraded storage and 503 when a configured database is unhealthy.
-- `POST /api/onboarding/request-access`: validates and durably records a public access request; it does not create an account. Postgres is used when configured, otherwise a durable file path is required in production.
-- `GET|POST /api/onboarding/access-requests`: admin-only list and approve/decline workflow for requests in the Inbox.
+- Public registration and access-request intake are disabled. `/signup` permanently redirects to `/login`.
+- `GET|POST /api/onboarding/access-requests`: admin-only list and approve/decline workflow for historical requests in the Inbox.
 - `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/session`.
 - `GET|POST /api/auth/control-plane`: admin-only tenant/user/membership administration. `POST` creates a workspace user and returns a generated initial password when one is not supplied.
 

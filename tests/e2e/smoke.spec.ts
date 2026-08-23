@@ -347,95 +347,27 @@ test("mobile workspace menu reaches advanced routes and signs out", async ({ pag
   await expect(page).toHaveURL(/\/login$/);
 });
 
-test("access requests reject incomplete client and API payloads", async ({ page, request }) => {
-  await page.goto("/signup");
-  const submit = page.getByRole("button", { name: "Request workspace" });
-  await expect(submit).toBeEnabled();
-
-  await page.getByLabel("Name").fill("B");
-  await page.getByLabel("Work email").fill("not-an-email");
-  await page.getByLabel("Company").fill("O");
-  await page.getByLabel("First workflow to automate").fill("too short");
-  await submit.click();
-  await expect(
-    page.locator('[data-testid="access-request-form"] [role="alert"]'),
-  ).toContainText("Review the highlighted fields");
-  await expect(page.getByLabel("Name")).toHaveAttribute("aria-invalid", "true");
-  await expect(page.getByLabel("Work email")).toHaveAttribute("aria-invalid", "true");
-
+test("public signup redirects to private login and intake is closed", async ({
+  page,
+  request,
+}) => {
   const response = await request.post("/api/onboarding/request-access", {
     data: {
-      name: "B",
-      email: "not-an-email",
-      company: "O",
+      name: "Ada Operator",
+      email: "ada@example.com",
+      company: "Private Workspace",
       role: "engineering",
-      timeline: "30_days",
-      useCase: "too short",
+      timeline: "now",
+      useCase: "Operate a governed private agent workspace.",
     },
   });
-  expect(response.status()).toBe(400);
-  expect(await response.json()).toMatchObject({ error: "Invalid access request" });
-});
+  expect(response.status()).toBe(404);
 
-test("valid access requests are persisted before success is shown", async ({ page }) => {
-  const suffix = crypto.randomUUID().slice(0, 8);
-  const requestedName = `Ada Operator ${suffix}`;
-  const requestedEmail = `ada-${suffix}@example.com`;
   await page.goto("/signup");
-  await page.getByLabel("Name").fill(requestedName);
-  await page.getByLabel("Work email").fill(requestedEmail);
-  await page.getByLabel("Company").fill("Example Team");
-  await page.getByLabel("First workflow to automate").fill(
-    "Review incidents and prepare a remediation plan with linked evidence.",
-  );
-  await page.getByRole("button", { name: "Request workspace" }).click();
-
-  await expect(page.getByRole("status")).toContainText("pending review");
-  await expect(page.getByRole("status")).toContainText("complete request was stored");
-
-  await signIn(page);
-  await page.goto("/app/approvals");
-  const accessSection = page.getByRole("region", { name: "Workspace access" });
-  const requestCard = accessSection
-    .locator("article")
-    .filter({ hasText: requestedName });
-  await expect(requestCard).toBeVisible();
-  await requestCard
-    .getByLabel(`Review note for ${requestedName}`)
-    .fill("Team owner verified.");
-  await requestCard.getByRole("button", { name: "Approve request" }).click();
-  await expect(page.getByRole("status")).toContainText(
-    `Approved ${requestedName}`,
-  );
-  await expect(
-    requestCard.getByText(
-      "Access is approved. Finish creating the workspace identity; this request stays here until provisioning succeeds.",
-    ),
-  ).toBeVisible();
-  await expect(
-    requestCard.getByRole("button", { name: "Resume provisioning" }),
-  ).toBeVisible();
-
-  await page
-    .getByRole("button", { name: `Provision ${requestedName}` })
-    .click();
-  await expect(page).toHaveURL(/\/app\/settings#create-user$/);
-  const createUserForm = page.locator("form").filter({ hasText: "Create workspace user" });
-  await expect(createUserForm.getByLabel("Name")).toHaveValue(requestedName);
-  await expect(createUserForm.getByLabel("Email")).toHaveValue(requestedEmail);
-  await createUserForm.getByLabel("Workspace role").selectOption("viewer");
-  await createUserForm.getByLabel("Initial password (optional)").fill(
-    "playwright-new-user-password",
-  );
-  await createUserForm.getByRole("button", { name: "Run action" }).click();
-  await expect(page.getByText("Action completed.")).toBeVisible();
-
-  await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login$/);
-  await page.getByLabel("Email address").fill(requestedEmail);
-  await page.locator("#password").fill("playwright-new-user-password");
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).toHaveURL(/\/onboarding$/);
+  await expect(page.getByLabel("Email address")).toBeVisible();
+  await expect(page.getByLabel("Password", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
 });
 
 test("new connector contracts stay quarantined until reviewed in place", async ({ page }) => {
