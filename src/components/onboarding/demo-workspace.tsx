@@ -91,10 +91,10 @@ export function DemoWorkspace() {
                 {running ? "Running demo" : "Run sample agent"}
               </button>
               <Link
-                href="/signup"
+                href="/login"
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-md border border-line bg-surface px-5 text-sm font-semibold transition hover:bg-surface-raised"
               >
-                Request workspace
+                Sign in to workspace
                 <ArrowRight size={16} aria-hidden="true" />
               </Link>
             </div>

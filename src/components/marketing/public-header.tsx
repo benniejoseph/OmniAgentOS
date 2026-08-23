@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, Menu, Sparkles, X } from "lucide-react";
 import { clsx } from "clsx";
-import { marketingNav } from "@/lib/navigation";
+import { marketingActions, marketingNav } from "@/lib/marketing-content";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 
 export function PublicHeader() {
@@ -62,16 +62,10 @@ export function PublicHeader() {
         <div className="flex items-center gap-2">
           <ThemeToggle compact />
           <Link
-            href="/login"
-            className="hidden min-h-11 items-center rounded-md px-3 text-sm font-semibold text-muted transition hover:bg-surface hover:text-foreground lg:inline-flex"
+            href={marketingActions.signIn.href}
+            className="hidden min-h-11 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-ink transition hover:brightness-105 sm:inline-flex"
           >
-            Sign in
-          </Link>
-          <Link
-            href="/signup"
-            className="hidden min-h-11 items-center gap-2 rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink transition hover:brightness-105 sm:inline-flex"
-          >
-            Get access
+            {marketingActions.signIn.label}
             <ArrowRight size={15} aria-hidden="true" />
           </Link>
           <button
@@ -110,12 +104,13 @@ export function PublicHeader() {
                 {item.label}
               </Link>
             ))}
-            <div className="mt-3 grid grid-cols-2 gap-2 border-t border-line pt-3">
-              <Link href="/login" className="inline-flex min-h-11 items-center justify-center rounded-md border border-line text-sm font-semibold">
-                Sign in
-              </Link>
-              <Link href="/signup" className="inline-flex min-h-11 items-center justify-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink">
-                Get access
+            <div className="mt-3 border-t border-line pt-3">
+              <Link
+                href={marketingActions.signIn.href}
+                className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink"
+              >
+                {marketingActions.signIn.label}
+                <ArrowRight size={15} aria-hidden="true" />
               </Link>
             </div>
           </div>

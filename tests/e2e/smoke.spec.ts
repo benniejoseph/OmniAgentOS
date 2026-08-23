@@ -132,16 +132,35 @@ test("landing stays within desktop and mobile browser budgets", async ({
 
 test("public and mobile application navigation stay usable", async ({ page }) => {
   await page.goto("/");
-  const publicNavigation = page.getByRole("navigation", { name: "Public navigation" });
+  const publicNavigation = page.getByRole("navigation", {
+    name: "Public navigation",
+  });
   await expect(publicNavigation).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Sign in" }).first(),
+  ).toHaveAttribute("href", "/login");
+  await expect(page.getByRole("link", { name: "Get access" })).toHaveCount(0);
+  await expect(
+    publicNavigation.getByRole("link", { name: "Pricing" }),
+  ).toHaveCount(0);
   await publicNavigation.getByRole("link", { name: "Docs" }).click();
   await expect(page).toHaveURL(/\/docs$/);
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await page.getByRole("button", { name: "Open public navigation" }).click();
-  const publicMobileMenu = page.getByRole("navigation", { name: "Public navigation" });
+  await page
+    .getByRole("button", { name: "Open public navigation" })
+    .click();
+  const publicMobileMenu = page.getByRole("navigation", {
+    name: "Public navigation",
+  });
   await expect(publicMobileMenu).toBeVisible();
+  await expect(
+    publicMobileMenu.getByRole("link", { name: "Sign in" }),
+  ).toHaveAttribute("href", "/login");
+  await expect(
+    publicMobileMenu.getByRole("link", { name: "Pricing" }),
+  ).toHaveCount(0);
   await publicMobileMenu.getByRole("link", { name: "Demo" }).click();
   await expect(page).toHaveURL(/\/demo$/);
 

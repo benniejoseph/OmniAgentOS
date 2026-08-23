@@ -39,10 +39,10 @@ const quickStart = [
     icon: Play,
   },
   {
-    title: "Request or enter access",
-    href: "/signup",
-    action: "Get access",
-    body: "Request workspace access, or sign in after an administrator creates your account.",
+    title: "Enter the private workspace",
+    href: "/login",
+    action: "Sign in",
+    body: "Use the configured owner account to continue into onboarding and the operating workspace.",
     icon: KeyRound,
   },
   {
@@ -89,7 +89,6 @@ const userSurfaces = [
   ["/docs", "This complete product guide"],
   ["/changelog", "Shipped slices and platform progress"],
   ["/demo", "Public sample workspace"],
-  ["/signup", "Workspace access request"],
   ["/login", "Secure session sign in"],
   ["/onboarding", "First-run activation checklist"],
   ["/app", "Authenticated operations dashboard"],
@@ -146,7 +145,6 @@ const apiGroups = [
       "/api/auth/logout",
       "/api/auth/session",
       "/api/auth/control-plane",
-      "/api/onboarding/request-access",
     ],
   },
   {
@@ -567,8 +565,11 @@ export function DocsGuide() {
               Open app
               <ArrowRight size={16} aria-hidden="true" />
             </Link>
-            <Link href="/signup" className="inline-flex h-12 items-center justify-center rounded-md border border-background/20 px-5 text-sm font-semibold transition hover:bg-background/10">
-              Request access
+            <Link
+              href="/login"
+              className="inline-flex h-12 items-center justify-center rounded-md border border-background/20 px-5 text-sm font-semibold transition hover:bg-background/10"
+            >
+              Sign in
             </Link>
           </div>
         </div>

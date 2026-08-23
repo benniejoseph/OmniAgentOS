@@ -44,15 +44,6 @@ export type ProductPage = AppNavItem & {
   sections: { title: string; body: string; points: string[] }[];
 };
 
-export const marketingNav = [
-  { href: "/platform", label: "Platform" },
-  { href: "/solutions", label: "Solutions" },
-  { href: "/security", label: "Security" },
-  { href: "/demo", label: "Demo" },
-  { href: "/pricing", label: "Pricing" },
-  { href: "/docs", label: "Docs" },
-];
-
 export const appNav: AppNavItem[] = [
   {
     href: "/app/command",
@@ -577,15 +568,16 @@ export const marketingPages = {
     ],
   },
   pricing: {
-    eyebrow: "Pricing",
-    headline: "Pricing is not published yet.",
-    summary: "Request access to discuss deployment needs. No public plan, price, or service commitment is available in this build.",
+    eyebrow: "Private deployment",
+    headline: "No public plans or registration.",
+    summary:
+      "This deployment is privately operated. Use the configured owner account to enter the workspace.",
     icon: Database,
     sections: [
-      "Describe the operators, workflows, and connected systems you need.",
-      "Review hosting, authentication, data retention, and support requirements.",
-      "Confirm commercial terms before treating any feature as purchased.",
-      "Use the local workspace to evaluate the product workflow.",
+      "One private operator workspace.",
+      "Email and password entry through secure session auth.",
+      "Tenant-scoped data and governed tools.",
+      "No public registration or commercial checkout.",
     ],
   },
   docs: {

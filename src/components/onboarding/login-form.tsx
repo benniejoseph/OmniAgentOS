@@ -129,7 +129,7 @@ export function LoginForm() {
         <p className="text-sm font-semibold text-primary">Sign in</p>
         <h2 className="mt-3 text-3xl font-semibold tracking-normal">Open your workspace.</h2>
         <p className="mt-3 text-sm leading-6 text-muted">
-          Use the administrator account configured for this deployment. New teams can request access first.
+          Use the owner account configured for this private deployment.
         </p>
       </div>
 
@@ -213,12 +213,8 @@ export function LoginForm() {
         {submitting ? "Signing in" : "Sign in"}
       </button>
 
-      <p className="text-sm text-muted">
-        Need access?{" "}
-        <Link href="/signup" className="font-semibold text-primary hover:underline">
-          Request workspace access
-        </Link>
-        .
+      <p className="text-center text-xs leading-5 text-muted">
+        Private workspace · No public registration
       </p>
     </form>
   );
