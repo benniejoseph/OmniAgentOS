@@ -1,73 +1,132 @@
 import Link from "next/link";
-import { ArrowRight, CheckCircle2, Sparkles } from "lucide-react";
-import { PublicHeader } from "@/components/marketing/public-header";
+import {
+  Activity,
+  ArrowLeft,
+  CheckCircle2,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
+import { ThemeToggle } from "@/components/theme/theme-toggle";
 
 const proofPoints = [
-  "Protected session auth with HttpOnly cookies.",
-  "Tenant-scoped access to production telemetry.",
-  "Sample workspace for evaluation before setup.",
-];
+  {
+    icon: Activity,
+    title: "Operational clarity",
+    body: "See current work, blockers, and what happens next.",
+  },
+  {
+    icon: ShieldCheck,
+    title: "Risk-first controls",
+    body: "Pause sensitive tools for an explicit decision.",
+  },
+  {
+    icon: CheckCircle2,
+    title: "Durable evidence",
+    body: "Keep results, memory, approvals, and release proof.",
+  },
+] as const;
 
-export function AuthShell({
-  eyebrow,
-  title,
-  summary,
-  children,
-}: {
-  eyebrow: string;
-  title: string;
-  summary: string;
-  children: React.ReactNode;
-}) {
+export function AuthShell({ children }: { children: React.ReactNode }) {
   return (
-    <main className="min-h-screen bg-background text-foreground">
-      <PublicHeader />
-      <section className="min-h-screen border-b border-line pt-16">
-        <div className="mx-auto grid min-h-[calc(100svh-4rem)] max-w-7xl gap-10 px-4 py-10 sm:px-6 lg:grid-cols-[0.95fr_1.05fr] lg:px-8">
-          <div className="flex flex-col justify-between rounded-lg border border-line bg-surface-raised p-6 text-foreground sm:p-8 lg:min-h-[680px]">
+    <>
+      <a
+        href="#main-content"
+        className="sr-only fixed left-4 top-4 z-50 rounded-md bg-primary px-4 py-3 font-semibold text-primary-ink focus:not-sr-only"
+      >
+        Skip to sign in
+      </a>
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className="min-h-svh bg-background text-foreground"
+      >
+        <div className="grid min-h-svh lg:grid-cols-[0.95fr_1.05fr]">
+          <aside
+            data-testid="auth-story"
+            aria-label="Private workspace benefits"
+            className="hidden flex-col justify-between border-r border-line bg-primary/10 p-10 lg:flex xl:p-14"
+          >
             <div>
-              <div className="grid size-12 place-items-center rounded-md bg-primary text-primary-ink">
-                <Sparkles size={20} aria-hidden="true" />
-              </div>
-              <p className="mt-10 text-sm font-semibold text-primary">{eyebrow}</p>
-              <h1 className="mt-4 max-w-2xl text-4xl font-semibold tracking-normal sm:text-5xl">{title}</h1>
-              <p className="mt-6 max-w-xl text-base leading-7 text-muted">{summary}</p>
-            </div>
-
-            <div className="mt-12">
-              <div className="grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-3">
-                {["Identity", "Workspace", "First run"].map((item, index) => (
-                  <div key={item} className="bg-surface p-4">
-                    <p className="font-mono text-xs text-muted">0{index + 1}</p>
-                    <p className="mt-8 text-sm font-semibold">{item}</p>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-8 space-y-4">
-                {proofPoints.map((point) => (
-                  <div key={point} className="flex items-start gap-3 border-b border-line pb-4">
-                    <CheckCircle2 size={17} className="mt-0.5 text-primary" aria-hidden="true" />
-                    <p className="text-sm leading-6 text-muted">{point}</p>
-                  </div>
-                ))}
-              </div>
               <Link
-                href="/demo"
-                className="mt-8 inline-flex h-11 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-ink transition hover:brightness-105"
+                href="/"
+                className="inline-flex items-center gap-3 font-semibold tracking-tight"
+                aria-label="OmniAgentOS home"
               >
-                Try sample workspace
-                <ArrowRight size={15} aria-hidden="true" />
+                <span className="grid size-10 place-items-center rounded-md bg-primary text-primary-ink">
+                  <Sparkles size={18} aria-hidden="true" />
+                </span>
+                <span className="text-lg">OmniAgentOS</span>
               </Link>
+              <p className="mt-16 inline-flex rounded-full border border-primary/25 bg-background/60 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-primary">
+                Private agent workspace
+              </p>
+              <p className="mt-5 max-w-xl text-5xl font-semibold leading-[1.02] tracking-tighter xl:text-6xl">
+                Run faster. Keep every action governed.
+              </p>
+              <p className="mt-6 max-w-lg text-base leading-7 text-muted">
+                One focused command center for plans, approvals, memory, and
+                release evidence.
+              </p>
+              <div className="mt-10 grid gap-3">
+                {proofPoints.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <div
+                      key={item.title}
+                      className="grid grid-cols-[2.75rem_1fr] gap-4 rounded-lg border border-line bg-background/60 p-4"
+                    >
+                      <div className="grid size-11 place-items-center rounded-md bg-primary/12 text-primary">
+                        <Icon size={18} aria-hidden="true" />
+                      </div>
+                      <div>
+                        <p className="font-semibold">{item.title}</p>
+                        <p className="mt-1 text-sm leading-6 text-muted">
+                          {item.body}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+            <div className="mt-12 flex items-center justify-between rounded-lg border border-primary/20 bg-background/60 px-4 py-3 text-sm">
+              <span className="text-muted">Owner access</span>
+              <strong className="text-primary">Single account</strong>
+            </div>
+          </aside>
 
-          <div className="flex items-center">
-            <div className="w-full rounded-lg border border-line bg-surface p-5 sm:p-8">
-              {children}
+          <section
+            aria-label="Sign in"
+            className="flex min-h-svh flex-col p-4 sm:p-8 lg:p-10"
+          >
+            <div className="flex min-h-11 items-center justify-between gap-4">
+              <Link
+                href="/"
+                className="inline-flex min-h-11 items-center gap-2 rounded-md text-sm font-semibold lg:hidden"
+              >
+                <span className="grid size-9 place-items-center rounded-md bg-primary text-primary-ink">
+                  <Sparkles size={16} aria-hidden="true" />
+                </span>
+                OmniAgentOS
+              </Link>
+              <span className="hidden lg:block" />
+              <ThemeToggle />
             </div>
-          </div>
+
+            <div className="flex flex-1 items-center justify-center py-8">
+              <div className="w-full max-w-md">{children}</div>
+            </div>
+
+            <Link
+              href="/"
+              className="inline-flex min-h-11 items-center gap-2 self-center rounded-md px-3 text-sm font-medium text-muted transition hover:text-foreground"
+            >
+              <ArrowLeft size={16} aria-hidden="true" />
+              Back to homepage
+            </Link>
+          </section>
         </div>
-      </section>
-    </main>
+      </main>
+    </>
   );
 }

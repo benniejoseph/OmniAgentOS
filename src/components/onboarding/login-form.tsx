@@ -38,13 +38,14 @@ export function LoginForm() {
           authenticated: boolean;
         };
         if (!canceled) {
-          setSessionState(
-            !validSession.authEnabled
-              ? "local"
-              : validSession.authenticated
-                ? "authenticated"
-                : "anonymous",
-          );
+          if (!validSession.authEnabled) {
+            setSessionState("local");
+          } else if (validSession.authenticated) {
+            setSessionState("authenticated");
+            router.replace("/onboarding");
+          } else {
+            setSessionState("anonymous");
+          }
         }
       } catch {
         if (!canceled) {
@@ -57,7 +58,7 @@ export function LoginForm() {
     return () => {
       canceled = true;
     };
-  }, [sessionCheckAttempt]);
+  }, [router, sessionCheckAttempt]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -73,11 +74,15 @@ export function LoginForm() {
       const body = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        setError(body.message || "Email or password is incorrect.");
+        setError(
+          response.status === 429
+            ? "Too many sign-in attempts. Try again shortly."
+            : body.message || "Email or password is incorrect.",
+        );
         return;
       }
 
-      router.push("/onboarding");
+      router.replace("/onboarding");
       router.refresh();
     } catch {
       setError("Sign in failed. Check your connection and try again.");
@@ -88,20 +93,9 @@ export function LoginForm() {
 
   if (sessionState === "authenticated") {
     return (
-      <div>
-        <div className="grid size-12 place-items-center rounded-md bg-primary/12 text-primary">
-          <ShieldCheck size={22} aria-hidden="true" />
-        </div>
-        <h2 className="mt-8 text-3xl font-semibold tracking-normal">You are already signed in.</h2>
-        <p className="mt-4 text-sm leading-6 text-muted">
-          Continue onboarding to configure the workspace and run the first governed agent workflow.
-        </p>
-        <Link
-          href="/onboarding"
-          className="mt-8 inline-flex h-11 items-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-ink transition hover:brightness-105"
-        >
-          Continue onboarding
-        </Link>
+      <div className="flex items-center gap-3 text-sm text-muted" role="status">
+        <Loader2 size={17} className="animate-spin" aria-hidden="true" />
+        Opening your workspace.
       </div>
     );
   }
@@ -124,12 +118,25 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={submit} className="space-y-6" noValidate>
-      <div>
-        <p className="text-sm font-semibold text-primary">Sign in</p>
-        <h2 className="mt-3 text-3xl font-semibold tracking-normal">Open your workspace.</h2>
+    <form
+      data-testid="login-form"
+      aria-busy={submitting}
+      onSubmit={submit}
+      className="space-y-6"
+      noValidate
+    >
+      <div className="text-center">
+        <div className="mx-auto grid size-12 place-items-center rounded-md bg-primary/12 text-primary">
+          <LogIn size={21} aria-hidden="true" />
+        </div>
+        <p className="mt-6 text-xs font-semibold uppercase tracking-[0.14em] text-primary">
+          Private owner access
+        </p>
+        <h1 className="mt-3 text-3xl font-semibold tracking-[-0.035em]">
+          Welcome back
+        </h1>
         <p className="mt-3 text-sm leading-6 text-muted">
-          Use the owner account configured for this private deployment.
+          Sign in to your OmniAgent workspace.
         </p>
       </div>
 

@@ -250,6 +250,10 @@ test("public and mobile application navigation stay usable", async ({ page }) =>
 
 test("local bootstrap authentication rejects bad credentials and signs in", async ({ page }) => {
   await page.goto("/login");
+  await expect(page.getByTestId("auth-story")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Welcome back" }),
+  ).toBeVisible();
   await page.getByLabel("Email address").fill(adminEmail);
   await page.locator("#password").fill("incorrect-password");
   await page.getByRole("button", { name: "Sign in" }).click();
@@ -260,6 +264,60 @@ test("local bootstrap authentication rejects bad credentials and signs in", asyn
   await page.locator("#password").fill(adminPassword);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/onboarding$/);
+});
+
+test("private login is form-first, theme-aware, and rate-limit safe", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/auth/login", async (route) => {
+    await route.fulfill({
+      status: 429,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "Too Many Requests",
+        message: "Too many login attempts. Try again later.",
+      }),
+    });
+  });
+  await page.goto("/login");
+
+  await expect(
+    page.getByRole("heading", { name: "Welcome back" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("auth-story")).toBeHidden();
+  await expect(page.getByTestId("login-form")).toBeVisible();
+  await expect(
+    page.getByText("Private workspace · No public registration"),
+  ).toBeVisible();
+
+  const initialPreference = await page
+    .locator("html")
+    .getAttribute("data-theme-preference");
+  await page.getByRole("button", { name: /^Theme:/ }).click();
+  const changedPreference = await page
+    .locator("html")
+    .getAttribute("data-theme-preference");
+  expect(changedPreference).not.toBe(initialPreference);
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-theme-preference",
+    changedPreference || "system",
+  );
+
+  const hasHorizontalOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth,
+  );
+  expect(hasHorizontalOverflow).toBe(false);
+
+  await page.getByLabel("Email address").fill(adminEmail);
+  await page
+    .getByLabel("Password", { exact: true })
+    .fill("rate-limited-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByTestId("login-form").getByRole("alert")).toContainText(
+    "Too many sign-in attempts. Try again shortly.",
+  );
 });
 
 test("command palette supports keyboard search, navigation, and escape", async ({ page }) => {
