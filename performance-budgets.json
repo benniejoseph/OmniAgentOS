@@ -1,6 +1,7 @@
 {
   "authenticatedReadP95Ms": 500,
   "sessionP95Ms": 300,
+  "releaseApiP95Ms": 1500,
   "landingP95Ms": 1500,
   "dashboardUsableMs": 1500,
   "firstSseStatusMs": 1000,

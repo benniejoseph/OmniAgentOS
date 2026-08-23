@@ -32,6 +32,7 @@ describe("frontend performance budgets", () => {
     expect(budgets).toMatchObject({
       authenticatedReadP95Ms: 500,
       sessionP95Ms: 300,
+      releaseApiP95Ms: 1_500,
       dashboardUsableMs: 1_500,
       firstSseStatusMs: 1_000,
       completionVisibilityMs: 1_000,
@@ -43,7 +44,7 @@ describe("frontend performance budgets", () => {
   });
 
   it("uses finalized Web Vitals and a browser dashboard release gate", async () => {
-    const [reporter, deployment, dashboardBenchmark, healthBadge] =
+    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge] =
       await Promise.all([
         readFile(
           path.resolve(
@@ -52,6 +53,7 @@ describe("frontend performance budgets", () => {
           "utf8",
         ),
         readFile(path.resolve("scripts/deploy-production.mjs"), "utf8"),
+        readFile(path.resolve("scripts/benchmark-preview.mjs"), "utf8"),
         readFile(path.resolve("scripts/benchmark-dashboard.mjs"), "utf8"),
         readFile(
           path.resolve(
@@ -64,6 +66,8 @@ describe("frontend performance budgets", () => {
     expect(reporter).toContain("onCLS(report)");
     expect(reporter).toContain("onINP(report)");
     expect(reporter).not.toContain("new PerformanceObserver");
+    expect(previewBenchmark).toContain("serverP95BudgetMs");
+    expect(previewBenchmark).toContain("parseServerDuration");
     expect(dashboardBenchmark).toContain('path: "/app"');
     expect(dashboardBenchmark).toContain("budgets.dashboardUsableMs");
     expect(deployment).toContain('["promote", stagedBaseUrl, "--yes"]');

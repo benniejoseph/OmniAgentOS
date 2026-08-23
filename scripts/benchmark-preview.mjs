@@ -37,20 +37,23 @@ const availableTargets = [
   {
     name: "health",
     path: "/api/health",
-    p95BudgetMs: budgets.authenticatedReadP95Ms,
+    p95BudgetMs: budgets.releaseApiP95Ms,
+    serverP95BudgetMs: budgets.authenticatedReadP95Ms,
   },
   ...(cookie
     ? [
         {
           name: "session",
           path: "/api/auth/session",
-          p95BudgetMs: budgets.sessionP95Ms,
+          p95BudgetMs: budgets.releaseApiP95Ms,
+          serverP95BudgetMs: budgets.sessionP95Ms,
           cookie,
         },
         {
           name: "workspace-summary",
           path: "/api/workspace-summary?limit=10&approvalLimit=10",
-          p95BudgetMs: budgets.authenticatedReadP95Ms,
+          p95BudgetMs: budgets.releaseApiP95Ms,
+          serverP95BudgetMs: budgets.authenticatedReadP95Ms,
           cookie,
         },
       ]
@@ -93,12 +96,23 @@ for (const target of targets) {
   const durations = measurements
     .map((measurement) => measurement.durationMs)
     .sort((left, right) => left - right);
+  const serverDurations = measurements
+    .map((measurement) => measurement.serverDurationMs)
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  const p95Ms = percentile(durations, 0.95);
+  const serverP95Ms = serverDurations.length
+    ? percentile(serverDurations, 0.95)
+    : undefined;
+  const serverPassed =
+    target.serverP95BudgetMs === undefined ||
+    (serverP95Ms !== undefined && serverP95Ms <= target.serverP95BudgetMs);
   const result = {
     name: target.name,
     path: target.path,
     samples,
     p50Ms: percentile(durations, 0.5),
-    p95Ms: percentile(durations, 0.95),
+    p95Ms,
     maxMs: Math.round(durations.at(-1) || 0),
     averageBytes: Math.round(
       measurements.reduce(
@@ -107,12 +121,18 @@ for (const target of targets) {
       ) / measurements.length,
     ),
     p95BudgetMs: target.p95BudgetMs,
-    passed: percentile(durations, 0.95) <= target.p95BudgetMs,
+    serverP95Ms,
+    serverP95BudgetMs: target.serverP95BudgetMs,
+    passed: p95Ms <= target.p95BudgetMs && serverPassed,
     latestServerTiming: measurements.at(-1)?.serverTiming,
   };
   results.push(result);
   console.log(
-    `${result.passed ? "PASS" : "FAIL"} ${result.name}: p50=${result.p50Ms}ms p95=${result.p95Ms}ms budget=${result.p95BudgetMs}ms`,
+    `${result.passed ? "PASS" : "FAIL"} ${result.name}: p50=${result.p50Ms}ms p95=${result.p95Ms}ms budget=${result.p95BudgetMs}ms${
+      result.serverP95BudgetMs === undefined
+        ? ""
+        : `; server p95=${result.serverP95Ms ?? "missing"}ms budget=${result.serverP95BudgetMs}ms`
+    }`,
   );
 }
 
@@ -162,7 +182,18 @@ async function requestTarget(target) {
     durationMs,
     bytes: body.byteLength,
     serverTiming: response.headers.get("server-timing") || undefined,
+    serverDurationMs: parseServerDuration(
+      response.headers.get("server-timing"),
+    ),
   };
+}
+
+function parseServerDuration(header) {
+  const match = String(header || "").match(
+    /(?:^|,)\s*total;dur=([0-9]+(?:\.[0-9]+)?)/i,
+  );
+  const duration = Number(match?.[1]);
+  return Number.isFinite(duration) ? duration : undefined;
 }
 
 function percentile(sorted, quantile) {
