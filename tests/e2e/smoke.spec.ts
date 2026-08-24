@@ -522,6 +522,7 @@ test("persisted readiness dismissal survives failed reload", async ({ page }) =>
   ).toContainText(
     "Readiness remains temporarily unavailable.",
   );
+  await expect(page.getByTestId("workspace-readiness-focus")).toBeFocused();
   expect(
     await page.evaluate(() =>
       window.localStorage.getItem("omniagent.workspace-readiness.compact.v1"),

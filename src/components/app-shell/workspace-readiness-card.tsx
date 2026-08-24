@@ -64,7 +64,9 @@ export function WorkspaceReadinessCard({
       // The expanded state remains available when storage is unavailable.
     }
     setDisclosure("expanded");
-    window.requestAnimationFrame(() => dismissRef.current?.focus());
+    window.requestAnimationFrame(() =>
+      (dismissRef.current ?? cardRef.current)?.focus(),
+    );
     if (state.status === "idle") {
       void onRefresh();
     }
