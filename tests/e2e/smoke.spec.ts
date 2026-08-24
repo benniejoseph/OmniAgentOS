@@ -14,7 +14,7 @@ let cachedSessionCookies: BrowserCookie[] = [];
 async function signIn(page: Page) {
   if (cachedSessionCookies.length) {
     await page.context().addCookies(cachedSessionCookies);
-    await page.goto("/onboarding");
+    await page.goto("/app");
     const session = await page.evaluate(async () => {
       const response = await fetch("/api/auth/session");
       return (await response.json()) as {
@@ -32,8 +32,8 @@ async function signIn(page: Page) {
     data: { email: adminEmail, password: adminPassword },
   });
   expect(login.ok()).toBeTruthy();
-  await page.goto("/onboarding");
-  await expect(page).toHaveURL(/\/onboarding$/);
+  await page.goto("/app");
+  await expect(page).toHaveURL(/\/app$/);
   cachedSessionCookies = (await page.context().cookies()).filter(
     (cookie) => cookie.name === "omniagent_session",
   );
@@ -269,7 +269,16 @@ test("local bootstrap authentication rejects bad credentials and signs in", asyn
 
   await page.locator("#password").fill(adminPassword);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).toHaveURL(/\/onboarding$/);
+  await expect(page).toHaveURL(/\/app$/);
+});
+
+test("retired onboarding redirects", async ({ page, request }) => {
+  test.slow();
+  const response = await request.get("/onboarding", { maxRedirects: 0 });
+  expect(response.status()).toBe(308);
+  expect(response.headers().location).toBe("/app");
+  await page.goto("/onboarding");
+  await expect(page).toHaveURL(/\/app$/);
 });
 
 test("local development login keeps a level-one heading and direct workspace action", async ({

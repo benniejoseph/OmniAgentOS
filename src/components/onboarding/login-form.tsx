@@ -42,7 +42,7 @@ export function LoginForm() {
             setSessionState("local");
           } else if (validSession.authenticated) {
             setSessionState("authenticated");
-            router.replace("/onboarding");
+            router.replace("/app");
           } else {
             setSessionState("anonymous");
           }
@@ -82,8 +82,7 @@ export function LoginForm() {
         return;
       }
 
-      router.replace("/onboarding");
-      router.refresh();
+      router.replace("/app");
     } catch {
       setError("Sign in failed. Check your connection and try again.");
     } finally {

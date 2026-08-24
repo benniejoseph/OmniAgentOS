@@ -1,16 +1,5 @@
-import type { Metadata } from "next";
-import { PublicHeader } from "@/components/marketing/public-header";
-import { OnboardingConsole } from "@/components/onboarding/onboarding-console";
-
-export const metadata: Metadata = {
-  title: "Onboarding",
-};
+import { permanentRedirect } from "next/navigation";
 
 export default function OnboardingPage() {
-  return (
-    <>
-      <PublicHeader />
-      <OnboardingConsole />
-    </>
-  );
+  permanentRedirect("/app");
 }

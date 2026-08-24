@@ -20,5 +20,7 @@ describe("private public entry surface", () => {
     expect(source).not.toContain("/api/onboarding/request-access");
     expect(source).not.toContain("Get access");
     expect(source).not.toContain("Request workspace");
+    expect(source).not.toContain('href="/onboarding"');
+    expect(source).not.toContain("Start onboarding");
   });
 });

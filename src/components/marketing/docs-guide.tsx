@@ -6,7 +6,6 @@ import {
   Brain,
   Cable,
   CheckCircle2,
-  ClipboardCheck,
   Database,
   KeyRound,
   Layers3,
@@ -42,15 +41,8 @@ const quickStart = [
     title: "Enter the private workspace",
     href: "/login",
     action: "Sign in",
-    body: "Use the configured owner account to continue into onboarding and the operating workspace.",
+    body: "Use the configured owner account to continue into the operating workspace.",
     icon: KeyRound,
-  },
-  {
-    title: "Complete onboarding",
-    href: "/onboarding",
-    action: "Start onboarding",
-    body: "Confirm workspace identity, choose a memory source, register one connector, run one workflow, and review evidence.",
-    icon: ClipboardCheck,
   },
   {
     title: "Operate from the app",
@@ -90,7 +82,6 @@ const userSurfaces = [
   ["/changelog", "Shipped slices and platform progress"],
   ["/demo", "Public sample workspace"],
   ["/login", "Secure session sign in"],
-  ["/onboarding", "First-run activation checklist"],
   ["/app", "Authenticated operations dashboard"],
   ["/app/command", "Goal entry and command center"],
   ["/app/memory", "Memory, RAG, graph, and provenance"],
@@ -138,7 +129,7 @@ const useCases = [
 
 const apiGroups = [
   {
-    title: "Auth, onboarding, and identity",
+    title: "Auth and identity",
     icon: KeyRound,
     routes: [
       "/api/auth/login",
@@ -229,7 +220,7 @@ const productionChecklist = [
   "Set production secrets in Vercel: OpenAI, database, auth bootstrap, cron, internal smoke, and signing values.",
   "Confirm /api/health returns healthy before inviting operators.",
   "Run Production Smoke after every deployment and inspect release evidence.",
-  "Use demo mode for prospects and onboarding mode for new teams before connecting real systems.",
+  "Use demo mode for prospects and dashboard readiness for new workspaces before connecting real systems.",
   "Register one connector at a time, start with dry runs, and require approval for high-risk operations.",
   "Review SLO warnings after smoke tests; cold-start latency warnings can be advisory when availability and errors are clean.",
   "Keep access requests separate from real account creation until admin invitation, billing, and SSO policies are finalized.",
@@ -249,14 +240,14 @@ export function DocsGuide() {
               How to use OmniAgentOS.
             </h1>
             <p className="mt-6 max-w-2xl text-lg leading-8 text-muted">
-              A complete operating manual for the public site, onboarding flow, command center, memory, workflows, connectors, governed tools, evaluations, observability, security, and production release gates.
+              A complete operating manual for the public site, dashboard readiness, command center, memory, workflows, connectors, governed tools, evaluations, observability, security, and production release gates.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Link
-                href="/onboarding"
+                href="/login"
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-primary px-5 text-sm font-semibold text-primary-ink transition hover:brightness-105"
               >
-                Start onboarding
+                Sign in
                 <ArrowRight size={16} aria-hidden="true" />
               </Link>
               <Link
@@ -310,7 +301,7 @@ export function DocsGuide() {
               <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Quick path</p>
               <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">Start with the safest path to value.</h2>
               <p className="mt-5 text-base leading-7 text-muted">
-                New users should understand the product in demo mode, request or enter access, complete onboarding, then operate from the dashboard and command center.
+                New users should understand the product in demo mode, sign in with owner access, then follow readiness from the dashboard and command center.
               </p>
             </div>
             <div className="grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-2">
@@ -442,7 +433,7 @@ export function DocsGuide() {
               <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Routes</p>
               <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">Where everything lives.</h2>
               <p className="mt-5 text-base leading-7 text-muted">
-                The product is split into public education, access, onboarding, and authenticated operations.
+                The product is split into public education, private access, and authenticated operations.
               </p>
             </div>
             <div className="grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-2">
@@ -557,7 +548,7 @@ export function DocsGuide() {
             <BookOpen size={24} className="text-primary" aria-hidden="true" />
             <h2 className="mt-4 text-3xl font-semibold tracking-normal">Run the guide with the product open.</h2>
             <p className="mt-3 max-w-2xl text-sm leading-6 opacity-72">
-              Keep this page beside the app while you complete onboarding, connect your first source, run your first workflow, and inspect release evidence.
+              Keep this page beside the app while you follow dashboard readiness, connect your first source, run your first workflow, and inspect release evidence.
             </p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">
