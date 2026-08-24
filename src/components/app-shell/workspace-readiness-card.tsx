@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRef, useState, useSyncExternalStore } from "react";
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import {
   CheckCircle2,
   Circle,
@@ -38,11 +38,12 @@ export function WorkspaceReadinessCard({
   const [disclosure, setDisclosure] = useState<
     "automatic" | "expanded" | "compact"
   >("automatic");
+  const cardRef = useRef<HTMLDivElement>(null);
   const reopenRef = useRef<HTMLButtonElement>(null);
   const dismissRef = useRef<HTMLButtonElement>(null);
   const data = "data" in state ? state.data : undefined;
   const isCompact =
-    state.status !== "error" &&
+    Boolean(data) &&
     (disclosure === "compact" ||
       (disclosure === "automatic" &&
         (manualCompact !== false || Boolean(data?.firstSuccessfulRun))));
@@ -70,102 +71,136 @@ export function WorkspaceReadinessCard({
     }
   }
 
+  function retry() {
+    cardRef.current?.focus();
+    void onRefresh();
+  }
+
   if (manualCompact === null) {
     return null;
   }
 
   if (isCompact) {
     return (
-      <section className="mt-4 rounded-lg border border-line bg-surface p-3">
-        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-surface-raised text-primary">
-              <Settings2 size={16} aria-hidden="true" />
-            </span>
-            <div className="min-w-0">
-              <p className="text-sm font-semibold">Setup and readiness</p>
-              <p className="mt-1 text-xs leading-5 text-muted">
-                {data
-                  ? progressLabel(data)
-                  : state.status === "loading"
-                    ? "Checking workspace readiness."
-                    : "Open the setup checklist when you need it."}
-              </p>
+      <ReadinessFocusBoundary focusRef={cardRef}>
+        <section className="mt-4 rounded-lg border border-line bg-surface p-3">
+          <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="grid size-9 shrink-0 place-items-center rounded-md bg-surface-raised text-primary">
+                <Settings2 size={16} aria-hidden="true" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">Setup and readiness</p>
+                <p className="mt-1 text-xs leading-5 text-muted">
+                  {data
+                    ? progressLabel(data)
+                    : state.status === "loading"
+                      ? "Checking workspace readiness."
+                      : "Open the setup checklist when you need it."}
+                </p>
+              </div>
             </div>
+            <button
+              ref={reopenRef}
+              type="button"
+              className="action-button w-full shrink-0 sm:w-auto"
+              onClick={reopen}
+              aria-expanded="false"
+              aria-controls="workspace-readiness-details"
+            >
+              Open setup and readiness
+            </button>
           </div>
-          <button
-            ref={reopenRef}
-            type="button"
-            className="action-button w-full shrink-0 sm:w-auto"
-            onClick={reopen}
-            aria-expanded="false"
-            aria-controls="workspace-readiness-details"
-          >
-            Open setup and readiness
-          </button>
-        </div>
-      </section>
+        </section>
+      </ReadinessFocusBoundary>
     );
   }
 
   if (state.status === "idle" || state.status === "loading") {
     return (
-      <section
-        id="workspace-readiness-details"
-        className="mt-4 rounded-lg border border-line bg-surface p-4"
-        aria-labelledby="workspace-readiness-heading"
-      >
-        <div className="flex items-center gap-3" role="status" aria-live="polite">
-          <Loader2
-            size={18}
-            className="shrink-0 animate-spin text-primary"
-            aria-hidden="true"
-          />
-          <div>
-            <h2 id="workspace-readiness-heading" className="text-sm font-semibold">
-              Checking workspace readiness
-            </h2>
-            <p className="mt-1 text-sm leading-6 text-muted">
-              You can keep working while setup checks load.
-            </p>
+      <ReadinessFocusBoundary focusRef={cardRef}>
+        <section
+          id="workspace-readiness-details"
+          className="mt-4 rounded-lg border border-line bg-surface p-4"
+          aria-labelledby="workspace-readiness-heading"
+        >
+          <div className="flex items-center gap-3" role="status" aria-live="polite">
+            <Loader2
+              size={18}
+              className="shrink-0 animate-spin text-primary"
+              aria-hidden="true"
+            />
+            <div>
+              <h2 id="workspace-readiness-heading" className="text-sm font-semibold">
+                Checking workspace readiness
+              </h2>
+              <p className="mt-1 text-sm leading-6 text-muted">
+                You can keep working while setup checks load.
+              </p>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </ReadinessFocusBoundary>
     );
   }
 
   if (state.status === "error" && !state.data) {
     return (
-      <section
-        id="workspace-readiness-details"
-        className="mt-4 rounded-lg border border-danger/40 bg-danger/10 p-4"
-        role="alert"
-        aria-labelledby="workspace-readiness-error"
-      >
-        <h2 id="workspace-readiness-error" className="text-sm font-semibold">
-          Setup readiness could not be loaded
-        </h2>
-        <p className="mt-1 text-sm leading-6 text-muted">{state.error}</p>
-        <button
-          type="button"
-          className="action-button mt-3 w-full sm:w-auto"
-          onClick={() => void onRefresh()}
+      <ReadinessFocusBoundary focusRef={cardRef}>
+        <section
+          id="workspace-readiness-details"
+          className="mt-4 rounded-lg border border-danger/40 bg-danger/10 p-4"
+          role="alert"
+          aria-labelledby="workspace-readiness-error"
         >
-          <RefreshCw size={15} aria-hidden="true" />
-          Retry
-        </button>
-      </section>
+          <h2 id="workspace-readiness-error" className="text-sm font-semibold">
+            Setup readiness could not be loaded
+          </h2>
+          <p className="mt-1 text-sm leading-6 text-muted">{state.error}</p>
+          <button
+            type="button"
+            className="action-button mt-3 w-full sm:w-auto"
+            onClick={retry}
+          >
+            <RefreshCw size={15} aria-hidden="true" />
+            Retry
+          </button>
+        </section>
+      </ReadinessFocusBoundary>
     );
   }
 
   return (
-    <ExpandedReadiness
-      state={state}
-      data={data as WorkspaceReadiness}
-      onRefresh={onRefresh}
-      onDismiss={dismiss}
-      dismissRef={dismissRef}
-    />
+    <ReadinessFocusBoundary focusRef={cardRef}>
+      <ExpandedReadiness
+        state={state}
+        data={data as WorkspaceReadiness}
+        onRefresh={onRefresh}
+        onRetry={retry}
+        onDismiss={dismiss}
+        dismissRef={dismissRef}
+      />
+    </ReadinessFocusBoundary>
+  );
+}
+
+function ReadinessFocusBoundary({
+  focusRef,
+  children,
+}: {
+  focusRef: RefObject<HTMLDivElement | null>;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      ref={focusRef}
+      role="group"
+      aria-label="Workspace readiness status"
+      data-testid="workspace-readiness-focus"
+      tabIndex={-1}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -173,12 +208,14 @@ function ExpandedReadiness({
   state,
   data,
   onRefresh,
+  onRetry,
   onDismiss,
   dismissRef,
 }: {
   state: WorkspaceReadinessState;
   data: WorkspaceReadiness;
   onRefresh: () => void | Promise<void>;
+  onRetry: () => void;
   onDismiss: () => void;
   dismissRef: RefObject<HTMLButtonElement | null>;
 }) {
@@ -217,7 +254,7 @@ function ExpandedReadiness({
           <button
             type="button"
             className="action-button mt-3 w-full sm:w-auto"
-            onClick={() => void onRefresh()}
+            onClick={onRetry}
           >
             <RefreshCw size={15} aria-hidden="true" />
             Retry

@@ -439,6 +439,7 @@ test("Start avoids admin evidence requests on its critical path", async ({
 });
 
 test("dashboard presents dismissible first-run readiness without blocking work", async ({ page }) => {
+  test.slow();
   await signIn(page);
   await page.route("**/api/workspace-readiness", (route) =>
     route.fulfill({
@@ -465,10 +466,29 @@ test("dashboard presents dismissible first-run readiness without blocking work",
   await expect(page.getByRole("link", { name: "Start first task" })).toHaveAttribute("href", "/app/command");
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   await page.getByRole("button", { name: "Dismiss setup for now" }).click();
-  await expect(page.getByRole("button", { name: "Open setup and readiness" })).toBeVisible();
+  const reopen = page.getByRole("button", { name: "Open setup and readiness" });
+  await expect(reopen).toBeVisible();
+  await expect(reopen).toBeFocused();
+  expect(
+    await page.evaluate(() =>
+      window.localStorage.getItem("omniagent.workspace-readiness.compact.v1"),
+    ),
+  ).toBe("1");
+
+  await page.reload();
+  await expect(reopen).toBeVisible();
+  await reopen.click();
+  await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Dismiss setup for now" })).toBeFocused();
+  expect(
+    await page.evaluate(() =>
+      window.localStorage.getItem("omniagent.workspace-readiness.compact.v1"),
+    ),
+  ).toBeNull();
 });
 
 test("dashboard keeps readiness compact after first success", async ({ page }) => {
+  test.slow();
   await signIn(page);
   await page.route("**/api/workspace-readiness", (route) =>
     route.fulfill({
@@ -500,17 +520,36 @@ test("dashboard keeps readiness compact after first success", async ({ page }) =
 });
 
 test("readiness failure leaves dashboard usable", async ({ page }) => {
+  test.slow();
   await signIn(page);
-  await page.route("**/api/workspace-readiness", (route) =>
-    route.fulfill({
-      status: 503,
+  let requests = 0;
+  await page.route("**/api/workspace-readiness", (route) => {
+    requests += 1;
+    return route.fulfill({
+      status: requests === 1 ? 503 : 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        error: "Service Unavailable",
-        message: "Readiness is temporarily unavailable.",
-      }),
-    }),
-  );
+      body: JSON.stringify(
+        requests === 1
+          ? {
+              error: "Service Unavailable",
+              message: "Readiness is temporarily unavailable.",
+            }
+          : {
+              generatedAt: new Date().toISOString(),
+              checks: {
+                identity: true,
+                knowledge: false,
+                connector: false,
+                firstRun: false,
+                evaluation: false,
+              },
+              completedCount: 1,
+              totalCount: 5,
+              firstSuccessfulRun: false,
+            },
+      ),
+    });
+  });
 
   await page.goto("/app");
   const readinessAlert = page.getByRole("alert").filter({
@@ -522,6 +561,165 @@ test("readiness failure leaves dashboard usable", async ({ page }) => {
       .getByTestId("activity-workspace")
       .getByRole("link", { name: "Start task", exact: true }),
   ).toHaveAttribute("href", "/app/command");
+  await readinessAlert.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByTestId("workspace-readiness-focus")).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeVisible();
+});
+
+test("readiness rejects malformed success and recovers", async ({ page }) => {
+  test.slow();
+  await signIn(page);
+  let requests = 0;
+  await page.route("**/api/workspace-readiness", (route) => {
+    requests += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        requests === 1
+          ? { generatedAt: new Date().toISOString(), checks: null }
+          : {
+              generatedAt: new Date().toISOString(),
+              checks: {
+                identity: true,
+                knowledge: false,
+                connector: false,
+                firstRun: false,
+                evaluation: false,
+              },
+              completedCount: 1,
+              totalCount: 5,
+              firstSuccessfulRun: false,
+            },
+      ),
+    });
+  });
+
+  await page.goto("/app");
+  const readinessAlert = page.getByRole("alert").filter({
+    has: page.getByRole("button", { name: "Retry" }),
+  });
+  await expect(readinessAlert).toContainText("Readiness response was invalid.");
+  await expect(
+    page
+      .getByTestId("activity-workspace")
+      .getByRole("link", { name: "Start task", exact: true }),
+  ).toHaveAttribute("href", "/app/command");
+  await readinessAlert.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByTestId("workspace-readiness-focus")).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeVisible();
+});
+
+test("readiness preserves stale data and can compact after refresh failure", async ({ page }) => {
+  test.slow();
+  await signIn(page);
+  let requests = 0;
+  await page.route("**/api/workspace-readiness", (route) => {
+    requests += 1;
+    return route.fulfill({
+      status: requests === 1 ? 200 : 503,
+      contentType: "application/json",
+      body: JSON.stringify(
+        requests === 1
+          ? {
+              generatedAt: new Date().toISOString(),
+              checks: {
+                identity: true,
+                knowledge: false,
+                connector: false,
+                firstRun: false,
+                evaluation: false,
+              },
+              completedCount: 1,
+              totalCount: 5,
+              firstSuccessfulRun: false,
+            }
+          : {
+              error: "Service Unavailable",
+              message: "Readiness refresh is temporarily unavailable.",
+            },
+      ),
+    });
+  });
+
+  await page.goto("/app");
+  await expect(page.getByText("1 of 5 readiness checks complete.")).toBeVisible();
+  await page.getByRole("button", { name: "Refresh setup" }).click();
+  const readinessAlert = page.getByRole("alert").filter({
+    has: page.getByRole("button", { name: "Retry" }),
+  });
+  await expect(readinessAlert).toContainText(
+    "Readiness refresh is temporarily unavailable.",
+  );
+  await expect(page.getByText("1 of 5 readiness checks complete.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Dismiss setup for now" }).click();
+  const reopen = page.getByRole("button", { name: "Open setup and readiness" });
+  await expect(reopen).toBeVisible();
+  await expect(reopen).toBeFocused();
+  expect(
+    await page.evaluate(() =>
+      window.localStorage.getItem("omniagent.workspace-readiness.compact.v1"),
+    ),
+  ).toBe("1");
+});
+
+test("readiness stays outside recurring dashboard refresh", async ({ page }) => {
+  test.slow();
+  await signIn(page);
+  let readinessRequests = 0;
+  let summaryRequests = 0;
+  await page.route("**/api/workspace-readiness", (route) => {
+    readinessRequests += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        checks: {
+          identity: true,
+          knowledge: false,
+          connector: false,
+          firstRun: false,
+          evaluation: false,
+        },
+        completedCount: 1,
+        totalCount: 5,
+        firstSuccessfulRun: false,
+      }),
+    });
+  });
+  await page.route("**/api/workspace-summary?*", (route) => {
+    summaryRequests += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        summary: {
+          sources: {
+            runs: {
+              status: "ready",
+              data: [
+                {
+                  id: "active-readiness-poll-check",
+                  status: "running",
+                  prompt: "Keep dashboard polling active",
+                  startedAt: new Date().toISOString(),
+                },
+              ],
+            },
+            workflows: { status: "ready", data: [] },
+            approvals: { status: "ready", data: [] },
+          },
+        },
+      }),
+    });
+  });
+
+  await page.goto("/app");
+  await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeVisible();
+  await expect.poll(() => summaryRequests, { timeout: 12_000 }).toBeGreaterThan(1);
+  expect(readinessRequests).toBe(1);
 });
 
 test("workspace summary panels settle independently", async ({ page }) => {

@@ -46,7 +46,7 @@ export function useWorkspaceReadiness({ enabled }: { enabled: boolean }) {
       }
       setState({
         status: "ready",
-        data: body as WorkspaceReadiness,
+        data: parseWorkspaceReadiness(body),
       });
     } catch (error) {
       if (controller.signal.aborted || activeRequestRef.current !== controller) {
@@ -89,4 +89,59 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown, fallback: string) {
   return typeof value === "string" && value ? value : fallback;
+}
+
+function parseWorkspaceReadiness(value: unknown): WorkspaceReadiness {
+  const record = asRecord(value);
+  const checksRecord = asRecord(record.checks);
+  const identity = checksRecord.identity;
+  const knowledge = checksRecord.knowledge;
+  const connector = checksRecord.connector;
+  const firstRun = checksRecord.firstRun;
+  const evaluation = checksRecord.evaluation;
+  const generatedAt = record.generatedAt;
+  const completedCount = record.completedCount;
+  const firstSuccessfulRun = record.firstSuccessfulRun;
+  const validChecks =
+    typeof identity === "boolean" &&
+    typeof knowledge === "boolean" &&
+    typeof connector === "boolean" &&
+    typeof firstRun === "boolean" &&
+    typeof evaluation === "boolean";
+
+  if (
+    typeof generatedAt !== "string" ||
+    !Number.isFinite(Date.parse(generatedAt)) ||
+    !validChecks ||
+    typeof completedCount !== "number" ||
+    !Number.isInteger(completedCount) ||
+    completedCount < 0 ||
+    completedCount > 5 ||
+    record.totalCount !== 5 ||
+    typeof firstSuccessfulRun !== "boolean"
+  ) {
+    throw new Error("Readiness response was invalid.");
+  }
+
+  const checks = {
+    identity,
+    knowledge,
+    connector,
+    firstRun,
+    evaluation,
+  };
+  if (
+    completedCount !== Object.values(checks).filter(Boolean).length ||
+    firstSuccessfulRun !== firstRun
+  ) {
+    throw new Error("Readiness response was invalid.");
+  }
+
+  return {
+    generatedAt,
+    checks,
+    completedCount,
+    totalCount: 5,
+    firstSuccessfulRun,
+  };
 }
