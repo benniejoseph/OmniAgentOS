@@ -20,6 +20,8 @@ import {
   canPerform,
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
+import { useWorkspaceReadiness } from "@/components/app-shell/use-workspace-readiness";
+import { WorkspaceReadinessCard } from "@/components/app-shell/workspace-readiness-card";
 import {
   beginResourceRefresh,
   settleResourceRefresh,
@@ -66,6 +68,7 @@ export function DashboardOverview() {
   const workspaceAvailable = Boolean(
     session && (!session.authEnabled || session.authenticated),
   );
+  const readiness = useWorkspaceReadiness({ enabled: workspaceAvailable });
   const canUseInbox = canPerform(role, "manage.workflow");
   const canReadIncidents = canPerform(role, "read.security");
   const isLoading =
@@ -286,6 +289,13 @@ export function DashboardOverview() {
           />
         </div>
       </section>
+
+      {workspaceAvailable ? (
+        <WorkspaceReadinessCard
+          state={readiness.state}
+          onRefresh={readiness.refresh}
+        />
+      ) : null}
 
       {sessionStatus === "error" ? (
         <StateNotice
