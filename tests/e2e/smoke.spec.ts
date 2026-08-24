@@ -487,6 +487,48 @@ test("dashboard presents dismissible first-run readiness without blocking work",
   ).toBeNull();
 });
 
+test("persisted readiness dismissal survives failed reload", async ({ page }) => {
+  test.slow();
+  await signIn(page);
+  await page.evaluate(() => {
+    window.localStorage.setItem(
+      "omniagent.workspace-readiness.compact.v1",
+      "1",
+    );
+  });
+  await page.route("**/api/workspace-readiness", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "Service Unavailable",
+        message: "Readiness remains temporarily unavailable.",
+      }),
+    }),
+  );
+
+  await page.goto("/app");
+  const reopen = page.getByRole("button", { name: "Open setup and readiness" });
+  await expect(reopen).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Setup readiness could not be loaded" }),
+  ).toBeHidden();
+
+  await reopen.click();
+  await expect(
+    page.getByRole("alert").filter({
+      has: page.getByRole("button", { name: "Retry" }),
+    }),
+  ).toContainText(
+    "Readiness remains temporarily unavailable.",
+  );
+  expect(
+    await page.evaluate(() =>
+      window.localStorage.getItem("omniagent.workspace-readiness.compact.v1"),
+    ),
+  ).toBeNull();
+});
+
 test("dashboard keeps readiness compact after first success", async ({ page }) => {
   test.slow();
   await signIn(page);

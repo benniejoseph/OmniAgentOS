@@ -43,10 +43,9 @@ export function WorkspaceReadinessCard({
   const dismissRef = useRef<HTMLButtonElement>(null);
   const data = "data" in state ? state.data : undefined;
   const isCompact =
-    Boolean(data) &&
-    (disclosure === "compact" ||
-      (disclosure === "automatic" &&
-        (manualCompact !== false || Boolean(data?.firstSuccessfulRun))));
+    disclosure === "compact" ||
+    (disclosure === "automatic" &&
+      (manualCompact === true || Boolean(data?.firstSuccessfulRun)));
 
   function dismiss() {
     try {
