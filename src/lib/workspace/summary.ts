@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { getApprovalQueue, type ApprovalQueueItem } from "@/lib/operations/queue";
 import { listAgentRunSummaries } from "@/lib/runs/store";
 import type { AgentRunRecord } from "@/lib/runs/types";
@@ -5,7 +6,6 @@ import { canPerform } from "@/lib/security/context";
 import type { SecurityRole } from "@/lib/security/types";
 import { listWorkflowRunSummaries } from "@/lib/workflows/store";
 import type { WorkflowRunRecord } from "@/lib/workflows/types";
-import { AsyncTtlCache } from "@/lib/performance/async-ttl-cache";
 
 export type WorkspaceSummarySource<T> =
   | { status: "ready"; data: T }
@@ -43,10 +43,25 @@ const defaultDependencies: WorkspaceSummaryDependencies = {
   getApprovals: getApprovalQueue,
 };
 
-// Dashboard refreshes are read-heavy and tolerate a short freshness window.
-// Keeping the cache tenant- and permission-scoped avoids repeated cross-region
-// transactions while preserving the existing RLS boundary on cache misses.
-const workspaceSummaryCache = new AsyncTtlCache<WorkspaceSummary>(15_000, 100);
+// Next's data cache is shared across serverless instances. The arguments are
+// part of the cache key, so tenant and permission boundaries remain isolated.
+const loadCachedWorkspaceSummary = unstable_cache(
+  (
+    tenantId: string,
+    role: SecurityRole,
+    boundedLimit: number,
+    boundedApprovalLimit: number,
+  ) =>
+    loadWorkspaceSummarySources({
+      tenantId,
+      role,
+      boundedLimit,
+      boundedApprovalLimit,
+      dependencies: defaultDependencies,
+    }),
+  ["workspace-summary-v1"],
+  { revalidate: 15 },
+);
 
 export async function loadWorkspaceSummary(
   {
@@ -65,20 +80,11 @@ export async function loadWorkspaceSummary(
   const boundedLimit = Math.min(Math.max(limit, 1), 50);
   const boundedApprovalLimit = Math.min(Math.max(approvalLimit, 1), 25);
   if (dependencies === defaultDependencies) {
-    const key = JSON.stringify([
+    return loadCachedWorkspaceSummary(
       tenantId,
       role,
       boundedLimit,
       boundedApprovalLimit,
-    ]);
-    return workspaceSummaryCache.get(key, () =>
-      loadWorkspaceSummarySources({
-        tenantId,
-        role,
-        boundedLimit,
-        boundedApprovalLimit,
-        dependencies,
-      }),
     );
   }
   return loadWorkspaceSummarySources({
