@@ -1,5 +1,5 @@
 app = "omniagent-os-worker"
-primary_region = "sin"
+primary_region = "iad"
 kill_signal = "SIGTERM"
 kill_timeout = "15s"
 
