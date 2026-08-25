@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AGENT_MAX_MESSAGE_CHARS, AGENT_MAX_MESSAGES, AGENT_RUNS_PER_MINUTE } from "@/lib/config";
+import { AGENT_MAX_MESSAGE_CHARS, AGENT_MAX_MESSAGES, AGENT_RUNS_PER_MINUTE, hasOpenAIKey } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
@@ -8,6 +8,12 @@ import {
 } from "@/lib/http/rate-limit";
 import { encodeSse, sseResponse } from "@/lib/http/sse";
 import { runAgent } from "@/lib/orchestration/agent-runner";
+import { getAgentPerformance } from "@/lib/agents/performance";
+import {
+  adaptSupervisorDecision,
+  compileThreadContext,
+  routeAgentRequest,
+} from "@/lib/orchestration/supervisor";
 import { redactSensitive } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -23,9 +29,14 @@ const chatMessageSchema = z.object({
 }).strict();
 
 const requestSchema = z.object({
-  messages: z.array(chatMessageSchema).min(1).max(AGENT_MAX_MESSAGES),
+  messages: z.array(chatMessageSchema).min(1).max(AGENT_MAX_MESSAGES).optional(),
+  threadId: z.string().uuid().optional(),
+  message: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS).optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
-}).strict();
+  agentId: z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"]).optional(),
+  specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
+  strategy: z.enum(["auto", "direct", "durable"]).optional(),
+}).strict().refine((value) => Boolean(value.message || value.messages?.length), { message: "A message is required." });
 
 async function POSTHandler(request: Request) {
   let body: unknown;
@@ -51,7 +62,7 @@ async function POSTHandler(request: Request) {
       resourceType: "agent_run",
       metadata: {
         mode: parsed.data.mode || "orchestrate",
-        messageCount: parsed.data.messages.length,
+        messageCount: parsed.data.messages?.length || 1,
       },
     });
   } catch (error) {
@@ -83,21 +94,108 @@ async function POSTHandler(request: Request) {
     );
   }
 
+  const mode = parsed.data.mode || "orchestrate";
+  const requestMessage = parsed.data.message || parsed.data.messages?.at(-1)?.content || "";
+  const inferredDecision = routeAgentRequest(requestMessage, mode, parsed.data.agentId);
+  const preliminaryDecision = parsed.data.strategy === "direct"
+    ? { ...inferredDecision, route: "direct" as const, reasons: ["Direct execution was explicitly selected."] }
+    : parsed.data.strategy === "durable"
+      ? { ...inferredDecision, route: "durable_workflow" as const, reasons: ["Durable execution was explicitly selected."] }
+      : inferredDecision;
+
+  if (preliminaryDecision.route === "durable_workflow") {
+    try {
+      await authorizeRequest({
+        request,
+        action: "manage.workflow",
+        resourceType: "workflow",
+        metadata: { source: "atomic_supervisor", threadId: parsed.data.threadId },
+      });
+    } catch (error) {
+      return forbiddenResponse(error);
+    }
+  }
+
   const encoder = new TextEncoder();
-  const safeMessages = parsed.data.messages.map((message) => ({
+  let threadId = parsed.data.threadId;
+  let safeMessages = (parsed.data.messages || []).map((message) => ({
     ...message,
     content: String(redactSensitive(message.content)),
   }));
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
+        controller.enqueue(encoder.encode(encodeSse({
+          type: "status",
+          label: "supervisor routing",
+          detail: preliminaryDecision.reasons[0] || "Selecting the right execution path.",
+        })));
+        const decision = adaptSupervisorDecision(
+          preliminaryDecision,
+          hasOpenAIKey() ? await getAgentPerformance(context.tenantId) : [],
+        );
+        if (parsed.data.message) {
+          const { appendThreadTurn, createThread, getThread, listThreadTurns } = await import("@/lib/threads/store");
+          const safeMessage = String(redactSensitive(parsed.data.message));
+          let thread = threadId ? await getThread(threadId, { tenantId: context.tenantId }) : null;
+          if (thread && thread.actorId !== context.actorId) thread = null;
+          if (threadId && !thread) throw new Error("Thread not found.");
+          if (!thread) {
+            thread = await createThread({ tenantId: context.tenantId, actorId: context.actorId, title: safeMessage, mode: parsed.data.mode || "orchestrate" });
+            threadId = thread.id;
+          }
+          await appendThreadTurn({ tenantId: context.tenantId, threadId: thread.id, role: "user", content: safeMessage });
+          if (decision.route === "durable_workflow") {
+            const { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } = await import("@/lib/workflows/queue");
+            const { createWorkflowRun } = await import("@/lib/workflows/store");
+            const detail = await createWorkflowRun({
+              tenantId: context.tenantId,
+              goal: safeMessage,
+              mode,
+              requireApproval: decision.requiresApproval,
+              metadata: {
+                source: "atomic_supervisor",
+                threadId: thread.id,
+                actorId: context.actorId,
+                primaryAgentId: decision.primaryAgentId,
+                specialistIds: decision.specialistIds,
+                learning: decision.learning,
+              },
+              idempotencyKey: `supervisor:${thread.id}:${Date.now()}`,
+            });
+            await enqueueWorkflowRunTick(detail.run.id, "supervisor_delegated", undefined, context.tenantId);
+            scheduleWorkflowQueueDrain(undefined, context.tenantId);
+            const acknowledgement = decision.requiresApproval
+              ? "I moved this into a durable workflow. It will preserve progress and pause before consequential external actions."
+              : "I moved this into a durable workflow so it can continue in the background and preserve progress.";
+            await appendThreadTurn({
+              tenantId: context.tenantId,
+              threadId: thread.id,
+              role: "assistant",
+              content: acknowledgement,
+            });
+            controller.enqueue(encoder.encode(encodeSse({
+              type: "delegated",
+              threadId: thread.id,
+              workflowId: detail.run.id,
+              acknowledgement,
+              reason: decision.reasons[0] || "Durable execution selected.",
+            })));
+            return;
+          }
+          const turns = await listThreadTurns(thread.id, { tenantId: context.tenantId, limit: AGENT_MAX_MESSAGES * 2 });
+          safeMessages = compileThreadContext(turns, { maxMessages: AGENT_MAX_MESSAGES }).messages;
+        }
         for await (const event of runAgent(
           {
-            ...parsed.data,
+            mode: parsed.data.mode,
+            threadId,
             messages: safeMessages,
             tenantId: context.tenantId,
             actorId: context.actorId,
             role: context.role,
+            agentId: decision.primaryAgentId,
+            specialistIds: decision.specialistIds,
           },
           request.signal,
         )) {

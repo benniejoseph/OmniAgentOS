@@ -1,4 +1,6 @@
+import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { foldRunProjection } from "@/lib/events/projections";
 import { listStreamEvents } from "@/lib/events/store";
 import {
@@ -10,12 +12,19 @@ import {
   appendRunEvent,
   cancelAgentRun,
   getAgentRun,
+  recordAgentRunFeedback,
 } from "@/lib/runs/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
+export const PATCH = withDatabaseRequestScope(PATCHHandler);
 export const DELETE = withDatabaseRequestScope(DELETEHandler);
+
+const feedbackSchema = z.object({
+  verdict: z.enum(["useful", "needs_work"]),
+  correction: z.string().trim().max(2_000).optional(),
+}).strict();
 
 async function GETHandler(
   request: Request,
@@ -61,6 +70,51 @@ async function GETHandler(
     replayed,
     consistent,
   });
+}
+
+async function PATCHHandler(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  const { id } = await context.params;
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
+  const parsed = feedbackSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json(
+      { error: "Invalid run feedback", details: parsed.error.flatten() },
+      { status: 400 },
+    );
+  }
+
+  let auth;
+  try {
+    auth = await authorizeRequest({
+      request,
+      action: "run.agent",
+      resourceType: "agent_run_feedback",
+      resourceId: id,
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
+  const run = await getAgentRun(id, { tenantId: auth.tenantId });
+  if (!run) return Response.json({ error: "Run not found." }, { status: 404 });
+  if (run.status !== "completed") {
+    return Response.json(
+      { error: "Feedback is available after a run completes." },
+      { status: 409 },
+    );
+  }
+  const updated = await recordAgentRunFeedback(id, parsed.data, {
+    tenantId: auth.tenantId,
+  });
+  return Response.json({ run: publicAgentRun(updated || run) });
 }
 
 async function DELETEHandler(

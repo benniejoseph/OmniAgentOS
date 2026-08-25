@@ -213,7 +213,7 @@ try {
     JSON.stringify(expectedTableNames)
   ) {
     throw new Error(
-      "Restored OmniAgent table inventory does not match the backup.",
+      "Restored Asael table inventory does not match the backup.",
     );
   }
   if (
@@ -239,7 +239,7 @@ try {
       backupManifest.sourceDatabaseIdentity.omniDatabaseId
   ) {
     throw new Error(
-      "Restored OmniAgent database identity does not match the backup source.",
+      "Restored Asael database identity does not match the backup source.",
     );
   }
 

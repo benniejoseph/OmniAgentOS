@@ -1,0 +1,332 @@
+<style>
+  .blueprint {
+    overflow: hidden;
+    margin-top: 26px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: #f5faf7;
+    color: #15231e;
+    box-shadow: 0 24px 70px rgba(10, 42, 30, 0.12);
+  }
+  .site-nav {
+    display: flex;
+    min-height: 52px;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #d9e8e0;
+    padding: 0 24px;
+    background: rgba(255,255,255,.86);
+  }
+  .site-brand { font-weight: 820; letter-spacing: -0.04em; }
+  .site-brand span { color: #278966; }
+  .site-links { color: #62756d; font-size: 11px; word-spacing: 14px; }
+  .site-login {
+    border-radius: 6px;
+    background: #287f62;
+    color: white;
+    padding: 8px 14px;
+    font-size: 10px;
+    font-weight: 750;
+  }
+  .hero {
+    display: grid;
+    grid-template-columns: .9fr 1.1fr;
+    gap: 34px;
+    align-items: center;
+    min-height: 365px;
+    padding: 54px 42px 38px;
+    background:
+      linear-gradient(90deg, rgba(245,250,247,.99), rgba(245,250,247,.92) 46%, rgba(245,250,247,.42)),
+      radial-gradient(circle at 85% 18%, rgba(39,137,102,.22), transparent 38%);
+  }
+  .eyebrow {
+    color: #287f62;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+  }
+  .hero h3 {
+    margin: 12px 0 0;
+    max-width: 430px;
+    font-size: clamp(38px, 5.2vw, 68px);
+    line-height: .95;
+    letter-spacing: -.065em;
+  }
+  .hero-copy {
+    max-width: 450px;
+    margin-top: 18px;
+    color: #5a6e65;
+    font-size: 14px;
+    line-height: 1.65;
+  }
+  .hero-actions { display: flex; gap: 9px; margin-top: 23px; }
+  .hero-button {
+    border: 1px solid #c7dad1;
+    border-radius: 6px;
+    padding: 10px 15px;
+    background: white;
+    font-size: 11px;
+    font-weight: 750;
+  }
+  .hero-button.primary { border-color: #287f62; background: #287f62; color: #fff; }
+  .health { margin-top: 18px; color: #62756d; font-size: 10px; }
+  .health::before {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 7px;
+    border-radius: 999px;
+    background: #38a978;
+    content: "";
+  }
+  .workspace {
+    overflow: hidden;
+    transform: perspective(900px) rotateY(-3deg);
+    border: 1px solid rgba(39,137,102,.28);
+    border-radius: 12px;
+    background: #0a1512;
+    color: #e9f7f1;
+    box-shadow: 0 28px 60px rgba(18, 70, 51, .2);
+  }
+  .workspace-head {
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(117,161,145,.18);
+    padding: 10px 13px;
+    font-size: 9px;
+  }
+  .workspace-body {
+    display: grid;
+    grid-template-columns: 95px 1fr;
+    min-height: 218px;
+  }
+  .workspace-rail {
+    border-right: 1px solid rgba(117,161,145,.18);
+    background: repeating-linear-gradient(180deg, transparent 0 32px, rgba(75,213,159,.08) 32px 33px);
+  }
+  .workspace-main { padding: 12px; }
+  .workspace-metrics { display: grid; grid-template-columns: repeat(3,1fr); gap: 7px; }
+  .workspace-metric {
+    min-height: 52px;
+    border: 1px solid rgba(117,161,145,.17);
+    border-radius: 6px;
+    padding: 8px;
+  }
+  .workspace-metric b { display:block; font-size: 15px; }
+  .workspace-metric span { color: #87a398; font-size: 7px; }
+  .workspace-chart {
+    min-height: 116px;
+    margin-top: 8px;
+    border: 1px solid rgba(117,161,145,.17);
+    border-radius: 6px;
+    background:
+      linear-gradient(145deg, transparent 39%, rgba(75,213,159,.72) 40% 41%, transparent 42% 55%, rgba(75,213,159,.72) 56% 57%, transparent 58%),
+      repeating-linear-gradient(0deg, transparent 0 27px, rgba(117,161,145,.08) 27px 28px);
+  }
+  .fact-strip {
+    display: grid;
+    grid-template-columns: repeat(4,1fr);
+    border-top: 1px solid #d9e8e0;
+    border-bottom: 1px solid #d9e8e0;
+    background: #fff;
+  }
+  .fact { padding: 20px 22px; border-right: 1px solid #d9e8e0; }
+  .fact:last-child { border-right: 0; }
+  .fact b { display:block; font-size: 20px; }
+  .fact span { color:#6c7f77; font-size:9px; }
+  .section {
+    padding: 52px 42px;
+    border-bottom: 1px solid #d9e8e0;
+  }
+  .section.alt { background:#eef6f2; }
+  .section-label { color:#287f62; font-size:9px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
+  .section h4 { margin:9px 0 0; max-width:560px; font-size:28px; line-height:1.05; letter-spacing:-.045em; }
+  .section-intro { max-width:600px; margin-top:12px; color:#667a71; font-size:11px; line-height:1.6; }
+  .loop {
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:8px;
+    margin-top:28px;
+  }
+  .loop-step {
+    min-height:100px;
+    border:1px solid #d3e4dc;
+    border-radius:8px;
+    padding:14px;
+    background:#fff;
+  }
+  .loop-step strong { color:#287f62; font-size:10px; }
+  .loop-step b { display:block; margin-top:28px; font-size:13px; }
+  .loop-step span { display:block; margin-top:6px; color:#71837b; font-size:8px; line-height:1.45; }
+  .capabilities {
+    display:grid;
+    grid-template-columns:repeat(3,1fr);
+    gap:8px;
+    margin-top:28px;
+  }
+  .capability {
+    min-height:112px;
+    border:1px solid #d3e4dc;
+    border-radius:8px;
+    padding:15px;
+    background:#f9fcfa;
+  }
+  .capability i {
+    display:grid;
+    width:27px;
+    height:27px;
+    place-items:center;
+    border-radius:5px;
+    background:#dff1e9;
+    color:#287f62;
+    font-style:normal;
+    font-size:9px;
+    font-weight:800;
+  }
+  .capability b { display:block; margin-top:17px; font-size:12px; }
+  .capability span { display:block; margin-top:7px; color:#71837b; font-size:8px; line-height:1.5; }
+  .walkthrough {
+    display:grid;
+    grid-template-columns:.8fr 1.2fr;
+    gap:28px;
+    align-items:center;
+    margin-top:28px;
+  }
+  .walk-list div { padding:13px 0; border-bottom:1px solid #d3e4dc; font-size:10px; font-weight:720; }
+  .walk-list span { float:right; color:#287f62; }
+  .walk-panel {
+    min-height:218px;
+    border:1px solid #c9ded4;
+    border-radius:10px;
+    background:#0b1713;
+    box-shadow:0 22px 45px rgba(22,68,51,.14);
+  }
+  .faq { display:grid; grid-template-columns:.7fr 1.3fr; gap:30px; margin-top:24px; }
+  .faq-list div { padding:14px 0; border-bottom:1px solid #d3e4dc; font-size:10px; }
+  .final-cta {
+    margin:42px;
+    border:1px solid #1f5f49;
+    border-radius:12px;
+    padding:42px;
+    background:#0a1512;
+    color:#f0faf6;
+    text-align:center;
+  }
+  .final-cta h4 { margin:0; font-size:30px; letter-spacing:-.045em; }
+  .final-cta p { color:#8fa89e; font-size:10px; }
+  .approval {
+    display:flex;
+    gap:12px;
+    margin-top:24px;
+  }
+  .approve-option {
+    flex:1;
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:16px;
+    cursor:pointer;
+  }
+  .approve-option.selected { border-color:var(--accent); }
+  .approve-option h3 { margin:0; font-size:15px; }
+  .approve-option p { margin:6px 0 0; color:var(--muted); font-size:12px; }
+  @media(max-width:850px){
+    .site-links{display:none}
+    .hero,.walkthrough,.faq{grid-template-columns:1fr}
+    .workspace{transform:none}
+    .fact-strip,.loop{grid-template-columns:repeat(2,1fr)}
+    .capabilities{grid-template-columns:1fr}
+    .approval{flex-direction:column}
+  }
+</style>
+
+<h2>Direction B · Homepage blueprint</h2>
+<p class="subtitle">TradeTaper’s full marketing rhythm, translated into OmniAgent’s adaptive light/dark system and private-owner use case.</p>
+
+<div class="blueprint">
+  <div class="site-nav">
+    <div class="site-brand">Omni<span>Agent</span>OS</div>
+    <div class="site-links">Platform Solutions Security Demo Docs</div>
+    <div class="site-login">Login</div>
+  </div>
+
+  <div class="hero">
+    <div>
+      <div class="eyebrow">Your governed agent operating layer</div>
+      <h3>Give agents goals. Keep the controls.</h3>
+      <div class="hero-copy">Plan, supervise, approve, and verify AI work in one focused workspace—with durable memory and evidence at every step.</div>
+      <div class="hero-actions"><div class="hero-button primary">Sign in</div><div class="hero-button">Explore sample workspace</div></div>
+      <div class="health">Live system health, loaded after the critical content</div>
+    </div>
+    <div class="workspace">
+      <div class="workspace-head"><span>Workspace overview</span><span class="signal">Operational</span></div>
+      <div class="workspace-body">
+        <div class="workspace-rail"></div>
+        <div class="workspace-main">
+          <div class="workspace-metrics"><div class="workspace-metric"><b>12</b><span>Active runs</span></div><div class="workspace-metric"><b>3</b><span>Approvals</span></div><div class="workspace-metric"><b>Pass</b><span>Release gate</span></div></div>
+          <div class="workspace-chart"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="fact-strip">
+    <div class="fact"><b>7</b><span>Recorded workflow stages</span></div>
+    <div class="fact"><b>3</b><span>Independent worker lanes</span></div>
+    <div class="fact"><b>100%</b><span>Tenant-scoped operations</span></div>
+    <div class="fact"><b>Live</b><span>Evidence-backed health</span></div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Operating loop</div>
+    <h4>From goal to evidence, one connected flow.</h4>
+    <div class="section-intro">The page explains the product through the same sequence the owner actually uses.</div>
+    <div class="loop">
+      <div class="loop-step"><strong>01</strong><b>Define</b><span>Set the goal and choose the operating mode.</span></div>
+      <div class="loop-step"><strong>02</strong><b>Execute</b><span>Follow the plan, context, and governed tools.</span></div>
+      <div class="loop-step"><strong>03</strong><b>Approve</b><span>Pause risky actions for a human decision.</span></div>
+      <div class="loop-step"><strong>04</strong><b>Verify</b><span>Review results, evidence, and durable memory.</span></div>
+    </div>
+  </div>
+
+  <div class="section alt">
+    <div class="section-label">Platform capabilities</div>
+    <h4>Designed like an operations desk, not a chatbot.</h4>
+    <div class="capabilities">
+      <div class="capability"><i>01</i><b>Agent command center</b><span>Start work, inspect progress, and understand the current step.</span></div>
+      <div class="capability"><i>02</i><b>Durable workflows</b><span>Resume long-running work instead of losing state between requests.</span></div>
+      <div class="capability"><i>03</i><b>Governed tools</b><span>Route risky actions through explicit policy and approval.</span></div>
+      <div class="capability"><i>04</i><b>Memory + knowledge</b><span>Retrieve prior context and retain useful outcomes with provenance.</span></div>
+      <div class="capability"><i>05</i><b>Observability</b><span>Trace runtime events, performance, incidents, and worker health.</span></div>
+      <div class="capability"><i>06</i><b>Release evidence</b><span>Prove isolation, security, worker readiness, and evaluation quality.</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Product walkthrough</div>
+    <h4>One workspace, shown as one operating story.</h4>
+    <div class="walkthrough">
+      <div class="walk-list"><div>Command <span>01</span></div><div>Workflow <span>02</span></div><div>Approval <span>03</span></div><div>Evidence <span>04</span></div></div>
+      <div class="walk-panel"></div>
+    </div>
+  </div>
+
+  <div class="section alt">
+    <div class="section-label">Trust and control</div>
+    <h4>Private by design. Observable by default.</h4>
+    <div class="section-intro">Pricing and testimonials are replaced with product-relevant proof: tenant isolation, server-held secrets, approval policy, release gates, and auditable results.</div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Frequently asked</div>
+    <h4>Clear answers before entering the workspace.</h4>
+    <div class="faq"><div class="section-intro">Short, owner-focused answers about agents, approvals, memory, data boundaries, and what the demo contains.</div><div class="faq-list"><div>What can OmniAgent do?</div><div>When does work pause for approval?</div><div>What information is retained?</div><div>How is release readiness verified?</div></div></div>
+  </div>
+
+  <div class="final-cta"><h4>Open the operating workspace.</h4><p>Private owner access · Email/password authentication · No public signup</p><div class="hero-actions" style="justify-content:center"><div class="hero-button primary">Sign in</div><div class="hero-button" style="background:transparent;color:#f0faf6;border-color:#385c4f">Open demo</div></div></div>
+</div>
+
+<div class="approval">
+  <div class="approve-option" data-choice="homepage-approved" onclick="toggleSelect(this)"><h3>Approve homepage structure</h3><p>Move on to the login page design.</p></div>
+  <div class="approve-option" data-choice="homepage-change" onclick="toggleSelect(this)"><h3>Request a change</h3><p>Tell me in chat what should be removed, added, or reordered.</p></div>
+</div>

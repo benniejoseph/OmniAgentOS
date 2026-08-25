@@ -1,5 +1,5 @@
 {
-  "name": "omniagent-os",
+  "name": "asael",
   "version": "0.1.0",
   "private": true,
   "engines": {
@@ -45,8 +45,10 @@
     "ajv": "^8.20.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.33.0",
+    "mammoth": "^1.12.1",
     "next": "16.3.1",
     "openai": "^6.49.0",
+    "pdf-parse": "^2.4.5",
     "postgres": "^3.4.9",
     "react": "19.2.8",
     "react-dom": "19.2.8",

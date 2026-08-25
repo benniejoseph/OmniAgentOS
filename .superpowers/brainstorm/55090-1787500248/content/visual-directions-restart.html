@@ -1,0 +1,239 @@
+<style>
+  .directions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+    margin-top: 28px;
+  }
+  .direction {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--surface);
+    cursor: pointer;
+    transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  }
+  .direction:hover {
+    transform: translateY(-3px);
+    border-color: var(--accent);
+    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.12);
+  }
+  .direction.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+  .preview {
+    min-height: 390px;
+    padding: 12px;
+    color: #f2fbf7;
+    background: #06100c;
+  }
+  .preview.adaptive {
+    color: #14231d;
+    background: #f5faf7;
+  }
+  .preview.cinematic {
+    background:
+      linear-gradient(90deg, rgba(5, 13, 14, 0.96), rgba(5, 13, 14, 0.58)),
+      radial-gradient(circle at 82% 24%, #286f60, #081417 55%, #050a0b);
+  }
+  .nav {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid rgba(120, 160, 144, 0.18);
+    padding: 2px 0 10px;
+    font-size: 6px;
+  }
+  .brand {
+    font-size: 9px;
+    font-weight: 800;
+  }
+  .brand span, .signal { color: #57dda8; }
+  .login {
+    border: 1px solid rgba(87, 221, 168, 0.45);
+    border-radius: 4px;
+    padding: 3px 6px;
+  }
+  .hero {
+    display: grid;
+    grid-template-columns: 0.92fr 1.08fr;
+    gap: 10px;
+    align-items: center;
+    min-height: 142px;
+    padding: 17px 0;
+  }
+  .eyebrow {
+    color: #47c895;
+    font-size: 5px;
+    font-weight: 800;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+  }
+  .headline {
+    margin-top: 7px;
+    font-size: 19px;
+    font-weight: 800;
+    line-height: 0.98;
+    letter-spacing: -0.045em;
+  }
+  .copy {
+    margin-top: 8px;
+    font-size: 6px;
+    line-height: 1.55;
+    opacity: 0.62;
+  }
+  .actions { display: flex; gap: 5px; margin-top: 10px; }
+  .action {
+    border: 1px solid rgba(120, 160, 144, 0.24);
+    border-radius: 3px;
+    padding: 4px 7px;
+    font-size: 5px;
+    font-weight: 700;
+  }
+  .action.primary {
+    border-color: #57dda8;
+    background: #57dda8;
+    color: #07120e;
+  }
+  .product {
+    min-height: 102px;
+    overflow: hidden;
+    border: 1px solid rgba(87, 221, 168, 0.26);
+    border-radius: 7px;
+    background: rgba(5, 15, 12, 0.82);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+  }
+  .adaptive .product {
+    background: #fff;
+    box-shadow: 0 14px 34px rgba(22, 59, 45, 0.10);
+  }
+  .product-head {
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(120, 160, 144, 0.17);
+    padding: 6px;
+    font-size: 5px;
+  }
+  .product-body {
+    display: grid;
+    grid-template-columns: 0.7fr 1.3fr;
+    gap: 5px;
+    padding: 6px;
+  }
+  .rail, .chart {
+    min-height: 72px;
+    border: 1px solid rgba(120, 160, 144, 0.16);
+    border-radius: 4px;
+  }
+  .rail {
+    background: repeating-linear-gradient(180deg, transparent 0 10px, rgba(87, 221, 168, 0.10) 10px 11px);
+  }
+  .chart {
+    background:
+      linear-gradient(145deg, transparent 39%, rgba(87, 221, 168, 0.76) 40% 42%, transparent 43% 56%, rgba(87, 221, 168, 0.76) 57% 59%, transparent 60%),
+      repeating-linear-gradient(0deg, transparent 0 14px, rgba(120, 160, 144, 0.08) 14px 15px);
+  }
+  .metrics, .flow, .features {
+    display: grid;
+    gap: 5px;
+  }
+  .metrics { grid-template-columns: repeat(4, 1fr); }
+  .flow { grid-template-columns: repeat(4, 1fr); margin-top: 8px; }
+  .features { grid-template-columns: repeat(3, 1fr); margin-top: 8px; }
+  .metric, .step, .feature {
+    border: 1px solid rgba(120, 160, 144, 0.16);
+    border-radius: 5px;
+    padding: 6px;
+  }
+  .metric b, .step b, .feature b {
+    display: block;
+    font-size: 7px;
+  }
+  .metric span, .step span, .feature span {
+    display: block;
+    margin-top: 5px;
+    font-size: 5px;
+    opacity: 0.55;
+  }
+  .step { min-height: 42px; }
+  .step b { color: #47c895; }
+  .feature { min-height: 52px; }
+  .section-title {
+    margin-top: 17px;
+    font-size: 10px;
+    font-weight: 760;
+    letter-spacing: -0.025em;
+  }
+  .caption { padding: 16px; }
+  .caption h3 { margin: 0; font-size: 17px; }
+  .caption p { margin: 7px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .recommended {
+    display: inline-flex;
+    margin-bottom: 8px;
+    border-radius: 999px;
+    padding: 4px 8px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+  @media (max-width: 1000px) {
+    .directions { grid-template-columns: 1fr; }
+  }
+</style>
+
+<h2>Which OmniAgent direction should we build?</h2>
+<p class="subtitle">All three keep the existing green/amber theme, light and dark modes, email/password login, and no public signup. Click one to select it.</p>
+
+<div class="directions">
+  <div class="direction" data-choice="reference-forward" onclick="toggleSelect(this)">
+    <div class="preview">
+      <div class="nav"><div class="brand">Omni<span>Agent</span></div><div>Platform · Workflows · Security · Docs</div><div class="login">Login</div></div>
+      <div class="hero">
+        <div><div class="eyebrow">Governed agent operations</div><div class="headline">A clearer way to run every agent.</div><div class="copy">Plan, supervise, approve, and verify AI work in one focused operating system.</div><div class="actions"><div class="action primary">Open workspace</div><div class="action">View demo</div></div></div>
+        <div class="product"><div class="product-head"><span>Command center</span><span class="signal">Live</span></div><div class="product-body"><div class="rail"></div><div class="chart"></div></div></div>
+      </div>
+      <div class="metrics"><div class="metric"><b>24</b><span>Runs</span></div><div class="metric"><b>98%</b><span>Policy</span></div><div class="metric"><b>12</b><span>Tools</span></div><div class="metric"><b>Ready</b><span>Release</span></div></div>
+      <div class="section-title">From goal to evidence, one connected flow.</div>
+      <div class="flow"><div class="step"><b>01</b><span>Define</span></div><div class="step"><b>02</b><span>Execute</span></div><div class="step"><b>03</b><span>Approve</span></div><div class="step"><b>04</b><span>Verify</span></div></div>
+      <div class="section-title">Built like an operations desk.</div>
+      <div class="features"><div class="feature"><b>Workflows</b><span>Resumable</span></div><div class="feature"><b>Approvals</b><span>Risk-aware</span></div><div class="feature"><b>Evidence</b><span>Verified</span></div></div>
+    </div>
+    <div class="caption"><h3>A · Reference-forward</h3><p>Closest to TradeTaper: dark-first, compact, dashboard-led, and information dense.</p></div>
+  </div>
+
+  <div class="direction" data-choice="omni-adaptive" onclick="toggleSelect(this)">
+    <div class="preview adaptive">
+      <div class="nav"><div class="brand">Omni<span>Agent</span>OS</div><div>Platform · Solutions · Security · Docs</div><div class="login">Login</div></div>
+      <div class="hero">
+        <div><div class="eyebrow">Your agent operating layer</div><div class="headline">Give agents goals. Keep the controls.</div><div class="copy">One workspace for plans, memory, tools, approvals, and trustworthy results.</div><div class="actions"><div class="action primary">Sign in</div><div class="action">Explore demo</div></div></div>
+        <div class="product"><div class="product-head"><span>Workspace overview</span><span class="signal">Healthy</span></div><div class="product-body"><div class="rail"></div><div class="chart"></div></div></div>
+      </div>
+      <div class="metrics"><div class="metric"><b>Live</b><span>Status</span></div><div class="metric"><b>3</b><span>Lanes</span></div><div class="metric"><b>100%</b><span>Scoped</span></div><div class="metric"><b>Pass</b><span>Gates</span></div></div>
+      <div class="section-title">One operating loop for serious AI work.</div>
+      <div class="flow"><div class="step"><b>01</b><span>Goal</span></div><div class="step"><b>02</b><span>Plan + act</span></div><div class="step"><b>03</b><span>Review</span></div><div class="step"><b>04</b><span>Learn</span></div></div>
+      <div class="section-title">Capability without mystery.</div>
+      <div class="features"><div class="feature"><b>Observable</b><span>Progress</span></div><div class="feature"><b>Governed</b><span>Controls</span></div><div class="feature"><b>Durable</b><span>Memory</span></div></div>
+    </div>
+    <div class="caption"><div class="recommended">Recommended</div><h3>B · Omni adaptive</h3><p>TradeTaper’s hierarchy rebuilt with exact OmniAgent tokens. Light and dark are equal, and the content remains distinctly ours.</p></div>
+  </div>
+
+  <div class="direction" data-choice="cinematic-control-room" onclick="toggleSelect(this)">
+    <div class="preview cinematic">
+      <div class="nav"><div class="brand">Omni<span>Agent</span>OS</div><div>Platform · Demo · Security · Docs</div><div class="login">Login</div></div>
+      <div class="hero" style="grid-template-columns:1.1fr .9fr;min-height:170px">
+        <div><div class="eyebrow">Human control · machine speed</div><div class="headline" style="font-size:22px">The command center for agent work.</div><div class="copy">A cinematic, product-image-led entry into the governed workspace.</div><div class="actions"><div class="action primary">Enter workspace</div><div class="action">Watch flow</div></div></div>
+        <div style="min-height:125px;border:1px solid rgba(87,221,168,.24);border-radius:8px;background:rgba(87,221,168,.08);box-shadow:0 20px 42px rgba(0,0,0,.34)"></div>
+      </div>
+      <div class="metrics"><div class="metric"><b>Plan</b><span>Intent</span></div><div class="metric"><b>Act</b><span>Tools</span></div><div class="metric"><b>See</b><span>Evidence</span></div><div class="metric"><b>Learn</b><span>Memory</span></div></div>
+      <div class="section-title">A visual narrative, not a dashboard catalogue.</div>
+      <div class="flow" style="grid-template-columns:1.35fr .65fr"><div class="step" style="min-height:70px"><b>Live workspace</b><span>One dominant product moment</span></div><div class="step" style="min-height:70px"><b>Controls</b><span>Focused proof</span></div></div>
+      <div class="section-title">Fewer sections, stronger atmosphere.</div>
+      <div class="features"><div class="feature"><b>Goal</b><span>Guided</span></div><div class="feature"><b>Approval</b><span>Amber</span></div><div class="feature"><b>Proof</b><span>Green</span></div></div>
+    </div>
+    <div class="caption"><h3>C · Cinematic control room</h3><p>Keeps the current image-led OmniAgent identity and borrows TradeTaper’s polish rather than its full density.</p></div>
+  </div>
+</div>

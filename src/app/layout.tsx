@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { WebVitalsReporter } from "@/components/performance/web-vitals-reporter";
+import { PwaRegistrar } from "@/components/pwa-registrar";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -15,11 +16,20 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+  ),
   title: {
-    default: "OmniAgentOS Operator Workspace",
-    template: "%s | OmniAgentOS",
+    default: "Asael — Personal Agent Arsenal",
+    template: "%s | Asael",
   },
-  description: "Give an AI agent work, watch its progress, resolve approvals, and review evidence.",
+  description: "A private second brain and adaptive personal agent arsenal.",
+  applicationName: "Asael",
+  openGraph: {
+    title: "Asael — Personal Agent Arsenal",
+    description: "A private second brain and adaptive personal agent arsenal.",
+    images: [{ url: "/asael-logo.png", width: 1200, height: 800, alt: "Asael" }],
+  },
 };
 
 const themeBootScript = `
@@ -54,6 +64,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
         <ThemeProvider />
         <WebVitalsReporter />
+        <PwaRegistrar />
         {children}
       </body>
     </html>

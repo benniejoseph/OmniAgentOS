@@ -195,7 +195,7 @@ test("homepage presents the private owner operating story responsively", async (
 
   const firstQuestion = page
     .locator("summary")
-    .filter({ hasText: "What can OmniAgent do?" });
+    .filter({ hasText: "What can Asael do?" });
   await firstQuestion.focus();
   await page.keyboard.press("Enter");
   await expect(
@@ -240,12 +240,209 @@ test("public and mobile application navigation stay usable", async ({ page }) =>
   await signIn(page);
   await page.goto("/app");
 
-  const mobileNavigation = page.getByRole("navigation", { name: "Primary workspace navigation" });
+  const mobileNavigation = page.getByRole("navigation", { name: "Everyday workspace navigation" });
   await expect(mobileNavigation).toBeVisible();
-  await expect(mobileNavigation.getByRole("link", { name: "Runs" })).toBeVisible();
-  await expect(mobileNavigation.getByRole("link", { name: "Start" })).toBeVisible();
-  await mobileNavigation.getByRole("link", { name: "Start" }).click();
+  await expect(mobileNavigation.getByRole("link")).toHaveCount(5);
+  await expect(mobileNavigation.getByRole("link", { name: "Today" })).toBeVisible();
+  await expect(mobileNavigation.getByRole("link", { name: "Ask" })).toBeVisible();
+  await page.getByRole("button", { name: "Open workspace menu" }).click();
+  await expect(page.getByRole("navigation", { name: "Complete workspace navigation" }).getByRole("link", { name: "Inbox" })).toBeVisible();
+  await page.getByRole("button", { name: "Close workspace menu" }).last().click();
+  await mobileNavigation.getByRole("link", { name: "Ask" }).click();
   await expect(page).toHaveURL(/\/app\/command$/);
+});
+
+test("capture inbox queues a note and a text file", async ({ page }) => {
+  await signIn(page);
+  await page.goto("/app/capture", { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "Save it before it disappears." })).toBeVisible();
+
+  await page.getByLabel("Note content").fill("The weekly review happens every Friday afternoon.");
+  await page.getByLabel("Title").fill("Weekly review cadence");
+  await page.getByRole("button", { name: "Save to memory" }).click();
+  await expect(page.getByText(/is queued for indexing/)).toBeVisible({ timeout: 20_000 });
+
+  await page.getByTestId("capture-file-input").setInputFiles({
+    name: "project-notes.md",
+    mimeType: "text/markdown",
+    buffer: Buffer.from("# Project notes\n\nUse source-backed answers."),
+  });
+  await expect(page.getByText("project-notes.md")).toBeVisible();
+  await page.getByRole("button", { name: "Save to memory" }).click();
+  await expect(page.getByText(/project notes.*queued for indexing/i)).toBeVisible({ timeout: 20_000 });
+
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("memory studio creates, inspects, corrects, and forgets a claim", async ({ page }) => {
+  await signIn(page);
+  await page.goto("/app/memory");
+  await expect(page.getByRole("heading", { name: "Memory", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Knowledge graph" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Add memory" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add a memory" });
+  await dialog.getByLabel("Title").fill("Preferred briefing style");
+  await dialog.getByLabel("What should your agents know?").fill("Lead with the decision, then show compact evidence.");
+  await dialog.getByRole("button", { name: "Save memory" }).click();
+
+  const inspector = page.locator(".memory-inspector");
+  await expect(inspector.getByRole("heading", { name: "Preferred briefing style" })).toBeVisible();
+  await inspector.getByLabel("Claim").fill("Lead with the recommendation, then show compact evidence.");
+  await inspector.getByRole("button", { name: "Save correction" }).click();
+  await expect(inspector.getByRole("button", { name: "Corrected" })).toBeVisible();
+
+  await inspector.getByRole("button", { name: "Forget" }).click();
+  await inspector.getByRole("button", { name: "Confirm forget" }).click();
+  await expect(page.getByText("Memory forgotten and removed from recall.")).toBeAttached();
+});
+
+test("agent arsenal stays navigable across themes and viewports", async ({ page }) => {
+  test.slow();
+  await signIn(page);
+  for (const [index, viewport] of [{ width: 1440, height: 900 }, { width: 390, height: 844 }].entries()) {
+    await page.setViewportSize(viewport);
+    await page.goto("/app/agents", { waitUntil: "networkidle" });
+    await expect(page.getByRole("heading", { name: "Your working intelligence." })).toBeVisible();
+    await page.getByRole("button", { name: /Scout, Research/ }).click();
+    await expect(page.getByRole("heading", { name: "Scout" })).toBeVisible();
+    await expect(page.getByText("Reads broadly, never performs external mutations.")).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    if (index === 0) {
+      await page.getByRole("link", { name: "Assign work to Scout" }).click();
+      await expect(page).toHaveURL(/\/app\/command\?agent=scout$/);
+      await expect(page.getByText("Scout is leading this task")).toBeVisible();
+      await page.goto("/app/agents", { waitUntil: "networkidle" });
+    }
+  }
+  await page.evaluate(() => localStorage.setItem("omniagent-theme", "dark"));
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.getByRole("button", { name: /Atlas, Supervisor/ })).toBeVisible();
+});
+
+test("Today captures and reversibly completes a focus item", async ({ page }) => {
+  const taskTitle = "Prepare the personal weekly review";
+  await signIn(page);
+  await page.goto("/app", { waitUntil: "networkidle" });
+  await expect(page.getByText(/things deserve your attention|Your field is clear/)).toBeVisible();
+  await page.getByLabel("Add a focus item").fill(taskTitle);
+  await page.getByLabel("Priority").selectOption("high");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const focusItem = page.locator(".today-focus-list .today-focus-item").filter({ hasText: taskTitle }).last();
+  await expect(focusItem).toBeVisible();
+  const dailyBrief = page.locator(".today-generated-brief");
+  await expect(dailyBrief.getByRole("heading", { name: "A clear starting point" })).toBeVisible();
+  const briefAction = dailyBrief.getByRole("button", { name: /Generate brief|Refresh/ });
+  await expect(briefAction).toBeVisible();
+  await briefAction.click();
+  await expect(dailyBrief).toContainText(taskTitle);
+  await focusItem.click();
+  await expect(focusItem).toHaveClass(/is-done/);
+  await focusItem.click();
+  await expect(focusItem).not.toHaveClass(/is-done/);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(page.locator(".today-focus-list").getByText(taskTitle, { exact: true }).first()).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("notification center delivers and completes an actionable reminder", async ({ page }) => {
+  const title = `Review the private brief ${crypto.randomUUID().slice(0, 6)}`;
+  await signIn(page);
+  await page.goto("/app", { waitUntil: "networkidle" });
+
+  await page.getByRole("button", { name: /^Notifications/ }).click();
+  let dialog = page.getByRole("dialog", { name: "Notifications" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByText("Delivery settings", { exact: true }).click();
+  const quietHours = dialog.getByLabel(/^Quiet hours/);
+  if (await quietHours.isChecked()) await quietHours.uncheck();
+  await dialog.getByRole("button", { name: "Save settings" }).click();
+  await dialog.getByRole("button", { name: "Close notifications" }).click();
+
+  const dueAt = await page.evaluate(() => {
+    const date = new Date(Date.now() - 60_000);
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+    return local.toISOString().slice(0, 16);
+  });
+  await page.getByLabel("Add a focus item").fill(title);
+  await page.getByLabel("Item type").selectOption("reminder");
+  await page.getByLabel("Due time").fill(dueAt);
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+
+  await page.getByRole("button", { name: /^Notifications/ }).click();
+  dialog = page.getByRole("dialog", { name: "Notifications" });
+  const reminder = dialog.getByRole("article").filter({ hasText: title });
+  await expect(reminder).toBeVisible();
+  await expect(reminder).toContainText("Overdue");
+  await reminder.getByRole("button", { name: "Complete" }).click();
+  await expect(dialog.getByText("Recent history")).toBeVisible();
+  await expect(dialog.locator(".notification-history")).toContainText(title);
+  await expect(dialog.locator(".notification-history")).toContainText("Completed");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("button", { name: /^Notifications/ })).toBeFocused();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: /^Notifications/ }).click();
+  dialog = page.getByRole("dialog", { name: "Notifications" });
+  await expect(dialog).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("Projects persists an Atlas plan and guarded task progress", async ({ page }) => {
+  test.slow();
+  const projectTitle = `Build a private agent system ${crypto.randomUUID().slice(0, 6)}`;
+  await signIn(page);
+  await page.goto("/app/projects", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+  await page.locator(".projects-create-button").click();
+  await page.getByLabel("Project name").fill(projectTitle);
+  await page.getByLabel("Successful outcome").fill("A repeatable agent workflow completes bounded work with evidence and review.");
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  await expect(page.getByRole("heading", { name: projectTitle })).toBeVisible();
+
+  await page.getByRole("button", { name: "Plan with Atlas" }).click();
+  await expect(page.getByText("Atlas added a plan")).toBeVisible();
+  const tasks = page.locator(".project-task-list .project-task");
+  await expect(tasks).toHaveCount(5);
+  await expect(page.locator(".project-task-list")).toContainText("Scout");
+  await expect(page.locator(".project-task-list")).toContainText("Forge");
+  await expect(page.locator(".project-task-list")).toContainText("Sentinel");
+
+  const firstTask = tasks.first();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes("/tasks/") && response.request().method() === "PATCH" && response.ok()),
+    firstTask.getByRole("button", { name: /^Start / }).click(),
+  ]);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(firstTask).toHaveClass(/is-doing/);
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes("/tasks/") && response.request().method() === "PATCH" && response.ok()),
+    firstTask.getByRole("button", { name: /^Complete / }).click(),
+  ]);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(firstTask).toHaveClass(/is-done/);
+  await expect(firstTask.getByRole("link", { name: /^Assign / })).toHaveAttribute("href", /\/app\/command\?agent=atlas&prompt=/);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: projectTitle })).toBeVisible();
+  await expect(page.locator(".project-task-list .project-task").first()).toHaveClass(/is-done/);
+  await expect(page.getByRole("heading", { name: "Ready for deployment" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Verified work becomes memory" })).toBeVisible();
+  await expect(page.getByText("No verified outputs yet")).toBeVisible();
+  await page.getByLabel("Operating mode").selectOption("autonomous");
+  await page.getByLabel("Task budget").fill("3");
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith("/execution") && response.request().method() === "POST" && response.ok()),
+    page.getByRole("button", { name: "Start agents" }).click(),
+  ]);
+  await expect(page.locator(".project-execution-deck")).toHaveClass(/is-running|is-waiting_approval/);
+  await expect(page.locator(".project-task-live, .project-task-action").first()).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test("local bootstrap authentication rejects bad credentials and signs in", async ({ page }) => {
@@ -255,7 +452,7 @@ test("local bootstrap authentication rejects bad credentials and signs in", asyn
     page.getByRole("heading", { name: "Welcome back" }),
   ).toBeVisible();
   const desktopHomeLink = page.getByRole("link", {
-    name: "OmniAgentOS home",
+    name: "Asael home",
   });
   const desktopHomeLinkBox = await desktopHomeLink.boundingBox();
   expect(desktopHomeLinkBox).not.toBeNull();
@@ -370,6 +567,7 @@ test("command palette supports keyboard search, navigation, and escape", async (
   await signIn(page);
   await page.goto("/app");
 
+  await expect(page.getByTestId("command-palette-trigger")).toBeVisible();
   await page.keyboard.press("Control+K");
   const palette = page.getByRole("dialog", { name: "Go to a workspace" });
   await expect(palette).toBeVisible();
@@ -381,7 +579,7 @@ test("command palette supports keyboard search, navigation, and escape", async (
   await page.keyboard.press("Tab");
   await expect(search).toBeFocused();
   await search.fill("results");
-  await expect(palette.getByRole("option")).toHaveCount(1);
+  await expect(palette.getByRole("option", { name: /^Results/ })).toHaveAttribute("aria-selected", "true");
   await search.press("Enter");
   await expect(page).toHaveURL(/\/app\/results$/);
 
@@ -396,6 +594,15 @@ test("command palette supports keyboard search, navigation, and escape", async (
 test("agent work streams a clearly labeled fallback into results", async ({ page }) => {
   await signIn(page);
   await page.goto("/app/command");
+  // Local Playwright runs use the Next development server. Warm both route
+  // modules so this assertion measures application latency, not compilation.
+  await page.evaluate(async () => {
+    await fetch("/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "Warm the agent route." }] }),
+    }).then((response) => response.text());
+  });
   await page
     .getByRole("textbox", { name: /^Task outcome/ })
     .fill("Summarize the release posture without making external changes.");
@@ -413,6 +620,15 @@ test("agent work streams a clearly labeled fallback into results", async ({ page
   await expect(executionPanel).toContainText(
     "OPENAI_API_KEY is not configured, so no model ran.",
   );
+
+  await executionPanel.getByRole("button", { name: "Needs work" }).click();
+  await executionPanel
+    .getByLabel("What should change next time?")
+    .fill("Lead with the recommendation and make the evidence easier to scan.");
+  await executionPanel.getByRole("button", { name: "Save feedback" }).click();
+  await expect(executionPanel.getByText(/Correction saved/)).toBeVisible();
+  await executionPanel.getByRole("button", { name: "Useful" }).click();
+  await expect(executionPanel.getByText(/Useful outcome saved/)).toBeVisible();
 
   await page.getByRole("tab", { name: "Result" }).click();
   const resultsLink = page.getByRole("link", { name: "Open Results" });
@@ -573,7 +789,6 @@ test("dashboard keeps readiness compact after first success", async ({ page }) =
 
 test("readiness failure leaves dashboard usable", async ({ page }) => {
   test.slow();
-  await signIn(page);
   let requests = 0;
   await page.route("**/api/workspace-readiness", (route) => {
     requests += 1;
@@ -602,6 +817,8 @@ test("readiness failure leaves dashboard usable", async ({ page }) => {
       ),
     });
   });
+
+  await signIn(page);
 
   await page.goto("/app");
   const readinessAlert = page.getByRole("alert").filter({
@@ -966,8 +1183,8 @@ test("new connector contracts stay quarantined until reviewed in place", async (
         hasText:
           "Approved 1 exact OpenAPI contract and activated the connector.",
       }),
-  ).toBeVisible();
-  await expect(reviewCard).toBeHidden();
+  ).toBeVisible({ timeout: 20_000 });
+  await expect(reviewCard).toBeHidden({ timeout: 20_000 });
 
   const reviewed = await page.evaluate(async () => {
     const response = await fetch("/api/openapi-connectors");
@@ -984,4 +1201,21 @@ test("new connector contracts stay quarantined until reviewed in place", async (
     status: "active",
   });
   expect(connector).toMatchObject({ status: "active" });
+});
+
+test("every navigation destination renders a focused page without horizontal overflow", async ({ page }) => {
+  test.setTimeout(240_000);
+  await signIn(page);
+  const routes = [
+    "/app", "/app/command", "/app/capture", "/app/projects", "/app/memory",
+    "/app/agents", "/app/workflows", "/app/connectors", "/app/tools",
+    "/app/approvals", "/app/results", "/app/evaluations", "/app/observability",
+    "/app/security", "/app/settings",
+  ];
+  for (const route of routes) {
+    await page.goto(route);
+    await expect(page.locator("h1"), `${route} should expose one page title`).toHaveCount(1);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+    expect(overflow, `${route} should fit the viewport`).toBe(false);
+  }
 });

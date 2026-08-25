@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { DashboardOverview } from "@/components/app-shell/dashboard-overview";
+import { TodayWorkspace } from "@/components/today-workspace";
 
 export const metadata: Metadata = {
-  title: "Runs",
+  title: "Today",
 };
 
 export default function AppDashboardPage() {
-  return <DashboardOverview />;
+  return <TodayWorkspace />;
 }

@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "description": "Golden agent tasks scored on every change. Assertions are deterministic substring/regex checks against the agent's final response. Keep tasks small, real, and gradeable.",
+  "version": 2,
+  "description": "Golden agent tasks score answer content plus citations, tool trajectory, latency, fallbacks, and configured cost budgets. Keep tasks small, real, and gradeable.",
   "tasks": [
     {
       "id": "memory-summary",

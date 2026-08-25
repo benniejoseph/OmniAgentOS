@@ -253,6 +253,45 @@ describe("agent run approval continuations (file mode)", () => {
     expect(event.payload.responseSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("persists reversible outcome feedback and returns recent correction guidance", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({
+      tenantId: "feedback",
+      mode: "research",
+      prompt: "compare options",
+      messages: [{ role: "user", content: "compare options" }],
+      agentId: "scout",
+    });
+    await store.completeAgentRun(run.id, "comparison");
+    await expect(
+      store.recordAgentRunFeedback(
+        run.id,
+        {
+          verdict: "needs_work",
+          correction: "  Lead with the recommendation and verify every source.  ",
+        },
+        { tenantId: "feedback" },
+      ),
+    ).resolves.toMatchObject({
+      feedback: {
+        verdict: "needs_work",
+        correction: "Lead with the recommendation and verify every source.",
+      },
+    });
+    await expect(
+      store.getAgentFeedbackGuidance("scout", { tenantId: "feedback" }),
+    ).resolves.toEqual([
+      "Lead with the recommendation and verify every source.",
+    ]);
+    await expect(
+      store.recordAgentRunFeedback(
+        run.id,
+        { verdict: "useful" },
+        { tenantId: "feedback" },
+      ),
+    ).resolves.toMatchObject({ feedback: { verdict: "useful" } });
+  });
+
   it("redacts persisted run text and hides resume internals from API records", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({

@@ -10,16 +10,20 @@ import {
 } from "@/lib/operations/job-queue";
 import { redactSensitive } from "@/lib/security/context";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
-import type { AgentRunContinuation, AgentRunEventRecord, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
+import type { GroundingReport } from "@/lib/rag/citations";
+import type { AgentRunContinuation, AgentRunEventRecord, AgentRunFeedback, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 
 export async function createAgentRun(input: {
   tenantId?: string;
+  threadId?: string;
   mode: AgentMode;
   prompt: string;
   messages: ChatMessage[];
   model?: string;
+  agentId?: string;
+  specialistIds?: string[];
 }) {
   const now = new Date().toISOString();
   const safeMessages = input.messages.map((message) => ({
@@ -29,11 +33,16 @@ export async function createAgentRun(input: {
   const run: AgentRunRecord = {
     id: randomUUID(),
     tenantId: normalizeTenantId(input.tenantId),
+    threadId: input.threadId,
     mode: input.mode,
     status: "running",
     prompt: safeRunText(input.prompt, 30_000),
     messages: safeMessages,
     model: input.model,
+    agentId: input.agentId || "atlas",
+    specialistIds: Array.from(
+      new Set([input.agentId || "atlas", ...(input.specialistIds || [])]),
+    ).slice(0, 5),
     memoryContextCount: 0,
     consolidationCount: 0,
     startedAt: now,
@@ -43,11 +52,11 @@ export async function createAgentRun(input: {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_agent_runs (
-        id, tenant_id, mode, status, prompt, messages, model, memory_context_count, started_at
+        id, tenant_id, thread_id, mode, status, prompt, messages, model, agent_id, specialist_ids, memory_context_count, started_at
       )
       VALUES (
-        ${run.id}, ${run.tenantId}, ${run.mode}, ${run.status}, ${run.prompt}, ${run.messages}::jsonb,
-        ${run.model || null}, ${run.memoryContextCount}, ${run.startedAt}
+        ${run.id}, ${run.tenantId}, ${run.threadId || null}, ${run.mode}, ${run.status}, ${run.prompt}, ${run.messages}::jsonb,
+        ${run.model || null}, ${run.agentId}, ${run.specialistIds}, ${run.memoryContextCount}, ${run.startedAt}
       )
     `;
     return run;
@@ -136,6 +145,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
     type: event.type,
     responseLength: event.response.length,
     responseSha256: createHash("sha256").update(event.response).digest("hex"),
+    grounding: event.grounding,
   };
 }
 
@@ -193,8 +203,97 @@ export async function recordRunConsolidation(
   });
 }
 
-export async function completeAgentRun(runId: string, response: string) {
-  return setRunStatus(runId, "completed", { response });
+export async function recordAgentRunFeedback(
+  runId: string,
+  input: { verdict: AgentRunFeedback["verdict"]; correction?: string },
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const feedback: AgentRunFeedback = {
+    verdict: input.verdict,
+    correction: input.correction
+      ? safeRunText(input.correction.trim(), 2_000)
+      : undefined,
+    updatedAt: new Date().toISOString(),
+  };
+
+  let updated: AgentRunRecord | undefined;
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      UPDATE omni_agent_runs
+      SET feedback = ${feedback}::jsonb
+      WHERE id = ${runId}
+        AND tenant_id = ${tenantId}
+        AND status = 'completed'
+      RETURNING *
+    `;
+    updated = rows[0] ? runFromRow(rows[0]) : undefined;
+  } else {
+    await updateFileRun(runId, (run) => {
+      if (
+        normalizeTenantId(run.tenantId) === tenantId &&
+        run.status === "completed"
+      ) {
+        run.feedback = feedback;
+        updated = run;
+      }
+    });
+  }
+
+  if (updated) {
+    await appendDomainEventSafely({
+      tenantId,
+      streamId: `run:${runId}`,
+      type: "run.feedback",
+      payload: {
+        verdict: feedback.verdict,
+        hasCorrection: Boolean(feedback.correction),
+      },
+      correlationId: runId,
+    });
+  }
+  return updated ? sanitizeAgentRunRecord(updated) : undefined;
+}
+
+export async function getAgentFeedbackGuidance(
+  agentId: string,
+  options: { tenantId?: string; limit?: number } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const limit = Math.min(Math.max(options.limit || 3, 1), 5);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT feedback
+      FROM omni_agent_runs
+      WHERE tenant_id = ${tenantId}
+        AND agent_id = ${agentId}
+        AND feedback->>'verdict' = 'needs_work'
+        AND COALESCE(feedback->>'correction', '') <> ''
+      ORDER BY started_at DESC
+      LIMIT ${limit}
+    `;
+    return rows
+      .map((row) => parseAgentRunFeedback(row.feedback)?.correction)
+      .filter((value): value is string => Boolean(value));
+  }
+
+  const ledger = await readRunLedger();
+  return ledger.runs
+    .filter((run) =>
+      normalizeTenantId(run.tenantId) === tenantId &&
+      (run.agentId || "atlas") === agentId &&
+      run.feedback?.verdict === "needs_work" &&
+      Boolean(run.feedback.correction)
+    )
+    .slice(0, limit)
+    .map((run) => run.feedback?.correction)
+    .filter((value): value is string => Boolean(value));
+}
+
+export async function completeAgentRun(runId: string, response: string, grounding?: GroundingReport) {
+  return setRunStatus(runId, "completed", { response, grounding });
 }
 
 export async function failAgentRun(runId: string, error: string) {
@@ -473,7 +572,7 @@ export async function listAgentRunSummaries(
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT
-        id, tenant_id, mode, status, prompt, response, error, continuation,
+        id, tenant_id, mode, status, prompt, response, grounding, feedback, error, continuation, agent_id, specialist_ids,
         started_at, completed_at
       FROM omni_agent_runs
       WHERE tenant_id = ${tenantId}
@@ -545,7 +644,7 @@ export async function getRunStats(options: { tenantId?: string } = {}) {
 async function setRunStatus(
   runId: string,
   status: RunStatus,
-  values: { response?: string; error?: string },
+  values: { response?: string; error?: string; grounding?: GroundingReport },
 ) {
   const completedAt = new Date().toISOString();
   const safeResponse = values.response
@@ -559,6 +658,7 @@ async function setRunStatus(
       UPDATE omni_agent_runs
       SET status = ${status},
           response = ${safeResponse || null},
+          grounding = ${values.grounding || null}::jsonb,
           error = ${safeError || null},
           continuation = NULL,
           completed_at = ${completedAt}
@@ -577,6 +677,7 @@ async function setRunStatus(
     changed = true;
     run.status = status;
     run.response = safeResponse;
+    run.grounding = values.grounding;
     run.error = safeError;
     run.continuation = undefined;
     run.completedAt = completedAt;
@@ -637,14 +738,19 @@ function runFromRow(row: Record<string, unknown>): AgentRunRecord {
   return sanitizeAgentRunRecord({
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
+    threadId: row.thread_id ? String(row.thread_id) : undefined,
     mode: String(row.mode) as AgentMode,
     status: String(row.status) as RunStatus,
     prompt: String(row.prompt || ""),
     messages: Array.isArray(row.messages) ? (row.messages as ChatMessage[]) : [],
     model: row.model ? String(row.model) : undefined,
+    agentId: row.agent_id ? String(row.agent_id) : "atlas",
+    specialistIds: Array.isArray(row.specialist_ids) ? row.specialist_ids.map(String) : [],
+    feedback: parseAgentRunFeedback(row.feedback),
     memoryContextCount: Number(row.memory_context_count || 0),
     consolidationCount: Number(row.consolidation_count || 0),
     response: row.response ? String(row.response) : undefined,
+    grounding: parseGroundingReport(row.grounding),
     error: row.error ? String(row.error) : undefined,
     consolidationError: row.consolidation_error ? String(row.consolidation_error) : undefined,
     continuation: parseContinuation(row.continuation),
@@ -662,6 +768,9 @@ function sanitizeAgentRunRecord(run: AgentRunRecord): AgentRunRecord {
     response: run.response
       ? String(redactSensitive(run.response))
       : undefined,
+    grounding: run.grounding
+      ? (redactSensitive(run.grounding) as GroundingReport)
+      : undefined,
     error: run.error
       ? String(redactSensitive(run.error)).slice(0, 2_000)
       : undefined,
@@ -671,6 +780,31 @@ function sanitizeAgentRunRecord(run: AgentRunRecord): AgentRunRecord {
     continuation: run.continuation
       ? (redactSensitive(run.continuation) as AgentRunContinuation)
       : undefined,
+  };
+}
+
+function parseGroundingReport(value: unknown): GroundingReport | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Partial<GroundingReport>;
+  if (!candidate.status || !["verified", "not_required", "missing", "invalid"].includes(candidate.status)) {
+    return undefined;
+  }
+  return {
+    status: candidate.status,
+    citedIds: Array.isArray(candidate.citedIds) ? candidate.citedIds.map(String) : [],
+    invalidIds: Array.isArray(candidate.invalidIds) ? candidate.invalidIds.map(String) : [],
+    sources: Array.isArray(candidate.sources) ? candidate.sources : [],
+  };
+}
+
+function parseAgentRunFeedback(value: unknown): AgentRunFeedback | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Partial<AgentRunFeedback>;
+  if (candidate.verdict !== "useful" && candidate.verdict !== "needs_work") return undefined;
+  return {
+    verdict: candidate.verdict,
+    correction: candidate.correction ? safeRunText(String(candidate.correction), 2_000) : undefined,
+    updatedAt: candidate.updatedAt ? String(candidate.updatedAt) : new Date(0).toISOString(),
   };
 }
 

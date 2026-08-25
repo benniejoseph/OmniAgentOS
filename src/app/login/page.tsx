@@ -4,7 +4,7 @@ import { LoginForm } from "@/components/onboarding/login-form";
 
 export const metadata: Metadata = {
   title: "Private Sign In",
-  description: "Sign in to the private OmniAgent owner workspace.",
+  description: "Sign in to your private Asael workspace.",
 };
 
 export default function LoginPage() {

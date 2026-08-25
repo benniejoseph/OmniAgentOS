@@ -3,6 +3,7 @@ import { saveMemory } from "@/lib/memory/store";
 import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { appendThreadTurn } from "@/lib/threads/store";
 import { executeDynamicWorkflowPlan, parseWorkflowPlanOutput } from "@/lib/workflows/executor";
 import {
   buildDynamicWorkflowPlan,
@@ -913,6 +914,19 @@ async function completeWorkflow(
   }, { tenantId, expectedUpdatedAt });
   if (completed) {
     await appendWorkflowEvent(runId, "workflow.completed", {});
+    const threadId = detail?.run.input.metadata?.threadId;
+    if (typeof threadId === "string" && threadId) {
+      try {
+        await appendThreadTurn({
+          tenantId,
+          threadId,
+          role: "assistant",
+          content: String(reportOutput?.report || "Workflow completed."),
+        });
+      } catch (error) {
+        console.error("Workflow thread result persistence failed.", error instanceof Error ? error.message : "Unknown persistence error.");
+      }
+    }
   }
 }
 

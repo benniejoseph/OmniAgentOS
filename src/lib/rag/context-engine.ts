@@ -22,6 +22,7 @@ import type {
   RetrievalProfile,
   RetrievalTraceRecord,
 } from "@/lib/rag/types";
+import { citationIdForEvidence } from "@/lib/rag/citations";
 import { redactSensitive } from "@/lib/security/context";
 
 type BuildContextPackOptions = {
@@ -102,9 +103,10 @@ export async function buildContextPack(
   const [memoryResults, knowledgeResults, graphResults] = await Promise.all([
     searchMemories(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId: options.tenantId }),
     searchKnowledge(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId: options.tenantId }),
-    options.tenantId
-      ? Promise.resolve([])
-      : searchMemoryGraph(normalizedQuery, { limit: Math.min(candidateLimit, 24) }),
+    searchMemoryGraph(normalizedQuery, {
+      limit: Math.min(candidateLimit, 24),
+      tenantId: options.tenantId,
+    }),
   ]);
   const evidence = scoreEvidenceItems({
     profile,
@@ -472,9 +474,9 @@ function formatContextPack(items: ContextEvidenceItem[], profile: RetrievalProfi
   }
 
   const ordered = positionalPack(items);
-  const evidence = ordered.map((item, index) => {
+  const evidence = ordered.map((item) => {
     const header = [
-      `[${index + 1}] ${evidenceKindLabel(item.kind)}: ${item.title}`,
+      `[${citationIdForEvidence(item)}] ${evidenceKindLabel(item.kind)}: ${item.title}`,
       `mode: ${profile.mode}; confidence: ${item.confidence.toFixed(2)}; utility: ${item.utilityScore.toFixed(2)}`,
       `reasons: ${item.reasons.slice(0, 6).join(", ") || "ranked context"}`,
     ];
@@ -482,7 +484,7 @@ function formatContextPack(items: ContextEvidenceItem[], profile: RetrievalProfi
   });
   const recap = items
     .slice(0, 3)
-    .map((item, index) => `${index + 1}. ${item.title} (${item.kind}, confidence ${item.confidence.toFixed(2)})`)
+    .map((item) => `[${citationIdForEvidence(item)}] ${item.title} (${item.kind}, confidence ${item.confidence.toFixed(2)})`)
     .join("\n");
 
   return String(redactSensitive([
@@ -493,6 +495,7 @@ function formatContextPack(items: ContextEvidenceItem[], profile: RetrievalProfi
     `rationale: ${profile.rationale.join(" ")}`,
     "",
     "Selected Evidence",
+    "Cite supported claims with the exact bracketed evidence ID shown below. Never invent an evidence ID.",
     evidence.join("\n\n---\n\n"),
     "",
     "Critical Evidence Recap",

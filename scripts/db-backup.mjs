@@ -391,7 +391,7 @@ async function readDatabaseTableRowCountsFromSql(sql) {
     !tableNames.length ||
     tableNames.some((name) => !/^omni_[a-z0-9_]+$/.test(String(name)))
   ) {
-    throw new Error("Unable to build a safe OmniAgent table inventory.");
+    throw new Error("Unable to build a safe Asael table inventory.");
   }
   const counts = {};
   for (const tableName of tableNames) {

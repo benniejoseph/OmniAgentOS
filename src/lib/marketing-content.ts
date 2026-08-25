@@ -119,7 +119,7 @@ export const trustControls = [
 
 export const marketingFaq = [
   {
-    question: "What can OmniAgent do?",
+    question: "What can Asael do?",
     answer:
       "It turns a goal into planned, observable work using durable workflows, governed tools, memory, approvals, and stored result evidence.",
   },

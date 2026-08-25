@@ -25,4 +25,25 @@ describe("agent prompt provenance", () => {
     );
     expect(request).toEqual({ role: "user", content: "User: Summarize the evidence." });
   });
+
+  it("turns selected specialists into explicit review perspectives", () => {
+    const instructions = buildAgentInstructions({
+      mode: "execute",
+      agentId: "forge",
+      specialistIds: ["forge", "sentinel"],
+    });
+    expect(instructions).toContain("Supporting perspectives:");
+    expect(instructions).toContain("Sentinel, critic");
+    expect(instructions).toContain("do not claim that separate agents executed work");
+  });
+
+  it("includes recent personal corrections without treating them as evidence", () => {
+    const instructions = buildAgentInstructions({
+      mode: "research",
+      agentId: "scout",
+      feedbackGuidance: ["Prefer concise comparisons with a recommendation."],
+    });
+    expect(instructions).toContain("Prefer concise comparisons");
+    expect(instructions).toContain("not as evidence for factual claims");
+  });
 });

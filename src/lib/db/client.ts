@@ -57,6 +57,7 @@ export const tenantRootPolicyTables = [
   "omni_knowledge_chunks",
   "omni_retrieval_traces",
   "omni_agent_runs",
+  "omni_threads",
   "omni_tool_executions",
   "omni_mcp_connectors",
   "omni_mcp_tools",
@@ -85,15 +86,24 @@ export const tenantRootPolicyTables = [
   "omni_access_requests",
   "omni_auth_memberships",
   "omni_auth_sessions",
+  "omni_oauth_grants",
+  "omni_today_items",
+  "omni_today_preferences",
+  "omni_daily_briefs",
+  "omni_personal_notifications",
+  "omni_projects",
+  "omni_project_artifacts",
 ] as const;
 
 export const tenantChildPolicyTables = [
   "omni_agent_events",
+  "omni_thread_turns",
   "omni_workflow_node_executions",
   "omni_workflow_trigger_events",
   "omni_workflow_steps",
   "omni_workflow_events",
   "omni_incident_events",
+  "omni_project_tasks",
 ] as const;
 
 export const tenantPolicyTables = [
@@ -405,6 +415,83 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[10],
       up: normalizeLegacyJsonbStorage,
     },
+    {
+      ...databaseSchemaMigrations[11],
+      up: async (sql) => {
+        await ensureConversationThreads(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[12],
+      up: ensureClaimBasedMemory,
+    },
+    {
+      ...databaseSchemaMigrations[13],
+      up: ensurePersistedAnswerGrounding,
+    },
+    {
+      ...databaseSchemaMigrations[14],
+      up: async (sql) => {
+        await ensureOAuthGrants(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[15],
+      up: ensureAgentAssignmentHistory,
+    },
+    {
+      ...databaseSchemaMigrations[16],
+      up: ensureAgentOutcomeFeedback,
+    },
+    {
+      ...databaseSchemaMigrations[17],
+      up: async (sql) => {
+        await ensureTodayItems(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[18],
+      up: async (sql) => {
+        await ensureProactiveDailyBriefs(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[19],
+      up: async (sql) => {
+        await ensurePersonalNotificationCenter(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[20],
+      up: async (sql) => {
+        await ensurePersonalProjects(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[21],
+      up: ensureAutonomousProjectExecution,
+    },
+    {
+      ...databaseSchemaMigrations[22],
+      up: async (sql) => {
+        await ensureProjectArtifacts(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[23],
+      up: ensureProjectArtifactReflections,
+    },
+    {
+      ...databaseSchemaMigrations[24],
+      up: ensureOAuthIncrementalSyncHealth,
+    },
   ];
 }
 
@@ -440,6 +527,7 @@ export async function migrateDatabaseSchema(
     const pg = getRawPg();
     schemaMigrationReady = (async () => {
       await pg.begin(async (tx) => {
+        await setMigrationDatabaseRole(tx);
         const configuredTimeout = Number(
           process.env.OMNIAGENT_MIGRATION_STATEMENT_TIMEOUT_MS,
         );
@@ -530,6 +618,7 @@ export async function migrateDatabaseSchema(
       // cannot abort and roll back otherwise-successful ordered migrations.
       try {
         await pg.begin(async (tx) => {
+          await setMigrationDatabaseRole(tx);
           await tx`SELECT set_config('omni.system_scope', 'true', true)`;
           await tx`SELECT set_config('omni.system_reason', 'optional vector schema maintenance', true)`;
           await ensureVectorSchema(wrapPg(tx));
@@ -557,6 +646,15 @@ export async function migrateDatabaseSchema(
     schemaReady = null;
     throw error;
   }
+}
+
+async function setMigrationDatabaseRole(tx: postgres.TransactionSql<Record<string, never>>) {
+  const role = process.env.MIGRATION_DATABASE_ROLE?.trim();
+  if (!role) return;
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(role)) {
+    throw new Error("MIGRATION_DATABASE_ROLE must be a valid PostgreSQL role name.");
+  }
+  await tx.unsafe(`SET LOCAL ROLE "${role}"`);
 }
 
 async function verifyDatabaseSchema() {
@@ -715,7 +813,7 @@ async function assertMaintenanceDatabaseRoleSafety(runtimePg: postgres.Sql) {
     runtimeIdentity !== maintenanceIdentity
   ) {
     throw new Error(
-      "DATABASE_URL and OMNIAGENT_MAINTENANCE_DATABASE_URL must identify the same OmniAgent database.",
+      "DATABASE_URL and OMNIAGENT_MAINTENANCE_DATABASE_URL must identify the same Asael database.",
     );
   }
   if (
@@ -969,6 +1067,12 @@ async function runTableMigrations(sql: SqlClient) {
   await sql`CREATE INDEX IF NOT EXISTS omni_memories_type_idx ON omni_memories (type)`;
   await sql`CREATE INDEX IF NOT EXISTS omni_memories_updated_at_idx ON omni_memories (updated_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS omni_memories_tags_idx ON omni_memories USING GIN (tags)`;
+  await ensureClaimBasedMemory(sql);
+  await ensureOAuthGrants(sql);
+  await ensureTodayItems(sql);
+  await ensureProactiveDailyBriefs(sql);
+  await ensurePersonalNotificationCenter(sql);
+  await ensurePersonalProjects(sql);
   await sql`
     CREATE INDEX IF NOT EXISTS omni_memories_text_idx
     ON omni_memories
@@ -1123,6 +1227,9 @@ async function runTableMigrations(sql: SqlClient) {
       prompt TEXT NOT NULL,
       messages JSONB NOT NULL DEFAULT '[]',
       model TEXT,
+      agent_id TEXT NOT NULL DEFAULT 'atlas',
+      specialist_ids TEXT[] NOT NULL DEFAULT '{}',
+      feedback JSONB,
       memory_context_count INTEGER NOT NULL DEFAULT 0,
       consolidation_count INTEGER NOT NULL DEFAULT 0,
       response TEXT,
@@ -1139,10 +1246,19 @@ async function runTableMigrations(sql: SqlClient) {
   await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS consolidated_at TIMESTAMPTZ`;
   await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS consolidation_error TEXT`;
   await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS continuation JSONB`;
+  await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS grounding JSONB`;
+  await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS agent_id TEXT NOT NULL DEFAULT 'atlas'`;
+  await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS specialist_ids TEXT[] NOT NULL DEFAULT '{}'`;
+  await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS feedback JSONB`;
+  await ensurePersistedAnswerGrounding(sql);
+  await ensureAgentAssignmentHistory(sql);
+  await ensureAgentOutcomeFeedback(sql);
   await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_started_at_idx ON omni_agent_runs (started_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_tenant_started_at_idx ON omni_agent_runs (tenant_id, started_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_status_idx ON omni_agent_runs (status)`;
   await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_consolidated_at_idx ON omni_agent_runs (consolidated_at DESC)`;
+
+  await ensureConversationThreads(sql);
 
   await sql`
     CREATE TABLE IF NOT EXISTS omni_agent_events (
@@ -1337,7 +1453,7 @@ async function runTableMigrations(sql: SqlClient) {
     CREATE TABLE IF NOT EXISTS omni_workflow_plans (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL DEFAULT 'default',
-      workflow_run_id TEXT REFERENCES omni_workflow_runs(id) ON DELETE SET NULL,
+      workflow_run_id TEXT,
       goal TEXT NOT NULL,
       status TEXT NOT NULL,
       planner TEXT NOT NULL,
@@ -1460,7 +1576,7 @@ async function runTableMigrations(sql: SqlClient) {
       source TEXT NOT NULL,
       event_type TEXT,
       signature_verified BOOLEAN NOT NULL DEFAULT FALSE,
-      workflow_run_id TEXT REFERENCES omni_workflow_runs(id) ON DELETE SET NULL,
+      workflow_run_id TEXT,
       queue_job_id TEXT REFERENCES omni_operation_jobs(id) ON DELETE SET NULL,
       payload JSONB NOT NULL DEFAULT '{}',
       headers JSONB NOT NULL DEFAULT '{}',
@@ -1915,7 +2031,291 @@ async function runTableMigrations(sql: SqlClient) {
   `;
   await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_approval_policy_versions_policy_idx ON omni_observability_slo_approval_policy_versions (policy_id, version DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS omni_observability_slo_approval_policy_versions_created_idx ON omni_observability_slo_approval_policy_versions (created_at DESC)`;
+  await ensureProjectArtifacts(sql);
   await ensurePlatformSafetyTables(sql);
+}
+
+async function ensureClaimBasedMemory(sql: SqlClient) {
+  await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION NOT NULL DEFAULT 0.7`;
+  await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS claim_status TEXT NOT NULL DEFAULT 'active'`;
+  await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS asserted_by TEXT NOT NULL DEFAULT 'system'`;
+  await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS evidence_refs TEXT[] NOT NULL DEFAULT '{}'`;
+  await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ`;
+  await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS valid_to TIMESTAMPTZ`;
+  await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS supersedes_id TEXT`;
+  await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS contradiction_of_id TEXT`;
+  await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS forgotten_at TIMESTAMPTZ`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_memories_claim_status_idx ON omni_memories (tenant_id, claim_status, updated_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_memories_supersedes_idx ON omni_memories (tenant_id, supersedes_id)`;
+}
+
+async function ensurePersistedAnswerGrounding(sql: SqlClient) {
+  await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS grounding JSONB`;
+}
+
+async function ensureOAuthGrants(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_oauth_grants (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      scopes TEXT[] NOT NULL DEFAULT '{}',
+      sealed_tokens JSONB NOT NULL,
+      expires_at TIMESTAMPTZ,
+      sync_cursor TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, provider)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_oauth_grants_tenant_actor_idx ON omni_oauth_grants (tenant_id, actor_id, updated_at DESC)`;
+}
+
+async function ensureAgentAssignmentHistory(sql: SqlClient) {
+  await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS agent_id TEXT NOT NULL DEFAULT 'atlas'`;
+  await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS specialist_ids TEXT[] NOT NULL DEFAULT '{}'`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_tenant_agent_idx ON omni_agent_runs (tenant_id, agent_id, started_at DESC)`;
+}
+
+async function ensureAgentOutcomeFeedback(sql: SqlClient) {
+  await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS feedback JSONB`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_tenant_feedback_idx ON omni_agent_runs (tenant_id, agent_id, started_at DESC) WHERE feedback IS NOT NULL`;
+}
+
+async function ensureTodayItems(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_today_items (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'task',
+      priority TEXT NOT NULL DEFAULT 'medium',
+      status TEXT NOT NULL DEFAULT 'open',
+      due_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_today_items_tenant_actor_status_idx ON omni_today_items (tenant_id, actor_id, status, due_at, created_at DESC)`;
+}
+
+async function ensureProactiveDailyBriefs(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_today_preferences (
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      brief_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      brief_time TEXT NOT NULL DEFAULT '08:00',
+      timezone TEXT NOT NULL DEFAULT 'UTC',
+      reminder_lead_minutes INTEGER NOT NULL DEFAULT 30,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (tenant_id, actor_id)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_today_preferences_schedule_idx ON omni_today_preferences (tenant_id, brief_enabled, updated_at)`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_daily_briefs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      local_date TEXT NOT NULL,
+      content JSONB NOT NULL DEFAULT '{}',
+      generated_by TEXT NOT NULL DEFAULT 'system',
+      model TEXT,
+      source_counts JSONB NOT NULL DEFAULT '{}',
+      generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, local_date)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_daily_briefs_tenant_actor_date_idx ON omni_daily_briefs (tenant_id, actor_id, local_date DESC)`;
+}
+
+async function ensurePersonalNotificationCenter(sql: SqlClient) {
+  await ensureProactiveDailyBriefs(sql);
+  await sql`ALTER TABLE omni_today_preferences ADD COLUMN IF NOT EXISTS notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE`;
+  await sql`ALTER TABLE omni_today_preferences ADD COLUMN IF NOT EXISTS quiet_hours_enabled BOOLEAN NOT NULL DEFAULT TRUE`;
+  await sql`ALTER TABLE omni_today_preferences ADD COLUMN IF NOT EXISTS quiet_hours_start TEXT NOT NULL DEFAULT '22:00'`;
+  await sql`ALTER TABLE omni_today_preferences ADD COLUMN IF NOT EXISTS quiet_hours_end TEXT NOT NULL DEFAULT '07:00'`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_personal_notifications (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'reminder',
+      source_type TEXT NOT NULL DEFAULT 'today_item',
+      source_id TEXT NOT NULL,
+      occurrence_key TEXT NOT NULL,
+      urgency TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'unread',
+      due_at TIMESTAMPTZ NOT NULL,
+      snoozed_until TIMESTAMPTZ,
+      read_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, source_type, source_id, occurrence_key)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_personal_notifications_inbox_idx ON omni_personal_notifications (tenant_id, actor_id, status, updated_at DESC)`;
+}
+
+async function ensurePersonalProjects(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_projects (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      objective TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      autonomy_mode TEXT NOT NULL DEFAULT 'manual',
+      execution_status TEXT NOT NULL DEFAULT 'idle',
+      task_budget INTEGER NOT NULL DEFAULT 12,
+      tasks_dispatched INTEGER NOT NULL DEFAULT 0,
+      max_parallel_tasks INTEGER NOT NULL DEFAULT 1,
+      require_approval BOOLEAN NOT NULL DEFAULT TRUE,
+      last_synced_at TIMESTAMPTZ,
+      target_date TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_projects_owner_status_idx ON omni_projects (tenant_id, actor_id, status, updated_at DESC)`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_project_tasks (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      project_id TEXT NOT NULL REFERENCES omni_projects(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'open',
+      priority TEXT NOT NULL DEFAULT 'medium',
+      agent_id TEXT NOT NULL DEFAULT 'atlas',
+      position INTEGER NOT NULL DEFAULT 0,
+      origin TEXT NOT NULL DEFAULT 'manual',
+      due_at TIMESTAMPTZ,
+      dependency_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      workflow_run_id TEXT,
+      workflow_status TEXT,
+      execution_error TEXT,
+      dispatched_at TIMESTAMPTZ,
+      dispatch_attempt INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_project_tasks_project_position_idx ON omni_project_tasks (tenant_id, project_id, position, created_at)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_project_tasks_workflow_idx ON omni_project_tasks (tenant_id, workflow_run_id) WHERE workflow_run_id IS NOT NULL`;
+}
+
+async function ensureAutonomousProjectExecution(sql: SqlClient) {
+  await ensurePersonalProjects(sql);
+  await sql`ALTER TABLE omni_projects ADD COLUMN IF NOT EXISTS autonomy_mode TEXT NOT NULL DEFAULT 'manual'`;
+  await sql`ALTER TABLE omni_projects ADD COLUMN IF NOT EXISTS execution_status TEXT NOT NULL DEFAULT 'idle'`;
+  await sql`ALTER TABLE omni_projects ADD COLUMN IF NOT EXISTS task_budget INTEGER NOT NULL DEFAULT 12`;
+  await sql`ALTER TABLE omni_projects ADD COLUMN IF NOT EXISTS tasks_dispatched INTEGER NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE omni_projects ADD COLUMN IF NOT EXISTS max_parallel_tasks INTEGER NOT NULL DEFAULT 1`;
+  await sql`ALTER TABLE omni_projects ADD COLUMN IF NOT EXISTS require_approval BOOLEAN NOT NULL DEFAULT TRUE`;
+  await sql`ALTER TABLE omni_projects ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE omni_project_tasks ADD COLUMN IF NOT EXISTS dependency_ids JSONB NOT NULL DEFAULT '[]'::jsonb`;
+  await sql`ALTER TABLE omni_project_tasks ADD COLUMN IF NOT EXISTS workflow_run_id TEXT`;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'omni_project_tasks_workflow_run_fk'
+      ) THEN
+        ALTER TABLE omni_project_tasks
+          ADD CONSTRAINT omni_project_tasks_workflow_run_fk
+          FOREIGN KEY (workflow_run_id) REFERENCES omni_workflow_runs(id) ON DELETE SET NULL;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`ALTER TABLE omni_project_tasks ADD COLUMN IF NOT EXISTS workflow_status TEXT`;
+  await sql`ALTER TABLE omni_project_tasks ADD COLUMN IF NOT EXISTS execution_error TEXT`;
+  await sql`ALTER TABLE omni_project_tasks ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE omni_project_tasks ADD COLUMN IF NOT EXISTS dispatch_attempt INTEGER NOT NULL DEFAULT 0`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_project_tasks_workflow_idx ON omni_project_tasks (tenant_id, workflow_run_id) WHERE workflow_run_id IS NOT NULL`;
+}
+
+async function ensureProjectArtifacts(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_project_artifacts (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      project_id TEXT NOT NULL REFERENCES omni_projects(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES omni_project_tasks(id) ON DELETE CASCADE,
+      workflow_run_id TEXT NOT NULL REFERENCES omni_workflow_runs(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      memory_id TEXT REFERENCES omni_memories(id) ON DELETE SET NULL,
+      source_memory_id TEXT REFERENCES omni_memories(id) ON DELETE SET NULL,
+      evidence_refs TEXT[] NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, workflow_run_id)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_project_artifacts_project_created_idx ON omni_project_artifacts (tenant_id, project_id, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_project_artifacts_task_idx ON omni_project_artifacts (tenant_id, task_id, created_at DESC)`;
+}
+
+async function ensureProjectArtifactReflections(sql: SqlClient) {
+  await ensureProjectArtifacts(sql);
+  await sql`ALTER TABLE omni_project_artifacts ADD COLUMN IF NOT EXISTS verdict TEXT`;
+  await sql`ALTER TABLE omni_project_artifacts ADD COLUMN IF NOT EXISTS lesson TEXT`;
+  await sql`ALTER TABLE omni_project_artifacts ADD COLUMN IF NOT EXISTS reflection_memory_id TEXT REFERENCES omni_memories(id) ON DELETE SET NULL`;
+  await sql`ALTER TABLE omni_project_artifacts ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_project_artifacts_reviewed_idx ON omni_project_artifacts (tenant_id, agent_id, reviewed_at DESC) WHERE verdict IS NOT NULL`;
+}
+
+async function ensureOAuthIncrementalSyncHealth(sql: SqlClient) {
+  await ensureOAuthGrants(sql);
+  await sql`ALTER TABLE omni_oauth_grants ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'idle'`;
+  await sql`ALTER TABLE omni_oauth_grants ADD COLUMN IF NOT EXISTS sync_error TEXT`;
+  await sql`ALTER TABLE omni_oauth_grants ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE omni_oauth_grants ADD COLUMN IF NOT EXISTS synced_items INTEGER NOT NULL DEFAULT 0`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_oauth_grants_sync_health_idx ON omni_oauth_grants (tenant_id, actor_id, sync_status, last_synced_at DESC)`;
+}
+
+async function ensureConversationThreads(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_threads (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'default',
+      actor_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'orchestrate',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_threads_tenant_updated_idx ON omni_threads (tenant_id, updated_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_threads_actor_updated_idx ON omni_threads (tenant_id, actor_id, updated_at DESC)`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_thread_turns (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'default',
+      thread_id TEXT NOT NULL REFERENCES omni_threads(id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+      content TEXT NOT NULL,
+      run_id TEXT REFERENCES omni_agent_runs(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_thread_turns_thread_created_idx ON omni_thread_turns (tenant_id, thread_id, created_at ASC)`;
+  await sql`ALTER TABLE omni_agent_runs ADD COLUMN IF NOT EXISTS thread_id TEXT REFERENCES omni_threads(id) ON DELETE SET NULL`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_agent_runs_thread_idx ON omni_agent_runs (tenant_id, thread_id, started_at DESC)`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2494,24 +2894,63 @@ async function ensureTenantIsolationPolicies(sql: SqlClient) {
     $$
   `;
 
-  for (const tableName of tenantPolicyTables) {
-    await sql.query(`ALTER TABLE ${tableName} ENABLE ROW LEVEL SECURITY`);
-    await sql.query(`ALTER TABLE ${tableName} FORCE ROW LEVEL SECURITY`);
-    await sql.query(`
-      DO $$
-      BEGIN
-        CREATE POLICY omni_tenant_isolation ON ${tableName}
-        FOR ALL
-        USING (omni_tenant_visible(tenant_id))
-        WITH CHECK (omni_tenant_visible(tenant_id));
-      EXCEPTION WHEN duplicate_object THEN
-        ALTER POLICY omni_tenant_isolation ON ${tableName}
-        USING (omni_tenant_visible(tenant_id))
-        WITH CHECK (omni_tenant_visible(tenant_id));
-      END
-      $$
-    `);
-  }
+  // Keep policy application inside one server-side block. Besides avoiding
+  // hundreds of pooler round-trips during upgrades, this lets earlier
+  // migrations safely skip tables that are only introduced by later ones.
+  const policyTableArray = tenantPolicyTables
+    .map((tableName) => `'${tableName.replaceAll("'", "''")}'`)
+    .join(", ");
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      policy_table TEXT;
+      policy_schema TEXT := current_schema();
+    BEGIN
+      FOREACH policy_table IN ARRAY ARRAY[${policyTableArray}] LOOP
+        IF to_regclass(format('%I.%I', policy_schema, policy_table)) IS NULL THEN
+          CONTINUE;
+        END IF;
+
+        EXECUTE format(
+          'ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY',
+          policy_schema,
+          policy_table
+        );
+        EXECUTE format(
+          'ALTER TABLE %I.%I FORCE ROW LEVEL SECURITY',
+          policy_schema,
+          policy_table
+        );
+
+        IF EXISTS (
+          SELECT 1
+          FROM pg_policy policy
+          JOIN pg_class relation ON relation.oid = policy.polrelid
+          JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+          WHERE namespace.nspname = policy_schema
+            AND relation.relname = policy_table
+            AND policy.polname = 'omni_tenant_isolation'
+        ) THEN
+          EXECUTE format(
+            'ALTER POLICY omni_tenant_isolation ON %I.%I ' ||
+            'USING (omni_tenant_visible(tenant_id)) ' ||
+            'WITH CHECK (omni_tenant_visible(tenant_id))',
+            policy_schema,
+            policy_table
+          );
+        ELSE
+          EXECUTE format(
+            'CREATE POLICY omni_tenant_isolation ON %I.%I FOR ALL ' ||
+            'USING (omni_tenant_visible(tenant_id)) ' ||
+            'WITH CHECK (omni_tenant_visible(tenant_id))',
+            policy_schema,
+            policy_table
+          );
+        END IF;
+      END LOOP;
+    END
+    $migration$
+  `);
 }
 
 // ---------------------------------------------------------------------------

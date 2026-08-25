@@ -6,11 +6,11 @@ product
 
 ## Users
 
-OmniAgent OS is for engineering, operations, product, and security teams that need an AI agent to complete real work across connected systems without losing human control. The primary user is an operator or administrator who gives the agent a goal, watches progress and evidence, resolves approvals, and reviews the outcome. Viewers need a trustworthy read-only view of results and system health.
+Asael is a private personal operating system for one owner who wants a coordinated arsenal of AI agents to handle research, building, planning, administration, and creative work. The owner gives the system an outcome, watches specialist agents collaborate, corrects their work, and decides which actions may affect external systems.
 
 ## Product Purpose
 
-OmniAgent OS turns a goal into governed, durable work. It combines context, tools, approvals, recovery, and evidence so routine reversible actions can earn autonomy while novel or dangerous actions remain supervised. Success means users can quickly answer four questions: what is running, what needs me, what changed, and can I trust the result?
+Asael turns personal goals into adaptive, durable work. It combines specialist agents, long-term memory, tools, approvals, recovery, and evidence so repeated reversible work becomes easier while novel or consequential actions remain supervised. Success means the owner can quickly answer four questions: what is working, what needs me, what did the system learn, and can I trust the result?
 
 The authenticated product is primary. Marketing and documentation support adoption but must not compete with the core workflow. The deeper product thesis and earned-autonomy model live in `docs/vision/PRODUCT.md`.
 

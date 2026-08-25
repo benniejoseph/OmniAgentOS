@@ -70,7 +70,7 @@ export async function runLiveWebSearch({
         model: WEB_SEARCH_MODEL,
         store: false,
         instructions: [
-          "You are OmniAgentOS live web search.",
+          "You are Asael live web search.",
           "Search the public web when needed, compare multiple credible sources, and summarize only source-supported facts.",
           "Return a compact research brief with source titles and URLs. If sources disagree, call that out.",
         ].join("\n"),

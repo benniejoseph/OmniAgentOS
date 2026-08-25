@@ -16,6 +16,7 @@ import type {
   KnowledgeSearchResult,
   KnowledgeSourceType,
 } from "@/lib/rag/types";
+import type { MemoryRecord } from "@/lib/memory/types";
 
 type RagSqlClient = ReturnType<typeof getSql>;
 
@@ -55,10 +56,7 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
     String(redactSensitive(input.source?.trim() || "manual")).slice(0, 2_000);
   const tenantId = normalizeTenantId(input.tenantId);
   const documentId = input.idempotencyKey
-    ? `knowledge_${createHash("sha256")
-        .update(`${tenantId}:${input.idempotencyKey}`)
-        .digest("hex")
-        .slice(0, 40)}`
+    ? knowledgeDocumentId(tenantId, input.idempotencyKey)
     : randomUUID();
   const document: KnowledgeDocument = {
     id: documentId,
@@ -121,6 +119,35 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
     }),
   );
   return { document, chunks };
+}
+
+export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: string, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const documentId = knowledgeDocumentId(tenantId, idempotencyKey);
+  const forgottenAt = new Date().toISOString();
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    await getSql().transaction(async (sql: RagSqlClient) => {
+      await sql`DELETE FROM omni_knowledge_chunks WHERE tenant_id = ${tenantId} AND document_id = ${documentId}`;
+      await sql`DELETE FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND id = ${documentId}`;
+      await sql`UPDATE omni_memories SET title = '[forgotten]', content = '', tags = '{}', source = '[forgotten]', embedding = NULL, claim_status = 'forgotten', forgotten_at = ${forgottenAt}, updated_at = ${forgottenAt} WHERE tenant_id = ${tenantId} AND id LIKE ${documentId + "_memory_%"}`;
+    });
+    return documentId;
+  }
+  await updateJsonFile<KnowledgeLedger>(getKnowledgeFile(), { documents: [], chunks: [] }, (ledger) => ({
+    documents: ledger.documents.filter((document) => document.id !== documentId || normalizeTenantId(document.tenantId) !== tenantId),
+    chunks: ledger.chunks.filter((chunk) => chunk.documentId !== documentId || normalizeTenantId(chunk.tenantId) !== tenantId),
+  }));
+  await updateJsonFile<MemoryRecord[]>(getDataPath("memory.json"), [], (memories) => memories.map((memory) =>
+    normalizeTenantId(memory.tenantId) === tenantId && memory.id.startsWith(`${documentId}_memory_`)
+      ? { ...memory, title: "[forgotten]", content: "", tags: [], source: "[forgotten]", embedding: undefined, claimStatus: "forgotten", forgottenAt, updatedAt: forgottenAt }
+      : memory,
+  ));
+  return documentId;
+}
+
+export function knowledgeDocumentId(tenantId: string, idempotencyKey: string) {
+  return `knowledge_${createHash("sha256").update(`${normalizeTenantId(tenantId)}:${idempotencyKey}`).digest("hex").slice(0, 40)}`;
 }
 
 export async function listKnowledgeDocuments(limit = 20, options: { tenantId?: string } = {}) {

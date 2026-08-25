@@ -1,4 +1,5 @@
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
+import type { GroundingReport } from "@/lib/rag/citations";
 
 export type RunStatus =
   | "running"
@@ -7,6 +8,12 @@ export type RunStatus =
   | "completed"
   | "failed"
   | "canceled";
+
+export type AgentRunFeedback = {
+  verdict: "useful" | "needs_work";
+  correction?: string;
+  updatedAt: string;
+};
 
 export type AgentRunContinuation = {
   /** Full conversation array for ZDR-safe resume (replaces previousResponseId). */
@@ -34,14 +41,19 @@ export type AgentRunContinuation = {
 export type AgentRunRecord = {
   id: string;
   tenantId?: string;
+  threadId?: string;
   mode: AgentMode;
   status: RunStatus;
   prompt: string;
   messages: ChatMessage[];
   model?: string;
+  agentId?: string;
+  specialistIds?: string[];
+  feedback?: AgentRunFeedback;
   memoryContextCount: number;
   consolidationCount?: number;
   response?: string;
+  grounding?: GroundingReport;
   error?: string;
   consolidationError?: string;
   continuation?: AgentRunContinuation;

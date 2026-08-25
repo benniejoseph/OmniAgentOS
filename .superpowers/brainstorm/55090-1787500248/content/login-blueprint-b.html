@@ -1,0 +1,356 @@
+<style>
+  .theme-pair {
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:18px;
+    margin-top:26px;
+  }
+  .auth-preview {
+    overflow:hidden;
+    min-height:470px;
+    border:1px solid var(--border);
+    border-radius:16px;
+    box-shadow:0 20px 55px rgba(0,0,0,.12);
+  }
+  .auth-preview.light {
+    background:#f6faf8;
+    color:#18241f;
+  }
+  .auth-preview.dark {
+    background:#0b1110;
+    color:#eef7f3;
+  }
+  .auth-grid {
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    min-height:470px;
+  }
+  .story {
+    display:flex;
+    flex-direction:column;
+    justify-content:space-between;
+    padding:30px;
+    background:#e6f3ed;
+  }
+  .dark .story {
+    background:#082219;
+  }
+  .brand {
+    font-size:15px;
+    font-weight:820;
+    letter-spacing:-.04em;
+  }
+  .brand span { color:#2a936d; }
+  .dark .brand span { color:#59dea9; }
+  .owner-badge {
+    display:inline-flex;
+    margin-top:25px;
+    border:1px solid rgba(42,147,109,.28);
+    border-radius:999px;
+    padding:5px 8px;
+    color:#257d5e;
+    font-size:7px;
+    font-weight:800;
+    letter-spacing:.1em;
+    text-transform:uppercase;
+  }
+  .dark .owner-badge { color:#59dea9; }
+  .story h3 {
+    margin:12px 0 0;
+    max-width:320px;
+    font-size:28px;
+    line-height:1.02;
+    letter-spacing:-.05em;
+  }
+  .story-copy {
+    margin-top:12px;
+    color:#63776e;
+    font-size:9px;
+    line-height:1.6;
+  }
+  .dark .story-copy { color:#9ab0a6; }
+  .proofs { display:grid; gap:7px; margin-top:22px; }
+  .proof {
+    display:grid;
+    grid-template-columns:28px 1fr;
+    gap:9px;
+    align-items:center;
+    border:1px solid rgba(42,147,109,.16);
+    border-radius:7px;
+    padding:9px;
+    background:rgba(255,255,255,.52);
+  }
+  .dark .proof { background:rgba(0,0,0,.16); }
+  .proof-icon {
+    display:grid;
+    width:28px;
+    height:28px;
+    place-items:center;
+    border-radius:5px;
+    background:rgba(42,147,109,.12);
+    color:#2a936d;
+    font-size:8px;
+    font-weight:800;
+  }
+  .dark .proof-icon { color:#59dea9; }
+  .proof b { display:block; font-size:8px; }
+  .proof span { display:block; margin-top:3px; color:#6a7d74; font-size:6px; line-height:1.45; }
+  .dark .proof span { color:#91a69d; }
+  .private-note {
+    display:flex;
+    justify-content:space-between;
+    border:1px solid rgba(42,147,109,.2);
+    border-radius:7px;
+    padding:11px;
+    font-size:7px;
+  }
+  .private-note b { color:#2a936d; }
+  .dark .private-note b { color:#59dea9; }
+  .form-side {
+    position:relative;
+    display:flex;
+    align-items:center;
+    padding:30px;
+    background:#fff;
+  }
+  .dark .form-side { background:#070b0a; }
+  .theme-control {
+    position:absolute;
+    right:18px;
+    top:18px;
+    color:#6e8078;
+    font-size:7px;
+  }
+  .form-card { width:100%; max-width:300px; margin:0 auto; }
+  .form-mark {
+    display:grid;
+    width:42px;
+    height:42px;
+    place-items:center;
+    margin:0 auto;
+    border-radius:9px;
+    background:rgba(42,147,109,.12);
+    color:#2a936d;
+    font-size:14px;
+    font-weight:850;
+  }
+  .dark .form-mark { color:#59dea9; }
+  .form-card h3 {
+    margin:16px 0 0;
+    text-align:center;
+    font-size:20px;
+    letter-spacing:-.035em;
+  }
+  .form-card > p {
+    margin:5px 0 0;
+    color:#708179;
+    text-align:center;
+    font-size:8px;
+  }
+  .field { margin-top:16px; }
+  .field label {
+    display:block;
+    margin-bottom:6px;
+    font-size:7px;
+    font-weight:720;
+  }
+  .input {
+    min-height:36px;
+    border:1px solid #d4e1db;
+    border-radius:6px;
+    padding:0 10px;
+    color:#809189;
+    font-size:8px;
+    line-height:36px;
+    background:#fbfdfc;
+  }
+  .dark .input {
+    border-color:#24332d;
+    background:#0c1210;
+    color:#82958c;
+  }
+  .form-meta {
+    display:flex;
+    justify-content:flex-end;
+    margin-top:8px;
+    color:#62776e;
+    font-size:7px;
+  }
+  .submit {
+    margin-top:16px;
+    border-radius:6px;
+    padding:10px;
+    background:#2a8766;
+    color:#fff;
+    text-align:center;
+    font-size:8px;
+    font-weight:780;
+  }
+  .dark .submit { background:#59dea9; color:#07120e; }
+  .owner-only {
+    margin-top:13px;
+    color:#75877e;
+    text-align:center;
+    font-size:7px;
+  }
+  .back-home {
+    margin-top:22px;
+    color:#71847a;
+    text-align:center;
+    font-size:7px;
+  }
+  .mobile-row {
+    display:grid;
+    grid-template-columns:180px 1fr;
+    gap:20px;
+    align-items:center;
+    margin-top:22px;
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:18px;
+  }
+  .phone {
+    overflow:hidden;
+    min-height:335px;
+    border:1px solid #283b33;
+    border-radius:22px;
+    padding:16px 12px;
+    background:#0a100e;
+    color:#eef7f3;
+  }
+  .phone .form-card h3 { font-size:17px; }
+  .phone .form-mark { width:36px; height:36px; }
+  .mobile-copy h3 { margin:0; font-size:20px; }
+  .mobile-copy p { color:var(--muted); font-size:13px; line-height:1.6; }
+  .mobile-copy ul { margin:13px 0 0; padding-left:18px; color:var(--muted); font-size:12px; line-height:1.8; }
+  .approval {
+    display:flex;
+    gap:12px;
+    margin-top:24px;
+  }
+  .approve-option {
+    flex:1;
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:16px;
+    cursor:pointer;
+  }
+  .approve-option.selected { border-color:var(--accent); }
+  .approve-option h3 { margin:0; font-size:15px; }
+  .approve-option p { margin:6px 0 0; color:var(--muted); font-size:12px; }
+  @media(max-width:1000px){
+    .theme-pair{grid-template-columns:1fr}
+  }
+  @media(max-width:700px){
+    .auth-grid{grid-template-columns:1fr}
+    .story{display:none}
+    .mobile-row{grid-template-columns:1fr}
+  }
+</style>
+
+<h2>Direction B · Private login blueprint</h2>
+<p class="subtitle">TradeTaper’s split authentication composition, simplified for one owner and rendered with OmniAgent’s existing adaptive theme.</p>
+
+<div class="theme-pair">
+  <div>
+    <div class="label">Light mode</div>
+    <div class="auth-preview light">
+      <div class="auth-grid">
+        <div class="story">
+          <div>
+            <div class="brand">Omni<span>Agent</span>OS</div>
+            <div class="owner-badge">Private agent workspace</div>
+            <h3>Run faster. Keep every action governed.</h3>
+            <div class="story-copy">One focused command center for plans, approvals, memory, and release evidence.</div>
+            <div class="proofs">
+              <div class="proof"><div class="proof-icon">01</div><div><b>Operational clarity</b><span>See current work and what happens next.</span></div></div>
+              <div class="proof"><div class="proof-icon">02</div><div><b>Risk-first controls</b><span>Pause sensitive tools for approval.</span></div></div>
+              <div class="proof"><div class="proof-icon">03</div><div><b>Durable evidence</b><span>Keep results, memory, and release proof.</span></div></div>
+            </div>
+          </div>
+          <div class="private-note"><span>Owner access</span><b>Single account</b></div>
+        </div>
+        <div class="form-side">
+          <div class="theme-control">System · Light · Dark</div>
+          <div class="form-card">
+            <div class="form-mark">O</div>
+            <h3>Welcome back</h3>
+            <p>Sign in to your OmniAgent workspace</p>
+            <div class="field"><label>Email address</label><div class="input">owner@example.com</div></div>
+            <div class="field"><label>Password</label><div class="input">••••••••••••</div></div>
+            <div class="form-meta">Password recovery stays private</div>
+            <div class="submit">Sign in →</div>
+            <div class="owner-only">Private workspace · No public registration</div>
+            <div class="back-home">← Back to homepage</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="label">Dark mode</div>
+    <div class="auth-preview dark">
+      <div class="auth-grid">
+        <div class="story">
+          <div>
+            <div class="brand">Omni<span>Agent</span>OS</div>
+            <div class="owner-badge">Private agent workspace</div>
+            <h3>Run faster. Keep every action governed.</h3>
+            <div class="story-copy">One focused command center for plans, approvals, memory, and release evidence.</div>
+            <div class="proofs">
+              <div class="proof"><div class="proof-icon">01</div><div><b>Operational clarity</b><span>See current work and what happens next.</span></div></div>
+              <div class="proof"><div class="proof-icon">02</div><div><b>Risk-first controls</b><span>Pause sensitive tools for approval.</span></div></div>
+              <div class="proof"><div class="proof-icon">03</div><div><b>Durable evidence</b><span>Keep results, memory, and release proof.</span></div></div>
+            </div>
+          </div>
+          <div class="private-note"><span>Owner access</span><b>Single account</b></div>
+        </div>
+        <div class="form-side">
+          <div class="theme-control">System · Light · Dark</div>
+          <div class="form-card">
+            <div class="form-mark">O</div>
+            <h3>Welcome back</h3>
+            <p>Sign in to your OmniAgent workspace</p>
+            <div class="field"><label>Email address</label><div class="input">owner@example.com</div></div>
+            <div class="field"><label>Password</label><div class="input">••••••••••••</div></div>
+            <div class="form-meta">Password recovery stays private</div>
+            <div class="submit">Sign in →</div>
+            <div class="owner-only">Private workspace · No public registration</div>
+            <div class="back-home">← Back to homepage</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mobile-row">
+  <div class="phone">
+    <div class="brand">Omni<span>Agent</span>OS</div>
+    <div class="form-card" style="margin-top:36px">
+      <div class="form-mark">O</div>
+      <h3>Welcome back</h3>
+      <p>Private owner access</p>
+      <div class="field"><label>Email address</label><div class="input">owner@example.com</div></div>
+      <div class="field"><label>Password</label><div class="input">••••••••••••</div></div>
+      <div class="submit">Sign in →</div>
+      <div class="back-home">← Back to homepage</div>
+    </div>
+  </div>
+  <div class="mobile-copy">
+    <h3>Mobile prioritizes access.</h3>
+    <p>The promotional panel disappears below the desktop breakpoint. The form loads first, fits within one viewport, and keeps all existing accessible states.</p>
+    <ul>
+      <li>No Google button or signup prompt</li>
+      <li>Explicit labels, password reveal, loading, and error recovery</li>
+      <li>Already-signed-in users continue directly to onboarding</li>
+      <li>/signup redirects to /login and all signup links are removed</li>
+    </ul>
+  </div>
+</div>
+
+<div class="approval">
+  <div class="approve-option" data-choice="login-approved" onclick="toggleSelect(this)"><h3>Approve login structure</h3><p>Move on to behavior, components, and testing.</p></div>
+  <div class="approve-option" data-choice="login-change" onclick="toggleSelect(this)"><h3>Request a change</h3><p>Tell me what should change in the layout, copy, or mobile treatment.</p></div>
+</div>

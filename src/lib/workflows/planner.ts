@@ -909,7 +909,7 @@ async function mutateWorkflowPlanLedger(mutator: (ledger: WorkflowPlanLedger) =>
 }
 
 function buildPlannerInstructions() {
-  return `You are the Dynamic Workflow Planner for OmniAgent OS.
+  return `You are the Dynamic Workflow Planner for Asael.
 
 Return JSON that exactly matches the provided schema.
 

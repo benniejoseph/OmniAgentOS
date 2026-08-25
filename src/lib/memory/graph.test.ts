@@ -91,6 +91,26 @@ describe("memory graph tenant isolation (file mode)", () => {
     expect(tenantBNodes.some((node) => node.memoryIds.includes("memory-a"))).toBe(false);
   });
 
+  it("includes tenant-scoped graph evidence in the agent context pack", async () => {
+    const graph = await import("@/lib/memory/graph");
+    const { buildContextPack } = await import("@/lib/rag/context-engine");
+    await graph.indexMemoryGraphRecords(
+      [memory("tenant-context", "memory-context")],
+      "test",
+      { tenantId: "tenant-context" },
+    );
+
+    const pack = await buildContextPack("Postgres workflow isolation", {
+      tenantId: "tenant-context",
+      limit: 8,
+      persistTrace: false,
+    });
+
+    expect(pack.graphResults.length).toBeGreaterThan(0);
+    expect(pack.graphResults.every((result) => result.node.tenantId === "tenant-context")).toBe(true);
+    expect(pack.results.some((result) => result.kind === "graph")).toBe(true);
+  });
+
   it("rejects mixed-tenant indexing batches", async () => {
     const graph = await import("@/lib/memory/graph");
     await expect(

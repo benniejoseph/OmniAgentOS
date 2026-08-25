@@ -39,6 +39,10 @@ import {
   processAllTenantWorkflowQueues,
   processWorkflowQueue,
 } from "@/lib/workflows/queue";
+import { processDueDailyBriefs } from "@/lib/today/briefs";
+import { processDueNotifications } from "@/lib/today/notifications";
+import { processActiveProjectExecutions } from "@/lib/projects/execution";
+import { syncDuePersonalProviders } from "@/lib/connectors/personal-sync";
 
 export const runtime = "nodejs";
 // Workflow steps run gpt-5 planning/execution that can exceed 60s; 300s is the
@@ -340,6 +344,19 @@ async function POSTHandler(request: Request) {
         limit: parsed.data.limit || 5,
       }),
     ]);
+    const dailyBriefs = await processDueDailyBriefs({
+      tenantId: context.tenantId,
+      limit: 3,
+    });
+    const personalNotifications = await processDueNotifications({
+      tenantId: context.tenantId,
+      limit: 20,
+    });
+    const projectExecutions = await processActiveProjectExecutions({
+      tenantId: context.tenantId,
+      limit: 10,
+    });
+    const connectedSourceSyncs = await syncDuePersonalProviders({ tenantId: context.tenantId, limit: 2 });
     const slo = parsed.data.slo
       ? await runObservabilitySloMonitor({
           trigger: "operator.workflow_tick",
@@ -398,6 +415,10 @@ async function POSTHandler(request: Request) {
       agentResumes,
       backgroundJobs,
       recoveredToolClaims,
+      dailyBriefs,
+      personalNotifications,
+      projectExecutions,
+      connectedSourceSyncs,
       slo,
       alerts,
       stats,
@@ -519,6 +540,10 @@ async function runAllTenantScheduledWork({
     tenantId: string;
     agentRunsRepaired: number;
     toolClaimsRecovered: number;
+    dailyBriefsGenerated: number;
+    personalNotificationsProcessed: number;
+    projectExecutionsProcessed: number;
+    connectedSourcesSynced: number;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
     alerts?: Awaited<ReturnType<typeof runScheduledAlertDispatch>>;
   }> = [];
@@ -620,12 +645,20 @@ async function runTenantMaintenance({
     tenantId: string;
     agentRunsRepaired: number;
     toolClaimsRecovered: number;
+    dailyBriefsGenerated: number;
+    personalNotificationsProcessed: number;
+    projectExecutionsProcessed: number;
+    connectedSourcesSynced: number;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
     alerts?: Awaited<ReturnType<typeof runScheduledAlertDispatch>>;
   } = {
     tenantId,
     agentRunsRepaired: 0,
     toolClaimsRecovered: 0,
+    dailyBriefsGenerated: 0,
+    personalNotificationsProcessed: 0,
+    projectExecutionsProcessed: 0,
+    connectedSourcesSynced: 0,
   };
   if (Date.now() < deadlineAt) {
     result.agentRunsRepaired = await repairStuckAgentRuns({ tenantId });
@@ -634,6 +667,26 @@ async function runTenantMaintenance({
     result.toolClaimsRecovered = (
       await recoverStaleToolExecutionClaims({ tenantId })
     ).length;
+  }
+  if (Date.now() < deadlineAt) {
+    result.dailyBriefsGenerated = (
+      await processDueDailyBriefs({ tenantId, limit: 3 })
+    ).length;
+  }
+  if (Date.now() < deadlineAt) {
+    result.personalNotificationsProcessed = (
+      await processDueNotifications({ tenantId, limit: 20 })
+    ).length;
+  }
+  if (Date.now() < deadlineAt) {
+    result.projectExecutionsProcessed = (
+      await processActiveProjectExecutions({ tenantId, limit: 10 })
+    ).length;
+  }
+  if (Date.now() < deadlineAt) {
+    result.connectedSourcesSynced = (
+      await syncDuePersonalProviders({ tenantId, limit: 2 })
+    ).filter((item) => item.status === "healthy").length;
   }
   if (enableSlo && Date.now() < deadlineAt) {
     result.slo = await runObservabilitySloMonitor({

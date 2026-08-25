@@ -80,7 +80,7 @@ async function ensureBootstrapIdentityInScope() {
   }
   const email = normalizeEmail(process.env.OMNIAGENT_BOOTSTRAP_EMAIL!);
   const password = process.env.OMNIAGENT_BOOTSTRAP_PASSWORD!;
-  const tenantName = process.env.OMNIAGENT_BOOTSTRAP_TENANT || "OmniAgent OS";
+  const tenantName = process.env.OMNIAGENT_BOOTSTRAP_TENANT || "Asael";
   const tenantId = normalizeTenantId(process.env.OMNIAGENT_DEFAULT_TENANT || "default");
   const existing = await findUserByEmail(email);
 
@@ -96,7 +96,7 @@ async function ensureBootstrapIdentityInScope() {
 
   await createUserWithMembership({
     email,
-    name: process.env.OMNIAGENT_BOOTSTRAP_NAME || "OmniAgent Admin",
+    name: process.env.OMNIAGENT_BOOTSTRAP_NAME || "Asael Owner",
     password,
     role: "admin",
     tenantId,
@@ -299,7 +299,7 @@ export async function createUserWithMembership({
   password,
   role,
   tenantId = normalizeTenantId(process.env.OMNIAGENT_DEFAULT_TENANT || "default"),
-  tenantName = "OmniAgent OS",
+  tenantName = "Asael",
 }: {
   email: string;
   name?: string;

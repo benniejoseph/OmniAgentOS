@@ -17,6 +17,15 @@ export type MemoryRecord = {
   scope: "user" | "workspace" | "project";
   source: string;
   importance: number;
+  confidence?: number;
+  claimStatus?: "active" | "superseded" | "contradicted" | "forgotten";
+  assertedBy?: "user" | "agent" | "system" | "import";
+  evidenceRefs?: string[];
+  validFrom?: string;
+  validTo?: string;
+  supersedesId?: string;
+  contradictionOfId?: string;
+  forgottenAt?: string;
   createdAt: string;
   updatedAt: string;
   embedding?: number[];
