@@ -64,11 +64,14 @@ export function hasOpenAIKey() {
 }
 
 export function getAppBaseUrl() {
-  const vercelHost = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
-  return (
-    process.env.NEXT_PUBLIC_APP_URL ||
-    (vercelHost ? `https://${vercelHost}` : "http://localhost:3000")
-  );
+  const configuredUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/+$/, "");
+  }
+  const vercelHost = (
+    process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL
+  )?.trim();
+  return vercelHost ? `https://${vercelHost}` : "http://localhost:3000";
 }
 
 export const AGENT_MAX_TOOL_STEPS = normalizePositiveInteger(
