@@ -1,4 +1,4 @@
-import { hasOpenAIKey } from "@/lib/config";
+import { GEMINI_FAST_MODEL, GEMINI_IMAGE_MODEL, hasGeminiKey, hasGoogleMediaKey, hasOpenAIKey } from "@/lib/config";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
 import {
@@ -42,6 +42,9 @@ async function GETHandler(request: Request) {
 
   return Response.json({
     openaiConfigured: hasOpenAIKey(),
+    geminiConfigured: hasGeminiKey(),
+    googleMediaConfigured: hasGoogleMediaKey(),
+    googleModels: { fast: GEMINI_FAST_MODEL, image: GEMINI_IMAGE_MODEL },
     liveWebSearchConfigured: hasOpenAIKey(),
     databaseConfigured: hasDatabaseUrl(),
     storageBackend: getStorageBackend(),

@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { clsx } from "clsx";
 import { PersonalConnections } from "@/components/connectors/personal-connections";
+import { PersonalDataControls } from "@/components/settings/personal-data-controls";
 import {
   permissionMessage,
   type WorkspacePermission,
@@ -1014,11 +1015,10 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
   settings: {
     title: "Settings",
     eyebrow: "Workspace and runtime configuration",
-    description: "Understand runtime posture, model and storage configuration, auth state, release metadata, environment readiness, and tenant defaults.",
+    description: "Manage your private runtime, model providers, storage, portable archive, and release readiness.",
     icon: Database,
     endpoints: [
       { key: "session", label: "Session", path: "/api/auth/session" },
-      { key: "identity", label: "Team", path: "/api/auth/control-plane" },
       { key: "capabilities", label: "Capabilities", path: "/api/capabilities" },
       { key: "health", label: "Health", path: "/api/health" },
       { key: "release", label: "Release evidence", path: "/api/release/evidence" },
@@ -1028,13 +1028,13 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
       { label: "Database", description: "Database configuration", value: (data) => booleanLabel(readPath(data, "capabilities.databaseConfigured"), "configured", "missing") },
       { label: "Storage", description: "Active persistence backend", value: (data) => stringPath(data, "capabilities.storageBackend", "unknown") },
       { label: "OpenAI", description: "Model provider readiness", value: (data) => booleanLabel(readPath(data, "capabilities.openaiConfigured"), "live", "fallback") },
-      { label: "Users", description: "Workspace identities", value: (data) => numberPath(data, "identity.stats.users") },
+      { label: "Gemini", description: "Multimodal provider readiness", value: (data) => booleanLabel(readPath(data, "capabilities.geminiConfigured"), "live", "missing") },
     ],
     flow: [
       { title: "Runtime", body: "Confirm Vercel function health, cron, and deployment evidence.", icon: ActivityIcon },
       { title: "Storage", body: "Validate Neon Postgres, vector capability, memory, and ledgers.", icon: Database },
-      { title: "Model", body: "Check OpenAI generation and embedding configuration.", icon: Brain },
-      { title: "Govern", body: "Keep tenant, auth, release, and signing posture explicit.", icon: ShieldCheck },
+      { title: "Models", body: "Check OpenAI reasoning plus Gemini image, voice, and fast-task routing.", icon: Brain },
+      { title: "Recover", body: "Keep portable exports and infrastructure backups ready before major changes.", icon: ShieldCheck },
     ],
     sections: [
       {
@@ -1050,6 +1050,8 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           ),
           metricRow("Database URL", booleanLabel(readPath(data, "capabilities.databaseConfigured"), "configured", "missing"), readPath(data, "capabilities.databaseConfigured") ? "success" : "danger"),
           metricRow("OpenAI API key", booleanLabel(readPath(data, "capabilities.openaiConfigured"), "configured", "fallback"), readPath(data, "capabilities.openaiConfigured") ? "success" : "warning"),
+          metricRow("Gemini API key", booleanLabel(readPath(data, "capabilities.geminiConfigured"), "configured", "missing"), readPath(data, "capabilities.geminiConfigured") ? "success" : "warning"),
+          metricRow("Google media APIs", booleanLabel(readPath(data, "capabilities.googleMediaConfigured"), "configured", "missing"), readPath(data, "capabilities.googleMediaConfigured") ? "success" : "warning"),
           metricRow("Health endpoint", stringPath(data, "health.status", "unknown"), toneForStatus(readPath(data, "health.status"))),
         ],
       },
@@ -1064,92 +1066,8 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           metricRow("Knowledge documents", numberPath(data, "capabilities.knowledge.documents")),
         ],
       },
-      {
-        title: "Team members",
-        description: "Users with a membership in this workspace.",
-        emptyLabel: "No workspace members are available.",
-        rows: (data) => {
-          const memberships = arrayPath(data, "identity.memberships");
-          return arrayPath(data, "identity.users").map((user) => {
-            const membership = memberships.find(
-              (item) => item.userId === user.id,
-            );
-            return {
-              title: stringValue(user.name || user.email, "Workspace user"),
-              status: stringValue(membership?.role, "member"),
-              meta: stringValue(user.email),
-              time: stringValue(user.lastLoginAt || user.createdAt),
-              tone: stringValue(user.status) === "active" ? "success" : "warning",
-            };
-          });
-        },
-      },
     ],
-    actions: [
-      {
-        id: "create-user",
-        title: "Create workspace user",
-        description: "Provision a user after approving access. Leave password blank to generate a strong one-time credential. Retrying the same approved request rotates the credential so a lost response is recoverable.",
-        method: "POST",
-        path: "/api/auth/control-plane",
-        fields: [
-          { name: "name", label: "Name", type: "text", placeholder: "Ada Operator" },
-          { name: "email", label: "Email", type: "text", placeholder: "ada@example.com" },
-          {
-            name: "role",
-            label: "Workspace role",
-            type: "select",
-            defaultValue: "viewer",
-            options: [
-              { label: "Viewer — read only", value: "viewer" },
-              { label: "Operator — run work", value: "operator" },
-              { label: "Admin — manage workspace", value: "admin" },
-            ],
-          },
-          {
-            name: "password",
-            label: "Initial password (optional)",
-            type: "password",
-            placeholder: "Leave blank to generate",
-          },
-        ],
-        buildPayload: (values) => ({
-          operation: "create",
-          accessRequestId: textValue(values.accessRequestId) || undefined,
-          name: textValue(values.name) || undefined,
-          email: textValue(values.email),
-          role: textValue(values.role, "viewer"),
-          password: textValue(values.password) || undefined,
-        }),
-      },
-      {
-        id: "rotate-user-credential",
-        title: "Rotate workspace credential",
-        description:
-          "Replace a member password and revoke their active sessions. Leave password blank to generate a new one-time credential.",
-        method: "POST",
-        path: "/api/auth/control-plane",
-        fields: [
-          {
-            name: "email",
-            label: "Workspace email",
-            type: "text",
-            placeholder: "ada@example.com",
-          },
-          {
-            name: "password",
-            label: "Replacement password (optional)",
-            type: "password",
-            placeholder: "Leave blank to generate",
-          },
-        ],
-        buildPayload: (values) => ({
-          operation: "rotate",
-          email: textValue(values.email),
-          password: textValue(values.password) || undefined,
-        }),
-      },
-    ],
+    actions: [],
   },
 };
 
@@ -1607,6 +1525,8 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
           onRefresh={load}
         />
       ) : null}
+
+      {domain === "settings" ? <PersonalDataControls /> : null}
 
       <section className="mt-4 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-4">
         {config.metrics.map((metric) => {

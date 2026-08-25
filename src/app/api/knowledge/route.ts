@@ -4,6 +4,7 @@ import { embedTexts } from "@/lib/openai/client";
 import { redactSensitive } from "@/lib/security/context";
 import {
   getKnowledgeStats,
+  deleteKnowledgeDocumentsBySourcePrefix,
   listKnowledgeChunks,
   listKnowledgeDocuments,
   searchKnowledge,
@@ -12,6 +13,19 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
+export const DELETE = withDatabaseRequestScope(DELETEHandler);
+
+async function DELETEHandler(request: Request) {
+  let context;
+  try { context = await authorizeRequest({ request, action: "write.memory", resourceType: "knowledge", metadata: { operation: "delete_source" } }); }
+  catch (error) { return forbiddenResponse(error); }
+  const source = new URL(request.url).searchParams.get("source")?.trim();
+  if (!source || !["google:", "google:mail:", "google:calendar:", "google:drive:"].includes(source)) {
+    return Response.json({ error: "Choose a supported connected source." }, { status: 400 });
+  }
+  const deleted = await deleteKnowledgeDocumentsBySourcePrefix(source, { tenantId: context.tenantId });
+  return Response.json({ deleted, source }, { headers: { "cache-control": "private, no-store" } });
+}
 
 async function GETHandler(request: Request) {
   let context;

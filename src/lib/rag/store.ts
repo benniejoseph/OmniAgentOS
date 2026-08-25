@@ -146,6 +146,37 @@ export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: st
   return documentId;
 }
 
+export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: string, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const prefix = String(redactSensitive(sourcePrefix)).trim().slice(0, 500);
+  if (!prefix) throw new Error("A source prefix is required.");
+  const forgottenAt = new Date().toISOString();
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: RagSqlClient) => {
+      const rows = await sql`SELECT id FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND source LIKE ${prefix + "%"}`;
+      const ids = rows.map((row) => String(row.id));
+      if (!ids.length) return { documents: 0, memories: 0 };
+      const forgotten = await sql`UPDATE omni_memories SET title = '[forgotten]', content = '', tags = '{}', source = '[forgotten]', embedding = NULL, embedding_vector = NULL, claim_status = 'forgotten', forgotten_at = ${forgottenAt}, updated_at = ${forgottenAt} WHERE tenant_id = ${tenantId} AND source LIKE ${prefix + "%"} RETURNING id`;
+      await sql`DELETE FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND id = ANY(${ids})`;
+      return { documents: ids.length, memories: forgotten.length };
+    });
+  }
+  const ledger = await readKnowledgeLedger();
+  const ids = new Set(ledger.documents.filter((document) => normalizeTenantId(document.tenantId) === tenantId && document.source.startsWith(prefix)).map((document) => document.id));
+  await updateJsonFile<KnowledgeLedger>(getKnowledgeFile(), { documents: [], chunks: [] }, (current) => ({
+    documents: current.documents.filter((document) => !ids.has(document.id)),
+    chunks: current.chunks.filter((chunk) => !ids.has(chunk.documentId)),
+  }));
+  let memories = 0;
+  await updateJsonFile<MemoryRecord[]>(getDataPath("memory.json"), [], (items) => items.map((memory) => {
+    if (normalizeTenantId(memory.tenantId) !== tenantId || !memory.source.startsWith(prefix)) return memory;
+    memories += 1;
+    return { ...memory, title: "[forgotten]", content: "", tags: [], source: "[forgotten]", embedding: undefined, claimStatus: "forgotten", forgottenAt, updatedAt: forgottenAt };
+  }));
+  return { documents: ids.size, memories };
+}
+
 export function knowledgeDocumentId(tenantId: string, idempotencyKey: string) {
   return `knowledge_${createHash("sha256").update(`${normalizeTenantId(tenantId)}:${idempotencyKey}`).digest("hex").slice(0, 40)}`;
 }

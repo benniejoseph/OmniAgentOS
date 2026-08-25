@@ -10,6 +10,7 @@ import {
   Mail,
   RefreshCw,
   RotateCcw,
+  Trash2,
   Unplug,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -80,8 +81,9 @@ export function PersonalConnections({
     (item) => item.provider === "google" && item.status === "active",
   );
   const connected = Boolean(grant);
-  const [action, setAction] = useState<"sync" | "disconnect">();
+  const [action, setAction] = useState<"sync" | "disconnect" | "delete-data">();
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [confirmDeleteData, setConfirmDeleteData] = useState(false);
   const [message, setMessage] = useState<
     { tone: "success" | "error"; text: string } | undefined
   >();
@@ -155,6 +157,20 @@ export function PersonalConnections({
     } finally {
       setAction(undefined);
     }
+  }
+
+  async function deleteImportedGoogleData() {
+    setAction("delete-data"); setMessage(undefined);
+    try {
+      const response = await fetch("/api/knowledge?source=google%3A", { method: "DELETE", headers: { accept: "application/json" } });
+      const result = await response.json().catch(() => ({})) as { error?: string; deleted?: { documents?: number; memories?: number } };
+      if (!response.ok) throw new Error(result.error || "Imported Google data could not be removed.");
+      setConfirmDeleteData(false);
+      setMessage({ tone: "success", text: `Removed ${result.deleted?.documents || 0} Google knowledge items and forgot ${result.deleted?.memories || 0} derived memories. The read-only connection remains active.` });
+      await onRefresh();
+    } catch (deleteError) {
+      setMessage({ tone: "error", text: deleteError instanceof Error ? deleteError.message : "Imported Google data could not be removed." });
+    } finally { setAction(undefined); }
   }
 
   const busy = Boolean(action) || loading;
@@ -296,6 +312,8 @@ export function PersonalConnections({
             </div>
           </div>
         ) : null}
+
+        {connected ? <div className="mt-4 border-t border-line pt-4"><button type="button" onClick={() => setConfirmDeleteData((current) => !current)} disabled={busy} className="inline-flex min-h-10 items-center gap-2 text-sm font-semibold text-muted transition hover:text-danger" aria-expanded={confirmDeleteData}><Trash2 size={15} aria-hidden="true" />Remove imported Google data</button>{confirmDeleteData ? <div className="mt-3 flex flex-col gap-3 rounded-md border border-danger/30 bg-danger/8 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-semibold">Forget all imported Gmail, Calendar, and Drive context?</p><p className="mt-1 text-xs leading-5 text-muted">This removes connected-source knowledge and derived memories. Your Google account stays connected and a future sync can import current items again.</p></div><div className="flex gap-2"><button type="button" onClick={() => setConfirmDeleteData(false)} className="action-button">Cancel</button><button type="button" onClick={() => void deleteImportedGoogleData()} disabled={Boolean(action)} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-danger px-3 text-sm font-semibold text-white disabled:opacity-60">{action === "delete-data" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}Forget imported data</button></div></div> : null}</div> : null}
 
         <div className="mt-5 grid gap-px overflow-hidden rounded-md border border-line bg-line md:grid-cols-3">
           <ConnectionFact
