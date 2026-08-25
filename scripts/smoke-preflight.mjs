@@ -12,8 +12,6 @@ const isLoopback = ["localhost", "127.0.0.1", "::1"].includes(
 );
 
 const missing = [
-  ["administrator email", email],
-  ["administrator password", password],
   ["internal smoke secret", internalSecret],
   ["release evidence output path", evidenceOutput],
   ...(!isLoopback ? [["expected deployment revision", expectedRevision]] : []),
@@ -22,7 +20,10 @@ const missing = [
 if (missing.length) {
   failSmoke(`production smoke preflight is missing: ${missing.join(", ")}.`);
 }
-if (!email.includes("@")) {
+if (Boolean(email) !== Boolean(password)) {
+  failSmoke("production smoke administrator credentials must be supplied as a complete pair.");
+}
+if (email && !email.includes("@")) {
   failSmoke("production smoke administrator email is invalid.");
 }
 
