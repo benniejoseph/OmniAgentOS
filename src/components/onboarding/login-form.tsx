@@ -16,6 +16,7 @@ export function LoginForm() {
   const [sessionCheckAttempt, setSessionCheckAttempt] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [googleLoginConfigured, setGoogleLoginConfigured] = useState(false);
 
   useEffect(() => {
     let canceled = false;
@@ -36,7 +37,15 @@ export function LoginForm() {
         const validSession = session as {
           authEnabled: boolean;
           authenticated: boolean;
+          googleLoginConfigured?: boolean;
         };
+        setGoogleLoginConfigured(Boolean(validSession.googleLoginConfigured));
+        const googleResult = new URLSearchParams(window.location.search).get("google");
+        if (googleResult === "failed") {
+          setError("Google sign-in could not be verified. Use the configured owner account and try again.");
+        } else if (googleResult === "denied") {
+          setError("Google sign-in was canceled.");
+        }
         if (!canceled) {
           if (!validSession.authEnabled) {
             setSessionState("local");
@@ -168,6 +177,23 @@ export function LoginForm() {
         <div className="rounded-md border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-foreground" role="alert">
           {error}
         </div>
+      ) : null}
+
+      {googleLoginConfigured ? (
+        <>
+          <a
+            href="/api/auth/google/authorize"
+            className="inline-flex h-12 w-full items-center justify-center gap-3 rounded-md border border-line bg-background px-4 text-sm font-semibold transition hover:border-primary/45 hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            <span className="grid size-6 place-items-center rounded-full bg-white font-semibold text-[#4285f4]" aria-hidden="true">G</span>
+            Continue with Google
+          </a>
+          <div className="flex items-center gap-3 text-xs text-muted" aria-hidden="true">
+            <span className="h-px flex-1 bg-line" />
+            Password fallback
+            <span className="h-px flex-1 bg-line" />
+          </div>
+        </>
       ) : null}
 
       <div>

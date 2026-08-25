@@ -121,6 +121,41 @@ export async function authenticatePassword({
   return authenticatePasswordInScope({ email, password });
 }
 
+export async function authenticateFederatedIdentity({ email }: { email: string }) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseSystemScope(
+      "Authenticate a verified federated identity before its tenant is known.",
+      () => authenticateFederatedIdentityInScope(email),
+    );
+  }
+  return authenticateFederatedIdentityInScope(email);
+}
+
+async function authenticateFederatedIdentityInScope(email: string) {
+  const user = await findUserByEmail(normalizeEmail(email));
+  if (!user || user.status !== "active") return null;
+  const membership = await findPrimaryMembership(user.id);
+  if (!membership || membership.status !== "active") return null;
+  const tenant = await findTenant(membership.tenantId);
+  if (!tenant) return null;
+  const token = createOpaqueToken();
+  const expiresAt = new Date(
+    Date.now() + getSessionTtlDays() * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const session = await createSession({
+    userId: user.id,
+    tenantId: tenant.id,
+    token,
+    expiresAt,
+  });
+  await markLastLogin(user.id);
+  return {
+    token,
+    identity: identityFromRecords({ session, user, tenant, membership }),
+  };
+}
+
 async function authenticatePasswordInScope({
   email,
   password,
