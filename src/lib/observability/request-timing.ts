@@ -84,20 +84,22 @@ export function appendServerTiming(response: Response, request?: Request) {
   if (!snapshot) {
     return response;
   }
-  response.headers.set(
-    "server-timing",
-    formatServerTimingHeader(snapshot),
-  );
-  response.headers.set(
+  const headers = new Headers(response.headers);
+  headers.set("server-timing", formatServerTimingHeader(snapshot));
+  headers.set(
     "x-omni-db-queries",
     String(snapshot.databaseQueryCount),
   );
-  response.headers.set(
+  headers.set(
     "x-omni-db-writes",
     String(snapshot.databaseWriteCount),
   );
   scheduleRequestTimingTelemetry(snapshot, response.status, request);
-  return response;
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 export function formatServerTimingHeader(snapshot: RequestTimingSnapshot) {
