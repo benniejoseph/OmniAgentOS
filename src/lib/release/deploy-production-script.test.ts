@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("paired production deployment", () => {
-  it("verifies a staged paired release before promoting it", async () => {
+  it("promotes protected Vercel releases before canonical paired verification", async () => {
     const result = await runProcess(
       process.execPath,
       ["scripts/deploy-production.mjs", "--dry-run"],
@@ -23,8 +23,9 @@ describe("paired production deployment", () => {
     expect(commands[2]).toContain(
       "vercel deploy --prod --skip-domain --yes",
     );
-    expect(commands[3]).toContain(
-      "fly deploy --app omniagent-os-worker --build-arg OMNIAGENT_RELEASE_SHA=test-release --env OMNIAGENT_WORKER_BASE_URL=https://staged-deployment.example",
+    expect(commands[3]).toContain("vercel promote https://staged-deployment.example");
+    expect(commands[4]).toContain(
+      "fly deploy --app omniagent-os-worker --build-arg OMNIAGENT_RELEASE_SHA=test-release --env OMNIAGENT_WORKER_BASE_URL=https://production.example",
     );
     const smokeIndex = commands.findIndex((command) =>
       command.includes("npm run test:production-smoke"),
@@ -38,10 +39,11 @@ describe("paired production deployment", () => {
     const promoteIndex = commands.findIndex((command) =>
       command.includes("vercel promote"),
     );
-    expect(smokeIndex).toBeGreaterThan(3);
+    expect(smokeIndex).toBeGreaterThan(4);
     expect(previewIndex).toBeGreaterThan(smokeIndex);
     expect(dashboardIndex).toBeGreaterThan(previewIndex);
-    expect(promoteIndex).toBeGreaterThan(dashboardIndex);
+    expect(promoteIndex).toBe(3);
+    expect(smokeIndex).toBeGreaterThan(promoteIndex);
   });
 
   it("rejects untracked drift and polls asynchronous evaluation smoke jobs", async () => {

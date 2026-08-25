@@ -36,21 +36,13 @@ if (dryRun) {
     vercelEnvironment,
   );
   const staged = "https://staged-deployment.example";
-  printDryRun("fly", workerDeployArgs(staged));
-  printVerificationCommands(staged);
   printDryRun(
     "vercel",
     ["promote", staged, "--yes", "--scope", VERCEL_SCOPE],
     vercelEnvironment,
   );
-  printDryRun(
-    "npm",
-    ["run", "smoke:preflight"],
-    {
-      ...smokeEnvironment,
-      BASE_URL: "https://production.example",
-    },
-  );
+  printDryRun("fly", workerDeployArgs("https://production.example"));
+  printVerificationCommands("https://production.example");
   process.exit(0);
 }
 
@@ -82,22 +74,18 @@ try {
     { environment: vercelEnvironment, echo: true },
   );
   const stagedBaseUrl = deploymentUrlFromOutput(deploymentOutput);
-  workerMutationStarted = true;
-  await run("fly", workerDeployArgs(stagedBaseUrl));
-  await runVerificationCommands(stagedBaseUrl);
-
+  // Vercel deployment protection can intentionally block generated preview
+  // URLs. Promote first, then verify the canonical URL as one rollback-capable
+  // transaction with the paired worker release.
   await run(
     "vercel",
     ["promote", stagedBaseUrl, "--yes", "--scope", VERCEL_SCOPE],
     { environment: vercelEnvironment },
   );
   vercelPromoted = true;
-  await run("npm", ["run", "smoke:preflight"], {
-    environment: {
-      ...smokeEnvironment,
-      BASE_URL: productionBaseUrl,
-    },
-  });
+  workerMutationStarted = true;
+  await run("fly", workerDeployArgs(productionBaseUrl));
+  await runVerificationCommands(productionBaseUrl);
 } catch (error) {
   const rollbackErrors = [];
   if (vercelPromoted) {
@@ -139,7 +127,7 @@ try {
 }
 
 console.log(
-  `Production release ${revision} passed staged smoke and performance budgets before promotion.`,
+  `Production release ${revision} passed canonical smoke and performance budgets with rollback protection.`,
 );
 
 function validateReleaseConfiguration() {
