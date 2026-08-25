@@ -142,11 +142,11 @@ async function measureDashboard(page) {
     );
   }
   await page
-    .getByRole("heading", { name: "Track every task in one place." })
+    .locator('[data-testid="activity-workspace"] h1')
     .waitFor({ state: "visible" });
   await page
-    .getByRole("status", { name: "Loading runs" })
-    .waitFor({ state: "hidden" });
+    .locator('[data-testid="activity-workspace"][aria-busy="false"]')
+    .waitFor({ state: "visible" });
   const serverTiming = await response.headerValue("server-timing");
   return {
     durationMs: performance.now() - startedAt,

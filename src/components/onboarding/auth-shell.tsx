@@ -4,9 +4,9 @@ import {
   ArrowLeft,
   CheckCircle2,
   ShieldCheck,
-  Sparkles,
 } from "lucide-react";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
+import { AsaelMark } from "@/components/brand/asael-mark";
 
 const proofPoints = [
   {
@@ -50,12 +50,10 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
               <Link
                 href="/"
                 className="inline-flex min-h-11 items-center gap-3 font-semibold tracking-tight"
-                aria-label="OmniAgentOS home"
+                aria-label="Asael home"
               >
-                <span className="grid size-10 place-items-center rounded-md bg-primary text-primary-ink">
-                  <Sparkles size={18} aria-hidden="true" />
-                </span>
-                <span className="text-lg">OmniAgentOS</span>
+                <AsaelMark size={40} priority />
+                <span className="text-lg">Asael</span>
               </Link>
               <p className="mt-16 inline-flex rounded-full border border-primary/25 bg-background/60 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-primary">
                 Private agent workspace
@@ -104,10 +102,8 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
                 href="/"
                 className="inline-flex min-h-11 items-center gap-2 rounded-md text-sm font-semibold lg:hidden"
               >
-                <span className="grid size-9 place-items-center rounded-md bg-primary text-primary-ink">
-                  <Sparkles size={16} aria-hidden="true" />
-                </span>
-                OmniAgentOS
+                <AsaelMark size={36} priority />
+                Asael
               </Link>
               <span className="hidden lg:block" />
               <ThemeToggle />

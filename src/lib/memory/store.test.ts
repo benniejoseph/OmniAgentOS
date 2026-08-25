@@ -85,4 +85,34 @@ describe("memory persistence safety (file mode)", () => {
     ]);
     expect(replayed).toEqual(first);
   });
+
+  it("preserves correction lineage and excludes superseded claims from recall", async () => {
+    const store = await import("@/lib/memory/store");
+    const original = await store.saveMemory({
+      tenantId: "tenant-claims",
+      title: "Preferred planning day",
+      content: "Planning happens on Monday.",
+      assertedBy: "user",
+      confidence: 0.9,
+    });
+    const result = await store.correctMemory(original.id, {
+      content: "Planning happens on Friday.",
+      confidence: 1,
+    }, { tenantId: "tenant-claims", actorId: "user-1" });
+
+    expect(result?.previous.claimStatus).toBe("superseded");
+    expect(result?.corrected.supersedesId).toBe(original.id);
+    expect(result?.corrected.assertedBy).toBe("user");
+    const recalled = await store.searchMemories("planning happens", { tenantId: "tenant-claims" });
+    expect(recalled.map((item) => item.record.id)).toEqual([result?.corrected.id]);
+  });
+
+  it("scrubs forgotten content and removes it from list and search", async () => {
+    const store = await import("@/lib/memory/store");
+    const memory = await store.saveMemory({ tenantId: "tenant-forget", title: "Private preference", content: "Never retain this sentence." });
+    const forgotten = await store.forgetMemory(memory.id, { tenantId: "tenant-forget" });
+    expect(forgotten).toMatchObject({ claimStatus: "forgotten", title: "[forgotten]", content: "" });
+    await expect(store.listMemories({ tenantId: "tenant-forget" })).resolves.toEqual([]);
+    await expect(store.searchMemories("retain sentence", { tenantId: "tenant-forget" })).resolves.toEqual([]);
+  });
 });

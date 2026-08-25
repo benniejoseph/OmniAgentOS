@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, Menu, Sparkles, X } from "lucide-react";
+import { ArrowRight, Menu, X } from "lucide-react";
 import { clsx } from "clsx";
 import { marketingActions, marketingNav } from "@/lib/marketing-content";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
+import { AsaelMark } from "@/components/brand/asael-mark";
 
 export function PublicHeader() {
   const pathname = usePathname();
@@ -35,11 +36,9 @@ export function PublicHeader() {
   return (
     <header className="fixed inset-x-0 top-0 z-40 border-b border-line bg-background/95 backdrop-blur">
       <div className="mx-auto flex min-h-16 max-w-7xl items-center justify-between gap-3 px-4 py-2 sm:px-6 lg:px-8">
-        <Link href="/" className="flex min-w-0 items-center gap-3 text-sm font-semibold tracking-tight" aria-label="OmniAgentOS home">
-          <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary text-primary-ink">
-            <Sparkles size={17} aria-hidden="true" />
-          </span>
-          <span className="truncate text-base">OmniAgentOS</span>
+        <Link href="/" className="flex min-w-0 items-center gap-3 text-sm font-semibold tracking-tight" aria-label="Asael home">
+          <AsaelMark size={36} priority />
+          <span className="truncate text-base">Asael</span>
         </Link>
         <nav className="hidden items-center gap-1 md:flex" aria-label="Public navigation">
           {marketingNav.map((item) => (

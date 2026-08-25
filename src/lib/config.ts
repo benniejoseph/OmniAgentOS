@@ -7,6 +7,9 @@ export const WEB_SEARCH_TIMEOUT_MS = normalizePositiveInteger(
 );
 export const EMBEDDING_MODEL =
   process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-large";
+export const TRANSCRIPTION_MODEL =
+  process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
+export const OCR_MODEL = process.env.OPENAI_OCR_MODEL || "gpt-4o-mini";
 export const EMBEDDING_DIMENSIONS = normalizePositiveInteger(
   process.env.OPENAI_EMBEDDING_DIMENSIONS,
   1536,

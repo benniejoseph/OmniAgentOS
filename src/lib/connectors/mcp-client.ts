@@ -10,7 +10,7 @@ import type { SecurityRole } from "@/lib/security/types";
 import type { ToolRiskLevel } from "@/lib/tools/types";
 
 const CLIENT_INFO = {
-  name: "omniagent-os",
+  name: "asael",
   version: "0.1.0",
 };
 

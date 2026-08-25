@@ -3,7 +3,7 @@ import { hasOpenAIKey } from "@/lib/config";
 import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
 import type { AgentMode } from "@/lib/orchestration/types";
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
-import { saveMemories, saveMemory } from "@/lib/memory/store";
+import { listMemories, saveMemories, saveMemory, type CreateMemoryInput } from "@/lib/memory/store";
 import type { MemoryRecord } from "@/lib/memory/types";
 import { redactSensitive } from "@/lib/security/context";
 
@@ -74,6 +74,9 @@ export async function consolidateAgentRunMemory({
     tags: ["agent-run", mode],
     source: "agent",
     importance: 0.42,
+    confidence: 0.55,
+    assertedBy: "agent",
+    evidenceRefs: [`run:${runId}`],
     embedding,
   });
   const consolidation = await consolidateRunMemory({
@@ -191,15 +194,21 @@ async function persistConsolidatedItems({
     scope: "workspace" as const,
     source: "consolidator",
     importance: clamp01(item.importance),
+    confidence: clamp01(item.confidence),
+    assertedBy: "agent" as const,
+    evidenceRefs: [`run:${runId}`],
   }));
+  const existing = await listMemories({ tenantId, includeInactive: true, limit: 500 });
+  const reconciledInputs = reconcileConsolidatedMemoryClaims(memoryInputs, existing);
+  if (!reconciledInputs.length) return [];
   const embeddings = await embedTexts(
-    memoryInputs.map((item) => `${item.title}\n\n${item.content}`),
+    reconciledInputs.map((item) => `${item.title}\n\n${item.content}`),
     abortSignal,
   );
   abortSignal?.throwIfAborted();
 
   const saved: MemoryRecord[] = await saveMemories(
-    memoryInputs.map((input, index) => ({
+    reconciledInputs.map((input, index) => ({
       ...input,
       tenantId,
       embedding: embeddings?.[index],
@@ -211,8 +220,44 @@ async function persistConsolidatedItems({
   return saved;
 }
 
+export function reconcileConsolidatedMemoryClaims(
+  inputs: CreateMemoryInput[],
+  existing: MemoryRecord[],
+): CreateMemoryInput[] {
+  return inputs.flatMap((input) => {
+    const matching = existing.find((record) =>
+      record.claimStatus === "active"
+      && record.type === (input.type || "fact")
+      && claimIdentity(record.title) === claimIdentity(input.title),
+    );
+    if (!matching) return [input];
+    if (canonicalClaimContent(matching.content) === canonicalClaimContent(input.content)) return [];
+    return [{
+      ...input,
+      claimStatus: "contradicted" as const,
+      contradictionOfId: matching.id,
+      confidence: Math.min(input.confidence ?? 0.5, 0.5),
+      tags: normalizeTags([...(input.tags || []), "needs-review", "contradiction"]),
+      evidenceRefs: [...new Set([...(input.evidenceRefs || []), `memory:${matching.id}`])],
+    }];
+  });
+}
+
+function claimIdentity(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function canonicalClaimContent(value: string) {
+  return value
+    .replace(/^Source (run|request):.*$/gim, "")
+    .replace(/^Confidence:.*$/gim, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 function buildConsolidationInstructions() {
-  return `You are the Memory Curator for OmniAgent OS.
+  return `You are the Memory Curator for Asael.
 
 Extract only durable information that should help future agent runs.
 Return JSON that exactly matches the provided schema.

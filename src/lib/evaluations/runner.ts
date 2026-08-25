@@ -1145,7 +1145,7 @@ async function ensureGraphEvalSeedMemory() {
     type: "procedure",
     title,
     content:
-      "OmniAgent OS should connect adaptive RAG, graph memory, durable workflow approvals, pgvector retrieval, security controls, and evaluation traces into a multi-hop agentic orchestration context.",
+      "Asael should connect adaptive RAG, graph memory, durable workflow approvals, pgvector retrieval, security controls, and evaluation traces into a multi-hop agentic orchestration context.",
     tags: ["graph-memory", "rag", "workflow", "approval", "evaluation", "security"],
     source: "evaluation",
     scope: "workspace",

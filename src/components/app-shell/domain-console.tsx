@@ -99,7 +99,7 @@ export type DomainAction = {
   id: string;
   title: string;
   description: string;
-  method: "GET" | "POST" | "PATCH";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   path: string;
   fields: ActionField[];
   buildPath?: (values: Record<string, FormValue>) => string;
@@ -223,8 +223,8 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
         rows: (data) =>
           arrayPath(data, "memory.memories").map((item) => ({
             title: stringValue(item.title, "Untitled memory"),
-            status: stringValue(item.type, "memory"),
-            meta: tagsValue(item.tags),
+            status: `${stringValue(item.type, "memory")} · ${stringValue(item.claimStatus, "active")}`,
+            meta: `${stringValue(item.id)} · ${Math.round(numberValue(item.confidence, 0.7) * 100)}% confidence · ${stringValue(item.assertedBy, "system")} · ${tagsValue(item.tags) || stringValue(item.source, "unknown source")}`,
             time: stringValue(item.updatedAt || item.createdAt),
           })),
       },
@@ -293,6 +293,37 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           tags: commaList(values.tags),
           content: textValue(values.content),
         }),
+      },
+      {
+        id: "correct-memory",
+        title: "Correct memory",
+        description: "Create a new claim that supersedes an inaccurate memory while preserving its history.",
+        method: "PATCH",
+        path: "/api/memory",
+        fields: [
+          { name: "memoryId", label: "Memory ID", type: "text", placeholder: "Memory record ID" },
+          { name: "title", label: "Corrected title", type: "text", placeholder: "Updated title" },
+          { name: "content", label: "Corrected content", type: "textarea", placeholder: "What should Asael remember instead?" },
+          { name: "contradiction", label: "Mark the previous claim as contradicted", type: "checkbox", defaultValue: false },
+        ],
+        buildPath: (values) => `/api/memory/${encodeURIComponent(textValue(values.memoryId))}`,
+        buildPayload: (values) => ({
+          title: textValue(values.title),
+          content: textValue(values.content),
+          contradiction: Boolean(values.contradiction),
+          confidence: 1,
+        }),
+      },
+      {
+        id: "forget-memory",
+        title: "Forget memory",
+        description: "Irreversibly scrub a memory's content and remove it from recall.",
+        method: "DELETE",
+        path: "/api/memory",
+        fields: [
+          { name: "memoryId", label: "Memory ID", type: "text", placeholder: "Memory record ID" },
+        ],
+        buildPath: (values) => `/api/memory/${encodeURIComponent(textValue(values.memoryId))}`,
       },
       {
         id: "test-retrieval",

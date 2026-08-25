@@ -21,6 +21,10 @@ const memorySchema = z.object({
   type: z.enum(["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"]).optional(),
   tags: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
   importance: z.number().min(0).max(1).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  evidenceRefs: z.array(z.string().trim().min(1).max(500)).max(50).optional(),
+  validFrom: z.string().datetime().optional(),
+  validTo: z.string().datetime().optional(),
 }).strict();
 
 async function GETHandler(request: Request) {
@@ -62,6 +66,7 @@ async function GETHandler(request: Request) {
     memories: (
       await listMemories({
         tenantId: context.tenantId,
+        includeInactive: true,
         limit: Math.min(Math.max(limit, 1), 100),
       })
     ).map(publicMemoryRecord),
@@ -112,6 +117,7 @@ async function POSTHandler(request: Request) {
       tenantId: context.tenantId,
       source: "manual",
       scope: "workspace",
+      assertedBy: "user",
       embedding,
     });
     await indexMemoryGraphRecords([record], "memory.manual");

@@ -137,7 +137,7 @@ export function LoginForm() {
           Welcome back
         </h1>
         <p className="mt-3 text-sm leading-6 text-muted">
-          Sign in to your OmniAgent workspace.
+          Sign in to your Asael workspace.
         </p>
       </div>
 

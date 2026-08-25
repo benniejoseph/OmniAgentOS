@@ -61,7 +61,7 @@ export function DashboardOverview() {
   } = useWorkspaceSession();
   const [resources, setResources] = useState(initialResources);
   const [lastRefresh, setLastRefresh] = useState<string>();
-  const [announcement, setAnnouncement] = useState("Runs workspace ready.");
+  const [announcement, setAnnouncement] = useState("Today is ready.");
   const loadVersionRef = useRef(0);
   const activeLoadRef = useRef<AbortController | null>(null);
 
@@ -219,7 +219,7 @@ export function DashboardOverview() {
 
   return (
     <div
-      className="mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8"
+      className="mx-auto max-w-[90rem] px-4 py-7 sm:px-7 lg:px-10"
       aria-busy={isLoading}
       data-testid="activity-workspace"
     >
@@ -227,20 +227,20 @@ export function DashboardOverview() {
         {announcement}
       </p>
 
-      <section className="rounded-lg border border-line bg-surface p-5">
+      <section className="border-b border-line/80 pb-7">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-3">
-              <span className="grid size-10 place-items-center rounded-md bg-primary text-primary-ink">
+              <span className="grid size-10 place-items-center rounded-xl bg-primary text-primary-ink shadow-sm">
                 <Activity size={18} aria-hidden="true" />
               </span>
               <div>
-                <p className="text-xs font-semibold text-primary">Runs</p>
-                <h1 className="mt-1 text-2xl font-semibold">Track every task in one place.</h1>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Today</p>
+                <h1 className="mt-1 text-3xl font-semibold tracking-tight">Your day, at a glance.</h1>
               </div>
             </div>
             <p className="mt-4 max-w-3xl text-sm leading-6 text-muted">
-              See active and recent agent runs and workflows. Decisions wait in Approvals, and completed output stays in Results.
+              Continue recent work, review what needs you, or give Asael something new to think about.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -251,33 +251,33 @@ export function DashboardOverview() {
               className="action-button"
             >
               {isLoading ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
-              Refresh runs
+              Refresh
             </button>
-            <Link href="/app/command" className="primary-button">
-              Start task
+            <Link href="/app/command" className="primary-button" aria-label="Start task">
+              Ask Asael
               <ArrowRight size={15} aria-hidden="true" />
             </Link>
           </div>
         </div>
 
-        <div className="mt-5 grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-2 md:grid-cols-5">
+        <div className="mt-7 grid gap-5 sm:grid-cols-2 md:grid-cols-5">
           <Metric
-            label="Active runs"
+            label="In progress"
             value={metricValue(resources.runs, activeRows.filter((row) => row.kind === "agent").length)}
             tone={metricTone(resources.runs, activeRows.some((row) => row.kind === "agent") ? "warning" : "neutral")}
           />
           <Metric
-            label="Active workflows"
+            label="Automations"
             value={metricValue(resources.workflows, activeRows.filter((row) => row.kind === "workflow").length)}
             tone={metricTone(resources.workflows, activeRows.some((row) => row.kind === "workflow") ? "warning" : "neutral")}
           />
           <Metric
-            label="Needs attention"
+            label="Inbox"
             value={attentionMetric(resources.approvals, resources.incidents, approvals.length + incidents.length)}
             tone={attentionTone(resources.approvals, resources.incidents, approvals.length + incidents.length)}
           />
           <Metric
-            label="Completed"
+            label="Done today"
             value={combinedMetric(resources.runs, resources.workflows, completedRows.length)}
             tone={combinedTone(resources.runs, resources.workflows, completedRows.length)}
           />
@@ -345,7 +345,7 @@ export function DashboardOverview() {
 
       {workspaceAvailable ? (
         <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(19rem,0.65fr)]">
-          <Panel title="Active and recent work" description="Latest state first across agent runs and durable workflows.">
+          <Panel title="Recent work" description="Pick up where you left off.">
             {isLoading && !hasPriorData ? (
               <LoadingRows />
             ) : activityRows.length ? (
@@ -365,7 +365,7 @@ export function DashboardOverview() {
           </Panel>
 
           <div className="space-y-4">
-            <Panel title="Needs attention" description="Action approvals and active incidents, routed to their owning workspace.">
+            <Panel title="Inbox" description="Decisions and issues waiting for you.">
               {resources.approvals.status === "unavailable" && resources.incidents.status === "unavailable" ? (
                 <UnavailableState label={`${resources.approvals.error} ${resources.incidents.error}`} />
               ) : approvals.length || incidents.length ? (
@@ -389,7 +389,7 @@ export function DashboardOverview() {
               )}
             </Panel>
 
-            <Panel title="Recent results" description="Completed work with result evidence.">
+            <Panel title="Latest results" description="Completed work, ready to use.">
               {completedRows.length ? (
                 <div className="space-y-2">
                   {completedRows.slice(0, 4).map((row) => <ActivityItem key={`result-${row.key}`} row={row} compact />)}
@@ -409,8 +409,8 @@ export function DashboardOverview() {
         </section>
       ) : null}
 
-      <details className="mt-4 rounded-lg border border-line bg-surface p-4">
-        <summary className="min-h-11 cursor-pointer content-center text-sm font-semibold">More workspaces</summary>
+      <details className="mt-5 border-t border-line py-4">
+        <summary className="min-h-11 cursor-pointer content-center text-sm font-semibold">Advanced workspace</summary>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">
           Use these when a result needs deeper context, configuration, verification, or system diagnosis.
         </p>
@@ -570,8 +570,8 @@ function StatusBadge({ status }: { status: string }) {
 
 function Panel({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
   return (
-    <section className="min-w-0 rounded-lg border border-line bg-surface p-4">
-      <h2 className="text-sm font-semibold">{title}</h2>
+    <section className="soft-shadow min-w-0 rounded-2xl border border-line/80 bg-surface p-5">
+      <h2 className="text-base font-semibold tracking-tight">{title}</h2>
       <p className="mt-1 text-xs leading-5 text-muted">{description}</p>
       <div className="mt-4">{children}</div>
     </section>
@@ -590,7 +590,7 @@ function Metric({
   className?: string;
 }) {
   return (
-    <div className={clsx("bg-background p-3", className)}>
+    <div className={clsx("border-l-2 border-line pl-3", className)}>
       <p className="text-xs text-muted">{label}</p>
       <p className={clsx("mt-2 font-mono text-lg", textTone(tone))}>{value}</p>
     </div>

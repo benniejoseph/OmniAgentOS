@@ -11,7 +11,7 @@ import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type { MemoryRecord, MemorySearchResult, MemoryType } from "@/lib/memory/types";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
 
-type CreateMemoryInput = {
+export type CreateMemoryInput = {
   id?: string;
   tenantId?: string;
   type?: MemoryType;
@@ -21,12 +21,21 @@ type CreateMemoryInput = {
   scope?: MemoryRecord["scope"];
   source?: string;
   importance?: number;
+  confidence?: number;
+  claimStatus?: MemoryRecord["claimStatus"];
+  assertedBy?: MemoryRecord["assertedBy"];
+  evidenceRefs?: string[];
+  validFrom?: string;
+  validTo?: string;
+  supersedesId?: string;
+  contradictionOfId?: string;
   embedding?: number[];
 };
 
 type TenantScopedOptions = {
   tenantId?: string;
   limit?: number;
+  includeInactive?: boolean;
   sql?: MemorySqlClient;
 };
 
@@ -46,19 +55,17 @@ export async function listMemories(options: TenantScopedOptions = {}) {
       await ensureDatabaseSchema();
     }
     const sql = options.sql || getSql();
-    const rows = await sql`
-      SELECT *
-      FROM omni_memories
-      WHERE tenant_id = ${tenantId}
-      ORDER BY updated_at DESC
-      LIMIT ${limit}
-    `;
+    const rows = options.includeInactive
+      ? await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
+      : await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`;
     return rows.map(memoryFromRow);
   }
 
   const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
   return memories
     .filter((memory) => normalizeTenantId(memory.tenantId) === tenantId)
+    .filter((memory) => sanitizeMemoryRecord(memory).claimStatus !== "forgotten")
+    .filter((memory) => options.includeInactive || isActiveMemory(sanitizeMemoryRecord(memory)))
     .slice(0, limit)
     .map(sanitizeMemoryRecord);
 }
@@ -87,6 +94,14 @@ function memoryRecordFromInput(
     scope: input.scope || "workspace",
     source,
     importance: input.importance ?? 0.5,
+    confidence: clamp01(input.confidence ?? (source === "manual" ? 0.95 : 0.7)),
+    claimStatus: normalizeClaimStatus(input.claimStatus),
+    assertedBy: input.assertedBy || (source === "manual" ? "user" : source === "agent" || source === "consolidator" ? "agent" : "system"),
+    evidenceRefs: normalizeEvidenceRefs(input.evidenceRefs || []),
+    validFrom: normalizeOptionalDate(input.validFrom),
+    validTo: normalizeOptionalDate(input.validTo),
+    supersedesId: normalizeOptionalId(input.supersedesId),
+    contradictionOfId: normalizeOptionalId(input.contradictionOfId),
     createdAt: now,
     updatedAt: now,
     embedding: textWasRedacted ? undefined : input.embedding,
@@ -124,6 +139,14 @@ export async function saveMemories(inputs: CreateMemoryInput[]) {
       scope: record.scope,
       source: record.source,
       importance: record.importance,
+      confidence: record.confidence,
+      claim_status: record.claimStatus,
+      asserted_by: record.assertedBy,
+      evidence_refs: record.evidenceRefs,
+      valid_from: record.validFrom || null,
+      valid_to: record.validTo || null,
+      supersedes_id: record.supersedesId || null,
+      contradiction_of_id: record.contradictionOfId || null,
       embedding: record.embedding || null,
       created_at: record.createdAt,
       updated_at: record.updatedAt,
@@ -141,6 +164,14 @@ export async function saveMemories(inputs: CreateMemoryInput[]) {
           scope text,
           source text,
           importance double precision,
+          confidence double precision,
+          claim_status text,
+          asserted_by text,
+          evidence_refs text[],
+          valid_from timestamptz,
+          valid_to timestamptz,
+          supersedes_id text,
+          contradiction_of_id text,
           embedding jsonb,
           created_at timestamptz,
           updated_at timestamptz
@@ -149,11 +180,13 @@ export async function saveMemories(inputs: CreateMemoryInput[]) {
       inserted AS (
         INSERT INTO omni_memories (
           id, tenant_id, type, title, content, tags, scope, source, importance,
-          embedding, created_at, updated_at
+          confidence, claim_status, asserted_by, evidence_refs, valid_from, valid_to,
+          supersedes_id, contradiction_of_id, embedding, created_at, updated_at
         )
         SELECT
           id, tenant_id, type, title, content, tags, scope, source, importance,
-          embedding, created_at, updated_at
+          confidence, claim_status, asserted_by, evidence_refs, valid_from, valid_to,
+          supersedes_id, contradiction_of_id, embedding, created_at, updated_at
         FROM input_rows
         ON CONFLICT (id) DO NOTHING
         RETURNING omni_memories.*, TRUE AS _inserted
@@ -245,6 +278,7 @@ export async function searchMemories(
   const limit = options.limit || 8;
 
   return memories
+    .filter((record) => record.claimStatus === "active")
     .map((record) => {
       const text = `${record.title} ${record.content} ${record.tags.join(" ")}`;
       const recordTerms = tokenize(text);
@@ -268,6 +302,73 @@ export async function searchMemories(
     .filter((result) => result.score > 0.05)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
+}
+
+export async function getMemory(id: string, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`SELECT * FROM omni_memories WHERE id = ${id} AND tenant_id = ${tenantId} LIMIT 1`;
+    return rows[0] ? memoryFromRow(rows[0]) : null;
+  }
+  const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
+  const memory = memories.find((item) => item.id === id && normalizeTenantId(item.tenantId) === tenantId);
+  return memory ? sanitizeMemoryRecord(memory) : null;
+}
+
+export async function correctMemory(
+  id: string,
+  correction: { title?: string; content?: string; confidence?: number; validTo?: string; contradiction?: boolean },
+  options: { tenantId?: string; actorId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const existing = await getMemory(id, { tenantId });
+  if (!existing || existing.claimStatus === "forgotten") return null;
+  const corrected = await saveMemory({
+    tenantId,
+    type: existing.type,
+    title: correction.title || existing.title,
+    content: correction.content || existing.content,
+    tags: existing.tags,
+    scope: existing.scope,
+    source: `correction:${options.actorId || "user"}`,
+    importance: existing.importance,
+    confidence: correction.confidence ?? existing.confidence ?? 0.7,
+    assertedBy: "user",
+    evidenceRefs: [...(existing.evidenceRefs || []), `memory:${existing.id}`],
+    validFrom: new Date().toISOString(),
+    validTo: correction.validTo,
+    supersedesId: correction.contradiction ? undefined : existing.id,
+    contradictionOfId: correction.contradiction ? existing.id : undefined,
+  });
+  const oldStatus: NonNullable<MemoryRecord["claimStatus"]> = correction.contradiction ? "contradicted" : "superseded";
+  if (hasDatabaseUrl()) {
+    await getSql()`UPDATE omni_memories SET claim_status = ${oldStatus}, valid_to = COALESCE(valid_to, NOW()), updated_at = NOW() WHERE id = ${id} AND tenant_id = ${tenantId} AND claim_status <> 'forgotten'`;
+  } else {
+    await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) => memories.map((memory) =>
+      memory.id === id && normalizeTenantId(memory.tenantId) === tenantId
+        ? { ...sanitizeMemoryRecord(memory), claimStatus: oldStatus, validTo: memory.validTo || new Date().toISOString(), updatedAt: new Date().toISOString() }
+        : memory,
+    ));
+  }
+  return { previous: { ...existing, claimStatus: oldStatus }, corrected };
+}
+
+export async function forgetMemory(id: string, options: { tenantId?: string } = {}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const forgottenAt = new Date().toISOString();
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`UPDATE omni_memories SET title = '[forgotten]', content = '', tags = '{}', source = '[forgotten]', embedding = NULL, embedding_vector = NULL, claim_status = 'forgotten', forgotten_at = ${forgottenAt}, updated_at = ${forgottenAt} WHERE id = ${id} AND tenant_id = ${tenantId} RETURNING *`;
+    return rows[0] ? memoryFromRow(rows[0]) : null;
+  }
+  let forgotten: MemoryRecord | null = null;
+  await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) => memories.map((memory) => {
+    if (memory.id !== id || normalizeTenantId(memory.tenantId) !== tenantId) return memory;
+    forgotten = { ...sanitizeMemoryRecord(memory), title: "[forgotten]", content: "", tags: [], source: "[forgotten]", embedding: undefined, claimStatus: "forgotten", forgottenAt, updatedAt: forgottenAt };
+    return forgotten;
+  }));
+  return forgotten;
 }
 
 export async function getMemoryStats(options: { tenantId?: string } = {}) {
@@ -338,6 +439,9 @@ async function searchMemoriesDb(
                1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800) AS recency_score
         FROM omni_memories
         WHERE tenant_id = ${tenantId}
+          AND claim_status = 'active'
+          AND (valid_from IS NULL OR valid_from <= NOW())
+          AND (valid_to IS NULL OR valid_to > NOW())
           AND embedding_vector IS NOT NULL
         ORDER BY (
           (0.58 * GREATEST(0, 1 - (embedding_vector <=> ${vector}::vector))) +
@@ -375,6 +479,9 @@ async function searchMemoriesLexicalDb(query: string, limit: number, tenantId: s
            1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800) AS recency_score
     FROM omni_memories
     WHERE tenant_id = ${tenantId}
+      AND claim_status = 'active'
+      AND (valid_from IS NULL OR valid_from <= NOW())
+      AND (valid_to IS NULL OR valid_to > NOW())
       AND (
         ${query} = ''
         OR to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', ${query})
@@ -397,6 +504,15 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
     scope: String(row.scope || "workspace") as MemoryRecord["scope"],
     source: String(row.source || "database"),
     importance: Number(row.importance || 0.5),
+    confidence: Number(row.confidence ?? 0.7),
+    claimStatus: normalizeClaimStatus(row.claim_status),
+    assertedBy: normalizeAssertedBy(row.asserted_by),
+    evidenceRefs: Array.isArray(row.evidence_refs) ? row.evidence_refs.map(String) : [],
+    validFrom: row.valid_from ? normalizeDate(row.valid_from) : undefined,
+    validTo: row.valid_to ? normalizeDate(row.valid_to) : undefined,
+    supersedesId: row.supersedes_id ? String(row.supersedes_id) : undefined,
+    contradictionOfId: row.contradiction_of_id ? String(row.contradiction_of_id) : undefined,
+    forgottenAt: row.forgotten_at ? normalizeDate(row.forgotten_at) : undefined,
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
     embedding: parseEmbedding(row.embedding),
@@ -406,6 +522,10 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
 function sanitizeMemoryRecord(record: MemoryRecord): MemoryRecord {
   return {
     ...record,
+    confidence: clamp01(record.confidence ?? 0.7),
+    claimStatus: normalizeClaimStatus(record.claimStatus),
+    assertedBy: normalizeAssertedBy(record.assertedBy),
+    evidenceRefs: normalizeEvidenceRefs(record.evidenceRefs || []),
     title: String(redactSensitive(record.title)).slice(0, 240),
     content: String(redactSensitive(record.content)).slice(0, 200_000),
     tags: normalizeTags(
@@ -458,6 +578,40 @@ function normalizeTags(tags: string[]) {
         .slice(0, 12),
     ),
   );
+}
+
+function normalizeEvidenceRefs(refs: string[]) {
+  return Array.from(new Set(refs.map((ref) => String(redactSensitive(ref)).trim().slice(0, 500)).filter(Boolean))).slice(0, 50);
+}
+
+function normalizeOptionalDate(value?: string) {
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
+function normalizeOptionalId(value?: string) {
+  return value?.trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 200) || undefined;
+}
+
+function normalizeClaimStatus(value: unknown): NonNullable<MemoryRecord["claimStatus"]> {
+  return value === "superseded" || value === "contradicted" || value === "forgotten" ? value : "active";
+}
+
+function normalizeAssertedBy(value: unknown): NonNullable<MemoryRecord["assertedBy"]> {
+  return value === "user" || value === "agent" || value === "import" ? value : "system";
+}
+
+function isActiveMemory(memory: MemoryRecord) {
+  if (memory.claimStatus !== "active") return false;
+  const now = Date.now();
+  const validFrom = memory.validFrom ? Date.parse(memory.validFrom) : undefined;
+  const validTo = memory.validTo ? Date.parse(memory.validTo) : undefined;
+  return !(validFrom && validFrom > now) && !(validTo && validTo <= now);
+}
+
+function clamp01(value: number) {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0.7;
 }
 
 function tokenize(value: string) {

@@ -38,6 +38,12 @@ describe("scoreTask", () => {
     expect(scoreTask(task, "Finally, next action: ship it.").passed).toBe(true);
     expect(scoreTask(task, "no closing").passed).toBe(false);
   });
+
+  it("grades tool trajectory, citations, latency, and cost", () => {
+    const task: GoldenTask = { id: "trajectory", goal: "x", assert: { minCitations: 1, requiredToolIds: ["memory.search"], forbiddenToolIds: ["danger.delete"], maxLatencyMs: 2_000, maxEstimatedCostUsd: 0.05 } };
+    expect(scoreTask(task, "Grounded answer", { citationIds: ["M1"], toolIds: ["memory.search"], latencyMs: 900, estimatedCostUsd: 0.01 }).passed).toBe(true);
+    expect(scoreTask(task, "Ungrounded answer", { toolIds: ["danger.delete"], latencyMs: 3_000, estimatedCostUsd: 0.2 }).failures).toHaveLength(5);
+  });
 });
 
 describe("scoreboard", () => {

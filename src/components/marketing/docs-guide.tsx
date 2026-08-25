@@ -237,7 +237,7 @@ export function DocsGuide() {
           <div>
             <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Product guide</p>
             <h1 className="mt-4 max-w-3xl text-5xl font-semibold tracking-normal sm:text-7xl">
-              How to use OmniAgentOS.
+              How to use Asael.
             </h1>
             <p className="mt-6 max-w-2xl text-lg leading-8 text-muted">
               A complete operating manual for the public site, dashboard readiness, command center, memory, workflows, connectors, governed tools, evaluations, observability, security, and production release gates.
@@ -457,7 +457,7 @@ export function DocsGuide() {
             <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Use cases</p>
             <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">What teams can get done.</h2>
             <p className="mt-5 text-base leading-7 text-muted">
-              OmniAgentOS is useful whenever AI work needs memory, tools, approvals, repeatability, and production evidence.
+              Asael is useful whenever AI work needs memory, tools, approvals, repeatability, and production evidence.
             </p>
           </div>
           <div className="grid gap-4 md:grid-cols-2">

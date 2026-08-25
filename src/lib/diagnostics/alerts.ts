@@ -814,13 +814,13 @@ async function deliverSlackAlert(delivery: AlertDeliveryRecord) {
       "Idempotency-Key": delivery.id,
     },
     body: JSON.stringify({
-      text: `[${incident?.severity || delivery.severity}] ${incident?.title || "OmniAgent incident"}`,
+      text: `[${incident?.severity || delivery.severity}] ${incident?.title || "Asael incident"}`,
       blocks: [
         {
           type: "section",
           text: {
             type: "mrkdwn",
-            text: `*${incident?.title || "OmniAgent incident"}*\\n${incident?.message || ""}`,
+            text: `*${incident?.title || "Asael incident"}*\\n${incident?.message || ""}`,
           },
         },
       ],
@@ -850,9 +850,9 @@ async function deliverEmailAlert(delivery: AlertDeliveryRecord) {
       "Idempotency-Key": delivery.id,
     },
     body: JSON.stringify({
-      from: process.env.OMNIAGENT_ALERT_EMAIL_FROM || "OmniAgent OS <onboarding@resend.dev>",
+      from: process.env.OMNIAGENT_ALERT_EMAIL_FROM || "Asael <onboarding@resend.dev>",
       to: [to],
-      subject: `[${incident?.severity || delivery.severity}] ${incident?.title || "OmniAgent incident"}`,
+      subject: `[${incident?.severity || delivery.severity}] ${incident?.title || "Asael incident"}`,
       text: `${incident?.message || "Incident alert"}\n\nDelivery: ${delivery.id}`,
     }),
   });

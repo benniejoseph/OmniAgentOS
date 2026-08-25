@@ -9,15 +9,16 @@ import {
   LogIn,
   LogOut,
   Menu,
-  Sparkles,
   UserRound,
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { appNav, appNavGroups, primaryNavHrefs } from "@/lib/navigation";
+import { appNav, appNavGroups, primaryNavHrefs, primaryNavItems } from "@/lib/navigation";
 import { CommandPalette } from "@/components/app-shell/command-palette";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
+import { NotificationCenter } from "@/components/app-shell/notification-center";
+import { AsaelMark } from "@/components/brand/asael-mark";
 
 export function AppShell({ children, banner }: { children: React.ReactNode; banner?: React.ReactNode }) {
   const pathname = usePathname();
@@ -29,24 +30,6 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
   const [signOutError, setSignOutError] = useState<string>();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobilePanelRef = useRef<HTMLDivElement>(null);
-  const previousPathnameRef = useRef(pathname);
-
-  useEffect(() => {
-    const pathChanged = previousPathnameRef.current !== pathname;
-    previousPathnameRef.current = pathname;
-    if (!pathChanged) {
-      return;
-    }
-    const shouldFocusContent = mobileOpen;
-    const timer = window.setTimeout(() => {
-      setMobileOpen(false);
-      if (shouldFocusContent) {
-        document.getElementById("workspace-content")?.focus();
-      }
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [mobileOpen, pathname]);
-
   useEffect(() => {
     if (!mobileOpen) {
       return;
@@ -125,19 +108,17 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
         Skip to workspace
       </a>
 
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-line bg-surface lg:flex lg:flex-col">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 border-r border-line/80 bg-surface lg:flex lg:flex-col">
         <div className="flex h-16 items-center gap-3 border-b border-line px-5">
           <Link
             href="/app"
             className="flex min-w-0 items-center gap-3 rounded-md focus-visible:outline-none"
-            aria-label="OmniAgentOS workspace home"
+            aria-label="Asael workspace home"
           >
-            <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary text-primary-ink">
-              <Sparkles size={17} aria-hidden="true" />
-            </span>
+            <AsaelMark size={36} priority />
             <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold">OmniAgentOS</span>
-              <span className="block truncate text-xs text-muted">Governed AI workspace</span>
+                  <span className="block truncate text-sm font-semibold tracking-tight">Asael</span>
+                  <span className="block truncate text-xs text-muted">Your second brain</span>
             </span>
           </Link>
         </div>
@@ -159,9 +140,9 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
         </div>
       </aside>
 
-      <div className="lg:pl-64">
+      <div className="lg:pl-60">
         {banner}
-        <header className="sticky top-0 z-20 border-b border-line bg-background/95 backdrop-blur">
+        <header className="sticky top-0 z-20 border-b border-line/70 bg-background/85 backdrop-blur-xl">
           <div className="flex min-h-16 items-center justify-between gap-3 px-3 py-2 sm:px-6 lg:px-8">
             <div className="flex min-w-0 items-center gap-3">
               <button
@@ -185,40 +166,43 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
             </div>
             <div className="flex items-center gap-2">
               <CommandPalette />
+              <NotificationCenter />
               <ThemeToggle compact />
               <Link
                 href="/app/command"
                 className="hidden min-h-11 items-center justify-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink transition hover:brightness-105 sm:inline-flex"
               >
-                Start task
+                  Ask Asael
               </Link>
             </div>
           </div>
-          <nav className="flex gap-1 overflow-x-auto border-t border-line px-3 py-2 lg:hidden" aria-label="Primary workspace navigation">
-            {appNav
-              .filter((item) => primaryNavHrefs.includes(item.href))
-              .map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  aria-current={isActivePath(pathname, item.href) ? "page" : undefined}
-                  className={clsx(
-                    "inline-flex min-h-11 shrink-0 items-center rounded-md px-3 text-sm font-medium",
-                    isActivePath(pathname, item.href)
-                      ? "bg-primary text-primary-ink"
-                      : "text-muted hover:bg-surface-raised hover:text-foreground",
-                  )}
-                >
-                  {item.shortLabel || item.label}
-                </Link>
-              ))}
-          </nav>
         </header>
 
-        <main id="workspace-content" tabIndex={-1}>
+        <main id="workspace-content" tabIndex={-1} className="workspace-enter pb-20 lg:pb-0">
           {children}
         </main>
       </div>
+
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line/80 bg-background/95 px-1 pb-[max(.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur-xl lg:hidden" aria-label="Everyday workspace navigation">
+        {primaryNavItems.map((item) => {
+          const Icon = item.icon;
+          const active = isActivePath(pathname, item.href);
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              aria-current={active ? "page" : undefined}
+              className={clsx(
+                "flex min-h-14 flex-col items-center justify-center gap-1 rounded-md px-1 text-[11px] font-semibold transition",
+                active ? "text-primary" : "text-muted hover:bg-surface-raised hover:text-foreground",
+              )}
+            >
+              <Icon size={19} aria-hidden="true" />
+              <span>{item.shortLabel || item.label}</span>
+            </Link>
+          );
+        })}
+      </nav>
 
       {mobileOpen ? (
         <div className="fixed inset-0 z-50 lg:hidden">
@@ -246,13 +230,11 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
                 href="/app"
                 onClick={closeMobileNavigation}
                 className="flex min-w-0 items-center gap-3"
-                aria-label="OmniAgentOS workspace home"
+                aria-label="Asael workspace home"
               >
-                <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary text-primary-ink">
-                  <Sparkles size={17} aria-hidden="true" />
-                </span>
+                <AsaelMark size={36} />
                 <span id="mobile-workspace-menu-title" className="truncate text-sm font-semibold">
-                  OmniAgentOS
+                  Asael
                 </span>
               </Link>
               <button

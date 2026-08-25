@@ -1,4 +1,4 @@
-# OmniAgent OS
+# Asael
 
 An enterprise AI agent platform: a governed tool-calling agent with durable workflows, long-term memory and RAG, MCP/OpenAPI connectors, approvals, observability, and signed release evidence — built on Next.js, OpenAI, and Neon Postgres.
 

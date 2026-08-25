@@ -77,7 +77,7 @@ process.on("SIGTERM", beginShutdown);
 
 console.log(JSON.stringify({
   level: "info",
-  message: "OmniAgentOS worker started.",
+  message: "Asael worker started.",
   baseUrl,
   intervalMs,
   backgroundIntervalMs,
@@ -115,7 +115,7 @@ await Promise.all([
   enableRetention ? runRetentionLoop() : Promise.resolve(),
 ]);
 
-console.log(JSON.stringify({ level: "info", message: "OmniAgentOS worker stopped." }));
+console.log(JSON.stringify({ level: "info", message: "Asael worker stopped." }));
 
 async function runTickLane(lane, cadenceMs, laneOptions) {
   let tenantCursor;

@@ -8,10 +8,17 @@ import {
   FileText,
   GitBranch,
   Loader2,
+  Network,
   Play,
   RefreshCw,
+  Search,
+  Hammer,
+  ShieldCheck,
+  Sparkles,
   Square,
   TerminalSquare,
+  ThumbsDown,
+  ThumbsUp,
   Workflow,
 } from "lucide-react";
 import { clsx } from "clsx";
@@ -21,13 +28,30 @@ import {
 } from "@/components/app-shell/session-context";
 
 type JsonRecord = Record<string, unknown>;
+type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
+type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string };
 type AgentMode = "orchestrate" | "research" | "execute" | "learn";
+type AgentId = "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne";
+type GroundingReport = {
+  status: "verified" | "not_required" | "missing" | "invalid";
+  citedIds: string[];
+  invalidIds: string[];
+  sources: Array<{ citationId: string; kind: string; title: string; confidence: number }>;
+};
+type RunFeedback = {
+  verdict: "useful" | "needs_work";
+  correction?: string;
+  updatedAt: string;
+};
 type TabKey = "goal" | "context" | "plan" | "execute" | "evidence";
 
 type StreamEvent =
-  | { type: "run"; runId?: string }
+  | { type: "run"; runId?: string; threadId?: string }
   | { type: "status"; label?: string; detail?: string }
   | { type: "memory"; title?: string; count?: number }
+  | { type: "model"; model: string; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number }
+  | { type: "council_member"; agentId: AgentId; agentName: string; role: string; status: "thinking" | "completed" | "failed"; summary?: string; confidence?: number; durationMs?: number }
+  | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | { type: "delta"; text?: string }
   | {
       type: "tool";
@@ -39,7 +63,8 @@ type StreamEvent =
       summary?: string;
     }
   | { type: "waiting_approval"; executionId?: string; toolId?: string; message?: string }
-  | { type: "done"; response?: string }
+  | { type: "done"; response?: string; grounding?: GroundingReport }
+  | { type: "delegated"; threadId?: string; workflowId?: string; acknowledgement?: string; reason?: string }
   | { type: "error"; message?: string };
 
 const tabs: Array<{ key: TabKey; label: string; icon: typeof TerminalSquare }> = [
@@ -77,14 +102,23 @@ const starterGoals = [
   },
 ];
 
-export function AgentRunsWorkspace() {
+export function AgentRunsWorkspace({
+  initialAgentId,
+  initialThreadId,
+  initialGoal,
+}: {
+  initialAgentId?: AgentId;
+  initialThreadId?: string;
+  initialGoal?: string;
+}) {
   const {
     session,
     status: sessionStatus,
     role,
   } = useWorkspaceSession();
-  const [goal, setGoal] = useState(starterGoals[0].goal);
+  const [goal, setGoal] = useState(initialGoal || "");
   const [mode, setMode] = useState<AgentMode>("orchestrate");
+  const [preferredAgentId, setPreferredAgentId] = useState<AgentId | undefined>(initialAgentId);
   const [approvalRequired, setApprovalRequired] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>("goal");
   const [loading, setLoading] = useState<string>();
@@ -94,22 +128,30 @@ export function AgentRunsWorkspace() {
   const [workflowRun, setWorkflowRun] = useState<JsonRecord>();
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
   const [agentResponse, setAgentResponse] = useState("");
+  const [grounding, setGrounding] = useState<GroundingReport>();
   const [activeAgentRunId, setActiveAgentRunId] = useState("");
+  const [runFeedback, setRunFeedback] = useState<RunFeedback>();
+  const [feedbackSaving, setFeedbackSaving] = useState(false);
   const [evidence, setEvidence] = useState<JsonRecord>({});
   const [evidenceState, setEvidenceState] = useState<"loading" | "ready" | "error">("loading");
   const [workflowSyncError, setWorkflowSyncError] = useState<string>();
   const [runAnnouncement, setRunAnnouncement] = useState("Run workspace ready.");
   const [waitingApproval, setWaitingApproval] = useState<Extract<StreamEvent, { type: "waiting_approval" }>>();
+  const [threadId, setThreadId] = useState(initialThreadId || "");
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [turns, setTurns] = useState<ThreadTurn[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const evidenceControllerRef = useRef<AbortController | null>(null);
   const evidenceVersionRef = useRef(0);
   const pendingDeltasRef = useRef<string[]>([]);
   const deltaFlushTimerRef = useRef<number | null>(null);
+  const initialThreadLoadedRef = useRef(false);
 
   const planNodes = arrayPath(workflowPlan, "plan.plan.nodes");
   const contextResults = arrayPath(contextPack, "pack.results");
   const approvalItems = arrayPath(evidence, "approvals.items");
   const runRows = arrayPath(evidence, "runs.runs");
+  const agentRunCompleted = streamEvents.some((event) => event.type === "done");
   const reviewedPlanId = stringPath(workflowPlan, "plan.id", "");
   const reviewedPlanStatus = stringPath(workflowPlan, "plan.status", "");
   const reviewedPlanReady = Boolean(
@@ -191,6 +233,11 @@ export function AgentRunsWorkspace() {
   useEffect(() => {
     if (sessionStatus === "ready") {
       void refreshEvidence();
+      void refreshThreads();
+      if (initialThreadId && !initialThreadLoadedRef.current) {
+        initialThreadLoadedRef.current = true;
+        void loadThread(initialThreadId);
+      }
     }
     return () => {
       abortControllerRef.current?.abort();
@@ -316,6 +363,45 @@ export function AgentRunsWorkspace() {
     }
   }
 
+  async function saveRunFeedback(
+    verdict: RunFeedback["verdict"],
+    correction?: string,
+  ) {
+    if (!activeAgentRunId) return;
+    setFeedbackSaving(true);
+    setError(undefined);
+    try {
+      await readJson(`/api/runs/${encodeURIComponent(activeAgentRunId)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          verdict,
+          correction: correction?.trim() || undefined,
+        }),
+      });
+      setRunFeedback({
+        verdict,
+        correction: correction?.trim() || undefined,
+        updatedAt: new Date().toISOString(),
+      });
+      setRunAnnouncement(
+        verdict === "useful"
+          ? "Useful outcome recorded."
+          : "Correction recorded for future agent work.",
+      );
+      void refreshEvidence();
+    } catch (feedbackError) {
+      setError(
+        feedbackError instanceof Error
+          ? feedbackError.message
+          : "Feedback could not be saved.",
+      );
+      setRunAnnouncement("Feedback could not be saved.");
+    } finally {
+      setFeedbackSaving(false);
+    }
+  }
+
   function changeGoal(nextGoal: string) {
     if (nextGoal === goal) {
       return;
@@ -326,7 +412,9 @@ export function AgentRunsWorkspace() {
     setWorkflowRun(undefined);
     setWorkflowSyncError(undefined);
     setAgentResponse("");
+    setGrounding(undefined);
     setActiveAgentRunId("");
+    setRunFeedback(undefined);
     setStreamEvents([]);
     setWaitingApproval(undefined);
   }
@@ -341,6 +429,7 @@ export function AgentRunsWorkspace() {
     setWorkflowSyncError(undefined);
     setAgentResponse("");
     setActiveAgentRunId("");
+    setRunFeedback(undefined);
     setStreamEvents([]);
     setWaitingApproval(undefined);
   }
@@ -355,6 +444,7 @@ export function AgentRunsWorkspace() {
     setWorkflowSyncError(undefined);
     setAgentResponse("");
     setActiveAgentRunId("");
+    setRunFeedback(undefined);
     setStreamEvents([]);
     setWaitingApproval(undefined);
   }
@@ -481,9 +571,15 @@ export function AgentRunsWorkspace() {
     setError(undefined);
     setWorkflowPlan(undefined);
     setWorkflowRun(undefined);
+    const submittedGoal = goal.trim();
+    if (!submittedGoal) {
+      setError("Write a message before asking Asael.");
+      return;
+    }
     setAgentResponse("");
     setActiveAgentRunId("");
-    setStreamEvents([]);
+    setRunFeedback(undefined);
+    setStreamEvents([{ type: "status", label: "Starting", detail: "Opening the durable conversation." }]);
     setWaitingApproval(undefined);
     pendingDeltasRef.current = [];
     if (deltaFlushTimerRef.current !== null) {
@@ -492,12 +588,22 @@ export function AgentRunsWorkspace() {
     }
     setActiveTab("execute");
     setRunAnnouncement("Agent run started.");
+    setTurns((current) => [
+      ...current,
+      { id: `pending-user-${Date.now()}`, role: "user", content: submittedGoal, createdAt: new Date().toISOString() },
+    ]);
 
     try {
       const response = await fetch("/api/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode, messages: [{ role: "user", content: goal }] }),
+        body: JSON.stringify({
+          mode,
+          threadId: threadId || undefined,
+          message: submittedGoal,
+          strategy: "auto",
+          agentId: preferredAgentId,
+        }),
         signal: controller.signal,
       });
 
@@ -506,10 +612,13 @@ export function AgentRunsWorkspace() {
         throw new Error(stringValue(asRecord(body).message || asRecord(body).error, `/api/agent returned ${response.status}`));
       }
 
-      let terminalEvent: "done" | "waiting_approval" | "error" | undefined;
+      let terminalEvent: "done" | "delegated" | "waiting_approval" | "error" | undefined;
       await readSse(response.body, (event) => {
         if (event.type === "run" && event.runId) {
           setActiveAgentRunId(event.runId);
+          if (event.threadId) {
+            setThreadId(event.threadId);
+          }
           return;
         }
         if (event.type === "delta" && event.text) {
@@ -517,10 +626,33 @@ export function AgentRunsWorkspace() {
           return;
         }
         setStreamEvents((current) => [...current.slice(-199), event]);
+        if (event.type === "delegated") {
+          terminalEvent = "delegated";
+          const acknowledgement = event.acknowledgement || "This task is continuing as a durable workflow.";
+          if (event.threadId) setThreadId(event.threadId);
+          if (event.workflowId) setWorkflowRun({ run: { id: event.workflowId } });
+          setAgentResponse(acknowledgement);
+          setTurns((current) => [
+            ...current,
+            { id: `assistant-${Date.now()}`, role: "assistant", content: acknowledgement, createdAt: new Date().toISOString() },
+          ]);
+          setGoal("");
+          void refreshThreads();
+          setRunAnnouncement("Task moved to a durable background workflow.");
+        }
         if (event.type === "done") {
           terminalEvent = "done";
           flushPendingDeltas();
           setAgentResponse(event.response || "");
+          setGrounding(event.grounding);
+          if (event.response) {
+            setTurns((current) => [
+              ...current,
+              { id: `assistant-${Date.now()}`, role: "assistant", content: event.response || "", createdAt: new Date().toISOString() },
+            ]);
+          }
+          setGoal("");
+          void refreshThreads();
           setRunAnnouncement("Agent run completed. Review the result and evidence.");
         }
         if (event.type === "status") {
@@ -560,6 +692,39 @@ export function AgentRunsWorkspace() {
       abortControllerRef.current = null;
       setLoading(undefined);
     }
+  }
+
+  async function refreshThreads() {
+    try {
+      const result = asRecord(await readJson("/api/threads?limit=20"));
+      setThreads(arrayPath(result, "threads") as unknown as ThreadSummary[]);
+    } catch {
+      // Threads are convenience navigation; agent execution reports its own errors.
+    }
+  }
+
+  async function loadThread(id: string) {
+    try {
+      const result = asRecord(await readJson(`/api/threads/${encodeURIComponent(id)}`));
+      const thread = asRecord(result.thread);
+      setThreadId(stringValue(thread.id));
+      setMode((stringValue(thread.mode, "orchestrate") as AgentMode));
+      setTurns(arrayPath(result, "turns") as unknown as ThreadTurn[]);
+      setAgentResponse("");
+      setActiveTab("goal");
+    } catch (threadError) {
+      setError(threadError instanceof Error ? threadError.message : "Conversation could not be loaded.");
+    }
+  }
+
+  function newThread() {
+    setThreadId("");
+    setTurns([]);
+    setGoal("");
+    setAgentResponse("");
+    setStreamEvents([]);
+    setActiveTab("goal");
+    setError(undefined);
   }
 
   async function tickQueue() {
@@ -660,27 +825,27 @@ export function AgentRunsWorkspace() {
 
   return (
     <div
-      className="mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8"
+      className="mx-auto max-w-[90rem] px-4 py-7 sm:px-7 lg:px-10"
       aria-busy={Boolean(loading)}
       data-testid="work-workspace"
     >
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {runAnnouncement}
       </p>
-      <section className="rounded-lg border border-line bg-surface p-5">
+      <section className="border-b border-line/80 pb-7">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-3">
-              <span className="grid size-10 place-items-center rounded-md bg-primary text-primary-ink">
+              <span className="grid size-10 place-items-center rounded-xl bg-primary text-primary-ink shadow-sm">
                 <TerminalSquare size={18} aria-hidden="true" />
               </span>
               <div>
-                <p className="text-xs font-semibold text-primary">Start</p>
-                <h1 className="mt-1 text-2xl font-semibold tracking-normal">Start with the outcome you need.</h1>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Ask Asael</p>
+                <h1 className="mt-1 text-3xl font-semibold tracking-tight">What are we working on?</h1>
               </div>
             </div>
             <p className="mt-4 max-w-4xl text-sm leading-6 text-muted">
-              Run a focused task immediately, or preview a durable workflow plan first. Risky actions pause in Approvals and completed work appears in Results.
+              Ask a question, explore an idea, or hand off a task. You stay in control of every consequential action.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -692,7 +857,7 @@ export function AgentRunsWorkspace() {
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised"
             >
               {evidenceState === "loading" ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
-              Refresh evidence
+              Refresh
             </button>
           </div>
         </div>
@@ -726,9 +891,35 @@ export function AgentRunsWorkspace() {
         ) : null}
       </section>
 
-      <section className="mx-auto mt-4 max-w-6xl">
-        <div className="min-w-0 rounded-lg border border-line bg-surface">
-          <nav className="flex max-w-full gap-1 overflow-x-auto border-b border-line p-2 sm:gap-2" aria-label="Agent run stages" role="tablist">
+      <section className="mx-auto mt-6 max-w-6xl">
+        <div className="mb-4 grid gap-4 lg:grid-cols-[15rem_minmax(0,1fr)]">
+          <aside className="min-w-0 border-b border-line pb-4 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-4" aria-label="Recent conversations">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">Conversations</h2>
+              <button type="button" onClick={newThread} className="rounded-lg px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/10">New</button>
+            </div>
+            <div className="mt-3 flex gap-2 overflow-x-auto lg:block lg:space-y-1 lg:overflow-visible">
+              {threads.slice(0, 8).map((thread) => (
+                <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} className={clsx("min-w-44 rounded-xl px-3 py-2 text-left transition lg:block lg:w-full lg:min-w-0", thread.id === threadId ? "bg-foreground text-background" : "hover:bg-surface-raised")}>
+                  <span className="block truncate text-sm font-medium">{thread.title}</span>
+                  <span className={clsx("mt-1 block text-xs", thread.id === threadId ? "text-background/65" : "text-muted")}>{formatRelativeThreadTime(thread.updatedAt)}</span>
+                </button>
+              ))}
+              {!threads.length ? <p className="text-xs leading-5 text-muted">Your conversations will appear here.</p> : null}
+            </div>
+          </aside>
+          <div className="min-w-0 space-y-4" aria-live="polite">
+            {turns.map((turn) => (
+              <article key={turn.id} className={clsx("max-w-3xl", turn.role === "user" ? "ml-auto rounded-2xl bg-foreground px-4 py-3 text-background" : "border-l-2 border-primary pl-4")}>
+                <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
+              </article>
+            ))}
+            {agentResponse && turns.at(-1)?.content !== agentResponse ? <article className="max-w-3xl border-l-2 border-primary pl-4"><p className="whitespace-pre-wrap text-sm leading-6">{agentResponse}</p></article> : null}
+            {!turns.length && !agentResponse ? <div className="py-6"><p className="text-lg font-semibold tracking-tight">Start a conversation</p><p className="mt-1 text-sm text-muted">Asael remembers the thread, so you can refine, question, and continue.</p></div> : null}
+          </div>
+        </div>
+        <div className="soft-shadow min-w-0 overflow-hidden rounded-2xl border border-line/80 bg-surface">
+          <nav className="flex max-w-full gap-1 overflow-x-auto border-b border-line/80 px-3 py-2 sm:gap-2" aria-label="Agent run stages" role="tablist">
             {tabs.map((tab, index) => {
               const Icon = tab.icon;
               return (
@@ -743,8 +934,8 @@ export function AgentRunsWorkspace() {
                   aria-controls="run-stage-panel"
                   tabIndex={activeTab === tab.key ? 0 : -1}
                   className={clsx(
-                    "inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-2 text-sm font-semibold transition sm:gap-2 sm:px-3",
-                    activeTab === tab.key ? "bg-primary text-primary-ink" : "text-muted hover:bg-surface-raised hover:text-foreground",
+                    "inline-flex min-h-10 shrink-0 items-center gap-1 rounded-xl px-2 text-sm font-semibold transition sm:gap-2 sm:px-3",
+                    activeTab === tab.key ? "bg-foreground text-background shadow-sm" : "text-muted hover:bg-surface-raised hover:text-foreground",
                   )}
                 >
                   <Icon size={15} className="hidden sm:block" aria-hidden="true" />
@@ -766,6 +957,7 @@ export function AgentRunsWorkspace() {
                 goal={goal}
                 mode={mode}
                 approvalRequired={approvalRequired}
+                preferredAgentId={preferredAgentId}
                 loading={loading}
                 readDisabledReason={readPermission}
                 runDisabledReason={runPermission}
@@ -776,6 +968,7 @@ export function AgentRunsWorkspace() {
                 onGoalChange={changeGoal}
                 onModeChange={changeMode}
                 onApprovalChange={changeApprovalRequired}
+                onClearPreferredAgent={() => setPreferredAgentId(undefined)}
                 onContext={() => void buildContext()}
                 onPlan={() => void buildPlan()}
                 onAgent={() => void runAgent()}
@@ -982,6 +1175,7 @@ export function AgentRunsWorkspace() {
                     </Link>
                   </div>
                 ) : null}
+                <CouncilExecutionMap events={streamEvents} />
                 <div className="grid gap-4 lg:grid-cols-[0.86fr_1.14fr]">
                   <div className="rounded-md border border-line bg-background p-3">
                     <p className="text-sm font-semibold">Run stream</p>
@@ -999,10 +1193,36 @@ export function AgentRunsWorkspace() {
                     </div>
                   </div>
                   <div className="rounded-md border border-line bg-background p-3">
-                    <p className="text-sm font-semibold">Agent response</p>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold">Agent response</p>
+                      {grounding ? (
+                        <StatusPill
+                          label={groundingLabel(grounding.status)}
+                          tone={grounding.status === "verified" ? "success" : grounding.status === "not_required" ? "neutral" : "warning"}
+                        />
+                      ) : null}
+                    </div>
                     <div className="mt-3 min-h-64 max-h-96 overflow-auto rounded-md border border-line bg-surface p-3 text-sm leading-6 text-muted">
                       {agentResponse || "Run the agent to stream an answer here."}
                     </div>
+                    {grounding?.sources.some((source) => grounding.citedIds.includes(source.citationId)) ? (
+                      <div className="mt-3 space-y-2" aria-label="Answer sources">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-muted">Sources used</p>
+                        {grounding.sources.filter((source) => grounding.citedIds.includes(source.citationId)).map((source) => (
+                          <div key={source.citationId} className="rounded-md border border-line bg-surface px-3 py-2 text-xs">
+                            <p className="font-medium text-foreground">{source.title}</p>
+                            <p className="mt-0.5 font-mono text-muted">[{source.citationId}] · {source.kind} · {Math.round(source.confidence * 100)}%</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {agentResponse && activeAgentRunId && agentRunCompleted ? (
+                      <RunFeedbackPanel
+                        feedback={runFeedback}
+                        saving={feedbackSaving}
+                        onSave={saveRunFeedback}
+                      />
+                    ) : null}
                   </div>
                 </div>
               </StagePanel>
@@ -1049,10 +1269,41 @@ export function AgentRunsWorkspace() {
   );
 }
 
+function CouncilExecutionMap({ events }: { events: StreamEvent[] }) {
+  const memberEvents = events.filter((event): event is Extract<StreamEvent, { type: "council_member" }> => event.type === "council_member");
+  const latestByAgent = new Map<AgentId, Extract<StreamEvent, { type: "council_member" }>>();
+  for (const event of memberEvents) latestByAgent.set(event.agentId, event);
+  const members = [...latestByAgent.values()];
+  const verdict = [...events].reverse().find((event): event is Extract<StreamEvent, { type: "council_verdict" }> => event.type === "council_verdict");
+  if (!members.length && !verdict) return null;
+  return (
+    <section className="council-execution" aria-label="Live agent council">
+      <header>
+        <div><Network size={15} aria-hidden="true" /><span>Agent council</span></div>
+        <small>{verdict ? "Review complete" : "Independent passes running"}</small>
+      </header>
+      <div className="council-stage">
+        <svg viewBox="0 0 720 220" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M360 108 C285 108 265 42 165 42 M360 108 C285 108 265 178 165 178 M360 108 C435 108 455 42 555 42 M360 108 C435 108 455 178 555 178" />
+        </svg>
+        <div className="council-hub"><span><Sparkles size={17} aria-hidden="true" /></span><strong>Atlas</strong><small>Synthesis</small></div>
+        <div className="council-members">
+          {members.map((member) => {
+            const Icon = member.agentId === "scout" ? Search : member.agentId === "forge" ? Hammer : member.agentId === "sentinel" ? ShieldCheck : member.agentId === "mnemosyne" ? Brain : Sparkles;
+            return <article key={member.agentId} className={clsx(`is-${member.status}`, `agent-${member.agentId}`)}><span><Icon size={15} aria-hidden="true" /></span><div><strong>{member.agentName}</strong><small>{member.status === "thinking" ? "Thinking" : member.status === "failed" ? "Needs retry" : member.confidence === undefined ? "Complete" : `${Math.round(member.confidence * 100)}% confidence`}</small></div>{member.summary ? <p>{member.summary}</p> : null}</article>;
+          })}
+        </div>
+      </div>
+      {verdict ? <footer className={clsx(`is-${verdict.status}`)}><ShieldCheck size={14} aria-hidden="true" /><div><strong>{verdict.status === "passed" ? "Sentinel accepted the answer" : verdict.status === "revised" ? "Atlas revised after critique" : "Critic pass needs retry"}</strong><p>{verdict.assessment}</p></div><span>{Math.round(verdict.score * 100)}%</span></footer> : null}
+    </section>
+  );
+}
+
 function GoalStage({
   goal,
   mode,
   approvalRequired,
+  preferredAgentId,
   loading,
   readDisabledReason,
   runDisabledReason,
@@ -1063,6 +1314,7 @@ function GoalStage({
   onGoalChange,
   onModeChange,
   onApprovalChange,
+  onClearPreferredAgent,
   onContext,
   onPlan,
   onAgent,
@@ -1071,6 +1323,7 @@ function GoalStage({
   goal: string;
   mode: AgentMode;
   approvalRequired: boolean;
+  preferredAgentId?: AgentId;
   loading?: string;
   readDisabledReason?: string;
   runDisabledReason?: string;
@@ -1081,6 +1334,7 @@ function GoalStage({
   onGoalChange: (value: string) => void;
   onModeChange: (value: AgentMode) => void;
   onApprovalChange: (value: boolean) => void;
+  onClearPreferredAgent: () => void;
   onContext: () => void;
   onPlan: () => void;
   onAgent: () => void;
@@ -1093,6 +1347,17 @@ function GoalStage({
       title="Describe the outcome"
       description="Choose a safe sample or write the result you need. Planning and advanced controls stay optional."
     >
+      {preferredAgentId ? (
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2.5">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-primary">Primary agent</p>
+            <p className="mt-1 text-sm font-semibold">{agentDisplayName(preferredAgentId)} is leading this task</p>
+          </div>
+          <button type="button" onClick={onClearPreferredAgent} className="rounded-md px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/10">
+            Use automatic routing
+          </button>
+        </div>
+      ) : null}
       <div aria-labelledby="sample-use-cases">
         <div className="flex flex-wrap items-end justify-between gap-2">
           <p id="sample-use-cases" className="text-sm font-semibold">
@@ -1346,6 +1611,99 @@ function ResultRows({ rows, empty }: { rows: Array<{ title: string; status: stri
   );
 }
 
+function RunFeedbackPanel({
+  feedback,
+  saving,
+  onSave,
+}: {
+  feedback?: RunFeedback;
+  saving: boolean;
+  onSave: (verdict: RunFeedback["verdict"], correction?: string) => Promise<void>;
+}) {
+  const [correctionOpen, setCorrectionOpen] = useState(
+    feedback?.verdict === "needs_work",
+  );
+  const [correction, setCorrection] = useState(feedback?.correction || "");
+
+  return (
+    <section className="mt-3 border-t border-line pt-3" aria-labelledby="run-feedback-title">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p id="run-feedback-title" className="text-sm font-semibold">Train this agent</p>
+          <p className="mt-1 text-xs text-muted">Your signal shapes future routing and responses.</p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            aria-pressed={feedback?.verdict === "useful"}
+            disabled={saving}
+            onClick={() => {
+              setCorrectionOpen(false);
+              void onSave("useful");
+            }}
+            className={clsx(
+              "inline-flex min-h-10 items-center gap-2 rounded-md border px-3 text-xs font-semibold transition disabled:opacity-60",
+              feedback?.verdict === "useful"
+                ? "border-success/40 bg-success/10 text-success"
+                : "border-line hover:bg-surface-raised",
+            )}
+          >
+            <ThumbsUp size={14} aria-hidden="true" /> Useful
+          </button>
+          <button
+            type="button"
+            aria-pressed={feedback?.verdict === "needs_work" || correctionOpen}
+            disabled={saving}
+            onClick={() => setCorrectionOpen(true)}
+            className={clsx(
+              "inline-flex min-h-10 items-center gap-2 rounded-md border px-3 text-xs font-semibold transition disabled:opacity-60",
+              feedback?.verdict === "needs_work" || correctionOpen
+                ? "border-warning/45 bg-warning/10 text-warning"
+                : "border-line hover:bg-surface-raised",
+            )}
+          >
+            <ThumbsDown size={14} aria-hidden="true" /> Needs work
+          </button>
+        </div>
+      </div>
+      {correctionOpen ? (
+        <div className="mt-3 rounded-md border border-line bg-surface p-3">
+          <label className="block text-xs font-semibold" htmlFor="run-feedback-correction">
+            What should change next time?
+          </label>
+          <textarea
+            id="run-feedback-correction"
+            value={correction}
+            maxLength={2_000}
+            rows={3}
+            disabled={saving}
+            onChange={(event) => setCorrection(event.currentTarget.value)}
+            placeholder="Be more concise, verify a source, preserve a constraint..."
+            className="mt-2 w-full rounded-md border border-line bg-background px-3 py-2 text-sm leading-5 outline-none focus:border-primary"
+          />
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <p className="text-xs text-muted">Saved corrections guide this specialist on future tasks.</p>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void onSave("needs_work", correction)}
+              className="primary-button shrink-0"
+            >
+              {saving ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
+              Save feedback
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {feedback ? (
+        <p className="mt-2 text-xs text-muted" role="status">
+          {feedback.verdict === "useful" ? "Useful outcome saved." : "Correction saved."} You can change this anytime.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function EvidenceCard({ title, rows, empty }: { title: string; rows: Array<{ title: string; status: string; meta: string }>; empty: string }) {
   return (
     <div className="rounded-md border border-line bg-background p-3">
@@ -1456,6 +1814,22 @@ function streamEventLabel(event: StreamEvent) {
   if (event.type === "memory") {
     return event.count ? `${event.title || "Memory"} (${event.count})` : event.title || "Memory event.";
   }
+  if (event.type === "model") {
+    const cost = event.estimatedCostUsd === undefined ? "cost rate not configured" : `$${event.estimatedCostUsd.toFixed(6)}`;
+    return `${event.model} used ${event.totalTokens.toLocaleString()} tokens in ${(event.latencyMs / 1_000).toFixed(1)}s (${cost})${event.fallbackUsed ? "; fallback used" : ""}.`;
+  }
+  if (event.type === "council_member") {
+    if (event.status === "thinking") return `${event.agentName} is working independently as ${event.role}.`;
+    if (event.status === "failed") return `${event.agentName} could not complete its council pass${event.summary ? `: ${event.summary}` : "."}`;
+    return `${event.agentName} completed its ${event.role.toLowerCase()} pass${event.confidence === undefined ? "." : ` at ${Math.round(event.confidence * 100)}% confidence.`}`;
+  }
+  if (event.type === "council_verdict") {
+    return event.status === "passed"
+      ? `Sentinel accepted the result at ${Math.round(event.score * 100)}%.`
+      : event.status === "revised"
+        ? `Sentinel requested changes; Atlas revised the answer (${Math.round(event.score * 100)}% initial score).`
+        : event.assessment;
+  }
   if (event.type === "tool") {
     const name = event.toolName || event.toolId || "Tool";
     if (event.status === "running") {
@@ -1484,10 +1858,30 @@ function streamEventLabel(event: StreamEvent) {
   if (event.type === "done") {
     return "Agent run completed.";
   }
+  if (event.type === "delegated") {
+    return event.reason || "Task delegated to a durable workflow.";
+  }
   if (event.type === "error") {
     return event.message || "Agent run failed.";
   }
   return "Event received.";
+}
+
+function groundingLabel(status: GroundingReport["status"]) {
+  if (status === "verified") return "Citations verified";
+  if (status === "not_required") return "No retrieved sources";
+  if (status === "invalid") return "Invalid citation";
+  return "Citation needed";
+}
+
+function agentDisplayName(agentId: AgentId) {
+  return {
+    atlas: "Atlas",
+    scout: "Scout",
+    forge: "Forge",
+    sentinel: "Sentinel",
+    mnemosyne: "Mnemosyne",
+  }[agentId];
 }
 
 function asRecord(value: unknown): JsonRecord {
@@ -1520,6 +1914,17 @@ function stringValue(value: unknown, fallback = "") {
 function numberValue(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function formatRelativeThreadTime(value: string) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "Recently";
+  const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60_000));
+  if (minutes < 1) return "Just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 type Tone = "neutral" | "success" | "warning" | "danger";

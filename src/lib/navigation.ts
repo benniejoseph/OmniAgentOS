@@ -1,10 +1,13 @@
 import {
   Activity,
+  Inbox,
   Brain,
+  Bot,
   Cable,
   CheckCircle2,
   Database,
   FileText,
+  FolderKanban,
   GitBranch,
   Globe2,
   Layers3,
@@ -46,24 +49,45 @@ export type ProductPage = AppNavItem & {
 
 export const appNav: AppNavItem[] = [
   {
+    href: "/app/capture",
+    label: "Capture",
+    shortLabel: "Capture",
+    description: "Save a note or file to your second brain.",
+    icon: Inbox,
+  },
+  {
+    href: "/app/agents",
+    label: "Agents",
+    shortLabel: "Agents",
+    description: "Your specialists, capabilities, and learning loops.",
+    icon: Bot,
+  },
+  {
     href: "/app/command",
-    label: "Start",
-    shortLabel: "Start",
-    description: "Describe an outcome and choose how the agent should run it.",
+    label: "Ask",
+    shortLabel: "Ask",
+    description: "Think, research, or hand off an outcome.",
     icon: TerminalSquare,
   },
   {
     href: "/app",
-    label: "Runs",
-    shortLabel: "Runs",
-    description: "Watch active and recent tasks, workflows, and blockers.",
+    label: "Today",
+    shortLabel: "Today",
+    description: "Your work, decisions, and recent results.",
     icon: Activity,
   },
   {
+    href: "/app/projects",
+    label: "Projects",
+    shortLabel: "Projects",
+    description: "Goals, plans, and delegated work in one place.",
+    icon: FolderKanban,
+  },
+  {
     href: "/app/approvals",
-    label: "Approvals",
-    shortLabel: "Approvals",
-    description: "Review actions and access requests that need a decision.",
+    label: "Inbox",
+    shortLabel: "Inbox",
+    description: "Review actions that need your attention.",
     icon: CheckCircle2,
   },
   {
@@ -80,8 +104,8 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/memory",
-    label: "Knowledge",
-    description: "What the agent remembers: saved facts, documents, and past learnings.",
+    label: "Memory",
+    description: "What your second brain knows and remembers.",
     icon: Brain,
   },
   {
@@ -125,32 +149,48 @@ export const appNav: AppNavItem[] = [
   },
 ];
 
-// The everyday loop: give work, watch it, resolve blockers, review evidence.
-export const primaryNavHrefs = ["/app/command", "/app", "/app/approvals", "/app/results"];
+// The five-item everyday loop stays reachable on mobile. Everything else is
+// progressively disclosed by the kind of work it supports.
+export const primaryNavHrefs = ["/app", "/app/command", "/app/capture", "/app/projects", "/app/memory"];
+export const primaryNavItems = primaryNavHrefs.map((href) => {
+  const item = appNav.find((entry) => entry.href === href);
+  if (!item) throw new Error(`Missing primary navigation item for ${href}`);
+  return item;
+});
 
 export const appNavGroups: AppNavGroup[] = [
   {
-    label: "Operate",
-    items: appNav.filter((item) => primaryNavHrefs.includes(item.href)),
+    label: "Workspace",
+    items: primaryNavItems,
   },
   {
-    label: "Build and connect",
+    label: "Automation",
     collapsible: true,
     items: appNav.filter((item) =>
       [
         "/app/workflows",
-        "/app/memory",
         "/app/connectors",
         "/app/tools",
+        "/app/agents",
       ].includes(item.href),
     ),
   },
   {
-    label: "Admin",
+    label: "Review",
     collapsible: true,
     items: appNav.filter((item) =>
       [
+        "/app/approvals",
+        "/app/results",
         "/app/evaluations",
+      ].includes(item.href),
+    ),
+  },
+  {
+    label: "System",
+    collapsible: true,
+    items: appNav.filter((item) =>
+      [
         "/app/observability",
         "/app/security",
         "/app/settings",
@@ -461,7 +501,7 @@ export const marketingPages = {
   platform: {
     eyebrow: "Platform",
     headline: "Give agents work and review what happens.",
-    summary: "OmniAgentOS brings goals, context, tool activity, approvals, workflows, and result evidence into one operator workspace.",
+    summary: "Asael brings goals, context, tool activity, approvals, workflows, and result evidence into one operator workspace.",
     icon: Sparkles,
     sections: [
       "Plan and execute durable agent work.",
@@ -473,7 +513,7 @@ export const marketingPages = {
   solutions: {
     eyebrow: "Solutions",
     headline: "Run multi-step work with explicit review points.",
-    summary: "Use OmniAgentOS for research, automation, support operations, security workflows, data analysis, and any multi-step AI process that needs memory and control.",
+    summary: "Use Asael for research, automation, support operations, security workflows, data analysis, and any multi-step AI process that needs memory and control.",
     icon: Globe2,
     sections: [
       "Research agents with durable source context.",
@@ -522,7 +562,7 @@ export const marketingPages = {
   changelog: {
     eyebrow: "Changelog",
     headline: "A production system with visible progress.",
-    summary: "Track shipped platform slices, operational hardening, UI updates, and release evidence as OmniAgentOS evolves.",
+    summary: "Track shipped platform slices, operational hardening, UI updates, and release evidence as Asael evolves.",
     icon: GitBranch,
     sections: [
       "Event-log stage 2: fold runs projection, GET /api/runs/:id?replay=true proves stored state matches event history.",

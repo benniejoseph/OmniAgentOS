@@ -24,12 +24,23 @@ export function CommandPalette() {
     if (!normalized) {
       return appNav;
     }
-    return appNav.filter(
-      (item) =>
-        item.label.toLowerCase().includes(normalized) ||
-        item.description.toLowerCase().includes(normalized) ||
-        item.href.toLowerCase().includes(normalized),
-    );
+    return appNav
+      .filter(
+        (item) =>
+          item.label.toLowerCase().includes(normalized) ||
+          item.description.toLowerCase().includes(normalized) ||
+          item.href.toLowerCase().includes(normalized),
+      )
+      .toSorted((left, right) => {
+        const relevance = (label: string) => {
+          const candidate = label.toLowerCase();
+          if (candidate === normalized) return 0;
+          if (candidate.startsWith(normalized)) return 1;
+          if (candidate.includes(normalized)) return 2;
+          return 3;
+        };
+        return relevance(left.label) - relevance(right.label);
+      });
   }, [query]);
   const currentIndex = results.length
     ? Math.min(activeIndex, results.length - 1)
@@ -67,8 +78,8 @@ export function CommandPalette() {
         }
       }
     }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [closePalette, open, openPalette]);
 
   useEffect(() => {

@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { ResponseFormatTextJSONSchemaConfig } from "openai/resources/responses/responses";
 import { AGENT_MODEL, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, hasOpenAIKey } from "@/lib/config";
+import { estimateModelCostUsd, type ModelUsage } from "@/lib/openai/model-router";
 
 let client: OpenAI | null = null;
 let readinessCache:
@@ -201,6 +202,8 @@ export async function streamResponseTurn({
   abortSignal,
   reasoningEffort,
   maxOutputTokens,
+  model = AGENT_MODEL,
+  fallbackModel,
 }: {
   instructions?: string;
   input: ResponseTurnInput;
@@ -209,26 +212,56 @@ export async function streamResponseTurn({
   abortSignal?: AbortSignal;
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
   maxOutputTokens?: number;
-}): Promise<{ responseId: string; functionCalls: ResponseFunctionCall[]; functionCallItems: ResponseFunctionCallItem[]; text: string }> {
-  const stream = await getOpenAIClient().responses.create(
+  model?: string;
+  fallbackModel?: string;
+}): Promise<{
+  responseId: string;
+  functionCalls: ResponseFunctionCall[];
+  functionCallItems: ResponseFunctionCallItem[];
+  text: string;
+  model: string;
+  fallbackUsed: boolean;
+  latencyMs: number;
+  usage: ModelUsage;
+  estimatedCostUsd?: number;
+}> {
+  const startedAt = Date.now();
+  let activeModel = model;
+  let fallbackUsed = false;
+  let emittedOutput = false;
+  let stream: Awaited<ReturnType<ReturnType<typeof getOpenAIClient>["responses"]["create"]>>;
+  try {
+    stream = await createTurnStream(activeModel);
+  } catch (error) {
+    if (!fallbackModel || fallbackModel === activeModel) throw error;
+    activeModel = fallbackModel;
+    fallbackUsed = true;
+    stream = await createTurnStream(activeModel);
+  }
+
+  function createTurnStream(selectedModel: string) {
+    return getOpenAIClient().responses.create(
     {
-      model: AGENT_MODEL,
+      model: selectedModel,
       ...(instructions ? { instructions } : {}),
       input: input as never,
       ...(tools && tools.length ? { tools: tools as never } : {}),
-      ...(reasoningEffort && supportsReasoningEffort(AGENT_MODEL) ? { reasoning: { effort: reasoningEffort } } : {}),
+      ...(reasoningEffort && supportsReasoningEffort(selectedModel) ? { reasoning: { effort: reasoningEffort } } : {}),
       ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
       stream: true,
       store: false,
     },
     { signal: abortSignal },
   );
+  }
 
   let responseId = "";
   let text = "";
   const callsByItemId = new Map<string, { itemId: string; callId: string; name: string; argumentsJson: string }>();
+  let usage: ModelUsage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 };
 
-  for await (const rawEvent of stream as AsyncIterable<Record<string, unknown>>) {
+  try {
+    for await (const rawEvent of stream as AsyncIterable<Record<string, unknown>>) {
     const eventType = String(rawEvent.type || "");
 
     if (eventType === "response.created") {
@@ -238,6 +271,7 @@ export async function streamResponseTurn({
 
     if (eventType === "response.output_text.delta" && typeof rawEvent.delta === "string" && rawEvent.delta) {
       text += rawEvent.delta;
+      emittedOutput = true;
       await onDelta(rawEvent.delta);
     }
 
@@ -246,6 +280,7 @@ export async function streamResponseTurn({
         | { id?: string; type?: string; call_id?: string; name?: string; arguments?: string }
         | undefined;
       if (item?.type === "function_call" && item.id) {
+        emittedOutput = true;
         callsByItemId.set(item.id, {
           itemId: item.id,
           callId: item.call_id || item.id,
@@ -264,8 +299,36 @@ export async function streamResponseTurn({
     }
 
     if (eventType === "response.completed") {
-      const response = rawEvent.response as { id?: string } | undefined;
+      const response = rawEvent.response as { id?: string; usage?: Record<string, unknown> } | undefined;
       responseId = response?.id || responseId;
+      usage = normalizeUsage(response?.usage);
+    }
+  }
+  } catch (error) {
+    if (emittedOutput || fallbackUsed || !fallbackModel || fallbackModel === activeModel) throw error;
+    activeModel = fallbackModel;
+    fallbackUsed = true;
+    stream = await createTurnStream(activeModel);
+    for await (const rawEvent of stream as AsyncIterable<Record<string, unknown>>) {
+      const eventType = String(rawEvent.type || "");
+      if (eventType === "response.created") responseId = (rawEvent.response as { id?: string } | undefined)?.id || responseId;
+      if (eventType === "response.output_text.delta" && typeof rawEvent.delta === "string" && rawEvent.delta) {
+        text += rawEvent.delta;
+        await onDelta(rawEvent.delta);
+      }
+      if (eventType === "response.output_item.added") {
+        const item = rawEvent.item as { id?: string; type?: string; call_id?: string; name?: string; arguments?: string } | undefined;
+        if (item?.type === "function_call" && item.id) callsByItemId.set(item.id, { itemId: item.id, callId: item.call_id || item.id, name: item.name || "", argumentsJson: item.arguments || "" });
+      }
+      if (eventType === "response.function_call_arguments.done") {
+        const call = callsByItemId.get(typeof rawEvent.item_id === "string" ? rawEvent.item_id : "");
+        if (call && typeof rawEvent.arguments === "string") call.argumentsJson = rawEvent.arguments;
+      }
+      if (eventType === "response.completed") {
+        const completed = rawEvent.response as { id?: string; usage?: Record<string, unknown> } | undefined;
+        responseId = completed?.id || responseId;
+        usage = normalizeUsage(completed?.usage);
+      }
     }
   }
 
@@ -285,7 +348,29 @@ export async function streamResponseTurn({
       name: call.name,
       arguments: call.argumentsJson,
     })),
+    model: activeModel,
+    fallbackUsed,
+    latencyMs: Date.now() - startedAt,
+    usage,
+    estimatedCostUsd: estimateModelCostUsd(activeModel, usage),
   };
+}
+
+function normalizeUsage(raw?: Record<string, unknown>): ModelUsage {
+  const details = raw?.input_tokens_details as Record<string, unknown> | undefined;
+  const inputTokens = finiteToken(raw?.input_tokens);
+  const outputTokens = finiteToken(raw?.output_tokens);
+  return {
+    inputTokens,
+    outputTokens,
+    cachedInputTokens: finiteToken(details?.cached_tokens),
+    totalTokens: finiteToken(raw?.total_tokens) || inputTokens + outputTokens,
+  };
+}
+
+function finiteToken(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : 0;
 }
 
 export async function createStructuredResponse({

@@ -53,5 +53,75 @@
     "version": 11,
     "name": "native_jsonb_parameter_storage",
     "checksum": "156b1b7a862d309ff93af3c8645f249f347baacd263c590244c455c293870c42"
+  },
+  {
+    "version": 12,
+    "name": "durable_conversation_threads",
+    "checksum": "f43e73f964de15fd956ad73bf90a77536621fa46d354fb6c9f861f4a0a93ef55"
+  },
+  {
+    "version": 13,
+    "name": "claim_based_memory_lifecycle",
+    "checksum": "3357e80703e024f7738a740ac131c12d70106b544327362014e59efce35f2eb8"
+  },
+  {
+    "version": 14,
+    "name": "persisted_answer_grounding",
+    "checksum": "a2b954f8f5eceaf3e5d85bace2c3de4c29523e409943114b043b27c6f77defb5"
+  },
+  {
+    "version": 15,
+    "name": "per_user_oauth_grants",
+    "checksum": "050378ebf9d8ee1a85fd50937ae08857041330085736e7f64bdb08f8af43c95a"
+  },
+  {
+    "version": 16,
+    "name": "agent_assignment_history",
+    "checksum": "3a5f7f2e24951ca02068bd61e2a179982b9634baa149b360616e76c6591a2635"
+  },
+  {
+    "version": 17,
+    "name": "agent_outcome_feedback",
+    "checksum": "25dc97e34f8e87c6c287f6fc98c03902b3db86aa5738bd0d4258b224d538bab3"
+  },
+  {
+    "version": 18,
+    "name": "personal_today_items",
+    "checksum": "a29901043d111f63bc4271666dc5c55f1df1a20371bcfb1e17d41393c6488ed7"
+  },
+  {
+    "version": 19,
+    "name": "proactive_daily_briefs",
+    "checksum": "d850a56d093f696ba3b6e8e6d6e9dd24f9c36fb21d5806a99da2cc606ee3264e"
+  },
+  {
+    "version": 20,
+    "name": "personal_notification_center",
+    "checksum": "572da00a810218ac992616e213bf8b2b21e00a364e905bedf95421d486340928"
+  },
+  {
+    "version": 21,
+    "name": "personal_projects_and_tasks",
+    "checksum": "56835bb292feda44e616deeeeccd7f81ac974c69d133ffe980fcde4d0db34f7d"
+  },
+  {
+    "version": 22,
+    "name": "autonomous_project_execution",
+    "checksum": "40b83b84f79202e77c8424e7ac3aa10706c254cadcdc2295e30cfd3960fedb29"
+  },
+  {
+    "version": 23,
+    "name": "project_artifacts_and_learning",
+    "checksum": "ccea2337d1622e6afc938892fc0b781ff8b1aa30321beba7084219ac7b28bcf6"
+  },
+  {
+    "version": 24,
+    "name": "project_artifact_reflections",
+    "checksum": "d75116c81b792b982c93a0bdd76319c4ff64a3b3c940d01881de7a829fd80278"
+  },
+  {
+    "version": 25,
+    "name": "oauth_incremental_sync_health",
+    "checksum": "8dac18871541ece13e83d32cb400f4539b38e0cf3cfc3cc38fbc896d363a6e62"
   }
 ]

@@ -11,6 +11,19 @@ export type GoldenAssertion = {
   noneOf?: string[];
   minLength?: number;
   regex?: string;
+  minCitations?: number;
+  requiredToolIds?: string[];
+  forbiddenToolIds?: string[];
+  maxEstimatedCostUsd?: number;
+  maxLatencyMs?: number;
+};
+
+export type EvalTrajectory = {
+  citationIds?: string[];
+  toolIds?: string[];
+  estimatedCostUsd?: number;
+  latencyMs?: number;
+  fallbackCount?: number;
 };
 
 export type GoldenTask = {
@@ -28,7 +41,7 @@ export type TaskScore = {
   failures: string[];
 };
 
-export function scoreTask(task: GoldenTask, response: string): TaskScore {
+export function scoreTask(task: GoldenTask, response: string, trajectory: EvalTrajectory = {}): TaskScore {
   const text = (response || "").toLowerCase();
   const failures: string[] = [];
   const checks: boolean[] = [];
@@ -71,6 +84,41 @@ export function scoreTask(task: GoldenTask, response: string): TaskScore {
     if (!ok) {
       failures.push(`did not match /${task.assert.regex}/i`);
     }
+  }
+
+  if (task.assert.minCitations !== undefined) {
+    const count = new Set(trajectory.citationIds || []).size;
+    const ok = count >= task.assert.minCitations;
+    checks.push(ok);
+    if (!ok) failures.push(`expected at least ${task.assert.minCitations} verified citations; received ${count}`);
+  }
+
+  if (task.assert.requiredToolIds?.length) {
+    const used = new Set(trajectory.toolIds || []);
+    const missing = task.assert.requiredToolIds.filter((toolId) => !used.has(toolId));
+    checks.push(missing.length === 0);
+    if (missing.length) failures.push(`required tools not used: ${missing.join(", ")}`);
+  }
+
+  if (task.assert.forbiddenToolIds?.length) {
+    const used = new Set(trajectory.toolIds || []);
+    const present = task.assert.forbiddenToolIds.filter((toolId) => used.has(toolId));
+    checks.push(present.length === 0);
+    if (present.length) failures.push(`forbidden tools used: ${present.join(", ")}`);
+  }
+
+  if (task.assert.maxEstimatedCostUsd !== undefined) {
+    const cost = trajectory.estimatedCostUsd;
+    const ok = cost !== undefined && cost <= task.assert.maxEstimatedCostUsd;
+    checks.push(ok);
+    if (!ok) failures.push(`estimated cost ${cost ?? "unavailable"} exceeded ${task.assert.maxEstimatedCostUsd}`);
+  }
+
+  if (task.assert.maxLatencyMs !== undefined) {
+    const latency = trajectory.latencyMs;
+    const ok = latency !== undefined && latency <= task.assert.maxLatencyMs;
+    checks.push(ok);
+    if (!ok) failures.push(`latency ${latency ?? "unavailable"}ms exceeded ${task.assert.maxLatencyMs}ms`);
   }
 
   const passedChecks = checks.filter(Boolean).length;

@@ -47,11 +47,20 @@ function agentTimelineItem(item: ResultRecord): ResultTimelineItem {
     title: stringValue(item.prompt, "Agent run"),
     status,
     body: fullText(item.response || item.error, finalState(status) ? "No result text was stored." : "This run has not produced a final result yet."),
-    meta: `${stringValue(item.mode, "agent")} / ${formatResultTime(timestampValue)}`,
+    meta: `${stringValue(item.mode, "agent")} / ${groundingSummary(item.grounding)} / ${formatResultTime(timestampValue)}`,
     href: `/app/results?run=${encodeURIComponent(key)}`,
     tone: toneForResultStatus(status),
     timestamp: parsedTime(timestampValue),
   };
+}
+
+function groundingSummary(value: unknown) {
+  const status = stringValue(readPath(value, "status"));
+  if (status === "verified") return "citations verified";
+  if (status === "missing") return "citation needed";
+  if (status === "invalid") return "invalid citation";
+  if (status === "not_required") return "no retrieved sources";
+  return "grounding unavailable";
 }
 
 function workflowTimelineItem(item: ResultRecord): ResultTimelineItem {

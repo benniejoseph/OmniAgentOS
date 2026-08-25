@@ -1,4 +1,5 @@
-import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_MODEL, AGENT_REASONING_EFFORT, hasOpenAIKey } from "@/lib/config";
+import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, hasOpenAIKey } from "@/lib/config";
+import { getAgentLearningGuidance } from "@/lib/agents/learning";
 import { listMcpGovernedTools, listOpenApiGovernedTools } from "@/lib/connectors/governed-tools";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import {
@@ -8,10 +9,21 @@ import {
   type ResponseFunctionTool,
   type ResponseTurnInput,
 } from "@/lib/openai/client";
+import { selectAgentModel } from "@/lib/openai/model-router";
+import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { enqueueMemoryConsolidationJob } from "@/lib/operations/background-jobs";
 import { buildAgentInput, buildAgentInstructions } from "@/lib/orchestration/prompts";
+import {
+  formatCouncilContributions,
+  reviewCouncilResponse,
+  reviseCouncilResponse,
+  runCouncilRound,
+  type CouncilAgentId,
+  type CouncilContribution,
+} from "@/lib/orchestration/council";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { verifyResponseCitations } from "@/lib/rag/citations";
 import {
   appendRunEvent,
   cancelAgentRun,
@@ -29,6 +41,7 @@ import { redactSensitive } from "@/lib/security/context";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { getGovernedTools } from "@/lib/tools/registry";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
+import { appendThreadTurn } from "@/lib/threads/store";
 import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
 
 const MAX_TOOL_RESULT_CHARS = 8_000;
@@ -57,12 +70,20 @@ export async function* runAgent(
     .reverse()
     .find((message) => message.role === "user");
   const query = lastUserMessage?.content || "";
+  const modelRoute = selectAgentModel({
+    message: query,
+    mode,
+    specialistCount: request.specialistIds?.length,
+  });
   const run = await createAgentRun({
     tenantId: request.tenantId,
+    threadId: request.threadId,
     mode,
     prompt: query,
     messages: safeMessages,
-    model: hasOpenAIKey() ? AGENT_MODEL : "fallback",
+    model: hasOpenAIKey() ? modelRoute.model : "fallback",
+    agentId: request.agentId,
+    specialistIds: request.specialistIds,
   });
 
   // Persist non-delta events immediately; buffer text deltas so streaming does
@@ -126,7 +147,14 @@ export async function* runAgent(
   }
 
   try {
-    yield await emit({ type: "run", runId });
+    yield await emit({ type: "run", runId, threadId: request.threadId });
+    yield await emit({
+      type: "status",
+      label: `${agentDisplayName(request.agentId || "atlas")} assigned`,
+      detail: request.specialistIds?.length
+        ? `Specialist team: ${request.specialistIds.map(agentDisplayName).join(", ")}.`
+        : "Primary specialist selected by Atlas.",
+    });
     yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
     const useLiveWeb = shouldUseLiveWebSearch(query) && hasOpenAIKey();
     const retrievalPromise = buildContextPack(query, {
@@ -134,6 +162,11 @@ export async function* runAgent(
       tenantId: request.tenantId,
     });
     const toolboxPromise = buildAgentToolbox(request.tenantId);
+    const feedbackGuidancePromise = hasOpenAIKey()
+      ? getAgentLearningGuidance(request.agentId || "atlas", {
+          tenantId: request.tenantId,
+        })
+      : Promise.resolve([]);
     const liveWebPromise = useLiveWeb
       ? runLiveWebSearch({
           query,
@@ -157,7 +190,7 @@ export async function* runAgent(
       yield await emit({
         type: "status",
         label: "live web search",
-        detail: "The request appears to need current information, so OmniAgentOS is searching the web before answering.",
+        detail: "The request appears to need current information, so Asael is searching the web before answering.",
       });
       const liveWebOutcome = await liveWebPromise;
       if ("result" in liveWebOutcome && liveWebOutcome.result) {
@@ -187,13 +220,54 @@ export async function* runAgent(
       await toolboxPromise,
       liveWebContext ? ["web.search"] : [],
     );
+    const feedbackGuidance = await feedbackGuidancePromise;
     const instructions = buildAgentInstructions({
       mode,
+      agentId: request.agentId,
+      specialistIds: request.specialistIds,
+      feedbackGuidance,
     });
+    const primaryAgentId = asCouncilAgentId(request.agentId || "atlas");
+    const councilAgentIds = [...new Set([primaryAgentId, ...(request.specialistIds || []).map(asCouncilAgentId)])];
+    const councilActive = hasOpenAIKey() && councilAgentIds.length > 1;
+    let councilContributions: CouncilContribution[] = [];
+    if (councilActive) {
+      for (const agentId of councilAgentIds.filter((agentId) => agentId !== primaryAgentId)) {
+        yield await emit({
+          type: "council_member",
+          agentId,
+          agentName: agentDisplayName(agentId),
+          role: councilRole(agentId),
+          status: "thinking",
+        });
+      }
+      councilContributions = await runCouncilRound({
+        goal: query,
+        mode,
+        primaryAgentId,
+        specialistIds: councilAgentIds,
+        contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
+        tenantId: request.tenantId,
+        abortSignal,
+      });
+      for (const contribution of councilContributions) {
+        yield await emit({
+          type: "council_member",
+          agentId: contribution.agentId,
+          agentName: contribution.name,
+          role: contribution.role,
+          status: contribution.status,
+          summary: contribution.summary,
+          confidence: contribution.confidence,
+          durationMs: contribution.durationMs,
+        });
+      }
+    }
     const initialConversationItems = buildAgentInput({
       messages: safeMessages,
       memoryContext: retrieval.contextBlock,
       liveWebContext,
+      councilContext: formatCouncilContributions(councilContributions),
     });
 
     let response = "";
@@ -208,7 +282,11 @@ export async function* runAgent(
       }
       await flushDeltas();
     } else {
-      yield await emit({ type: "status", label: "reasoning", detail: "Streaming from the OpenAI Responses API with governed tools." });
+      yield await emit({
+        type: "status",
+        label: `${modelRoute.tier} model selected`,
+        detail: modelRoute.reason,
+      });
 
       const securityContext: SecurityContext = {
         tenantId: normalizeTenantId(request.tenantId),
@@ -235,6 +313,8 @@ export async function* runAgent(
           abortSignal,
           reasoningEffort: AGENT_REASONING_EFFORT,
           maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+          model: modelRoute.model,
+          fallbackModel: modelRoute.fallbackModel,
           onDelta: (text) => channel.push(text),
         }).finally(() => channel.close());
 
@@ -245,6 +325,36 @@ export async function* runAgent(
         }
 
         const turn = await turnPromise;
+        yield await emit({
+          type: "model",
+          model: turn.model,
+          tier: modelRoute.tier,
+          inputTokens: turn.usage.inputTokens,
+          outputTokens: turn.usage.outputTokens,
+          cachedInputTokens: turn.usage.cachedInputTokens,
+          totalTokens: turn.usage.totalTokens,
+          latencyMs: turn.latencyMs,
+          fallbackUsed: turn.fallbackUsed,
+          estimatedCostUsd: turn.estimatedCostUsd,
+        });
+        await recordRuntimeEventSafely({
+          category: "api",
+          action: "openai.response",
+          tenantId: request.tenantId,
+          actorId: request.actorId,
+          resourceType: "agent_run",
+          resourceId: run.id,
+          durationMs: turn.latencyMs,
+          message: turn.fallbackUsed ? "OpenAI response completed through fallback." : "OpenAI response completed.",
+          metadata: {
+            model: turn.model,
+            requestedModel: modelRoute.model,
+            tier: modelRoute.tier,
+            fallbackUsed: turn.fallbackUsed,
+            usage: turn.usage,
+            estimatedCostUsd: turn.estimatedCostUsd,
+          },
+        });
 
         if (!turn.functionCalls.length) {
           break;
@@ -260,7 +370,59 @@ export async function* runAgent(
         const outputs: Array<{ type: "function_call_output"; call_id: string; output: string }> = [];
 
         const callsThisTurn = turn.functionCalls.slice(0, MAX_TOOL_CALLS_PER_TURN);
-        for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
+        const parallelCalls = callsThisTurn.map((call) => {
+          const entry = toolbox.byFunctionName.get(call.name);
+          if (!entry || entry.definition.riskLevel !== 0 || entry.definition.approvalRequired) return null;
+          try {
+            return { call, entry, input: parseFunctionArguments(call.argumentsJson) };
+          } catch {
+            return null;
+          }
+        });
+        const canRunInParallel = parallelCalls.length > 1 && parallelCalls.every(Boolean);
+
+        if (canRunInParallel) {
+          const prepared = parallelCalls.filter((item): item is NonNullable<typeof item> => Boolean(item));
+          for (const item of prepared) {
+            yield await emit({
+              type: "tool",
+              toolId: item.entry.definition.id,
+              toolName: item.entry.definition.name,
+              status: "running",
+              riskLevel: item.entry.definition.riskLevel,
+            });
+          }
+          const executions = await Promise.all(prepared.map((item) => executeGovernedTool({
+            toolId: item.entry.definition.id,
+            input: item.input,
+            dryRun: false,
+            approved: false,
+            context: securityContext,
+            abortSignal,
+            idempotencyKey: `${run.id}:${item.call.callId}`,
+          })));
+          for (let index = 0; index < prepared.length; index += 1) {
+            const item = prepared[index];
+            const execution = executions[index];
+            yield await emit({
+              type: "tool",
+              toolId: item.entry.definition.id,
+              toolName: item.entry.definition.name,
+              status: execution.record.status === "executed" ? "executed" : execution.record.status === "dry_run" ? "dry_run" : execution.record.status === "blocked" ? "blocked" : "failed",
+              riskLevel: item.entry.definition.riskLevel,
+              dryRun: execution.record.dryRun,
+              summary: execution.record.reason,
+              executionId: execution.record.id,
+            });
+            outputs.push(functionCallOutput(item.call, {
+              status: execution.record.status,
+              dryRun: execution.record.dryRun,
+              approvalRequired: execution.record.approvalRequired,
+              note: execution.record.status === "executed" ? "Executed concurrently with other safe read-only tools." : execution.record.reason,
+              result: execution.result,
+            }));
+          }
+        } else for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
           const call = callsThisTurn[callIndex];
           const entry = toolbox.byFunctionName.get(call.name);
           if (!entry) {
@@ -377,7 +539,62 @@ export async function* runAgent(
       await flushDeltas();
     }
 
-    const completed = await completeAgentRun(run.id, response);
+    if (councilActive && councilAgentIds.includes("sentinel") && response.trim()) {
+      try {
+        const verdict = await reviewCouncilResponse({
+          goal: query,
+          response,
+          contributions: councilContributions,
+          contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
+          abortSignal,
+        });
+        if (!verdict.passed) {
+          response = await reviseCouncilResponse({
+            goal: query,
+            response,
+            verdict,
+            contributions: councilContributions,
+            abortSignal,
+          });
+        }
+        yield await emit({
+          type: "council_member",
+          agentId: "sentinel",
+          agentName: "Sentinel",
+          role: "Critic",
+          status: "completed",
+          summary: verdict.assessment,
+          confidence: verdict.score,
+        });
+        yield await emit({
+          type: "council_verdict",
+          status: verdict.passed ? "passed" : "revised",
+          score: verdict.score,
+          assessment: verdict.assessment,
+          requiredChanges: verdict.requiredChanges,
+        });
+      } catch (error) {
+        yield await emit({
+          type: "council_member",
+          agentId: "sentinel",
+          agentName: "Sentinel",
+          role: "Critic",
+          status: "failed",
+          summary: error instanceof Error ? error.message : "Sentinel review failed.",
+          confidence: 0,
+        });
+        yield await emit({
+          type: "council_verdict",
+          status: "failed",
+          score: 0,
+          assessment: "The specialist result is available, but the final critic pass failed.",
+          requiredChanges: ["Run Sentinel verification again before relying on consequential claims."],
+        });
+      }
+    }
+
+    const grounding = verifyResponseCitations(response, retrieval.results);
+    const completed = await completeAgentRun(run.id, response, grounding);
     if (!completed) {
       yield await emit({
         type: "status",
@@ -387,6 +604,12 @@ export async function* runAgent(
       });
       return;
     }
+    await appendAssistantTurnSafely({
+      threadId: request.threadId,
+      tenantId: request.tenantId,
+      runId: run.id,
+      response,
+    });
     const consolidation = enqueueMemoryConsolidationSafely({
       runId: run.id,
       tenantId: request.tenantId,
@@ -394,7 +617,7 @@ export async function* runAgent(
       prompt: query,
       response,
     });
-    yield await emit({ type: "done", response });
+    yield await emit({ type: "done", response, grounding });
     await consolidation;
   } catch (error) {
     if (abortSignal?.aborted) {
@@ -407,6 +630,10 @@ export async function* runAgent(
     await failAgentRun(run.id, message);
     yield await emit({ type: "error", message });
   }
+}
+
+function agentDisplayName(agentId: string) {
+  return ({ atlas: "Atlas", scout: "Scout", forge: "Forge", sentinel: "Sentinel", mnemosyne: "Mnemosyne" } as Record<string, string>)[agentId] || "Atlas";
 }
 
 export function resumeAgentRunAfterToolApproval(input: {
@@ -757,6 +984,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
           "The run was canceled or finalized before the resumed response could be committed.",
       };
     }
+    await appendAssistantTurnSafely({
+      threadId: run.threadId,
+      tenantId: continuation.context.tenantId,
+      runId: run.id,
+      response,
+    });
     const consolidation = enqueueMemoryConsolidationSafely({
       runId: run.id,
       tenantId: continuation.context.tenantId,
@@ -773,6 +1006,25 @@ async function resumeAgentRunAfterToolApprovalInScope({
     await failAgentRun(run.id, message);
     await appendRunEvent(run.id, { type: "error", message });
     return { resumed: true, status: "failed", error: message };
+  }
+}
+
+async function appendAssistantTurnSafely({
+  threadId,
+  tenantId,
+  runId,
+  response,
+}: {
+  threadId?: string;
+  tenantId?: string;
+  runId: string;
+  response: string;
+}) {
+  if (!threadId || !response.trim()) return;
+  try {
+    await appendThreadTurn({ threadId, tenantId, runId, role: "assistant", content: response });
+  } catch (error) {
+    console.error("Assistant thread turn persistence failed.", String(redactSensitive(error instanceof Error ? error.message : "Unknown persistence error.")));
   }
 }
 
@@ -1034,6 +1286,22 @@ function createDeltaChannel() {
       }
     },
   };
+}
+
+function asCouncilAgentId(value: string): CouncilAgentId {
+  return value === "scout" || value === "forge" || value === "sentinel" || value === "mnemosyne"
+    ? value
+    : "atlas";
+}
+
+function councilRole(agentId: CouncilAgentId) {
+  return {
+    atlas: "Supervisor",
+    scout: "Research",
+    forge: "Builder",
+    sentinel: "Critic",
+    mnemosyne: "Memory",
+  }[agentId];
 }
 
 function normalizeRole(role?: string): SecurityRole {
