@@ -123,5 +123,10 @@
     "version": 25,
     "name": "oauth_incremental_sync_health",
     "checksum": "8dac18871541ece13e83d32cb400f4539b38e0cf3cfc3cc38fbc896d363a6e62"
+  },
+  {
+    "version": 26,
+    "name": "custom_agent_and_skill_studio",
+    "checksum": "b9330011742af71d64d932ad34bd55d374d7b936d2db88a7e502f50a29aec04c"
   }
 ]

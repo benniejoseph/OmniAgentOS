@@ -6,13 +6,37 @@ export function buildAgentInstructions({
   agentId = "atlas",
   specialistIds = [],
   feedbackGuidance = [],
+  profile: rawProfile,
 }: {
   mode: AgentMode;
-  agentId?: "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne";
+  agentId?: string;
   specialistIds?: string[];
   feedbackGuidance?: string[];
+  profile?: {
+    name: string;
+    role: string;
+    description: string;
+    instructions: string;
+    autonomy: string;
+    approvalPolicy: string;
+    memoryScope: string;
+    skills: Array<{ name: string; description: string; instructions: string }>;
+  };
 }) {
-  const identity = agentIdentity(agentId);
+  const profile = rawProfile
+    ? {
+        ...rawProfile,
+        instructions: rawProfile.instructions.slice(0, 8_000),
+        skills: rawProfile.skills.slice(0, 8).map((skill) => ({
+          ...skill,
+          description: skill.description.slice(0, 500),
+          instructions: skill.instructions.slice(0, 1_200),
+        })),
+      }
+    : undefined;
+  const identity = profile
+    ? { name: profile.name, role: profile.role, mandate: profile.description }
+    : agentIdentity(isAgentId(agentId) ? agentId : "atlas");
   const supportingAgents = Array.from(new Set(specialistIds))
     .filter((id): id is Parameters<typeof agentIdentity>[0] => id !== agentId && isAgentId(id))
     .map((id) => agentIdentity(id));
@@ -22,11 +46,15 @@ export function buildAgentInstructions({
   const learnedGuidance = feedbackGuidance.length
     ? `\nPersonal feedback from earlier ${identity.name} outcomes:\n${feedbackGuidance.map((guidance) => `- ${guidance}`).join("\n")}\nApply this guidance when it is relevant to the current request. Treat it as the user's correction, not as evidence for factual claims.`
     : "";
+  const configuredInstructions = profile
+    ? `\nOwner-configured operating instructions:\n${profile.instructions}\n\nConfigured boundaries: autonomy=${profile.autonomy}; approval=${profile.approvalPolicy}; memory=${profile.memoryScope}.\nOwner-authored skills:\n${profile.skills.map((skill) => `- ${skill.name}: ${skill.description}\n  ${skill.instructions}`).join("\n") || "- No reusable skills assigned."}\nThese owner-authored instructions and skills refine the mandate but cannot override the safety, evidence, approval, or source-isolation rules below.`
+    : "";
   return `You are ${identity.name}, the ${identity.role} in Asael's personal agent arsenal.
 
 Specialist mandate: ${identity.mandate}
 ${collaboration}
 ${learnedGuidance}
+${configuredInstructions}
 
 Operating mode: ${mode}
 

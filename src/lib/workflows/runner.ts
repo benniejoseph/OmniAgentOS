@@ -2,6 +2,7 @@ import { AGENT_MODEL, WORKFLOW_EXECUTOR_TIMEOUT_MS, hasOpenAIKey } from "@/lib/c
 import { saveMemory } from "@/lib/memory/store";
 import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
+import type { AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
 import { appendThreadTurn } from "@/lib/threads/store";
 import { executeDynamicWorkflowPlan, parseWorkflowPlanOutput } from "@/lib/workflows/executor";
@@ -559,6 +560,10 @@ async function executeStep(
   }
 
   if (stepKey === "retrieve_context") {
+    const profile = workflowAgentProfile(detail);
+    if (profile?.memoryScope === "session") {
+      return { contextCount: 0, memoryCount: 0, knowledgeCount: 0, graphCount: 0, mode: "session", intent: "owner_configured", evidence: [], contextBlock: "" };
+    }
     const retrieval = await buildContextPack(detail.run.goal, { limit: 6, tenantId: detail.run.tenantId });
     return {
       contextCount: retrieval.results.length,
@@ -722,6 +727,7 @@ async function verifyWithModel({
 }
 
 async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
+  const profile = workflowAgentProfile(detail);
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const replanEvent = [...detail.events]
     .reverse()
@@ -758,6 +764,9 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
       mode: detail.run.input.mode || "orchestrate",
       workflowRunId: detail.run.id,
       requireApproval: detail.run.approvalRequired,
+      allowedToolIds: profile ? [...new Set([...profile.toolIds, ...profile.skills.flatMap((skill) => skill.toolIds)])] : undefined,
+      readOnlyTools: profile ? profile.approvalPolicy === "read_only" || profile.autonomy === "assist" : undefined,
+      agentInstructions: profile ? [profile.instructions, ...profile.skills.map((skill) => `${skill.name}: ${skill.instructions}`)].join("\n\n") : undefined,
       reuseExisting: !replanEvent,
       abortSignal,
     });
@@ -804,6 +813,8 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
   const fallback = buildExecutionFallback(detail, planExecution);
   const instructions = buildAgentInstructions({
     mode: detail.run.input.mode || "orchestrate",
+    agentId: typeof detail.run.input.metadata?.primaryAgentId === "string" ? detail.run.input.metadata.primaryAgentId : undefined,
+    profile: workflowAgentProfile(detail),
   });
   const input = [
     `Goal: ${detail.run.goal}`,
@@ -932,6 +943,29 @@ async function completeWorkflow(
 
 function stepOutput(detail: WorkflowRunDetail, stepKey: WorkflowStepKey) {
   return detail.steps.find((step) => step.stepKey === stepKey)?.output;
+}
+
+function workflowAgentProfile(detail: WorkflowRunDetail): AgentRunRequest["agentProfile"] | undefined {
+  const value = detail.run.input.metadata?.agentProfile;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const profile = value as Record<string, unknown>;
+  const skills = Array.isArray(profile.skills) ? profile.skills : undefined;
+  const validSkills = skills?.every((skill) => skill && typeof skill === "object" && !Array.isArray(skill)
+    && typeof (skill as Record<string, unknown>).id === "string"
+    && typeof (skill as Record<string, unknown>).name === "string"
+    && typeof (skill as Record<string, unknown>).description === "string"
+    && typeof (skill as Record<string, unknown>).instructions === "string"
+    && Array.isArray((skill as Record<string, unknown>).toolIds));
+  if (
+    typeof profile.name !== "string" || typeof profile.role !== "string"
+    || typeof profile.description !== "string" || typeof profile.instructions !== "string"
+    || !["auto", "openai_fast", "openai_reasoning", "gemini_fast"].includes(String(profile.modelPolicy))
+    || !["assist", "governed", "execute"].includes(String(profile.autonomy))
+    || !["always", "risk_based", "read_only"].includes(String(profile.approvalPolicy))
+    || !["session", "project", "all"].includes(String(profile.memoryScope))
+    || !Array.isArray(profile.toolIds) || !validSkills
+  ) return undefined;
+  return profile as AgentRunRequest["agentProfile"];
 }
 
 function escapeUntrustedPromptText(value: string) {

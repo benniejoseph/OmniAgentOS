@@ -75,6 +75,7 @@ export async function* runAgent(
     message: query,
     mode,
     specialistCount: request.specialistIds?.length,
+    modelPolicy: request.agentProfile?.modelPolicy,
   });
   const run = await createAgentRun({
     tenantId: request.tenantId,
@@ -82,7 +83,7 @@ export async function* runAgent(
     mode,
     prompt: query,
     messages: safeMessages,
-    model: hasOpenAIKey() ? modelRoute.model : "fallback",
+    model: hasOpenAIKey() || hasGeminiKey() ? modelRoute.model : "fallback",
     agentId: request.agentId,
     specialistIds: request.specialistIds,
   });
@@ -151,7 +152,7 @@ export async function* runAgent(
     yield await emit({ type: "run", runId, threadId: request.threadId });
     yield await emit({
       type: "status",
-      label: `${agentDisplayName(request.agentId || "atlas")} assigned`,
+      label: `${request.agentProfile?.name || agentDisplayName(request.agentId || "atlas")} assigned`,
       detail: request.specialistIds?.length
         ? `Specialist team: ${request.specialistIds.map(agentDisplayName).join(", ")}.`
         : "Primary specialist selected by Atlas.",
@@ -217,16 +218,34 @@ export async function* runAgent(
     // Skip web.search when we already fetched live web context — avoids redundant
     // tool-call loops that blow the 60s Vercel budget. Excluding it from the toolbox
     // filters the OpenAI tool list, the instructions, and the dispatch map together.
-    const toolbox = filterAgentToolbox(
+    let toolbox = filterAgentToolbox(
       await toolboxPromise,
       liveWebContext ? ["web.search"] : [],
     );
+    let agentToolPolicy: AgentRunContinuation["toolPolicy"];
+    if (request.agentProfile) {
+      const configuredToolIds = [...new Set([
+        ...request.agentProfile.toolIds,
+        ...request.agentProfile.skills.flatMap((skill) => skill.toolIds),
+      ])];
+      toolbox = filterAgentToolboxAllowed(
+        toolbox,
+        configuredToolIds,
+        request.agentProfile.approvalPolicy === "read_only" || request.agentProfile.autonomy === "assist",
+      );
+      agentToolPolicy = {
+        allowedToolIds: configuredToolIds,
+        readOnly: request.agentProfile.approvalPolicy === "read_only" || request.agentProfile.autonomy === "assist",
+        forceApproval: request.agentProfile.approvalPolicy === "always",
+      };
+    }
     const feedbackGuidance = await feedbackGuidancePromise;
     const instructions = buildAgentInstructions({
       mode,
       agentId: request.agentId,
       specialistIds: request.specialistIds,
       feedbackGuidance,
+      profile: request.agentProfile,
     });
     const primaryAgentId = asCouncilAgentId(request.agentId || "atlas");
     const councilAgentIds = [...new Set([primaryAgentId, ...(request.specialistIds || []).map(asCouncilAgentId)])];
@@ -266,7 +285,7 @@ export async function* runAgent(
     }
     const initialConversationItems = buildAgentInput({
       messages: safeMessages,
-      memoryContext: retrieval.contextBlock,
+      memoryContext: request.agentProfile?.memoryScope === "session" ? "" : retrieval.contextBlock,
       liveWebContext,
       councilContext: formatCouncilContributions(councilContributions),
     });
@@ -446,6 +465,7 @@ export async function* runAgent(
             context: securityContext,
             abortSignal,
             idempotencyKey: `${run.id}:${item.call.callId}`,
+            forceApproval: agentToolPolicy?.forceApproval,
           })));
           for (let index = 0; index < prepared.length; index += 1) {
             const item = prepared[index];
@@ -505,6 +525,7 @@ export async function* runAgent(
             context: securityContext,
             abortSignal,
             idempotencyKey: `${run.id}:${call.callId}`,
+            forceApproval: agentToolPolicy?.forceApproval,
           });
 
           yield await emit({
@@ -540,6 +561,7 @@ export async function* runAgent(
                 actorId: securityContext.actorId,
                 role: securityContext.role,
               },
+              toolPolicy: agentToolPolicy,
               createdAt: new Date().toISOString(),
             };
             await flushDeltas();
@@ -741,7 +763,14 @@ async function resumeAgentRunAfterToolApprovalInScope({
     detail: `Tool approval ${executionId} resolved; continuing the same agent run.`,
   });
 
-  const toolbox = await buildAgentToolbox(continuation.context.tenantId);
+  let toolbox = await buildAgentToolbox(continuation.context.tenantId);
+  if (continuation.toolPolicy) {
+    toolbox = filterAgentToolboxAllowed(
+      toolbox,
+      continuation.toolPolicy.allowedToolIds,
+      continuation.toolPolicy.readOnly,
+    );
+  }
   let response = continuation.response || run.response || "";
   let toolSteps = continuation.toolSteps;
   const persistedConversationItems = continuation.conversationItems as ConversationItem[];
@@ -841,6 +870,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         },
         abortSignal,
         idempotencyKey: `${run.id}:${call.callId}`,
+        forceApproval: continuation.toolPolicy?.forceApproval,
       });
       await appendRunEvent(run.id, {
         type: "tool",
@@ -873,6 +903,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               executionId: execution.record.id,
             },
             context: continuation.context,
+            toolPolicy: continuation.toolPolicy,
             createdAt: new Date().toISOString(),
           },
         });
@@ -961,6 +992,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           },
           abortSignal,
           idempotencyKey: `${run.id}:${call.callId}`,
+          forceApproval: continuation.toolPolicy?.forceApproval,
         });
 
         await appendRunEvent(run.id, {
@@ -994,6 +1026,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
                 executionId: execution.record.id,
               },
               context: continuation.context,
+              toolPolicy: continuation.toolPolicy,
               createdAt: new Date().toISOString(),
             },
           });
@@ -1199,6 +1232,21 @@ function filterAgentToolbox(
     byFunctionName: new Map(
       tools.map((entry) => [entry.functionName, entry]),
     ),
+  };
+}
+
+function filterAgentToolboxAllowed(
+  toolbox: Awaited<ReturnType<typeof buildAgentToolbox>>,
+  allowedToolIds: readonly string[],
+  readOnly: boolean,
+) {
+  const allowed = new Set(allowedToolIds);
+  const tools = toolbox.tools.filter((entry) => allowed.has(entry.definition.id) && (!readOnly || entry.definition.riskLevel === 0));
+  const functionNames = new Set(tools.map((entry) => entry.functionName));
+  return {
+    tools,
+    openAITools: toolbox.openAITools.filter((tool) => functionNames.has(tool.name)),
+    byFunctionName: new Map(tools.map((entry) => [entry.functionName, entry])),
   };
 }
 

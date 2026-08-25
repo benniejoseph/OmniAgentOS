@@ -58,6 +58,18 @@ export type AgentRunRequest = {
   tenantId?: string;
   actorId?: string;
   role?: string;
-  agentId?: "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne";
+  agentId?: string;
   specialistIds?: string[];
+  agentProfile?: {
+    name: string;
+    role: string;
+    description: string;
+    instructions: string;
+    modelPolicy: "auto" | "openai_fast" | "openai_reasoning" | "gemini_fast";
+    autonomy: "assist" | "governed" | "execute";
+    approvalPolicy: "always" | "risk_based" | "read_only";
+    memoryScope: "session" | "project" | "all";
+    toolIds: string[];
+    skills: Array<{ id: string; name: string; description: string; instructions: string; toolIds: string[] }>;
+  };
 };
