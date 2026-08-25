@@ -72,3 +72,18 @@ export async function refreshOAuthAccess(provider: OAuthProvider, refreshToken: 
   if (!response.ok || typeof result.access_token !== "string") throw new Error(`${config.label} access expired and could not be refreshed. Reconnect the source.`);
   return { ...result, refresh_token: typeof result.refresh_token === "string" ? result.refresh_token : refreshToken };
 }
+
+export async function revokeOAuthAccess(provider: OAuthProvider, token: string) {
+  if (provider !== "google" || !token) return false;
+  const response = await fetch("https://oauth2.googleapis.com/revoke", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ token }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error("Google access could not be revoked. Try again.");
+  return true;
+}

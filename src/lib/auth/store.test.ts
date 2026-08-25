@@ -90,6 +90,28 @@ describe("auth identity creation (file mode)", () => {
     });
   });
 
+  it("creates a session for an existing verified federated identity", async () => {
+    const auth = await import("@/lib/auth/store");
+    const email = "federated-owner@example.com";
+    await auth.createUserWithMembership({
+      email,
+      password: "unused password fallback",
+      role: "admin",
+      tenantId: "tenant-federated",
+    });
+
+    await expect(auth.authenticateFederatedIdentity({ email })).resolves.toMatchObject({
+      identity: {
+        user: { email },
+        tenant: { id: "tenant-federated" },
+        membership: { role: "admin" },
+      },
+    });
+    await expect(
+      auth.authenticateFederatedIdentity({ email: "unknown@example.com" }),
+    ).resolves.toBeNull();
+  });
+
   it("resolves a fresh session without provisioning changed bootstrap credentials", async () => {
     const auth = await import("@/lib/auth/store");
     process.env.OMNIAGENT_BOOTSTRAP_EMAIL = "bootstrap-session@example.com";
