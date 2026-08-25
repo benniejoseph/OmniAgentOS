@@ -43,4 +43,14 @@ describe("request timing", () => {
       ),
     ).toBe(false);
   });
+
+  it("adds timing headers to redirect responses with immutable headers", async () => {
+    const response = await runWithRequestTiming(() =>
+      appendServerTiming(Response.redirect("https://example.com/connected", 302)),
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("https://example.com/connected");
+    expect(response.headers.get("server-timing")).toContain("total;dur=");
+  });
 });
