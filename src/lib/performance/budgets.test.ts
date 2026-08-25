@@ -93,7 +93,7 @@ describe("frontend performance budgets", () => {
   });
 
   it("uses finalized Web Vitals and a browser dashboard release gate", async () => {
-    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge] =
+    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge, workspaceSummary] =
       await Promise.all([
         readFile(
           path.resolve(
@@ -108,6 +108,10 @@ describe("frontend performance budgets", () => {
           path.resolve(
             "src/components/marketing/public-health-badge.tsx",
           ),
+          "utf8",
+        ),
+        readFile(
+          path.resolve("src/lib/workspace/summary.ts"),
           "utf8",
         ),
       ]);
@@ -125,5 +129,8 @@ describe("frontend performance budgets", () => {
     );
     expect(healthBadge).toContain("/api/health?public=1");
     expect(healthBadge).toContain('cache: "force-cache"');
+    expect(workspaceSummary).toContain("unstable_cache");
+    expect(workspaceSummary).toContain('["workspace-summary-v1"]');
+    expect(workspaceSummary).toContain("{ revalidate: 15 }");
   });
 });
