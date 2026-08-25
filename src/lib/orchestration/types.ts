@@ -43,7 +43,7 @@ export type AgentEvent =
   | { type: "status"; label: string; detail?: string }
   | { type: "delta"; text: string }
   | { type: "memory"; title: string; count?: number }
-  | { type: "model"; model: string; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number }
+  | { type: "model"; model: string; provider?: "openai" | "google"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number }
   | AgentCouncilEvent
   | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | AgentToolEvent

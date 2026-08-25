@@ -1,7 +1,8 @@
-import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, hasOpenAIKey } from "@/lib/config";
+import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, hasGeminiKey, hasOpenAIKey } from "@/lib/config";
 import { getAgentLearningGuidance } from "@/lib/agents/learning";
 import { listMcpGovernedTools, listOpenApiGovernedTools } from "@/lib/connectors/governed-tools";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
+import { generateGeminiText } from "@/lib/google/ai";
 import {
   streamResponseTurn,
   type ConversationItem,
@@ -272,8 +273,8 @@ export async function* runAgent(
 
     let response = "";
 
-    if (!hasOpenAIKey()) {
-      yield await emit({ type: "status", label: "dev fallback", detail: "OPENAI_API_KEY is not configured. This is a simulated response, not model output." });
+    if (!hasOpenAIKey() && !hasGeminiKey()) {
+      yield await emit({ type: "status", label: "dev fallback", detail: "No model provider is configured. This is a simulated response, not model output." });
       for (const chunk of fallbackResponse(query, retrieval.results.length)) {
         response += chunk;
         persistDelta(chunk);
@@ -288,6 +289,50 @@ export async function* runAgent(
         detail: modelRoute.reason,
       });
 
+      let geminiCompleted = false;
+      if (modelRoute.provider === "google") {
+        try {
+          const gemini = await generateGeminiText({
+            prompt: geminiPromptForConversation(initialConversationItems),
+            instructions,
+            maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+            abortSignal,
+          });
+          response = gemini.text;
+          persistDelta(gemini.text);
+          yield { type: "delta", text: gemini.text };
+          yield await emit({
+            type: "model",
+            provider: "google",
+            model: gemini.model,
+            tier: modelRoute.tier,
+            inputTokens: gemini.usage.inputTokens,
+            outputTokens: gemini.usage.outputTokens,
+            cachedInputTokens: gemini.usage.cachedInputTokens,
+            totalTokens: gemini.usage.totalTokens,
+            latencyMs: gemini.latencyMs,
+            fallbackUsed: false,
+            estimatedCostUsd: gemini.estimatedCostUsd,
+          });
+          await recordRuntimeEventSafely({
+            category: "api",
+            action: "gemini.response",
+            tenantId: request.tenantId,
+            actorId: request.actorId,
+            resourceType: "agent_run",
+            resourceId: run.id,
+            durationMs: gemini.latencyMs,
+            message: "Gemini response completed.",
+            metadata: { model: gemini.model, tier: modelRoute.tier, usage: gemini.usage, estimatedCostUsd: gemini.estimatedCostUsd, responseId: gemini.responseId },
+          });
+          geminiCompleted = true;
+        } catch (error) {
+          if (!hasOpenAIKey()) throw error;
+          yield await emit({ type: "status", label: "Gemini fallback", detail: "Gemini was unavailable, so Asael switched to the governed OpenAI runtime." });
+        }
+      }
+
+      if (!geminiCompleted) {
       const securityContext: SecurityContext = {
         tenantId: normalizeTenantId(request.tenantId),
         actorId: request.actorId || "agent",
@@ -327,6 +372,7 @@ export async function* runAgent(
         const turn = await turnPromise;
         yield await emit({
           type: "model",
+          provider: "openai",
           model: turn.model,
           tier: modelRoute.tier,
           inputTokens: turn.usage.inputTokens,
@@ -535,6 +581,7 @@ export async function* runAgent(
 
         conversationItems = [...(conversationItems ?? []), ...outputs];
       }
+      }
 
       await flushDeltas();
     }
@@ -630,6 +677,14 @@ export async function* runAgent(
     await failAgentRun(run.id, message);
     yield await emit({ type: "error", message });
   }
+}
+
+function geminiPromptForConversation(items: ConversationItem[]) {
+  return items.flatMap((item) => {
+    if ("role" in item) return [`${item.role.toUpperCase()}: ${item.content}`];
+    if (item.type === "function_call_output") return [`TOOL RESULT: ${item.output}`];
+    return [];
+  }).join("\n\n").slice(0, 120_000);
 }
 
 function agentDisplayName(agentId: string) {

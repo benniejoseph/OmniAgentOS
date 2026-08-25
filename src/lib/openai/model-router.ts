@@ -1,4 +1,4 @@
-import { AGENT_MODEL, WEB_SEARCH_MODEL } from "@/lib/config";
+import { AGENT_MODEL, GEMINI_FAST_MODEL, WEB_SEARCH_MODEL, hasGeminiKey } from "@/lib/config";
 import type { AgentMode } from "@/lib/orchestration/types";
 
 export type ModelTier = "fast" | "reasoning";
@@ -6,6 +6,7 @@ export type ModelTier = "fast" | "reasoning";
 export type ModelRoute = {
   model: string;
   fallbackModel?: string;
+  provider: "openai" | "google";
   tier: ModelTier;
   reason: string;
 };
@@ -30,16 +31,32 @@ export function selectAgentModel(input: {
     || text.length > 1_200
     || /\b(analy[sz]e|architect|debug|implement|research|compare|investigate|production|security|migration|multi[- ]step|verify)\b/i.test(text);
 
+  const googleSimpleTask = hasGeminiKey()
+    && !complex
+    && /\b(summarize|rewrite|rephrase|classify|categorize|extract|shorten|brainstorm|outline|title|tag|translate|format)\b/i.test(text);
+
+  if (googleSimpleTask) {
+    return {
+      model: GEMINI_FAST_MODEL,
+      fallbackModel: fastModel,
+      provider: "google",
+      tier: "fast",
+      reason: "A bounded language task can use the cost-efficient Gemini tier with OpenAI fallback.",
+    };
+  }
+
   return complex
     ? {
         model: reasoningModel,
         fallbackModel: fastModel === reasoningModel ? undefined : fastModel,
+        provider: "openai",
         tier: "reasoning",
         reason: "Complexity, risk, or specialist coordination benefits from deeper reasoning.",
       }
     : {
         model: fastModel,
         fallbackModel: reasoningModel === fastModel ? undefined : reasoningModel,
+        provider: "openai",
         tier: "fast",
         reason: "A focused request can use the lower-latency model tier.",
       };
