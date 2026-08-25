@@ -35,7 +35,7 @@ async function signIn(page: Page) {
   await page.goto("/app");
   await expect(page).toHaveURL(/\/app$/);
   cachedSessionCookies = (await page.context().cookies()).filter(
-    (cookie) => cookie.name === "omniagent_session",
+    (cookie) => cookie.name === "asael_session" || cookie.name === "__Host-asael_session",
   );
 }
 
@@ -790,6 +790,7 @@ test("dashboard keeps readiness compact after first success", async ({ page }) =
 test("readiness failure leaves dashboard usable", async ({ page }) => {
   test.slow();
   let requests = 0;
+  await signIn(page);
   await page.route("**/api/workspace-readiness", (route) => {
     requests += 1;
     return route.fulfill({
@@ -817,8 +818,6 @@ test("readiness failure leaves dashboard usable", async ({ page }) => {
       ),
     });
   });
-
-  await signIn(page);
 
   await page.goto("/app");
   const readinessAlert = page.getByRole("alert").filter({

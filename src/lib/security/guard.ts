@@ -107,7 +107,7 @@ export async function authorizeRequest({
       decision: "allow",
       riskLevel,
       metadata,
-    })
+    }, { failClosed: requiresDurableAudit(action, riskLevel) })
   );
   return context;
 }
@@ -176,15 +176,31 @@ function normalizeOrigin(value?: string | null) {
   }
 }
 
-async function recordAuditSafely(args: Parameters<typeof recordSecurityAudit>[0]) {
+async function recordAuditSafely(args: Parameters<typeof recordSecurityAudit>[0], options: { failClosed?: boolean } = {}) {
   try {
     await recordSecurityAudit(args);
   } catch (error) {
+    if (options.failClosed) {
+      throw new SecurityPolicyError(
+        "The security audit ledger is unavailable, so this consequential action was not executed.",
+        503,
+      );
+    }
     console.warn(
       "Security audit write failed.",
       redactSensitive(error instanceof Error ? error.message : error),
     );
   }
+}
+
+function requiresDurableAudit(action: string, riskLevel?: number) {
+  return (riskLevel ?? 0) >= 2 || [
+    "execute.tool",
+    "manage.connector",
+    "manage.identity",
+    "manage.security",
+    "manage.workflow",
+  ].includes(action);
 }
 
 async function recordSecuritySystemFailureSafely({

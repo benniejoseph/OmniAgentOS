@@ -240,8 +240,8 @@ export function CaptureWorkspace() {
             {file ? <button type="button" onClick={() => chooseFile(undefined)} className="grid size-11 place-items-center rounded-md hover:bg-surface-raised" aria-label="Remove attachment"><X size={17} /></button> : null}
             <button type="button" onClick={() => inputRef.current?.click()} className="action-button"><Paperclip size={15} aria-hidden="true" />Choose file</button>
             <button type="button" onClick={() => cameraInputRef.current?.click()} className="action-button"><Camera size={15} aria-hidden="true" />Scan</button>
-            <input ref={inputRef} data-testid="capture-file-input" type="file" className="sr-only" accept=".pdf,.docx,.eml,.ics,.png,.jpg,.jpeg,.webp,.txt,.md,.markdown,.csv,.json,.html,.htm,.yaml,.yml" onChange={(event) => chooseFile(event.target.files?.[0])} />
-            <input ref={cameraInputRef} type="file" className="sr-only" accept="image/*" capture="environment" onChange={(event) => chooseFile(event.target.files?.[0])} />
+            <input ref={inputRef} data-testid="capture-file-input" type="file" className="sr-only" aria-label="Choose a file to capture" accept=".pdf,.docx,.eml,.ics,.png,.jpg,.jpeg,.webp,.txt,.md,.markdown,.csv,.json,.html,.htm,.yaml,.yml" onChange={(event) => chooseFile(event.target.files?.[0])} />
+            <input ref={cameraInputRef} type="file" className="sr-only" aria-label="Scan an image with the camera" accept="image/*" capture="environment" onChange={(event) => chooseFile(event.target.files?.[0])} />
           </div>
         </div>
 

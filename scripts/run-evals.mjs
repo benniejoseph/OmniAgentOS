@@ -54,6 +54,8 @@ function applyAssertion(assert, response, trajectory) {
   }
   if (assert.maxEstimatedCostUsd !== undefined && !(trajectory.estimatedCostUsd <= assert.maxEstimatedCostUsd)) failures.push(`cost ${trajectory.estimatedCostUsd} exceeded ${assert.maxEstimatedCostUsd}`);
   if (assert.maxLatencyMs !== undefined && trajectory.latencyMs > assert.maxLatencyMs) failures.push(`latency ${trajectory.latencyMs}ms exceeded ${assert.maxLatencyMs}ms`);
+  if (assert.maxFallbacks !== undefined && trajectory.fallbackCount > assert.maxFallbacks) failures.push(`fallback count ${trajectory.fallbackCount} exceeded ${assert.maxFallbacks}`);
+  if (assert.requiredProvider && !trajectory.providers.has(assert.requiredProvider)) failures.push(`required provider not used: ${assert.requiredProvider}`);
   return failures;
 }
 
@@ -84,7 +86,7 @@ async function runTask(task) {
   }
   const text = await res.text();
   let response = "";
-  const trajectory = { toolIds: new Set(), citationIds: new Set(), estimatedCostUsd: undefined, latencyMs: 0, fallbackCount: 0 };
+  const trajectory = { toolIds: new Set(), citationIds: new Set(), providers: new Set(), estimatedCostUsd: undefined, latencyMs: 0, fallbackCount: 0 };
   for (const line of text.split("\n")) {
     if (!line.startsWith("data:")) continue;
     try {
@@ -93,6 +95,7 @@ async function runTask(task) {
       if (event.type === "done" && event.response) response = event.response;
       if (event.type === "tool" && event.toolId && event.status !== "running") trajectory.toolIds.add(event.toolId);
       if (event.type === "model") {
+        if (event.provider) trajectory.providers.add(event.provider);
         if (typeof event.estimatedCostUsd === "number") trajectory.estimatedCostUsd = (trajectory.estimatedCostUsd || 0) + event.estimatedCostUsd;
         if (event.fallbackUsed) trajectory.fallbackCount += 1;
       }
