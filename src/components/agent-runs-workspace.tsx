@@ -32,7 +32,7 @@ type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
 type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string };
 type AgentMode = "orchestrate" | "research" | "execute" | "learn";
-type AgentId = "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne";
+type AgentId = string;
 type GroundingReport = {
   status: "verified" | "not_required" | "missing" | "invalid";
   citedIds: string[];
@@ -120,6 +120,7 @@ export function AgentRunsWorkspace({
   const [goal, setGoal] = useState(initialGoal || "");
   const [mode, setMode] = useState<AgentMode>("orchestrate");
   const [preferredAgentId, setPreferredAgentId] = useState<AgentId | undefined>(initialAgentId);
+  const [preferredAgentName, setPreferredAgentName] = useState<string | undefined>(initialAgentId ? agentDisplayName(initialAgentId) : undefined);
   const [approvalRequired, setApprovalRequired] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>("goal");
   const [loading, setLoading] = useState<string>();
@@ -150,6 +151,15 @@ export function AgentRunsWorkspace({
   const initialThreadLoadedRef = useRef(false);
   const responseAudioRef = useRef<HTMLAudioElement | null>(null);
   const responseAudioUrlRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!initialAgentId || agentDisplayName(initialAgentId) !== "Custom agent") return;
+    const controller = new AbortController();
+    void readJson(`/api/agents/${encodeURIComponent(initialAgentId)}`, { signal: controller.signal })
+      .then((payload) => setPreferredAgentName(stringPath(asRecord(payload), "agent.name", "Custom agent")))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [initialAgentId]);
 
   const planNodes = arrayPath(workflowPlan, "plan.plan.nodes");
   const contextResults = arrayPath(contextPack, "pack.results");
@@ -986,6 +996,7 @@ export function AgentRunsWorkspace({
                 mode={mode}
                 approvalRequired={approvalRequired}
                 preferredAgentId={preferredAgentId}
+                preferredAgentName={preferredAgentName}
                 loading={loading}
                 readDisabledReason={readPermission}
                 runDisabledReason={runPermission}
@@ -996,7 +1007,7 @@ export function AgentRunsWorkspace({
                 onGoalChange={changeGoal}
                 onModeChange={changeMode}
                 onApprovalChange={changeApprovalRequired}
-                onClearPreferredAgent={() => setPreferredAgentId(undefined)}
+                onClearPreferredAgent={() => { setPreferredAgentId(undefined); setPreferredAgentName(undefined); }}
                 onContext={() => void buildContext()}
                 onPlan={() => void buildPlan()}
                 onAgent={() => void runAgent()}
@@ -1335,6 +1346,7 @@ function GoalStage({
   mode,
   approvalRequired,
   preferredAgentId,
+  preferredAgentName,
   loading,
   readDisabledReason,
   runDisabledReason,
@@ -1355,6 +1367,7 @@ function GoalStage({
   mode: AgentMode;
   approvalRequired: boolean;
   preferredAgentId?: AgentId;
+  preferredAgentName?: string;
   loading?: string;
   readDisabledReason?: string;
   runDisabledReason?: string;
@@ -1382,7 +1395,7 @@ function GoalStage({
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2.5">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-primary">Primary agent</p>
-            <p className="mt-1 text-sm font-semibold">{agentDisplayName(preferredAgentId)} is leading this task</p>
+            <p className="mt-1 text-sm font-semibold">{preferredAgentName || agentDisplayName(preferredAgentId)} is leading this task</p>
           </div>
           <button type="button" onClick={onClearPreferredAgent} className="rounded-md px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/10">
             Use automatic routing
@@ -1912,7 +1925,7 @@ function agentDisplayName(agentId: AgentId) {
     forge: "Forge",
     sentinel: "Sentinel",
     mnemosyne: "Mnemosyne",
-  }[agentId];
+  }[agentId] || "Custom agent";
 }
 
 function asRecord(value: unknown): JsonRecord {

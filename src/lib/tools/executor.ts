@@ -128,6 +128,7 @@ export async function executeGovernedTool({
   executionClaimToken,
   abortSignal,
   idempotencyKey,
+  forceApproval = false,
 }: {
   toolId: string;
   input: Record<string, unknown>;
@@ -139,6 +140,8 @@ export async function executeGovernedTool({
   executionClaimToken?: string;
   abortSignal?: AbortSignal;
   idempotencyKey?: string;
+  /** Hardens write tools for agents configured to approve every mutation. */
+  forceApproval?: boolean;
 }) {
   try {
     assertToolInputSize(input);
@@ -152,11 +155,11 @@ export async function executeGovernedTool({
     }
     throw error;
   }
-  const tool =
+  const registeredTool =
     getGovernedTool(toolId) ||
     (await getMcpGovernedTool(toolId, { tenantId: context?.tenantId })) ||
     (await getOpenApiGovernedTool(toolId, { tenantId: context?.tenantId }));
-  if (!tool) {
+  if (!registeredTool) {
     const reason = "Unknown tools are blocked by default.";
     const patch: Omit<ToolExecutionRecord, "id" | "createdAt"> = {
       tenantId: context?.tenantId,
@@ -196,6 +199,12 @@ export async function executeGovernedTool({
     }
     return { record: saved, result: null };
   }
+  const effectiveForceApproval = forceApproval || Boolean(
+    existingRecord?.approvalRequired && !registeredTool.approvalRequired && registeredTool.riskLevel > 0,
+  );
+  const tool = effectiveForceApproval
+    ? { ...registeredTool, approvalRequired: true }
+    : registeredTool;
   if (existingRecord && executionClaimToken) {
     const reviewedFingerprint =
       getToolExecutionApprovalFingerprint(existingRecord);

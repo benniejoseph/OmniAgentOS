@@ -22,6 +22,7 @@ export function selectAgentModel(input: {
   message: string;
   mode?: AgentMode;
   specialistCount?: number;
+  modelPolicy?: "auto" | "openai_fast" | "openai_reasoning" | "gemini_fast";
 }): ModelRoute {
   const fastModel = process.env.OPENAI_FAST_MODEL?.trim() || WEB_SEARCH_MODEL;
   const reasoningModel = process.env.OPENAI_REASONING_MODEL?.trim() || AGENT_MODEL;
@@ -34,6 +35,16 @@ export function selectAgentModel(input: {
   const googleSimpleTask = hasGeminiKey()
     && !complex
     && /\b(summarize|rewrite|rephrase|classify|categorize|extract|shorten|brainstorm|outline|title|tag|translate|format)\b/i.test(text);
+
+  if (input.modelPolicy === "gemini_fast" && hasGeminiKey()) {
+    return { model: GEMINI_FAST_MODEL, fallbackModel: fastModel, provider: "google", tier: "fast", reason: "This agent is configured to prefer Gemini's fast tier with OpenAI fallback." };
+  }
+  if (input.modelPolicy === "openai_reasoning") {
+    return { model: reasoningModel, fallbackModel: fastModel === reasoningModel ? undefined : fastModel, provider: "openai", tier: "reasoning", reason: "This agent is configured to prefer the deeper OpenAI reasoning tier." };
+  }
+  if (input.modelPolicy === "openai_fast") {
+    return { model: fastModel, fallbackModel: reasoningModel === fastModel ? undefined : reasoningModel, provider: "openai", tier: "fast", reason: "This agent is configured to prefer the low-latency OpenAI tier." };
+  }
 
   if (googleSimpleTask) {
     return {

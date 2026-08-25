@@ -34,6 +34,11 @@ export type AgentRunContinuation = {
     actorId: string;
     role: "viewer" | "operator" | "admin" | "system";
   };
+  toolPolicy?: {
+    allowedToolIds: string[];
+    readOnly: boolean;
+    forceApproval: boolean;
+  };
   createdAt: string;
   resumeClaimedAt?: string;
 };

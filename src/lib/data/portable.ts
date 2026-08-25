@@ -7,11 +7,12 @@ import { ingestTextDocument } from "@/lib/rag/retriever";
 import { listKnowledgeChunks, listKnowledgeDocuments } from "@/lib/rag/store";
 import { appendThreadTurn, createThread, listThreads, listThreadTurns } from "@/lib/threads/store";
 import { createTodayItem, listTodayItems, updateTodayItem } from "@/lib/today/store";
+import { createAgentSkill, createCustomAgent, listAgentSkills, listCustomAgents } from "@/lib/skills/store";
 
 export type PortableArchive = Awaited<ReturnType<typeof createPortableArchive>>;
 
 export async function createPortableArchive(input: { tenantId: string; actorId: string }) {
-  const [documents, chunks, memories, threads, today, projects, connections] = await Promise.all([
+  const [documents, chunks, memories, threads, today, projects, connections, skills, agents] = await Promise.all([
     listKnowledgeDocuments(5_000, { tenantId: input.tenantId }),
     listKnowledgeChunks(50_000, { tenantId: input.tenantId }),
     listMemories({ tenantId: input.tenantId, limit: 20_000, includeInactive: true }),
@@ -19,6 +20,8 @@ export async function createPortableArchive(input: { tenantId: string; actorId: 
     listTodayItems(250, { tenantId: input.tenantId, actorId: input.actorId }),
     listProjects(100, { tenantId: input.tenantId, actorId: input.actorId }),
     listOAuthGrants(input.tenantId, input.actorId),
+    listAgentSkills({ tenantId: input.tenantId, actorId: input.actorId }, false),
+    listCustomAgents({ tenantId: input.tenantId, actorId: input.actorId }),
   ]);
   const [threadTurns, projectCollections] = await Promise.all([
     Promise.all(threads.map(async (thread) => ({ thread, turns: await listThreadTurns(thread.id, { tenantId: input.tenantId, limit: 100 }) }))),
@@ -55,6 +58,8 @@ export async function createPortableArchive(input: { tenantId: string; actorId: 
       tasks: (projectCollections.tasksByProject.get(project.id) || []).map((task) => ({ title: task.title, detail: task.detail, priority: task.priority, agentId: task.agentId, origin: task.origin, dueAt: task.dueAt })),
     })),
     connections: connections.map((grant) => ({ provider: grant.provider, scopes: grant.scopes, status: grant.status, lastSyncedAt: grant.lastSyncedAt, syncedItems: grant.syncedItems })),
+    skills: skills.map(({ id, name, description, instructions, category, status, toolIds, tags, knowledgeTags }) => ({ id, name, description, instructions, category, status, toolIds, tags, knowledgeTags })),
+    agents: agents.map(({ id, name, role, description, instructions, status, accent, modelPolicy, autonomy, approvalPolicy, memoryScope, skillIds, toolIds }) => ({ id, name, role, description, instructions, status, accent, modelPolicy, autonomy, approvalPolicy, memoryScope, skillIds, toolIds })),
   };
 }
 
@@ -90,11 +95,19 @@ export async function restorePortableArchive(archive: unknown, input: { tenantId
     const created = await createTodayItem({ tenantId: input.tenantId, actorId: input.actorId, title: item.title, kind: item.kind, priority: item.priority, dueAt: item.dueAt });
     if (item.status === "done") await updateTodayItem(created.id, { status: "done" }, { tenantId: input.tenantId, actorId: input.actorId });
   }
+  const restoredSkillIds = new Map<string, string>();
+  for (const item of data.skills.slice(0, 250)) {
+    const restored = await createAgentSkill(item, { tenantId: input.tenantId, actorId: input.actorId });
+    if (item.id) restoredSkillIds.set(item.id, restored.id);
+  }
+  for (const item of data.agents.slice(0, 100)) {
+    await createCustomAgent({ name: item.name, role: item.role, description: item.description, instructions: item.instructions, status: item.status, accent: item.accent, modelPolicy: item.modelPolicy, autonomy: item.autonomy, approvalPolicy: item.approvalPolicy, memoryScope: item.memoryScope, skillIds: item.skillIds.map((skillId) => restoredSkillIds.get(skillId) || skillId), toolIds: item.toolIds }, { tenantId: input.tenantId, actorId: input.actorId });
+  }
   for (const item of data.projects.slice(0, 100)) {
     const project = await createProject({ tenantId: input.tenantId, actorId: input.actorId, title: item.title, objective: item.objective, status: item.status, targetDate: item.targetDate });
     await createProjectTasks(project.id, item.tasks.slice(0, 20), { tenantId: input.tenantId });
   }
-  return { knowledge, memories: memoryInputs.length, threads: data.threads.length, turns, today: data.today.length, projects: data.projects.length };
+  return { knowledge, memories: memoryInputs.length, threads: data.threads.length, turns, today: data.today.length, projects: data.projects.length, skills: data.skills.length, agents: data.agents.length };
 }
 
 function asArchive(value: unknown) {
@@ -107,6 +120,8 @@ function asArchive(value: unknown) {
     threads: array(archive.threads).map((item) => { const row = record(item); return { title: text(row.title, 90) || "Restored conversation", mode: mode(row.mode), turns: array(row.turns).map((turn) => { const value = record(turn); return { role: value.role === "assistant" ? "assistant" as const : "user" as const, content: text(value.content, 40_000) }; }).filter((turn) => turn.content) }; }),
     today: array(archive.today).map((item) => { const row = record(item); return { title: text(row.title, 280), kind: row.kind === "reminder" ? "reminder" as const : "task" as const, priority: priority(row.priority), status: row.status === "done" ? "done" as const : "open" as const, dueAt: optionalDate(row.dueAt) }; }).filter((item) => item.title),
     projects: array(archive.projects).map((item) => { const row = record(item); return { title: text(row.title, 180), objective: text(row.objective, 2_000), status: projectStatus(row.status), targetDate: optionalDate(row.targetDate), tasks: array(row.tasks).map((task) => { const value = record(task); return { title: text(value.title, 240), detail: text(value.detail, 1_000), priority: priority(value.priority), agentId: agentId(value.agentId), origin: value.origin === "agent" ? "agent" as const : "manual" as const, dueAt: optionalDate(value.dueAt) }; }).filter((task) => task.title) }; }).filter((item) => item.title && item.objective),
+    skills: array(archive.skills).map((item) => { const row = record(item); return { id: identifier(row.id), name: text(row.name, 120), description: text(row.description, 500), instructions: text(row.instructions, 12_000), category: skillCategory(row.category), status: skillStatus(row.status), toolIds: identifiers(row.toolIds, 50), tags: identifiers(row.tags, 30), knowledgeTags: identifiers(row.knowledgeTags, 30) }; }).filter((item) => item.name && item.description && item.instructions.length >= 10),
+    agents: array(archive.agents).map((item) => { const row = record(item); return { id: identifier(row.id), name: text(row.name, 120), role: text(row.role, 120), description: text(row.description, 700), instructions: text(row.instructions, 12_000), status: customAgentStatus(row.status), accent: agentAccent(row.accent), modelPolicy: agentModelPolicy(row.modelPolicy), autonomy: agentAutonomy(row.autonomy), approvalPolicy: agentApprovalPolicy(row.approvalPolicy), memoryScope: agentMemoryScope(row.memoryScope), skillIds: identifiers(row.skillIds, 30), toolIds: identifiers(row.toolIds, 50) }; }).filter((item) => item.name && item.role && item.description && item.instructions.length >= 10),
   };
 }
 
@@ -127,3 +142,13 @@ function mode(value: unknown) { return (["orchestrate", "research", "execute", "
 function priority(value: unknown) { return (["low", "medium", "high"] as const).find((item) => item === value) || "medium"; }
 function projectStatus(value: unknown) { return (["draft", "active", "completed", "archived"] as const).find((item) => item === value) || "active"; }
 function agentId(value: unknown) { return (["atlas", "scout", "forge", "sentinel", "mnemosyne"] as const).find((item) => item === value) || "atlas"; }
+function identifier(value: unknown) { return text(value, 120).replace(/[^a-zA-Z0-9_.:-]/g, ""); }
+function identifiers(value: unknown, max: number) { return [...new Set(array(value).map(identifier).filter(Boolean))].slice(0, max); }
+function skillCategory(value: unknown) { return (["research", "creation", "analysis", "memory", "automation", "personal"] as const).find((item) => item === value) || "personal"; }
+function skillStatus(value: unknown) { return value === "disabled" ? "disabled" as const : "active" as const; }
+function customAgentStatus(value: unknown) { return (["ready", "learning", "paused"] as const).find((item) => item === value) || "ready"; }
+function agentAccent(value: unknown) { return (["emerald", "blue", "amber", "violet", "rose"] as const).find((item) => item === value) || "emerald"; }
+function agentModelPolicy(value: unknown) { return (["auto", "openai_fast", "openai_reasoning", "gemini_fast"] as const).find((item) => item === value) || "auto"; }
+function agentAutonomy(value: unknown) { return (["assist", "governed", "execute"] as const).find((item) => item === value) || "governed"; }
+function agentApprovalPolicy(value: unknown) { return (["always", "risk_based", "read_only"] as const).find((item) => item === value) || "risk_based"; }
+function agentMemoryScope(value: unknown) { return (["session", "project", "all"] as const).find((item) => item === value) || "all"; }

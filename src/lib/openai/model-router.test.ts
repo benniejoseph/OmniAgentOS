@@ -27,6 +27,26 @@ describe("model router", () => {
     expect(selectAgentModel({ message: "Implement and verify this production migration", mode: "execute" })).toMatchObject({ model: "deep-model", fallbackModel: "fast-model", tier: "reasoning" });
   });
 
+  it("honors an owner-configured model policy with a safe fallback", () => {
+    process.env.OPENAI_FAST_MODEL = "fast-model";
+    process.env.OPENAI_REASONING_MODEL = "deep-model";
+    expect(selectAgentModel({ message: "Do a quick check", mode: "learn", modelPolicy: "openai_reasoning" })).toMatchObject({
+      model: "deep-model",
+      fallbackModel: "fast-model",
+      provider: "openai",
+      tier: "reasoning",
+    });
+  });
+
+  it("falls back to OpenAI when a Gemini policy is selected without Gemini credentials", () => {
+    process.env.OPENAI_FAST_MODEL = "fast-model";
+    expect(selectAgentModel({ message: "Summarize this", mode: "learn", modelPolicy: "gemini_fast" })).toMatchObject({
+      model: "fast-model",
+      provider: "openai",
+      tier: "fast",
+    });
+  });
+
   it("calculates configured token cost without hard-coded vendor pricing", () => {
     process.env.OPENAI_MODEL_PRICING_JSON = JSON.stringify({ test: { input: 2, cachedInput: 0.5, output: 8 } });
     expect(estimateModelCostUsd("test", { inputTokens: 1_000, cachedInputTokens: 400, outputTokens: 500, totalTokens: 1_500 })).toBe(0.0054);

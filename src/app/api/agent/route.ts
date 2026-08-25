@@ -16,6 +16,7 @@ import {
 } from "@/lib/orchestration/supervisor";
 import { redactSensitive } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { getCustomAgent, listAgentSkills } from "@/lib/skills/store";
 
 export const runtime = "nodejs";
 // gpt-5 research/orchestrate runs can exceed 60s; 300s is the Vercel Pro ceiling.
@@ -33,7 +34,7 @@ const requestSchema = z.object({
   threadId: z.string().uuid().optional(),
   message: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS).optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
-  agentId: z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"]).optional(),
+  agentId: z.string().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
 }).strict().refine((value) => Boolean(value.message || value.messages?.length), { message: "A message is required." });
@@ -96,7 +97,32 @@ async function POSTHandler(request: Request) {
 
   const mode = parsed.data.mode || "orchestrate";
   const requestMessage = parsed.data.message || parsed.data.messages?.at(-1)?.content || "";
-  const inferredDecision = routeAgentRequest(requestMessage, mode, parsed.data.agentId);
+  const requestedBuiltInAgent = isBuiltInAgentId(parsed.data.agentId) ? parsed.data.agentId : undefined;
+  const customAgent = parsed.data.agentId && !requestedBuiltInAgent
+    ? await getCustomAgent(parsed.data.agentId, { tenantId: context.tenantId, actorId: context.actorId })
+    : undefined;
+  if (parsed.data.agentId && !requestedBuiltInAgent && !customAgent) {
+    return Response.json({ error: "Agent not found." }, { status: 404 });
+  }
+  if (customAgent?.status === "paused") {
+    return Response.json({ error: "Agent paused", message: "Resume this agent in the Agent Builder before assigning work." }, { status: 409 });
+  }
+  const customSkills = customAgent
+    ? (await listAgentSkills({ tenantId: context.tenantId, actorId: context.actorId })).filter((skill) => customAgent.skillIds.includes(skill.id) && skill.status === "active")
+    : [];
+  const agentProfile = customAgent ? {
+    name: customAgent.name,
+    role: customAgent.role,
+    description: customAgent.description,
+    instructions: customAgent.instructions,
+    modelPolicy: customAgent.modelPolicy,
+    autonomy: customAgent.autonomy,
+    approvalPolicy: customAgent.approvalPolicy,
+    memoryScope: customAgent.memoryScope,
+    toolIds: customAgent.toolIds,
+    skills: customSkills.map(({ id, name, description, instructions, toolIds }) => ({ id, name, description, instructions, toolIds })),
+  } : undefined;
+  const inferredDecision = routeAgentRequest(requestMessage, mode, requestedBuiltInAgent);
   const preliminaryDecision = parsed.data.strategy === "direct"
     ? { ...inferredDecision, route: "direct" as const, reasons: ["Direct execution was explicitly selected."] }
     : parsed.data.strategy === "durable"
@@ -152,12 +178,15 @@ async function POSTHandler(request: Request) {
               tenantId: context.tenantId,
               goal: safeMessage,
               mode,
-              requireApproval: decision.requiresApproval,
+              requireApproval: decision.requiresApproval || customAgent?.approvalPolicy === "always",
               metadata: {
                 source: "atomic_supervisor",
                 threadId: thread.id,
                 actorId: context.actorId,
-                primaryAgentId: decision.primaryAgentId,
+                primaryAgentId: customAgent?.id || decision.primaryAgentId,
+                customAgentName: customAgent?.name,
+                skillIds: customSkills.map((skill) => skill.id),
+                agentProfile,
                 specialistIds: decision.specialistIds,
                 learning: decision.learning,
               },
@@ -165,7 +194,7 @@ async function POSTHandler(request: Request) {
             });
             await enqueueWorkflowRunTick(detail.run.id, "supervisor_delegated", undefined, context.tenantId);
             scheduleWorkflowQueueDrain(undefined, context.tenantId);
-            const acknowledgement = decision.requiresApproval
+            const acknowledgement = decision.requiresApproval || customAgent?.approvalPolicy === "always"
               ? "I moved this into a durable workflow. It will preserve progress and pause before consequential external actions."
               : "I moved this into a durable workflow so it can continue in the background and preserve progress.";
             await appendThreadTurn({
@@ -194,8 +223,9 @@ async function POSTHandler(request: Request) {
             tenantId: context.tenantId,
             actorId: context.actorId,
             role: context.role,
-            agentId: decision.primaryAgentId,
+            agentId: customAgent?.id || decision.primaryAgentId,
             specialistIds: decision.specialistIds,
+            agentProfile,
           },
           request.signal,
         )) {
@@ -221,4 +251,8 @@ async function POSTHandler(request: Request) {
   });
 
   return sseResponse(stream);
+}
+
+function isBuiltInAgentId(value?: string): value is "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne" {
+  return value === "atlas" || value === "scout" || value === "forge" || value === "sentinel" || value === "mnemosyne";
 }

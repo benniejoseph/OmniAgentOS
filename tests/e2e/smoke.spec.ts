@@ -1218,3 +1218,55 @@ test("every navigation destination renders a focused page without horizontal ove
     expect(overflow, `${route} should fit the viewport`).toBe(false);
   }
 });
+
+test("owner can compose a skill, create an agent, and assign work from the visual arsenal", async ({ page }) => {
+  await signIn(page);
+  const suffix = Date.now().toString(36);
+  const skillName = `Daily synthesis ${suffix}`;
+  const agentName = `Compass ${suffix}`;
+
+  await page.goto("/app/agents");
+  await expect(page.getByRole("heading", { name: "Your working intelligence." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Skill Studio" })).toBeVisible();
+
+  await page.getByRole("button", { name: "New skill" }).click();
+  const skillDialog = page.getByRole("dialog", { name: "Skill" });
+  await skillDialog.getByLabel("Name").fill(skillName);
+  await skillDialog.getByLabel("Description").fill("Turns scattered evidence into a focused daily review.");
+  await skillDialog.getByLabel("Operating instructions").fill("Summarize evidence, surface contradictions, and recommend the next three actions.");
+  await skillDialog.getByRole("button", { name: "Create skill" }).click();
+  await expect(page.getByRole("status")).toContainText(`${skillName} created.`);
+
+  await page.getByRole("button", { name: "Create agent" }).click();
+  const agentDialog = page.getByRole("dialog", { name: "Agent" });
+  await agentDialog.getByLabel("Name").fill(agentName);
+  await agentDialog.getByLabel("Role").fill("Daily chief of staff");
+  await agentDialog.getByLabel("Description").fill("Keeps the owner focused on the highest-leverage work.");
+  await agentDialog.getByLabel("Operating instructions").fill("Use evidence before recommendations and make uncertainty explicit.");
+  await agentDialog.getByLabel(skillName).check();
+  await agentDialog.getByRole("button", { name: "Create agent" }).click();
+  await expect(page.getByRole("status")).toContainText(`${agentName} created.`);
+
+  await page.locator(".arsenal-roster-item", { hasText: agentName }).click();
+  await page.getByRole("link", { name: `Assign work to ${agentName}` }).click();
+  await expect(page).toHaveURL(/\/app\/command\?agent=/);
+  await expect(page.getByText(`${agentName} is leading this task`)).toBeVisible();
+
+  const created = await page.evaluate(async ({ skillName, agentName }) => {
+    const [skills, agents] = await Promise.all([
+      fetch("/api/skills").then((response) => response.json()),
+      fetch("/api/agents").then((response) => response.json()),
+    ]);
+    return {
+      skillId: skills.skills.find((item: { name?: string }) => item.name === skillName)?.id,
+      agentId: agents.agents.find((item: { name?: string }) => item.name === agentName)?.id,
+    };
+  }, { skillName, agentName });
+  const cleanup = await page.evaluate(async ({ agentId, skillId }) => {
+    const statuses: number[] = [];
+    if (agentId) statuses.push((await fetch(`/api/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" })).status);
+    if (skillId) statuses.push((await fetch(`/api/skills/${encodeURIComponent(skillId)}`, { method: "DELETE" })).status);
+    return statuses;
+  }, created);
+  expect(cleanup).toEqual([200, 200]);
+});

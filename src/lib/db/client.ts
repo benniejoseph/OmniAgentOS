@@ -93,6 +93,8 @@ export const tenantRootPolicyTables = [
   "omni_personal_notifications",
   "omni_projects",
   "omni_project_artifacts",
+  "omni_custom_skills",
+  "omni_custom_agents",
 ] as const;
 
 export const tenantChildPolicyTables = [
@@ -491,6 +493,13 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[24],
       up: ensureOAuthIncrementalSyncHealth,
+    },
+    {
+      ...databaseSchemaMigrations[25],
+      up: async (sql) => {
+        await ensureAgentSkillStudio(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
     },
   ];
 }
@@ -2286,6 +2295,54 @@ async function ensureOAuthIncrementalSyncHealth(sql: SqlClient) {
   await sql`ALTER TABLE omni_oauth_grants ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`;
   await sql`ALTER TABLE omni_oauth_grants ADD COLUMN IF NOT EXISTS synced_items INTEGER NOT NULL DEFAULT 0`;
   await sql`CREATE INDEX IF NOT EXISTS omni_oauth_grants_sync_health_idx ON omni_oauth_grants (tenant_id, actor_id, sync_status, last_synced_at DESC)`;
+}
+
+async function ensureAgentSkillStudio(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_custom_skills (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      slug TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      instructions TEXT NOT NULL,
+      category TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      version INTEGER NOT NULL DEFAULT 1,
+      tool_ids TEXT[] NOT NULL DEFAULT '{}',
+      tags TEXT[] NOT NULL DEFAULT '{}',
+      knowledge_tags TEXT[] NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, slug)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_custom_skills_owner_updated_idx ON omni_custom_skills (tenant_id, actor_id, updated_at DESC)`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_custom_agents (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      slug TEXT NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      description TEXT NOT NULL,
+      instructions TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ready',
+      accent TEXT NOT NULL DEFAULT 'emerald',
+      model_policy TEXT NOT NULL DEFAULT 'auto',
+      autonomy TEXT NOT NULL DEFAULT 'governed',
+      approval_policy TEXT NOT NULL DEFAULT 'risk_based',
+      memory_scope TEXT NOT NULL DEFAULT 'all',
+      skill_ids TEXT[] NOT NULL DEFAULT '{}',
+      tool_ids TEXT[] NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, slug)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_custom_agents_owner_updated_idx ON omni_custom_agents (tenant_id, actor_id, updated_at DESC)`;
 }
 
 async function ensureConversationThreads(sql: SqlClient) {
