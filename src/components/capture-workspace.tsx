@@ -1,7 +1,8 @@
 "use client";
 
+import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, CheckCircle2, FileText, Loader2, Mic, Paperclip, RefreshCw, Square, Upload, X } from "lucide-react";
+import { Camera, CheckCircle2, Download, FileText, ImageIcon, Loader2, Mic, Paperclip, RefreshCw, Sparkles, Square, Upload, X } from "lucide-react";
 import { clsx } from "clsx";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { listOfflineCaptures, queueOfflineCapture, removeOfflineCapture, type OfflineCapture } from "@/lib/capture/offline";
@@ -26,6 +27,10 @@ export function CaptureWorkspace() {
   const [oauthGrants, setOAuthGrants] = useState<OAuthGrantItem[]>([]);
   const [syncingProvider, setSyncingProvider] = useState<string>();
   const [offlinePending, setOfflinePending] = useState(0);
+  const [imagePrompt, setImagePrompt] = useState("");
+  const [imageRatio, setImageRatio] = useState<"1:1" | "16:9" | "9:16" | "4:3" | "3:4">("1:1");
+  const [generatingImage, setGeneratingImage] = useState(false);
+  const [generatedImage, setGeneratedImage] = useState<{ dataUrl: string; model: string }>();
   const inputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<MediaRecorder | undefined>(undefined);
@@ -132,6 +137,29 @@ export function CaptureWorkspace() {
     } finally { setSyncingProvider(undefined); }
   }
 
+  async function createImage() {
+    if (!imagePrompt.trim()) return;
+    setGeneratingImage(true); setMessage(undefined);
+    try {
+      const response = await fetch("/api/media/image", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt: imagePrompt.trim(), aspectRatio: imageRatio }) });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(String(payload.error || "Image generation failed."));
+      setGeneratedImage({ dataUrl: String(payload.image), model: String(payload.model || "Gemini") });
+      setMessage({ tone: "success", text: "Visual created. Download it or move it into the capture inbox." });
+    } catch (error) {
+      setMessage({ tone: "error", text: error instanceof Error ? error.message : "Image generation failed." });
+    } finally { setGeneratingImage(false); }
+  }
+
+  async function attachGeneratedImage() {
+    if (!generatedImage) return;
+    const blob = await fetch(generatedImage.dataUrl).then((response) => response.blob());
+    chooseFile(new File([blob], `asael-${Date.now()}.jpg`, { type: blob.type || "image/jpeg" }));
+    if (!title.trim()) setTitle(imagePrompt.trim().slice(0, 120));
+    setGeneratedImage(undefined);
+    setMessage({ tone: "success", text: "Generated visual moved into the capture inbox. Add tags, then save it to memory." });
+  }
+
   async function submitCapture(event: React.FormEvent) {
     event.preventDefault();
     if (blocked) return setMessage({ tone: "error", text: blocked });
@@ -227,6 +255,38 @@ export function CaptureWorkspace() {
           <button type="submit" disabled={submitting || Boolean(blocked)} title={blocked} className="primary-button min-w-36">{submitting ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}{submitting ? "Saving…" : "Save to memory"}</button>
         </div>
       </form>
+
+      <section className="border-t border-line py-7" aria-labelledby="visual-studio-title">
+        <div className="grid gap-6 lg:grid-cols-[0.92fr_1.08fr] lg:items-start">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Gemini visual studio</p>
+            <h2 id="visual-studio-title" className="mt-2 text-xl font-semibold tracking-tight">Turn an idea into an image.</h2>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-muted">Create a private working visual, then download it or place it directly into your capture inbox.</p>
+            <label className="mt-5 block text-xs font-medium text-muted">Describe the visual
+              <textarea value={imagePrompt} onChange={(event) => setImagePrompt(event.target.value)} maxLength={4_000} rows={4} placeholder="A calm, cinematic dashboard illustration showing a network of personal AI agents…" className="mt-2 w-full resize-y rounded-lg border border-line bg-surface px-3 py-3 text-sm leading-6 text-foreground outline-none focus:border-primary" />
+            </label>
+            <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
+              <label className="text-xs font-medium text-muted">Aspect ratio
+                <select value={imageRatio} onChange={(event) => setImageRatio(event.target.value as typeof imageRatio)} className="mt-2 block min-h-11 rounded-md border border-line bg-surface px-3 text-sm text-foreground">
+                  <option value="1:1">Square · 1:1</option><option value="16:9">Landscape · 16:9</option><option value="9:16">Portrait · 9:16</option><option value="4:3">Classic · 4:3</option><option value="3:4">Tall · 3:4</option>
+                </select>
+              </label>
+              <button type="button" onClick={() => void createImage()} disabled={generatingImage || imagePrompt.trim().length < 3 || Boolean(blocked)} className="primary-button min-h-11">
+                {generatingImage ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Sparkles size={16} aria-hidden="true" />}{generatingImage ? "Creating…" : "Create visual"}
+              </button>
+            </div>
+          </div>
+          <div className="relative grid min-h-72 place-items-center overflow-hidden rounded-xl border border-line bg-[radial-gradient(circle_at_top_right,color-mix(in_oklab,var(--color-primary)_16%,transparent),transparent_52%)] p-3">
+            {generatedImage ? <>
+              <Image src={generatedImage.dataUrl} alt={`AI-generated visual: ${imagePrompt}`} width={1024} height={1024} unoptimized className="max-h-[32rem] w-auto rounded-lg object-contain shadow-2xl" />
+              <div className="absolute inset-x-3 bottom-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-background/90 p-2 backdrop-blur">
+                <span className="truncate text-xs text-muted">{generatedImage.model}</span>
+                <div className="flex gap-2"><a href={generatedImage.dataUrl} download="asael-visual.jpg" className="action-button"><Download size={14} aria-hidden="true" />Download</a><button type="button" onClick={() => void attachGeneratedImage()} className="primary-button"><ImageIcon size={14} aria-hidden="true" />Use in capture</button></div>
+              </div>
+            </> : <div className="max-w-sm text-center"><ImageIcon size={34} className="mx-auto text-primary/70" aria-hidden="true" /><p className="mt-3 text-sm font-medium">Your generated visual appears here</p><p className="mt-1 text-xs leading-5 text-muted">Nothing is stored until you explicitly move it into capture.</p></div>}
+          </div>
+        </div>
+      </section>
 
       <section className="border-t border-line py-6">
         <h2 className="text-sm font-semibold">Connected sources</h2>

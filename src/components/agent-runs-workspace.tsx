@@ -19,6 +19,7 @@ import {
   TerminalSquare,
   ThumbsDown,
   ThumbsUp,
+  Volume2,
   Workflow,
 } from "lucide-react";
 import { clsx } from "clsx";
@@ -49,7 +50,7 @@ type StreamEvent =
   | { type: "run"; runId?: string; threadId?: string }
   | { type: "status"; label?: string; detail?: string }
   | { type: "memory"; title?: string; count?: number }
-  | { type: "model"; model: string; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number }
+  | { type: "model"; model: string; provider?: "openai" | "google"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number }
   | { type: "council_member"; agentId: AgentId; agentName: string; role: string; status: "thinking" | "completed" | "failed"; summary?: string; confidence?: number; durationMs?: number }
   | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | { type: "delta"; text?: string }
@@ -132,6 +133,7 @@ export function AgentRunsWorkspace({
   const [activeAgentRunId, setActiveAgentRunId] = useState("");
   const [runFeedback, setRunFeedback] = useState<RunFeedback>();
   const [feedbackSaving, setFeedbackSaving] = useState(false);
+  const [speechLoading, setSpeechLoading] = useState(false);
   const [evidence, setEvidence] = useState<JsonRecord>({});
   const [evidenceState, setEvidenceState] = useState<"loading" | "ready" | "error">("loading");
   const [workflowSyncError, setWorkflowSyncError] = useState<string>();
@@ -146,6 +148,8 @@ export function AgentRunsWorkspace({
   const pendingDeltasRef = useRef<string[]>([]);
   const deltaFlushTimerRef = useRef<number | null>(null);
   const initialThreadLoadedRef = useRef(false);
+  const responseAudioRef = useRef<HTMLAudioElement | null>(null);
+  const responseAudioUrlRef = useRef<string | undefined>(undefined);
 
   const planNodes = arrayPath(workflowPlan, "plan.plan.nodes");
   const contextResults = arrayPath(contextPack, "pack.results");
@@ -245,6 +249,8 @@ export function AgentRunsWorkspace({
       if (deltaFlushTimerRef.current !== null) {
         window.clearTimeout(deltaFlushTimerRef.current);
       }
+      responseAudioRef.current?.pause();
+      if (responseAudioUrlRef.current) URL.revokeObjectURL(responseAudioUrlRef.current);
     };
     // Session changes are the only automatic evidence refresh trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -692,6 +698,28 @@ export function AgentRunsWorkspace({
       abortControllerRef.current = null;
       setLoading(undefined);
     }
+  }
+
+  async function listenToResponse() {
+    if (!agentResponse.trim() || speechLoading) return;
+    if (responseAudioRef.current && !responseAudioRef.current.paused) {
+      responseAudioRef.current.pause();
+      return;
+    }
+    setSpeechLoading(true);
+    try {
+      const response = await fetch("/api/media/speech", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: agentResponse }) });
+      if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(stringValue(asRecord(body).error, "Speech playback failed.")); }
+      const blob = await response.blob();
+      if (responseAudioUrlRef.current) URL.revokeObjectURL(responseAudioUrlRef.current);
+      const url = URL.createObjectURL(blob);
+      responseAudioUrlRef.current = url;
+      const audio = new Audio(url);
+      responseAudioRef.current = audio;
+      await audio.play();
+    } catch (speechError) {
+      setError(speechError instanceof Error ? speechError.message : "Speech playback failed.");
+    } finally { setSpeechLoading(false); }
   }
 
   async function refreshThreads() {
@@ -1195,12 +1223,15 @@ export function AgentRunsWorkspace({
                   <div className="rounded-md border border-line bg-background p-3">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm font-semibold">Agent response</p>
+                      <div className="flex items-center gap-2">
+                      {agentResponse ? <button type="button" onClick={() => void listenToResponse()} disabled={speechLoading} className="action-button" aria-label="Listen to agent response">{speechLoading ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}Listen</button> : null}
                       {grounding ? (
                         <StatusPill
                           label={groundingLabel(grounding.status)}
                           tone={grounding.status === "verified" ? "success" : grounding.status === "not_required" ? "neutral" : "warning"}
                         />
                       ) : null}
+                      </div>
                     </div>
                     <div className="mt-3 min-h-64 max-h-96 overflow-auto rounded-md border border-line bg-surface p-3 text-sm leading-6 text-muted">
                       {agentResponse || "Run the agent to stream an answer here."}
@@ -1816,7 +1847,7 @@ function streamEventLabel(event: StreamEvent) {
   }
   if (event.type === "model") {
     const cost = event.estimatedCostUsd === undefined ? "cost rate not configured" : `$${event.estimatedCostUsd.toFixed(6)}`;
-    return `${event.model} used ${event.totalTokens.toLocaleString()} tokens in ${(event.latencyMs / 1_000).toFixed(1)}s (${cost})${event.fallbackUsed ? "; fallback used" : ""}.`;
+    return `${event.provider === "google" ? "Google · " : "OpenAI · "}${event.model} used ${event.totalTokens.toLocaleString()} tokens in ${(event.latencyMs / 1_000).toFixed(1)}s (${cost})${event.fallbackUsed ? "; fallback used" : ""}.`;
   }
   if (event.type === "council_member") {
     if (event.status === "thinking") return `${event.agentName} is working independently as ${event.role}.`;

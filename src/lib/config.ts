@@ -10,6 +10,8 @@ export const EMBEDDING_MODEL =
 export const TRANSCRIPTION_MODEL =
   process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
 export const OCR_MODEL = process.env.OPENAI_OCR_MODEL || "gpt-4o-mini";
+export const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || "gemini-3.5-flash-lite";
+export const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-lite-image";
 export const EMBEDDING_DIMENSIONS = normalizePositiveInteger(
   process.env.OPENAI_EMBEDDING_DIMENSIONS,
   1536,
@@ -61,6 +63,14 @@ export const WORKFLOW_PLAN_NODES_PER_TICK = normalizePositiveInteger(
 
 export function hasOpenAIKey() {
   return Boolean(process.env.OPENAI_API_KEY?.trim());
+}
+
+export function hasGeminiKey() {
+  return Boolean(process.env.GEMINI_API_KEY?.trim());
+}
+
+export function hasGoogleMediaKey() {
+  return Boolean(process.env.GOOGLE_MEDIA_API_KEY?.trim());
 }
 
 export function getAppBaseUrl() {
