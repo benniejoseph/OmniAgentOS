@@ -613,12 +613,19 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
         description: "Potential systems to connect next.",
         emptyLabel: "No catalog entries loaded.",
         rows: (data) =>
-          arrayPath(data, "catalog.connectors").map((item) => ({
-            title: stringValue(item.name, "Connector"),
-            status: stringValue(item.status, "planned"),
-            meta: stringValue(item.adapter, "adapter"),
-            tone: stringValue(item.status) === "planned" ? "neutral" : "success",
-          })),
+          arrayPath(data, "catalog.connectors")
+            .filter(
+              (item) =>
+                !["gmail", "google-drive", "google-calendar"].includes(
+                  stringValue(item.id),
+                ),
+            )
+            .map((item) => ({
+              title: stringValue(item.name, "Connector"),
+              status: stringValue(item.status, "planned"),
+              meta: stringValue(item.adapter, "adapter"),
+              tone: stringValue(item.status) === "planned" ? "neutral" : "success",
+            })),
       },
     ],
     actions: [
