@@ -24,6 +24,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { clsx } from "clsx";
+import { PersonalConnections } from "@/components/connectors/personal-connections";
 import {
   permissionMessage,
   type WorkspacePermission,
@@ -538,10 +539,11 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
   },
   integrations: {
     title: "Integrations",
-    eyebrow: "MCP, OpenAPI, connection catalog",
-    description: "Connect external systems safely, discover operations, classify risk, and keep connector health visible before tools can use them.",
+    eyebrow: "Google, MCP, OpenAPI",
+    description: "Connect personal sources and governed tools, then keep their permissions, freshness, and health visible in one place.",
     icon: Cable,
     endpoints: [
+      { key: "oauth", label: "Personal sources", path: "/api/oauth" },
       { key: "connectors", label: "MCP connectors", path: "/api/connectors" },
       { key: "openapi", label: "OpenAPI connectors", path: "/api/openapi-connectors" },
       { key: "catalog", label: "Connection catalog", path: "/api/connection-catalog" },
@@ -1588,6 +1590,15 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
             ) : null}
           </div>
         </section>
+      ) : null}
+
+      {domain === "integrations" ? (
+        <PersonalConnections
+          payload={data.oauth}
+          loading={resources.oauth?.status === "loading"}
+          error={resources.oauth?.status === "error" ? resources.oauth.error : undefined}
+          onRefresh={load}
+        />
       ) : null}
 
       <section className="mt-4 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-4">
