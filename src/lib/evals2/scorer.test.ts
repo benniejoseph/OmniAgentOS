@@ -44,6 +44,12 @@ describe("scoreTask", () => {
     expect(scoreTask(task, "Grounded answer", { citationIds: ["M1"], toolIds: ["memory.search"], latencyMs: 900, estimatedCostUsd: 0.01 }).passed).toBe(true);
     expect(scoreTask(task, "Ungrounded answer", { toolIds: ["danger.delete"], latencyMs: 3_000, estimatedCostUsd: 0.2 }).failures).toHaveLength(5);
   });
+
+  it("grades provider routing and fallback budgets", () => {
+    const task: GoldenTask = { id: "routing", goal: "x", assert: { requiredProvider: "google", maxFallbacks: 0 } };
+    expect(scoreTask(task, "Result", { providers: ["google"], fallbackCount: 0 }).passed).toBe(true);
+    expect(scoreTask(task, "Result", { providers: ["openai"], fallbackCount: 1 }).passed).toBe(false);
+  });
 });
 
 describe("scoreboard", () => {

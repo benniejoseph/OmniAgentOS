@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   CircleHelp,
   Database,
+  Download,
   FileText,
   GitBranch,
   Layers3,
@@ -1527,6 +1528,8 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
       ) : null}
 
       {domain === "settings" ? <PersonalDataControls /> : null}
+
+      {domain === "security" ? <section className="mt-4 flex flex-col gap-3 rounded-lg border border-line bg-surface p-5 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Tamper-evident evidence</p><h2 className="mt-1 text-base font-semibold">Signed audit chain</h2><p className="mt-1 text-sm text-muted">Download a chronologically chained, HMAC-signed audit export for offline verification.</p></div><a href="/api/security/audits/export" download className="primary-button shrink-0"><Download size={15} aria-hidden="true" />Download signed audit</a></section> : null}
 
       <section className="mt-4 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-4">
         {config.metrics.map((metric) => {

@@ -16,6 +16,8 @@ export type GoldenAssertion = {
   forbiddenToolIds?: string[];
   maxEstimatedCostUsd?: number;
   maxLatencyMs?: number;
+  maxFallbacks?: number;
+  requiredProvider?: "openai" | "google";
 };
 
 export type EvalTrajectory = {
@@ -24,6 +26,7 @@ export type EvalTrajectory = {
   estimatedCostUsd?: number;
   latencyMs?: number;
   fallbackCount?: number;
+  providers?: string[];
 };
 
 export type GoldenTask = {
@@ -119,6 +122,19 @@ export function scoreTask(task: GoldenTask, response: string, trajectory: EvalTr
     const ok = latency !== undefined && latency <= task.assert.maxLatencyMs;
     checks.push(ok);
     if (!ok) failures.push(`latency ${latency ?? "unavailable"}ms exceeded ${task.assert.maxLatencyMs}ms`);
+  }
+
+  if (task.assert.maxFallbacks !== undefined) {
+    const count = trajectory.fallbackCount || 0;
+    const ok = count <= task.assert.maxFallbacks;
+    checks.push(ok);
+    if (!ok) failures.push(`fallback count ${count} exceeded ${task.assert.maxFallbacks}`);
+  }
+
+  if (task.assert.requiredProvider) {
+    const ok = new Set(trajectory.providers || []).has(task.assert.requiredProvider);
+    checks.push(ok);
+    if (!ok) failures.push(`required provider not used: ${task.assert.requiredProvider}`);
   }
 
   const passedChecks = checks.filter(Boolean).length;
