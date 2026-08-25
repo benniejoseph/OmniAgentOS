@@ -5,10 +5,13 @@ import {
   withDatabaseRequestScope,
 } from "@/lib/db/client";
 import { hasOpenAIKey } from "@/lib/config";
+import { AsyncTtlCache } from "@/lib/performance/async-ttl-cache";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
 export const GET = withDatabaseRequestScope(GETHandler);
+
+const databaseReadinessCache = new AsyncTtlCache<boolean>(15_000, 1);
 
 async function GETHandler(request: Request) {
   const startedAt = Date.now();
@@ -46,8 +49,11 @@ async function GETHandler(request: Request) {
   }
 
   try {
-    await ensureDatabaseSchema();
-    await getSql()`SELECT 1 AS ok`;
+    await databaseReadinessCache.get("database", async () => {
+      await ensureDatabaseSchema();
+      await getSql()`SELECT 1 AS ok`;
+      return true;
+    });
     const ms = Date.now() - startedAt;
     const missingProductionDependency =
       production &&
