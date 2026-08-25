@@ -146,16 +146,6 @@ function validateReleaseConfiguration() {
   const required = [
     ["BASE_URL", process.env.BASE_URL],
     [
-      "administrator email",
-      process.env.SMOKE_ADMIN_EMAIL ||
-        process.env.OMNIAGENT_BOOTSTRAP_EMAIL,
-    ],
-    [
-      "administrator password",
-      process.env.SMOKE_ADMIN_PASSWORD ||
-        process.env.OMNIAGENT_BOOTSTRAP_PASSWORD,
-    ],
-    [
       "internal smoke secret",
       process.env.SMOKE_INTERNAL_AUTH_SECRET ||
         process.env.OMNIAGENT_INTERNAL_AUTH_SECRET,
@@ -167,6 +157,11 @@ function validateReleaseConfiguration() {
     .map(([name]) => name);
   if (missing.length) {
     fail(`Production release configuration is missing: ${missing.join(", ")}.`);
+  }
+  const smokeEmail = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
+  const smokePassword = process.env.SMOKE_ADMIN_PASSWORD || process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
+  if (Boolean(smokeEmail) !== Boolean(smokePassword)) {
+    fail("Administrator smoke credentials must be supplied as a complete email/password pair.");
   }
   let url;
   try {

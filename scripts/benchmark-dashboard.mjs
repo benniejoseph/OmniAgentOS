@@ -23,8 +23,9 @@ const password =
   process.env.BENCHMARK_PASSWORD ||
   process.env.SMOKE_ADMIN_PASSWORD ||
   process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
+const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
 const reusableCookie = await readSessionCookie();
-if (!reusableCookie && (!email || !password)) {
+if (!reusableCookie && (!email || !password) && !internalSecret) {
   failSmoke(
     "dashboard benchmark requires a reusable session or administrator credentials.",
   );
@@ -39,11 +40,18 @@ const browser = await chromium.launch({ headless: true });
 
 try {
   const context = await browser.newContext({
-    extraHTTPHeaders: bypassSecret
-      ? {
-          "x-vercel-protection-bypass": bypassSecret,
-        }
-      : undefined,
+    extraHTTPHeaders: {
+      ...(bypassSecret ? { "x-vercel-protection-bypass": bypassSecret } : {}),
+      ...(internalSecret ? {
+        "x-omni-internal-auth": internalSecret,
+        "x-omni-synthetic-auth": internalSecret,
+        "x-omni-synthetic-source": "production-benchmark",
+        "x-omni-slo-excluded": "true",
+        "x-omni-tenant-id": process.env.SMOKE_TENANT_ID || "production_smoke",
+        "x-omni-user-id": process.env.SMOKE_ACTOR_ID || "production-smoke",
+        "x-omni-user-role": "admin",
+      } : {}),
+    },
   });
   if (reusableCookie) {
     const separator = reusableCookie.indexOf("=");
@@ -54,7 +62,7 @@ try {
         url: baseUrl,
       },
     ]);
-  } else {
+  } else if (!internalSecret) {
     const login = await context.request.post(`${baseUrl}/api/auth/login`, {
       data: { email, password },
       headers: bypassSecret

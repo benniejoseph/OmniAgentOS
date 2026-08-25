@@ -144,6 +144,45 @@ if (email && password) {
     }),
   });
   checks.push(assert(privateEndpoint.status === 400, "connector blocks private endpoints", `expected 400, got ${privateEndpoint.status}`));
+} else if (internalSecret) {
+  const internalHeaders = {
+    "content-type": "application/json",
+    origin: baseUrl,
+    "x-omni-internal-auth": internalSecret,
+    "x-omni-tenant-id": process.env.SMOKE_TENANT_ID || "production_smoke",
+    "x-omni-user-id": process.env.SMOKE_ACTOR_ID || "production-smoke",
+    "x-omni-user-role": "admin",
+  };
+  const authenticatedRead = await request("/api/memory?limit=1", { headers: internalHeaders });
+  checks.push(assert(authenticatedRead.status === 200, "internal authenticated memory read succeeds", `expected 200, got ${authenticatedRead.status}`));
+  for (const path of ["/api/connectors", "/api/openapi-connectors"]) {
+    const catalogue = await request(path, { headers: internalHeaders });
+    const text = await catalogue.text();
+    checks.push(assert(catalogue.status === 200, `internal authenticated ${path} read succeeds`, `expected 200, got ${catalogue.status}`));
+    checks.push(assert(
+      !/(OPENAI_API_KEY|DATABASE_URL|OMNIAGENT_CONNECTOR_[A-Z0-9_]+)/.test(text),
+      `${path} redacts connector secret env names`,
+      "raw connector secret env name leaked",
+    ));
+  }
+  const forbiddenSecret = await request("/api/connectors", {
+    method: "POST",
+    headers: internalHeaders,
+    body: JSON.stringify({
+      name: "Smoke forbidden secret",
+      endpoint: "https://example.com/mcp",
+      authType: "bearer_env",
+      authTokenEnv: "OPENAI_API_KEY",
+      discover: false,
+    }),
+  });
+  checks.push(assert(forbiddenSecret.status === 400, "connector cannot reference platform secrets", `expected 400, got ${forbiddenSecret.status}`));
+  const privateEndpoint = await request("/api/connectors", {
+    method: "POST",
+    headers: internalHeaders,
+    body: JSON.stringify({ name: "Smoke private endpoint", endpoint: "http://127.0.0.1:9999/mcp", authType: "none", discover: false }),
+  });
+  checks.push(assert(privateEndpoint.status === 400, "connector blocks private endpoints", `expected 400, got ${privateEndpoint.status}`));
 } else {
   checks.push({
     ok: false,

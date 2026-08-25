@@ -26,6 +26,16 @@ const password =
   process.env.BENCHMARK_PASSWORD ||
   process.env.SMOKE_ADMIN_PASSWORD ||
   process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
+const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
+const internalHeaders = internalSecret ? {
+  "x-omni-internal-auth": internalSecret,
+  "x-omni-synthetic-auth": internalSecret,
+  "x-omni-synthetic-source": "production-benchmark",
+  "x-omni-slo-excluded": "true",
+  "x-omni-tenant-id": process.env.SMOKE_TENANT_ID || "production_smoke",
+  "x-omni-user-id": process.env.SMOKE_ACTOR_ID || "production-smoke",
+  "x-omni-user-role": "admin",
+} : undefined;
 
 const reusableCookie = await readSessionCookie();
 const cookie =
@@ -43,7 +53,7 @@ const availableTargets = [
     p95BudgetMs: budgets.releaseApiP95Ms,
     serverP95BudgetMs: budgets.authenticatedReadP95Ms,
   },
-  ...(cookie
+  ...(cookie || internalHeaders
     ? [
         {
           name: "session",
@@ -51,6 +61,7 @@ const availableTargets = [
           p95BudgetMs: budgets.releaseApiP95Ms,
           serverP95BudgetMs: budgets.sessionP95Ms,
           cookie,
+          headers: internalHeaders,
         },
         {
           name: "workspace-summary",
@@ -58,6 +69,7 @@ const availableTargets = [
           p95BudgetMs: budgets.releaseApiP95Ms,
           serverP95BudgetMs: budgets.authenticatedReadP95Ms,
           cookie,
+          headers: internalHeaders,
         },
       ]
     : []),
@@ -81,7 +93,7 @@ if (!targets.length) {
   failSmoke("no benchmark targets are available with the supplied credentials.");
 }
 
-if (!cookie) {
+if (!cookie && !internalHeaders) {
   console.warn(
     "Benchmark credentials are absent; authenticated read budgets were skipped.",
   );
@@ -192,7 +204,7 @@ async function readSessionCookie() {
 async function requestTarget(target) {
   const startedAt = performance.now();
   const response = await smokeFetch(baseUrl, target.path, {
-    headers: target.cookie ? { cookie: target.cookie } : undefined,
+    headers: { ...(target.headers || {}), ...(target.cookie ? { cookie: target.cookie } : {}) },
   });
   const body = await response.arrayBuffer();
   const durationMs = performance.now() - startedAt;
