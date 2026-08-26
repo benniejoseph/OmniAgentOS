@@ -654,6 +654,8 @@ function BuilderDialog({
                   <option value="openai_fast">OpenAI fast</option>
                   <option value="openai_reasoning">OpenAI reasoning</option>
                   <option value="gemini_fast">Gemini fast</option>
+                  <option value="anthropic_fast">Claude fast</option>
+                  <option value="anthropic_reasoning">Claude reasoning</option>
                 </select>
               </label>
               <label>

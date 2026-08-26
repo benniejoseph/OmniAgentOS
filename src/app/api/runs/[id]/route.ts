@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { foldRunProjection } from "@/lib/events/projections";
 import { listStreamEvents } from "@/lib/events/store";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
+import { applyRunMemoryFeedback } from "@/lib/memory/store";
 import {
   cancelOperationJobByDedupeKey,
+  getAgentExecuteJobDedupeKey,
   getAgentResumeJobDedupeKey,
 } from "@/lib/operations/job-queue";
 import { publicAgentRun } from "@/lib/runs/public";
@@ -17,6 +20,8 @@ import {
   recordAgentRunFeedback,
 } from "@/lib/runs/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { getGovernedTool } from "@/lib/tools/registry";
+import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -121,7 +126,49 @@ async function PATCHHandler(
   const updated = await recordAgentRunFeedback(id, parsed.data, {
     tenantId: auth.tenantId,
   });
-  return Response.json({ run: publicAgentRun(updated || run) });
+  const affectedMemoryIds = await applyRunMemoryFeedback(id, parsed.data.verdict, {
+    tenantId: auth.tenantId,
+  });
+  const enteredNeedsWork = parsed.data.verdict === "needs_work" &&
+    run.feedback?.verdict !== "needs_work";
+  const demotedCapabilities = enteredNeedsWork
+    ? await demoteRunCapabilities(id, auth.tenantId)
+    : [];
+  return Response.json({
+    run: publicAgentRun(updated || run),
+    learning: {
+      disposition: parsed.data.verdict === "useful" ? "reinforced" : "quarantined",
+      affectedMemories: affectedMemoryIds.length,
+      demotedCapabilities,
+    },
+  });
+}
+
+async function demoteRunCapabilities(runId: string, tenantId: string) {
+  const events = await listStreamEvents(`run:${runId}`, { tenantId, limit: 2_000 });
+  const toolIds = [...new Set(events.flatMap((event) => {
+    if (event.type !== "run.tool" || event.payload.status !== "executed") return [];
+    const toolId = typeof event.payload.toolId === "string" ? event.payload.toolId : "";
+    return toolId ? [toolId] : [];
+  }))].slice(0, 20);
+  const demoted: string[] = [];
+  for (const toolId of toolIds) {
+    const tool = getGovernedTool(toolId) ||
+      await getMcpGovernedTool(toolId, { tenantId }) ||
+      await getOpenApiGovernedTool(toolId, { tenantId });
+    if (!tool || (!tool.approvalRequired && tool.riskLevel < 2)) continue;
+    await recordActionOutcome({
+      actionClass: actionClassFor(tool.id),
+      toolId: tool.id,
+      tenantId,
+      kind: "rejected",
+      reversible: tool.reversible === true,
+      riskLevel: tool.riskLevel,
+      humanApproved: false,
+    });
+    demoted.push(tool.id);
+  }
+  return demoted;
 }
 
 async function DELETEHandler(
@@ -147,7 +194,13 @@ async function DELETEHandler(
     return Response.json({ error: "Run not found." }, { status: 404 });
   }
   if (["completed", "failed", "canceled"].includes(run.status)) {
+    let canceledJobs = 0;
     if (run.status === "canceled") {
+      canceledJobs = (await cancelOperationJobByDedupeKey(
+        getAgentExecuteJobDedupeKey(run.id),
+        run.error || "Canceled by the operator.",
+        { tenantId: auth.tenantId },
+      )).length;
       await ensureRunCancellationEvent(run.id, run.error || "Canceled by the operator.", auth.tenantId);
       await syncMissionExecutorSafely({
         executorType: "agent_run",
@@ -155,7 +208,7 @@ async function DELETEHandler(
         status: "canceled",
       }, { tenantId: auth.tenantId, actorId: auth.actorId });
     }
-    return Response.json({ run: publicAgentRun(run), canceledJobs: 0 });
+    return Response.json({ run: publicAgentRun(run), canceledJobs });
   }
 
   const reason = "Canceled by the operator.";
@@ -171,6 +224,11 @@ async function DELETEHandler(
             { tenantId: auth.tenantId },
           )
         : [];
+      canceledJobs.push(...await cancelOperationJobByDedupeKey(
+        getAgentExecuteJobDedupeKey(current.id),
+        reason,
+        { tenantId: auth.tenantId },
+      ));
       await ensureRunCancellationEvent(current.id, current.error || reason, auth.tenantId);
       await syncMissionExecutorSafely({
         executorType: "agent_run",
@@ -193,8 +251,13 @@ async function DELETEHandler(
         getAgentResumeJobDedupeKey(executionId),
         reason,
         { tenantId: auth.tenantId },
-      )
+    )
     : [];
+  canceledJobs.push(...await cancelOperationJobByDedupeKey(
+    getAgentExecuteJobDedupeKey(run.id),
+    reason,
+    { tenantId: auth.tenantId },
+  ));
   await ensureRunCancellationEvent(run.id, reason, auth.tenantId);
   await syncMissionExecutorSafely({
     executorType: "agent_run",

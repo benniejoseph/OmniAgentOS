@@ -51,6 +51,24 @@ type TenantScopedOptions = {
   tenantId?: string;
 };
 
+export type McpToolMetadataRecord = Pick<
+  McpToolRecord,
+  | "id"
+  | "connectorId"
+  | "connectorName"
+  | "name"
+  | "title"
+  | "description"
+  | "riskLevel"
+  | "approvalRequired"
+>;
+
+export type McpToolMetadataSearchOptions = TenantScopedOptions & {
+  query?: string;
+  limit?: number;
+  allowlist?: readonly string[];
+};
+
 export function createMcpConnectorRecord(input: RegisterMcpConnectorInput): McpConnectorRecord {
   const now = new Date().toISOString();
   return {
@@ -630,14 +648,124 @@ export async function listMcpTools(connectorId?: string, options: TenantScopedOp
   );
 }
 
+/**
+ * Searches the active catalog without selecting connector schemas, annotations,
+ * endpoints, or secret bindings. Full contracts are loaded only after selection.
+ */
+export async function searchActiveMcpToolMetadata(
+  options: McpToolMetadataSearchOptions = {},
+): Promise<McpToolMetadataRecord[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const limit = normalizeMetadataLimit(options.limit);
+  const allowlist = normalizeMetadataAllowlist(options.allowlist);
+  const terms = normalizeMetadataSearchTerms(options.query);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const patterns = terms.map((term) => `%${term}%`);
+    const rows = await getSql()`
+      SELECT
+        tools.id,
+        tools.connector_id,
+        tools.connector_name,
+        tools.name,
+        tools.title,
+        tools.description,
+        tools.risk_level,
+        tools.approval_required
+      FROM omni_mcp_tools tools
+      INNER JOIN omni_mcp_connectors connectors
+        ON connectors.id = tools.connector_id
+        AND connectors.tenant_id = tools.tenant_id
+      WHERE tools.tenant_id = ${tenantId}
+        AND tools.status = 'active'
+        AND connectors.status = 'active'
+        AND (${allowlist === undefined} OR tools.id = ANY(${allowlist || []}::text[]))
+        AND (
+          ${patterns.length === 0}
+          OR LOWER(CONCAT_WS(' ', tools.id, tools.connector_name, tools.name, tools.title, tools.description))
+            LIKE ANY(${patterns}::text[])
+        )
+      ORDER BY
+        (
+          SELECT COUNT(*)
+          FROM unnest(${patterns}::text[]) AS matched(pattern)
+          WHERE LOWER(CONCAT_WS(
+            ' ', tools.id, tools.connector_name, tools.name, tools.title, tools.description
+          )) LIKE matched.pattern
+        ) DESC,
+        tools.updated_at DESC,
+        tools.id ASC
+      LIMIT ${limit}
+    `;
+    return rows.map(mcpToolMetadataFromRow);
+  }
+
+  const ledger = await readConnectorLedger();
+  const activeConnectorIds = new Set(
+    ledger.connectors
+      .filter(
+        (connector) =>
+          normalizeTenantId(connector.tenantId) === tenantId &&
+          connector.status === "active",
+      )
+      .map((connector) => connector.id),
+  );
+  const allowed = allowlist === undefined ? undefined : new Set(allowlist);
+  return ledger.tools
+    .filter(
+      (tool) =>
+        normalizeTenantId(tool.tenantId) === tenantId &&
+        tool.status === "active" &&
+        activeConnectorIds.has(tool.connectorId) &&
+        (!allowed || allowed.has(tool.id)) &&
+        metadataMatchesTerms(
+          `${tool.id} ${tool.connectorName} ${tool.name} ${tool.title || ""} ${tool.description || ""}`,
+          terms,
+        ),
+    )
+    .sort(
+      (left, right) =>
+        metadataTermScore(
+          `${right.id} ${right.connectorName} ${right.name} ${right.title || ""} ${right.description || ""}`,
+          terms,
+        ) - metadataTermScore(
+          `${left.id} ${left.connectorName} ${left.name} ${left.title || ""} ${left.description || ""}`,
+          terms,
+        ) || right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id),
+    )
+    .slice(0, limit)
+    .map(toMcpToolMetadata);
+}
+
 export async function getMcpToolById(toolId: string, options: TenantScopedOptions = {}) {
   const parsed = parseMcpToolId(toolId);
   if (!parsed) {
     return null;
   }
 
-  const tools = await listMcpTools(parsed.connectorId, options);
-  return tools.find((tool) => tool.name === parsed.toolName) || null;
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_mcp_tools
+      WHERE id = ${toolId}
+        AND connector_id = ${parsed.connectorId}
+        AND tenant_id = ${tenantId}
+      LIMIT 1
+    `;
+    return rows[0] ? toolFromRow(rows[0]) : null;
+  }
+
+  const ledger = await readConnectorLedger();
+  return ledger.tools.find(
+    (tool) =>
+      tool.id === toolId &&
+      tool.connectorId === parsed.connectorId &&
+      tool.name === parsed.toolName &&
+      normalizeTenantId(tool.tenantId) === tenantId,
+  ) || null;
 }
 
 export async function recordMcpConnectorError(connector: McpConnectorRecord, error: string) {
@@ -750,6 +878,81 @@ function toolFromRow(row: Record<string, unknown>): McpToolRecord {
     updatedAt: normalizeDate(row.updated_at),
   };
 }
+
+function mcpToolMetadataFromRow(row: Record<string, unknown>): McpToolMetadataRecord {
+  return {
+    id: String(row.id),
+    connectorId: String(row.connector_id),
+    connectorName: String(row.connector_name),
+    name: String(row.name),
+    title: row.title ? String(row.title) : undefined,
+    description: row.description ? String(row.description) : undefined,
+    riskLevel: Number(row.risk_level) as ToolRiskLevel,
+    approvalRequired: Boolean(row.approval_required),
+  };
+}
+
+function toMcpToolMetadata(tool: McpToolRecord): McpToolMetadataRecord {
+  return {
+    id: tool.id,
+    connectorId: tool.connectorId,
+    connectorName: tool.connectorName,
+    name: tool.name,
+    title: tool.title,
+    description: tool.description,
+    riskLevel: tool.riskLevel,
+    approvalRequired: tool.approvalRequired,
+  };
+}
+
+function normalizeMetadataLimit(value?: number) {
+  return Number.isFinite(value)
+    ? Math.min(Math.max(Math.floor(value as number), 1), 200)
+    : 100;
+}
+
+function normalizeMetadataAllowlist(value?: readonly string[]) {
+  if (value === undefined) {
+    return undefined;
+  }
+  return [...new Set(value.map((id) => id.trim()).filter(Boolean))].slice(0, 128);
+}
+
+function normalizeMetadataSearchTerms(value?: string) {
+  return [...new Set(
+    (value || "")
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .match(/[a-z0-9]+/g) || [],
+  )].filter((term) =>
+    !METADATA_SEARCH_STOP_WORDS.has(term) &&
+    (term.length >= 3 || METADATA_SEARCH_SHORT_TERMS.has(term))
+  ).slice(0, 12);
+}
+
+function metadataMatchesTerms(value: string, terms: readonly string[]) {
+  if (!terms.length) {
+    return true;
+  }
+  const normalized = value.normalize("NFKD").toLowerCase();
+  return terms.some((term) => normalized.includes(term));
+}
+
+function metadataTermScore(value: string, terms: readonly string[]) {
+  const normalized = value.normalize("NFKD").toLowerCase();
+  return terms.reduce(
+    (score, term) => score + (normalized.includes(term) ? 1 : 0),
+    0,
+  );
+}
+
+const METADATA_SEARCH_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "can", "could", "for", "from", "get", "i", "in",
+  "is", "it", "me", "my", "of", "on", "or", "please", "the", "this", "to",
+  "use", "want", "with", "you",
+]);
+const METADATA_SEARCH_SHORT_TERMS = new Set(["ai", "db", "hr", "qa"]);
 
 function parseObject(value: unknown): Record<string, unknown> | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) {

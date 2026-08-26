@@ -1,10 +1,16 @@
-import { AGENT_MODEL, WORKFLOW_EXECUTOR_TIMEOUT_MS, hasOpenAIKey } from "@/lib/config";
+import { WORKFLOW_EXECUTOR_TIMEOUT_MS } from "@/lib/config";
 import { saveMemory } from "@/lib/memory/store";
-import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
+import { generateModelStructured } from "@/lib/models/gateway";
+import { hasModelProviderFeature } from "@/lib/models/registry";
+import { embedTexts } from "@/lib/openai/client";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
 import { appendThreadTurn } from "@/lib/threads/store";
+import {
+  buildWorkflowSpecialistContext,
+  inspectWorkflowSpecialistDependencies,
+} from "@/lib/subagents/context";
 import { executeDynamicWorkflowPlan, parseWorkflowPlanOutput } from "@/lib/workflows/executor";
 import {
   buildDynamicWorkflowPlan,
@@ -54,6 +60,30 @@ export async function tickWorkflowRun(
 
   if (TERMINAL_STATUSES.has(detail.run.status)) {
     return detail;
+  }
+
+  if (detail.run.status === "queued") {
+    const specialistGate = await inspectWorkflowSpecialistDependencies(detail);
+    if (specialistGate.state === "pending") {
+      await appendWorkflowEvent(detail.run.id, "workflow.specialists.pending", {
+        taskIds: specialistGate.pendingTaskIds,
+      });
+      return detail;
+    }
+    if (specialistGate.state === "failed") {
+      await transitionWorkflowRun(detail.run.id, ["queued"], {
+        status: "failed",
+        error: specialistGate.reason,
+        completedAt: new Date().toISOString(),
+      }, { tenantId: detail.run.tenantId });
+      await appendWorkflowEvent(detail.run.id, "workflow.specialists.failed", {
+        taskIds: specialistGate.failedTaskIds,
+        reason: specialistGate.reason,
+      });
+      return getWorkflowRunDetail(runId, {
+        tenantId: options.tenantId,
+      }) as Promise<WorkflowRunDetail>;
+    }
   }
 
   if (
@@ -553,7 +583,7 @@ async function executeStep(
   if (stepKey === "preflight") {
     return {
       workflowType: detail.run.workflowType,
-      model: hasOpenAIKey() ? AGENT_MODEL : "fallback",
+      model: hasModelProviderFeature("json_schema", "reasoning") ? "model-gateway" : "fallback",
       storage: "durable ledger ready",
       approvalRequired: detail.run.approvalRequired,
     };
@@ -561,26 +591,44 @@ async function executeStep(
 
   if (stepKey === "retrieve_context") {
     const profile = workflowAgentProfile(detail);
+    const specialistContext = await buildWorkflowSpecialistContext(detail);
     if (profile?.memoryScope === "session") {
-      return { contextCount: 0, memoryCount: 0, knowledgeCount: 0, graphCount: 0, mode: "session", intent: "owner_configured", evidence: [], contextBlock: "" };
+      return {
+        contextCount: specialistContext.count,
+        memoryCount: 0,
+        knowledgeCount: 0,
+        graphCount: 0,
+        specialistCount: specialistContext.count,
+        mode: "session",
+        intent: "owner_configured",
+        evidence: specialistContext.evidence,
+        contextBlock: specialistContext.contextBlock,
+      };
     }
     const retrieval = await buildContextPack(detail.run.goal, { limit: 6, tenantId: detail.run.tenantId });
     return {
-      contextCount: retrieval.results.length,
+      contextCount: retrieval.results.length + specialistContext.count,
       memoryCount: retrieval.memoryResults.length,
       knowledgeCount: retrieval.knowledgeResults.length,
       graphCount: retrieval.graphResults.length,
+      specialistCount: specialistContext.count,
       mode: retrieval.profile.mode,
       intent: retrieval.profile.intent,
       traceId: retrieval.trace?.id,
-      evidence: retrieval.results.map((item) => ({
-        id: item.id,
-        kind: item.kind,
-        title: item.title,
-        confidence: item.confidence,
-        utilityScore: item.utilityScore,
-      })),
-      contextBlock: retrieval.contextBlock.slice(0, 8000),
+      evidence: [
+        ...specialistContext.evidence,
+        ...retrieval.results.map((item) => ({
+          id: item.id,
+          kind: item.kind,
+          title: item.title,
+          confidence: item.confidence,
+          utilityScore: item.utilityScore,
+        })),
+      ],
+      contextBlock: [
+        retrieval.contextBlock.slice(0, 8_000),
+        specialistContext.contextBlock,
+      ].filter(Boolean).join("\n\n").slice(0, 20_000),
     };
   }
 
@@ -671,7 +719,7 @@ async function verifyWithModel({
   planExecution?: ReturnType<typeof parsePlanExecutionOutput>;
   abortSignal?: AbortSignal;
 }): Promise<ModelVerificationVerdict | undefined> {
-  if (!hasOpenAIKey()) {
+  if (!hasModelProviderFeature("json_schema", "reasoning")) {
     return undefined;
   }
 
@@ -681,7 +729,7 @@ async function verifyWithModel({
     WORKFLOW_EXECUTOR_TIMEOUT_MS,
   );
   try {
-    const raw = await createStructuredResponse({
+    const generated = await generateModelStructured({
       instructions:
         "You are a strict verification reviewer for an agent workflow. Judge ONLY from the evidence provided whether the acceptance criteria are satisfied. Dry-run or approval-pending tool results do not satisfy criteria that require real side effects. Be conservative: if evidence is missing or ambiguous, fail that criterion.",
       input: [
@@ -703,8 +751,9 @@ async function verifyWithModel({
         },
       },
       abortSignal: combineAbortSignals(controller.signal, abortSignal),
+      tier: "reasoning",
     });
-    const parsed = JSON.parse(raw) as ModelVerificationVerdict;
+    const parsed = JSON.parse(generated.text) as ModelVerificationVerdict;
     return {
       passed: Boolean(parsed.passed),
       score: Number(parsed.score) || 0,
@@ -824,7 +873,7 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
     "Return a concise execution result and next best action.",
   ].join("\n\n");
 
-  if (!hasOpenAIKey()) {
+  if (!hasModelProviderFeature("json_schema", "reasoning")) {
     return fallback;
   }
 
@@ -834,7 +883,7 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
       () => controller.abort(new Error("Workflow executor synthesis timed out.")),
       WORKFLOW_EXECUTOR_TIMEOUT_MS,
     );
-    const response = await createStructuredResponse({
+    const generated = await generateModelStructured({
       instructions,
       input,
       name: "workflow_execution_result",
@@ -849,16 +898,19 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
         required: ["deliverable", "response", "nextAction"],
       },
       abortSignal: combineAbortSignals(controller.signal, abortSignal),
+      tier: "reasoning",
     }).finally(() => clearTimeout(timer));
 
     return {
-      ...JSON.parse(response) as Record<string, unknown>,
+      ...JSON.parse(generated.text) as Record<string, unknown>,
       planExecution,
+      synthesisProvider: generated.provider,
+      synthesisModel: generated.model,
     };
   } catch (error) {
     return {
       ...fallback,
-      synthesisModel: "fallback-after-openai-error",
+      synthesisModel: "fallback-after-model-error",
       synthesisError: error instanceof Error ? error.message : "Workflow executor synthesis failed.",
     };
   }
@@ -959,7 +1011,7 @@ function workflowAgentProfile(detail: WorkflowRunDetail): AgentRunRequest["agent
   if (
     typeof profile.name !== "string" || typeof profile.role !== "string"
     || typeof profile.description !== "string" || typeof profile.instructions !== "string"
-    || !["auto", "openai_fast", "openai_reasoning", "gemini_fast"].includes(String(profile.modelPolicy))
+    || !["auto", "openai_fast", "openai_reasoning", "gemini_fast", "anthropic_fast", "anthropic_reasoning"].includes(String(profile.modelPolicy))
     || !["assist", "governed", "execute"].includes(String(profile.autonomy))
     || !["always", "risk_based", "read_only"].includes(String(profile.approvalPolicy))
     || !["session", "project", "all"].includes(String(profile.memoryScope))

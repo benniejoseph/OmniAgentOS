@@ -11,8 +11,10 @@ describe("frontend performance budgets", () => {
       "public",
       "omniagent-command-center.webp",
     );
-    const [metadata, hero, landing] = await Promise.all([
+    const markAsset = path.join(root, "public", "asael-mark-128.webp");
+    const [metadata, markMetadata, hero, landing] = await Promise.all([
       stat(heroAsset),
+      stat(markAsset),
       readFile(
         path.join(
           root,
@@ -36,8 +38,10 @@ describe("frontend performance budgets", () => {
     ]);
 
     expect(metadata.size).toBeLessThanOrEqual(budgets.heroImageMaxBytes);
+    expect(markMetadata.size).toBeLessThanOrEqual(8_000);
     expect(hero).toContain('src="/omniagent-command-center.webp"');
     expect(hero).toContain("preload");
+    expect(hero).toContain("unoptimized");
     expect(hero).toContain("sizes=");
     expect(hero).not.toContain("animate-drift");
     expect(landing).not.toContain('"use client"');
@@ -133,7 +137,8 @@ describe("frontend performance budgets", () => {
     expect(workspaceSummary).toContain("unstable_cache");
     expect(workspaceSummary).toContain('["workspace-summary-v1"]');
     expect(workspaceSummary).toContain("{ revalidate: 15 }");
-    expect(todayRoute).toContain('["today-dashboard-v1"]');
-    expect(todayRoute).toContain("{ revalidate: 15 }");
+    expect(todayRoute).not.toContain("unstable_cache");
+    expect(todayRoute).toContain("await loadTodaySnapshot(");
+    expect(todayRoute).toContain('"cache-control": "private, no-store"');
   });
 });

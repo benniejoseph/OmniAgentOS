@@ -123,36 +123,53 @@ export async function appendDomainEventSafely(
 
 export async function listStreamEvents(
   streamId: string,
-  options: { tenantId?: string; limit?: number } = {},
+  options: {
+    tenantId?: string;
+    actorId?: string;
+    afterSeq?: number;
+    limit?: number;
+    order?: "asc" | "desc";
+  } = {},
 ): Promise<DomainEvent[]> {
   const limit = Math.min(Math.max(options.limit || 500, 1), 2_000);
+  const afterSeq = Math.max(Math.trunc(options.afterSeq || 0), 0);
+  const order = options.order === "desc" ? "desc" : "asc";
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = options.tenantId
-      ? await getSql()`
-          SELECT * FROM omni_events
-          WHERE stream_id = ${streamId} AND tenant_id = ${options.tenantId}
-          ORDER BY seq ASC
-          LIMIT ${limit}
-        `
-      : await getSql()`
-          SELECT * FROM omni_events
-          WHERE stream_id = ${streamId}
-          ORDER BY seq ASC
-          LIMIT ${limit}
-        `;
+    const params: unknown[] = [streamId, afterSeq];
+    const predicates = ["stream_id = $1", "seq > $2"];
+    if (options.tenantId) {
+      params.push(normalizeTenantId(options.tenantId));
+      predicates.push(`tenant_id = $${params.length}`);
+    }
+    if (options.actorId) {
+      params.push(options.actorId);
+      predicates.push(`actor_id = $${params.length}`);
+    }
+    params.push(limit);
+    const rows = await getSql().query(
+      `SELECT * FROM omni_events
+       WHERE ${predicates.join(" AND ")}
+       ORDER BY seq ${order === "desc" ? "DESC" : "ASC"}
+       LIMIT $${params.length}`,
+      params,
+    );
     return rows.map(eventFromRow);
   }
 
   const ledger = await readLedger();
-  return ledger.events
+  const events = ledger.events
     .filter(
       (event) =>
         event.streamId === streamId &&
-        (!options.tenantId || event.tenantId === normalizeTenantId(options.tenantId)),
+        event.seq > afterSeq &&
+        (!options.tenantId || event.tenantId === normalizeTenantId(options.tenantId)) &&
+        (!options.actorId || event.actorId === options.actorId),
     )
-    .sort((left, right) => left.seq - right.seq)
+    .sort((left, right) => left.seq - right.seq);
+  if (order === "desc") events.reverse();
+  return events
     .slice(0, limit);
 }
 

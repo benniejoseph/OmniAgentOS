@@ -22,7 +22,7 @@ export type AgentSkill = {
 
 export type CustomAgentStatus = "ready" | "learning" | "paused";
 export type AgentAccent = "emerald" | "blue" | "amber" | "violet" | "rose";
-export type AgentModelPolicy = "auto" | "openai_fast" | "openai_reasoning" | "gemini_fast";
+export type AgentModelPolicy = "auto" | "openai_fast" | "openai_reasoning" | "gemini_fast" | "anthropic_fast" | "anthropic_reasoning";
 export type AgentAutonomy = "assist" | "governed" | "execute";
 export type AgentApprovalPolicy = "always" | "risk_based" | "read_only";
 export type AgentMemoryScope = "session" | "project" | "all";

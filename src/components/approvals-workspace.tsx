@@ -42,6 +42,15 @@ type TrustProfile = {
   failures: number;
   autonomyMode: "approve_each" | "auto_with_alert";
   reversible: boolean;
+  autonomy?: {
+    stage: "manual" | "shadow" | "supervised" | "autonomous";
+    progress: number;
+    score: number;
+    confidence: number;
+    freshness: number;
+    reason: string;
+    budget: { maxActions: number; windowSeconds: number };
+  };
 };
 
 type TrustResponse = {
@@ -889,11 +898,12 @@ function TrackRecord({
 }) {
   const target = threshold || 25;
   const graduated = trust.autonomyMode === "auto_with_alert";
-  const pct = graduated ? 100 : Math.min(Math.round((trust.cleanStreak / target) * 100), 99);
+  const pct = Math.min(Math.round((trust.autonomy?.progress ?? trust.cleanStreak / target) * 100), 100);
+  const stage = trust.autonomy?.stage || (graduated ? "autonomous" : "shadow");
   return (
     <div className="mt-4 rounded-md border border-line bg-background p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">Track record</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">{stage} learning</p>
         <p className="text-xs text-muted">
           {trust.successes} ok · {trust.failures} failed · streak {trust.cleanStreak}
         </p>
@@ -904,12 +914,17 @@ function TrackRecord({
             <div className={clsx("h-full rounded-full", graduated ? "bg-success" : "bg-primary")} style={{ width: `${pct}%` }} />
           </div>
           <p className="mt-2 text-xs text-muted">
-            {graduated
+            {trust.autonomy?.reason || (graduated
               ? enabled
                 ? "Earned autonomy. Future calls run automatically with alerting."
                 : "Eligible for autonomy. Enable graduated autonomy to let it run without gating."
-              : `${trust.cleanStreak}/${target} clean executions toward earning autonomy.`}
+              : `${trust.cleanStreak}/${target} clean executions toward earning autonomy.`)}
           </p>
+          {trust.autonomy ? (
+            <p className="mt-1 text-[11px] text-muted">
+              Reliability {Math.round(trust.autonomy.score * 100)}% · confidence {Math.round(trust.autonomy.confidence * 100)}% · budget {trust.autonomy.budget.maxActions}/hour
+            </p>
+          ) : null}
         </>
       ) : (
         <p className="mt-2 text-xs text-muted">Irreversible action. It is always gated and never graduates.</p>

@@ -4,6 +4,7 @@ export const CAPABILITY_DEFAULT_LIMIT = 12;
 export const CAPABILITY_MAX_LIMIT = 50;
 export const CAPABILITY_MAX_QUERY_LENGTH = 160;
 export const CAPABILITY_MAX_ALLOWLIST_ENTRIES = 128;
+export const CAPABILITY_MAX_METADATA_CANDIDATES = 200;
 
 export type CapabilitySource = "native" | "mcp" | "openapi";
 
@@ -28,6 +29,8 @@ export type CapabilitySearchInput = {
   query?: string;
   limit?: number;
   allowlist?: readonly string[];
+  /** Internal callers may narrow discovery without changing the public result shape. */
+  sources?: readonly CapabilitySource[];
 };
 
 export type CapabilityResolveInput = {

@@ -290,11 +290,13 @@ export async function searchMemories(
         options.queryEmbedding && record.embedding
           ? Math.max(0, cosineSimilarity(options.queryEmbedding, record.embedding))
           : 0;
-      const score = lexicalScore + tagScore + importanceScore + embeddingScore;
+      const confidence = clamp01(record.confidence ?? 0.7);
+      const score = (lexicalScore + tagScore + importanceScore + embeddingScore) * (0.35 + confidence * 0.65);
       const reasons = [
         overlap.length ? `matched ${overlap.slice(0, 5).join(", ")}` : "",
         embeddingScore ? "semantic match" : "",
         record.importance >= 0.8 ? "high importance" : "",
+        confidence >= 0.85 ? "high-confidence claim" : confidence < 0.5 ? "low-confidence claim" : "",
       ].filter(Boolean);
 
       return { record, score, reasons };
@@ -372,6 +374,80 @@ export async function forgetMemory(id: string, options: { tenantId?: string } = 
   return forgotten;
 }
 
+/**
+ * Close the run-feedback loop without deleting evidence. Positive feedback
+ * raises confidence modestly; a correction quarantines agent-authored claims
+ * from retrieval until the owner reviews or replaces them.
+ */
+export async function applyRunMemoryFeedback(
+  runId: string,
+  verdict: "useful" | "needs_work",
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const evidenceRef = `run:${runId}`;
+  const now = new Date().toISOString();
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = verdict === "useful"
+      ? await getSql()`
+          UPDATE omni_memories
+          SET confidence = LEAST(0.95, confidence + 0.10),
+              tags = ARRAY(SELECT DISTINCT unnest(tags || ARRAY['owner-verified']::text[])),
+              updated_at = ${now}
+          WHERE tenant_id = ${tenantId}
+            AND asserted_by = 'agent'
+            AND claim_status = 'active'
+            AND ${evidenceRef} = ANY(evidence_refs)
+            AND NOT ('owner-verified' = ANY(tags))
+          RETURNING id
+        `
+      : await getSql()`
+          UPDATE omni_memories
+          SET confidence = LEAST(confidence, 0.35),
+              claim_status = 'contradicted',
+              valid_to = COALESCE(valid_to, ${now}),
+              tags = ARRAY(SELECT DISTINCT unnest(tags || ARRAY['needs-review', 'run-corrected']::text[])),
+              updated_at = ${now}
+          WHERE tenant_id = ${tenantId}
+            AND asserted_by = 'agent'
+            AND claim_status = 'active'
+            AND ${evidenceRef} = ANY(evidence_refs)
+          RETURNING id
+        `;
+    return rows.map((row) => String(row.id));
+  }
+
+  const changed: string[] = [];
+  await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) => memories.map((raw) => {
+    const memory = sanitizeMemoryRecord(raw);
+    if (
+      normalizeTenantId(memory.tenantId) !== tenantId ||
+      memory.assertedBy !== "agent" ||
+      memory.claimStatus !== "active" ||
+      !memory.evidenceRefs?.includes(evidenceRef) ||
+      (verdict === "useful" && memory.tags.includes("owner-verified"))
+    ) return raw;
+    changed.push(memory.id);
+    return verdict === "useful"
+      ? {
+          ...memory,
+          confidence: Math.min(0.95, (memory.confidence ?? 0.7) + 0.1),
+          tags: normalizeTags([...memory.tags, "owner-verified"]),
+          updatedAt: now,
+        }
+      : {
+          ...memory,
+          confidence: Math.min(memory.confidence ?? 0.7, 0.35),
+          claimStatus: "contradicted" as const,
+          validTo: memory.validTo || now,
+          tags: normalizeTags([...memory.tags, "needs-review", "run-corrected"]),
+          updatedAt: now,
+        };
+  }));
+  return changed;
+}
+
 export async function getMemoryStats(options: { tenantId?: string } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
 
@@ -445,16 +521,17 @@ async function searchMemoriesDb(
           AND (valid_to IS NULL OR valid_to > NOW())
           AND embedding_vector IS NOT NULL
         ORDER BY (
-          (0.58 * GREATEST(0, 1 - (embedding_vector <=> ${vector}::vector))) +
-          (0.24 * CASE
+          (0.52 * GREATEST(0, 1 - (embedding_vector <=> ${vector}::vector))) +
+          (0.22 * CASE
             WHEN ${queryText} = '' THEN 0
             ELSE ts_rank_cd(
               to_tsvector('english', title || ' ' || content),
               plainto_tsquery('english', ${queryText})
             )
           END) +
-          (0.12 * importance) +
-          (0.06 * (1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800)))
+          (0.10 * importance) +
+          (0.06 * (1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800))) +
+          (0.10 * confidence)
         ) DESC
         LIMIT ${limit}
       `;
@@ -487,7 +564,7 @@ async function searchMemoriesLexicalDb(query: string, limit: number, tenantId: s
         ${query} = ''
         OR to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', ${query})
       )
-    ORDER BY lexical_score DESC, importance DESC, updated_at DESC
+    ORDER BY (lexical_score * (0.35 + confidence * 0.65)) DESC, importance DESC, updated_at DESC
     LIMIT ${limit}
   `;
 
@@ -548,7 +625,8 @@ function memorySearchResultFromRow(row: Record<string, unknown>): MemorySearchRe
   const lexicalScore = Number(row.lexical_score || 0);
   const recencyScore = Number(row.recency_score || 0);
   const memory = memoryFromRow(row);
-  const score = vectorScore * 0.58 + lexicalScore * 0.24 + memory.importance * 0.12 + recencyScore * 0.06;
+  const confidence = clamp01(memory.confidence ?? 0.7);
+  const score = vectorScore * 0.52 + lexicalScore * 0.22 + memory.importance * 0.10 + recencyScore * 0.06 + confidence * 0.10;
 
   return {
     record: memory,
@@ -558,6 +636,7 @@ function memorySearchResultFromRow(row: Record<string, unknown>): MemorySearchRe
       lexicalScore > 0 ? "keyword match" : "",
       memory.importance >= 0.8 ? "high importance" : "",
       recencyScore > 0.5 ? "recent memory" : "",
+      confidence >= 0.85 ? "high-confidence claim" : confidence < 0.5 ? "low-confidence claim" : "",
     ].filter(Boolean),
   };
 }

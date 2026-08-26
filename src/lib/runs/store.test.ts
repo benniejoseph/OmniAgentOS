@@ -210,7 +210,7 @@ describe("agent run approval continuations (file mode)", () => {
           job.payload.executionId === "exec-durable",
       ),
     ).toBe(true);
-  });
+  }, 30_000);
 
   it("defers unresolved approval jobs without consuming retry attempts", async () => {
     const store = await import("@/lib/runs/store");

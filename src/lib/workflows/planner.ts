@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { AGENT_MODEL, WORKFLOW_PLANNER_TIMEOUT_MS, hasOpenAIKey } from "@/lib/config";
-import { listMcpGovernedTools, listOpenApiGovernedTools } from "@/lib/connectors/governed-tools";
+import { loadProgressiveAgentTools } from "@/lib/capabilities/toolbox";
+import { WORKFLOW_PLANNER_TIMEOUT_MS } from "@/lib/config";
 import { connectionCatalog } from "@/lib/connectors/catalog";
 import {
   ensureDatabaseSchema,
@@ -9,12 +9,12 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
-import { createStructuredResponse } from "@/lib/openai/client";
+import { generateModelStructured } from "@/lib/models/gateway";
+import { hasModelProviderFeature } from "@/lib/models/registry";
 import { buildContextPack } from "@/lib/rag/context-engine";
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
-import { getGovernedTools } from "@/lib/tools/registry";
 import type { ToolDefinition } from "@/lib/tools/types";
 import { shouldUseLiveWebSearch } from "@/lib/web-search/search";
 import type {
@@ -137,7 +137,10 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
 
   const mode = input.mode || "orchestrate";
   const context = await buildContextPack(goal, { limit: 8, tenantId });
-  const availableCandidates = await getPlannerToolCandidates(goal, context.contextBlock, { tenantId });
+  const availableCandidates = await getPlannerToolCandidates(goal, context.contextBlock, {
+    tenantId,
+    preferredToolIds: input.allowedToolIds,
+  });
   const allowedToolIds = input.allowedToolIds ? new Set(input.allowedToolIds) : undefined;
   const toolCandidates = (allowedToolIds
     ? availableCandidates.filter((tool) => allowedToolIds.has(tool.id))
@@ -391,7 +394,7 @@ async function generatePlan({
   agentInstructions?: string;
   abortSignal?: AbortSignal;
 }): Promise<{ planner: WorkflowPlanRecord["planner"]; model: string; plan: WorkflowDynamicPlan }> {
-  if (!hasOpenAIKey()) {
+  if (!hasModelProviderFeature("json_schema", "reasoning")) {
     return {
       planner: "deterministic",
       model: "fallback",
@@ -402,7 +405,7 @@ async function generatePlan({
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error("Workflow planner timed out.")), WORKFLOW_PLANNER_TIMEOUT_MS);
-    const raw = await createStructuredResponse(
+    const generated = await generateModelStructured(
       {
         name: "dynamic_workflow_plan",
         schema: dynamicPlanJsonSchema,
@@ -419,24 +422,25 @@ async function generatePlan({
           ? AbortSignal.any([controller.signal, abortSignal])
           : controller.signal,
         reasoningEffort: "minimal",
+        tier: "reasoning",
       },
     ).finally(() => clearTimeout(timer));
-    const parsed = dynamicPlanSchema.parse(JSON.parse(raw));
+    const parsed = dynamicPlanSchema.parse(JSON.parse(generated.text));
     return {
-      planner: "openai",
-      model: AGENT_MODEL,
+      planner: generated.provider === "local" ? "deterministic" : generated.provider,
+      model: generated.model,
       plan: normalizePlan(parsed as WorkflowDynamicPlan, { goal, mode, requireApproval, toolCandidates }),
     };
   } catch (error) {
     const fallback = deterministicPlan({ goal, mode, requireApproval, toolCandidates, contextTraceId });
     return {
       planner: "deterministic",
-      model: "fallback-after-openai-error",
+      model: "fallback-after-model-error",
       plan: {
         ...fallback,
         risks: [
           ...fallback.risks,
-          `OpenAI planner fallback used: ${error instanceof Error ? error.message : "unknown planner error"}`.slice(0, 240),
+          `Model planner fallback used: ${error instanceof Error ? error.message : "unknown planner error"}`.slice(0, 240),
         ],
       },
     };
@@ -446,13 +450,13 @@ async function generatePlan({
 async function getPlannerToolCandidates(
   goal: string,
   contextBlock: string,
-  options: TenantScopedOptions = {},
+  options: TenantScopedOptions & { preferredToolIds?: readonly string[] } = {},
 ): Promise<PlannerToolCandidate[]> {
-  const [mcpTools, openApiTools] = await Promise.all([
-    listMcpGovernedTools({ tenantId: options.tenantId }).catch(() => []),
-    listOpenApiGovernedTools({ tenantId: options.tenantId }).catch(() => []),
-  ]);
-  const tools = [...getGovernedTools(), ...mcpTools, ...openApiTools];
+  const { definitions: tools } = await loadProgressiveAgentTools({
+    tenantId: options.tenantId,
+    query: `${goal}\n${contextBlock.slice(0, 12_000)}`,
+    preferredToolIds: options.preferredToolIds,
+  });
   const terms = tokenize(`${goal}\n${contextBlock}`);
 
   return tools
@@ -877,7 +881,9 @@ function workflowPlanFromRow(row: Record<string, unknown>): WorkflowPlanRecord {
     workflowRunId: row.workflow_run_id ? String(row.workflow_run_id) : undefined,
     goal: String(row.goal || ""),
     status: row.status === "failed" ? "failed" : "planned",
-    planner: row.planner === "openai" ? "openai" : "deterministic",
+    planner: row.planner === "openai" || row.planner === "google" || row.planner === "anthropic"
+      ? row.planner
+      : "deterministic",
     model: String(row.model || "unknown"),
     plan: plan.success ? (plan.data as WorkflowDynamicPlan) : deterministicPlan({
       goal: String(row.goal || ""),

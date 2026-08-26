@@ -22,7 +22,7 @@ export const customAgentInputSchema = z.object({
   instructions: z.string().min(10).max(12_000),
   status: z.enum(["ready", "learning", "paused"]).default("ready"),
   accent: z.enum(["emerald", "blue", "amber", "violet", "rose"]).default("emerald"),
-  modelPolicy: z.enum(["auto", "openai_fast", "openai_reasoning", "gemini_fast"]).default("auto"),
+  modelPolicy: z.enum(["auto", "openai_fast", "openai_reasoning", "gemini_fast", "anthropic_fast", "anthropic_reasoning"]).default("auto"),
   autonomy: z.enum(["assist", "governed", "execute"]).default("governed"),
   approvalPolicy: z.enum(["always", "risk_based", "read_only"]).default("risk_based"),
   memoryScope: z.enum(["session", "project", "all"]).default("all"),

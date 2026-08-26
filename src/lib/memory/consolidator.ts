@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { hasOpenAIKey } from "@/lib/config";
-import { createStructuredResponse, embedTexts } from "@/lib/openai/client";
+import { hasModelProviderFeature } from "@/lib/models/registry";
+import { generateModelStructured } from "@/lib/models/gateway";
+import { embedTexts } from "@/lib/openai/client";
 import type { AgentMode } from "@/lib/orchestration/types";
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
 import { listMemories, saveMemories, saveMemory, type CreateMemoryInput } from "@/lib/memory/store";
@@ -109,14 +110,14 @@ export async function consolidateRunMemory({
     return { summary: "No run content to consolidate.", saved: [], skipped: true };
   }
 
-  if (!hasOpenAIKey()) {
-    return { summary: "OPENAI_API_KEY is not configured; consolidation skipped.", saved: [], skipped: true };
+  if (!hasModelProviderFeature("json_schema")) {
+    return { summary: "No structured model provider is configured; consolidation skipped.", saved: [], skipped: true };
   }
 
   try {
     const safePrompt = safeMemoryText(prompt).slice(0, 8_000);
     const safeResponse = safeMemoryText(response).slice(0, 24_000);
-    const raw = await createStructuredResponse({
+    const generated = await generateModelStructured({
       name: "memory_consolidation",
       schema: consolidationJsonSchema,
       instructions: buildConsolidationInstructions(),
@@ -127,8 +128,9 @@ export async function consolidateRunMemory({
         `<untrusted_assistant_response>\n${escapeUntrustedPromptText(safeResponse)}\n</untrusted_assistant_response>`,
       ].join("\n\n"),
       abortSignal,
+      tier: "fast",
     });
-    const parsed = consolidationSchema.parse(JSON.parse(raw));
+    const parsed = consolidationSchema.parse(JSON.parse(generated.text));
     const items = parsed.items
       .map(cleanItem)
       .filter((item) => item.title && item.content)
@@ -225,11 +227,13 @@ export function reconcileConsolidatedMemoryClaims(
   existing: MemoryRecord[],
 ): CreateMemoryInput[] {
   return inputs.flatMap((input) => {
-    const matching = existing.find((record) =>
-      record.claimStatus === "active"
-      && record.type === (input.type || "fact")
-      && claimIdentity(record.title) === claimIdentity(input.title),
-    );
+    const matching = existing
+      .filter((record) =>
+        record.claimStatus === "active" && record.type === (input.type || "fact")
+      )
+      .map((record) => ({ record, similarity: claimIdentitySimilarity(record.title, input.title) }))
+      .filter((candidate) => candidate.similarity >= 0.65)
+      .sort((left, right) => right.similarity - left.similarity)[0]?.record;
     if (!matching) return [input];
     if (canonicalClaimContent(matching.content) === canonicalClaimContent(input.content)) return [];
     return [{
@@ -245,6 +249,17 @@ export function reconcileConsolidatedMemoryClaims(
 
 function claimIdentity(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function claimIdentitySimilarity(left: string, right: string) {
+  const leftIdentity = claimIdentity(left);
+  const rightIdentity = claimIdentity(right);
+  if (!leftIdentity || !rightIdentity) return 0;
+  if (leftIdentity === rightIdentity) return 1;
+  const leftTokens = new Set(leftIdentity.split(" "));
+  const rightTokens = new Set(rightIdentity.split(" "));
+  const shared = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  return (2 * shared) / (leftTokens.size + rightTokens.size);
 }
 
 function canonicalClaimContent(value: string) {

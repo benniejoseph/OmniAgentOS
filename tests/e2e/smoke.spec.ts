@@ -276,6 +276,7 @@ test("capture inbox queues a note and a text file", async ({ page }) => {
 });
 
 test("memory studio creates, inspects, corrects, and forgets a claim", async ({ page }) => {
+  test.slow();
   await signIn(page);
   await page.goto("/app/memory");
   await expect(page.getByRole("heading", { name: "Memory", exact: true })).toBeVisible();
@@ -324,9 +325,20 @@ test("agent arsenal stays navigable across themes and viewports", async ({ page 
 
 test("Today captures and reversibly completes a focus item", async ({ page }) => {
   const taskTitle = "Prepare the personal weekly review";
+  const hydrationRequests: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "GET" &&
+      (url.pathname === "/api/today" || url.pathname === "/api/workspace-summary")
+    ) {
+      hydrationRequests.push(url.pathname);
+    }
+  });
   await signIn(page);
-  await page.goto("/app", { waitUntil: "networkidle" });
   await expect(page.getByText(/things deserve your attention|Your field is clear/)).toBeVisible();
+  await page.waitForTimeout(250);
+  expect(hydrationRequests).toEqual([]);
   await page.getByLabel("Add a focus item").fill(taskTitle);
   await page.getByLabel("Priority").selectOption("high");
   await page.getByRole("button", { name: "Add", exact: true }).click();
@@ -338,9 +350,23 @@ test("Today captures and reversibly completes a focus item", async ({ page }) =>
   await expect(briefAction).toBeVisible();
   await briefAction.click();
   await expect(dailyBrief).toContainText(taskTitle);
-  await focusItem.click();
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().includes("/api/today/") &&
+      response.request().method() === "PATCH" &&
+      response.ok(),
+    ),
+    focusItem.click(),
+  ]);
   await expect(focusItem).toHaveClass(/is-done/);
-  await focusItem.click();
+  await Promise.all([
+    page.waitForResponse((response) =>
+      response.url().includes("/api/today/") &&
+      response.request().method() === "PATCH" &&
+      response.ok(),
+    ),
+    focusItem.click(),
+  ]);
   await expect(focusItem).not.toHaveClass(/is-done/);
 
   await page.setViewportSize({ width: 390, height: 844 });
@@ -350,6 +376,7 @@ test("Today captures and reversibly completes a focus item", async ({ page }) =>
 });
 
 test("notification center delivers and completes an actionable reminder", async ({ page }) => {
+  test.slow();
   const title = `Review the private brief ${crypto.randomUUID().slice(0, 6)}`;
   await signIn(page);
   await page.goto("/app", { waitUntil: "networkidle" });
@@ -448,17 +475,35 @@ test("Projects persists an Atlas plan and guarded task progress", async ({ page 
 
 test("Missions creates a durable outcome without exposing executor internals", async ({ page }) => {
   await signIn(page);
-  await page.goto("/app/missions", { waitUntil: "networkidle" });
+  await page.goto("/app/missions", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { level: 1, name: "Missions" })).toBeVisible();
 
   await page.getByRole("button", { name: "New mission" }).first().click();
   const title = `Mission QA ${Date.now().toString(36)}`;
   await page.getByRole("textbox", { name: "Mission", exact: true }).fill(title);
   await page.getByRole("textbox", { name: "Observable outcome" }).fill("Produce a concise operating brief with evidence receipts.");
+  const missionRouteReloads: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      url.pathname.startsWith("/app/missions/") &&
+      (request.resourceType() === "document" ||
+        request.headers().rsc === "1" ||
+        url.searchParams.has("_rsc"))
+    ) {
+      missionRouteReloads.push(request.url());
+    }
+  });
   await page.getByRole("button", { name: "Create draft" }).click();
 
   await expect(page).toHaveURL(/\/app\/missions\/[0-9a-f-]+$/);
   await expect(page.getByRole("heading", { level: 2, name: title })).toBeVisible();
+  await page.evaluate(() => window.history.back());
+  await expect(page).toHaveURL(/\/app\/missions$/);
+  await page.evaluate(() => window.history.forward());
+  await expect(page).toHaveURL(/\/app\/missions\/[0-9a-f-]+$/);
+  await expect(page.getByRole("heading", { level: 2, name: title })).toBeVisible();
+  expect(missionRouteReloads).toEqual([]);
   await expect(page.getByRole("heading", { name: "Live work surfaces" })).toBeVisible();
   await expect(page.getByText("Terminal", { exact: true })).toBeVisible();
   await expect(page.getByText("Files", { exact: true })).toBeVisible();
@@ -470,6 +515,18 @@ test("Missions creates a durable outcome without exposing executor internals", a
     return response.ok && !body.includes("fenceToken") && !body.includes("sourceKey");
   });
   expect(detailIsSafe).toBe(true);
+
+  const hydrationRequests: string[] = [];
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.startsWith("/api/")) hydrationRequests.push(pathname);
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { level: 2, name: title })).toBeVisible();
+  expect(hydrationRequests).not.toContain("/api/auth/session");
+  expect(hydrationRequests).not.toContain(
+    page.url().replace(/^.*\/app\/missions\//, "/api/missions/"),
+  );
 
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -504,6 +561,7 @@ test("retired onboarding redirects", async ({ page, request }) => {
   const response = await request.get("/onboarding", { maxRedirects: 0 });
   expect(response.status()).toBe(308);
   expect(response.headers().location).toBe("/app");
+  await signIn(page);
   await page.goto("/onboarding");
   await expect(page).toHaveURL(/\/app$/);
 });
@@ -622,6 +680,7 @@ test("command palette supports keyboard search, navigation, and escape", async (
 });
 
 test("agent work streams a clearly labeled fallback into results", async ({ page }) => {
+  test.slow();
   await signIn(page);
   await page.goto("/app/command");
   // Local Playwright runs use the Next development server. Warm both route
@@ -1016,7 +1075,12 @@ test("readiness stays outside recurring dashboard refresh", async ({ page }) => 
 
   await page.goto("/app");
   await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeVisible();
-  await expect.poll(() => summaryRequests, { timeout: 12_000 }).toBeGreaterThan(1);
+  // The first summary is server-seeded. An explicit refresh supplies an
+  // active run, then only the lightweight summary poll repeats at 15 seconds.
+  expect(summaryRequests).toBe(0);
+  await page.getByRole("button", { name: "Refresh Today" }).click();
+  await expect.poll(() => summaryRequests).toBe(1);
+  await expect.poll(() => summaryRequests, { timeout: 20_000 }).toBeGreaterThan(1);
   expect(readinessRequests).toBe(1);
 });
 
@@ -1057,6 +1121,7 @@ test("workspace summary panels settle independently", async ({ page }) => {
   });
 
   await page.goto("/app");
+  await page.getByRole("button", { name: "Refresh Today" }).click();
   await expect(
     page.getByText("Independent panel result").first(),
   ).toBeVisible();
@@ -1304,6 +1369,7 @@ test("integrations reveals Google status while slower catalogs continue loading"
 });
 
 test("owner can compose a skill, create an agent, and assign work from the visual arsenal", async ({ page }) => {
+  test.slow();
   await signIn(page);
   const suffix = Date.now().toString(36);
   const skillName = `Daily synthesis ${suffix}`;

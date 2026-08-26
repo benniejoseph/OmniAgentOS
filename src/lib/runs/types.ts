@@ -2,6 +2,7 @@ import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { GroundingReport } from "@/lib/rag/citations";
 
 export type RunStatus =
+  | "queued"
   | "running"
   | "waiting_approval"
   | "resuming"

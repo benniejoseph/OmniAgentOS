@@ -148,7 +148,7 @@ function skillCategory(value: unknown) { return (["research", "creation", "analy
 function skillStatus(value: unknown) { return value === "disabled" ? "disabled" as const : "active" as const; }
 function customAgentStatus(value: unknown) { return (["ready", "learning", "paused"] as const).find((item) => item === value) || "ready"; }
 function agentAccent(value: unknown) { return (["emerald", "blue", "amber", "violet", "rose"] as const).find((item) => item === value) || "emerald"; }
-function agentModelPolicy(value: unknown) { return (["auto", "openai_fast", "openai_reasoning", "gemini_fast"] as const).find((item) => item === value) || "auto"; }
+function agentModelPolicy(value: unknown) { return (["auto", "openai_fast", "openai_reasoning", "gemini_fast", "anthropic_fast", "anthropic_reasoning"] as const).find((item) => item === value) || "auto"; }
 function agentAutonomy(value: unknown) { return (["assist", "governed", "execute"] as const).find((item) => item === value) || "governed"; }
 function agentApprovalPolicy(value: unknown) { return (["always", "risk_based", "read_only"] as const).find((item) => item === value) || "risk_based"; }
 function agentMemoryScope(value: unknown) { return (["session", "project", "all"] as const).find((item) => item === value) || "all"; }

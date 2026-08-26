@@ -43,7 +43,7 @@ describe("foldTrustProfile", () => {
       successes: 5,
       failures: 1,
       cleanStreak: 3,
-      autonomyMode: "auto_with_alert",
+      autonomyMode: "approve_each",
     });
   });
 

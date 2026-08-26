@@ -16,11 +16,11 @@ export function ThemeProvider() {
 
     syncTheme();
     media.addEventListener("change", syncTheme);
-    window.addEventListener("omniagent-theme-change", syncTheme);
+    window.addEventListener("storage", syncTheme);
 
     return () => {
       media.removeEventListener("change", syncTheme);
-      window.removeEventListener("omniagent-theme-change", syncTheme);
+      window.removeEventListener("storage", syncTheme);
     };
   }, []);
 
@@ -34,8 +34,16 @@ export function getStoredTheme(): ThemePreference {
 
 export function setStoredTheme(theme: ThemePreference) {
   window.localStorage.setItem(themeStorageKey, theme);
-  applyTheme(theme);
+  // Update the control immediately, then move the full-page color-token swap
+  // past the interaction's first paint. Recoloring a rich workspace can
+  // otherwise dominate INP even though the click handler itself is tiny.
+  document.documentElement.dataset.themePreference = theme;
   window.dispatchEvent(new Event("omniagent-theme-change"));
+  window.requestAnimationFrame(() => {
+    window.setTimeout(() => {
+      if (getStoredTheme() === theme) applyTheme(theme);
+    }, 0);
+  });
 }
 
 export function resolveTheme(theme: ThemePreference) {

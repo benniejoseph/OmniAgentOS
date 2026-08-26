@@ -14,6 +14,7 @@ import type { MissionDetail } from "@/lib/missions/types";
 import { syncMissionExecutor } from "@/lib/missions/runtime";
 import {
   cancelOperationJobByDedupeKey,
+  getAgentExecuteJobDedupeKey,
   getAgentResumeJobDedupeKey,
 } from "@/lib/operations/job-queue";
 import {
@@ -154,7 +155,7 @@ type CancellationTarget =
   | {
       kind: "agent_run";
       id: string;
-      status: "running" | "waiting_approval" | "resuming" | "canceled";
+      status: "queued" | "running" | "waiting_approval" | "resuming" | "canceled";
       executionId?: string;
     }
   | {
@@ -183,13 +184,13 @@ async function buildCancellationPlan(
       if (!run) {
         throw new MissionCancellationBlockedError("The linked agent run could not be found, so cancellation stopped fail-closed.", executor);
       }
-      if (!["running", "waiting_approval", "resuming", "canceled"].includes(run.status)) {
+      if (!["queued", "running", "waiting_approval", "resuming", "canceled"].includes(run.status)) {
         throw new MissionCancellationBlockedError(`The linked agent run is already ${run.status}; reconcile the mission before canceling it.`, executor);
       }
       return {
         kind: "agent_run",
         id: run.id,
-        status: run.status as "running" | "waiting_approval" | "resuming" | "canceled",
+        status: run.status as "queued" | "running" | "waiting_approval" | "resuming" | "canceled",
         executionId: run.continuation?.pendingToolCall.executionId,
       };
     }
@@ -234,6 +235,11 @@ async function cancelLinkedExecutors(
           { tenantId: owner.tenantId },
         );
       }
+      await cancelOperationJobByDedupeKey(
+        getAgentExecuteJobDedupeKey(target.id),
+        reason,
+        { tenantId: owner.tenantId },
+      );
       const synced = await syncMissionExecutor({
         executorType: "agent_run",
         executorId: target.id,

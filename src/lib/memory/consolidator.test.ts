@@ -29,4 +29,17 @@ describe("memory claim reconciliation", () => {
     expect(result).toMatchObject({ claimStatus: "contradicted", contradictionOfId: "existing", confidence: 0.5 });
     expect(result.tags).toContain("needs-review");
   });
+
+  it("recognizes a renamed version of the same atomic claim", () => {
+    const [result] = reconcileConsolidatedMemoryClaims([{
+      type: "preference",
+      title: "Writing style preference",
+      content: "Use expansive prose.",
+      confidence: 0.9,
+    }], [existing]);
+    expect(result).toMatchObject({
+      claimStatus: "contradicted",
+      contradictionOfId: "existing",
+    });
+  });
 });

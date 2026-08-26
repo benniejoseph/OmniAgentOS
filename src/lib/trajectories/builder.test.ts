@@ -15,6 +15,8 @@ const run: AgentRunRecord = {
   specialistIds: ["forge"],
   memoryContextCount: 2,
   response: "private answer",
+  feedback: { verdict: "needs_work", correction: "private correction", updatedAt: "2026-08-26T00:00:03.000Z" },
+  grounding: { status: "verified", citedIds: ["memory:1"], invalidIds: [], sources: [] },
   startedAt: "2026-08-26T00:00:00.000Z",
   completedAt: "2026-08-26T00:00:02.000Z",
 };
@@ -60,12 +62,15 @@ describe("run trajectory", () => {
       }),
     ]);
 
-    expect(trajectory.usage).toMatchObject({ totalTokens: 15, estimatedCostUsd: 0.004 });
+    expect(trajectory.version).toBe(2);
+    expect(trajectory.usage).toMatchObject({ totalTokens: 15, estimatedCostUsd: 0.004, costKnown: true });
     expect(trajectory.providers).toEqual(["openai"]);
     expect(trajectory.toolExecutionIds).toEqual(["exec-1"]);
     expect(trajectory.events[1].receipt).not.toHaveProperty("summary");
     expect(JSON.stringify(trajectory)).not.toContain("private request");
     expect(JSON.stringify(trajectory)).not.toContain("private answer");
+    expect(JSON.stringify(trajectory)).not.toContain("private correction");
+    expect(trajectory.learning).toMatchObject({ feedbackVerdict: "needs_work", correctionLength: 18, groundingStatus: "verified" });
     expect(verifyRunTrajectory(trajectory, run).valid).toBe(true);
   });
 

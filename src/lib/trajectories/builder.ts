@@ -12,7 +12,8 @@ const zeroUsage: TrajectoryUsage = {
   outputTokens: 0,
   cachedInputTokens: 0,
   totalTokens: 0,
-  estimatedCostUsd: 0,
+  estimatedCostUsd: undefined,
+  costKnown: false,
   latencyMs: 0,
   fallbackCount: 0,
 };
@@ -24,18 +25,27 @@ export function buildRunTrajectory(
   const ordered = [...domainEvents]
     .filter((event) => event.streamId === `run:${run.id}`)
     .sort((left, right) => left.seq - right.seq);
+  const modelEvents = ordered.filter((event) => event.type === "run.model");
   const usage = ordered.reduce((total, event) => {
     if (event.type !== "run.model") return total;
+    const eventCost = optionalFinite(event.payload.estimatedCostUsd);
     return {
       inputTokens: total.inputTokens + finite(event.payload.inputTokens),
       outputTokens: total.outputTokens + finite(event.payload.outputTokens),
       cachedInputTokens: total.cachedInputTokens + finite(event.payload.cachedInputTokens),
       totalTokens: total.totalTokens + finite(event.payload.totalTokens),
-      estimatedCostUsd: roundUsd(total.estimatedCostUsd + finite(event.payload.estimatedCostUsd)),
+      estimatedCostUsd: eventCost === undefined || !total.costKnown
+        ? undefined
+        : roundUsd((total.estimatedCostUsd || 0) + eventCost),
+      costKnown: total.costKnown && eventCost !== undefined,
       latencyMs: total.latencyMs + finite(event.payload.latencyMs),
       fallbackCount: total.fallbackCount + (event.payload.fallbackUsed === true ? 1 : 0),
     };
-  }, { ...zeroUsage });
+  }, {
+    ...zeroUsage,
+    costKnown: modelEvents.length > 0,
+    estimatedCostUsd: modelEvents.length > 0 ? 0 : undefined,
+  });
 
   const providers = unique(ordered
     .filter((event) => event.type === "run.model")
@@ -48,7 +58,7 @@ export function buildRunTrajectory(
     .map((event) => optionalString(event.payload.executionId)));
 
   return {
-    version: 1,
+    version: 2,
     run: {
       id: run.id,
       tenantId: run.tenantId,
@@ -72,6 +82,16 @@ export function buildRunTrajectory(
     providers,
     models,
     toolExecutionIds,
+    learning: {
+      feedbackVerdict: run.feedback?.verdict,
+      correctionLength: run.feedback?.correction?.length,
+      correctionSha256: run.feedback?.correction
+        ? sha256(run.feedback.correction)
+        : undefined,
+      groundingStatus: run.grounding?.status,
+      citedIds: run.grounding?.citedIds || [],
+      invalidCitationCount: run.grounding?.invalidIds.length || 0,
+    },
     events: ordered.map(toTrajectoryEvent),
     runtime: {
       app: "asael",
@@ -91,6 +111,7 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
       "provider", "model", "tier", "inputTokens", "outputTokens",
       "cachedInputTokens", "totalTokens", "latencyMs", "fallbackUsed",
       "estimatedCostUsd",
+      "costKnown",
     ]);
   } else if (event.type === "run.tool") {
     copy(receipt, payload, [
@@ -163,4 +184,11 @@ function unique(values: Array<string | undefined>) {
 
 function roundUsd(value: number) {
   return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function optionalFinite(value: unknown) {
+  const number = Number(value);
+  return value === undefined || value === null || !Number.isFinite(number) || number < 0
+    ? undefined
+    : number;
 }

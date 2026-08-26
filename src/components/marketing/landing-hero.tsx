@@ -56,6 +56,7 @@ export function LandingHero() {
               alt="Asael workspace showing task progress, approvals, and result evidence."
               fill
               preload
+              unoptimized
               sizes="(max-width: 1024px) calc(100vw - 2rem), 55vw"
               className="object-cover object-center"
             />

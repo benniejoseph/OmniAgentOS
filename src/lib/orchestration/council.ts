@@ -1,7 +1,7 @@
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { getAgentLearningGuidance } from "@/lib/agents/learning";
 import { AGENT_REASONING_EFFORT } from "@/lib/config";
-import { createStructuredResponse } from "@/lib/openai/client";
+import { generateModelStructured } from "@/lib/models/gateway";
 import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
 import type { AgentMode } from "@/lib/orchestration/types";
 
@@ -49,7 +49,7 @@ export async function runCouncilRound(input: {
         tenantId: input.tenantId,
         limit: 5,
       });
-      const raw = await createStructuredResponse({
+      const generated = await generateModelStructured({
         instructions: [
           `You are ${agent.name}, the ${agent.role} in a private multi-agent council.`,
           agent.description,
@@ -68,8 +68,9 @@ export async function runCouncilRound(input: {
         schema: contributionSchema,
         reasoningEffort: AGENT_REASONING_EFFORT,
         abortSignal: input.abortSignal,
+        tier: "reasoning",
       });
-      const parsed = JSON.parse(raw) as Partial<CouncilContribution>;
+      const parsed = JSON.parse(generated.text) as Partial<CouncilContribution>;
       return {
         agentId,
         name: agent.name,
@@ -109,7 +110,7 @@ export async function reviewCouncilResponse(input: {
   contextBlock: string;
   abortSignal?: AbortSignal;
 }): Promise<CouncilVerdict> {
-  const raw = await createStructuredResponse({
+  const generated = await generateModelStructured({
     instructions: "You are Sentinel, the final critic in a private agent council. Fail work with unsupported claims, missed requirements, unsafe advice, invented execution, or material disagreement with the specialist evidence. Be strict but specific.",
     input: [
       `Goal: ${input.goal}`,
@@ -121,8 +122,9 @@ export async function reviewCouncilResponse(input: {
     schema: verdictSchema,
     reasoningEffort: AGENT_REASONING_EFFORT,
     abortSignal: input.abortSignal,
+    tier: "reasoning",
   });
-  const parsed = JSON.parse(raw) as CouncilVerdict;
+  const parsed = JSON.parse(generated.text) as CouncilVerdict;
   return {
     passed: Boolean(parsed.passed),
     score: boundedScore(parsed.score),
@@ -139,7 +141,7 @@ export async function reviseCouncilResponse(input: {
   contextBlock: string;
   abortSignal?: AbortSignal;
 }) {
-  const raw = await createStructuredResponse({
+  const generated = await generateModelStructured({
     instructions: "You are Atlas. Revise the candidate response to satisfy Sentinel's required changes. Preserve valid bracketed citation IDs exactly, remove unsupported claims, state unresolved uncertainty, and return only the improved final response.",
     input: [
       `Goal: ${input.goal}`,
@@ -157,8 +159,9 @@ export async function reviseCouncilResponse(input: {
     },
     reasoningEffort: AGENT_REASONING_EFFORT,
     abortSignal: input.abortSignal,
+    tier: "reasoning",
   });
-  return String((JSON.parse(raw) as { response?: string }).response || input.response);
+  return String((JSON.parse(generated.text) as { response?: string }).response || input.response);
 }
 
 export function formatCouncilContributions(contributions: CouncilContribution[]) {

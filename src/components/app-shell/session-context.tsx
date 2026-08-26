@@ -68,9 +68,15 @@ const permissionRoles: Record<WorkspacePermission, WorkspaceRole[]> = {
 
 const SessionContext = createContext<SessionContextValue | undefined>(undefined);
 
-export function WorkspaceSessionProvider({ children }: { children: React.ReactNode }) {
-  const [session, setSession] = useState<WorkspaceSession>();
-  const [status, setStatus] = useState<SessionStatus>("loading");
+export function WorkspaceSessionProvider({
+  children,
+  initialSession,
+}: {
+  children: React.ReactNode;
+  initialSession?: WorkspaceSession;
+}) {
+  const [session, setSession] = useState<WorkspaceSession | undefined>(initialSession);
+  const [status, setStatus] = useState<SessionStatus>(initialSession ? "ready" : "loading");
   const [error, setError] = useState<string>();
 
   const refresh = useCallback(async () => {
@@ -99,9 +105,10 @@ export function WorkspaceSessionProvider({ children }: { children: React.ReactNo
   }, []);
 
   useEffect(() => {
+    if (initialSession) return;
     const timer = window.setTimeout(() => void refresh(), 0);
     return () => window.clearTimeout(timer);
-  }, [refresh]);
+  }, [initialSession, refresh]);
 
   const signOut = useCallback(async () => {
     const response = await fetch("/api/auth/logout", {

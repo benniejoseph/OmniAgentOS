@@ -1,6 +1,15 @@
 import { unstable_cache } from "next/cache";
 import { resolveCapability, searchCapabilities } from "@/lib/capabilities/catalog";
-import { GEMINI_FAST_MODEL, GEMINI_IMAGE_MODEL, hasGeminiKey, hasGoogleMediaKey, hasOpenAIKey } from "@/lib/config";
+import {
+  ANTHROPIC_FAST_MODEL,
+  ANTHROPIC_REASONING_MODEL,
+  GEMINI_FAST_MODEL,
+  GEMINI_IMAGE_MODEL,
+  hasAnthropicKey,
+  hasGeminiKey,
+  hasGoogleMediaKey,
+  hasOpenAIKey,
+} from "@/lib/config";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
 import {
@@ -150,8 +159,13 @@ function settingsCapabilities({
   return {
     openaiConfigured: hasOpenAIKey(),
     geminiConfigured: hasGeminiKey(),
+    anthropicConfigured: hasAnthropicKey(),
     googleMediaConfigured: hasGoogleMediaKey(),
     googleModels: { fast: GEMINI_FAST_MODEL, image: GEMINI_IMAGE_MODEL },
+    anthropicModels: {
+      fast: ANTHROPIC_FAST_MODEL,
+      reasoning: ANTHROPIC_REASONING_MODEL,
+    },
     liveWebSearchConfigured: hasOpenAIKey(),
     databaseConfigured: hasDatabaseUrl(),
     storageBackend: getStorageBackend(),

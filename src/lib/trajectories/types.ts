@@ -5,7 +5,8 @@ export type TrajectoryUsage = {
   outputTokens: number;
   cachedInputTokens: number;
   totalTokens: number;
-  estimatedCostUsd: number;
+  estimatedCostUsd?: number;
+  costKnown: boolean;
   latencyMs: number;
   fallbackCount: number;
 };
@@ -18,7 +19,7 @@ export type TrajectoryEvent = {
 };
 
 export type RunTrajectory = {
-  version: 1;
+  version: 2;
   run: {
     id: string;
     tenantId?: string;
@@ -43,6 +44,14 @@ export type RunTrajectory = {
   providers: string[];
   models: string[];
   toolExecutionIds: string[];
+  learning: {
+    feedbackVerdict?: "useful" | "needs_work";
+    correctionLength?: number;
+    correctionSha256?: string;
+    groundingStatus?: "verified" | "not_required" | "missing" | "invalid";
+    citedIds: string[];
+    invalidCitationCount: number;
+  };
   events: TrajectoryEvent[];
   runtime: {
     app: "asael";
