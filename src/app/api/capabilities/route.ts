@@ -32,12 +32,6 @@ import { getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 
-const loadCachedVectorStoreStatus = unstable_cache(
-  getVectorStoreStatus,
-  ["vector-store-status-v1"],
-  { revalidate: 60 },
-);
-
 const loadCachedSettingsCapabilities = unstable_cache(
   loadSettingsCapabilities,
   ["settings-capabilities-v1"],
@@ -83,7 +77,7 @@ async function GETHandler(request: Request) {
 
 async function loadSettingsCapabilities(tenantId: string) {
   const [vectorStore, memory, knowledge] = await Promise.all([
-    loadCachedVectorStoreStatus(),
+    getVectorStoreStatus(),
     getMemoryStats({ tenantId }),
     getKnowledgeStats({ tenantId }),
   ]);
@@ -140,7 +134,7 @@ async function loadFullCapabilities(
     evaluations,
     securityStats,
   ] = await Promise.all([
-    loadCachedVectorStoreStatus(),
+    getVectorStoreStatus(),
     getMemoryStats({ tenantId }),
     getMemoryGraphStats({ tenantId }),
     getKnowledgeStats({ tenantId }),
