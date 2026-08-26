@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import {
   redactSensitive,
   requirePermission,
@@ -8,6 +9,7 @@ import {
 import { recordSecurityAudit } from "@/lib/security/audit-store";
 import type { SecurityContext } from "@/lib/security/types";
 import { measureRequestStage } from "@/lib/observability/request-timing";
+import { runWithDatabaseTenantScope } from "@/lib/db/client";
 
 const safeRequestMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -98,18 +100,36 @@ export async function authorizeRequest({
     throw error;
   }
 
-  await measureRequestStage("audit", () =>
-    recordAuditSafely({
-      context,
-      action,
-      resourceType,
-      resourceId,
-      decision: "allow",
-      riskLevel,
-      metadata,
-    }, { failClosed: requiresDurableAudit(action, riskLevel) })
-  );
+  const allowedAudit = {
+    context,
+    action,
+    resourceType,
+    resourceId,
+    decision: "allow" as const,
+    riskLevel,
+    metadata,
+  };
+  if (shouldDeferAllowedAudit(request, action, riskLevel)) {
+    scheduleRoutineReadAudit(request, allowedAudit);
+  } else {
+    await measureRequestStage("audit", () =>
+      recordAuditSafely(allowedAudit, {
+        failClosed: requiresDurableAudit(action, riskLevel),
+      })
+    );
+  }
   return context;
+}
+
+export function shouldDeferAllowedAudit(
+  request: Pick<Request, "method">,
+  action: string,
+  riskLevel?: number,
+) {
+  return (
+    safeRequestMethods.has(request.method.toUpperCase()) &&
+    !requiresDurableAudit(action, riskLevel)
+  );
 }
 
 export function assertTrustedSessionMutation(
@@ -201,6 +221,46 @@ function requiresDurableAudit(action: string, riskLevel?: number) {
     "manage.security",
     "manage.workflow",
   ].includes(action);
+}
+
+function scheduleRoutineReadAudit(
+  request: Request,
+  args: Parameters<typeof recordSecurityAudit>[0],
+) {
+  // Verified synthetic probes already emit dedicated observability evidence;
+  // duplicating every successful read in the security ledger can overwhelm a
+  // cross-region database during release tests.
+  if (
+    isVerifiedSyntheticRequest(request) ||
+    Math.random() >= allowedReadAuditSampleRate()
+  ) {
+    return;
+  }
+  try {
+    after(() =>
+      runWithDatabaseTenantScope(args.context.tenantId, () =>
+        recordAuditSafely(args),
+      ),
+    );
+  } catch {
+    // Unit calls and non-Next runtimes do not expose a response lifecycle.
+    // Routine reads remain fail-open; denials and consequential actions above
+    // are still written synchronously.
+  }
+}
+
+function isVerifiedSyntheticRequest(request: Request) {
+  const expected = process.env.OMNIAGENT_INTERNAL_AUTH_SECRET?.trim();
+  const provided = request.headers.get("x-omni-synthetic-auth")?.trim();
+  return Boolean(expected && provided && expected === provided);
+}
+
+function allowedReadAuditSampleRate() {
+  const configured = Number(process.env.OMNIAGENT_ALLOWED_READ_AUDIT_SAMPLE_RATE);
+  if (Number.isFinite(configured)) {
+    return Math.min(Math.max(configured, 0), 1);
+  }
+  return process.env.NODE_ENV === "production" ? 0.05 : 0;
 }
 
 async function recordSecuritySystemFailureSafely({
