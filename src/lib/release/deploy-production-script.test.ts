@@ -101,7 +101,8 @@ describe("paired production deployment", () => {
       command.includes("fly ssh console --app omniagent-os-worker") &&
       command.includes("kill -USR1") &&
       command.includes("/tmp/asael-worker-release-activated") &&
-      command.includes("expected_revision='test-release'"),
+      command.includes("expected_revision=") &&
+      command.includes("test-release"),
     );
     const activatedWorkerSettleIndex = commands.findIndex((command) =>
       command.includes(
@@ -129,6 +130,9 @@ describe("paired production deployment", () => {
         command.includes("npm run smoke:release"),
     );
     const workerActivationCommand = commands[workerActivationIndex];
+    expect(commands[canonicalWorkerIndex]).toContain("--command sh -c ");
+    expect(commands[canonicalWorkerIndex]).not.toContain("--command read ");
+    expect(workerActivationCommand).toContain("--command sh -c ");
     const commandMarker = " --command ";
     const activationShell = workerActivationCommand
       ? workerActivationCommand.slice(
