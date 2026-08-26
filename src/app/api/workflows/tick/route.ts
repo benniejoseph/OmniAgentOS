@@ -308,7 +308,10 @@ async function POSTHandler(request: Request) {
             { status: 400 },
           );
         }
-        const workerHeartbeat = await recordWorkerHeartbeat(workerHeartbeatInput);
+        const workerHeartbeat = await recordWorkerHeartbeat({
+          ...workerHeartbeatInput,
+          phase: "startup",
+        });
         return Response.json({
           startup: true,
           lane,
@@ -331,7 +334,10 @@ async function POSTHandler(request: Request) {
         timeBudgetMs: parsed.data.timeBudgetMs || 240_000,
       });
       const workerHeartbeat = workerHeartbeatInput
-        ? await recordWorkerHeartbeat(workerHeartbeatInput)
+        ? await recordWorkerHeartbeat({
+            ...workerHeartbeatInput,
+            phase: "active",
+          })
         : undefined;
       await recordRuntimeEventSafely({
         category: "workflow",

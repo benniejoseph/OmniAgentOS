@@ -17,7 +17,25 @@ if (!headers) {
   failSmoke("release evidence smoke requires valid administrator credentials or SMOKE_INTERNAL_AUTH_SECRET.");
 }
 
-const response = await request("/api/release/evidence?refresh=true", { headers });
+const evidenceQuery = new URLSearchParams({ refresh: "true" });
+if (process.env.OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS === "true") {
+  const notBefore = process.env.OMNIAGENT_WORKER_HEARTBEAT_NOT_BEFORE?.trim();
+  const notBeforeMs = notBefore ? Date.parse(notBefore) : Number.NaN;
+  if (!notBefore || notBefore.length > 80 || !Number.isFinite(notBeforeMs)) {
+    failSmoke(
+      "active worker evidence requires a valid OMNIAGENT_WORKER_HEARTBEAT_NOT_BEFORE timestamp.",
+    );
+  }
+  evidenceQuery.set("requireActiveWorker", "true");
+  evidenceQuery.set(
+    "workerHeartbeatNotBefore",
+    new Date(notBeforeMs).toISOString(),
+  );
+}
+const response = await request(
+  `/api/release/evidence?${evidenceQuery.toString()}`,
+  { headers },
+);
 const json = await readJson(response);
 const report = json?.report;
 const gateById = new Map((report?.gates || []).map((gate) => [gate.id, gate]));

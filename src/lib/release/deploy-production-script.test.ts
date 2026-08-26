@@ -10,6 +10,18 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("paired production deployment", () => {
+  it("keeps the tenant-isolation workflow read to the scoped run list", async () => {
+    const tenantSmoke = await readFile(
+      "scripts/smoke-tenant-isolation.mjs",
+      "utf8",
+    );
+
+    expect(tenantSmoke).toContain(
+      "/api/workflows?limit=100&stats=false&queue=false",
+    );
+    expect(tenantSmoke).not.toContain('"/api/workflows?limit=100"');
+  });
+
   it("verifies the staged web and worker before promotion, then verifies canonical", async () => {
     const result = await runProcess(
       process.execPath,
@@ -91,6 +103,31 @@ describe("paired production deployment", () => {
       command.includes("/tmp/asael-worker-release-activated") &&
       command.includes("expected_revision='test-release'"),
     );
+    const activatedWorkerSettleIndex = commands.findIndex((command) =>
+      command.includes(
+        "wait for activated canonical worker target registration window",
+      ),
+    );
+    const postActivationSecurityIndex = commands.findIndex(
+      (command, index) =>
+        index > workerActivationIndex &&
+        command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
+        command.includes("OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS=true") &&
+        command.includes(
+          "OMNIAGENT_WORKER_HEARTBEAT_NOT_BEFORE=<activation-started-at>",
+        ) &&
+        command.includes("npm run smoke:security"),
+    );
+    const postActivationEvidenceIndex = commands.findIndex(
+      (command, index) =>
+        index > workerActivationIndex &&
+        command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
+        command.includes("OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS=true") &&
+        command.includes(
+          "OMNIAGENT_WORKER_HEARTBEAT_NOT_BEFORE=<activation-started-at>",
+        ) &&
+        command.includes("npm run smoke:release"),
+    );
     const workerActivationCommand = commands[workerActivationIndex];
     const commandMarker = " --command ";
     const activationShell = workerActivationCommand
@@ -162,6 +199,13 @@ describe("paired production deployment", () => {
     expect(canonicalPreviewIndex).toBeGreaterThan(canonicalSmokeIndex);
     expect(canonicalDashboardIndex).toBeGreaterThan(canonicalPreviewIndex);
     expect(workerActivationIndex).toBeGreaterThan(canonicalDashboardIndex);
+    expect(activatedWorkerSettleIndex).toBeGreaterThan(workerActivationIndex);
+    expect(postActivationSecurityIndex).toBeGreaterThan(
+      activatedWorkerSettleIndex,
+    );
+    expect(postActivationEvidenceIndex).toBeGreaterThan(
+      postActivationSecurityIndex,
+    );
     expect(
       commands.filter((command) => command.includes("fly deploy")),
     ).toHaveLength(1);
@@ -674,19 +718,22 @@ describe("paired production deployment", () => {
       deployScript.indexOf("console.log(\n  `Production release"),
     );
     expect(rollback).not.toContain("workerReleaseActivationArgs");
-    const vercelRollbackIndex = rollback.indexOf(
-      '"promote",\n        previousVercelDeployment',
-    );
     const secretRollbackIndex = rollback.indexOf(
       "stageFlyGatewayTokenOverlap(rollbackOpenAIGateway",
     );
     const workerRollbackIndex = rollback.indexOf("previousWorkerImage");
+    const vercelRollbackIndex = rollback.indexOf(
+      '"promote",\n        previousVercelDeployment',
+    );
     const verificationIndex = rollback.indexOf("runRollbackVerification(");
 
-    expect(vercelRollbackIndex).toBeGreaterThanOrEqual(0);
-    expect(secretRollbackIndex).toBeGreaterThan(vercelRollbackIndex);
+    expect(secretRollbackIndex).toBeGreaterThanOrEqual(0);
     expect(workerRollbackIndex).toBeGreaterThan(secretRollbackIndex);
-    expect(verificationIndex).toBeGreaterThan(workerRollbackIndex);
+    expect(vercelRollbackIndex).toBeGreaterThan(workerRollbackIndex);
+    expect(verificationIndex).toBeGreaterThan(vercelRollbackIndex);
+    expect(rollback).toContain(
+      "Vercel rollback was skipped because the active worker could not be safely rolled back first.",
+    );
     expect(deployScript).toContain(
       "token: gateway.previousToken || gateway.token",
     );
@@ -813,7 +860,13 @@ describe("paired production deployment", () => {
     expect(initialCutoverRollbackConfig).toContain('strategy = "immediate"');
     expect(initialCutoverRollbackConfig).not.toContain("[http_service]");
     expect(releaseEvidenceSmoke).toContain(
-      'request("/api/release/evidence?refresh=true"',
+      'OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS === "true"',
+    );
+    expect(releaseEvidenceSmoke).toContain(
+      'evidenceQuery.set("requireActiveWorker", "true")',
+    );
+    expect(releaseEvidenceSmoke).toContain(
+      'evidenceQuery.set(\n    "workerHeartbeatNotBefore"',
     );
   });
 });

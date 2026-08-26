@@ -4,7 +4,9 @@ import {
   databaseSchemaMigrations,
   enterDatabaseTenantContext,
   getDatabaseAcquireTimeoutMs,
+  getDatabaseIdleTransactionTimeoutMs,
   getDatabaseLockTimeoutMs,
+  getDatabasePoolIdleTimeoutSeconds,
   getDatabasePoolMax,
   getDatabaseSchemaVerificationTimeoutMs,
   getDatabaseStatementTimeoutMs,
@@ -20,6 +22,7 @@ describe("database pool sizing", () => {
   it("allows overlapping production requests without unbounded connections", () => {
     try {
       vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "");
+      vi.stubEnv("VERCEL", "");
       vi.stubEnv("NODE_ENV", "test");
       expect(getDatabasePoolMax()).toBe(1);
 
@@ -29,8 +32,27 @@ describe("database pool sizing", () => {
       vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "8");
       expect(getDatabasePoolMax()).toBe(8);
 
+      vi.stubEnv("VERCEL", "1");
+      expect(getDatabasePoolMax()).toBe(1);
+
+      vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "20");
+      expect(getDatabasePoolMax()).toBe(1);
+
+      vi.stubEnv("VERCEL", "");
       vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "200");
       expect(getDatabasePoolMax()).toBe(20);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("closes idle Vercel pool connections sooner without changing durable runtimes", () => {
+    try {
+      vi.stubEnv("VERCEL", "");
+      expect(getDatabasePoolIdleTimeoutSeconds()).toBe(20);
+
+      vi.stubEnv("VERCEL", "1");
+      expect(getDatabasePoolIdleTimeoutSeconds()).toBe(5);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -72,22 +94,28 @@ describe("database pool sizing", () => {
     }
   });
 
-  it("bounds transaction-local statement and lock timeouts", () => {
+  it("bounds transaction-local statement, lock, and idle timeouts", () => {
     try {
       vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "");
       vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "");
+      vi.stubEnv("OMNIAGENT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS", "");
       expect(getDatabaseStatementTimeoutMs()).toBe(15_000);
       expect(getDatabaseLockTimeoutMs()).toBe(1_000);
+      expect(getDatabaseIdleTransactionTimeoutMs()).toBe(15_000);
 
       vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "250");
       vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "25");
+      vi.stubEnv("OMNIAGENT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS", "250");
       expect(getDatabaseStatementTimeoutMs()).toBe(1_000);
       expect(getDatabaseLockTimeoutMs()).toBe(100);
+      expect(getDatabaseIdleTransactionTimeoutMs()).toBe(1_000);
 
       vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "90000");
       vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "20000");
+      vi.stubEnv("OMNIAGENT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS", "90000");
       expect(getDatabaseStatementTimeoutMs()).toBe(60_000);
       expect(getDatabaseLockTimeoutMs()).toBe(10_000);
+      expect(getDatabaseIdleTransactionTimeoutMs()).toBe(60_000);
 
       vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "2000");
       vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "5000");
@@ -95,8 +123,10 @@ describe("database pool sizing", () => {
 
       vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "invalid");
       vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "invalid");
+      vi.stubEnv("OMNIAGENT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS", "invalid");
       expect(getDatabaseStatementTimeoutMs()).toBe(15_000);
       expect(getDatabaseLockTimeoutMs()).toBe(1_000);
+      expect(getDatabaseIdleTransactionTimeoutMs()).toBe(15_000);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -117,6 +147,8 @@ describe("database pool acquisition", () => {
       "OMNIAGENT_MAINTENANCE_DATABASE_URL",
       "postgresql://maintenance.invalid/asael",
     );
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "20");
     vi.resetModules();
     const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
@@ -140,6 +172,16 @@ describe("database pool acquisition", () => {
       ).resolves.toEqual([{ source: "maintenance" }]);
 
       expect(postgresFactory).toHaveBeenCalledTimes(2);
+      expect(postgresFactory).toHaveBeenNthCalledWith(
+        1,
+        "postgresql://runtime.invalid/asael",
+        expect.objectContaining({ max: 1, idle_timeout: 5 }),
+      );
+      expect(postgresFactory).toHaveBeenNthCalledWith(
+        2,
+        "postgresql://maintenance.invalid/asael",
+        expect.objectContaining({ max: 1, idle_timeout: 5 }),
+      );
       expect(runtime.pg.reserve).toHaveBeenCalledOnce();
       expect(runtime.reserved).not.toHaveProperty("begin");
       expect(runtime.reserved.release).toHaveBeenCalledOnce();
@@ -439,21 +481,26 @@ describe("database scope application", () => {
 
     vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "12345");
     vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "750");
+    vi.stubEnv("OMNIAGENT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS", "15000");
     try {
       await applyDatabaseScope(sql, {
         kind: "tenant",
         tenantId: "tenant-a",
       });
       expect(calls).toHaveLength(1);
-      expect(calls[0].text.match(/set_config/g)).toHaveLength(5);
+      expect(calls[0].text.match(/set_config/g)).toHaveLength(6);
       expect(calls[0].text).toContain("set_config('statement_timeout'");
       expect(calls[0].text).toContain("set_config('lock_timeout'");
+      expect(calls[0].text).toContain(
+        "set_config('idle_in_transaction_session_timeout'",
+      );
       expect(calls[0].params).toEqual([
         "tenant-a",
         "false",
         "",
         "12345",
         "750",
+        "15000",
       ]);
 
       calls.length = 0;
@@ -462,13 +509,14 @@ describe("database scope application", () => {
         reason: "maintenance",
       });
       expect(calls).toHaveLength(1);
-      expect(calls[0].text.match(/set_config/g)).toHaveLength(5);
+      expect(calls[0].text.match(/set_config/g)).toHaveLength(6);
       expect(calls[0].params).toEqual([
         "",
         "true",
         "maintenance",
         "12345",
         "750",
+        "15000",
       ]);
     } finally {
       vi.unstubAllEnvs();

@@ -92,6 +92,8 @@ const releaseHoldValue =
   process.env.OMNIAGENT_WORKER_RELEASE_HOLD?.trim() || "false";
 const releaseHoldRequested = releaseHoldValue === "true";
 const canonicalRetryIntervalMs = 30_000;
+const canonicalPromotionRetryIntervalMs = 2_000;
+const canonicalPromotionRetryWindowMs = 70_000;
 const laneHeartbeats = new Map();
 let heartbeatWrite = Promise.resolve();
 let heavyLaneQueue = Promise.resolve();
@@ -145,6 +147,7 @@ let releaseHoldController = new AbortController();
 let releaseWorkGeneration = 0;
 let lastAutomaticCanonicalRetryAt = 0;
 let canonicalActivation;
+let canonicalPromotionActivation;
 let releaseActivation;
 function beginShutdown() {
   if (shuttingDown) return;
@@ -158,7 +161,8 @@ function beginShutdown() {
 process.on("SIGINT", beginShutdown);
 process.on("SIGTERM", beginShutdown);
 process.on("SIGHUP", () => {
-  void activateCanonicalWorkerTarget("promotion signal").catch((error) => {
+  void activateCanonicalWorkerTargetWithRetry("promotion signal").catch((error) => {
+    if (shuttingDown) return;
     console.error(JSON.stringify({
       level: "error",
       message: "Canonical worker target activation failed.",
@@ -248,7 +252,10 @@ await gatewayShutdown;
 
 console.log(JSON.stringify({ level: "info", message: "Asael worker stopped." }));
 
-async function activateCanonicalWorkerTarget(reason) {
+async function activateCanonicalWorkerTarget(
+  reason,
+  deadline = Number.POSITIVE_INFINITY,
+) {
   if (!canonicalBaseUrl) {
     throw new Error("No canonical worker target is configured.");
   }
@@ -257,6 +264,13 @@ async function activateCanonicalWorkerTarget(reason) {
   }
   if (canonicalActivation) return canonicalActivation;
   canonicalActivation = (async () => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error("Canonical target activation retry window elapsed.");
+    }
+    const attemptTimeoutMs = Number.isFinite(remainingMs)
+      ? Math.max(1, Math.min(targetSwitchTimeoutMs, remainingMs))
+      : targetSwitchTimeoutMs;
     let response;
     try {
       response = await fetch(`${canonicalBaseUrl}/api/health`, {
@@ -270,7 +284,7 @@ async function activateCanonicalWorkerTarget(reason) {
         redirect: "manual",
         signal: AbortSignal.any([
           shutdownController.signal,
-          AbortSignal.timeout(targetSwitchTimeoutMs),
+          AbortSignal.timeout(attemptTimeoutMs),
         ]),
       });
     } catch (error) {
@@ -313,6 +327,58 @@ async function activateCanonicalWorkerTarget(reason) {
     return await canonicalActivation;
   } finally {
     canonicalActivation = undefined;
+  }
+}
+
+async function activateCanonicalWorkerTargetWithRetry(reason) {
+  if (!canonicalBaseUrl) {
+    return activateCanonicalWorkerTarget(reason);
+  }
+  if (workerDestination.baseUrl === canonicalBaseUrl) {
+    return workerDestination;
+  }
+  if (canonicalPromotionActivation) return canonicalPromotionActivation;
+  canonicalPromotionActivation = (async () => {
+    const deadline = Date.now() + canonicalPromotionRetryWindowMs;
+    let attempts = 0;
+    let lastError;
+    while (!shuttingDown && Date.now() < deadline) {
+      attempts += 1;
+      try {
+        return await activateCanonicalWorkerTarget(reason, deadline);
+      } catch (error) {
+        lastError = error;
+      }
+      if (shuttingDown || workerDestination.baseUrl === canonicalBaseUrl) {
+        break;
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      console.log(JSON.stringify({
+        level: "info",
+        message: "Canonical worker target is not ready; retrying promotion signal.",
+        attempt: attempts,
+        retryInMs: Math.min(canonicalPromotionRetryIntervalMs, remainingMs),
+        releaseRevision,
+      }));
+      await sleep(
+        Math.min(canonicalPromotionRetryIntervalMs, remainingMs),
+        shutdownController.signal,
+      );
+    }
+    if (shuttingDown) {
+      throw new Error("Worker shut down during canonical target activation.");
+    }
+    throw new Error(
+      `Canonical target activation did not succeed after ${attempts} attempt(s): ${
+        lastError instanceof Error ? lastError.message : "unknown error"
+      }`,
+    );
+  })();
+  try {
+    return await canonicalPromotionActivation;
+  } finally {
+    canonicalPromotionActivation = undefined;
   }
 }
 
@@ -432,6 +498,7 @@ async function runTickLane(
     let nextDelayMs = startupAttempt
       ? Math.min(cadenceMs, intervalMs)
       : cadenceMs;
+    let waitForHeldWorkerEvent = false;
     let startedAt = Date.now();
     try {
       const executeTick = async () => {
@@ -471,9 +538,20 @@ async function runTickLane(
           startup = false;
         }
         if (startupAttempt) {
-          nextDelayMs = releaseWorkIsEnabled()
-            ? firstWorkDelayMs
-            : Math.max(cadenceMs, 30_000);
+          if (releaseWorkIsEnabled()) {
+            nextDelayMs = firstWorkDelayMs;
+          } else if (releaseHeld) {
+            // A successful release-hold registration is valid until the
+            // target changes or work is explicitly activated. Repeating it
+            // creates avoidable serverless/database pressure during the most
+            // demanding release checks.
+            waitForHeldWorkerEvent = true;
+            nextDelayMs = null;
+          } else {
+            // An activated process that restarted on its immutable staged
+            // URL must keep retrying the exact-revision canonical target.
+            nextDelayMs = canonicalRetryIntervalMs;
+          }
         }
         if (lane === "maintenance") {
           tenantCursor =
@@ -513,6 +591,7 @@ async function runTickLane(
         error: body?.error,
       }));
     } catch (error) {
+      waitForHeldWorkerEvent = false;
       if (!releaseWorkIsEnabled()) {
         nextDelayMs = canonicalRetryIntervalMs;
       }
@@ -529,11 +608,15 @@ async function runTickLane(
       if (releaseGeneration !== releaseWorkGeneration) {
         continue;
       }
-      await sleepForWorkerEvent(
-        nextDelayMs,
-        targetGeneration,
-        releaseGeneration,
-      );
+      if (waitForHeldWorkerEvent) {
+        await waitForWorkerEvent(targetGeneration, releaseGeneration);
+      } else {
+        await sleepForWorkerEvent(
+          nextDelayMs,
+          targetGeneration,
+          releaseGeneration,
+        );
+      }
     }
   }
 }
@@ -720,6 +803,33 @@ function sleepForWorkerEvent(
       ...(wakeForRelease ? [releaseSignal] : []),
     ]),
   );
+}
+
+function waitForWorkerEvent(
+  expectedTargetGeneration,
+  expectedReleaseGeneration = releaseWorkGeneration,
+) {
+  if (
+    expectedTargetGeneration !== workerDestination.generation ||
+    expectedReleaseGeneration !== releaseWorkGeneration
+  ) {
+    return Promise.resolve();
+  }
+  const signal = AbortSignal.any([
+    shutdownController.signal,
+    targetSwitchController.signal,
+    releaseHoldController.signal,
+  ]);
+  if (
+    signal.aborted ||
+    expectedTargetGeneration !== workerDestination.generation ||
+    expectedReleaseGeneration !== releaseWorkGeneration
+  ) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    signal.addEventListener("abort", resolve, { once: true });
+  });
 }
 
 function sleep(ms, signal) {

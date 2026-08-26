@@ -59,6 +59,11 @@ const MAX_DATABASE_STATEMENT_TIMEOUT_MS = 60_000;
 const DEFAULT_DATABASE_LOCK_TIMEOUT_MS = 1_000;
 const MIN_DATABASE_LOCK_TIMEOUT_MS = 100;
 const MAX_DATABASE_LOCK_TIMEOUT_MS = 10_000;
+const DEFAULT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS = 15_000;
+const MIN_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS = 1_000;
+const MAX_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS = 60_000;
+const DEFAULT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS = 20;
+const VERCEL_DATABASE_POOL_IDLE_TIMEOUT_SECONDS = 5;
 
 // ---------------------------------------------------------------------------
 // Public exports (unchanged API surface)
@@ -141,11 +146,22 @@ export function hasMaintenanceDatabaseUrl() {
 export function getDatabasePoolMax() {
   const configured = Number(process.env.OMNIAGENT_DATABASE_POOL_MAX);
   if (Number.isInteger(configured) && configured > 0) {
-    return Math.min(configured, 20);
+    // Every Vercel route bundle/isolate owns its own postgres.js singleton.
+    // Enforce one connection per runtime or maintenance pool even when the
+    // shared production override is higher so independent functions cannot
+    // multiply the Supavisor frontend count under burst traffic.
+    return process.env.VERCEL ? 1 : Math.min(configured, 20);
   }
+  if (process.env.VERCEL) return 1;
   // Production runtimes can serve overlapping requests in one process. A
   // single connection lets a long workflow tick starve unrelated reads.
   return process.env.NODE_ENV === "production" ? 4 : 1;
+}
+
+export function getDatabasePoolIdleTimeoutSeconds() {
+  return process.env.VERCEL
+    ? VERCEL_DATABASE_POOL_IDLE_TIMEOUT_SECONDS
+    : DEFAULT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS;
 }
 
 export function getDatabaseAcquireTimeoutMs() {
@@ -199,6 +215,22 @@ export function getDatabaseLockTimeoutMs(
         )
       : DEFAULT_DATABASE_LOCK_TIMEOUT_MS;
   return Math.min(lockTimeoutMs, statementTimeoutMs);
+}
+
+export function getDatabaseIdleTransactionTimeoutMs() {
+  const configured = Number(
+    process.env.OMNIAGENT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS,
+  );
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS;
+  }
+  return Math.min(
+    Math.max(
+      Math.round(configured),
+      MIN_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS,
+    ),
+    MAX_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS,
+  );
 }
 
 export async function closeDatabaseClient() {
@@ -1057,7 +1089,7 @@ function createPostgresClient(databaseUrl: string, label: string) {
     prepare: false, // required for Supabase transaction-mode pooler (Supavisor)
     ssl: databaseSslConfiguration(databaseUrl, label),
     max: getDatabasePoolMax(),
-    idle_timeout: 20,
+    idle_timeout: getDatabasePoolIdleTimeoutSeconds(),
     connect_timeout: 10,
     // Under prepare:false (required by the pooler) the driver returns json/jsonb
     // columns as raw strings instead of parsed values. Parse them back to objects/
@@ -1424,13 +1456,15 @@ export async function applyDatabaseScope(sql: AnyPg, scope?: DatabaseScope) {
   const systemReason = systemScope ? scope.reason : "";
   const statementTimeoutMs = getDatabaseStatementTimeoutMs();
   const lockTimeoutMs = getDatabaseLockTimeoutMs(statementTimeoutMs);
+  const idleTransactionTimeoutMs = getDatabaseIdleTransactionTimeoutMs();
   await sql`
     SELECT
       set_config('omni.tenant_id', ${tenantId}, true),
       set_config('omni.system_scope', ${systemScope ? "true" : "false"}, true),
       set_config('omni.system_reason', ${systemReason}, true),
       set_config('statement_timeout', ${String(statementTimeoutMs)}, true),
-      set_config('lock_timeout', ${String(lockTimeoutMs)}, true)
+      set_config('lock_timeout', ${String(lockTimeoutMs)}, true),
+      set_config('idle_in_transaction_session_timeout', ${String(idleTransactionTimeoutMs)}, true)
   `;
 }
 

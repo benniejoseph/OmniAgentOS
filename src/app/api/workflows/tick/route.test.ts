@@ -153,6 +153,7 @@ describe("dedicated worker heartbeat timing", () => {
     expect(routeMocks.recordWorkerHeartbeat).toHaveBeenCalledWith({
       instanceId: "worker-test",
       lane: "fast",
+      phase: "startup",
       protocol: "1",
       revision: "release-test",
       target: "http://localhost",
@@ -192,7 +193,14 @@ describe("dedicated worker heartbeat timing", () => {
       "scheduled-work-completed",
       "heartbeat-recorded",
     ]);
-    expect(routeMocks.recordWorkerHeartbeat).toHaveBeenCalledOnce();
+    expect(routeMocks.recordWorkerHeartbeat).toHaveBeenCalledWith({
+      instanceId: "worker-test",
+      lane: "fast",
+      phase: "active",
+      protocol: "1",
+      revision: "release-test",
+      target: "http://localhost",
+    });
   });
 
   it("does not publish an ordinary heartbeat when scheduled work fails", async () => {
