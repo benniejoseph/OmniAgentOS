@@ -4,6 +4,7 @@ import {
   databaseSchemaMigrations,
   enterDatabaseTenantContext,
   getDatabasePoolMax,
+  getDatabaseSchemaVerificationTimeoutMs,
   getDatabaseTenantContext,
   getPendingSchemaMigrationVersions,
   isDatabaseMutation,
@@ -27,6 +28,24 @@ describe("database pool sizing", () => {
 
       vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "200");
       expect(getDatabasePoolMax()).toBe(20);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("bounds production schema verification timeouts", () => {
+    try {
+      vi.stubEnv("OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS", "");
+      expect(getDatabaseSchemaVerificationTimeoutMs()).toBe(10_000);
+
+      vi.stubEnv("OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS", "250");
+      expect(getDatabaseSchemaVerificationTimeoutMs()).toBe(1_000);
+
+      vi.stubEnv("OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS", "90000");
+      expect(getDatabaseSchemaVerificationTimeoutMs()).toBe(60_000);
+
+      vi.stubEnv("OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS", "invalid");
+      expect(getDatabaseSchemaVerificationTimeoutMs()).toBe(10_000);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -220,6 +239,78 @@ describe("ordered database schema versions", () => {
 
     await expect(verifyDatabaseSchemaWithClient(sql)).resolves.toBeUndefined();
     expect(calls).toBe(1);
+  });
+
+  it("cancels a pending schema query when verification times out", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS", "1000");
+    try {
+      const cancel = vi.fn(() => Promise.resolve());
+      const pendingQuery = Object.assign(
+        new Promise<Record<string, unknown>[]>(() => undefined),
+        { cancel },
+      );
+      const sql = (() => pendingQuery) as Parameters<
+        typeof verifyDatabaseSchemaWithClient
+      >[0];
+
+      const verification = verifyDatabaseSchemaWithClient(sql);
+      const rejection = expect(verification).rejects.toThrow(
+        "Database schema verification timed out after 1000ms.",
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await rejection;
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets a timed-out production verification so the next request retries", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("DATABASE_URL", "postgresql://example.invalid/omniagent");
+    vi.stubEnv("OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS", "1000");
+    const cancel = vi.fn(() => Promise.resolve());
+    const hangingQuery = Object.assign(
+      new Promise<Record<string, unknown>[]>(() => undefined),
+      { cancel },
+    );
+    const rows = databaseSchemaMigrations.map(({ version, name, checksum }) => ({
+      version,
+      name,
+      checksum,
+    }));
+    let queries = 0;
+    const sql = () => {
+      queries += 1;
+      return queries === 1 ? hangingQuery : Promise.resolve(rows);
+    };
+    vi.doMock("postgres", () => ({
+      default: vi.fn(() => sql),
+    }));
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      const firstVerification = isolatedClient.ensureDatabaseSchema();
+      const rejection = expect(firstVerification).rejects.toThrow(
+        "Database schema verification timed out after 1000ms.",
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      await rejection;
+
+      await expect(isolatedClient.ensureDatabaseSchema()).resolves.toBeUndefined();
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(queries).toBe(2);
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
+      vi.resetModules();
+    }
   });
 
   it("propagates a tenant resolved after an asynchronous lookup to the caller", async () => {

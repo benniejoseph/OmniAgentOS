@@ -47,6 +47,10 @@ let schemaReady: Promise<void> | null = null;
 let schemaMigrationReady: Promise<void> | null = null;
 const databaseScope = new AsyncLocalStorage<DatabaseScope>();
 
+const DEFAULT_SCHEMA_VERIFICATION_TIMEOUT_MS = 10_000;
+const MIN_SCHEMA_VERIFICATION_TIMEOUT_MS = 1_000;
+const MAX_SCHEMA_VERIFICATION_TIMEOUT_MS = 60_000;
+
 // ---------------------------------------------------------------------------
 // Public exports (unchanged API surface)
 // ---------------------------------------------------------------------------
@@ -133,6 +137,19 @@ export function getDatabasePoolMax() {
   // Production runtimes can serve overlapping requests in one process. A
   // single connection lets a long workflow tick starve unrelated reads.
   return process.env.NODE_ENV === "production" ? 4 : 1;
+}
+
+export function getDatabaseSchemaVerificationTimeoutMs() {
+  const configured = Number(
+    process.env.OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS,
+  );
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_SCHEMA_VERIFICATION_TIMEOUT_MS;
+  }
+  return Math.min(
+    Math.max(Math.round(configured), MIN_SCHEMA_VERIFICATION_TIMEOUT_MS),
+    MAX_SCHEMA_VERIFICATION_TIMEOUT_MS,
+  );
 }
 
 export async function closeDatabaseClient() {
@@ -554,10 +571,16 @@ export async function ensureDatabaseSchema() {
     schemaReady = verifyDatabaseSchema();
   }
 
+  const pendingSchema = schemaReady;
+
   try {
-    await schemaReady;
+    await pendingSchema;
   } catch (error) {
-    schemaReady = null;
+    // Do not let a late rejection from an older verification clear a newer
+    // retry that another request has already started.
+    if (schemaReady === pendingSchema) {
+      schemaReady = null;
+    }
     throw error;
   }
 }
@@ -710,12 +733,16 @@ async function verifyDatabaseSchema() {
 export async function verifyDatabaseSchemaWithClient(pg: AnyPg) {
   let appliedRows: Record<string, unknown>[];
   try {
-    appliedRows = await pg`
+    const pendingQuery = pg`
       SELECT version, name, checksum
       FROM omni_schema_version
       WHERE version IS NOT NULL
       ORDER BY version ASC
     `;
+    appliedRows = await waitForSchemaVerificationQuery(
+      pendingQuery,
+      getDatabaseSchemaVerificationTimeoutMs(),
+    );
   } catch (error) {
     if (
       error &&
@@ -748,6 +775,61 @@ export async function verifyDatabaseSchemaWithClient(pg: AnyPg) {
         "Run the controlled database migration before serving this release.",
     );
   }
+}
+
+async function waitForSchemaVerificationQuery<T>(
+  pendingQuery: PromiseLike<T> | T,
+  timeoutMs: number,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+
+      let cancellationError: unknown;
+      const cancel = (
+        pendingQuery as { cancel?: () => unknown } | null | undefined
+      )?.cancel;
+      if (typeof cancel === "function") {
+        try {
+          const cancellation = cancel.call(pendingQuery);
+          if (
+            cancellation &&
+            typeof (cancellation as PromiseLike<unknown>).then === "function"
+          ) {
+            void Promise.resolve(cancellation).catch(() => undefined);
+          }
+        } catch (error) {
+          cancellationError = error;
+        }
+      }
+
+      reject(
+        new Error(
+          `Database schema verification timed out after ${timeoutMs}ms.`,
+          cancellationError === undefined
+            ? undefined
+            : { cause: cancellationError },
+        ),
+      );
+    }, timeoutMs);
+
+    void Promise.resolve(pendingQuery).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 async function assertRuntimeDatabaseRoleSafety(pg: postgres.Sql) {
