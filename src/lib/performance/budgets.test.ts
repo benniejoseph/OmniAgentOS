@@ -126,6 +126,15 @@ describe("frontend performance budgets", () => {
     expect(reporter).not.toContain("new PerformanceObserver");
     expect(previewBenchmark).toContain("serverP95BudgetMs");
     expect(previewBenchmark).toContain("parseServerDuration");
+    expect(previewBenchmark).toContain("validateSettingsCapabilities");
+    expect(previewBenchmark).toContain(
+      'payload?.storageSnapshot?.status !== "ready"',
+    );
+    expect(previewBenchmark).toContain(
+      'await requestTarget(target, { validate: false })',
+    );
+    expect(previewBenchmark).toContain("waitForTargetReadiness(target)");
+    expect(previewBenchmark).toContain("Date.now() + 20_000");
     expect(dashboardBenchmark).toContain('path: "/app"');
     expect(dashboardBenchmark).toContain("budgets.releaseDashboardUsableMs");
     expect(dashboardBenchmark).toContain("serverP95BudgetMs");

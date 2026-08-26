@@ -1062,12 +1062,60 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
         title: "Vector and memory backend",
         description: "Persistence and retrieval backend status.",
         emptyLabel: "Capability data unavailable.",
-        rows: (data) => [
-          metricRow("Storage backend", stringPath(data, "capabilities.storageBackend", "unknown")),
-          metricRow("Vector store", stringPath(data, "capabilities.vectorStore.status", "unknown"), toneForStatus(readPath(data, "capabilities.vectorStore.status"))),
-          metricRow("Memory total", numberPath(data, "capabilities.memory.total")),
-          metricRow("Knowledge documents", numberPath(data, "capabilities.knowledge.documents")),
-        ],
+        rows: (data) => {
+          const snapshotStatus = stringPath(
+            data,
+            "capabilities.storageSnapshot.status",
+            "unknown",
+          );
+          const snapshotReason = stringPath(
+            data,
+            "capabilities.storageSnapshot.reason",
+            "",
+          );
+          const snapshotCheckedAt = stringPath(
+            data,
+            "capabilities.storageSnapshot.checkedAt",
+            "",
+          );
+          const memoryStatus = stringPath(
+            data,
+            "capabilities.memory.status",
+            "unknown",
+          );
+          const knowledgeStatus = stringPath(
+            data,
+            "capabilities.knowledge.status",
+            "unknown",
+          );
+          return [
+            metricRow("Storage backend", stringPath(data, "capabilities.storageBackend", "unknown")),
+            {
+              title: "Storage snapshot",
+              status: snapshotStatus,
+              meta: snapshotReason
+                ? `Fallback reason: ${snapshotReason}`
+                : "Latest tenant-scoped aggregate read",
+              ...(snapshotCheckedAt ? { time: snapshotCheckedAt } : {}),
+              tone: toneForStatus(snapshotStatus),
+            },
+            metricRow("Vector store", stringPath(data, "capabilities.vectorStore.status", "unknown"), toneForStatus(readPath(data, "capabilities.vectorStore.status"))),
+            metricRow(
+              "Memory total",
+              memoryStatus === "unavailable"
+                ? "Unavailable"
+                : numberPath(data, "capabilities.memory.total"),
+              toneForStatus(memoryStatus),
+            ),
+            metricRow(
+              "Knowledge documents",
+              knowledgeStatus === "unavailable"
+                ? "Unavailable"
+                : numberPath(data, "capabilities.knowledge.documents"),
+              toneForStatus(knowledgeStatus),
+            ),
+          ];
+        },
       },
     ],
     actions: [],
@@ -2484,7 +2532,7 @@ function toneForStatus(value: unknown): Row["tone"] {
   if (["healthy", "passed", "success", "completed", "executed", "active", "allow", "approved", "ready", "info"].includes(text)) {
     return "success";
   }
-  if (["warn", "warning", "waiting_approval", "queued", "paused", "pending", "degraded", "dry_run"].includes(text)) {
+  if (["warn", "warning", "waiting_approval", "queued", "paused", "pending", "degraded", "dry_run", "unavailable"].includes(text)) {
     return "warning";
   }
   if (["error", "failed", "blocked", "deny", "unhealthy", "rejected", "open"].includes(text)) {

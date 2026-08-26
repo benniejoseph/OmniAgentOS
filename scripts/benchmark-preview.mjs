@@ -78,6 +78,7 @@ const availableTargets = [
           serverP95BudgetMs: budgets.authenticatedReadP95Ms,
           cookie,
           headers: internalHeaders,
+          validate: validateSettingsCapabilities,
         },
         {
           name: "workspace-readiness",
@@ -118,7 +119,14 @@ if (!cookie && !internalHeaders) {
 const results = [];
 for (const target of targets) {
   for (let index = 0; index < warmups; index += 1) {
-    await requestTarget(target);
+    // Cold requests may return an explicit bounded/degraded snapshot while the
+    // single-flight read finishes. Warm the target without treating that
+    // intentional transient as release evidence; every measured sample below
+    // must still be fully ready.
+    await requestTarget(target, { validate: false });
+  }
+  if (target.validate) {
+    await waitForTargetReadiness(target);
   }
   const measurements = [];
   for (let index = 0; index < samples; index += 1) {
@@ -217,7 +225,7 @@ async function readSessionCookie() {
   return cookie;
 }
 
-async function requestTarget(target) {
+async function requestTarget(target, options = {}) {
   const startedAt = performance.now();
   const response = await smokeFetch(baseUrl, target.path, {
     headers: { ...(target.headers || {}), ...(target.cookie ? { cookie: target.cookie } : {}) },
@@ -229,6 +237,19 @@ async function requestTarget(target) {
       `${target.name} returned ${response.status} during preview benchmark.`,
     );
   }
+  let payload;
+  if (target.validate) {
+    try {
+      payload = JSON.parse(new TextDecoder().decode(body));
+    } catch {
+      throw new Error(
+        `${target.name} returned invalid JSON during preview benchmark.`,
+      );
+    }
+    if (options.validate !== false) {
+      target.validate(payload);
+    }
+  }
   return {
     durationMs,
     bytes: body.byteLength,
@@ -236,7 +257,46 @@ async function requestTarget(target) {
     serverDurationMs: parseServerDuration(
       response.headers.get("server-timing"),
     ),
+    payload,
   };
+}
+
+async function waitForTargetReadiness(target) {
+  const deadline = Date.now() + 20_000;
+  let lastError;
+  do {
+    const measurement = await requestTarget(target, { validate: false });
+    try {
+      target.validate(measurement.payload);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  } while (Date.now() < deadline);
+
+  throw new Error(
+    `${target.name} did not become functionally ready within 20000ms: ${
+      lastError instanceof Error ? lastError.message : "validation failed"
+    }`,
+  );
+}
+
+function validateSettingsCapabilities(payload) {
+  if (payload?.storageSnapshot?.status !== "ready") {
+    throw new Error(
+      "settings-capabilities returned a degraded storage snapshot during preview benchmark.",
+    );
+  }
+  if (
+    payload?.vectorStore?.status !== "ready" ||
+    payload?.memory?.status !== "ready" ||
+    payload?.knowledge?.status !== "ready"
+  ) {
+    throw new Error(
+      "settings-capabilities storage details were unavailable during preview benchmark.",
+    );
+  }
 }
 
 function parseServerDuration(header) {

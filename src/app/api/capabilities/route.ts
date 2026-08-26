@@ -1,6 +1,10 @@
 import { unstable_cache } from "next/cache";
 import { resolveCapability, searchCapabilities } from "@/lib/capabilities/catalog";
 import {
+  loadSettingsStorageSnapshot,
+  type SettingsStorageSnapshot,
+} from "@/lib/capabilities/settings-snapshot";
+import {
   ANTHROPIC_FAST_MODEL,
   ANTHROPIC_REASONING_MODEL,
   GEMINI_FAST_MODEL,
@@ -42,12 +46,6 @@ import { getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 
-const loadCachedSettingsCapabilities = unstable_cache(
-  loadSettingsCapabilities,
-  ["settings-capabilities-v1"],
-  { revalidate: 15 },
-);
-
 const loadCachedFullCapabilities = unstable_cache(
   loadFullCapabilities,
   ["full-capabilities-v1"],
@@ -71,8 +69,14 @@ async function GETHandler(request: Request) {
   }
 
   if (view === "settings") {
+    const snapshot = await loadSettingsStorageSnapshot(
+      securityContext.tenantId,
+    );
     return Response.json(
-      await loadCachedSettingsCapabilities(securityContext.tenantId),
+      {
+        ...settingsCapabilities(snapshot),
+        storageSnapshot: snapshot.storageSnapshot,
+      },
       { headers: { "cache-control": "private, no-store" } },
     );
   }
@@ -138,24 +142,19 @@ function privateNoStoreHeaders() {
   return { "cache-control": "private, no-store" };
 }
 
-async function loadSettingsCapabilities(tenantId: string) {
-  const [vectorStore, memory, knowledge] = await Promise.all([
-    getVectorStoreStatus(),
-    getMemoryStats({ tenantId }),
-    getKnowledgeStats({ tenantId }),
-  ]);
-  return settingsCapabilities({ vectorStore, memory, knowledge });
-}
+type SettingsCapabilityInput =
+  | Pick<SettingsStorageSnapshot, "vectorStore" | "memory" | "knowledge">
+  | {
+      vectorStore: Awaited<ReturnType<typeof getVectorStoreStatus>>;
+      memory: Awaited<ReturnType<typeof getMemoryStats>>;
+      knowledge: Awaited<ReturnType<typeof getKnowledgeStats>>;
+    };
 
 function settingsCapabilities({
   vectorStore,
   memory,
   knowledge,
-}: {
-  vectorStore: Awaited<ReturnType<typeof getVectorStoreStatus>>;
-  memory: Awaited<ReturnType<typeof getMemoryStats>>;
-  knowledge: Awaited<ReturnType<typeof getKnowledgeStats>>;
-}) {
+}: SettingsCapabilityInput) {
   return {
     openaiConfigured: hasOpenAIKey(),
     geminiConfigured: hasGeminiKey(),
