@@ -134,28 +134,43 @@ export function TodayWorkspace() {
     const controller = new AbortController();
     loadRef.current = controller;
     setLoading(true);
-    const [todayResult, summaryResult] = await Promise.allSettled([
-      readJson("/api/today", { signal: controller.signal }),
-      readJson("/api/workspace-summary?limit=16&approvalLimit=12", { signal: controller.signal }),
-    ]);
-    if (controller.signal.aborted) return;
-    if (todayResult.status === "fulfilled") {
-      const nextToday = todayResult.value as TodayPayload;
-      setToday(nextToday);
-      setTodayError(undefined);
-      if (nextToday.briefGenerationDue && briefAttemptRef.current !== nextToday.briefLocalDate) {
-        briefAttemptRef.current = nextToday.briefLocalDate || nextToday.generatedAt.slice(0, 10);
-        void generateBrief(false);
+    let contentRevealed = false;
+    const revealContent = () => {
+      if (!contentRevealed && !controller.signal.aborted) {
+        contentRevealed = true;
+        setLoading(false);
       }
-    } else {
-      setTodayError(errorMessage(todayResult.reason));
-    }
-    if (summaryResult.status === "fulfilled") {
-      setSummary(record(summaryResult.value.summary));
-      setSummaryError(undefined);
-    } else {
-      setSummaryError(errorMessage(summaryResult.reason));
-    }
+    };
+    const todayRequest = readJson("/api/today", { signal: controller.signal })
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        const nextToday = payload as unknown as TodayPayload;
+        setToday(nextToday);
+        setTodayError(undefined);
+        if (nextToday.briefGenerationDue && briefAttemptRef.current !== nextToday.briefLocalDate) {
+          briefAttemptRef.current = nextToday.briefLocalDate || nextToday.generatedAt.slice(0, 10);
+          void generateBrief(false);
+        }
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setTodayError(errorMessage(error));
+      })
+      .finally(revealContent);
+    const summaryRequest = readJson(
+      "/api/workspace-summary?limit=16&approvalLimit=12",
+      { signal: controller.signal },
+    )
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        setSummary(record(payload.summary));
+        setSummaryError(undefined);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setSummaryError(errorMessage(error));
+      })
+      .finally(revealContent);
+    await Promise.allSettled([todayRequest, summaryRequest]);
+    if (controller.signal.aborted) return;
     setLoading(false);
     setAnnouncement("Today refreshed.");
   }
