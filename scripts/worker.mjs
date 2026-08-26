@@ -38,13 +38,17 @@ const backgroundStartupDelayMs = normalizeNonNegativeInteger(
 const maintenanceIntervalMs = Math.max(
   normalizePositiveInteger(
     process.env.OMNIAGENT_WORKER_MAINTENANCE_INTERVAL_MS,
-    60_000,
+    5 * 60 * 1_000,
   ),
   30_000,
 );
 const maintenanceStartupDelayMs = normalizeNonNegativeInteger(
   process.env.OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS,
-  maintenanceIntervalMs,
+  60_000,
+);
+const maintenanceFirstRunDelayMs = normalizeNonNegativeInteger(
+  process.env.OMNIAGENT_WORKER_MAINTENANCE_FIRST_RUN_DELAY_MS,
+  15 * 60 * 1_000,
 );
 const requestTimeoutMs = Math.min(
   normalizePositiveInteger(process.env.OMNIAGENT_WORKER_REQUEST_TIMEOUT_MS, 300_000),
@@ -67,6 +71,7 @@ const retentionStartupDelayMs = normalizeNonNegativeInteger(
 );
 const laneHeartbeats = new Map();
 let heartbeatWrite = Promise.resolve();
+let heavyLaneQueue = Promise.resolve();
 
 if (!baseUrl) {
   fail("OMNIAGENT_WORKER_BASE_URL, NEXT_PUBLIC_APP_URL, or BASE_URL is required.");
@@ -97,6 +102,7 @@ console.log(JSON.stringify({
   backgroundStartupDelayMs,
   maintenanceIntervalMs,
   maintenanceStartupDelayMs,
+  maintenanceFirstRunDelayMs,
   limit,
   slo: enableSlo,
   alerts: enableAlerts,
@@ -127,7 +133,7 @@ await Promise.all([
     alerts: enableAlerts,
     maintenanceTenantLimit: limit,
     timeBudgetMs: 240_000,
-  }, maintenanceStartupDelayMs),
+  }, maintenanceStartupDelayMs, maintenanceFirstRunDelayMs),
   enableRetention
     ? runRetentionLoop(retentionStartupDelayMs)
     : Promise.resolve(),
@@ -135,29 +141,52 @@ await Promise.all([
 
 console.log(JSON.stringify({ level: "info", message: "Asael worker stopped." }));
 
-async function runTickLane(lane, cadenceMs, laneOptions, startupDelayMs) {
+async function runTickLane(
+  lane,
+  cadenceMs,
+  laneOptions,
+  startupDelayMs,
+  firstWorkDelayMs = cadenceMs,
+) {
   if (startupDelayMs > 0) {
     await sleep(startupDelayMs, shutdownController.signal);
   }
   let startup = true;
   let tenantCursor;
   while (!shuttingDown) {
-    const startedAt = Date.now();
+    const startupAttempt = startup;
+    let nextDelayMs = startupAttempt
+      ? Math.min(cadenceMs, intervalMs)
+      : cadenceMs;
+    let startedAt = Date.now();
     try {
-      await recordLaneState(lane, "running", startedAt);
-      const { response, body } = await requestWorkerEndpoint(
-        "/api/workflows/tick",
-        {
-          ...laneOptions,
-          scope: "all_tenants",
-          lane,
-          ...(startup ? { startup: true } : {}),
-          ...(lane === "maintenance" ? { tenantCursor } : {}),
-        },
-        1_000_000,
-      );
+      const executeTick = async () => {
+        startedAt = Date.now();
+        await recordLaneState(lane, "running", startedAt);
+        return requestWorkerEndpoint(
+          "/api/workflows/tick",
+          {
+            ...laneOptions,
+            scope: "all_tenants",
+            lane,
+            ...(startupAttempt ? { startup: true } : {}),
+            ...(lane === "maintenance" ? { tenantCursor } : {}),
+          },
+          1_000_000,
+        );
+      };
+      const result = lane === "fast" || startupAttempt
+        ? await executeTick()
+        : await runHeavyLane(executeTick);
+      if (!result) {
+        break;
+      }
+      const { response, body } = result;
       if (response.ok) {
         startup = false;
+        if (startupAttempt) {
+          nextDelayMs = firstWorkDelayMs;
+        }
         if (lane === "maintenance") {
           tenantCursor =
             typeof body?.nextTenantCursor === "string"
@@ -174,8 +203,10 @@ async function runTickLane(lane, cadenceMs, laneOptions, startupDelayMs) {
           ? `Worker ${lane} lane completed.`
           : `Worker ${lane} lane failed.`,
         lane,
+        startup: startupAttempt,
         status: response.status,
         durationMs: Date.now() - startedAt,
+        nextDelayMs,
         leased:
           body?.queue?.leased ?? body?.backgroundJobs?.leased,
         completed:
@@ -201,8 +232,25 @@ async function runTickLane(lane, cadenceMs, laneOptions, startupDelayMs) {
       }));
     }
     if (!shuttingDown) {
-      await sleep(cadenceMs, shutdownController.signal);
+      await sleep(nextDelayMs, shutdownController.signal);
     }
+  }
+}
+
+async function runHeavyLane(operation) {
+  const previous = heavyLaneQueue;
+  let release = () => undefined;
+  heavyLaneQueue = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    if (shuttingDown) {
+      return undefined;
+    }
+    return await operation();
+  } finally {
+    release();
   }
 }
 
@@ -235,7 +283,10 @@ async function runRetentionLoop(startupDelayMs) {
     if (shuttingDown) {
       break;
     }
-    const retention = await runRetentionSweep();
+    const retention = await runHeavyLane(runRetentionSweep);
+    if (!retention) {
+      break;
+    }
     delayMs = !retention.succeeded
       ? Math.min(retentionIntervalMs, 5 * 60 * 1_000)
       : retention.moreAvailable

@@ -189,6 +189,103 @@ describe("allowed audit scheduling", () => {
       shouldDeferAllowedAudit({ method: "HEAD" }, "read", 2),
     ).toBe(false);
   });
+
+  it("logs only structured diagnostics before failing a consequential action closed", async () => {
+    const consoleWarn = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    guardMocks.resolveSecurityContext.mockResolvedValue({
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+      role: "admin",
+      source: "headers",
+    });
+    guardMocks.recordSecurityAudit.mockRejectedValue(
+      Object.assign(
+        new Error(
+          "Database connection acquisition timed out. postgresql://audit-user:audit-password@db.example.test/asael SELECT secret_value FROM private_table",
+        ),
+        {
+          code: "DATABASE_ACQUIRE_TIMEOUT",
+          detail: "api-key-should-never-be-logged",
+        },
+      ),
+    );
+
+    try {
+      await expect(
+        authorizeRequest({
+          request: new Request("https://app.example.test/api/workflows", {
+            method: "POST",
+          }),
+          action: "manage.workflow",
+          resourceType: "workflow",
+        }),
+      ).rejects.toMatchObject({
+        message:
+          "The security audit ledger is unavailable, so this consequential action was not executed.",
+        status: 503,
+      });
+      expect(consoleWarn).toHaveBeenCalledTimes(1);
+      const serialized = String(consoleWarn.mock.calls[0]?.[0]);
+      expect(JSON.parse(serialized)).toEqual({
+        level: "warn",
+        event: "security.audit_write_failed",
+        outcome: "blocked",
+        action: "manage.workflow",
+        resourceType: "workflow",
+        category: "connection_acquire_timeout",
+        code: "DATABASE_ACQUIRE_TIMEOUT",
+      });
+      expect(serialized).not.toMatch(
+        /audit-user|audit-password|db\.example|select|secret_value|private_table|api-key/i,
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it("continues a non-durable action and records a structured audit warning", async () => {
+    const consoleWarn = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const context = {
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+      role: "admin" as const,
+      source: "headers" as const,
+    };
+    guardMocks.resolveSecurityContext.mockResolvedValue(context);
+    guardMocks.recordSecurityAudit.mockRejectedValue(
+      Object.assign(new Error("canceling statement due to lock timeout"), {
+        code: "55P03",
+      }),
+    );
+
+    try {
+      await expect(
+        authorizeRequest({
+          request: new Request("https://app.example.test/api/memory", {
+            method: "POST",
+          }),
+          action: "read",
+          resourceType: "memory",
+        }),
+      ).resolves.toEqual(context);
+      expect(consoleWarn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(consoleWarn.mock.calls[0]?.[0]))).toEqual({
+        level: "warn",
+        event: "security.audit_write_failed",
+        outcome: "continued",
+        action: "read",
+        resourceType: "memory",
+        category: "lock_timeout",
+        code: "55P03",
+      });
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
 });
 
 function mutationRequest(origin: string) {
