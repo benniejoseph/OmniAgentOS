@@ -93,6 +93,8 @@ export async function* runAgent(
     modelPolicy: request.agentProfile?.modelPolicy,
   });
   const providerConfigured = hasOpenAIKey() || hasGeminiKey() || hasAnthropicKey();
+  const durableMemoryEnabled =
+    providerConfigured && request.agentProfile?.memoryScope !== "session";
   const run = request.preclaimedRunId
     ? await requirePreclaimedAgentRun(request.preclaimedRunId, {
         tenantId: request.tenantId,
@@ -181,11 +183,11 @@ export async function* runAgent(
         ? `Specialist team: ${request.specialistIds.map(agentDisplayName).join(", ")}.`
         : "Primary specialist selected by Atlas.",
     });
-    if (providerConfigured) {
+    if (durableMemoryEnabled) {
       yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
     }
     const useLiveWeb = shouldUseLiveWebSearch(query) && hasOpenAIKey();
-    const retrievalPromise = providerConfigured
+    const retrievalPromise = durableMemoryEnabled
       ? buildContextPack(query, {
           limit: 8,
           tenantId: request.tenantId,
@@ -201,7 +203,7 @@ export async function* runAgent(
           preferredToolIds: configuredToolIds,
         })
       : Promise.resolve(emptyAgentToolbox());
-    const feedbackGuidancePromise = hasModelProviderFeature("text", modelRoute.tier)
+    const feedbackGuidancePromise = durableMemoryEnabled && hasModelProviderFeature("text", modelRoute.tier)
       ? getAgentLearningGuidance(request.agentId || "atlas", {
           tenantId: request.tenantId,
         })
@@ -217,7 +219,7 @@ export async function* runAgent(
           .catch((error: unknown) => ({ error }))
       : undefined;
     const retrieval = await retrievalPromise;
-    if (providerConfigured) {
+    if (durableMemoryEnabled) {
       await updateRunContextCount(run.id, retrieval.results.length);
       yield await emit({
         type: "memory",
@@ -753,7 +755,7 @@ export async function* runAgent(
       runId: run.id,
       response,
     });
-    const consolidation = providerConfigured
+    const consolidation = durableMemoryEnabled
       ? enqueueMemoryConsolidationSafely({
           runId: run.id,
           tenantId: request.tenantId,
