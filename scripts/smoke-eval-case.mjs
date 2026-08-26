@@ -178,36 +178,51 @@ async function driveBackgroundQueue() {
     );
     return;
   }
-  const response = await request("/api/workflows/tick", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-omni-internal-auth": internalSecret,
-      "x-omni-tenant-id": "production_smoke",
-      "x-omni-user-id": "production-smoke",
-      "x-omni-user-role": "system",
-      "x-omni-worker-instance": "production-smoke",
-      "x-omni-worker-protocol":
-        process.env.OMNIAGENT_WORKER_PROTOCOL_VERSION || "1",
-      ...(process.env.SMOKE_EXPECTED_REVISION
-        ? { "x-omni-worker-revision": process.env.SMOKE_EXPECTED_REVISION }
-        : {}),
-    },
-    body: JSON.stringify({
-      scope: "all_tenants",
-      lane: "background",
-      limit: 1,
-      timeBudgetMs: 240_000,
-      slo: false,
-      alerts: false,
-    }),
-  });
-  const json = await readJson(response);
+  let response;
+  let json;
+  let lastError;
+  for (let driveBackgroundQueueAttempt = 1; driveBackgroundQueueAttempt <= 3; driveBackgroundQueueAttempt += 1) {
+    try {
+      response = await smokeFetch(baseUrl, "/api/workflows/tick", {
+        method: "POST",
+        headers: {
+          ...syntheticHeaders,
+          "content-type": "application/json",
+          "x-omni-internal-auth": internalSecret,
+          "x-omni-tenant-id": "production_smoke",
+          "x-omni-user-id": "production-smoke",
+          "x-omni-user-role": "system",
+          "x-omni-worker-instance": "production-smoke",
+          "x-omni-worker-protocol":
+            process.env.OMNIAGENT_WORKER_PROTOCOL_VERSION || "1",
+          ...(process.env.SMOKE_EXPECTED_REVISION
+            ? { "x-omni-worker-revision": process.env.SMOKE_EXPECTED_REVISION }
+            : {}),
+        },
+        body: JSON.stringify({
+          scope: "all_tenants",
+          lane: "background",
+          limit: 1,
+          timeBudgetMs: 240_000,
+          slo: false,
+          alerts: false,
+        }),
+      });
+      json = await readJson(response);
+      if (response.status === 200) break;
+      lastError = statusDetail(response.status, json);
+      if (response.status < 500 || driveBackgroundQueueAttempt === 3) break;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "background queue request failed";
+      if (driveBackgroundQueueAttempt === 3) break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, driveBackgroundQueueAttempt * 2_000));
+  }
   checks.push(
     assert(
-      response.status === 200,
+      response?.status === 200,
       "staged background queue processed",
-      statusDetail(response.status, json),
+      lastError || (response ? statusDetail(response.status, json) : "no response"),
     ),
   );
 }
