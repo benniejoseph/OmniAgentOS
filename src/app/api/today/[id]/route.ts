@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { invalidateTodaySnapshot } from "@/lib/today/snapshot-cache";
 import { updateTodayItem } from "@/lib/today/store";
 
 export const runtime = "nodejs";
@@ -41,6 +42,9 @@ async function PATCHHandler(
     tenantId: context.tenantId,
     actorId: context.actorId,
   });
+  if (item) {
+    invalidateTodaySnapshot(context);
+  }
   return item
     ? Response.json({ item })
     : Response.json({ error: "Focus item not found." }, { status: 404 });

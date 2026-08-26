@@ -7,6 +7,7 @@ import {
   getTodayBriefBundle,
   updateTodayPreferences,
 } from "@/lib/today/briefs";
+import { invalidateTodaySnapshot } from "@/lib/today/snapshot-cache";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -56,6 +57,7 @@ async function POSTHandler(request: Request) {
     actorId: context.actorId,
     force: parsed.force,
   });
+  invalidateTodaySnapshot(context);
   return Response.json({ brief });
 }
 
@@ -72,6 +74,7 @@ async function PATCHHandler(request: Request) {
     tenantId: context.tenantId,
     actorId: context.actorId,
   });
+  invalidateTodaySnapshot(context);
   return Response.json({ preferences });
 }
 

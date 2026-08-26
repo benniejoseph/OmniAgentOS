@@ -1,24 +1,71 @@
+import {
+  hasDatabaseUrl,
+  runWithDatabaseTenantScope,
+} from "@/lib/db/client";
 import { listMemories } from "@/lib/memory/store";
 import { listProjects, listProjectTasks } from "@/lib/projects/store";
 import { listThreads } from "@/lib/threads/store";
 import { getTodayBriefBundle } from "@/lib/today/briefs";
+import { loadPostgresTodaySnapshot } from "@/lib/today/postgres-snapshot";
+import { loadCachedTodaySnapshot } from "@/lib/today/snapshot-cache";
 import { listTodayItems } from "@/lib/today/store";
 
-export type TodaySnapshot = Awaited<ReturnType<typeof loadTodaySnapshot>>;
+export type TodaySnapshot = Awaited<ReturnType<typeof readLocalTodaySnapshot>>;
 
 /**
  * Builds the browser-safe Today projection for an already-authorized owner.
- * This deliberately has no cross-request cache: reminder state and owner
- * mutations must be visible immediately, and callers provide the full scope.
+ * The default path uses Next's shared data cache so warm server renders avoid
+ * repeating the dashboard's fan-out reads. Explicit `now` values bypass the
+ * cache for deterministic jobs and tests. Mutating routes expire the matching
+ * owner tag immediately, while the short TTL bounds staleness for other source
+ * changes and time-derived reminder state.
  */
 export async function loadTodaySnapshot({
   tenantId,
   actorId,
-  now = new Date(),
+  now,
 }: {
   tenantId: string;
   actorId: string;
   now?: Date;
+}): Promise<TodaySnapshot> {
+  const readScopedSnapshot = () => runWithDatabaseTenantScope(
+    tenantId,
+    () => readTodaySnapshot({ tenantId, actorId, now: now || new Date() }),
+  );
+  if (now) {
+    return readScopedSnapshot();
+  }
+  return loadCachedTodaySnapshot(
+    { tenantId, actorId },
+    readScopedSnapshot,
+  );
+}
+
+async function readTodaySnapshot({
+  tenantId,
+  actorId,
+  now,
+}: {
+  tenantId: string;
+  actorId: string;
+  now: Date;
+}): Promise<TodaySnapshot> {
+  if (hasDatabaseUrl()) {
+    return loadPostgresTodaySnapshot({ tenantId, actorId, now });
+  }
+
+  return readLocalTodaySnapshot({ tenantId, actorId, now });
+}
+
+async function readLocalTodaySnapshot({
+  tenantId,
+  actorId,
+  now,
+}: {
+  tenantId: string;
+  actorId: string;
+  now: Date;
 }) {
   const [items, threads, memories, briefBundle, projects] = await Promise.all([
     listTodayItems(100, { tenantId, actorId }),

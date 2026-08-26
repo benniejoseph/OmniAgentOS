@@ -97,7 +97,7 @@ describe("frontend performance budgets", () => {
   });
 
   it("uses finalized Web Vitals and a browser dashboard release gate", async () => {
-    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge, workspaceSummary, todayRoute] =
+    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge, workspaceSummary, todayRoute, todaySnapshot, todaySnapshotCache] =
       await Promise.all([
         readFile(
           path.resolve(
@@ -119,6 +119,8 @@ describe("frontend performance budgets", () => {
           "utf8",
         ),
         readFile(path.resolve("src/app/api/today/route.ts"), "utf8"),
+        readFile(path.resolve("src/lib/today/snapshot.ts"), "utf8"),
+        readFile(path.resolve("src/lib/today/snapshot-cache.ts"), "utf8"),
       ]);
     expect(reporter).toContain('from "web-vitals"');
     expect(reporter).toContain("onCLS(report)");
@@ -154,5 +156,15 @@ describe("frontend performance budgets", () => {
     expect(todayRoute).not.toContain("unstable_cache");
     expect(todayRoute).toContain("await loadTodaySnapshot(");
     expect(todayRoute).toContain('"cache-control": "private, no-store"');
+    expect(todaySnapshot).toContain("loadCachedTodaySnapshot(");
+    expect(todaySnapshot).toContain("loadPostgresTodaySnapshot(");
+    expect(todaySnapshotCache).toContain("unstable_cache(");
+    expect(todaySnapshotCache).toContain(
+      "TODAY_SNAPSHOT_REVALIDATE_SECONDS = 15",
+    );
+    expect(todaySnapshotCache).toContain(
+      "revalidate: TODAY_SNAPSHOT_REVALIDATE_SECONDS",
+    );
+    expect(todaySnapshotCache).toContain("{ expire: 0 }");
   });
 });

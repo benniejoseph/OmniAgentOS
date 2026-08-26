@@ -3,6 +3,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { loadTodaySnapshot } from "@/lib/today/snapshot";
+import { invalidateTodaySnapshot } from "@/lib/today/snapshot-cache";
 import { createTodayItem } from "@/lib/today/store";
 
 export const runtime = "nodejs";
@@ -54,5 +55,6 @@ async function POSTHandler(request: Request) {
     actorId: context.actorId,
     ...parsed.data,
   });
+  invalidateTodaySnapshot(context);
   return Response.json({ item }, { status: 201 });
 }
