@@ -151,8 +151,6 @@ async function collectReleaseEvidenceReport(
         model: process.env.OMNIAGENT_AGENT_MODEL || "configured model",
         checkedAt,
       };
-  const workerHeartbeats = await getLatestWorkerHeartbeats();
-
   const criticalBlockingBreaches = observabilitySlo.breaches.filter(
     (breach) => breach.severity === "critical" && !advisorySloPolicyIds.has(breach.policy.id),
   );
@@ -163,6 +161,11 @@ async function collectReleaseEvidenceReport(
   const expectedWorkerProtocol =
     process.env.OMNIAGENT_WORKER_PROTOCOL_VERSION?.trim() ||
     WORKER_PROTOCOL_VERSION;
+  const workerHeartbeats = await getLatestWorkerHeartbeats({
+    protocol: expectedWorkerProtocol,
+    revision: deployment.commitSha,
+    target: expectedWorkerTarget,
+  });
   const requiredWorkerLanes = ["fast", "background", "maintenance"] as const;
   const workerLaneReadiness = requiredWorkerLanes.map((lane) => {
     const heartbeat = workerHeartbeats.find((item) => item.lane === lane);

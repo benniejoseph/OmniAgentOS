@@ -191,6 +191,11 @@ describe("release evidence", () => {
     ]);
     expect(duplicate.checkedAt).toBe(report.checkedAt);
     expect(mocks.getTenantIsolationReport).toHaveBeenCalledTimes(1);
+    expect(mocks.getLatestWorkerHeartbeats).toHaveBeenCalledWith({
+      protocol: "1",
+      revision,
+      target: "https://release.example.test",
+    });
     expect(report.releaseGate.approved).toBe(true);
     expect(observedGatewayToken).toBe(gatewayToken);
     expect(
