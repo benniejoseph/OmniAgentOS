@@ -18,6 +18,28 @@ const budgets = JSON.parse(
 const samples = positiveInteger(process.env.BENCHMARK_SAMPLES, 20, 200);
 const warmups = positiveInteger(process.env.BENCHMARK_WARMUPS, 3, 20);
 const enforce = process.env.BENCHMARK_ENFORCE !== "false";
+const requiredReadyStreak = positiveInteger(
+  process.env.BENCHMARK_READY_STREAK,
+  3,
+  5,
+);
+const readinessTimeoutMs = Math.max(
+  100,
+  positiveInteger(
+    process.env.BENCHMARK_READINESS_TIMEOUT_MS,
+    20_000,
+    60_000,
+  ),
+);
+const readinessPollMs = Math.max(
+  5,
+  positiveInteger(
+    process.env.BENCHMARK_READINESS_POLL_MS,
+    250,
+    1_000,
+  ),
+);
+
 const email =
   process.env.BENCHMARK_EMAIL ||
   process.env.SMOKE_ADMIN_EMAIL ||
@@ -118,20 +140,7 @@ if (!cookie && !internalHeaders) {
 
 const results = [];
 for (const target of targets) {
-  for (let index = 0; index < warmups; index += 1) {
-    // Cold requests may return an explicit bounded/degraded snapshot while the
-    // single-flight read finishes. Warm the target without treating that
-    // intentional transient as release evidence; every measured sample below
-    // must still be fully ready.
-    await requestTarget(target, { validate: false });
-  }
-  if (target.validate) {
-    await waitForTargetReadiness(target);
-  }
-  const measurements = [];
-  for (let index = 0; index < samples; index += 1) {
-    measurements.push(await requestTarget(target));
-  }
+  const measurements = await measureTarget(target);
   const durations = measurements
     .map((measurement) => measurement.durationMs)
     .sort((left, right) => left - right);
@@ -261,22 +270,48 @@ async function requestTarget(target, options = {}) {
   };
 }
 
+async function measureTarget(target) {
+  for (let index = 0; index < warmups; index += 1) {
+    // A cold function may return an explicit bounded/degraded snapshot while
+    // its single-flight read completes. Priming is not release evidence;
+    // every measured sample below remains fully validated and fails closed.
+    await requestTarget(target, { validate: false });
+  }
+  if (target.validate) {
+    await waitForTargetReadiness(target);
+  }
+  const measurements = [];
+  for (let index = 0; index < samples; index += 1) {
+    measurements.push(await requestTarget(target));
+  }
+  return measurements;
+}
+
 async function waitForTargetReadiness(target) {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + readinessTimeoutMs;
   let lastError;
+  let consecutiveReady = 0;
+  let bestReadyStreak = 0;
   do {
     const measurement = await requestTarget(target, { validate: false });
     try {
       target.validate(measurement.payload);
-      return;
+      consecutiveReady += 1;
+      bestReadyStreak = Math.max(bestReadyStreak, consecutiveReady);
+      if (consecutiveReady >= requiredReadyStreak) {
+        return;
+      }
     } catch (error) {
       lastError = error;
+      consecutiveReady = 0;
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, readinessPollMs));
+    }
   } while (Date.now() < deadline);
 
   throw new Error(
-    `${target.name} did not become functionally ready within 20000ms: ${
+    `${target.name} did not sustain ${requiredReadyStreak} consecutive ready responses within ${readinessTimeoutMs}ms (best streak ${bestReadyStreak}): ${
       lastError instanceof Error ? lastError.message : "validation failed"
     }`,
   );

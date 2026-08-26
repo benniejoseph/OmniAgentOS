@@ -1,5 +1,7 @@
 import { unstable_cache } from "next/cache";
+import { after } from "next/server";
 import { resolveCapability, searchCapabilities } from "@/lib/capabilities/catalog";
+import { loadSharedSettingsStorageSnapshot } from "@/lib/capabilities/settings-cache";
 import {
   loadSettingsStorageSnapshot,
   type SettingsStorageSnapshot,
@@ -44,6 +46,7 @@ import { getWorkflowStats } from "@/lib/workflows/store";
 import { getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 export const GET = withDatabaseRequestScope(GETHandler);
 
 const loadCachedFullCapabilities = unstable_cache(
@@ -69,9 +72,31 @@ async function GETHandler(request: Request) {
   }
 
   if (view === "settings") {
+    let cacheFill: ReturnType<typeof loadSharedSettingsStorageSnapshot> | undefined;
     const snapshot = await loadSettingsStorageSnapshot(
       securityContext.tenantId,
+      {
+        loader: (tenantId) => {
+          cacheFill = loadSharedSettingsStorageSnapshot(tenantId);
+          return cacheFill;
+        },
+      },
     );
+    if (snapshot.storageSnapshot.status === "degraded" && cacheFill) {
+      // The fast response remains bounded while waitUntil keeps the shared
+      // cache fill alive after Vercel sends it. A later request, even on a
+      // different function instance, can then reuse the ready snapshot.
+      after(async () => {
+        try {
+          await cacheFill;
+        } catch {
+          console.warn(JSON.stringify({
+            level: "warn",
+            event: "capabilities.settings_storage_cache_fill_failed",
+          }));
+        }
+      });
+    }
     return Response.json(
       {
         ...settingsCapabilities(snapshot),

@@ -1151,6 +1151,8 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
   >({});
   const [announcement, setAnnouncement] = useState("Workspace ready.");
   const loadController = useRef<AbortController | null>(null);
+  const settingsRetryTimer = useRef<number | null>(null);
+  const settingsRetryCount = useRef(0);
   const actionRequestKeys = useRef<
     Record<string, { signature: string; key: string }>
   >({});
@@ -1159,7 +1161,14 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
     return Object.fromEntries(Object.entries(resources).map(([key, value]) => [key, value.data])) as DomainData;
   }, [resources]);
 
-  async function load() {
+  async function load(options: { settingsRetry?: boolean } = {}) {
+    if (!options.settingsRetry) {
+      settingsRetryCount.current = 0;
+    }
+    if (settingsRetryTimer.current !== null) {
+      window.clearTimeout(settingsRetryTimer.current);
+      settingsRetryTimer.current = null;
+    }
     if (sessionStatus === "loading") {
       return;
     }
@@ -1247,8 +1256,36 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
       return;
     }
     setLastRefresh(new Date().toLocaleTimeString());
+    const settingsSnapshotDegraded =
+      domain === "settings" &&
+      entries.some(
+        ([key, resource]) =>
+          key === "capabilities" &&
+          resource.status === "ready" &&
+          stringPath(resource.data, "storageSnapshot.status", "") ===
+            "degraded",
+      );
+    if (settingsSnapshotDegraded && settingsRetryCount.current < 3) {
+      settingsRetryCount.current += 1;
+      const retryDelayMs = 1_000 * settingsRetryCount.current;
+      setAnnouncement(
+        `Settings storage is warming. Retrying in ${settingsRetryCount.current} second${
+          settingsRetryCount.current === 1 ? "" : "s"
+        }.`,
+      );
+      settingsRetryTimer.current = window.setTimeout(() => {
+        settingsRetryTimer.current = null;
+        void load({ settingsRetry: true });
+      }, retryDelayMs);
+      return;
+    }
+    if (!settingsSnapshotDegraded) {
+      settingsRetryCount.current = 0;
+    }
     setAnnouncement(
-      entries.some(([, resource]) => resource.status === "error")
+      settingsSnapshotDegraded
+        ? "Settings refreshed, but the storage snapshot is still unavailable. Use Refresh to try again."
+        : entries.some(([, resource]) => resource.status === "error")
         ? `${config.title} refreshed with unavailable sources.`
         : `${config.title} refreshed.`,
     );
@@ -1261,6 +1298,10 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
     const timer = window.setTimeout(() => void load(), 0);
     return () => {
       window.clearTimeout(timer);
+      if (settingsRetryTimer.current !== null) {
+        window.clearTimeout(settingsRetryTimer.current);
+        settingsRetryTimer.current = null;
+      }
       loadController.current?.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

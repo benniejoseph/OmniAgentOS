@@ -108,6 +108,19 @@ describe("settings storage snapshot", () => {
     expect(repeated).toEqual(first);
   });
 
+  it("preserves the real database-read timestamp supplied by the shared cache", async () => {
+    const checkedAt = "2026-08-26T10:00:00.000Z";
+    const result = await loadSettingsStorageSnapshot("shared-cache-timestamp", {
+      loader: async () => ({ snapshot: readySnapshot, checkedAt }),
+      timeoutMs: 100,
+    });
+
+    expect(result.storageSnapshot).toMatchObject({
+      status: "ready",
+      checkedAt,
+    });
+  });
+
   it("returns an explicit unavailable snapshot when the bounded read stalls", async () => {
     vi.useFakeTimers();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);

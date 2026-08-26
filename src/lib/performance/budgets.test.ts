@@ -97,7 +97,7 @@ describe("frontend performance budgets", () => {
   });
 
   it("uses finalized Web Vitals and a browser dashboard release gate", async () => {
-    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge, workspaceSummary, todayRoute, todaySnapshot, todaySnapshotCache] =
+    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge, workspaceSummary, todayRoute, todaySnapshot, todaySnapshotCache, capabilitiesRoute, settingsCache, domainConsole] =
       await Promise.all([
         readFile(
           path.resolve(
@@ -121,6 +121,15 @@ describe("frontend performance budgets", () => {
         readFile(path.resolve("src/app/api/today/route.ts"), "utf8"),
         readFile(path.resolve("src/lib/today/snapshot.ts"), "utf8"),
         readFile(path.resolve("src/lib/today/snapshot-cache.ts"), "utf8"),
+        readFile(path.resolve("src/app/api/capabilities/route.ts"), "utf8"),
+        readFile(
+          path.resolve("src/lib/capabilities/settings-cache.ts"),
+          "utf8",
+        ),
+        readFile(
+          path.resolve("src/components/app-shell/domain-console.tsx"),
+          "utf8",
+        ),
       ]);
     expect(reporter).toContain('from "web-vitals"');
     expect(reporter).toContain("onCLS(report)");
@@ -136,7 +145,13 @@ describe("frontend performance budgets", () => {
       'await requestTarget(target, { validate: false })',
     );
     expect(previewBenchmark).toContain("waitForTargetReadiness(target)");
-    expect(previewBenchmark).toContain("Date.now() + 20_000");
+    expect(previewBenchmark).toContain("Date.now() + readinessTimeoutMs");
+    expect(previewBenchmark).toContain("requiredReadyStreak");
+    expect(previewBenchmark).toContain("consecutiveReady = 0");
+    expect(previewBenchmark).toContain(
+      "measurements.push(await requestTarget(target))",
+    );
+    expect(previewBenchmark).not.toContain("discarding the attempt");
     expect(dashboardBenchmark).toContain('path: "/app"');
     expect(dashboardBenchmark).toContain("budgets.releaseDashboardUsableMs");
     expect(dashboardBenchmark).toContain("serverP95BudgetMs");
@@ -166,5 +181,19 @@ describe("frontend performance budgets", () => {
       "revalidate: TODAY_SNAPSHOT_REVALIDATE_SECONDS",
     );
     expect(todaySnapshotCache).toContain("{ expire: 0 }");
+    expect(capabilitiesRoute).toContain(
+      'import { after } from "next/server"',
+    );
+    expect(capabilitiesRoute).toContain(
+      "loadSharedSettingsStorageSnapshot",
+    );
+    expect(capabilitiesRoute).toContain("after(async () =>");
+    expect(settingsCache).toContain("unstable_cache(");
+    expect(settingsCache).toContain("runWithDatabaseTenantScope(");
+    expect(settingsCache).toContain(
+      "SETTINGS_STORAGE_FILL_TIMEOUT_MS = 20_000",
+    );
+    expect(domainConsole).toContain("settingsSnapshotDegraded");
+    expect(domainConsole).toContain("settingsRetryCount.current < 3");
   });
 });
