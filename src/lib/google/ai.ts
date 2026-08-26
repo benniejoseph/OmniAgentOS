@@ -1,4 +1,10 @@
 import { GEMINI_FAST_MODEL, GEMINI_IMAGE_MODEL, hasGeminiKey, hasGoogleMediaKey } from "@/lib/config";
+import type {
+  ModelToolCall,
+  ModelToolContinuation,
+  ModelToolDefinition,
+  ModelToolResult,
+} from "@/lib/models/types";
 import type { ModelUsage } from "@/lib/openai/model-router";
 
 const INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
@@ -6,11 +12,18 @@ const SPEECH_URL = "https://speech.googleapis.com/v1/speech:recognize";
 const TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize";
 
 type InteractionContent = { type?: string; text?: string; data?: string; mime_type?: string };
+type InteractionStep = Record<string, unknown> & {
+  type?: string;
+  id?: string;
+  name?: string;
+  arguments?: unknown;
+  content?: InteractionContent[];
+};
 type InteractionResponse = {
   id?: string;
   model?: string;
   status?: string;
-  steps?: Array<{ type?: string; content?: InteractionContent[] }>;
+  steps?: InteractionStep[];
   usage?: { total_input_tokens?: number; total_output_tokens?: number; total_cached_tokens?: number; total_tokens?: number };
   error?: { message?: string };
 };
@@ -22,6 +35,11 @@ export type GeminiTextResult = {
   latencyMs: number;
   usage: ModelUsage;
   estimatedCostUsd?: number;
+};
+
+export type GeminiToolTurnResult = GeminiTextResult & {
+  toolCalls: ModelToolCall[];
+  continuation: ModelToolContinuation;
 };
 
 export async function generateGeminiText(input: {
@@ -52,6 +70,104 @@ export async function generateGeminiText(input: {
   if (!text) throw new Error("Gemini returned no text.");
   const usage = normalizeGeminiUsage(body.usage);
   return { text, model: body.model || model, responseId: body.id, latencyMs: Date.now() - startedAt, usage, estimatedCostUsd: estimateGeminiCostUsd(body.model || model, usage) };
+}
+
+export async function generateGeminiToolTurn(input: {
+  prompt: string;
+  instructions?: string;
+  model?: string;
+  maxOutputTokens?: number;
+  tools: readonly ModelToolDefinition[];
+  continuation?: ModelToolContinuation;
+  toolResults?: readonly ModelToolResult[];
+  abortSignal?: AbortSignal;
+}): Promise<GeminiToolTurnResult> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || !hasGeminiKey()) throw new Error("Gemini is not configured.");
+  if (input.continuation && input.continuation.provider !== "google") {
+    throw new Error("Gemini cannot consume another provider's continuation state.");
+  }
+  const model = input.model || GEMINI_FAST_MODEL;
+  const history: Record<string, unknown>[] = input.continuation?.state.length
+    ? input.continuation.state.map((step) => ({ ...step }))
+    : [{
+        type: "user_input",
+        content: [{ type: "text", text: input.prompt }],
+      }];
+  for (const result of input.toolResults || []) {
+    history.push({
+      type: "function_result",
+      name: result.name,
+      call_id: result.callId,
+      result: [{ type: "text", text: result.output }],
+      ...(result.isError ? { is_error: true } : {}),
+    });
+  }
+
+  const startedAt = Date.now();
+  const response = await fetch(INTERACTIONS_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+    body: JSON.stringify({
+      model,
+      input: history,
+      ...(input.instructions ? { system_instruction: input.instructions } : {}),
+      tools: input.tools.map((tool) => ({
+        type: "function",
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      })),
+      generation_config: {
+        max_output_tokens: Math.min(
+          Math.max(input.maxOutputTokens || 2_000, 64),
+          8_000,
+        ),
+      },
+      store: false,
+    }),
+    signal: input.abortSignal,
+  });
+  const body = await readInteractionResponse(response);
+  const steps = body.steps || [];
+  const text = interactionContents(body)
+    .filter((item) => item.type === "text")
+    .map((item) => item.text || "")
+    .join("")
+    .trim();
+  const toolCalls = steps.flatMap((step) => {
+    if (step.type !== "function_call" || !step.id || !step.name) return [];
+    return [{
+      callId: step.id,
+      name: step.name,
+      argumentsJson: typeof step.arguments === "string"
+        ? step.arguments
+        : JSON.stringify(
+            step.arguments && typeof step.arguments === "object"
+              ? step.arguments
+              : {},
+          ),
+    }];
+  });
+  if (!text && !toolCalls.length) {
+    throw new Error("Gemini returned neither text nor function calls.");
+  }
+  const usage = normalizeGeminiUsage(body.usage);
+  return {
+    text,
+    toolCalls,
+    continuation: {
+      provider: "google",
+      // Preserve every model step exactly, including thought/tool signatures,
+      // so the next store:false request remains a valid stateless continuation.
+      state: [...history, ...steps],
+    },
+    model: body.model || model,
+    responseId: body.id,
+    latencyMs: Date.now() - startedAt,
+    usage,
+    estimatedCostUsd: estimateGeminiCostUsd(body.model || model, usage),
+  };
 }
 
 export async function generateGeminiImage(input: {
@@ -125,7 +241,13 @@ async function readJsonResponse(response: Response) {
   const body = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok) {
     const nested = body.error && typeof body.error === "object" ? body.error as Record<string, unknown> : undefined;
-    throw new Error(String(nested?.message || body.message || `Google API returned ${response.status}.`).slice(0, 1_000));
+    const error = new Error(
+      String(
+        nested?.message || body.message || `Google API returned ${response.status}.`,
+      ).slice(0, 1_000),
+    ) as Error & { status: number };
+    error.status = response.status;
+    throw error;
   }
   return body;
 }

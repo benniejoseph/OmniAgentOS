@@ -3,7 +3,7 @@ import { foldTrustProfile } from "@/lib/events/projections";
 import { listStreamEvents } from "@/lib/events/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { listTrustProfiles } from "@/lib/trust/ledger";
-import { graduationThreshold, isGraduatedAutonomyEnabled } from "@/lib/trust/policy";
+import { computeAutonomy, graduationThreshold, isGraduatedAutonomyEnabled } from "@/lib/trust/policy";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -52,7 +52,10 @@ async function GETHandler(request: Request) {
   return Response.json({
     enabled: isGraduatedAutonomyEnabled(),
     threshold: graduationThreshold(),
-    profiles,
+    profiles: profiles.map((profile) => ({
+      ...profile,
+      autonomy: computeAutonomy(profile),
+    })),
     stats: {
       tracked: profiles.length,
       graduated: graduated.length,

@@ -117,4 +117,36 @@ describe("memory persistence safety (file mode)", () => {
     await expect(store.listMemories({ tenantId: "tenant-forget" })).resolves.toEqual([]);
     await expect(store.searchMemories("retain sentence", { tenantId: "tenant-forget" })).resolves.toEqual([]);
   });
+
+  it("reinforces useful run memories and quarantines corrected run claims", async () => {
+    const store = await import("@/lib/memory/store");
+    const useful = await store.saveMemory({
+      tenantId: "tenant-learning",
+      title: "Useful preference",
+      content: "Prefer a concise summary.",
+      assertedBy: "agent",
+      confidence: 0.6,
+      evidenceRefs: ["run:useful-run"],
+    });
+    await expect(store.applyRunMemoryFeedback("useful-run", "useful", { tenantId: "tenant-learning" }))
+      .resolves.toEqual([useful.id]);
+    expect((await store.getMemory(useful.id, { tenantId: "tenant-learning" }))?.confidence).toBeCloseTo(0.7);
+    await expect(store.applyRunMemoryFeedback("useful-run", "useful", { tenantId: "tenant-learning" }))
+      .resolves.toEqual([]);
+    expect((await store.getMemory(useful.id, { tenantId: "tenant-learning" }))?.confidence).toBeCloseTo(0.7);
+
+    const corrected = await store.saveMemory({
+      tenantId: "tenant-learning",
+      title: "Wrong preference",
+      content: "Always write long answers.",
+      assertedBy: "agent",
+      confidence: 0.9,
+      evidenceRefs: ["run:corrected-run"],
+    });
+    await expect(store.applyRunMemoryFeedback("corrected-run", "needs_work", { tenantId: "tenant-learning" }))
+      .resolves.toEqual([corrected.id]);
+    const quarantined = await store.getMemory(corrected.id, { tenantId: "tenant-learning" });
+    expect(quarantined).toMatchObject({ claimStatus: "contradicted", confidence: 0.35 });
+    await expect(store.searchMemories("long answers", { tenantId: "tenant-learning" })).resolves.toEqual([]);
+  });
 });

@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("paired production deployment", () => {
-  it("promotes protected Vercel releases before canonical paired verification", async () => {
+  it("verifies the staged web and worker before promotion, then verifies canonical", async () => {
     const result = await runProcess(
       process.execPath,
       ["scripts/deploy-production.mjs", "--dry-run"],
@@ -23,27 +23,38 @@ describe("paired production deployment", () => {
     expect(commands[2]).toContain(
       "vercel deploy --prod --skip-domain --yes",
     );
-    expect(commands[3]).toContain("vercel promote https://staged-deployment.example");
-    expect(commands[4]).toContain(
-      "fly deploy --app omniagent-os-worker --build-arg OMNIAGENT_RELEASE_SHA=test-release --env OMNIAGENT_WORKER_BASE_URL=https://production.example",
+    expect(commands[3]).toContain(
+      "fly deploy --app omniagent-os-worker --build-arg OMNIAGENT_RELEASE_SHA=test-release --env OMNIAGENT_WORKER_BASE_URL=https://staged-deployment.example",
     );
-    const smokeIndex = commands.findIndex((command) =>
+    const stagedSmokeIndex = commands.findIndex((command) =>
+      command.includes("BASE_URL=https://staged-deployment.example") &&
       command.includes("npm run test:production-smoke"),
     );
-    const previewIndex = commands.findIndex((command) =>
+    const stagedPreviewIndex = commands.findIndex((command) =>
+      command.includes("BASE_URL=https://staged-deployment.example") &&
       command.includes("npm run benchmark:preview"),
     );
-    const dashboardIndex = commands.findIndex((command) =>
+    const stagedDashboardIndex = commands.findIndex((command) =>
+      command.includes("BASE_URL=https://staged-deployment.example") &&
       command.includes("npm run benchmark:dashboard"),
     );
     const promoteIndex = commands.findIndex((command) =>
       command.includes("vercel promote"),
     );
-    expect(smokeIndex).toBeGreaterThan(4);
-    expect(previewIndex).toBeGreaterThan(smokeIndex);
-    expect(dashboardIndex).toBeGreaterThan(previewIndex);
-    expect(promoteIndex).toBe(3);
-    expect(smokeIndex).toBeGreaterThan(promoteIndex);
+    const canonicalWorkerIndex = commands.findIndex((command) =>
+      command.includes("--image registry.fly.io/omniagent-os-worker:staged") &&
+      command.includes("OMNIAGENT_WORKER_BASE_URL=https://production.example"),
+    );
+    const canonicalSmokeIndex = commands.findIndex((command) =>
+      command.includes("BASE_URL=https://production.example") &&
+      command.includes("npm run test:production-smoke"),
+    );
+    expect(stagedSmokeIndex).toBeGreaterThan(3);
+    expect(stagedPreviewIndex).toBeGreaterThan(stagedSmokeIndex);
+    expect(stagedDashboardIndex).toBeGreaterThan(stagedPreviewIndex);
+    expect(promoteIndex).toBeGreaterThan(stagedDashboardIndex);
+    expect(canonicalWorkerIndex).toBeGreaterThan(promoteIndex);
+    expect(canonicalSmokeIndex).toBeGreaterThan(canonicalWorkerIndex);
   });
 
   it("rejects untracked drift and polls asynchronous evaluation smoke jobs", async () => {
@@ -54,6 +65,7 @@ describe("paired production deployment", () => {
       previewBenchmark,
       dashboardBenchmark,
       sessionRoute,
+      workspaceSession,
       workerScript,
       workerImage,
     ] =
@@ -64,6 +76,7 @@ describe("paired production deployment", () => {
         readFile("scripts/benchmark-preview.mjs", "utf8"),
         readFile("scripts/benchmark-dashboard.mjs", "utf8"),
         readFile("src/app/api/auth/session/route.ts", "utf8"),
+        readFile("src/lib/auth/workspace-session.ts", "utf8"),
         readFile("scripts/worker.mjs", "utf8"),
         readFile("Dockerfile.worker", "utf8"),
       ]);
@@ -74,13 +87,16 @@ describe("paired production deployment", () => {
     expect(deployScript).toContain('"--scope", VERCEL_SCOPE');
     expect(deployScript).toContain("previousWorkerImage");
     expect(deployScript).toContain("previousVercelDeployment");
+    expect(deployScript).toContain("runRollbackVerification");
+    expect(deployScript).toContain("asael-release-evidence-");
     expect(deployScript).not.toContain('"cron secret"');
     expect(deployScript).toContain("SMOKE_SESSION_OUTPUT");
     expect(deployScript).toContain("BENCHMARK_SESSION_FILE");
     expect(securitySmoke).toContain("SMOKE_SESSION_OUTPUT");
     expect(previewBenchmark).toContain("BENCHMARK_SESSION_FILE");
     expect(dashboardBenchmark).toContain("BENCHMARK_SESSION_FILE");
-    expect(sessionRoute).toContain('headerContext?.source === "headers"');
+    expect(sessionRoute).toContain("resolveWorkspaceSession");
+    expect(workspaceSession).toContain('headerContext?.source === "headers"');
     expect(evaluationSmoke).toContain("response.status === 202");
     expect(evaluationSmoke).toContain("waitForEvaluationJob");
     expect(evaluationSmoke).toContain("driveBackgroundQueueAttempt <= 3");

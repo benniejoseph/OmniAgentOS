@@ -29,6 +29,12 @@ import {
 import { redactSensitive } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getCustomAgent, listAgentSkills } from "@/lib/skills/store";
+import {
+  bindDurableSpecialistsToWorkflow,
+  prepareDurableSpecialistDelegation,
+  scheduleDurableSpecialistDrain,
+} from "@/lib/subagents/scheduler";
+import type { PreparedDurableSpecialist } from "@/lib/subagents/types";
 
 export const runtime = "nodejs";
 // gpt-5 research/orchestrate runs can exceed 60s; 300s is the Vercel Pro ceiling.
@@ -194,9 +200,10 @@ async function POSTHandler(request: Request) {
         if (parsed.data.missionId && !mission) throw new Error("Mission not found.");
         if (mission) assertMissionAcceptsWork(mission);
         let missionTask: MissionTask | undefined;
-        if (parsed.data.message) {
+        let durableSpecialists: PreparedDurableSpecialist[] = [];
+        if (parsed.data.message || decision.route === "durable_workflow") {
           const { appendThreadTurn, createThread, getThread, listThreadTurns } = await import("@/lib/threads/store");
-          const safeMessage = String(redactSensitive(parsed.data.message));
+          const safeMessage = String(redactSensitive(parsed.data.message || requestMessage));
           let thread = threadId ? await getThread(threadId, { tenantId: context.tenantId }) : null;
           if (thread && thread.actorId !== context.actorId) thread = null;
           if (threadId && !thread) throw new Error("Thread not found.");
@@ -221,12 +228,25 @@ async function POSTHandler(request: Request) {
             const executionMessage = parsed.data.missionId
               ? missionInstruction(mission, safeMessage)
               : safeMessage;
+            if (decision.route === "durable_workflow") {
+              durableSpecialists = await prepareDurableSpecialistDelegation({
+                owner: missionOwner,
+                missionId: mission.id,
+                requestId,
+                objective: executionMessage,
+                mode,
+                primaryAgentId: decision.primaryAgentId,
+                specialistIds: decision.specialistIds,
+              });
+            }
             missionTask = await ensureMissionTask(mission.id, {
               sourceKey: `agent-request:${requestId}`,
               title: missionTitle(safeMessage),
               instructions: executionMessage,
               definitionOfDone: "Deliver the requested outcome, preserve evidence, and report blockers honestly.",
               priority: mission.priority,
+              position: durableSpecialists.length + 1,
+              dependencyIds: durableSpecialists.map((item) => item.taskId),
               input: { threadId: thread.id, turnId: userTurn.id, route: decision.route },
             }, missionOwner);
           }
@@ -235,7 +255,6 @@ async function POSTHandler(request: Request) {
             const executionMessage = parsed.data.missionId
               ? missionInstruction(mission, safeMessage)
               : safeMessage;
-            const { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } = await import("@/lib/workflows/queue");
             const { createWorkflowRun } = await import("@/lib/workflows/store");
             const detail = await createWorkflowRun({
               tenantId: context.tenantId,
@@ -254,6 +273,8 @@ async function POSTHandler(request: Request) {
                 skillIds: customSkills.map((skill) => skill.id),
                 agentProfile,
                 specialistIds: decision.specialistIds,
+                specialistTaskIds: durableSpecialists.map((item) => item.taskId),
+                specialistRunIds: durableSpecialists.map((item) => item.runId),
                 learning: decision.learning,
               },
               idempotencyKey: `supervisor:${context.actorId}:${requestId}`,
@@ -261,6 +282,11 @@ async function POSTHandler(request: Request) {
             if (detail.run.goal !== executionMessage.trim()) {
               throw new Error("requestId was already used for a different instruction. Submit this work with a new requestId.");
             }
+            await bindDurableSpecialistsToWorkflow(
+              durableSpecialists,
+              detail.run.id,
+              missionOwner,
+            );
             await attachMissionExecutor({
               taskId: missionTask.id,
               executorType: "workflow_run",
@@ -271,8 +297,10 @@ async function POSTHandler(request: Request) {
             if (mission.status === "draft") {
               mission = await transitionMission(mission.id, "queued", missionOwner);
             }
-            await enqueueWorkflowRunTick(detail.run.id, "supervisor_delegated", undefined, context.tenantId);
-            scheduleWorkflowQueueDrain(undefined, context.tenantId);
+            scheduleDurableSpecialistDrain(
+              context.tenantId,
+              durableSpecialists.length,
+            );
             const acknowledgement = decision.requiresApproval || customAgent?.approvalPolicy === "always"
               ? "I moved this into a durable workflow. It will preserve progress and pause before consequential external actions."
               : "I moved this into a durable workflow so it can continue in the background and preserve progress.";

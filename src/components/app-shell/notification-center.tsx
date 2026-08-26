@@ -67,6 +67,7 @@ export function NotificationCenter() {
   const [desktopAlerts, setDesktopAlerts] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
+  const loadControllerRef = useRef<AbortController | null>(null);
   const knownUnreadRef = useRef(new Set<string>());
   const loadedOnceRef = useRef(false);
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
@@ -80,9 +81,15 @@ export function NotificationCenter() {
 
   async function load(options: { quiet?: boolean } = {}) {
     if (!available) return;
+    loadControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
     if (!options.quiet) setLoading(true);
     try {
-      const payload = await readJson("/api/notifications") as CenterPayload;
+      const payload = await readJson("/api/notifications", {
+        signal: controller.signal,
+      }) as CenterPayload;
+      if (controller.signal.aborted) return;
       const freshUnread = payload.notifications.filter((item) =>
         item.status === "unread" && !knownUnreadRef.current.has(item.id)
       );
@@ -99,9 +106,9 @@ export function NotificationCenter() {
       setCenter(payload);
       setError(undefined);
     } catch (loadError) {
-      setError(message(loadError));
+      if (!controller.signal.aborted) setError(message(loadError));
     } finally {
-      setLoading(false);
+      if (loadControllerRef.current === controller) setLoading(false);
     }
   }
 
@@ -119,6 +126,7 @@ export function NotificationCenter() {
       window.clearTimeout(initial);
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
+      loadControllerRef.current?.abort();
     };
     // Session identity controls the polling lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -606,6 +606,9 @@ export async function transitionMissionTask(
   if (!current) throw new MissionNotFoundError("Mission task not found.");
   assertTaskTransition(current.status, status);
   if (current.status === status) return current;
+  if (status === "running") {
+    await assertTaskDependenciesSucceeded(current, owner);
+  }
   const now = new Date().toISOString();
   const next: MissionTask = {
     ...current,
@@ -933,6 +936,23 @@ async function validateTaskReferences(task: MissionTask, owner: Required<Mission
   const allowed = new Set(tasks.map((item) => item.id));
   const invalid = referenced.find((id) => !allowed.has(id));
   if (invalid) throw new MissionNotFoundError("Task dependency not found in mission.");
+}
+
+async function assertTaskDependenciesSucceeded(
+  task: MissionTask,
+  owner: Required<MissionOwner>,
+) {
+  if (!task.dependencyIds.length) return;
+  const tasks = await listMissionTasks(task.missionId, owner);
+  const byId = new Map(tasks.map((item) => [item.id, item]));
+  const unavailable = task.dependencyIds.filter(
+    (dependencyId) => byId.get(dependencyId)?.status !== "succeeded",
+  );
+  if (unavailable.length) {
+    throw new MissionTransitionError(
+      `Task dependencies must succeed before execution: ${unavailable.join(", ")}.`,
+    );
+  }
 }
 
 async function resolveMissionTransitionRace(

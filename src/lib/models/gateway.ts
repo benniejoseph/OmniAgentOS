@@ -1,0 +1,241 @@
+import { modelTargets } from "@/lib/models/registry";
+import type {
+  ModelAttemptReceipt,
+  ModelGenerationResult,
+  ModelProviderAdapter,
+  ModelStructuredRequest,
+  ModelTextRequest,
+  ModelToolDefinition,
+  ModelToolResult,
+  ModelToolTurnRequest,
+  ModelToolTurnResult,
+} from "@/lib/models/types";
+import { ModelProviderError } from "@/lib/models/types";
+
+const MAX_TARGET_ATTEMPTS = 4;
+const MAX_TOOL_DEFINITIONS = 32;
+const MAX_TOOL_DESCRIPTION_CHARS = 1_000;
+const MAX_TOOL_SCHEMA_BYTES = 16 * 1024;
+const MAX_TOOL_SCHEMA_TOTAL_BYTES = 64 * 1024;
+const MAX_TOOL_RESULT_CHARS = 8_000;
+const MAX_TOOL_RESULTS_PER_TURN = 5;
+
+export async function generateModelText(request: ModelTextRequest): Promise<ModelGenerationResult> {
+  return executeGateway(request, "text", (adapter, target) =>
+    adapter.generateText(request, target)
+  );
+}
+
+export async function generateModelStructured(request: ModelStructuredRequest): Promise<ModelGenerationResult> {
+  return executeGateway(request, "json_schema", (adapter, target) => {
+    if (!adapter.generateStructured) {
+      throw new ModelProviderError(
+        `${adapter.id} does not support structured generation.`,
+        adapter.id,
+        "invalid_request",
+        false,
+      );
+    }
+    return adapter.generateStructured(request, target);
+  });
+}
+
+export async function generateModelToolTurn(
+  request: ModelToolTurnRequest,
+): Promise<ModelToolTurnResult> {
+  if (
+    request.continuation &&
+    request.continuation.provider !== request.preferredProvider
+  ) {
+    throw new ModelProviderError(
+      "Tool-turn continuation state cannot cross model providers.",
+      request.preferredProvider,
+      "invalid_request",
+      false,
+    );
+  }
+  if (
+    request.allowedProviders &&
+    !request.allowedProviders.includes(request.preferredProvider)
+  ) {
+    throw new ModelProviderError(
+      "The preferred provider is outside this request's provider allowlist.",
+      request.preferredProvider,
+      "invalid_request",
+      false,
+    );
+  }
+
+  const providerBoundRequest: ModelToolTurnRequest = {
+    ...request,
+    allowedProviders: [request.preferredProvider],
+    allowCrossProviderFallback: false,
+    tools: sanitizeToolDefinitions(request.tools, request.preferredProvider),
+    toolResults: sanitizeToolResults(request.toolResults),
+  };
+  return executeGateway(
+    providerBoundRequest,
+    "tools",
+    (adapter, target) => {
+      if (!adapter.generateToolTurn) {
+        throw new ModelProviderError(
+          `${adapter.id} does not support governed tool turns.`,
+          adapter.id,
+          "invalid_request",
+          false,
+        );
+      }
+      return adapter.generateToolTurn(providerBoundRequest, target);
+    },
+  );
+}
+
+async function executeGateway<
+  TResult extends Omit<ModelGenerationResult, "attempts">,
+>(
+  request: ModelTextRequest,
+  feature: "text" | "json_schema" | "tools",
+  execute: (
+    adapter: ModelProviderAdapter,
+    target: ReturnType<typeof modelTargets>[number]["target"],
+  ) => Promise<TResult>,
+): Promise<TResult & { attempts: ModelAttemptReceipt[] }> {
+  const candidates = modelTargets({
+    tier: request.tier || "fast",
+    feature,
+    preferredProvider: request.preferredProvider,
+    allowedProviders: request.allowedProviders,
+    allowCrossProviderFallback: request.allowCrossProviderFallback,
+  }).slice(0, MAX_TARGET_ATTEMPTS);
+  if (!candidates.length) {
+    throw new ModelProviderError(
+      `No configured model provider supports ${feature}.`,
+      request.preferredProvider || request.allowedProviders?.[0] || "local",
+      "unavailable",
+      false,
+    );
+  }
+
+  const attempts: ModelAttemptReceipt[] = [];
+  let lastError: ModelProviderError | undefined;
+  for (const [index, candidate] of candidates.entries()) {
+    const startedAt = Date.now();
+    try {
+      const result = await execute(candidate.adapter, candidate.target);
+      attempts.push({
+        provider: result.provider,
+        model: result.model,
+        status: "completed",
+        latencyMs: result.latencyMs,
+      });
+      return { ...result, attempts };
+    } catch (error) {
+      const failure = candidate.adapter.classifyError(error);
+      attempts.push({
+        provider: candidate.adapter.id,
+        model: candidate.target.model,
+        status: "failed",
+        latencyMs: Date.now() - startedAt,
+        failureKind: failure.kind,
+        retryable: failure.retryable,
+      });
+      lastError = failure;
+      if (!failure.retryable || index === candidates.length - 1) throw attachAttempts(failure, attempts);
+    }
+  }
+  throw attachAttempts(
+    lastError || new ModelProviderError("Every model provider failed.", "local", "unknown", false),
+    attempts,
+  );
+}
+
+function sanitizeToolDefinitions(
+  tools: readonly ModelToolDefinition[],
+  provider: ModelToolTurnRequest["preferredProvider"],
+) {
+  if (tools.length > MAX_TOOL_DEFINITIONS) {
+    throw new ModelProviderError(
+      `Model tool count exceeds the ${MAX_TOOL_DEFINITIONS}-tool limit.`,
+      provider,
+      "invalid_request",
+      false,
+    );
+  }
+  const sanitized: ModelToolDefinition[] = [];
+  const seen = new Set<string>();
+  let totalSchemaBytes = 0;
+
+  for (const tool of tools) {
+    const name = tool.name.trim();
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name) || seen.has(name)) {
+      throw new ModelProviderError(
+        `Invalid or duplicate model tool name: ${name || "(empty)"}.`,
+        provider,
+        "invalid_request",
+        false,
+      );
+    }
+    let serializedSchema: string;
+    try {
+      serializedSchema = JSON.stringify(tool.parameters);
+    } catch {
+      throw new ModelProviderError(
+        `Tool schema for ${name} is not serializable.`,
+        provider,
+        "invalid_request",
+        false,
+      );
+    }
+    const schemaBytes = Buffer.byteLength(serializedSchema, "utf8");
+    if (
+      schemaBytes > MAX_TOOL_SCHEMA_BYTES ||
+      totalSchemaBytes + schemaBytes > MAX_TOOL_SCHEMA_TOTAL_BYTES
+    ) {
+      throw new ModelProviderError(
+        `Tool schema budget exceeded for ${name}.`,
+        provider,
+        "invalid_request",
+        false,
+      );
+    }
+    const parsedSchema = JSON.parse(serializedSchema) as Record<string, unknown>;
+    if (!parsedSchema || typeof parsedSchema !== "object" || Array.isArray(parsedSchema)) {
+      throw new ModelProviderError(
+        `Tool schema for ${name} must be a JSON object.`,
+        provider,
+        "invalid_request",
+        false,
+      );
+    }
+    seen.add(name);
+    totalSchemaBytes += schemaBytes;
+    sanitized.push({
+      type: "function",
+      name,
+      description: tool.description
+        .replace(/[\u0000-\u001f\u007f]/g, " ")
+        .trim()
+        .slice(0, MAX_TOOL_DESCRIPTION_CHARS),
+      parameters: parsedSchema,
+    });
+  }
+  return sanitized;
+}
+
+function sanitizeToolResults(results: readonly ModelToolResult[] | undefined) {
+  return (results || []).slice(0, MAX_TOOL_RESULTS_PER_TURN).map((result) => ({
+    callId: String(result.callId).slice(0, 256),
+    name: String(result.name).slice(0, 64),
+    output: String(result.output).slice(0, MAX_TOOL_RESULT_CHARS),
+    ...(result.isError ? { isError: true } : {}),
+  }));
+}
+
+function attachAttempts(error: ModelProviderError, attempts: ModelAttemptReceipt[]) {
+  Object.defineProperty(error, "attempts", {
+    value: attempts,
+    enumerable: true,
+    configurable: false,
+  });
+  return error;
+}

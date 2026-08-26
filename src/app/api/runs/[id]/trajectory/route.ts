@@ -3,6 +3,7 @@ import { listStreamEvents } from "@/lib/events/store";
 import { getAgentRun } from "@/lib/runs/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { buildRunTrajectory } from "@/lib/trajectories/builder";
+import { evaluateTrajectoryLearning } from "@/lib/trajectories/evaluate";
 import { verifyRunTrajectory } from "@/lib/trajectories/verify";
 
 export const runtime = "nodejs";
@@ -33,8 +34,13 @@ async function GETHandler(
     limit: 2_000,
   });
   const trajectory = buildRunTrajectory(run, events);
+  const verification = verifyRunTrajectory(trajectory, run);
   return Response.json(
-    { trajectory, verification: verifyRunTrajectory(trajectory, run) },
+    {
+      trajectory,
+      verification,
+      learningEvaluation: evaluateTrajectoryLearning(trajectory, verification),
+    },
     {
       headers: {
         "cache-control": "private, no-store",

@@ -44,7 +44,7 @@ export type AgentEvent =
   | { type: "status"; label: string; detail?: string }
   | { type: "delta"; text: string }
   | { type: "memory"; title: string; count?: number }
-  | { type: "model"; model: string; provider?: "openai" | "google"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number }
+  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean }
   | AgentCouncilEvent
   | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | AgentToolEvent
@@ -55,6 +55,8 @@ export type AgentEvent =
 
 export type AgentRunRequest = {
   messages: ChatMessage[];
+  /** Internal durable dispatch: the worker has already CAS-claimed this run. */
+  preclaimedRunId?: string;
   threadId?: string;
   mode?: AgentMode;
   tenantId?: string;
@@ -67,7 +69,7 @@ export type AgentRunRequest = {
     role: string;
     description: string;
     instructions: string;
-    modelPolicy: "auto" | "openai_fast" | "openai_reasoning" | "gemini_fast";
+    modelPolicy: "auto" | "openai_fast" | "openai_reasoning" | "gemini_fast" | "anthropic_fast" | "anthropic_reasoning";
     autonomy: "assist" | "governed" | "execute";
     approvalPolicy: "always" | "risk_based" | "read_only";
     memoryScope: "session" | "project" | "all";

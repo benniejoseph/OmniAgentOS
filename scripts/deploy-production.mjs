@@ -36,12 +36,20 @@ if (dryRun) {
     vercelEnvironment,
   );
   const staged = "https://staged-deployment.example";
+  printDryRun("fly", workerDeployArgs(staged));
+  printVerificationCommands(staged);
   printDryRun(
     "vercel",
     ["promote", staged, "--yes", "--scope", VERCEL_SCOPE],
     vercelEnvironment,
   );
-  printDryRun("fly", workerDeployArgs("https://production.example"));
+  printDryRun(
+    "fly",
+    workerImageDeployArgs(
+      "registry.fly.io/omniagent-os-worker:staged",
+      "https://production.example",
+    ),
+  );
   printVerificationCommands("https://production.example");
   process.exit(0);
 }
@@ -74,17 +82,23 @@ try {
     { environment: vercelEnvironment, echo: true },
   );
   const stagedBaseUrl = deploymentUrlFromOutput(deploymentOutput);
-  // Vercel deployment protection can intentionally block generated preview
-  // URLs. Promote first, then verify the canonical URL as one rollback-capable
-  // transaction with the paired worker release.
+  workerMutationStarted = true;
+  await run("fly", workerDeployArgs(stagedBaseUrl));
+  const stagedWorkerImage = await getCurrentWorkerImage();
+  await runVerificationCommands(stagedBaseUrl);
+
+  // Only expose the web release after the exact staged web/worker pair passes.
+  // Protected deployments are reached with VERCEL_AUTOMATION_BYPASS_SECRET.
+  vercelPromoted = true;
   await run(
     "vercel",
     ["promote", stagedBaseUrl, "--yes", "--scope", VERCEL_SCOPE],
     { environment: vercelEnvironment },
   );
-  vercelPromoted = true;
-  workerMutationStarted = true;
-  await run("fly", workerDeployArgs(productionBaseUrl));
+  await run(
+    "fly",
+    workerImageDeployArgs(stagedWorkerImage, productionBaseUrl),
+  );
   await runVerificationCommands(productionBaseUrl);
 } catch (error) {
   const rollbackErrors = [];
@@ -112,10 +126,19 @@ try {
         flyApp,
         "--image",
         previousWorkerImage,
+        "--env",
+        `OMNIAGENT_WORKER_BASE_URL=${productionBaseUrl}`,
         "--yes",
       ],
     ).catch((rollbackError) => {
       rollbackErrors.push(`Fly rollback failed: ${errorMessage(rollbackError)}`);
+    });
+  }
+  if (!rollbackErrors.length && (vercelPromoted || workerMutationStarted)) {
+    await runRollbackVerification(productionBaseUrl).catch((rollbackError) => {
+      rollbackErrors.push(
+        `Rollback verification failed: ${errorMessage(rollbackError)}`,
+      );
     });
   }
   fail(
@@ -163,6 +186,17 @@ function validateReleaseConfiguration() {
   if (url.search || url.hash) {
     fail("BASE_URL must not contain a query string or fragment.");
   }
+  const evidencePath = path.resolve(process.env.RELEASE_EVIDENCE_OUTPUT);
+  const temporaryRoot = path.resolve(tmpdir());
+  if (
+    !evidencePath.startsWith(`${temporaryRoot}${path.sep}`) ||
+    !path.basename(evidencePath).startsWith("asael-release-evidence-") ||
+    path.extname(evidencePath) !== ".json"
+  ) {
+    fail(
+      "RELEASE_EVIDENCE_OUTPUT must be a unique asael-release-evidence-*.json file inside the system temporary directory.",
+    );
+  }
   url.pathname = url.pathname.replace(/\/+$/, "");
   return url.toString().replace(/\/+$/, "");
 }
@@ -177,6 +211,19 @@ function workerDeployArgs(baseUrl) {
     ...(baseUrl
       ? ["--env", `OMNIAGENT_WORKER_BASE_URL=${baseUrl}`]
       : []),
+    "--yes",
+  ];
+}
+
+function workerImageDeployArgs(image, baseUrl) {
+  return [
+    "deploy",
+    "--app",
+    flyApp,
+    "--image",
+    image,
+    "--env",
+    `OMNIAGENT_WORKER_BASE_URL=${baseUrl}`,
     "--yes",
   ];
 }
@@ -257,6 +304,16 @@ async function runVerificationCommands(baseUrl) {
   } finally {
     await rm(sessionDirectory, { recursive: true, force: true });
   }
+}
+
+async function runRollbackVerification(baseUrl) {
+  await run("npm", ["run", "smoke:preflight"], {
+    environment: {
+      BASE_URL: baseUrl,
+      SMOKE_EXPECTED_REVISION: "",
+      SMOKE_REQUEST_TIMEOUT_MS: "300000",
+    },
+  });
 }
 
 function printVerificationCommands(baseUrl) {

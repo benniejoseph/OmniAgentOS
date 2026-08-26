@@ -461,14 +461,14 @@ export const productPages: Record<string, ProductPage> = {
     headline: "Configure the operating system behind every agent run.",
     summary: "Centralize environment posture, model configuration, tenant defaults, release metadata, and operator controls.",
     metrics: [
-      { label: "Runtime", value: "Vercel" },
+      { label: "Runtime", value: "Vercel + Fly" },
       { label: "Database", value: "Neon" },
-      { label: "Models", value: "OpenAI" },
+      { label: "Models", value: "Routed" },
     ],
     architecture: [
       { label: "Runtime", detail: "Vercel functions and cron" },
       { label: "Storage", detail: "Neon Postgres plus pgvector" },
-      { label: "Model", detail: "OpenAI generation and embeddings" },
+      { label: "Model", detail: "OpenAI, Gemini, and Claude-ready routing" },
       { label: "Evidence", detail: "release and eval signing" },
     ],
     signals: ["production env", "cron secret", "signing secret", "deployment metadata"],

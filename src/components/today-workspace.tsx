@@ -24,51 +24,16 @@ import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { useWorkspaceReadiness } from "@/components/app-shell/use-workspace-readiness";
 import { WorkspaceReadinessCard } from "@/components/app-shell/workspace-readiness-card";
 import { useLiveRefresh } from "@/components/use-live-refresh";
+import type { TodaySnapshot } from "@/lib/today/snapshot";
 
 type JsonRecord = Record<string, unknown>;
-type TodayItem = {
-  id: string;
-  title: string;
-  kind: "task" | "reminder";
-  priority: "low" | "medium" | "high";
-  status: "open" | "done";
-  dueAt?: string;
-  completedAt?: string;
-  createdAt: string;
-  reminderState?: "none" | "overdue" | "due_soon" | "later";
-};
-type TodayPreferences = {
-  briefEnabled: boolean;
-  briefTime: string;
-  timezone: string;
-  reminderLeadMinutes: number;
-  notificationsEnabled: boolean;
-  quietHoursEnabled: boolean;
-  quietHoursStart: string;
-  quietHoursEnd: string;
-};
-type DailyBrief = {
-  localDate: string;
-  summary: string;
-  focus: Array<{ title: string; reason: string }>;
-  watchouts: string[];
-  resurfaced: Array<{ title: string; context: string }>;
-  generatedBy: "ai" | "system";
-  model?: string;
-  sourceCounts: { items: number; memories: number; threads: number; activeWork: number; projects: number };
-  generatedAt: string;
-};
-type TodayPayload = {
-  generatedAt: string;
-  items: TodayItem[];
-  threads: Array<{ id: string; title: string; updatedAt: string }>;
-  memories: Array<{ id: string; title: string; content: string; type: string; updatedAt: string }>;
-  brief?: DailyBrief;
-  preferences: TodayPreferences;
-  briefLocalDate?: string;
-  briefGenerationDue: boolean;
-  projects?: Array<{ id: string; title: string; objective: string; targetDate?: string; completedTasks: number; totalTasks: number; nextTask?: string }>;
-};
+type TodayItem = TodaySnapshot["items"][number];
+type TodayPreferences = TodaySnapshot["preferences"];
+type DailyBrief = NonNullable<TodaySnapshot["brief"]>;
+
+const FULL_REFRESH_INTERVAL_MS = 60_000;
+const FULL_REFRESH_MIN_GAP_MS = 30_000;
+const ACTIVE_WORK_REFRESH_INTERVAL_MS = 15_000;
 
 const emptyPreferences: TodayPreferences = {
   briefEnabled: true,
@@ -81,13 +46,30 @@ const emptyPreferences: TodayPreferences = {
   quietHoursEnd: "07:00",
 };
 
-export function TodayWorkspace() {
+export function TodayWorkspace({
+  initialToday,
+  initialSummary,
+}: {
+  initialToday?: TodaySnapshot;
+  initialSummary?: unknown;
+}) {
   const { session, status: sessionStatus } = useWorkspaceSession();
-  const [today, setToday] = useState<TodayPayload>({ generatedAt: "", items: [], threads: [], memories: [], preferences: emptyPreferences, briefGenerationDue: false });
-  const [summary, setSummary] = useState<JsonRecord>({});
+  const hasInitialWorkspace = initialToday !== undefined && initialSummary !== undefined;
+  const [today, setToday] = useState<TodaySnapshot>(initialToday || {
+    generatedAt: "",
+    items: [],
+    threads: [],
+    memories: [],
+    brief: undefined,
+    preferences: emptyPreferences,
+    briefLocalDate: "",
+    briefGenerationDue: false,
+    projects: [],
+  });
+  const [summary, setSummary] = useState<JsonRecord>(() => record(initialSummary));
   const [todayError, setTodayError] = useState<string>();
   const [summaryError, setSummaryError] = useState<string>();
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!hasInitialWorkspace);
   const [saving, setSaving] = useState(false);
   const [generatingBrief, setGeneratingBrief] = useState(false);
   const [savingSchedule, setSavingSchedule] = useState(false);
@@ -97,7 +79,12 @@ export function TodayWorkspace() {
   const [dueAt, setDueAt] = useState("");
   const [announcement, setAnnouncement] = useState("Today is ready.");
   const [now, setNow] = useState<Date | null>(null);
-  const loadRef = useRef<AbortController | null>(null);
+  const todayRequestRef = useRef<AbortController | null>(null);
+  const summaryRequestRef = useRef<AbortController | null>(null);
+  const summaryRefreshRef = useRef<() => Promise<void>>(async () => undefined);
+  const lastFullRefreshAtRef = useRef(
+    initialToday?.generatedAt ? Date.parse(initialToday.generatedAt) : 0,
+  );
   const briefAttemptRef = useRef("");
   const workspaceAvailable = Boolean(session && (!session.authEnabled || session.authenticated));
   const readiness = useWorkspaceReadiness({ enabled: workspaceAvailable });
@@ -128,71 +115,122 @@ export function TodayWorkspace() {
   const reminders = open.filter((item) => item.kind === "reminder");
   const progress = visibleItems.length ? completed / visibleItems.length : 0;
 
-  async function load() {
+  function maybeGenerateBrief(nextToday: TodaySnapshot) {
+    if (
+      nextToday.briefGenerationDue &&
+      briefAttemptRef.current !== nextToday.briefLocalDate
+    ) {
+      briefAttemptRef.current = nextToday.briefLocalDate || nextToday.generatedAt.slice(0, 10);
+      void generateBrief(false);
+    }
+  }
+
+  async function refreshToday() {
     if (sessionStatus !== "ready" || !workspaceAvailable) return;
-    loadRef.current?.abort();
+    todayRequestRef.current?.abort();
     const controller = new AbortController();
-    loadRef.current = controller;
-    setLoading(true);
-    let contentRevealed = false;
-    const revealContent = () => {
-      if (!contentRevealed && !controller.signal.aborted) {
-        contentRevealed = true;
-        setLoading(false);
-      }
-    };
-    const todayRequest = readJson("/api/today", { signal: controller.signal })
-      .then((payload) => {
-        if (controller.signal.aborted) return;
-        const nextToday = payload as unknown as TodayPayload;
-        setToday(nextToday);
-        setTodayError(undefined);
-        if (nextToday.briefGenerationDue && briefAttemptRef.current !== nextToday.briefLocalDate) {
-          briefAttemptRef.current = nextToday.briefLocalDate || nextToday.generatedAt.slice(0, 10);
-          void generateBrief(false);
-        }
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) setTodayError(errorMessage(error));
-      })
-      .finally(revealContent);
-    const summaryRequest = readJson(
-      "/api/workspace-summary?limit=16&approvalLimit=12",
-      { signal: controller.signal },
-    )
-      .then((payload) => {
-        if (controller.signal.aborted) return;
-        setSummary(record(payload.summary));
-        setSummaryError(undefined);
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) setSummaryError(errorMessage(error));
-      })
-      .finally(revealContent);
-    await Promise.allSettled([todayRequest, summaryRequest]);
-    if (controller.signal.aborted) return;
-    setLoading(false);
-    setAnnouncement("Today refreshed.");
+    todayRequestRef.current = controller;
+    try {
+      const payload = await readJson("/api/today", { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      const nextToday = payload as unknown as TodaySnapshot;
+      setToday(nextToday);
+      setTodayError(undefined);
+      maybeGenerateBrief(nextToday);
+    } catch (error) {
+      if (!controller.signal.aborted) setTodayError(errorMessage(error));
+    }
+  }
+
+  async function refreshSummary() {
+    if (sessionStatus !== "ready" || !workspaceAvailable) return;
+    summaryRequestRef.current?.abort();
+    const controller = new AbortController();
+    summaryRequestRef.current = controller;
+    try {
+      const payload = await readJson(
+        "/api/workspace-summary?limit=16&approvalLimit=12",
+        { signal: controller.signal },
+      );
+      if (controller.signal.aborted) return;
+      setSummary(record(payload.summary));
+      setSummaryError(undefined);
+    } catch (error) {
+      if (!controller.signal.aborted) setSummaryError(errorMessage(error));
+    }
+  }
+
+  async function load({
+    force = false,
+    showLoading = false,
+    announce = false,
+  }: {
+    force?: boolean;
+    showLoading?: boolean;
+    announce?: boolean;
+  } = {}) {
+    if (sessionStatus !== "ready" || !workspaceAvailable) return;
+    const timestamp = Date.now();
+    if (
+      !force &&
+      Number.isFinite(lastFullRefreshAtRef.current) &&
+      timestamp - lastFullRefreshAtRef.current < FULL_REFRESH_MIN_GAP_MS
+    ) {
+      return;
+    }
+    lastFullRefreshAtRef.current = timestamp;
+    if (showLoading) setLoading(true);
+    try {
+      await Promise.all([refreshToday(), refreshSummary()]);
+      if (announce) setAnnouncement("Today refreshed.");
+    } finally {
+      if (showLoading) setLoading(false);
+    }
   }
 
   useEffect(() => {
     const clockTimer = window.setTimeout(() => setNow(new Date()), 0);
     const minuteTimer = window.setInterval(() => setNow(new Date()), 60_000);
-    const loadTimer = window.setTimeout(() => void load(), 0);
     return () => {
       window.clearInterval(minuteTimer);
       window.clearTimeout(clockTimer);
-      window.clearTimeout(loadTimer);
-      loadRef.current?.abort();
+      todayRequestRef.current?.abort();
+      summaryRequestRef.current?.abort();
     };
+  }, []);
+
+  useEffect(() => {
+    if (hasInitialWorkspace) {
+      maybeGenerateBrief(today);
+      return;
+    }
+    const loadTimer = window.setTimeout(
+      () => void load({ force: true, showLoading: true }),
+      0,
+    );
+    return () => window.clearTimeout(loadTimer);
     // Session identity is the automatic load boundary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionStatus, session]);
+  }, [hasInitialWorkspace, sessionStatus, session]);
+
+  useEffect(() => {
+    summaryRefreshRef.current = refreshSummary;
+  });
+
+  useEffect(() => {
+    if (!workspaceAvailable || activeWork.length === 0) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void summaryRefreshRef.current();
+      }
+    }, ACTIVE_WORK_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [activeWork.length, workspaceAvailable]);
 
   useLiveRefresh({
     enabled: workspaceAvailable,
     onRefresh: load,
-    pollIntervalMs: activeWork.length ? 8_000 : undefined,
+    pollIntervalMs: FULL_REFRESH_INTERVAL_MS,
   });
 
   async function addItem(event: React.FormEvent) {
@@ -305,7 +343,7 @@ export function TodayWorkspace() {
           <p>{briefLine(activeWork.length, approvals.length, reminders.length)}</p>
         </div>
         <div className="today-actions">
-          <button type="button" onClick={() => void load()} disabled={loading} className="today-icon-button" aria-label="Refresh Today">
+          <button type="button" onClick={() => void load({ force: true, showLoading: true, announce: true })} disabled={loading} className="today-icon-button" aria-label="Refresh Today">
             <RefreshCw size={16} className={loading ? "animate-spin" : ""} aria-hidden="true" />
           </button>
           <Link href="/app/capture" className="action-link">Capture</Link>

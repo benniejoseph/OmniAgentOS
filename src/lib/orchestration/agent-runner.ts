@@ -1,9 +1,21 @@
 import { createHash } from "node:crypto";
-import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, hasGeminiKey, hasOpenAIKey } from "@/lib/config";
+import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, hasAnthropicKey, hasGeminiKey, hasOpenAIKey } from "@/lib/config";
 import { getAgentLearningGuidance } from "@/lib/agents/learning";
-import { listMcpGovernedTools, listOpenApiGovernedTools } from "@/lib/connectors/governed-tools";
+import {
+  capabilityFunctionName,
+  loadProgressiveAgentTools,
+} from "@/lib/capabilities/toolbox";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
-import { generateGeminiText } from "@/lib/google/ai";
+import { generateModelToolTurn } from "@/lib/models/gateway";
+import type {
+  ModelAttemptReceipt,
+  ModelToolCall,
+  ModelToolDefinition,
+  ModelToolResult,
+  ModelToolTurnRequest,
+  ModelToolTurnResult,
+} from "@/lib/models/types";
+import { hasModelProviderFeature } from "@/lib/models/registry";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
 import {
   streamResponseTurn,
@@ -27,6 +39,7 @@ import {
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
 import { verifyResponseCitations } from "@/lib/rag/citations";
+import type { ContextPack } from "@/lib/rag/types";
 import {
   appendRunEvent,
   cancelAgentRun,
@@ -34,6 +47,7 @@ import {
   createAgentRun,
   failAgentRun,
   findAgentRunWaitingForToolApproval,
+  getAgentRun,
   markAgentRunResuming,
   markAgentRunWaitingForApproval,
   updateRunContextCount,
@@ -42,7 +56,6 @@ import type { AgentRunContinuation } from "@/lib/runs/types";
 import type { SecurityContext, SecurityRole } from "@/lib/security/types";
 import { redactSensitive } from "@/lib/security/context";
 import { executeGovernedTool } from "@/lib/tools/executor";
-import { getGovernedTools } from "@/lib/tools/registry";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { appendThreadTurn } from "@/lib/threads/store";
 import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
@@ -79,16 +92,23 @@ export async function* runAgent(
     specialistCount: request.specialistIds?.length,
     modelPolicy: request.agentProfile?.modelPolicy,
   });
-  const run = await createAgentRun({
-    tenantId: request.tenantId,
-    threadId: request.threadId,
-    mode,
-    prompt: query,
-    messages: safeMessages,
-    model: hasOpenAIKey() || hasGeminiKey() ? modelRoute.model : "fallback",
-    agentId: request.agentId,
-    specialistIds: request.specialistIds,
-  });
+  const providerConfigured = hasOpenAIKey() || hasGeminiKey() || hasAnthropicKey();
+  const run = request.preclaimedRunId
+    ? await requirePreclaimedAgentRun(request.preclaimedRunId, {
+        tenantId: request.tenantId,
+        agentId: request.agentId,
+        prompt: query,
+      })
+    : await createAgentRun({
+        tenantId: request.tenantId,
+        threadId: request.threadId,
+        mode,
+        prompt: query,
+        messages: safeMessages,
+        model: providerConfigured ? modelRoute.model : "fallback",
+        agentId: request.agentId,
+        specialistIds: request.specialistIds,
+      });
 
   // Persist non-delta events immediately; buffer text deltas so streaming does
   // not produce one store write per token. Delta writes are queued onto a
@@ -155,25 +175,33 @@ export async function* runAgent(
     yield await emit({
       type: "status",
       label: `${request.agentProfile?.name || agentDisplayName(request.agentId || "atlas")} assigned`,
-      detail: request.specialistIds?.length
+      detail: request.preclaimedRunId
+        ? "Durable read-only specialist claimed from the mission queue."
+        : request.specialistIds?.length
         ? `Specialist team: ${request.specialistIds.map(agentDisplayName).join(", ")}.`
         : "Primary specialist selected by Atlas.",
     });
-    yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
+    if (providerConfigured) {
+      yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
+    }
     const useLiveWeb = shouldUseLiveWebSearch(query) && hasOpenAIKey();
-    const retrievalPromise = buildContextPack(query, {
-      limit: 8,
-      tenantId: request.tenantId,
-    });
+    const retrievalPromise = providerConfigured
+      ? buildContextPack(query, {
+          limit: 8,
+          tenantId: request.tenantId,
+        })
+      : Promise.resolve(fallbackContextPack(query));
     const configuredToolIds = request.agentProfile ? [...new Set([
       ...request.agentProfile.toolIds,
       ...request.agentProfile.skills.flatMap((skill) => skill.toolIds),
     ])] : undefined;
-    const toolboxPromise = buildAgentToolbox(request.tenantId, {
-      query,
-      preferredToolIds: configuredToolIds,
-    });
-    const feedbackGuidancePromise = hasOpenAIKey()
+    const toolboxPromise = providerConfigured
+      ? buildAgentToolbox(request.tenantId, {
+          query,
+          preferredToolIds: configuredToolIds,
+        })
+      : Promise.resolve(emptyAgentToolbox());
+    const feedbackGuidancePromise = hasModelProviderFeature("text", modelRoute.tier)
       ? getAgentLearningGuidance(request.agentId || "atlas", {
           tenantId: request.tenantId,
         })
@@ -189,12 +217,14 @@ export async function* runAgent(
           .catch((error: unknown) => ({ error }))
       : undefined;
     const retrieval = await retrievalPromise;
-    await updateRunContextCount(run.id, retrieval.results.length);
-    yield await emit({
-      type: "memory",
-      title: `context pack ready (${retrieval.profile.mode})`,
-      count: retrieval.results.length,
-    });
+    if (providerConfigured) {
+      await updateRunContextCount(run.id, retrieval.results.length);
+      yield await emit({
+        type: "memory",
+        title: `context pack ready (${retrieval.profile.mode})`,
+        count: retrieval.results.length,
+      });
+    }
 
     let liveWebContext = "";
     if (useLiveWeb && liveWebPromise) {
@@ -254,7 +284,7 @@ export async function* runAgent(
     });
     const primaryAgentId = asCouncilAgentId(request.agentId || "atlas");
     const councilAgentIds = [...new Set([primaryAgentId, ...(request.specialistIds || []).map(asCouncilAgentId)])];
-    const councilActive = hasOpenAIKey() && councilAgentIds.length > 1;
+    const councilActive = hasModelProviderFeature("json_schema", "reasoning") && councilAgentIds.length > 1;
     let councilContributions: CouncilContribution[] = [];
     if (councilActive) {
       for (const agentId of councilAgentIds.filter((agentId) => agentId !== primaryAgentId)) {
@@ -297,14 +327,12 @@ export async function* runAgent(
 
     let response = "";
 
-    if (!hasOpenAIKey() && !hasGeminiKey()) {
+    if (!hasOpenAIKey() && !hasGeminiKey() && !hasAnthropicKey()) {
       yield await emit({ type: "status", label: "dev fallback", detail: "No model provider is configured. This is a simulated response, not model output." });
-      for (const chunk of fallbackResponse(query, retrieval.results.length)) {
-        response += chunk;
-        persistDelta(chunk);
-        yield { type: "delta", text: chunk };
-        await wait(18);
-      }
+      const fallback = fallbackResponse(query, retrieval.results.length).join("");
+      response = fallback;
+      persistDelta(fallback);
+      yield { type: "delta", text: fallback };
       await flushDeltas();
     } else {
       yield await emit({
@@ -313,50 +341,89 @@ export async function* runAgent(
         detail: modelRoute.reason,
       });
 
-      let geminiCompleted = false;
-      if (modelRoute.provider === "google") {
-        try {
-          const gemini = await generateGeminiText({
-            prompt: geminiPromptForConversation(initialConversationItems),
-            instructions,
-            maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
-            abortSignal,
-          });
-          response = gemini.text;
-          persistDelta(gemini.text);
-          yield { type: "delta", text: gemini.text };
-          yield await emit({
-            type: "model",
-            provider: "google",
-            model: gemini.model,
-            tier: modelRoute.tier,
-            inputTokens: gemini.usage.inputTokens,
-            outputTokens: gemini.usage.outputTokens,
-            cachedInputTokens: gemini.usage.cachedInputTokens,
-            totalTokens: gemini.usage.totalTokens,
-            latencyMs: gemini.latencyMs,
-            fallbackUsed: false,
-            estimatedCostUsd: gemini.estimatedCostUsd,
-          });
-          await recordRuntimeEventSafely({
-            category: "api",
-            action: "gemini.response",
-            tenantId: request.tenantId,
-            actorId: request.actorId,
-            resourceType: "agent_run",
-            resourceId: run.id,
-            durationMs: gemini.latencyMs,
-            message: "Gemini response completed.",
-            metadata: { model: gemini.model, tier: modelRoute.tier, usage: gemini.usage, estimatedCostUsd: gemini.estimatedCostUsd, responseId: gemini.responseId },
-          });
-          geminiCompleted = true;
-        } catch (error) {
-          if (!hasOpenAIKey()) throw error;
-          yield await emit({ type: "status", label: "Gemini fallback", detail: "Gemini was unavailable, so Asael switched to the governed OpenAI runtime." });
+      let providerTextCompleted = false;
+      if (modelRoute.provider !== "openai") {
+        const securityContext: SecurityContext = {
+          tenantId: normalizeTenantId(request.tenantId),
+          actorId: request.actorId || "agent",
+          role: normalizeRole(request.role),
+          source: "default",
+        };
+        const providerLoop = runNonOpenAIProviderToolLoop({
+          provider: modelRoute.provider,
+          tier: modelRoute.tier,
+          instructions,
+          prompt: modelPromptForConversation(initialConversationItems),
+          tools: toolbox.openAITools.map((tool) => ({
+            type: tool.type,
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters,
+          })),
+          toolbox,
+          securityContext,
+          runId: run.id,
+          abortSignal,
+          forceApproval: agentToolPolicy?.forceApproval,
+        });
+        let result: NonOpenAIProviderLoopResult;
+        for (;;) {
+          const next = await providerLoop.next();
+          if (next.done) {
+            result = next.value;
+            break;
+          }
+          const event = next.value;
+          if (event.type === "delta") {
+            response += event.text;
+            persistDelta(event.text);
+            yield event;
+          } else {
+            yield await emit(event);
+          }
         }
+        const fallbackUsed = result.attempts.some((attempt) => attempt.status === "failed");
+        yield await emit({
+          type: "model",
+          provider: result.provider,
+          model: result.model,
+          tier: modelRoute.tier,
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          cachedInputTokens: result.usage.cachedInputTokens,
+          totalTokens: result.usage.totalTokens,
+          latencyMs: result.latencyMs,
+          fallbackUsed,
+          estimatedCostUsd: result.estimatedCostUsd,
+          costKnown: result.costKnown,
+        });
+        await recordRuntimeEventSafely({
+          category: "api",
+          action: `${result.provider}.response`,
+          tenantId: request.tenantId,
+          actorId: request.actorId,
+          resourceType: "agent_run",
+          resourceId: run.id,
+          durationMs: result.latencyMs,
+          message: fallbackUsed
+            ? `${result.provider} response completed through a same-provider model fallback.`
+            : `${result.provider} response completed.`,
+          metadata: {
+            model: result.model,
+            requestedProvider: modelRoute.provider,
+            tier: modelRoute.tier,
+            fallbackUsed,
+            attempts: result.attempts,
+            usage: result.usage,
+            turns: result.turns,
+            estimatedCostUsd: result.estimatedCostUsd,
+            costKnown: result.costKnown,
+          },
+        });
+        providerTextCompleted = true;
       }
 
-      if (!geminiCompleted) {
+      if (!providerTextCompleted) {
       const securityContext: SecurityContext = {
         tenantId: normalizeTenantId(request.tenantId),
         actorId: request.actorId || "agent",
@@ -406,6 +473,7 @@ export async function* runAgent(
           latencyMs: turn.latencyMs,
           fallbackUsed: turn.fallbackUsed,
           estimatedCostUsd: turn.estimatedCostUsd,
+          costKnown: turn.estimatedCostUsd !== undefined,
         });
         await recordRuntimeEventSafely({
           category: "api",
@@ -685,13 +753,15 @@ export async function* runAgent(
       runId: run.id,
       response,
     });
-    const consolidation = enqueueMemoryConsolidationSafely({
-      runId: run.id,
-      tenantId: request.tenantId,
-      mode,
-      prompt: query,
-      response,
-    });
+    const consolidation = providerConfigured
+      ? enqueueMemoryConsolidationSafely({
+          runId: run.id,
+          tenantId: request.tenantId,
+          mode,
+          prompt: query,
+          response,
+        })
+      : Promise.resolve();
     yield await emit({ type: "done", response, grounding });
     await consolidation;
   } catch (error) {
@@ -710,7 +780,273 @@ export async function* runAgent(
   }
 }
 
-function geminiPromptForConversation(items: ConversationItem[]) {
+type NonOpenAIProviderLoopEvent = Extract<
+  AgentEvent,
+  { type: "delta" | "status" | "tool" }
+>;
+
+type NonOpenAIProviderLoopResult = {
+  text: string;
+  provider: "google" | "anthropic";
+  model: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    totalTokens: number;
+  };
+  latencyMs: number;
+  estimatedCostUsd?: number;
+  costKnown: boolean;
+  attempts: ModelAttemptReceipt[];
+  turns: number;
+};
+
+/**
+ * Provider-neutral governed tool loop used by Gemini and Anthropic runs.
+ * Dependency injection keeps the policy/continuation behavior directly
+ * testable without starting a complete persisted agent run.
+ */
+export async function* runNonOpenAIProviderToolLoop(input: {
+  provider: "google" | "anthropic";
+  tier: "fast" | "reasoning";
+  instructions: string;
+  prompt: string;
+  tools: readonly ModelToolDefinition[];
+  toolbox: {
+    byFunctionName: Map<string, ToolboxEntry>;
+  };
+  securityContext: SecurityContext;
+  runId: string;
+  abortSignal?: AbortSignal;
+  forceApproval?: boolean;
+  generateTurn?: (request: ModelToolTurnRequest) => Promise<ModelToolTurnResult>;
+  executeTool?: typeof executeGovernedTool;
+}): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
+  const generateTurn = input.generateTurn || generateModelToolTurn;
+  const executeTool = input.executeTool || executeGovernedTool;
+  let continuation: ModelToolTurnResult["continuation"] | undefined;
+  let toolResults: ModelToolResult[] | undefined;
+  let toolSteps = 0;
+  let turns = 0;
+  let text = "";
+  let model = "";
+  let latencyMs = 0;
+  let costKnown = true;
+  let estimatedCostUsd = 0;
+  const attempts: ModelAttemptReceipt[] = [];
+  const usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    totalTokens: 0,
+  };
+
+  for (;;) {
+    const toolsEnabled = toolSteps < AGENT_MAX_TOOL_STEPS;
+    const turn = await generateTurn({
+      input: input.prompt,
+      instructions: input.instructions,
+      tier: input.tier,
+      preferredProvider: input.provider,
+      allowedProviders: [input.provider],
+      allowCrossProviderFallback: false,
+      maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      abortSignal: input.abortSignal,
+      tools: toolsEnabled ? input.tools : [],
+      continuation,
+      toolResults,
+    });
+    if (turn.provider !== input.provider || turn.continuation.provider !== input.provider) {
+      throw new Error("A provider-bound tool turn returned cross-provider state.");
+    }
+
+    turns += 1;
+    model = turn.model;
+    latencyMs += turn.latencyMs;
+    attempts.push(...turn.attempts);
+    usage.inputTokens += turn.usage.inputTokens;
+    usage.outputTokens += turn.usage.outputTokens;
+    usage.cachedInputTokens += turn.usage.cachedInputTokens;
+    usage.totalTokens += turn.usage.totalTokens;
+    if (turn.costKnown && turn.estimatedCostUsd !== undefined) {
+      estimatedCostUsd += turn.estimatedCostUsd;
+    } else {
+      costKnown = false;
+    }
+    continuation = turn.continuation;
+
+    if (turn.text) {
+      text += turn.text;
+      yield { type: "delta", text: turn.text };
+    }
+    if (!turn.toolCalls.length) break;
+    if (!toolsEnabled) {
+      throw new Error(
+        `${input.provider} returned tool calls after the governed tool-step budget was exhausted.`,
+      );
+    }
+
+    toolSteps += 1;
+    const callsThisTurn = turn.toolCalls.slice(0, MAX_TOOL_CALLS_PER_TURN);
+    const outputs: ModelToolResult[] = [];
+    const parallelCalls = callsThisTurn.map((call) => {
+      const entry = input.toolbox.byFunctionName.get(call.name);
+      if (
+        !entry ||
+        entry.definition.riskLevel !== 0 ||
+        entry.definition.approvalRequired
+      ) {
+        return null;
+      }
+      try {
+        return { call, entry, arguments: parseFunctionArguments(call.argumentsJson) };
+      } catch {
+        return null;
+      }
+    });
+    const canRunInParallel =
+      parallelCalls.length > 1 && parallelCalls.every(Boolean);
+
+    if (canRunInParallel) {
+      const prepared = parallelCalls.filter(
+        (item): item is NonNullable<typeof item> => Boolean(item),
+      );
+      for (const item of prepared) {
+        yield {
+          type: "tool",
+          toolId: item.entry.definition.id,
+          toolName: item.entry.definition.name,
+          status: "running",
+          riskLevel: item.entry.definition.riskLevel,
+        };
+      }
+      const executions = await Promise.all(
+        prepared.map((item) => executeTool({
+          toolId: item.entry.definition.id,
+          input: item.arguments,
+          dryRun: false,
+          approved: false,
+          context: input.securityContext,
+          abortSignal: input.abortSignal,
+          idempotencyKey: `${input.runId}:${input.provider}:${item.call.callId}`,
+          forceApproval: input.forceApproval,
+        })),
+      );
+      for (let index = 0; index < prepared.length; index += 1) {
+        const item = prepared[index];
+        const execution = executions[index];
+        yield toolEventForExecution(item.entry.definition, execution.record);
+        outputs.push(providerToolResult(item.call, executionPayload(execution),
+          execution.record.status !== "executed" && execution.record.status !== "dry_run"));
+      }
+    } else {
+      for (const call of callsThisTurn) {
+        const entry = input.toolbox.byFunctionName.get(call.name);
+        if (!entry) {
+          outputs.push(providerToolResult(call, {
+            error: `Unknown tool ${call.name}.`,
+          }, true));
+          continue;
+        }
+        const definition = entry.definition;
+        yield {
+          type: "tool",
+          toolId: definition.id,
+          toolName: definition.name,
+          status: "running",
+          riskLevel: definition.riskLevel,
+        };
+
+        let parsedArguments: Record<string, unknown>;
+        try {
+          parsedArguments = parseFunctionArguments(call.argumentsJson);
+        } catch (error) {
+          const message = error instanceof Error
+            ? error.message
+            : "Tool arguments were rejected.";
+          yield {
+            type: "tool",
+            toolId: definition.id,
+            toolName: definition.name,
+            status: "failed",
+            riskLevel: definition.riskLevel,
+            summary: message,
+          };
+          outputs.push(providerToolResult(call, { error: message }, true));
+          continue;
+        }
+
+        const execution = await executeTool({
+          toolId: definition.id,
+          input: parsedArguments,
+          dryRun: false,
+          approved: false,
+          context: input.securityContext,
+          abortSignal: input.abortSignal,
+          idempotencyKey: `${input.runId}:${input.provider}:${call.callId}`,
+          forceApproval: input.forceApproval,
+        });
+        yield toolEventForExecution(definition, execution.record);
+        if (execution.record.status === "approval_required") {
+          yield {
+            type: "status",
+            label: "tool approval required",
+            detail:
+              `${definition.name} was added to Approvals. This provider turn will continue without executing it.`,
+          };
+        }
+        const isError =
+          execution.record.status !== "executed" &&
+          execution.record.status !== "dry_run";
+        outputs.push(providerToolResult(
+          call,
+          executionPayload(execution),
+          isError,
+        ));
+      }
+    }
+
+    for (const call of turn.toolCalls.slice(MAX_TOOL_CALLS_PER_TURN)) {
+      outputs.push(providerToolResult(call, {
+        error: "Per-turn tool call limit reached; call skipped.",
+      }, true));
+    }
+    if (turn.toolCalls.length > MAX_TOOL_CALLS_PER_TURN) {
+      yield {
+        type: "status",
+        label: "tool call budget enforced",
+        detail:
+          `${turn.toolCalls.length - MAX_TOOL_CALLS_PER_TURN} excess tool call(s) were rejected.`,
+      };
+    }
+    if (toolSteps >= AGENT_MAX_TOOL_STEPS) {
+      yield {
+        type: "status",
+        label: "tool budget reached",
+        detail:
+          `Tool step budget (${AGENT_MAX_TOOL_STEPS}) reached; asking the model for its final answer.`,
+      };
+    }
+    toolResults = outputs;
+  }
+
+  return {
+    text,
+    provider: input.provider,
+    model,
+    usage,
+    latencyMs,
+    ...(costKnown ? {
+      estimatedCostUsd: Math.round(estimatedCostUsd * 1_000_000) / 1_000_000,
+    } : {}),
+    costKnown,
+    attempts,
+    turns,
+  };
+}
+
+function modelPromptForConversation(items: ConversationItem[]) {
   return items.flatMap((item) => {
     if ("role" in item) return [`${item.role.toUpperCase()}: ${item.content}`];
     if (item.type === "function_call_output") return [`TOOL RESULT: ${item.output}`];
@@ -1236,40 +1572,29 @@ async function buildAgentToolbox(
   openAITools: ResponseFunctionTool[];
   byFunctionName: Map<string, ToolboxEntry>;
 }> {
-  const [mcpTools, openApiTools] = await Promise.all([
-    listMcpGovernedTools({ tenantId }).catch(() => [] as ToolDefinition[]),
-    listOpenApiGovernedTools({ tenantId }).catch(() => [] as ToolDefinition[]),
-  ]);
-
-  const excluded = new Set(options?.excludeToolIds ?? []);
-  const nativeDefinitions = getGovernedTools().filter(
-    (tool) => tool.status === "active" && tool.riskLevel < 3 && !excluded.has(tool.id),
-  );
-  const preferred = new Set(options?.preferredToolIds || []);
-  const externalLimit = preferred.size ? 12 : 6;
-  const externalDefinitions = [...mcpTools, ...openApiTools]
-    .filter((tool) =>
-      tool.status === "active" &&
-      tool.riskLevel < 3 &&
-      !excluded.has(tool.id) &&
-      (!preferred.size || preferred.has(tool.id))
-    )
-    .map((tool) => ({ tool, score: toolRelevanceScore(tool, options?.query || "") }))
-    .filter((candidate) => preferred.size || candidate.score > 0)
-    .sort((left, right) => right.score - left.score || left.tool.id.localeCompare(right.tool.id))
-    .slice(0, externalLimit)
-    .map((candidate) => candidate.tool);
-  const definitions = [...nativeDefinitions, ...externalDefinitions];
-
-  const used = new Set<string>();
-  const tools: ToolboxEntry[] = definitions.map((definition) => {
-    let functionName = definition.id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 60) || "tool";
-    while (used.has(functionName)) {
-      functionName = `${functionName.slice(0, 56)}_${used.size}`;
-    }
-    used.add(functionName);
-    return { definition, functionName };
+  const { definitions } = await loadProgressiveAgentTools({
+    tenantId,
+    excludeToolIds: options?.excludeToolIds,
+    query: options?.query,
+    preferredToolIds: options?.preferredToolIds,
   });
+  const tools: ToolboxEntry[] = definitions.map((definition) => {
+    return {
+      definition,
+      functionName: capabilityFunctionName(definition.id),
+    };
+  });
+  const byFunctionName = new Map(tools.map((entry) => [entry.functionName, entry]));
+  // Runs paused before hashed names shipped may still hold queued legacy calls.
+  // Keep those aliases executable without exposing them in new model requests.
+  for (const entry of tools) {
+    const legacyName = entry.definition.id
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .slice(0, 60) || "tool";
+    if (!byFunctionName.has(legacyName)) {
+      byFunctionName.set(legacyName, entry);
+    }
+  }
 
   return {
     tools,
@@ -1284,22 +1609,8 @@ async function buildAgentToolbox(
       parameters: entry.definition.inputSchema,
       strict: false as const,
     })),
-    byFunctionName: new Map(tools.map((entry) => [entry.functionName, entry])),
+    byFunctionName,
   };
-}
-
-function toolRelevanceScore(tool: ToolDefinition, query: string) {
-  const haystack = `${tool.id} ${tool.name} ${tool.description} ${tool.category}`.toLowerCase();
-  const normalizedQuery = query.toLowerCase().replace(/[^a-z0-9_.:-]+/g, " ").trim();
-  if (!normalizedQuery) return 0;
-  const tokens = [...new Set(normalizedQuery.split(/\s+/).filter((token) => token.length > 2))].slice(0, 24);
-  let score = haystack.includes(normalizedQuery) ? 100 : 0;
-  for (const token of tokens) {
-    if (tool.id.toLowerCase().includes(token)) score += 12;
-    if (tool.name.toLowerCase().includes(token)) score += 8;
-    if (tool.description.toLowerCase().includes(token)) score += 3;
-  }
-  return score;
 }
 
 function filterAgentToolbox(
@@ -1345,6 +1656,27 @@ function functionCallOutput(call: ResponseFunctionCall, payload: unknown) {
 }
 
 function functionCallOutputFromCallId(callId: string, payload: unknown) {
+  return {
+    type: "function_call_output" as const,
+    call_id: callId,
+    output: serializeToolResult(payload),
+  };
+}
+
+function providerToolResult(
+  call: ModelToolCall,
+  payload: unknown,
+  isError = false,
+): ModelToolResult {
+  return {
+    callId: call.callId,
+    name: call.name,
+    output: serializeToolResult(payload),
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
+function serializeToolResult(payload: unknown) {
   let output = JSON.stringify({
     provenance: "tool_result",
     trust: "untrusted_data",
@@ -1353,7 +1685,37 @@ function functionCallOutputFromCallId(callId: string, payload: unknown) {
   if (output.length > MAX_TOOL_RESULT_CHARS) {
     output = `${output.slice(0, MAX_TOOL_RESULT_CHARS)}… [truncated]`;
   }
-  return { type: "function_call_output" as const, call_id: callId, output };
+  return output;
+}
+
+function executionPayload(
+  execution: Awaited<ReturnType<typeof executeGovernedTool>>,
+) {
+  return {
+    status: execution.record.status,
+    dryRun: execution.record.dryRun,
+    approvalRequired: execution.record.approvalRequired,
+    note: execution.record.status === "executed"
+      ? "Executed for real."
+      : execution.record.reason,
+    result: execution.result,
+  };
+}
+
+function toolEventForExecution(
+  definition: ToolDefinition,
+  record: ToolExecutionRecord,
+): Extract<AgentEvent, { type: "tool" }> {
+  return {
+    type: "tool",
+    toolId: definition.id,
+    toolName: definition.name,
+    status: toolExecutionStatus(record.status),
+    riskLevel: definition.riskLevel,
+    dryRun: record.dryRun,
+    summary: record.reason,
+    executionId: record.id,
+  };
 }
 
 function parseFunctionArguments(argumentsJson: string): Record<string, unknown> {
@@ -1497,6 +1859,25 @@ function councilRole(agentId: CouncilAgentId) {
   }[agentId];
 }
 
+async function requirePreclaimedAgentRun(
+  runId: string,
+  expected: { tenantId?: string; agentId?: string; prompt: string },
+) {
+  const run = await getAgentRun(runId, { tenantId: expected.tenantId });
+  if (!run) throw new Error("The durable specialist run no longer exists.");
+  if (run.status !== "running") {
+    throw new Error(`The durable specialist run is ${run.status}, not claimed for execution.`);
+  }
+  const expectedPrompt = String(redactSensitive(expected.prompt)).slice(0, 30_000);
+  if (
+    run.prompt !== expectedPrompt ||
+    (expected.agentId && run.agentId !== expected.agentId)
+  ) {
+    throw new Error("The durable specialist claim does not match its queued request.");
+  }
+  return run;
+}
+
 function normalizeRole(role?: string): SecurityRole {
   return role === "viewer" || role === "operator" || role === "admin" || role === "system"
     ? role
@@ -1532,6 +1913,30 @@ function fallbackResponse(query: string, memoryCount: number) {
   return text.match(/.{1,42}(\s|$)/g) || [text];
 }
 
-function wait(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function fallbackContextPack(query: string): ContextPack {
+  return {
+    query,
+    profile: {
+      mode: "direct",
+      intent: "casual",
+      shouldRetrieve: false,
+      complexity: 0,
+      queryTerms: [],
+      expandedQueries: [],
+      rationale: ["No model provider is configured, so retrieval was skipped."],
+    },
+    results: [],
+    memoryResults: [],
+    knowledgeResults: [],
+    graphResults: [],
+    contextBlock: "",
+  };
+}
+
+function emptyAgentToolbox() {
+  return {
+    tools: [] as ToolboxEntry[],
+    openAITools: [] as ResponseFunctionTool[],
+    byFunctionName: new Map<string, ToolboxEntry>(),
+  };
 }

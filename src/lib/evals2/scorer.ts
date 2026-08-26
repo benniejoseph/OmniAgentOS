@@ -17,7 +17,7 @@ export type GoldenAssertion = {
   maxEstimatedCostUsd?: number;
   maxLatencyMs?: number;
   maxFallbacks?: number;
-  requiredProvider?: "openai" | "google";
+  requiredProvider?: "openai" | "google" | "anthropic" | "local";
 };
 
 export type EvalTrajectory = {

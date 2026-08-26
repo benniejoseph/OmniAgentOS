@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   applyObservabilitySloPolicyChange,
@@ -22,6 +23,7 @@ import {
 } from "@/lib/tools/audit-store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { executeGovernedTool } from "@/lib/tools/executor";
+import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM } from "@/lib/tools/types";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -242,13 +244,16 @@ async function POSTHandler(
       );
     }
     const rejected = rejection.record;
+    const rejectedTool = getGovernedTool(record.toolId) ||
+      await getMcpGovernedTool(record.toolId, { tenantId: securityContext.tenantId }) ||
+      await getOpenApiGovernedTool(record.toolId, { tenantId: securityContext.tenantId });
     // A rejection is a trust signal: it resets the action class's clean streak.
     await recordActionOutcome({
       actionClass: actionClassFor(record.toolId),
       toolId: record.toolId,
       tenantId: securityContext.tenantId,
       kind: "rejected",
-      reversible: false,
+      reversible: rejectedTool?.reversible ?? false,
       riskLevel: record.riskLevel,
       humanApproved: false,
     }).catch(() => undefined);

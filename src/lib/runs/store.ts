@@ -69,6 +69,113 @@ export async function createAgentRun(input: {
   return run;
 }
 
+/**
+ * Persist a durable run before it is dispatched. The caller supplies a
+ * deterministic id so supervisor retries converge on the same record.
+ */
+export async function createQueuedAgentRun(input: {
+  id: string;
+  tenantId?: string;
+  mode: AgentMode;
+  prompt: string;
+  messages: ChatMessage[];
+  model?: string;
+  agentId: string;
+}) {
+  const now = new Date().toISOString();
+  const safeMessages = input.messages.map((message) => ({
+    ...message,
+    content: safeRunText(message.content, 30_000),
+  }));
+  const run: AgentRunRecord = {
+    id: safeRunId(input.id),
+    tenantId: normalizeTenantId(input.tenantId),
+    mode: input.mode,
+    status: "queued",
+    prompt: safeRunText(input.prompt, 30_000),
+    messages: safeMessages,
+    model: input.model,
+    agentId: safeRunId(input.agentId),
+    specialistIds: [safeRunId(input.agentId)],
+    memoryContextCount: 0,
+    consolidationCount: 0,
+    startedAt: now,
+  };
+
+  let saved = run;
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      INSERT INTO omni_agent_runs (
+        id, tenant_id, mode, status, prompt, messages, model, agent_id,
+        specialist_ids, memory_context_count, started_at
+      )
+      VALUES (
+        ${run.id}, ${run.tenantId}, ${run.mode}, ${run.status}, ${run.prompt},
+        ${run.messages}::jsonb, ${run.model || null}, ${run.agentId},
+        ${run.specialistIds}, ${run.memoryContextCount}, ${run.startedAt}
+      )
+      ON CONFLICT (id) DO NOTHING
+      RETURNING *
+    `;
+    if (rows[0]) return runFromRow(rows[0]);
+    const existing = await getAgentRun(run.id, { tenantId: run.tenantId });
+    if (!existing) throw new Error("Queued agent run id collided without a readable record.");
+    assertQueuedRunIdentity(existing, run);
+    return existing;
+  }
+
+  await updateRunLedger((ledger) => {
+    const existing = ledger.runs.find((item) =>
+      item.id === run.id && normalizeTenantId(item.tenantId) === run.tenantId
+    );
+    if (existing) {
+      assertQueuedRunIdentity(existing, run);
+      saved = existing;
+      return ledger;
+    }
+    ledger.runs.unshift(run);
+    return ledger;
+  });
+  return saved;
+}
+
+/** Exactly one queue delivery may move a pre-created run into execution. */
+export async function claimQueuedAgentRun(
+  runId: string,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const startedAt = new Date().toISOString();
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      UPDATE omni_agent_runs
+      SET status = 'running', started_at = ${startedAt}, completed_at = NULL,
+          error = NULL
+      WHERE id = ${runId} AND tenant_id = ${tenantId} AND status = 'queued'
+      RETURNING *
+    `;
+    return rows[0] ? runFromRow(rows[0]) : undefined;
+  }
+
+  let claimed: AgentRunRecord | undefined;
+  await updateRunLedger((ledger) => {
+    const run = ledger.runs.find((item) =>
+      item.id === runId && normalizeTenantId(item.tenantId) === tenantId
+    );
+    if (run?.status === "queued") {
+      run.status = "running";
+      run.startedAt = startedAt;
+      run.completedAt = undefined;
+      run.error = undefined;
+      claimed = { ...run };
+    }
+    return ledger;
+  });
+  return claimed;
+}
+
 export async function appendRunEvent(
   runId: string,
   event: AgentEvent,
@@ -323,13 +430,15 @@ export async function repairStuckAgentRuns({
           error        = CASE
             WHEN status = 'resuming'
               THEN 'Approved run resume was interrupted; side effects were not replayed.'
+            WHEN status = 'queued'
+              THEN 'Queued durable agent run expired before dispatch.'
             ELSE 'Run timed out (function invocation limit exceeded).'
           END,
           continuation = NULL,
           completed_at = NOW()
       WHERE tenant_id = ${tenantId}
         AND (
-          (status = 'running' AND started_at <= ${staleBeforeEpoch}::timestamptz)
+          (status IN ('queued', 'running') AND started_at <= ${staleBeforeEpoch}::timestamptz)
           OR (
             status = 'resuming'
             AND COALESCE(
@@ -349,22 +458,25 @@ export async function repairStuckAgentRuns({
       if (normalizeTenantId(run.tenantId) !== tenantId) {
         continue;
       }
-      const staleRunning =
-        run.status === "running" &&
+      const staleInitial =
+        (run.status === "queued" || run.status === "running") &&
         Date.parse(run.startedAt) <= staleBefore;
       const resumeClaimedAt =
         run.continuation?.resumeClaimedAt || run.startedAt;
       const staleResuming =
         run.status === "resuming" &&
         Date.parse(resumeClaimedAt) <= staleBefore;
-      if (!staleRunning && !staleResuming) {
+      if (!staleInitial && !staleResuming) {
         continue;
       }
       repaired += 1;
+      const wasQueued = run.status === "queued";
       run.status = "failed";
       run.error = staleResuming
         ? "Approved run resume was interrupted; side effects were not replayed."
-        : "Run timed out (function invocation limit exceeded).";
+        : wasQueued
+          ? "Queued durable agent run expired before dispatch."
+          : "Run timed out (function invocation limit exceeded).";
       run.continuation = undefined;
       run.completedAt = new Date().toISOString();
     }
@@ -689,6 +801,28 @@ function safeRunText(value: string, maxChars: number) {
   return String(redactSensitive(value)).slice(0, maxChars);
 }
 
+function safeRunId(value: string) {
+  const safe = value.trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 200);
+  if (!safe) throw new Error("Agent run identity is required.");
+  return safe;
+}
+
+function assertQueuedRunIdentity(
+  existing: AgentRunRecord,
+  expected: AgentRunRecord,
+) {
+  if (
+    normalizeTenantId(existing.tenantId) !== expected.tenantId ||
+    existing.mode !== expected.mode ||
+    existing.prompt !== expected.prompt ||
+    existing.agentId !== expected.agentId
+  ) {
+    throw new Error(
+      "Durable agent run id is already bound to a different specialist request.",
+    );
+  }
+}
+
 async function updateFileRun(runId: string, mutate: (run: AgentRunRecord) => void) {
   await updateRunLedger((ledger) => {
     const run = ledger.runs.find((item) => item.id === runId);
@@ -718,10 +852,10 @@ async function updateRunLedger(mutate: (ledger: RunLedger) => RunLedger) {
 
 function trimLedger(ledger: RunLedger): RunLedger {
   const nonterminal = ledger.runs.filter((run) =>
-    ["running", "waiting_approval", "resuming"].includes(run.status),
+    ["queued", "running", "waiting_approval", "resuming"].includes(run.status),
   );
   const terminal = ledger.runs.filter(
-    (run) => !["running", "waiting_approval", "resuming"].includes(run.status),
+    (run) => !["queued", "running", "waiting_approval", "resuming"].includes(run.status),
   );
   const runs = [
     ...nonterminal,

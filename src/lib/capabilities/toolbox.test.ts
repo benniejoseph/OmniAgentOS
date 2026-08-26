@@ -1,0 +1,194 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  AGENT_EXTERNAL_TOOL_ALLOWLIST_LIMIT,
+  AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT,
+  applyToolSchemaBudget,
+  capabilityFunctionName,
+  loadProgressiveAgentTools,
+} from "@/lib/capabilities/toolbox";
+import type { CapabilityDescriptor } from "@/lib/capabilities/types";
+import type { ToolDefinition } from "@/lib/tools/types";
+
+describe("progressive agent toolbox", () => {
+  it("hydrates only the top six metadata matches by default", async () => {
+    const descriptors = Array.from(
+      { length: 20 },
+      (_, index) => descriptor(`mcp:mail:tool-${index}`),
+    );
+    const search = vi.fn(async () => ({
+      capabilities: descriptors,
+      query: "mail",
+      total: descriptors.length,
+      limit: 24,
+      hasMore: false,
+    }));
+    const resolveMcp = vi.fn(async (id: string) => tool({ id, category: "mcp" }));
+
+    const result = await loadProgressiveAgentTools(
+      { tenantId: "tenant-a", query: "mail" },
+      {
+        listNative: () => [tool({ id: "memory.search" })],
+        search,
+        resolveMcp,
+        resolveOpenApi: vi.fn(async () => null),
+      },
+    );
+
+    expect(resolveMcp).toHaveBeenCalledTimes(AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT);
+    expect(result.definitions).toHaveLength(AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT + 1);
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "tenant-a",
+      query: "mail",
+      sources: ["mcp", "openapi"],
+    }));
+  });
+
+  it("hydrates no more than twelve exact allowlisted tools and skips other sources", async () => {
+    const ids = Array.from({ length: 20 }, (_, index) => `openapi:mail:send-${index}`);
+    const search = vi.fn(async () => ({
+      capabilities: ids.map((id) => descriptor(id, "openapi")),
+      query: "",
+      total: ids.length,
+      limit: 48,
+      hasMore: false,
+    }));
+    const resolveOpenApi = vi.fn(async (id: string) => tool({ id, category: "openapi" }));
+
+    const result = await loadProgressiveAgentTools(
+      { tenantId: "tenant-a", query: "ignored", preferredToolIds: ids },
+      {
+        listNative: () => [tool({ id: "memory.search" })],
+        search,
+        resolveMcp: vi.fn(async () => null),
+        resolveOpenApi,
+      },
+    );
+
+    expect(resolveOpenApi).toHaveBeenCalledTimes(AGENT_EXTERNAL_TOOL_ALLOWLIST_LIMIT);
+    expect(result.definitions).toHaveLength(AGENT_EXTERNAL_TOOL_ALLOWLIST_LIMIT);
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({
+      query: undefined,
+      allowlist: ids,
+    }));
+  });
+
+  it("does not hydrate high-risk metadata and fails closed on resolver errors", async () => {
+    const resolveMcp = vi.fn(async (id: string) => {
+      if (id.endsWith("broken")) throw new Error("offline");
+      return tool({ id, category: "mcp" });
+    });
+    const result = await loadProgressiveAgentTools(
+      { tenantId: "tenant-a", query: "connector" },
+      {
+        listNative: () => [],
+        search: vi.fn(async () => ({
+          capabilities: [
+            descriptor("mcp:connector:blocked", "mcp", 3),
+            descriptor("mcp:connector:broken"),
+            descriptor("mcp:connector:ready"),
+          ],
+          query: "connector",
+          total: 3,
+          limit: 24,
+          hasMore: false,
+        })),
+        resolveMcp,
+        resolveOpenApi: vi.fn(async () => null),
+      },
+    );
+
+    expect(resolveMcp).toHaveBeenCalledTimes(2);
+    expect(result.definitions.map((item) => item.id)).toEqual([
+      "mcp:connector:ready",
+    ]);
+  });
+
+  it("keeps one connector source available when the other catalog fails", async () => {
+    const search = vi.fn(async (input: { sources?: readonly string[] }) => {
+      if (input.sources?.length === 2 || input.sources?.[0] === "openapi") {
+        throw new Error("OpenAPI catalog unavailable");
+      }
+      return {
+        capabilities: [descriptor("mcp:connector:ready")],
+        query: "connector",
+        total: 1,
+        limit: 24,
+        hasMore: false,
+      };
+    });
+    const result = await loadProgressiveAgentTools(
+      { tenantId: "tenant-a", query: "connector" },
+      {
+        listNative: () => [],
+        search,
+        resolveMcp: vi.fn(async (id) => tool({ id, category: "mcp" })),
+        resolveOpenApi: vi.fn(async () => null),
+      },
+    );
+
+    expect(result.definitions.map((item) => item.id)).toEqual([
+      "mcp:connector:ready",
+    ]);
+    expect(search).toHaveBeenCalledTimes(3);
+  });
+
+  it("enforces serialized per-tool and per-run schema byte budgets", () => {
+    const result = applyToolSchemaBudget(
+      [
+        tool({ id: "small-a", inputSchema: { value: "1234" } }),
+        tool({ id: "too-large", inputSchema: { value: "x".repeat(80) } }),
+        tool({ id: "small-b", inputSchema: { value: "5678" } }),
+      ],
+      { perToolBytes: 40, perRunBytes: 20 },
+    );
+
+    expect(result.definitions.map((item) => item.id)).toEqual(["small-a"]);
+    expect(result.omittedToolIds).toEqual(["too-large", "small-b"]);
+    expect(result.schemaBytes).toBe(
+      Buffer.byteLength(JSON.stringify({ value: "1234" }), "utf8"),
+    );
+  });
+
+  it("creates deterministic collision-resistant model function names", () => {
+    const first = capabilityFunctionName("mcp:mail/send:message");
+    const same = capabilityFunctionName("mcp:mail/send:message");
+    const formerlyColliding = capabilityFunctionName("mcp:mail_send:message");
+
+    expect(first).toBe(same);
+    expect(first).not.toBe(formerlyColliding);
+    expect(first).toMatch(/^[a-zA-Z0-9_-]+$/);
+    expect(first.length).toBeLessThanOrEqual(60);
+  });
+});
+
+function descriptor(
+  id: string,
+  source: "mcp" | "openapi" = "mcp",
+  riskLevel: 0 | 1 | 2 | 3 = 1,
+): CapabilityDescriptor {
+  return {
+    id,
+    name: id,
+    description: "External operation.",
+    category: source,
+    source,
+    riskLevel,
+    approvalRequired: riskLevel >= 2,
+    reversible: false,
+  };
+}
+
+function tool(overrides: Partial<ToolDefinition> = {}): ToolDefinition {
+  return {
+    id: "memory.search",
+    name: "Tool",
+    description: "Tool description.",
+    category: "memory",
+    status: "active",
+    riskLevel: 0,
+    dryRunSupported: true,
+    approvalRequired: false,
+    inputSchema: { type: "object" },
+    ...overrides,
+  };
+}

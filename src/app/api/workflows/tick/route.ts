@@ -43,6 +43,10 @@ import { processDueDailyBriefs } from "@/lib/today/briefs";
 import { processDueNotifications } from "@/lib/today/notifications";
 import { processActiveProjectExecutions } from "@/lib/projects/execution";
 import { syncDuePersonalProviders } from "@/lib/connectors/personal-sync";
+import {
+  processAllTenantDurableSpecialistQueues,
+  processDurableSpecialistQueue,
+} from "@/lib/subagents/worker";
 
 export const runtime = "nodejs";
 // Workflow steps run gpt-5 planning/execution that can exceed 60s; 300s is the
@@ -321,11 +325,12 @@ async function POSTHandler(request: Request) {
         workerHeartbeat,
         count:
           scheduled.queue?.leased ||
+          scheduled.durableSpecialists?.leased ||
           scheduled.backgroundJobs?.leased ||
           0,
       });
     }
-    const [queue, agentResumes, backgroundJobs, recoveredToolClaims] =
+    const [queue, agentResumes, durableSpecialists, backgroundJobs, recoveredToolClaims] =
       await Promise.all([
       processWorkflowQueue({
         limit: parsed.data.limit || 5,
@@ -333,6 +338,10 @@ async function POSTHandler(request: Request) {
       }),
       processAgentResumeQueue({
         limit: parsed.data.limit || 5,
+        tenantId: context.tenantId,
+      }),
+      processDurableSpecialistQueue({
+        limit: Math.min(parsed.data.limit || 2, 2),
         tenantId: context.tenantId,
       }),
       processBackgroundOperationQueue({
@@ -413,6 +422,7 @@ async function POSTHandler(request: Request) {
     return Response.json({
       queue,
       agentResumes,
+      durableSpecialists,
       backgroundJobs,
       recoveredToolClaims,
       dailyBriefs,
@@ -481,7 +491,7 @@ async function runAllTenantScheduledWork({
   const runFast = lane === "fast" || lane === "all";
   const runBackground = lane === "background" || lane === "all";
   const runMaintenance = lane === "maintenance" || lane === "all";
-  const [queue, agentResumes, backgroundJobs] = await Promise.all([
+  const [queue, agentResumes, durableSpecialists, backgroundJobs] = await Promise.all([
     runFast
       ? processAllTenantWorkflowQueues({
           limit: queueLimit,
@@ -510,6 +520,19 @@ async function runAllTenantScheduledWork({
           completed: 0,
           deferred: 0,
           failed: 0,
+        }),
+    runFast
+      ? processAllTenantDurableSpecialistQueues({
+          limit: queueLimit,
+          timeBudgetMs: boundedBudgetMs,
+        })
+      : Promise.resolve({
+          tenantIds: [],
+          tenantResults: [],
+          leased: 0,
+          completed: 0,
+          failed: 0,
+          stale: 0,
         }),
     runBackground
       ? processAllTenantBackgroundOperationQueues({
@@ -581,6 +604,7 @@ async function runAllTenantScheduledWork({
     lane,
     queue,
     agentResumes,
+    durableSpecialists,
     backgroundJobs,
     memoryGraphRebuilds,
     maintenanceTenantIds,

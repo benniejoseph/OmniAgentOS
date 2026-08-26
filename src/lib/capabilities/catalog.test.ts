@@ -110,8 +110,14 @@ describe("capability catalog", () => {
 
     await catalog.search({ tenantId: "tenant-private" });
 
-    expect(deps.listMcp).toHaveBeenCalledWith({ tenantId: "tenant-private" });
-    expect(deps.listOpenApi).toHaveBeenCalledWith({ tenantId: "tenant-private" });
+    expect(deps.listMcp).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "tenant-private",
+      limit: 48,
+    }));
+    expect(deps.listOpenApi).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "tenant-private",
+      limit: 48,
+    }));
   });
 
   it("resolves one source only and fails closed for inactive or disallowed capabilities", async () => {

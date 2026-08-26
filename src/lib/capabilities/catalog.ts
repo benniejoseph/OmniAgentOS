@@ -1,8 +1,8 @@
 import {
   getMcpGovernedTool,
   getOpenApiGovernedTool,
-  listMcpGovernedTools,
-  listOpenApiGovernedTools,
+  searchMcpGovernedToolMetadata,
+  searchOpenApiGovernedToolMetadata,
 } from "@/lib/connectors/governed-tools";
 import { getGovernedTool, getGovernedTools } from "@/lib/tools/registry";
 import type { ToolDefinition } from "@/lib/tools/types";
@@ -10,6 +10,7 @@ import {
   CAPABILITY_DEFAULT_LIMIT,
   CAPABILITY_MAX_ALLOWLIST_ENTRIES,
   CAPABILITY_MAX_LIMIT,
+  CAPABILITY_MAX_METADATA_CANDIDATES,
   CAPABILITY_MAX_QUERY_LENGTH,
   type CapabilityDescriptor,
   type CapabilityResolveInput,
@@ -18,15 +19,22 @@ import {
   type CapabilitySource,
 } from "@/lib/capabilities/types";
 
-type TenantOptions = { tenantId: string };
+type CapabilityListOptions = {
+  tenantId: string;
+  query?: string;
+  limit: number;
+  allowlist?: readonly string[];
+};
+
+type CapabilityCatalogItem = ToolDefinition | CapabilityDescriptor;
 
 export type CapabilityCatalogDependencies = {
-  listNative: () => readonly ToolDefinition[] | Promise<readonly ToolDefinition[]>;
-  listMcp: (options: TenantOptions) => Promise<readonly ToolDefinition[]>;
-  listOpenApi: (options: TenantOptions) => Promise<readonly ToolDefinition[]>;
+  listNative: (options: CapabilityListOptions) => readonly CapabilityCatalogItem[] | Promise<readonly CapabilityCatalogItem[]>;
+  listMcp: (options: CapabilityListOptions) => Promise<readonly CapabilityCatalogItem[]>;
+  listOpenApi: (options: CapabilityListOptions) => Promise<readonly CapabilityCatalogItem[]>;
   resolveNative: (id: string) => ToolDefinition | null | undefined | Promise<ToolDefinition | null | undefined>;
-  resolveMcp: (id: string, options: TenantOptions) => Promise<ToolDefinition | null>;
-  resolveOpenApi: (id: string, options: TenantOptions) => Promise<ToolDefinition | null>;
+  resolveMcp: (id: string, options: { tenantId: string }) => Promise<ToolDefinition | null>;
+  resolveOpenApi: (id: string, options: { tenantId: string }) => Promise<ToolDefinition | null>;
 };
 
 export type CapabilityCatalog = {
@@ -36,8 +44,8 @@ export type CapabilityCatalog = {
 
 const defaultDependencies: CapabilityCatalogDependencies = {
   listNative: getGovernedTools,
-  listMcp: (options) => listMcpGovernedTools(options),
-  listOpenApi: (options) => listOpenApiGovernedTools(options),
+  listMcp: (options) => searchMcpGovernedToolMetadata(options),
+  listOpenApi: (options) => searchOpenApiGovernedToolMetadata(options),
   resolveNative: getGovernedTool,
   resolveMcp: (id, options) => getMcpGovernedTool(id, options),
   resolveOpenApi: (id, options) => getOpenApiGovernedTool(id, options),
@@ -51,18 +59,27 @@ export function createCapabilityCatalog(
       const query = normalizeCapabilityQuery(input.query);
       const limit = normalizeCapabilityLimit(input.limit);
       const allowlist = normalizeCapabilityAllowlist(input.allowlist);
-      const requestedSources = sourcesForAllowlist(allowlist);
-      const tenantOptions = { tenantId: input.tenantId };
+      const requestedSources = sourcesForSearch(allowlist, input.sources);
+      const metadataLimit = Math.min(
+        CAPABILITY_MAX_METADATA_CANDIDATES,
+        Math.max(limit * 4, allowlist?.size || 0, limit),
+      );
+      const listOptions: CapabilityListOptions = {
+        tenantId: input.tenantId,
+        query: query || undefined,
+        limit: metadataLimit,
+        allowlist: allowlist ? [...allowlist] : undefined,
+      };
 
       const [native, mcp, openapi] = await Promise.all([
         requestedSources.has("native")
-          ? dependencies.listNative()
+          ? dependencies.listNative(listOptions)
           : Promise.resolve([]),
         requestedSources.has("mcp")
-          ? dependencies.listMcp(tenantOptions)
+          ? dependencies.listMcp(listOptions)
           : Promise.resolve([]),
         requestedSources.has("openapi")
-          ? dependencies.listOpenApi(tenantOptions)
+          ? dependencies.listOpenApi(listOptions)
           : Promise.resolve([]),
       ]);
 
@@ -165,12 +182,17 @@ export function normalizeCapabilityAllowlist(
 }
 
 function normalizeActiveTools(
-  tools: readonly ToolDefinition[],
+  tools: readonly CapabilityCatalogItem[],
   source: CapabilitySource,
 ) {
-  return tools
-    .filter((tool) => tool.status === "active")
-    .map((tool) => toCapabilityDescriptor(tool, source));
+  return tools.flatMap((tool) => {
+    if (isToolDefinition(tool)) {
+      return tool.status === "active"
+        ? [toCapabilityDescriptor(tool, source)]
+        : [];
+    }
+    return [normalizeCapabilityDescriptor(tool, source)];
+  });
 }
 
 function toCapabilityDescriptor(
@@ -187,6 +209,28 @@ function toCapabilityDescriptor(
     approvalRequired: tool.approvalRequired,
     reversible: tool.reversible === true,
   };
+}
+
+function normalizeCapabilityDescriptor(
+  capability: CapabilityDescriptor,
+  source: CapabilitySource,
+): CapabilityDescriptor {
+  return {
+    id: compactText(capability.id, 512),
+    name: compactText(capability.name, 120),
+    description: compactText(capability.description, 240),
+    category: capability.category,
+    source,
+    riskLevel: capability.riskLevel,
+    approvalRequired: capability.approvalRequired,
+    reversible: capability.reversible === true,
+  };
+}
+
+function isToolDefinition(
+  item: CapabilityCatalogItem,
+): item is ToolDefinition {
+  return "status" in item && "inputSchema" in item;
 }
 
 function compactText(value: string, maxLength: number) {
@@ -213,13 +257,23 @@ function sourceForCapabilityId(id: string): CapabilitySource {
   return "native";
 }
 
-function sourcesForAllowlist(
+function sourcesForSearch(
   allowlist: ReadonlySet<string> | undefined,
+  requested?: readonly CapabilitySource[],
 ): Set<CapabilitySource> {
+  const sources = requested === undefined
+    ? new Set<CapabilitySource>(["native", "mcp", "openapi"])
+    : new Set(
+        requested.filter(
+          (source): source is CapabilitySource =>
+            source === "native" || source === "mcp" || source === "openapi",
+        ),
+      );
   if (!allowlist) {
-    return new Set(["native", "mcp", "openapi"]);
+    return sources;
   }
-  return new Set([...allowlist].map(sourceForCapabilityId));
+  const allowedSources = new Set([...allowlist].map(sourceForCapabilityId));
+  return new Set([...sources].filter((source) => allowedSources.has(source)));
 }
 
 function scoreCapability(

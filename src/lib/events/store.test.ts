@@ -32,6 +32,45 @@ describe("event store (file mode)", () => {
     expect(aOnly[0].tenantId).toBe("tenant-a");
   });
 
+  it("scopes stream cursors by actor and returns a bounded newest-first delta", async () => {
+    const store = await import("@/lib/events/store");
+    const first = await store.appendDomainEvent({
+      streamId: "mission:cursor",
+      type: "mission.created",
+      tenantId: "tenant-cursor",
+      actorId: "actor-a",
+    });
+    await store.appendDomainEvent({
+      streamId: "mission:cursor",
+      type: "mission.private",
+      tenantId: "tenant-cursor",
+      actorId: "actor-b",
+    });
+    const second = await store.appendDomainEvent({
+      streamId: "mission:cursor",
+      type: "mission.task.created",
+      tenantId: "tenant-cursor",
+      actorId: "actor-a",
+    });
+    const third = await store.appendDomainEvent({
+      streamId: "mission:cursor",
+      type: "mission.status.changed",
+      tenantId: "tenant-cursor",
+      actorId: "actor-a",
+    });
+
+    const delta = await store.listStreamEvents("mission:cursor", {
+      tenantId: "tenant-cursor",
+      actorId: "actor-a",
+      afterSeq: first.seq,
+      limit: 2,
+      order: "desc",
+    });
+
+    expect(delta.map((event) => event.seq)).toEqual([third.seq, second.seq]);
+    expect(delta.every((event) => event.actorId === "actor-a")).toBe(true);
+  });
+
   it("filters recent events by type", async () => {
     const store = await import("@/lib/events/store");
     await store.appendDomainEvent({ streamId: "s:1", type: "trust.outcome.success", tenantId: "default" });

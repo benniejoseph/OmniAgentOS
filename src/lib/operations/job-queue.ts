@@ -12,6 +12,7 @@ import { getDataPath } from "@/lib/storage/paths";
 
 export type OperationJobType =
   | "workflow.tick"
+  | "agent.execute"
   | "agent.resume"
   | "memory.consolidate"
   | "knowledge.ingest"
@@ -1255,6 +1256,54 @@ export async function listRunnableAgentResumeTenantIds(limit = 10) {
     .slice(0, boundedLimit);
 }
 
+export async function listRunnableAgentExecuteTenantIds(limit = 10) {
+  const boundedLimit = Math.min(Math.max(limit, 1), 25);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseSystemScope(
+      "Find tenant-owned durable specialist work for the dedicated worker.",
+      async () => {
+        const rows = await getSql()`
+          SELECT tenant_id
+          FROM omni_operation_jobs
+          WHERE type = 'agent.execute'
+            AND (
+              (status = 'queued' AND run_at <= NOW())
+              OR (status = 'running' AND lease_expires_at <= NOW())
+            )
+          GROUP BY tenant_id
+          ORDER BY MIN(
+            CASE
+              WHEN status = 'queued' THEN run_at
+              ELSE lease_expires_at
+            END
+          ) ASC, tenant_id ASC
+          LIMIT ${boundedLimit}
+        `;
+        return rows.map((row) => String(row.tenant_id));
+      },
+    );
+  }
+
+  const now = Date.now();
+  const ledger = await readJobLedger();
+  return [
+    ...new Set(
+      ledger.jobs
+        .filter(
+          (job) =>
+            job.type === "agent.execute" &&
+            ((job.status === "queued" && Date.parse(job.runAt) <= now) ||
+              (job.status === "running" &&
+                Date.parse(job.leaseExpiresAt || "") <= now)),
+        )
+        .map(jobTenantId),
+    ),
+  ]
+    .sort()
+    .slice(0, boundedLimit);
+}
+
 export async function listRunnableBackgroundJobTenantIds(limit = 10) {
   const boundedLimit = Math.min(Math.max(limit, 1), 25);
   if (hasDatabaseUrl()) {
@@ -1446,6 +1495,7 @@ function sanitizeTerminalOperationPayload(
   payload: Record<string, unknown>,
 ) {
   if (
+    type !== "agent.execute" &&
     !BACKGROUND_OPERATION_JOB_TYPES.includes(
       type as (typeof BACKGROUND_OPERATION_JOB_TYPES)[number],
     )
@@ -1559,6 +1609,10 @@ export function storageDedupeKey(tenantId: string | undefined, dedupeKey: string
 
 export function getAgentResumeJobDedupeKey(executionId: string) {
   return `agent.resume:${executionId}`;
+}
+
+export function getAgentExecuteJobDedupeKey(runId: string) {
+  return `agent.execute:${runId}`;
 }
 
 function logicalDedupeKey(tenantId: string, dedupeKey: string) {

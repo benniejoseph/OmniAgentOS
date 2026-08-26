@@ -6,7 +6,9 @@ describe("model router", () => {
     delete process.env.OPENAI_FAST_MODEL;
     delete process.env.OPENAI_REASONING_MODEL;
     delete process.env.OPENAI_MODEL_PRICING_JSON;
+    delete process.env.OPENAI_API_KEY;
     delete process.env.GEMINI_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
   });
 
   it("routes focused conversational work to the fast tier", () => {
@@ -28,6 +30,7 @@ describe("model router", () => {
   });
 
   it("honors an owner-configured model policy with a safe fallback", () => {
+    process.env.OPENAI_API_KEY = "configured";
     process.env.OPENAI_FAST_MODEL = "fast-model";
     process.env.OPENAI_REASONING_MODEL = "deep-model";
     expect(selectAgentModel({ message: "Do a quick check", mode: "learn", modelPolicy: "openai_reasoning" })).toMatchObject({
@@ -44,6 +47,14 @@ describe("model router", () => {
       model: "fast-model",
       provider: "openai",
       tier: "fast",
+    });
+  });
+
+  it("honors a Claude policy when Anthropic is configured", () => {
+    process.env.ANTHROPIC_API_KEY = "configured";
+    expect(selectAgentModel({ message: "Review this architecture", mode: "research", modelPolicy: "anthropic_reasoning" })).toMatchObject({
+      provider: "anthropic",
+      tier: "reasoning",
     });
   });
 

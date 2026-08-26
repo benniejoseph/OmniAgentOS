@@ -9,6 +9,7 @@ import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/openapi-store";
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { readResponseTextLimited } from "@/lib/http/body";
+import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import { saveMemory, searchMemories } from "@/lib/memory/store";
 import type { MemoryType } from "@/lib/memory/types";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
@@ -23,6 +24,7 @@ import {
   completeClaimedToolExecution,
   claimIdempotentToolExecution,
   createToolExecutionRecord,
+  getToolExecution,
   getToolExecutionApprovalFingerprint,
   recoverStaleToolExecutionClaim,
   saveToolExecution,
@@ -252,6 +254,31 @@ export async function executeGovernedTool({
     }
   }
 
+  // Idempotent retries must resolve their existing receipt before consulting
+  // (and consuming) the earned-autonomy budget. This keeps transport retries
+  // from spending additional authority or producing a new approval decision.
+  if (!dryRun && idempotencyKey && !existingRecord) {
+    const existing = await getToolExecution(
+      idempotentToolExecutionId(
+        normalizeTenantId(context?.tenantId),
+        idempotencyKey,
+      ),
+      { tenantId: context?.tenantId },
+    );
+    if (existing) {
+      const recovered = existing.status === "executing"
+        ? await recoverStaleToolExecutionClaim(existing.id, {
+            tenantId: context?.tenantId,
+          })
+        : undefined;
+      const record = recovered || existing;
+      return {
+        record,
+        result: record.status === "executed" ? record.output : null,
+      };
+    }
+  }
+
   // Risk-3 approval is only honored when the record itself carries quorum
   // evidence: RISK3_QUORUM distinct admin/system approvers, requester excluded.
   // Enforced here so no API caller can bypass it with a bare approved flag.
@@ -280,7 +307,32 @@ export async function executeGovernedTool({
       riskLevel: tool.riskLevel,
       reversible,
     });
-    autonomyApproved = autonomy.mode === "auto_with_alert";
+    if (autonomy.mode === "auto_with_alert") {
+      try {
+        const budget = await checkSharedRateLimit({
+          key: `autonomy:${normalizeTenantId(context?.tenantId)}:${actionClassFor(tool.id)}`,
+          limit: autonomy.budget.maxActions,
+          windowMs: autonomy.budget.windowSeconds * 1_000,
+        });
+        autonomyApproved = budget.allowed;
+        if (!budget.allowed) {
+          autonomy = {
+            ...autonomy,
+            mode: "approve_each",
+            stage: "supervised",
+            reason: `The earned-autonomy budget is exhausted. Approval is required for ${budget.retryAfterSeconds} more seconds.`,
+          };
+        }
+      } catch {
+        // A missing shared budget ledger must never widen authority.
+        autonomy = {
+          ...autonomy,
+          mode: "approve_each",
+          stage: "supervised",
+          reason: "The autonomy budget could not be verified, so approval remains required.",
+        };
+      }
+    }
   }
 
   const decision = evaluateToolPolicy({ tool, approved: effectiveApproved || autonomyApproved });

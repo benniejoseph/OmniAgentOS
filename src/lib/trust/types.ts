@@ -6,6 +6,12 @@
 
 export type AutonomyMode = "approve_each" | "auto_with_alert";
 
+export type AutonomyStage =
+  | "manual"
+  | "shadow"
+  | "supervised"
+  | "autonomous";
+
 export type ActionOutcomeKind = "success" | "failure" | "rejected";
 
 export type ActionOutcome = {
@@ -44,10 +50,21 @@ export type TrustLedger = {
 
 export type AutonomyDecision = {
   mode: AutonomyMode;
+  stage: AutonomyStage;
   reason: string;
   cleanStreak: number;
   threshold: number;
   /** 0..1 progress toward graduation, for UI. 1 when already graduated. */
   progress: number;
   eligible: boolean;
+  /** Conservative lower-bound reliability score, from 0..1. */
+  score: number;
+  /** Confidence in the score, from 0..1, reduced as evidence becomes stale. */
+  confidence: number;
+  effectiveSampleSize: number;
+  freshness: number;
+  budget: {
+    windowSeconds: number;
+    maxActions: number;
+  };
 };

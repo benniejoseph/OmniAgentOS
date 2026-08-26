@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import {
   ArrowRight,
   Bot,
@@ -24,7 +24,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import type { CapabilityDescriptor } from "@/lib/capabilities/types";
@@ -43,19 +43,39 @@ type CapabilitySurface = {
   capability?: CapabilityDescriptor;
 };
 
-export function MissionWorkspace({ initialMissionId = "" }: { initialMissionId?: string }) {
-  const router = useRouter();
+export function MissionWorkspace({
+  initialMissionId = "",
+  initialMissions,
+  initialCapabilities,
+  initialDetail,
+  initialEventCursor = 0,
+  initialAsOf = 0,
+}: {
+  initialMissionId?: string;
+  initialMissions?: MissionSummaryView[];
+  initialCapabilities?: CapabilityDescriptor[];
+  initialDetail?: MissionDetailView;
+  initialEventCursor?: number;
+  initialAsOf?: number;
+}) {
+  const pathname = usePathname();
   const {
     session,
     status: sessionStatus,
     error: sessionError,
     refresh: refreshSession,
   } = useWorkspaceSession();
-  const [missions, setMissions] = useState<MissionSummaryView[]>([]);
-  const [details, setDetails] = useState<Record<string, MissionDetailView>>({});
-  const [capabilities, setCapabilities] = useState<CapabilityDescriptor[]>([]);
-  const [selectedId, setSelectedId] = useState(initialMissionId);
-  const [loading, setLoading] = useState(true);
+  const hasInitialWorkspace = initialMissions !== undefined && initialCapabilities !== undefined;
+  const [missions, setMissions] = useState<MissionSummaryView[]>(initialMissions || []);
+  const [details, setDetails] = useState<Record<string, MissionDetailView>>(
+    initialDetail ? { [initialDetail.mission.id]: initialDetail } : {},
+  );
+  const detailsRef = useRef(details);
+  const [capabilities, setCapabilities] = useState<CapabilityDescriptor[]>(initialCapabilities || []);
+  const initialSelectionId = initialMissionId || initialDetail?.mission.id || initialMissions?.[0]?.id || "";
+  const baseSelectionRef = useRef(initialDetail?.mission.id || initialMissions?.[0]?.id || "");
+  const [selectedId, setSelectedId] = useState(initialSelectionId);
+  const [loading, setLoading] = useState(!hasInitialWorkspace);
   const [showLoading, setShowLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
@@ -65,12 +85,13 @@ export function MissionWorkspace({ initialMissionId = "" }: { initialMissionId?:
   const [priority, setPriority] = useState<MissionSummaryView["priority"]>("normal");
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Mission control is ready.");
-  const [isNavigating, startNavigation] = useTransition();
+  const [asOf, setAsOf] = useState(initialAsOf);
   const listController = useRef<AbortController | null>(null);
   const detailController = useRef<AbortController | null>(null);
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
   const selectedDetail = selectedId ? details[selectedId] : undefined;
   const selectedMission = missions.find((mission) => mission.id === selectedId) || selectedDetail?.mission;
+  const selectedMissionStatus = selectedMission?.status;
   const sessionProblem = sessionStatus === "error"
     ? sessionError || "Your Asael session could not be verified."
     : sessionStatus === "ready" && !available
@@ -80,12 +101,36 @@ export function MissionWorkspace({ initialMissionId = "" }: { initialMissionId?:
   const workspaceLoading = loading && !sessionProblem;
 
   useEffect(() => {
+    detailsRef.current = details;
+  }, [details]);
+
+  useEffect(() => {
+    const routeMissionId = missionIdFromPath(pathname);
+    const nextId = routeMissionId || (
+      pathname === "/app/missions"
+        ? baseSelectionRef.current || missions[0]?.id || ""
+        : ""
+    );
+    if (!nextId) return;
+    setSelectedId((current) => current === nextId ? current : nextId);
+    setError(undefined);
+  }, [missions, pathname]);
+
+  useEffect(() => {
+    const tick = () => setAsOf(Date.now());
+    const timer = window.setInterval(tick, 60_000);
+    tick();
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     if (!loading) return;
     const timer = window.setTimeout(() => setShowLoading(true), 350);
     return () => window.clearTimeout(timer);
   }, [loading]);
 
   useEffect(() => {
+    if (hasInitialWorkspace) return;
     if (!available || sessionStatus !== "ready") return;
     listController.current?.abort();
     const controller = new AbortController();
@@ -112,7 +157,7 @@ export function MissionWorkspace({ initialMissionId = "" }: { initialMissionId?:
     }
     void loadWorkspace();
     return () => controller.abort();
-  }, [available, sessionStatus]);
+  }, [available, hasInitialWorkspace, sessionStatus]);
 
   useEffect(() => {
     if (!available || sessionStatus !== "ready" || !selectedId || details[selectedId]) return;
@@ -146,31 +191,98 @@ export function MissionWorkspace({ initialMissionId = "" }: { initialMissionId?:
       !available ||
       sessionStatus !== "ready" ||
       !selectedId ||
-      !selectedMission ||
-      !["queued", "running", "waiting"].includes(selectedMission.status)
+      !selectedMissionStatus ||
+      !["queued", "running", "waiting"].includes(selectedMissionStatus)
     ) return;
     let stopped = false;
-    const refreshDetail = async () => {
-      if (document.visibilityState === "hidden") return;
+    let inFlight = false;
+    let cursor = initialDetail?.mission.id === selectedId
+      ? initialEventCursor
+      : 0;
+    let visibleStatus = detailsRef.current[selectedId]?.mission.status;
+    let visibleUpdatedAt = detailsRef.current[selectedId]?.mission.updatedAt;
+    let consecutiveFailures = 0;
+    let timer: number | undefined;
+    let controller: AbortController | undefined;
+
+    const schedule = () => {
+      if (stopped || document.visibilityState === "hidden") return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(
+        () => void pollMissionEvents(),
+        missionEventPollDelay(consecutiveFailures),
+      );
+    };
+
+    const pollMissionEvents = async () => {
+      timer = undefined;
+      if (stopped || inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      controller = new AbortController();
       try {
-        const detail = await readJson(`/api/missions/${encodeURIComponent(selectedId)}`) as MissionDetailView;
-        if (stopped) return;
-        setDetails((current) => ({ ...current, [selectedId]: detail }));
-        setMissions((current) => current.map((mission) =>
-          mission.id === detail.mission.id ? detail.mission : mission
-        ));
+        const payload = await readJson(
+          `/api/missions/${encodeURIComponent(selectedId)}/events?afterSeq=${cursor}&limit=25`,
+          { signal: controller.signal },
+        );
+        const events = Array.isArray(payload.events) ? payload.events : [];
+        const nextCursor = missionEventCursor(payload.cursor, cursor);
+        const missionProjection = missionEventProjection(payload.mission);
+        const projectionChanged = Boolean(
+          missionProjection &&
+          (!visibleStatus ||
+            missionProjection.status !== visibleStatus ||
+            missionProjection.updatedAt !== visibleUpdatedAt),
+        );
+        if (events.length > 0 || projectionChanged) {
+          const detail = await readJson(`/api/missions/${encodeURIComponent(selectedId)}`, {
+            signal: controller.signal,
+          }) as MissionDetailView;
+          if (stopped) return;
+          setDetails((current) => ({ ...current, [selectedId]: detail }));
+          setMissions((current) => current.map((mission) =>
+            mission.id === detail.mission.id ? detail.mission : mission
+          ));
+          visibleStatus = detail.mission.status;
+          visibleUpdatedAt = detail.mission.updatedAt;
+        }
+        cursor = nextCursor;
+        consecutiveFailures = 0;
       } catch {
-        // Keep the last durable projection visible; the next focus or interval retries.
+        if (!controller.signal.aborted) consecutiveFailures += 1;
+        // Keep the durable projection visible and retry with bounded backoff.
+      } finally {
+        inFlight = false;
+        schedule();
       }
     };
-    const timer = window.setInterval(() => void refreshDetail(), 5_000);
-    window.addEventListener("focus", refreshDetail);
+
+    const wake = () => {
+      if (stopped || inFlight || document.visibilityState === "hidden") return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = undefined;
+      void pollMissionEvents();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        if (timer !== undefined) window.clearTimeout(timer);
+        timer = undefined;
+        controller?.abort();
+        return;
+      }
+      wake();
+    };
+
+    wake();
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       stopped = true;
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refreshDetail);
+      if (timer !== undefined) window.clearTimeout(timer);
+      controller?.abort();
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [available, selectedId, selectedMission, sessionStatus]);
+  }, [available, initialDetail?.mission.id, initialEventCursor, selectedId, selectedMissionStatus, sessionStatus]);
 
   const surfaces = useMemo(() => capabilitySurfaces(capabilities), [capabilities]);
   const activeCount = missions.filter((mission) =>
@@ -181,7 +293,7 @@ export function MissionWorkspace({ initialMissionId = "" }: { initialMissionId?:
   function selectMission(id: string) {
     setSelectedId(id);
     setError(undefined);
-    startNavigation(() => router.replace(`/app/missions/${encodeURIComponent(id)}`, { scroll: false }));
+    pushMissionHistory(id);
   }
 
   async function createMission(event: React.FormEvent) {
@@ -203,7 +315,7 @@ export function MissionWorkspace({ initialMissionId = "" }: { initialMissionId?:
       setPriority("normal");
       setShowCreate(false);
       setAnnouncement(`${mission.title} was created as a draft mission.`);
-      startNavigation(() => router.replace(`/app/missions/${encodeURIComponent(mission.id)}`, { scroll: false }));
+      pushMissionHistory(mission.id);
     } catch (createError) {
       setError(message(createError));
     } finally {
@@ -212,7 +324,7 @@ export function MissionWorkspace({ initialMissionId = "" }: { initialMissionId?:
   }
 
   return (
-    <section className={styles.shell} aria-busy={workspaceLoading || detailLoading || isNavigating}>
+    <section className={styles.shell} aria-busy={workspaceLoading || detailLoading}>
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
       <header className={styles.header}>
         <div>
@@ -279,7 +391,7 @@ export function MissionWorkspace({ initialMissionId = "" }: { initialMissionId?:
               <span className={clsx(styles.statusDot, statusTone(mission.status, styles))} />
               <span>
                 <strong>{mission.title}</strong>
-                <small>{statusLabel(mission.status)} · {relativeTime(mission.updatedAt)}</small>
+                <small>{statusLabel(mission.status)} · {relativeTime(mission.updatedAt, asOf)}</small>
               </span>
               <ChevronRight size={14} aria-hidden="true" />
             </button>
@@ -369,13 +481,13 @@ export function MissionWorkspace({ initialMissionId = "" }: { initialMissionId?:
 
         <aside className={styles.inspector} aria-label="Mission proof and attention">
           <div className={styles.inspectorHeading}><span>Attention & proof</span><ShieldCheck size={15} aria-hidden="true" /></div>
-          <InspectorBlock icon={<Clock3 size={14} />} label="Current state" value={selectedMission ? statusLabel(selectedMission.status) : "Idle"} detail={selectedMission?.startedAt ? `Started ${relativeTime(selectedMission.startedAt)}` : "No executor lease active"} />
+          <InspectorBlock icon={<Clock3 size={14} />} label="Current state" value={selectedMission ? statusLabel(selectedMission.status) : "Idle"} detail={selectedMission?.startedAt ? `Started ${relativeTime(selectedMission.startedAt, asOf)}` : "No executor lease active"} />
           <InspectorBlock icon={<Bot size={14} />} label="Attempts" value={String(selectedDetail?.attempts.length || 0)} detail={attemptDetail(selectedDetail)} />
           <InspectorBlock icon={<FolderOutput size={14} />} label="Evidence" value={String(selectedDetail?.artifacts.length || 0)} detail={selectedDetail?.artifacts[0]?.title || "No artifacts recorded"} />
           <div className={styles.proofList}>
             <p>Recent evidence</p>
             {selectedDetail?.artifacts.length ? selectedDetail.artifacts.slice(0, 5).map((artifact) => (
-              <div key={artifact.id}><FileCode2 size={13} aria-hidden="true" /><span><strong>{artifact.title}</strong><small>{artifact.kind} · {relativeTime(artifact.createdAt)}</small></span></div>
+              <div key={artifact.id}><FileCode2 size={13} aria-hidden="true" /><span><strong>{artifact.title}</strong><small>{artifact.kind} · {relativeTime(artifact.createdAt, asOf)}</small></span></div>
             )) : <span>Completed outputs, receipts, and files will appear here.</span>}
           </div>
         </aside>
@@ -438,6 +550,22 @@ function capabilitySurfaces(capabilities: CapabilityDescriptor[]): CapabilitySur
   ];
 }
 
+function missionIdFromPath(pathname: string) {
+  const match = pathname.match(/^\/app\/missions\/([^/]+)\/?$/);
+  if (!match) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return "";
+  }
+}
+
+function pushMissionHistory(id: string) {
+  const nextPath = `/app/missions/${encodeURIComponent(id)}`;
+  if (window.location.pathname === nextPath) return;
+  window.history.pushState(null, "", nextPath);
+}
+
 function authorityLabel(capability: CapabilityDescriptor) {
   return capability.approvalRequired ? `Approval · risk ${capability.riskLevel}` : `Policy · risk ${capability.riskLevel}`;
 }
@@ -467,8 +595,9 @@ function attemptDetail(detail?: MissionDetailView) {
   return latest ? `${latest.executorType} · ${latest.status}` : "No delegated execution yet";
 }
 
-function relativeTime(value: string) {
-  const delta = Date.now() - Date.parse(value);
+function relativeTime(value: string, asOf: number) {
+  if (!asOf) return "recently";
+  const delta = asOf - Date.parse(value);
   if (!Number.isFinite(delta) || delta < 0) return "just now";
   const minutes = Math.floor(delta / 60_000);
   if (minutes < 1) return "just now";
@@ -477,6 +606,34 @@ function relativeTime(value: string) {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+function missionEventCursor(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= fallback
+    ? value
+    : fallback;
+}
+
+function missionEventProjection(value: unknown) {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as { status?: unknown; updatedAt?: unknown };
+  const statuses: MissionStatus[] = [
+    "draft", "queued", "running", "waiting", "succeeded", "failed", "canceled", "archived",
+  ];
+  if (
+    typeof candidate.status !== "string" ||
+    !statuses.includes(candidate.status as MissionStatus) ||
+    typeof candidate.updatedAt !== "string"
+  ) return undefined;
+  return {
+    status: candidate.status as MissionStatus,
+    updatedAt: candidate.updatedAt,
+  };
+}
+
+function missionEventPollDelay(consecutiveFailures: number) {
+  const failureCount = Math.min(Math.max(consecutiveFailures, 0), 4);
+  return Math.min(2_500 * (2 ** failureCount), 30_000);
 }
 
 async function readJson(path: string, init?: RequestInit) {

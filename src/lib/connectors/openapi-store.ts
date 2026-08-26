@@ -60,6 +60,25 @@ type TenantScopedOptions = {
   tenantId?: string;
 };
 
+export type OpenApiOperationMetadataRecord = Pick<
+  OpenApiOperationRecord,
+  | "id"
+  | "connectorId"
+  | "connectorName"
+  | "operationId"
+  | "method"
+  | "summary"
+  | "description"
+  | "riskLevel"
+  | "approvalRequired"
+>;
+
+export type OpenApiOperationMetadataSearchOptions = TenantScopedOptions & {
+  query?: string;
+  limit?: number;
+  allowlist?: readonly string[];
+};
+
 export function createOpenApiConnectorRecord(input: RegisterOpenApiConnectorInput): OpenApiConnectorRecord {
   const now = new Date().toISOString();
   return {
@@ -663,14 +682,125 @@ export async function listOpenApiOperations(connectorId?: string, options: Tenan
   );
 }
 
+/** Metadata-only active operation search; intentionally excludes schemas and auth. */
+export async function searchActiveOpenApiOperationMetadata(
+  options: OpenApiOperationMetadataSearchOptions = {},
+): Promise<OpenApiOperationMetadataRecord[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const limit = normalizeMetadataLimit(options.limit);
+  const allowlist = normalizeMetadataAllowlist(options.allowlist);
+  const terms = normalizeMetadataSearchTerms(options.query);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const patterns = terms.map((term) => `%${term}%`);
+    const rows = await getSql()`
+      SELECT
+        operations.id,
+        operations.connector_id,
+        operations.connector_name,
+        operations.operation_id,
+        operations.method,
+        operations.summary,
+        operations.description,
+        operations.risk_level,
+        operations.approval_required
+      FROM omni_openapi_operations operations
+      INNER JOIN omni_openapi_connectors connectors
+        ON connectors.id = operations.connector_id
+        AND connectors.tenant_id = operations.tenant_id
+      WHERE operations.tenant_id = ${tenantId}
+        AND operations.status = 'active'
+        AND connectors.status = 'active'
+        AND (${allowlist === undefined} OR operations.id = ANY(${allowlist || []}::text[]))
+        AND (
+          ${patterns.length === 0}
+          OR LOWER(CONCAT_WS(
+            ' ', operations.id, operations.connector_name, operations.operation_id,
+            operations.method, operations.summary, operations.description
+          )) LIKE ANY(${patterns}::text[])
+        )
+      ORDER BY
+        (
+          SELECT COUNT(*)
+          FROM unnest(${patterns}::text[]) AS matched(pattern)
+          WHERE LOWER(CONCAT_WS(
+            ' ', operations.id, operations.connector_name, operations.operation_id,
+            operations.method, operations.summary, operations.description
+          )) LIKE matched.pattern
+        ) DESC,
+        operations.updated_at DESC,
+        operations.id ASC
+      LIMIT ${limit}
+    `;
+    return rows.map(openApiOperationMetadataFromRow);
+  }
+
+  const ledger = await readOpenApiLedger();
+  const activeConnectorIds = new Set(
+    ledger.connectors
+      .filter(
+        (connector) =>
+          normalizeTenantId(connector.tenantId) === tenantId &&
+          connector.status === "active",
+      )
+      .map((connector) => connector.id),
+  );
+  const allowed = allowlist === undefined ? undefined : new Set(allowlist);
+  return ledger.operations
+    .filter(
+      (operation) =>
+        normalizeTenantId(operation.tenantId) === tenantId &&
+        operation.status === "active" &&
+        activeConnectorIds.has(operation.connectorId) &&
+        (!allowed || allowed.has(operation.id)) &&
+        metadataMatchesTerms(
+          `${operation.id} ${operation.connectorName} ${operation.operationId} ${operation.method} ${operation.summary || ""} ${operation.description || ""}`,
+          terms,
+        ),
+    )
+    .sort(
+      (left, right) =>
+        metadataTermScore(
+          `${right.id} ${right.connectorName} ${right.operationId} ${right.method} ${right.summary || ""} ${right.description || ""}`,
+          terms,
+        ) - metadataTermScore(
+          `${left.id} ${left.connectorName} ${left.operationId} ${left.method} ${left.summary || ""} ${left.description || ""}`,
+          terms,
+        ) || right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id),
+    )
+    .slice(0, limit)
+    .map(toOpenApiOperationMetadata);
+}
+
 export async function getOpenApiOperationById(toolId: string, options: TenantScopedOptions = {}) {
   const parsed = parseOpenApiToolId(toolId);
   if (!parsed) {
     return null;
   }
 
-  const operations = await listOpenApiOperations(parsed.connectorId, options);
-  return operations.find((operation) => operation.operationId === parsed.operationId) || null;
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_openapi_operations
+      WHERE id = ${toolId}
+        AND connector_id = ${parsed.connectorId}
+        AND tenant_id = ${tenantId}
+      LIMIT 1
+    `;
+    return rows[0] ? openApiOperationFromRow(rows[0]) : null;
+  }
+
+  const ledger = await readOpenApiLedger();
+  return ledger.operations.find(
+    (operation) =>
+      operation.id === toolId &&
+      operation.connectorId === parsed.connectorId &&
+      operation.operationId === parsed.operationId &&
+      normalizeTenantId(operation.tenantId) === tenantId,
+  ) || null;
 }
 
 export async function recordOpenApiConnectorError(connector: OpenApiConnectorRecord, error: string) {
@@ -788,6 +918,87 @@ function openApiOperationFromRow(row: Record<string, unknown>): OpenApiOperation
     updatedAt: normalizeDate(row.updated_at),
   };
 }
+
+function openApiOperationMetadataFromRow(
+  row: Record<string, unknown>,
+): OpenApiOperationMetadataRecord {
+  return {
+    id: String(row.id),
+    connectorId: String(row.connector_id),
+    connectorName: String(row.connector_name),
+    operationId: String(row.operation_id),
+    method: String(row.method) as OpenApiOperationRecord["method"],
+    summary: row.summary ? String(row.summary) : undefined,
+    description: row.description ? String(row.description) : undefined,
+    riskLevel: Number(row.risk_level) as ToolRiskLevel,
+    approvalRequired: Boolean(row.approval_required),
+  };
+}
+
+function toOpenApiOperationMetadata(
+  operation: OpenApiOperationRecord,
+): OpenApiOperationMetadataRecord {
+  return {
+    id: operation.id,
+    connectorId: operation.connectorId,
+    connectorName: operation.connectorName,
+    operationId: operation.operationId,
+    method: operation.method,
+    summary: operation.summary,
+    description: operation.description,
+    riskLevel: operation.riskLevel,
+    approvalRequired: operation.approvalRequired,
+  };
+}
+
+function normalizeMetadataLimit(value?: number) {
+  return Number.isFinite(value)
+    ? Math.min(Math.max(Math.floor(value as number), 1), 200)
+    : 100;
+}
+
+function normalizeMetadataAllowlist(value?: readonly string[]) {
+  if (value === undefined) {
+    return undefined;
+  }
+  return [...new Set(value.map((id) => id.trim()).filter(Boolean))].slice(0, 128);
+}
+
+function normalizeMetadataSearchTerms(value?: string) {
+  return [...new Set(
+    (value || "")
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .match(/[a-z0-9]+/g) || [],
+  )].filter((term) =>
+    !METADATA_SEARCH_STOP_WORDS.has(term) &&
+    (term.length >= 3 || METADATA_SEARCH_SHORT_TERMS.has(term))
+  ).slice(0, 12);
+}
+
+function metadataMatchesTerms(value: string, terms: readonly string[]) {
+  if (!terms.length) {
+    return true;
+  }
+  const normalized = value.normalize("NFKD").toLowerCase();
+  return terms.some((term) => normalized.includes(term));
+}
+
+function metadataTermScore(value: string, terms: readonly string[]) {
+  const normalized = value.normalize("NFKD").toLowerCase();
+  return terms.reduce(
+    (score, term) => score + (normalized.includes(term) ? 1 : 0),
+    0,
+  );
+}
+
+const METADATA_SEARCH_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "can", "could", "for", "from", "get", "i", "in",
+  "is", "it", "me", "my", "of", "on", "or", "please", "the", "this", "to",
+  "use", "want", "with", "you",
+]);
+const METADATA_SEARCH_SHORT_TERMS = new Set(["ai", "db", "hr", "qa"]);
 
 function parseObject(value: unknown): Record<string, unknown> | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) {

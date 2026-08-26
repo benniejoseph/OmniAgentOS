@@ -20,10 +20,11 @@ export function AsaelMark({
       aria-hidden="true"
     >
       <Image
-        src="/asael-mark.png"
+        src="/asael-mark-128.webp"
         alt=""
         fill
         priority={priority}
+        unoptimized
         sizes={`${size}px`}
         className="object-cover"
       />

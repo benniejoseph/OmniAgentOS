@@ -380,6 +380,7 @@ export async function createStructuredResponse({
   name,
   abortSignal,
   reasoningEffort,
+  model,
 }: {
   instructions: string;
   input: string;
@@ -387,10 +388,40 @@ export async function createStructuredResponse({
   name: string;
   abortSignal?: AbortSignal;
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  model?: string;
 }) {
+  return (await createStructuredResponseWithMetrics({
+    instructions,
+    input,
+    schema,
+    name,
+    abortSignal,
+    reasoningEffort,
+    model,
+  })).text;
+}
+
+export async function createStructuredResponseWithMetrics({
+  instructions,
+  input,
+  schema,
+  name,
+  abortSignal,
+  reasoningEffort,
+  model = AGENT_MODEL,
+}: {
+  instructions: string;
+  input: string;
+  schema: ResponseFormatTextJSONSchemaConfig["schema"];
+  name: string;
+  abortSignal?: AbortSignal;
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  model?: string;
+}) {
+  const startedAt = Date.now();
   const response = await getOpenAIClient().responses.create(
     {
-      model: AGENT_MODEL,
+      model,
       instructions,
       input,
       text: {
@@ -401,11 +432,19 @@ export async function createStructuredResponse({
           schema,
         },
       },
-      ...(reasoningEffort && supportsReasoningEffort(AGENT_MODEL) ? { reasoning: { effort: reasoningEffort } } : {}),
+      ...(reasoningEffort && supportsReasoningEffort(model) ? { reasoning: { effort: reasoningEffort } } : {}),
       store: false,
     },
     { signal: abortSignal },
   );
 
-  return response.output_text;
+  const usage = normalizeUsage(response.usage as unknown as Record<string, unknown> | undefined);
+  return {
+    text: response.output_text,
+    responseId: response.id,
+    model,
+    usage,
+    latencyMs: Date.now() - startedAt,
+    estimatedCostUsd: estimateModelCostUsd(model, usage),
+  };
 }

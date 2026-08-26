@@ -1030,11 +1030,12 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
       { label: "Storage", description: "Active persistence backend", value: (data) => stringPath(data, "capabilities.storageBackend", "unknown") },
       { label: "OpenAI", description: "Model provider readiness", value: (data) => booleanLabel(readPath(data, "capabilities.openaiConfigured"), "live", "fallback") },
       { label: "Gemini", description: "Multimodal provider readiness", value: (data) => booleanLabel(readPath(data, "capabilities.geminiConfigured"), "live", "missing") },
+      { label: "Claude", description: "Anthropic provider readiness", value: (data) => booleanLabel(readPath(data, "capabilities.anthropicConfigured"), "live", "missing") },
     ],
     flow: [
       { title: "Runtime", body: "Confirm Vercel function health, cron, and deployment evidence.", icon: ActivityIcon },
       { title: "Storage", body: "Validate Neon Postgres, vector capability, memory, and ledgers.", icon: Database },
-      { title: "Models", body: "Check OpenAI reasoning plus Gemini image, voice, and fast-task routing.", icon: Brain },
+      { title: "Models", body: "Check OpenAI, Gemini, and Claude routing plus multimodal media readiness.", icon: Brain },
       { title: "Recover", body: "Keep portable exports and infrastructure backups ready before major changes.", icon: ShieldCheck },
     ],
     sections: [
@@ -1052,6 +1053,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           metricRow("Database URL", booleanLabel(readPath(data, "capabilities.databaseConfigured"), "configured", "missing"), readPath(data, "capabilities.databaseConfigured") ? "success" : "danger"),
           metricRow("OpenAI API key", booleanLabel(readPath(data, "capabilities.openaiConfigured"), "configured", "fallback"), readPath(data, "capabilities.openaiConfigured") ? "success" : "warning"),
           metricRow("Gemini API key", booleanLabel(readPath(data, "capabilities.geminiConfigured"), "configured", "missing"), readPath(data, "capabilities.geminiConfigured") ? "success" : "warning"),
+          metricRow("Anthropic API key", booleanLabel(readPath(data, "capabilities.anthropicConfigured"), "configured", "missing"), readPath(data, "capabilities.anthropicConfigured") ? "success" : "warning"),
           metricRow("Google media APIs", booleanLabel(readPath(data, "capabilities.googleMediaConfigured"), "configured", "missing"), readPath(data, "capabilities.googleMediaConfigured") ? "success" : "warning"),
           metricRow("Health endpoint", stringPath(data, "health.status", "unknown"), toneForStatus(readPath(data, "health.status"))),
         ],
