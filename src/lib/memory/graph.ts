@@ -145,6 +145,38 @@ export async function rebuildMemoryGraph(options: RebuildMemoryGraphOptions = {}
   return runWithDatabaseTenantScope(tenantId, () => rebuildMemoryGraphForTenant(options, tenantId));
 }
 
+export async function queueMemoryGraphRebuild(
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (!hasDatabaseUrl()) {
+    await rebuildMemoryGraph({ tenantId, source: "queued-memory-change" });
+    return { queued: false, tenantId, generation: "0" };
+  }
+
+  await ensureDatabaseSchema();
+  return runWithDatabaseTenantScope(tenantId, async () => {
+    const [row] = await getSql()`
+      INSERT INTO omni_memory_graph_rebuild_queue AS rebuild (
+        tenant_id, requested_at, attempts, last_error, updated_at, generation
+      )
+      VALUES (${tenantId}, NOW(), 0, NULL, NOW(), 1)
+      ON CONFLICT (tenant_id) DO UPDATE SET
+        requested_at = NOW(),
+        attempts = 0,
+        last_error = NULL,
+        updated_at = NOW(),
+        generation = rebuild.generation + 1
+      RETURNING tenant_id, generation
+    `;
+    return {
+      queued: true,
+      tenantId: String(row?.tenant_id || tenantId),
+      generation: String(row?.generation || "1"),
+    };
+  });
+}
+
 async function rebuildMemoryGraphForTenant(
   options: RebuildMemoryGraphOptions,
   tenantId: string,

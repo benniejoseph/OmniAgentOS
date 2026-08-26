@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { rebuildMemoryGraph } from "@/lib/memory/graph";
+import { queueMemoryGraphRebuild } from "@/lib/memory/graph";
 import { correctMemory, forgetMemory, getMemory } from "@/lib/memory/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -40,7 +40,7 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   try { context = await authorize(request, id, "write.memory"); } catch (error) { return forbiddenResponse(error); }
   const result = await correctMemory(id, parsed.data, { tenantId: context.tenantId, actorId: context.actorId });
   if (!result) return Response.json({ error: "Memory not found." }, { status: 404 });
-  await rebuildMemoryGraph({ tenantId: context.tenantId, source: "memory.correction" });
+  await queueMemoryGraphRebuild({ tenantId: context.tenantId });
   return Response.json({ previous: publicMemory(result.previous), corrected: publicMemory(result.corrected) });
 }
 
@@ -50,7 +50,7 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
   try { context = await authorize(request, id, "write.memory"); } catch (error) { return forbiddenResponse(error); }
   const memory = await forgetMemory(id, { tenantId: context.tenantId });
   if (!memory) return Response.json({ error: "Memory not found." }, { status: 404 });
-  await rebuildMemoryGraph({ tenantId: context.tenantId, source: "memory.forget" });
+  await queueMemoryGraphRebuild({ tenantId: context.tenantId });
   return Response.json({ forgotten: true, id });
 }
 
