@@ -68,6 +68,9 @@ const previousWorkerImage = await getCurrentWorkerImage();
 const previousVercelDeployment = await getCurrentVercelDeployment(
   productionBaseUrl,
 );
+const previousHealthRevision = await getCurrentHealthRevision(
+  productionBaseUrl,
+);
 
 let workerMutationStarted = false;
 let vercelPromoted = false;
@@ -135,7 +138,10 @@ try {
     });
   }
   if (!rollbackErrors.length && (vercelPromoted || workerMutationStarted)) {
-    await runRollbackVerification(productionBaseUrl).catch((rollbackError) => {
+    await runRollbackVerification(
+      productionBaseUrl,
+      previousHealthRevision,
+    ).catch((rollbackError) => {
       rollbackErrors.push(
         `Rollback verification failed: ${errorMessage(rollbackError)}`,
       );
@@ -284,6 +290,37 @@ async function getCurrentVercelDeployment(productionBaseUrl) {
   return normalizeDeploymentUrl(url);
 }
 
+async function getCurrentHealthRevision(baseUrl) {
+  const headers = {};
+  const bypassSecret =
+    process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
+  if (bypassSecret) {
+    headers["x-vercel-protection-bypass"] = bypassSecret;
+  }
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/api/health`, {
+      headers,
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (error) {
+    fail(`Unable to read the current production health revision: ${errorMessage(error)}`);
+  }
+  if (response.status !== 200) {
+    fail(
+      `Current production health must be healthy before deployment; received ${response.status}.`,
+    );
+  }
+  const body = await response.json().catch(() => ({}));
+  const healthRevision =
+    typeof body.revision === "string" ? body.revision.trim() : "";
+  if (body.status !== "healthy" || !healthRevision) {
+    fail("Current production health is missing a healthy rollback revision.");
+  }
+  return healthRevision;
+}
+
 async function runVerificationCommands(baseUrl) {
   const sessionDirectory = await mkdtemp(
     path.join(tmpdir(), "omniagent-release-session-"),
@@ -306,11 +343,11 @@ async function runVerificationCommands(baseUrl) {
   }
 }
 
-async function runRollbackVerification(baseUrl) {
+async function runRollbackVerification(baseUrl, expectedRevision) {
   await run("npm", ["run", "smoke:preflight"], {
     environment: {
       BASE_URL: baseUrl,
-      SMOKE_EXPECTED_REVISION: "",
+      SMOKE_EXPECTED_REVISION: expectedRevision,
       SMOKE_REQUEST_TIMEOUT_MS: "300000",
     },
   });
