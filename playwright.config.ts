@@ -60,6 +60,7 @@ export default defineConfig({
           OMNIAGENT_DEFAULT_TENANT: "playwright",
           OMNIAGENT_DEFAULT_ROLE: "operator",
           OMNIAGENT_LOCAL_PRODUCTION: "true",
+          TZ: "UTC",
           OMNIAGENT_DATA_DIR: path.join(os.tmpdir(), `omniagent-playwright-${process.pid}`),
           OMNIAGENT_ACCESS_REQUEST_FILE: path.join(
             os.tmpdir(),

@@ -375,6 +375,60 @@ test("Today captures and reversibly completes a focus item", async ({ page }) =>
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
+test("Today hydrates timestamp labels in a non-UTC browser", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({
+    baseURL,
+    timezoneId: "Asia/Kolkata",
+  });
+  const page = await context.newPage();
+  const hydrationErrors: string[] = [];
+  const captureHydrationError = (message: string) => {
+    if (
+      /Minified React error #418|hydration failed|server rendered text didn't match/i.test(
+        message,
+      )
+    ) {
+      hydrationErrors.push(message);
+    }
+  };
+  page.on("console", (message) => {
+    if (message.type() === "error") captureHydrationError(message.text());
+  });
+  page.on("pageerror", (error) => captureHydrationError(error.message));
+
+  try {
+    await signIn(page);
+    const briefPayload = await page.evaluate(async () => {
+      const response = await fetch("/api/today/brief", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      });
+      if (!response.ok) {
+        throw new Error(`brief generation returned ${response.status}`);
+      }
+      return response.json();
+    }) as {
+      brief?: { generatedAt?: string };
+    };
+    const generatedAt = briefPayload.brief?.generatedAt;
+    expect(generatedAt).toBeTruthy();
+
+    hydrationErrors.length = 0;
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(
+      page.locator('[data-testid="activity-workspace"][data-hydrated="true"]'),
+    ).toBeVisible();
+    await expect(page.locator(".today-brief-meta time")).toHaveAttribute(
+      "datetime",
+      generatedAt || "",
+    );
+    expect(hydrationErrors).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});
+
 test("notification center delivers and completes an actionable reminder", async ({ page }) => {
   test.slow();
   const title = `Review the private brief ${crypto.randomUUID().slice(0, 6)}`;
