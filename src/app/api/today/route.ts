@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -19,6 +20,12 @@ const createSchema = z.object({
   dueAt: z.string().datetime().optional(),
 }).strict();
 
+const loadCachedTodaySnapshot = unstable_cache(
+  loadTodaySnapshot,
+  ["today-dashboard-v1"],
+  { revalidate: 15 },
+);
+
 async function GETHandler(request: Request) {
   let context;
   try {
@@ -26,20 +33,30 @@ async function GETHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const snapshot = await loadCachedTodaySnapshot(
+    context.tenantId,
+    context.actorId,
+  );
+  return Response.json(snapshot, {
+    headers: { "cache-control": "private, no-store" },
+  });
+}
+
+async function loadTodaySnapshot(tenantId: string, actorId: string) {
   const [items, threads, memories, briefBundle, projects] = await Promise.all([
-    listTodayItems(100, { tenantId: context.tenantId, actorId: context.actorId }),
-    listThreads(6, { tenantId: context.tenantId, actorId: context.actorId }),
-    listMemories({ tenantId: context.tenantId, limit: 6 }),
-    getTodayBriefBundle({ tenantId: context.tenantId, actorId: context.actorId }),
-    listProjects(6, { tenantId: context.tenantId, actorId: context.actorId }),
+    listTodayItems(100, { tenantId, actorId }),
+    listThreads(6, { tenantId, actorId }),
+    listMemories({ tenantId, limit: 6 }),
+    getTodayBriefBundle({ tenantId, actorId }),
+    listProjects(6, { tenantId, actorId }),
   ]);
   const activeProjects = projects.filter((project) => project.status === "active").slice(0, 4);
   const projectTasks = await Promise.all(activeProjects.map((project) =>
-    listProjectTasks(project.id, { tenantId: context.tenantId })
+    listProjectTasks(project.id, { tenantId })
   ));
   const now = Date.now();
   const leadMs = briefBundle.preferences.reminderLeadMinutes * 60_000;
-  return Response.json({
+  return {
     generatedAt: new Date().toISOString(),
     items: items.map((item) => ({
       ...item,
@@ -72,7 +89,7 @@ async function GETHandler(request: Request) {
       totalTasks: projectTasks[index].length,
       nextTask: projectTasks[index].find((task) => task.status !== "done")?.title,
     })),
-  }, { headers: { "cache-control": "private, no-store" } });
+  };
 }
 
 async function POSTHandler(request: Request) {
