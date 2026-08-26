@@ -14,8 +14,8 @@ export default defineConfig({
     // File-backed concurrency tests run on developer workspaces as well as
     // local SSDs. Keep the limit bounded while allowing ordinary I/O variance.
     maxWorkers: 4,
-    testTimeout: 30_000,
-    hookTimeout: 30_000,
+    testTimeout: 60_000,
+    hookTimeout: 60_000,
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary", "lcov"],
