@@ -78,6 +78,11 @@ const advisorySloPolicyIds = new Set([
   "auth_failure_pressure",
   "security_policy_blocks",
 ]);
+const openAIGatewayService = "asael-openai-egress";
+const openAIGatewayRegion = "iad";
+const openAIGatewayProtocol = "1";
+const openAIGatewayProductionBaseUrl =
+  "https://omniagent-os-worker.fly.dev/v1";
 const releaseEvidenceCache = new Map<
   string,
   { expiresAt: number; report: ReleaseEvidenceReport }
@@ -137,6 +142,7 @@ async function collectReleaseEvidenceReport(
   const observabilitySlo = await getObservabilitySloSnapshot({ tenantId });
   const databaseRole = await getRuntimeDatabaseRoleSafety();
   const maintenanceDatabaseRole = await getMaintenanceDatabaseRoleSafety();
+  const openAIGateway = await getOpenAIGatewayEvidence(deployment, checkedAt);
   const openAi = deployment.environment === "production"
     ? await getOpenAIReadiness()
     : {
@@ -226,6 +232,21 @@ async function collectReleaseEvidenceReport(
         configured: Boolean(process.env.OMNIAGENT_INTERNAL_AUTH_SECRET?.trim()),
         connectorRefsBlocked: true,
       },
+    },
+    {
+      id: "openai_us_egress_gateway",
+      name: "US OpenAI egress gateway",
+      status: openAIGateway.required || openAIGateway.present
+        ? openAIGateway.ready
+          ? "pass"
+          : "fail"
+        : "pass",
+      summary: openAIGateway.required || openAIGateway.present
+        ? openAIGateway.ready
+          ? "The OpenAI gateway is healthy in the US and matches this release and protocol."
+          : "The Singapore deployment does not have a healthy, release-matched US OpenAI gateway."
+        : "The US OpenAI gateway is not required for this deployment region.",
+      details: openAIGateway,
     },
     {
       id: "openai_provider",
@@ -444,6 +465,162 @@ function normalizePositiveInteger(
 ) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function getOpenAIGatewayEvidence(
+  deployment: ReleaseEvidenceReport["deployment"],
+  checkedAt: string,
+) {
+  const configuredUrl = process.env.OMNIAGENT_OPENAI_GATEWAY_URL?.trim();
+  const configuredToken =
+    process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN?.trim();
+  const required =
+    deployment.environment === "production" && deployment.region === "sin1";
+  const present = Boolean(configuredUrl || configuredToken);
+  const configured = Boolean(configuredUrl && configuredToken);
+  const tokenSafe = Boolean(
+    configuredToken && /^[A-Za-z0-9._~-]{32,256}$/.test(configuredToken),
+  );
+  const baseUrl = normalizeOpenAIGatewayUrl(configuredUrl);
+  const safeConfiguration = configured && tokenSafe && Boolean(baseUrl);
+  const empty = {
+    checkedAt,
+    required,
+    present,
+    configured,
+    safeConfiguration,
+    reachable: false,
+    healthy: false,
+    serviceMatches: false,
+    regionMatches: false,
+    revisionMatches: false,
+    protocolMatches: false,
+    ready: false,
+  };
+  if (!safeConfiguration || !baseUrl || !configuredToken) {
+    return empty;
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(new URL("/healthz", baseUrl.origin), {
+      cache: "no-store",
+      headers: {
+        accept: "application/json",
+        "x-asael-gateway-token": configuredToken,
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(
+        normalizeBoundedPositiveInteger(
+          process.env.OMNIAGENT_OPENAI_GATEWAY_HEALTH_TIMEOUT_MS,
+          5_000,
+          500,
+          15_000,
+        ),
+      ),
+    });
+  } catch {
+    return empty;
+  }
+
+  const body = await readBoundedGatewayHealth(response, 16_384);
+  const observation = {
+    ...empty,
+    reachable: response.status === 200,
+    healthy: body?.status === "healthy",
+    serviceMatches: body?.service === openAIGatewayService,
+    regionMatches: body?.region === openAIGatewayRegion,
+    revisionMatches: Boolean(
+      deployment.commitSha && body?.revision === deployment.commitSha,
+    ),
+    protocolMatches: body?.protocol === openAIGatewayProtocol,
+  };
+  return {
+    ...observation,
+    ready:
+      observation.reachable &&
+      observation.healthy &&
+      observation.serviceMatches &&
+      observation.regionMatches &&
+      observation.revisionMatches &&
+      observation.protocolMatches,
+  };
+}
+
+function normalizeOpenAIGatewayUrl(value?: string) {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (
+    !/^https:\/\/omniagent-os-worker\.fly\.dev(?::443)?\/v1\/?$/i.test(
+      trimmed,
+    )
+  ) {
+    return undefined;
+  }
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    return undefined;
+  }
+  if (
+    url.origin !== "https://omniagent-os-worker.fly.dev" ||
+    (url.pathname !== "/v1" && url.pathname !== "/v1/")
+  ) {
+    return undefined;
+  }
+  return new URL(openAIGatewayProductionBaseUrl);
+}
+
+async function readBoundedGatewayHealth(
+  response: Response,
+  maxBytes: number,
+): Promise<Record<string, unknown> | undefined> {
+  if (!response.body) return undefined;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  text += decoder.decode();
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed && typeof parsed === "object"
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeBoundedPositiveInteger(
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : fallback;
 }
 
 function normalizeWorkerTarget(value?: string) {

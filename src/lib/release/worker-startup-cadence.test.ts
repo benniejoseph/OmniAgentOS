@@ -211,6 +211,90 @@ describe("dedicated worker startup cadence", () => {
     expect(fastRanDuringHeavyWork).toBe(true);
   }, 10_000);
 
+  it("rebinds every lane on SIGHUP without terminating the worker", async () => {
+    const staged = new Map<string, { startup: boolean | undefined; target: string | undefined }>();
+    const canonical = new Map<string, { startup: boolean | undefined; target: string | undefined }>();
+    let canonicalRevision = "previous-release";
+    const stagedServer = await startWorkerServer((lane, startup, target) => {
+      if (!staged.has(lane)) staged.set(lane, { startup, target });
+    });
+    const canonicalServer = await startWorkerServer(
+      (lane, startup, target) => {
+        if (!canonical.has(lane)) canonical.set(lane, { startup, target });
+      },
+      { healthRevision: () => canonicalRevision },
+    );
+    const child = startWorker(stagedServer.baseUrl, {
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
+      OMNIAGENT_RELEASE_SHA: "release-ready",
+      OMNIAGENT_WORKER_INTERVAL_MS: "5000",
+      OMNIAGENT_WORKER_BACKGROUND_INTERVAL_MS: "5000",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "0",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "0",
+      OMNIAGENT_WORKER_MAINTENANCE_FIRST_RUN_DELAY_MS: "5000",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "0",
+    });
+
+    await waitFor(() => staged.size === 4);
+    canonicalRevision = "release-ready";
+    expect(child.kill("SIGHUP")).toBe(true);
+    await waitFor(() => canonical.size === 4);
+
+    expect(child.exitCode).toBeNull();
+    expect(new Set(canonical.keys())).toEqual(
+      new Set(["fast", "background", "maintenance", "retention"]),
+    );
+    for (const lane of ["fast", "background", "maintenance"]) {
+      expect(canonical.get(lane)?.startup).toBe(true);
+    }
+    for (const observation of canonical.values()) {
+      expect(observation.target).toBe(canonicalServer.baseUrl);
+    }
+
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+  }, 10_000);
+
+  it("recovers the canonical target after a process restart", async () => {
+    const stagedLanes: string[] = [];
+    const canonicalRequests: Array<{
+      lane: string;
+      startup: boolean | undefined;
+      target: string | undefined;
+    }> = [];
+    const stagedServer = await startWorkerServer((lane) => {
+      stagedLanes.push(lane);
+    });
+    const canonicalServer = await startWorkerServer(
+      (lane, startup, target) => {
+        canonicalRequests.push({ lane, startup, target });
+      },
+      { healthRevision: "release-ready" },
+    );
+    const child = startWorker(stagedServer.baseUrl, {
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
+      OMNIAGENT_RELEASE_SHA: "release-ready",
+      OMNIAGENT_WORKER_INTERVAL_MS: "5000",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "5000",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "5000",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "5000",
+    });
+
+    await waitFor(() => canonicalRequests.some(({ lane }) => lane === "fast"));
+    expect(stagedLanes).toEqual([]);
+    expect(canonicalRequests[0]).toMatchObject({
+      lane: "fast",
+      startup: true,
+      target: canonicalServer.baseUrl,
+    });
+    expect(child.exitCode).toBeNull();
+
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+  }, 10_000);
+
   it("pins conservative production defaults", async () => {
     const [workerScript, flyConfig, workerImage, releaseEvidence] = await Promise.all([
       readFile("scripts/worker.mjs", "utf8"),
@@ -221,13 +305,23 @@ describe("dedicated worker startup cadence", () => {
 
     expect(workerScript).toContain("Math.floor(backgroundIntervalMs / 2)");
     expect(workerScript).toContain("if (startupDelayMs > 0)");
-    expect(workerScript).toContain("await sleep(nextDelayMs, shutdownController.signal)");
+    expect(workerScript).toContain(
+      "await sleepForWorkerEvent(nextDelayMs, targetGeneration)",
+    );
     expect(workerScript).not.toContain("cadenceMs - (Date.now() - startedAt)");
     expect(workerScript).toContain("...(startupAttempt ? { startup: true } : {})");
     expect(workerScript).toContain("if (response.ok) {\n        startup = false;");
     expect(workerScript).toContain("maintenanceFirstRunDelayMs");
     expect(workerScript).toContain("await runHeavyLane(executeTick)");
     expect(workerScript).toContain("await runHeavyLane(runRetentionSweep)");
+    expect(workerScript).toContain('process.on("SIGHUP"');
+    expect(workerScript).toContain("activateCanonicalWorkerTarget");
+    expect(workerScript).toContain("body?.revision !== releaseRevision");
+    expect(workerScript).toContain('const workerPidFile = "/tmp/asael-worker.pid"');
+    expect(workerScript).toContain("OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN");
+    expect(workerScript).toContain(
+      "previousToken: openAIEgressGatewayPreviousToken",
+    );
     expect(workerScript).toContain("15 * 60 * 1_000");
     expect(workerScript).toContain("10 * 60 * 1_000");
     expect(flyConfig).toContain('OMNIAGENT_WORKER_BACKGROUND_INTERVAL_MS = "15000"');
@@ -240,22 +334,61 @@ describe("dedicated worker startup cadence", () => {
     expect(workerImage).toContain("OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS||2100000");
     expect(releaseEvidence).toContain("2_100_000");
   });
+
+  it("rejects a previous gateway token without a primary token", async () => {
+    const { baseUrl } = await startWorkerServer(() => undefined);
+    const danglingPreviousToken =
+      "dangling-previous-gateway-token-that-is-at-least-32-chars";
+    const child = startWorker(baseUrl, {
+      OMNIAGENT_OPENAI_GATEWAY_TOKEN: "",
+      OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN: danglingPreviousToken,
+    });
+    let stderr = "";
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    const [exitCode] = await once(child, "exit");
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain(
+      "OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN requires OMNIAGENT_OPENAI_GATEWAY_TOKEN",
+    );
+    expect(stderr).not.toContain(danglingPreviousToken);
+  });
 });
 
 async function startWorkerServer(
-  onRequest: (lane: string, startup: boolean | undefined) => void,
+  onRequest: (
+    lane: string,
+    startup: boolean | undefined,
+    target: string | undefined,
+  ) => void,
   {
     responseDelayMs = 0,
     responseStatus = () => 200,
     onResponse = () => undefined,
+    healthRevision = "release-not-promoted",
   }: {
     responseDelayMs?: number | ((lane: string, attempt: number, startup: boolean | undefined) => number);
     responseStatus?: (lane: string, attempt: number, startup: boolean | undefined) => number;
     onResponse?: (lane: string, startup: boolean | undefined) => void;
+    healthRevision?: string | (() => string);
   } = {},
 ) {
   const attempts = new Map<string, number>();
   const server = createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/api/health") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        status: "healthy",
+        revision:
+          typeof healthRevision === "function"
+            ? healthRevision()
+            : healthRevision,
+      }));
+      return;
+    }
     const chunks: Buffer[] = [];
     for await (const chunk of request) {
       chunks.push(Buffer.from(chunk));
@@ -269,7 +402,11 @@ async function startWorkerServer(
       : body.lane || "unknown";
     const attempt = (attempts.get(lane) || 0) + 1;
     attempts.set(lane, attempt);
-    onRequest(lane, body.startup);
+    onRequest(
+      lane,
+      body.startup,
+      request.headers["x-omni-worker-target"] as string | undefined,
+    );
     const requestDelayMs = typeof responseDelayMs === "function"
       ? responseDelayMs(lane, attempt, body.startup)
       : responseDelayMs;
@@ -296,6 +433,7 @@ function startWorker(baseUrl: string, overrides: Record<string, string>) {
     env: {
       ...process.env,
       OMNIAGENT_WORKER_BASE_URL: baseUrl,
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: "",
       OMNIAGENT_INTERNAL_AUTH_SECRET: "worker-test-secret",
       OMNIAGENT_WORKER_INTERVAL_MS: "10000",
       OMNIAGENT_WORKER_BACKGROUND_INTERVAL_MS: "10000",
@@ -303,6 +441,10 @@ function startWorker(baseUrl: string, overrides: Record<string, string>) {
       OMNIAGENT_WORKER_RETENTION_INTERVAL_MS: "3600000",
       OMNIAGENT_WORKER_RETENTION: "true",
       OMNIAGENT_WORKER_REQUEST_TIMEOUT_MS: "3000",
+      OMNIAGENT_WORKER_TARGET_SWITCH_TIMEOUT_MS: "1000",
+      OMNIAGENT_RELEASE_SHA: "",
+      OMNIAGENT_OPENAI_GATEWAY_TOKEN: "",
+      OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN: "",
       VERCEL_AUTOMATION_BYPASS_SECRET: "",
       ...overrides,
     },

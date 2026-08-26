@@ -63,6 +63,80 @@ export const WORKFLOW_PLAN_NODES_PER_TICK = normalizePositiveInteger(
   3,
 );
 
+export type OpenAIGatewayConfig = Readonly<{
+  baseURL: string;
+  token: string;
+}>;
+
+export const OPENAI_GATEWAY_PRODUCTION_BASE_URL =
+  "https://omniagent-os-worker.fly.dev/v1";
+
+const OPENAI_GATEWAY_CONFIGURATION_ERROR =
+  "OpenAI gateway configuration is invalid.";
+const OPENAI_GATEWAY_PRODUCTION_URL_PATTERN =
+  /^https:\/\/omniagent-os-worker\.fly\.dev(?::443)?\/v1\/?$/i;
+
+export function getOpenAIGatewayConfig(): OpenAIGatewayConfig | undefined {
+  const configuredUrl = process.env.OMNIAGENT_OPENAI_GATEWAY_URL?.trim();
+  const token = process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN?.trim();
+  if (!configuredUrl && !token) {
+    return undefined;
+  }
+
+  const fail = () => {
+    if (isProductionDeployment()) {
+      throw new Error(OPENAI_GATEWAY_CONFIGURATION_ERROR);
+    }
+    return undefined;
+  };
+  if (
+    !configuredUrl ||
+    !token ||
+    !/^[A-Za-z0-9._~-]{32,256}$/.test(token)
+  ) {
+    return fail();
+  }
+
+  let url: URL;
+  try {
+    url = new URL(configuredUrl);
+  } catch {
+    return fail();
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    return fail();
+  }
+
+  if (
+    isProductionDeployment() &&
+    (!OPENAI_GATEWAY_PRODUCTION_URL_PATTERN.test(configuredUrl) ||
+      url.origin !== new URL(OPENAI_GATEWAY_PRODUCTION_BASE_URL).origin ||
+      (url.pathname !== "/v1" && url.pathname !== "/v1/"))
+  ) {
+    return fail();
+  }
+
+  const path = url.pathname.replace(/\/+$/, "");
+  url.pathname = path.endsWith("/v1") ? path : `${path}/v1`;
+  const baseURL = url.toString().replace(/\/$/, "");
+  if (
+    isProductionDeployment() &&
+    baseURL !== OPENAI_GATEWAY_PRODUCTION_BASE_URL
+  ) {
+    return fail();
+  }
+  return {
+    baseURL,
+    token,
+  };
+}
+
 export function hasOpenAIKey() {
   return Boolean(process.env.OPENAI_API_KEY?.trim());
 }
@@ -119,6 +193,13 @@ export const AGENT_MAX_OUTPUT_TOKENS = normalizePositiveInteger(
 function normalizePositiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function isProductionDeployment() {
+  return (
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL_ENV === "production"
+  );
 }
 
 function normalizeReasoningEffort(

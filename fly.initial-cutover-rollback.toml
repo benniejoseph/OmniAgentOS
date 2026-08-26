@@ -3,14 +3,15 @@ primary_region = "iad"
 kill_signal = "SIGTERM"
 kill_timeout = "300s"
 
-[build]
-  dockerfile = "Dockerfile.worker"
-
 [processes]
   worker = "node worker.mjs"
 
+# The one-time gateway cutover may need to restore an older worker image that
+# has no HTTP listener. The canonical Vercel deployment is rolled back first,
+# so this immediate, service-free recovery returns to the former direct-OpenAI
+# topology without waiting on a /healthz endpoint that image cannot provide.
 [deploy]
-  strategy = "bluegreen"
+  strategy = "immediate"
 
 [env]
   OMNIAGENT_WORKER_BASE_URL = "https://omniagent-os.vercel.app"
@@ -30,27 +31,6 @@ kill_timeout = "300s"
   OMNIAGENT_WORKER_RETENTION_INTERVAL_MS = "21600000"
   OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS = "600000"
   OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS = "2100000"
-  OMNIAGENT_OPENAI_GATEWAY_PORT = "8080"
-
-[http_service]
-  internal_port = 8080
-  force_https = true
-  auto_stop_machines = "off"
-  auto_start_machines = true
-  min_machines_running = 1
-  processes = ["worker"]
-
-  [http_service.concurrency]
-    type = "requests"
-    soft_limit = 8
-    hard_limit = 16
-
-  [[http_service.checks]]
-    grace_period = "10s"
-    interval = "10s"
-    method = "GET"
-    path = "/healthz"
-    timeout = "5s"
 
 [[vm]]
   memory = "256mb"

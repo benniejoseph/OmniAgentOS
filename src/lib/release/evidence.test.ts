@@ -33,6 +33,7 @@ import { getReleaseEvidenceReport } from "@/lib/release/evidence";
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
@@ -40,16 +41,51 @@ describe("release evidence", () => {
   it("serializes collectors to keep shared database pool pressure bounded", async () => {
     const revision = "release-revision";
     const workerRevision = revision;
+    const gatewayToken =
+      "gateway_token_abcdefghijklmnopqrstuvwxyz123456";
     vi.stubEnv("VERCEL", "1");
     vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("VERCEL_REGION", "sin1");
     vi.stubEnv("VERCEL_URL", "release.example.test");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", revision);
+    vi.stubEnv(
+      "OMNIAGENT_OPENAI_GATEWAY_URL",
+      "https://omniagent-os-worker.fly.dev/v1",
+    );
+    vi.stubEnv("OMNIAGENT_OPENAI_GATEWAY_TOKEN", gatewayToken);
     vi.stubEnv("OMNIAGENT_INTERNAL_AUTH_SECRET", "configured");
     vi.stubEnv("CRON_SECRET", "configured");
 
     let active = 0;
     let maxActive = 0;
     const order: string[] = [];
+    let gatewayRevision = revision;
+    let gatewayRegion = "iad";
+    let observedGatewayToken: string | undefined;
+    const gatewayFetch = vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      order.push("gateway");
+      observedGatewayToken = new Headers(init?.headers).get(
+        "x-asael-gateway-token",
+      ) || undefined;
+      expect(String(input)).toBe(
+        "https://omniagent-os-worker.fly.dev/healthz",
+      );
+      return new Response(JSON.stringify({
+        status: "healthy",
+        service: "asael-openai-egress",
+        region: gatewayRegion,
+        revision: gatewayRevision,
+        protocol: "1",
+        secret: gatewayToken,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", gatewayFetch);
     const collector = <T>(name: string, value: T) => async () => {
       active += 1;
       maxActive = Math.max(maxActive, active);
@@ -149,12 +185,30 @@ describe("release evidence", () => {
       "observability",
       "runtime-role",
       "maintenance-role",
+      "gateway",
       "openai",
       "heartbeat",
     ]);
     expect(duplicate.checkedAt).toBe(report.checkedAt);
     expect(mocks.getTenantIsolationReport).toHaveBeenCalledTimes(1);
     expect(report.releaseGate.approved).toBe(true);
+    expect(observedGatewayToken).toBe(gatewayToken);
+    expect(
+      report.gates.find((gate) => gate.id === "openai_us_egress_gateway"),
+    ).toMatchObject({
+      status: "pass",
+      details: {
+        required: true,
+        configured: true,
+        safeConfiguration: true,
+        reachable: true,
+        regionMatches: true,
+        revisionMatches: true,
+        protocolMatches: true,
+        ready: true,
+      },
+    });
+    expect(JSON.stringify(report)).not.toContain(gatewayToken);
     expect(
       report.gates.find((gate) => gate.id === "dedicated_worker"),
     ).toMatchObject({
@@ -165,6 +219,56 @@ describe("release evidence", () => {
         targetMatches: true,
       },
     });
+
+    gatewayRevision = "different-release";
+    gatewayRegion = "sin";
+    const gatewayMismatch = await getReleaseEvidenceReport(
+      "gateway-mismatch",
+    );
+    expect(gatewayMismatch.releaseGate.approved).toBe(false);
+    expect(
+      gatewayMismatch.gates.find(
+        (gate) => gate.id === "openai_us_egress_gateway",
+      ),
+    ).toMatchObject({
+      status: "fail",
+      details: {
+        configured: true,
+        reachable: true,
+        regionMatches: false,
+        revisionMatches: false,
+        ready: false,
+      },
+    });
+    expect(JSON.stringify(gatewayMismatch)).not.toContain(gatewayToken);
+    gatewayRevision = revision;
+    gatewayRegion = "iad";
+
+    const gatewayFetchesBeforeSpoof = gatewayFetch.mock.calls.length;
+    vi.stubEnv(
+      "OMNIAGENT_OPENAI_GATEWAY_URL",
+      "https://omniagent-os-worker.fly.dev.attacker.example/v1",
+    );
+    const gatewaySpoof = await getReleaseEvidenceReport("gateway-spoof");
+    expect(gatewaySpoof.releaseGate.approved).toBe(false);
+    expect(
+      gatewaySpoof.gates.find(
+        (gate) => gate.id === "openai_us_egress_gateway",
+      ),
+    ).toMatchObject({
+      status: "fail",
+      details: {
+        configured: true,
+        safeConfiguration: false,
+        reachable: false,
+        ready: false,
+      },
+    });
+    expect(gatewayFetch).toHaveBeenCalledTimes(gatewayFetchesBeforeSpoof);
+    vi.stubEnv(
+      "OMNIAGENT_OPENAI_GATEWAY_URL",
+      "https://omniagent-os-worker.fly.dev/v1",
+    );
 
     mocks.getLatestWorkerHeartbeats.mockResolvedValue(
       ["fast", "background", "maintenance"].map((lane) => ({

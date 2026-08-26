@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -13,11 +14,38 @@ class ReadinessAccessError extends Error {
   }
 }
 
+class GatewayReadinessAccessError extends Error {
+  constructor(status) {
+    super(`Gateway readiness access denied with HTTP ${status}.`);
+    this.name = "GatewayReadinessAccessError";
+    this.status = status;
+  }
+}
+
 const VERCEL_ORG_ID = "team_hFIwf5wwfzIn2I1WDZwY8pAv";
 const VERCEL_PROJECT_ID = "prj_BF3Uy9PhUUitqFAeA0g0LafaL4co";
 const VERCEL_SCOPE = "benniejosephs-projects";
+const PRODUCTION_BASE_URL = "https://omniagent-os.vercel.app";
+const VERCEL_DEPLOYMENT_HOST_PATTERN =
+  /^omniagent-[a-z0-9]+-benniejosephs-projects\.vercel\.app$/;
+const OPENAI_GATEWAY_SERVICE = "asael-openai-egress";
+const OPENAI_GATEWAY_REGION = "iad";
+const OPENAI_GATEWAY_PROTOCOL = "1";
+const OPENAI_GATEWAY_URL = "https://omniagent-os-worker.fly.dev/v1";
+const OPENAI_GATEWAY_TOKEN_ENV = "OMNIAGENT_OPENAI_GATEWAY_TOKEN";
+const OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV =
+  "OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN";
+const OPENAI_GATEWAY_INITIAL_CUTOVER_ENV =
+  "OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER";
+const PAID_INFERENCE_SENTINEL = "ASAEL_RELEASE_OK";
+const PAID_INFERENCE_MAX_OUTPUT_TOKENS = 16;
 const dryRun = process.argv.includes("--dry-run");
+const configurationProbe = process.argv.includes("--configuration-probe");
 const readinessProbeIndex = process.argv.indexOf("--readiness-probe");
+const gatewayReadinessProbeIndex = process.argv.indexOf(
+  "--gateway-readiness-probe",
+);
+const gatewayPaidProbeIndex = process.argv.indexOf("--gateway-paid-probe");
 const flyApp = process.env.FLY_APP?.trim() || "omniagent-os-worker";
 const revision =
   process.env.OMNIAGENT_RELEASE_SHA?.trim() ||
@@ -39,6 +67,35 @@ const readinessRequestTimeoutMs = boundedInteger(
   10_000,
   500,
   30_000,
+);
+const gatewayReadinessTimeoutMs = boundedInteger(
+  process.env.OMNIAGENT_DEPLOY_GATEWAY_READINESS_TIMEOUT_MS,
+  120_000,
+  1_000,
+  300_000,
+);
+const gatewayReadinessPollIntervalMs = boundedInteger(
+  process.env.OMNIAGENT_DEPLOY_GATEWAY_READINESS_POLL_MS,
+  1_000,
+  100,
+  10_000,
+);
+const gatewayReadinessRequestTimeoutMs = boundedInteger(
+  process.env.OMNIAGENT_DEPLOY_GATEWAY_READINESS_REQUEST_TIMEOUT_MS,
+  5_000,
+  500,
+  30_000,
+);
+const paidInferenceTimeoutMs = boundedInteger(
+  process.env.OMNIAGENT_DEPLOY_PAID_INFERENCE_TIMEOUT_MS,
+  60_000,
+  5_000,
+  120_000,
+);
+const paidInferenceModel = normalizeModelIdentifier(
+  process.env.OMNIAGENT_DEPLOY_OPENAI_SMOKE_MODEL ||
+    process.env.OPENAI_FAST_MODEL ||
+    "gpt-4o-mini",
 );
 const workerStartupSettleMs = boundedInteger(
   process.env.OMNIAGENT_DEPLOY_WORKER_STARTUP_SETTLE_MS,
@@ -70,11 +127,67 @@ if (readinessProbeIndex >= 0) {
   process.exit(0);
 }
 
+if (gatewayReadinessProbeIndex >= 0) {
+  const gateway = validateOpenAIGatewayConfiguration({
+    configuredUrl: process.argv[gatewayReadinessProbeIndex + 1],
+    configuredToken: process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN,
+    required: true,
+    allowLoopbackHttp: true,
+  });
+  const previousToken = validateOptionalGatewayToken(
+    process.env.OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN,
+    OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV,
+  );
+  const expectedRevision = normalizeExpectedRevision(
+    process.argv[gatewayReadinessProbeIndex + 2],
+  );
+  await waitForOpenAIGatewayTokenPair(
+    withPreviousGatewayToken(gateway, previousToken),
+    expectedRevision,
+    {
+      label: "Gateway readiness probe",
+    },
+  ).catch((error) => fail(errorMessage(error)));
+  process.exit(0);
+}
+
+if (gatewayPaidProbeIndex >= 0) {
+  const gateway = validateOpenAIGatewayConfiguration({
+    configuredUrl: process.argv[gatewayPaidProbeIndex + 1],
+    configuredToken: process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN,
+    required: true,
+    allowLoopbackHttp: true,
+  });
+  const expectedRevision = normalizeExpectedRevision(
+    process.argv[gatewayPaidProbeIndex + 2],
+  );
+  const openAIKey = validateOpenAIKey(process.env.OPENAI_API_KEY, true);
+  const readiness = await waitForOpenAIGatewayReadiness(
+    gateway,
+    expectedRevision,
+    { label: "Gateway paid probe" },
+  ).catch((error) => fail(errorMessage(error)));
+  await runPaidOpenAIGatewayInference({
+    gateway,
+    openAIKey,
+    expectedRevision,
+    readiness,
+    label: "Gateway paid probe",
+  }).catch((error) => fail(errorMessage(error)));
+  process.exit(0);
+}
+
+if (configurationProbe) {
+  validateReleaseConfiguration();
+  console.log("Production release configuration is valid.");
+  process.exit(0);
+}
+
 if (dryRun) {
   printDryRun(
     "npm",
     ["run", "smoke:release"],
-    { BASE_URL: "https://production.example" },
+    { BASE_URL: PRODUCTION_BASE_URL },
   );
   printDryRun("npm", ["run", "verify"]);
   printDryRun(
@@ -84,7 +197,13 @@ if (dryRun) {
   );
   const staged = "https://staged-deployment.example";
   printDryRunReadinessWait("staged web", staged, revision);
-  printDryRun("fly", workerDeployArgs(staged));
+  printDryRunGatewayTokenStage("candidate gateway overlap");
+  printDryRun(
+    "fly",
+    workerDeployArgs(staged, PRODUCTION_BASE_URL),
+  );
+  printDryRunGatewayPairReadiness("staged gateway", revision);
+  printDryRunPaidOpenAIInference("staged gateway", revision);
   printDryRunWorkerStartupWait("staged worker");
   printVerificationCommands(staged);
   printDryRun(
@@ -94,22 +213,23 @@ if (dryRun) {
   );
   printDryRunReadinessWait(
     "canonical web",
-    "https://production.example",
+    PRODUCTION_BASE_URL,
     revision,
   );
-  printDryRun(
-    "fly",
-    workerImageDeployArgs(
-      "registry.fly.io/omniagent-os-worker:staged",
-      "https://production.example",
-    ),
-  );
+  printDryRun("fly", workerCanonicalTargetArgs());
+  printDryRunGatewayPairReadiness("canonical gateway", revision);
+  printDryRunPaidOpenAIInference("canonical gateway", revision);
   printDryRunWorkerStartupWait("canonical worker");
-  printVerificationCommands("https://production.example");
+  printVerificationCommands(PRODUCTION_BASE_URL);
   process.exit(0);
 }
 
-const productionBaseUrl = validateReleaseConfiguration();
+const releaseConfiguration = validateReleaseConfiguration();
+const productionBaseUrl = releaseConfiguration.baseUrl;
+const openAIGateway = releaseConfiguration.openAIGateway;
+const openAIKey = releaseConfiguration.openAIKey;
+const initialOpenAIGatewayCutover =
+  releaseConfiguration.initialOpenAIGatewayCutover;
 const worktreeChanges = await capture("git", [
   "status",
   "--porcelain",
@@ -126,6 +246,23 @@ const previousVercelDeployment = await getCurrentVercelDeployment(
 const previousHealthRevision = await getCurrentHealthRevision(
   productionBaseUrl,
 );
+const rollbackOpenAIGateway = openAIGateway && !initialOpenAIGatewayCutover
+  ? createRollbackGatewayConfiguration(openAIGateway)
+  : undefined;
+if (initialOpenAIGatewayCutover) {
+  console.log(
+    "Initial OpenAI gateway cutover confirmed: prior-gateway preflight is skipped and rollback uses the pre-gateway worker topology.",
+  );
+}
+if (rollbackOpenAIGateway) {
+  // Prove the token used by the currently promoted Vercel release still
+  // reaches the current Fly revision before either platform is mutated.
+  await waitForOpenAIGatewayReadiness(
+    rollbackOpenAIGateway,
+    previousHealthRevision,
+    { label: "Rollback gateway preflight" },
+  ).catch((error) => fail(errorMessage(error)));
+}
 
 let workerMutationStarted = false;
 let vercelPromoted = false;
@@ -150,8 +287,28 @@ try {
     label: "Staged web",
   });
   workerMutationStarted = true;
-  await run("fly", workerDeployArgs(stagedBaseUrl));
-  const stagedWorkerImage = await getCurrentWorkerImage();
+  if (openAIGateway) {
+    await stageFlyGatewayTokenOverlap(openAIGateway, {
+      label: "Candidate gateway overlap",
+    });
+  }
+  await run("fly", workerDeployArgs(stagedBaseUrl, productionBaseUrl));
+  if (openAIGateway) {
+    const readiness = await waitForOpenAIGatewayTokenPair(
+      openAIGateway,
+      revision,
+      {
+        label: "Staged gateway",
+      },
+    );
+    await runPaidOpenAIGatewayInference({
+      gateway: openAIGateway,
+      openAIKey,
+      expectedRevision: revision,
+      readiness,
+      label: "Staged gateway",
+    });
+  }
   await waitForWorkerStartupWindow("Staged worker");
   await runVerificationCommands(stagedBaseUrl);
 
@@ -166,10 +323,25 @@ try {
   await waitForDeploymentReadiness(productionBaseUrl, revision, {
     label: "Canonical web",
   });
-  await run(
-    "fly",
-    workerImageDeployArgs(stagedWorkerImage, productionBaseUrl),
-  );
+  // Rebind the already-running worker in place. A second Fly deploy would
+  // restart the co-hosted OpenAI gateway on the single production machine.
+  await run("fly", workerCanonicalTargetArgs());
+  if (openAIGateway) {
+    const readiness = await waitForOpenAIGatewayTokenPair(
+      openAIGateway,
+      revision,
+      {
+        label: "Canonical gateway",
+      },
+    );
+    await runPaidOpenAIGatewayInference({
+      gateway: openAIGateway,
+      openAIKey,
+      expectedRevision: revision,
+      readiness,
+      label: "Canonical gateway",
+    });
+  }
   await waitForWorkerStartupWindow("Canonical worker");
   await runVerificationCommands(productionBaseUrl);
 } catch (error) {
@@ -190,26 +362,35 @@ try {
     });
   }
   if (workerMutationStarted) {
-    await run(
-      "fly",
-      [
-        "deploy",
-        "--app",
-        flyApp,
-        "--image",
-        previousWorkerImage,
-        "--env",
-        `OMNIAGENT_WORKER_BASE_URL=${productionBaseUrl}`,
-        "--yes",
-      ],
-    ).catch((rollbackError) => {
-      rollbackErrors.push(`Fly rollback failed: ${errorMessage(rollbackError)}`);
-    });
+    let gatewaySecretsRestored = true;
+    if (rollbackOpenAIGateway) {
+      await stageFlyGatewayTokenOverlap(rollbackOpenAIGateway, {
+        label: "Rollback gateway overlap",
+      }).catch((rollbackError) => {
+        gatewaySecretsRestored = false;
+        rollbackErrors.push(
+          `Fly rollback gateway secret staging failed: ${errorMessage(rollbackError)}`,
+        );
+      });
+    }
+    if (gatewaySecretsRestored) {
+      await run(
+        "fly",
+        workerRollbackArgs(
+          previousWorkerImage,
+          productionBaseUrl,
+          initialOpenAIGatewayCutover,
+        ),
+      ).catch((rollbackError) => {
+        rollbackErrors.push(`Fly rollback failed: ${errorMessage(rollbackError)}`);
+      });
+    }
   }
   if (!rollbackErrors.length && (vercelPromoted || workerMutationStarted)) {
     await runRollbackVerification(
       productionBaseUrl,
       previousHealthRevision,
+      rollbackOpenAIGateway,
     ).catch((rollbackError) => {
       rollbackErrors.push(
         `Rollback verification failed: ${errorMessage(rollbackError)}`,
@@ -225,10 +406,11 @@ try {
 }
 
 console.log(
-  `Production release ${revision} passed canonical smoke and performance budgets with rollback protection.`,
+  `Production release ${revision} passed canonical smoke and performance budgets with rollback-safe gateway token overlap.`,
 );
 
 function validateReleaseConfiguration() {
+  const singaporeTopology = configuredVercelRegions().includes("sin1");
   const required = [
     ["BASE_URL", process.env.BASE_URL],
     [
@@ -249,18 +431,28 @@ function validateReleaseConfiguration() {
   if (Boolean(smokeEmail) !== Boolean(smokePassword)) {
     fail("Administrator smoke credentials must be supplied as a complete email/password pair.");
   }
+  const configuredBaseUrl = String(process.env.BASE_URL || "").trim();
   let url;
   try {
-    url = new URL(process.env.BASE_URL);
+    url = new URL(configuredBaseUrl);
   } catch {
-    fail("BASE_URL must be a valid absolute production URL.");
+    fail(`BASE_URL must be exactly ${PRODUCTION_BASE_URL}.`);
   }
-  if (url.protocol !== "https:" || url.username || url.password) {
-    fail("BASE_URL must be an HTTPS URL without embedded credentials.");
+  if (
+    (configuredBaseUrl !== PRODUCTION_BASE_URL &&
+      configuredBaseUrl !== `${PRODUCTION_BASE_URL}/`) ||
+    url.origin !== PRODUCTION_BASE_URL ||
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    fail(`BASE_URL must be exactly ${PRODUCTION_BASE_URL}.`);
   }
-  if (url.search || url.hash) {
-    fail("BASE_URL must not contain a query string or fragment.");
-  }
+  const productionOrigin = PRODUCTION_BASE_URL;
   const evidencePath = path.resolve(process.env.RELEASE_EVIDENCE_OUTPUT);
   const temporaryRoot = path.resolve(tmpdir());
   if (
@@ -272,11 +464,195 @@ function validateReleaseConfiguration() {
       "RELEASE_EVIDENCE_OUTPUT must be a unique asael-release-evidence-*.json file inside the system temporary directory.",
     );
   }
-  url.pathname = url.pathname.replace(/\/+$/, "");
-  return url.toString().replace(/\/+$/, "");
+  const baseUrl = PRODUCTION_BASE_URL;
+  const openAIGateway = validateOpenAIGatewayConfiguration({
+    configuredUrl: process.env.OMNIAGENT_OPENAI_GATEWAY_URL,
+    configuredToken: process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN,
+    required: singaporeTopology,
+  });
+  const previousToken = validateOptionalGatewayToken(
+    process.env.OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN,
+    OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV,
+  );
+  const openAIKey = validateOpenAIKey(
+    process.env.OPENAI_API_KEY,
+    Boolean(openAIGateway),
+  );
+  const initialOpenAIGatewayCutover = validateInitialOpenAIGatewayCutover({
+    value: process.env.OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER,
+    gateway: openAIGateway,
+    previousToken,
+  });
+  if (openAIGateway && openAIGateway.baseUrl.origin === productionOrigin) {
+    fail("OMNIAGENT_OPENAI_GATEWAY_URL must use a separate gateway origin.");
+  }
+  return {
+    baseUrl,
+    openAIKey,
+    initialOpenAIGatewayCutover,
+    openAIGateway: openAIGateway
+      ? withPreviousGatewayToken(openAIGateway, previousToken)
+      : undefined,
+  };
 }
 
-function workerDeployArgs(baseUrl) {
+function configuredVercelRegions() {
+  let configuration;
+  try {
+    configuration = JSON.parse(
+      readFileSync(path.resolve("vercel.json"), "utf8"),
+    );
+  } catch {
+    fail("vercel.json must be readable before a production release.");
+  }
+  if (!Array.isArray(configuration?.regions)) return [];
+  return configuration.regions.filter(
+    (region) => typeof region === "string",
+  );
+}
+
+function validateOpenAIGatewayConfiguration({
+  configuredUrl,
+  configuredToken,
+  required,
+  allowLoopbackHttp = false,
+}) {
+  const rawUrl = String(configuredUrl || "").trim();
+  const token = String(configuredToken || "").trim();
+  if (!rawUrl && !token && !required) return undefined;
+  if (!rawUrl || !token) {
+    fail(
+      "Singapore releases require OMNIAGENT_OPENAI_GATEWAY_URL and OMNIAGENT_OPENAI_GATEWAY_TOKEN.",
+    );
+  }
+  validateRequiredGatewayToken(token, OPENAI_GATEWAY_TOKEN_ENV);
+
+  let baseUrl;
+  try {
+    baseUrl = new URL(rawUrl);
+  } catch {
+    fail("OMNIAGENT_OPENAI_GATEWAY_URL must be a valid absolute URL.");
+  }
+  const loopbackHttp =
+    allowLoopbackHttp &&
+    baseUrl.protocol === "http:" &&
+    ["localhost", "127.0.0.1", "::1"].includes(baseUrl.hostname);
+  const safeCommonShape =
+    !baseUrl.username &&
+    !baseUrl.password &&
+    !baseUrl.search &&
+    !baseUrl.hash;
+  const pathname = baseUrl.pathname;
+  const safePath = pathname === "/v1" || pathname === "/v1/";
+  const pinnedProductionGateway =
+    baseUrl.protocol === "https:" &&
+    baseUrl.hostname === "omniagent-os-worker.fly.dev" &&
+    !baseUrl.port &&
+    safePath;
+  if (!safeCommonShape || (!loopbackHttp && !pinnedProductionGateway)) {
+    fail(
+      `OMNIAGENT_OPENAI_GATEWAY_URL must be exactly ${OPENAI_GATEWAY_URL}; an explicit :443 and one trailing slash are accepted.`,
+    );
+  }
+  if (loopbackHttp && !safePath) {
+    fail("Loopback gateway readiness probes must use the exact /v1 path.");
+  }
+  baseUrl.pathname = "/v1";
+  if (pinnedProductionGateway) {
+    baseUrl.port = "";
+  }
+  return { baseUrl, token };
+}
+
+function validateRequiredGatewayToken(value, environmentName) {
+  const token = String(value || "").trim();
+  if (!/^[A-Za-z0-9._~-]{32,256}$/.test(token)) {
+    fail(`${environmentName} must be a 32-256 character URL-safe secret.`);
+  }
+  return token;
+}
+
+function validateOptionalGatewayToken(value, environmentName) {
+  const token = String(value || "").trim();
+  return token ? validateRequiredGatewayToken(token, environmentName) : undefined;
+}
+
+function validateOpenAIKey(value, required) {
+  const key = String(value || "").trim();
+  if (!key && !required) return undefined;
+  if (!/^[\x21-\x7e]{20,512}$/.test(key)) {
+    fail(
+      "OPENAI_API_KEY must be a 20-512 character printable secret for the paid release probe.",
+    );
+  }
+  return key;
+}
+
+function validateInitialOpenAIGatewayCutover({
+  value,
+  gateway,
+  previousToken,
+}) {
+  const confirmation = String(value || "").trim();
+  if (!confirmation) return false;
+  if (confirmation !== "CONFIRMED") {
+    fail(`${OPENAI_GATEWAY_INITIAL_CUTOVER_ENV} must equal CONFIRMED.`);
+  }
+  if (!gateway) {
+    fail(
+      `${OPENAI_GATEWAY_INITIAL_CUTOVER_ENV} requires a complete OpenAI gateway configuration.`,
+    );
+  }
+  if (previousToken) {
+    fail(
+      `${OPENAI_GATEWAY_INITIAL_CUTOVER_ENV} cannot be used with ${OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV}.`,
+    );
+  }
+  let rollbackConfig;
+  try {
+    rollbackConfig = readFileSync(
+      path.resolve("fly.initial-cutover-rollback.toml"),
+      "utf8",
+    );
+  } catch {
+    fail(
+      `${OPENAI_GATEWAY_INITIAL_CUTOVER_ENV} requires fly.initial-cutover-rollback.toml.`,
+    );
+  }
+  if (
+    rollbackConfig.includes("[http_service]") ||
+    !rollbackConfig.includes('strategy = "immediate"')
+  ) {
+    fail(
+      "The initial-cutover rollback config must be service-free and use the immediate strategy.",
+    );
+  }
+  return true;
+}
+
+function withPreviousGatewayToken(gateway, previousToken) {
+  if (previousToken && previousToken === gateway.token) {
+    fail(
+      `${OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV} must differ from ${OPENAI_GATEWAY_TOKEN_ENV}; omit it when no rotation is in progress.`,
+    );
+  }
+  return { ...gateway, previousToken };
+}
+
+function createRollbackGatewayConfiguration(gateway) {
+  return {
+    ...gateway,
+    token: gateway.previousToken || gateway.token,
+    previousToken: gateway.previousToken ? gateway.token : undefined,
+  };
+}
+
+function workerDeployArgs(baseUrl, canonicalBaseUrl) {
+  if (canonicalBaseUrl !== PRODUCTION_BASE_URL) {
+    fail(
+      `The worker canonical target must be exactly ${PRODUCTION_BASE_URL}.`,
+    );
+  }
   return [
     "deploy",
     "--app",
@@ -286,21 +662,110 @@ function workerDeployArgs(baseUrl) {
     ...(baseUrl
       ? ["--env", `OMNIAGENT_WORKER_BASE_URL=${baseUrl}`]
       : []),
+    ...(canonicalBaseUrl
+      ? [
+          "--env",
+          `OMNIAGENT_WORKER_CANONICAL_BASE_URL=${canonicalBaseUrl}`,
+        ]
+      : []),
+    "--strategy",
+    "bluegreen",
     "--yes",
   ];
 }
 
-function workerImageDeployArgs(image, baseUrl) {
+function workerCanonicalTargetArgs() {
+  return [
+    "ssh",
+    "console",
+    "--app",
+    flyApp,
+    "--command",
+    'read worker_pid < /tmp/asael-worker.pid && kill -HUP "$worker_pid"',
+  ];
+}
+
+function workerRollbackArgs(image, baseUrl, initialCutover) {
+  if (baseUrl !== PRODUCTION_BASE_URL) {
+    fail(
+      `The worker rollback target must be exactly ${PRODUCTION_BASE_URL}.`,
+    );
+  }
   return [
     "deploy",
     "--app",
     flyApp,
+    ...(initialCutover
+      ? [
+          "--config",
+          "fly.initial-cutover-rollback.toml",
+          "--strategy",
+          "immediate",
+        ]
+      : ["--strategy", "bluegreen"]),
     "--image",
     image,
     "--env",
     `OMNIAGENT_WORKER_BASE_URL=${baseUrl}`,
+    "--env",
+    `OMNIAGENT_WORKER_CANONICAL_BASE_URL=${baseUrl}`,
     "--yes",
   ];
+}
+
+async function stageFlyGatewayTokenOverlap(gateway, { label }) {
+  const removePreviousToken =
+    !gateway.previousToken &&
+    await flySecretExists(OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV);
+  const secretInput = [
+    `${OPENAI_GATEWAY_TOKEN_ENV}=${gateway.token}`,
+    ...(gateway.previousToken
+      ? [`${OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV}=${gateway.previousToken}`]
+      : []),
+    "",
+  ].join("\n");
+  await runWithSensitiveStdin(
+    "fly",
+    ["secrets", "import", "--app", flyApp, "--stage"],
+    secretInput,
+  );
+  if (removePreviousToken) {
+    // A previous token is valid only during an active rotation. Explicitly
+    // stage its removal so a completed overlap is not retained indefinitely.
+    await run("fly", [
+      "secrets",
+      "unset",
+      OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV,
+      "--app",
+      flyApp,
+      "--stage",
+    ]);
+  }
+  console.log(
+    `${label} staged on Fly with ${gateway.previousToken ? "two accepted tokens" : "one accepted token"}; secret values were not written to output.`,
+  );
+}
+
+async function flySecretExists(secretName) {
+  const output = await capture("fly", [
+    "secrets",
+    "list",
+    "--app",
+    flyApp,
+    "--json",
+  ]);
+  let secrets;
+  try {
+    secrets = JSON.parse(output);
+  } catch {
+    throw new Error("Unable to inspect Fly gateway secret names safely.");
+  }
+  if (!Array.isArray(secrets)) {
+    throw new Error("Fly gateway secret inventory was not an array.");
+  }
+  return secrets.some((secret) =>
+    [secret?.name, secret?.Name].some((name) => name === secretName),
+  );
 }
 
 async function getCurrentWorkerImage() {
@@ -318,11 +783,36 @@ async function getCurrentWorkerImage() {
   } catch {
     fail("Unable to parse the current Fly release for rollback preflight.");
   }
-  const release = releases?.find((candidate) => {
-    const image =
-      candidate?.imageRef || candidate?.image_ref || candidate?.ImageRef;
-    return image && String(candidate.status || "").toLowerCase() !== "failed";
-  });
+  if (!Array.isArray(releases)) {
+    fail("The current Fly release inventory was not an array.");
+  }
+  const eligibleReleases = releases
+    .map((candidate) => {
+      const image =
+        candidate?.imageRef || candidate?.image_ref || candidate?.ImageRef;
+      const status = String(
+        candidate?.status ?? candidate?.Status ?? "",
+      ).toLowerCase();
+      const version = Number(
+        candidate?.version ?? candidate?.Version,
+      );
+      return {
+        candidate,
+        image,
+        status,
+        version,
+      };
+    })
+    .filter(
+      ({ image, status, version }) =>
+        typeof image === "string" &&
+        image.trim() &&
+        status === "complete" &&
+        Number.isSafeInteger(version) &&
+        version >= 0,
+    )
+    .sort((left, right) => right.version - left.version);
+  const release = eligibleReleases[0]?.candidate;
   const image =
     release?.imageRef || release?.image_ref || release?.ImageRef;
   if (!image) {
@@ -412,10 +902,21 @@ async function runVerificationCommands(baseUrl) {
   }
 }
 
-async function runRollbackVerification(baseUrl, expectedRevision) {
+async function runRollbackVerification(
+  baseUrl,
+  expectedRevision,
+  rollbackGateway,
+) {
   await waitForDeploymentReadiness(baseUrl, expectedRevision, {
     label: "Rollback web",
   });
+  if (rollbackGateway) {
+    await waitForOpenAIGatewayTokenPair(
+      rollbackGateway,
+      expectedRevision,
+      { label: "Rollback gateway" },
+    );
+  }
   await run("npm", ["run", "smoke:preflight"], {
     environment: {
       BASE_URL: baseUrl,
@@ -423,6 +924,25 @@ async function runRollbackVerification(baseUrl, expectedRevision) {
       SMOKE_REQUEST_TIMEOUT_MS: "300000",
     },
   });
+}
+
+async function waitForOpenAIGatewayTokenPair(
+  gateway,
+  expectedRevision,
+  { label },
+) {
+  const readiness = await waitForOpenAIGatewayReadiness(
+    gateway,
+    expectedRevision,
+    { label: `${label} active token` },
+  );
+  if (!gateway.previousToken) return readiness;
+  await waitForOpenAIGatewayReadiness(
+    { ...gateway, token: gateway.previousToken, previousToken: undefined },
+    expectedRevision,
+    { label: `${label} previous token` },
+  );
+  return readiness;
 }
 
 async function waitForDeploymentReadiness(
@@ -504,6 +1024,317 @@ async function waitForDeploymentReadiness(
   throw new Error(
     `${label} did not become healthy at revision ${expectedRevision} within ${readinessTimeoutMs}ms after ${attempts} attempt(s). Last observation: ${lastHealthObservation || lastObservation}.`,
   );
+}
+
+async function waitForOpenAIGatewayReadiness(
+  gateway,
+  expectedRevision,
+  { label },
+) {
+  if (!gateway) {
+    throw new Error(
+      `${label} cannot run without a validated OpenAI gateway configuration.`,
+    );
+  }
+  const startedAt = Date.now();
+  const deadline = startedAt + gatewayReadinessTimeoutMs;
+  const healthUrl = new URL("/healthz", gateway.baseUrl.origin);
+  let attempts = 0;
+  let lastObservation = "no gateway health response";
+  let lastLoggedObservation = "";
+
+  while (Date.now() < deadline) {
+    attempts += 1;
+    const remainingMs = Math.max(1, deadline - Date.now());
+    let response;
+    try {
+      response = await fetch(healthUrl, {
+        cache: "no-store",
+        headers: {
+          accept: "application/json",
+          "x-asael-gateway-token": gateway.token,
+        },
+        redirect: "manual",
+        signal: AbortSignal.timeout(
+          Math.min(gatewayReadinessRequestTimeoutMs, remainingMs),
+        ),
+      });
+    } catch (error) {
+      lastObservation = `request_error=${safeDiagnostic(errorMessage(error))}`;
+    }
+
+    if (response) {
+      try {
+        const observation = await readGatewayHealthObservation(
+          response,
+          expectedRevision,
+        );
+        lastObservation = formatGatewayHealthObservation(observation);
+        if (gatewayHealthObservationReady(observation)) {
+          const tokenProbeStatus = await probeOpenAIGatewayToken(
+            gateway,
+            Math.max(1, deadline - Date.now()),
+          );
+          lastObservation = `${lastObservation} token=${tokenProbeStatus === 400}`;
+          if (tokenProbeStatus === 401 || tokenProbeStatus === 403) {
+            throw new GatewayReadinessAccessError(tokenProbeStatus);
+          }
+          if (tokenProbeStatus !== 400) {
+            throw new Error("Gateway token probe did not reach the authorization boundary.");
+          }
+          console.log(
+            `${label} became ready for release ${expectedRevision} in ${OPENAI_GATEWAY_REGION} with protocol ${OPENAI_GATEWAY_PROTOCOL} after ${attempts} attempt(s) in ${Date.now() - startedAt}ms.`,
+          );
+          return observation;
+        }
+        if (observation.httpStatus === 401 || observation.httpStatus === 403) {
+          throw new GatewayReadinessAccessError(observation.httpStatus);
+        }
+      } catch (error) {
+        if (error instanceof GatewayReadinessAccessError) {
+          throw new Error(
+            `${label} access was denied with HTTP ${error.status}. Verify the shared OMNIAGENT_OPENAI_GATEWAY_TOKEN secret.`,
+          );
+        }
+        lastObservation = "response_error=invalid_gateway_health_response";
+      }
+    }
+
+    if (
+      attempts === 1 ||
+      lastObservation !== lastLoggedObservation ||
+      attempts % 10 === 0
+    ) {
+      console.log(
+        `Waiting for ${label} readiness (attempt ${attempts}): ${lastObservation}.`,
+      );
+      lastLoggedObservation = lastObservation;
+    }
+    const sleepMs = Math.min(
+      gatewayReadinessPollIntervalMs,
+      Math.max(0, deadline - Date.now()),
+    );
+    if (sleepMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, sleepMs));
+    }
+  }
+
+  throw new Error(
+    `${label} did not become ready within ${gatewayReadinessTimeoutMs}ms after ${attempts} attempt(s). Last observation: ${lastObservation}.`,
+  );
+}
+
+async function probeOpenAIGatewayToken(gateway, remainingMs) {
+  // This allowlisted model-readiness route checks the gateway token before it
+  // checks the OpenAI Authorization header. Deliberately omitting Authorization
+  // yields 400 only when the gateway token was accepted and never reaches
+  // OpenAI, so pairing is verified without an API key or a paid request.
+  const probeUrl = new URL("/v1/models/gpt-5", gateway.baseUrl.origin);
+  let response;
+  try {
+    response = await fetch(probeUrl, {
+      cache: "no-store",
+      headers: {
+        accept: "application/json",
+        "x-asael-gateway-token": gateway.token,
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(
+        Math.min(gatewayReadinessRequestTimeoutMs, remainingMs),
+      ),
+    });
+    await response.body?.cancel().catch(() => undefined);
+    return response.status;
+  } catch {
+    return 0;
+  }
+}
+
+async function runPaidOpenAIGatewayInference({
+  gateway,
+  openAIKey,
+  expectedRevision,
+  readiness,
+  label,
+}) {
+  if (
+    !readiness ||
+    !gatewayHealthObservationReady(readiness) ||
+    readiness.revision !== expectedRevision
+  ) {
+    throw new Error(
+      `${label} paid inference requires release-matched gateway readiness.`,
+    );
+  }
+  if (!openAIKey) {
+    throw new Error(`${label} paid inference requires OPENAI_API_KEY.`);
+  }
+
+  // This synthetic probe calls the gateway directly, so it creates no Asael
+  // application rows; store:false also prevents OpenAI response retention.
+  const requestBody = JSON.stringify({
+    model: paidInferenceModel,
+    input:
+      `Synthetic Asael release verification. Reply with exactly ${PAID_INFERENCE_SENTINEL}.`,
+    max_output_tokens: PAID_INFERENCE_MAX_OUTPUT_TOKENS,
+    store: false,
+  });
+  const inferenceUrl = new URL(
+    "responses",
+    `${gateway.baseUrl.toString().replace(/\/+$/, "")}/`,
+  );
+  const idempotencyLabel = String(label)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  let response;
+  try {
+    response = await fetch(inferenceUrl, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${openAIKey}`,
+        "content-type": "application/json",
+        "idempotency-key":
+          `asael-release-${expectedRevision}-${idempotencyLabel}`.slice(0, 255),
+        "x-asael-gateway-token": gateway.token,
+      },
+      body: requestBody,
+      redirect: "manual",
+      signal: AbortSignal.timeout(paidInferenceTimeoutMs),
+    });
+  } catch (error) {
+    throw new Error(
+      `${label} paid OpenAI inference request failed: ${safeDiagnostic(errorMessage(error))}.`,
+    );
+  }
+
+  const gatewayRequestId = response.headers.get(
+    "x-asael-gateway-request-id",
+  );
+  const upstreamRequestId = response.headers.get("x-request-id");
+  const result = await readResponseTextLimited(response, 262_144);
+  let body;
+  if (!result.exceeded && result.text) {
+    try {
+      body = JSON.parse(result.text);
+    } catch {
+      body = undefined;
+    }
+  }
+  if (response.status !== 200) {
+    throw new Error(
+      `${label} paid OpenAI inference returned HTTP ${response.status}.`,
+    );
+  }
+  if (result.exceeded || !body || body.object !== "response") {
+    throw new Error(`${label} paid OpenAI inference returned an invalid response.`);
+  }
+  const responseModel =
+    typeof body.model === "string" ? body.model : "";
+  if (
+    responseModel !== paidInferenceModel &&
+    !responseModel.startsWith(`${paidInferenceModel}-`)
+  ) {
+    throw new Error(`${label} paid OpenAI inference used an unexpected model.`);
+  }
+  if (
+    typeof body.id !== "string" ||
+    !body.id.startsWith("resp_") ||
+    !gatewayRequestId ||
+    !upstreamRequestId
+  ) {
+    throw new Error(
+      `${label} paid inference did not prove the OpenAI gateway/provider path.`,
+    );
+  }
+  const inputTokens = positiveIntegerOrZero(body.usage?.input_tokens);
+  const outputTokens = positiveIntegerOrZero(body.usage?.output_tokens);
+  const totalTokens = positiveIntegerOrZero(body.usage?.total_tokens);
+  if (
+    inputTokens <= 0 ||
+    outputTokens <= 0 ||
+    totalTokens < inputTokens + outputTokens
+  ) {
+    throw new Error(`${label} paid OpenAI inference is missing valid usage.`);
+  }
+  if (!openAIResponseText(body).includes(PAID_INFERENCE_SENTINEL)) {
+    throw new Error(
+      `${label} paid OpenAI inference did not return the synthetic sentinel.`,
+    );
+  }
+
+  console.log(
+    `${label} paid inference passed: provider=openai model=${safeDiagnostic(responseModel)} inputTokens=${inputTokens} outputTokens=${outputTokens} totalTokens=${totalTokens} revision=${expectedRevision} store=false appData=none.`,
+  );
+}
+
+function positiveIntegerOrZero(value) {
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+function openAIResponseText(body) {
+  const fragments = [];
+  if (typeof body.output_text === "string") fragments.push(body.output_text);
+  if (!Array.isArray(body.output)) return fragments.join("\n");
+  for (const item of body.output) {
+    if (!Array.isArray(item?.content)) continue;
+    for (const content of item.content) {
+      if (typeof content?.text === "string") fragments.push(content.text);
+      if (typeof content?.output_text === "string") {
+        fragments.push(content.output_text);
+      }
+    }
+  }
+  return fragments.join("\n");
+}
+
+async function readGatewayHealthObservation(response, expectedRevision) {
+  const result = await readResponseTextLimited(response, 16_384);
+  let body;
+  if (!result.exceeded && result.text) {
+    try {
+      body = JSON.parse(result.text);
+    } catch {
+      body = undefined;
+    }
+  }
+  return {
+    httpStatus: response.status,
+    bodyState: result.exceeded ? "oversized" : body ? "json" : "invalid",
+    revision:
+      typeof body?.revision === "string" ? body.revision : undefined,
+    healthy: body?.status === "healthy",
+    serviceMatches: body?.service === OPENAI_GATEWAY_SERVICE,
+    regionMatches: body?.region === OPENAI_GATEWAY_REGION,
+    revisionMatches: body?.revision === expectedRevision,
+    protocolMatches: body?.protocol === OPENAI_GATEWAY_PROTOCOL,
+  };
+}
+
+function gatewayHealthObservationReady(observation) {
+  return (
+    observation.httpStatus === 200 &&
+    observation.healthy &&
+    observation.serviceMatches &&
+    observation.regionMatches &&
+    observation.revisionMatches &&
+    observation.protocolMatches
+  );
+}
+
+function formatGatewayHealthObservation(observation) {
+  return [
+    `http=${observation.httpStatus}`,
+    `body=${observation.bodyState}`,
+    `healthy=${observation.healthy}`,
+    `service=${observation.serviceMatches}`,
+    `region=${observation.regionMatches}`,
+    `revision=${observation.revisionMatches}`,
+    `protocol=${observation.protocolMatches}`,
+  ].join(" ");
 }
 
 function readinessHeaders(useDeploymentBypass) {
@@ -623,9 +1454,27 @@ function printDryRunReadinessWait(label, baseUrl, expectedRevision) {
   );
 }
 
+function printDryRunGatewayPairReadiness(label, expectedRevision) {
+  console.log(
+    `DRY RUN wait for ${label} active+optional-previous token readiness at /healthz revision=${expectedRevision} region=${OPENAI_GATEWAY_REGION} protocol=${OPENAI_GATEWAY_PROTOCOL} timeout=${gatewayReadinessTimeoutMs}ms`,
+  );
+}
+
+function printDryRunPaidOpenAIInference(label, expectedRevision) {
+  console.log(
+    `DRY RUN bounded paid OpenAI inference through ${label} provider=openai model=${paidInferenceModel} maxOutputTokens=${PAID_INFERENCE_MAX_OUTPUT_TOKENS} store=false appData=none revision=${expectedRevision}`,
+  );
+}
+
+function printDryRunGatewayTokenStage(label) {
+  console.log(
+    `DRY RUN stage ${label} on Fly through secret stdin; values redacted`,
+  );
+}
+
 function printDryRunWorkerStartupWait(label) {
   console.log(
-    `DRY RUN wait for ${label} startup registration window ${workerStartupSettleMs}ms`,
+    `DRY RUN wait for ${label} target registration window ${workerStartupSettleMs}ms`,
   );
 }
 
@@ -665,6 +1514,20 @@ function normalizeExpectedRevision(value) {
   return normalized;
 }
 
+function normalizeModelIdentifier(value) {
+  const normalized = String(value || "").trim();
+  if (
+    !normalized ||
+    normalized.length > 128 ||
+    !/^[a-zA-Z0-9._:-]+$/.test(normalized)
+  ) {
+    fail(
+      "OMNIAGENT_DEPLOY_OPENAI_SMOKE_MODEL must be a bounded model identifier.",
+    );
+  }
+  return normalized;
+}
+
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum
@@ -699,10 +1562,21 @@ function normalizeDeploymentUrl(value) {
   const url = new URL(
     String(value).startsWith("http") ? value : `https://${value}`,
   );
-  if (url.protocol !== "https:") {
-    throw new Error("Vercel deployment URL must use HTTPS.");
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.port ||
+    (url.pathname !== "/" && url.pathname !== "") ||
+    url.search ||
+    url.hash ||
+    !VERCEL_DEPLOYMENT_HOST_PATTERN.test(url.hostname)
+  ) {
+    throw new Error(
+      "Vercel deployment URL must be an exact deployment origin for the Asael production project.",
+    );
   }
-  return url.toString().replace(/\/+$/, "");
+  return url.origin;
 }
 
 function printDryRun(command, args, environment) {
@@ -754,6 +1628,42 @@ function run(command, args, options = {}) {
         ),
       );
     });
+  });
+}
+
+function runWithSensitiveStdin(command, args, input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: process.cwd(),
+      env: process.env,
+      // Suppress command output as a defense in depth: secret values are sent
+      // only over stdin and cannot be echoed by a verbose CLI or error path.
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    child.once("error", (error) => finish(error));
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        finish();
+        return;
+      }
+      finish(
+        new Error(
+          `${command} ${args.join(" ")} failed with ${signal || `exit code ${code}`}; sensitive command output was suppressed.`,
+        ),
+      );
+    });
+    child.stdin.once("error", (error) => finish(error));
+    child.stdin.end(input);
   });
 }
 
