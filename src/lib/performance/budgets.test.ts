@@ -129,6 +129,11 @@ describe("frontend performance budgets", () => {
     expect(dashboardBenchmark).toContain('path: "/app"');
     expect(dashboardBenchmark).toContain("budgets.releaseDashboardUsableMs");
     expect(dashboardBenchmark).toContain("serverP95BudgetMs");
+    expect(dashboardBenchmark).toContain('pathname === "/api/today"');
+    expect(dashboardBenchmark).toContain('pathname === "/api/workspace-summary"');
+    expect(dashboardBenchmark).toContain("dashboard performed duplicate hydration reads");
+    expect(dashboardBenchmark).toContain("const response = await page.goto");
+    expect(dashboardBenchmark).not.toContain("page.waitForResponse(");
     expect(deployment).toContain(
       '["promote", stagedBaseUrl, "--yes", "--scope", VERCEL_SCOPE]',
     );

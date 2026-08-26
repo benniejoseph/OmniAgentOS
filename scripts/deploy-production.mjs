@@ -9,10 +9,29 @@ const VERCEL_ORG_ID = "team_hFIwf5wwfzIn2I1WDZwY8pAv";
 const VERCEL_PROJECT_ID = "prj_BF3Uy9PhUUitqFAeA0g0LafaL4co";
 const VERCEL_SCOPE = "benniejosephs-projects";
 const dryRun = process.argv.includes("--dry-run");
+const readinessProbeIndex = process.argv.indexOf("--readiness-probe");
 const flyApp = process.env.FLY_APP?.trim() || "omniagent-os-worker";
 const revision =
   process.env.OMNIAGENT_RELEASE_SHA?.trim() ||
   await capture("git", ["rev-parse", "HEAD"]);
+const readinessTimeoutMs = boundedInteger(
+  process.env.OMNIAGENT_DEPLOY_READINESS_TIMEOUT_MS,
+  180_000,
+  1_000,
+  300_000,
+);
+const readinessPollIntervalMs = boundedInteger(
+  process.env.OMNIAGENT_DEPLOY_READINESS_POLL_MS,
+  2_000,
+  100,
+  10_000,
+);
+const readinessRequestTimeoutMs = boundedInteger(
+  process.env.OMNIAGENT_DEPLOY_READINESS_REQUEST_TIMEOUT_MS,
+  10_000,
+  500,
+  30_000,
+);
 const vercelEnvironment = {
   VERCEL_ORG_ID,
   VERCEL_PROJECT_ID,
@@ -22,6 +41,20 @@ const smokeEnvironment = {
   BENCHMARK_ENFORCE: "true",
   OMNIAGENT_RELEASE_SHA: revision,
 };
+
+if (readinessProbeIndex >= 0) {
+  const probeUrl = normalizeReadinessProbeUrl(
+    process.argv[readinessProbeIndex + 1],
+  );
+  const expectedRevision = normalizeExpectedRevision(
+    process.argv[readinessProbeIndex + 2],
+  );
+  await waitForDeploymentReadiness(probeUrl, expectedRevision, {
+    label: "Readiness probe",
+    useDeploymentBypass: false,
+  }).catch((error) => fail(errorMessage(error)));
+  process.exit(0);
+}
 
 if (dryRun) {
   printDryRun(
@@ -36,12 +69,18 @@ if (dryRun) {
     vercelEnvironment,
   );
   const staged = "https://staged-deployment.example";
+  printDryRunReadinessWait("staged web", staged, revision);
   printDryRun("fly", workerDeployArgs(staged));
   printVerificationCommands(staged);
   printDryRun(
     "vercel",
     ["promote", staged, "--yes", "--scope", VERCEL_SCOPE],
     vercelEnvironment,
+  );
+  printDryRunReadinessWait(
+    "canonical web",
+    "https://production.example",
+    revision,
   );
   printDryRun(
     "fly",
@@ -85,6 +124,9 @@ try {
     { environment: vercelEnvironment, echo: true },
   );
   const stagedBaseUrl = deploymentUrlFromOutput(deploymentOutput);
+  await waitForDeploymentReadiness(stagedBaseUrl, revision, {
+    label: "Staged web",
+  });
   workerMutationStarted = true;
   await run("fly", workerDeployArgs(stagedBaseUrl));
   const stagedWorkerImage = await getCurrentWorkerImage();
@@ -98,6 +140,9 @@ try {
     ["promote", stagedBaseUrl, "--yes", "--scope", VERCEL_SCOPE],
     { environment: vercelEnvironment },
   );
+  await waitForDeploymentReadiness(productionBaseUrl, revision, {
+    label: "Canonical web",
+  });
   await run(
     "fly",
     workerImageDeployArgs(stagedWorkerImage, productionBaseUrl),
@@ -344,6 +389,9 @@ async function runVerificationCommands(baseUrl) {
 }
 
 async function runRollbackVerification(baseUrl, expectedRevision) {
+  await waitForDeploymentReadiness(baseUrl, expectedRevision, {
+    label: "Rollback web",
+  });
   await run("npm", ["run", "smoke:preflight"], {
     environment: {
       BASE_URL: baseUrl,
@@ -351,6 +399,247 @@ async function runRollbackVerification(baseUrl, expectedRevision) {
       SMOKE_REQUEST_TIMEOUT_MS: "300000",
     },
   });
+}
+
+async function waitForDeploymentReadiness(
+  baseUrl,
+  expectedRevision,
+  { label, useDeploymentBypass = true },
+) {
+  const startedAt = Date.now();
+  const deadline = startedAt + readinessTimeoutMs;
+  let attempts = 0;
+  let lastObservation = "no health response";
+  let lastHealthObservation;
+  let lastLoggedObservation = "";
+
+  while (Date.now() < deadline) {
+    attempts += 1;
+    const remainingMs = Math.max(1, deadline - Date.now());
+    let response;
+    try {
+      response = await fetch(`${baseUrl}/api/health`, {
+        cache: "no-store",
+        headers: readinessHeaders(useDeploymentBypass),
+        redirect: "manual",
+        signal: AbortSignal.timeout(
+          Math.min(readinessRequestTimeoutMs, remainingMs),
+        ),
+      });
+    } catch (error) {
+      lastObservation = `request_error=${safeDiagnostic(errorMessage(error))}`;
+    }
+
+    if (response) {
+      try {
+        const observation = await readHealthObservation(response);
+        lastObservation = formatHealthObservation(observation);
+        lastHealthObservation = lastObservation;
+        if (
+          observation.httpStatus === 200 &&
+          observation.healthStatus === "healthy" &&
+          observation.revision === expectedRevision
+        ) {
+          console.log(
+            `${label} became ready at revision ${expectedRevision} after ${attempts} attempt(s) in ${Date.now() - startedAt}ms.`,
+          );
+          return;
+        }
+        if (observation.httpStatus === 401 || observation.httpStatus === 403) {
+          throw new ReadinessAccessError(observation.httpStatus);
+        }
+      } catch (error) {
+        if (error instanceof ReadinessAccessError) {
+          throw new Error(
+            `${label} readiness access was denied with HTTP ${error.status}. Configure VERCEL_AUTOMATION_BYPASS_SECRET for protected deployments.`,
+          );
+        }
+        lastObservation = `response_error=${safeDiagnostic(errorMessage(error))}`;
+      }
+    }
+
+    if (
+      attempts === 1 ||
+      lastObservation !== lastLoggedObservation ||
+      attempts % 10 === 0
+    ) {
+      console.log(
+        `Waiting for ${label} readiness (attempt ${attempts}): ${lastObservation}.`,
+      );
+      lastLoggedObservation = lastObservation;
+    }
+    const sleepMs = Math.min(
+      readinessPollIntervalMs,
+      Math.max(0, deadline - Date.now()),
+    );
+    if (sleepMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, sleepMs));
+    }
+  }
+
+  throw new Error(
+    `${label} did not become healthy at revision ${expectedRevision} within ${readinessTimeoutMs}ms after ${attempts} attempt(s). Last observation: ${lastHealthObservation || lastObservation}.`,
+  );
+}
+
+class ReadinessAccessError extends Error {
+  constructor(status) {
+    super(`Readiness access denied with HTTP ${status}.`);
+    this.name = "ReadinessAccessError";
+    this.status = status;
+  }
+}
+
+function readinessHeaders(useDeploymentBypass) {
+  const bypassSecret = useDeploymentBypass
+    ? process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim()
+    : undefined;
+  return {
+    accept: "application/json",
+    ...(bypassSecret
+      ? { "x-vercel-protection-bypass": bypassSecret }
+      : {}),
+  };
+}
+
+async function readHealthObservation(response) {
+  const result = await readResponseTextLimited(response, 16_384);
+  let body;
+  if (!result.exceeded && result.text) {
+    try {
+      body = JSON.parse(result.text);
+    } catch {
+      body = undefined;
+    }
+  }
+  const dependencies =
+    body?.dependencies && typeof body.dependencies === "object"
+      ? body.dependencies
+      : {};
+  return {
+    httpStatus: response.status,
+    healthStatus:
+      typeof body?.status === "string"
+        ? safeDiagnostic(body.status)
+        : undefined,
+    revision:
+      typeof body?.revision === "string"
+        ? safeDiagnostic(body.revision)
+        : undefined,
+    bodyState: result.exceeded
+      ? "oversized"
+      : body
+        ? "json"
+        : "invalid",
+    dependencies: {
+      databaseConfigured: booleanOrUndefined(dependencies.databaseConfigured),
+      openAiConfigured: booleanOrUndefined(dependencies.openAiConfigured),
+      cronSecretConfigured: booleanOrUndefined(dependencies.cronSecretConfigured),
+    },
+  };
+}
+
+async function readResponseTextLimited(response, maxBytes) {
+  if (!response.body) return { text: "", exceeded: false };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return { text: "", exceeded: true };
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  text += decoder.decode();
+  return { text, exceeded: false };
+}
+
+function formatHealthObservation(observation) {
+  const details = [
+    `http=${observation.httpStatus}`,
+    `body=${observation.bodyState}`,
+    observation.healthStatus
+      ? `health=${observation.healthStatus}`
+      : undefined,
+    observation.revision
+      ? `revision=${observation.revision}`
+      : "revision=missing",
+    formatBooleanDiagnostic(
+      "database",
+      observation.dependencies.databaseConfigured,
+    ),
+    formatBooleanDiagnostic(
+      "openai",
+      observation.dependencies.openAiConfigured,
+    ),
+    formatBooleanDiagnostic(
+      "cron",
+      observation.dependencies.cronSecretConfigured,
+    ),
+  ];
+  return details.filter(Boolean).join(" ");
+}
+
+function formatBooleanDiagnostic(label, value) {
+  return value === undefined ? undefined : `${label}=${value}`;
+}
+
+function booleanOrUndefined(value) {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function safeDiagnostic(value) {
+  return String(value || "")
+    .replace(/[\u0000-\u001f\u007f<>]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160) || "unknown";
+}
+
+function printDryRunReadinessWait(label, baseUrl, expectedRevision) {
+  console.log(
+    `DRY RUN wait for ${label} readiness at ${baseUrl}/api/health revision=${expectedRevision} timeout=${readinessTimeoutMs}ms`,
+  );
+}
+
+function normalizeReadinessProbeUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    fail("--readiness-probe requires a valid absolute URL.");
+  }
+  const loopbackHttp =
+    url.protocol === "http:" &&
+    ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  if ((url.protocol !== "https:" && !loopbackHttp) || url.username || url.password) {
+    fail("--readiness-probe requires HTTPS or loopback HTTP without embedded credentials.");
+  }
+  if (url.search || url.hash) {
+    fail("--readiness-probe URL must not contain a query string or fragment.");
+  }
+  url.pathname = url.pathname.replace(/\/+$/, "");
+  return url.toString().replace(/\/+$/, "");
+}
+
+function normalizeExpectedRevision(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized || normalized.length > 200 || !/^[a-zA-Z0-9._:-]+$/.test(normalized)) {
+    fail("--readiness-probe requires a bounded expected revision.");
+  }
+  return normalized;
+}
+
+function boundedInteger(value, fallback, minimum, maximum) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : fallback;
 }
 
 function printVerificationCommands(baseUrl) {

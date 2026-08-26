@@ -135,6 +135,51 @@ describe("ordered database schema versions", () => {
     );
   });
 
+  it("accepts a contiguous integrity-checked future marker for rollback runtime verification", async () => {
+    const nextVersion = (databaseSchemaMigrations.at(-1)?.version || 0) + 1;
+    const rows = [
+      ...databaseSchemaMigrations.map(({ version, name, checksum }) => ({
+        version,
+        name,
+        checksum,
+      })),
+      {
+        version: nextVersion,
+        name: "future_additive_migration",
+        checksum: "f".repeat(64),
+      },
+    ];
+    const sql = (() => Promise.resolve(rows)) as Parameters<
+      typeof verifyDatabaseSchemaWithClient
+    >[0];
+
+    await expect(verifyDatabaseSchemaWithClient(sql)).resolves.toBeUndefined();
+    expect(() =>
+      getPendingSchemaMigrationVersions([nextVersion + 1], {
+        allowFutureVersions: true,
+      }),
+    ).toThrow(/unknown migration versions/i);
+    expect(() =>
+      validateSchemaMigrationMarkers(
+        [
+          ...rows.slice(0, -1),
+          { ...rows[rows.length - 1], checksum: null },
+        ],
+        { allowFutureVersions: true },
+      ),
+    ).toThrow(/future database migration .* missing integrity metadata/i);
+
+    const missingCurrent = rows.filter(
+      (row) => row.version !== nextVersion - 1,
+    );
+    const missingCurrentSql = (() => Promise.resolve(missingCurrent)) as Parameters<
+      typeof verifyDatabaseSchemaWithClient
+    >[0];
+    await expect(verifyDatabaseSchemaWithClient(missingCurrentSql)).rejects.toThrow(
+      /pending versions/i,
+    );
+  });
+
   it("rejects changed migration names and checksums", () => {
     const first = databaseSchemaMigrations[0];
     expect(() =>

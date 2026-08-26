@@ -311,7 +311,10 @@ export const databaseSchemaMigrations = schemaMigrationManifest.map(
   (migration) => Object.freeze({ ...migration }),
 );
 
-export function getPendingSchemaMigrationVersions(appliedVersions: Iterable<number>) {
+export function getPendingSchemaMigrationVersions(
+  appliedVersions: Iterable<number>,
+  options: { allowFutureVersions?: boolean } = {},
+) {
   const applied = new Set(Array.from(appliedVersions));
   const knownVersions = new Set(
     databaseSchemaMigrations.map((migration) => migration.version),
@@ -319,7 +322,14 @@ export function getPendingSchemaMigrationVersions(appliedVersions: Iterable<numb
   const unknown = [...applied]
     .filter((version) => !knownVersions.has(version))
     .sort((left, right) => left - right);
-  if (unknown.length) {
+  const latestKnownVersion = databaseSchemaMigrations.at(-1)?.version || 0;
+  const futureVersionsAreContiguous = unknown.every(
+    (version, index) => version === latestKnownVersion + index + 1,
+  );
+  if (
+    unknown.length &&
+    (!options.allowFutureVersions || !futureVersionsAreContiguous)
+  ) {
     throw new Error(
       `Database schema contains unknown migration versions: ${unknown.join(", ")}.`,
     );
@@ -331,9 +341,15 @@ export function getPendingSchemaMigrationVersions(appliedVersions: Iterable<numb
 
 export function validateSchemaMigrationMarkers(
   rows: Array<{ version: number; name?: string | null; checksum?: string | null }>,
-  options: { allowLegacyMissingValues?: boolean } = {},
+  options: {
+    allowLegacyMissingValues?: boolean;
+    allowFutureVersions?: boolean;
+  } = {},
 ) {
-  getPendingSchemaMigrationVersions(rows.map((row) => Number(row.version)));
+  getPendingSchemaMigrationVersions(
+    rows.map((row) => Number(row.version)),
+    { allowFutureVersions: options.allowFutureVersions },
+  );
   const known = new Map(
     databaseSchemaMigrations.map((migration) => [migration.version, migration]),
   );
@@ -341,6 +357,16 @@ export function validateSchemaMigrationMarkers(
   for (const row of rows) {
     const expected = known.get(Number(row.version));
     if (!expected) {
+      if (
+        !options.allowFutureVersions ||
+        !row.name?.trim() ||
+        !row.checksum ||
+        !/^[a-f0-9]{64}$/.test(row.checksum)
+      ) {
+        throw new Error(
+          `Future database migration ${Number(row.version)} is missing integrity metadata.`,
+        );
+      }
       continue;
     }
     if (row.name && row.name !== expected.name) {
@@ -710,9 +736,11 @@ export async function verifyDatabaseSchemaWithClient(pg: AnyPg) {
       name: row.name ? String(row.name) : null,
       checksum: row.checksum ? String(row.checksum) : null,
     })),
+    { allowFutureVersions: true },
   );
   const pending = getPendingSchemaMigrationVersions(
     appliedRows.map((row) => Number(row.version)),
+    { allowFutureVersions: true },
   );
   if (pending.length) {
     throw new Error(
