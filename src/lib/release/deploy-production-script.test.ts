@@ -41,6 +41,9 @@ describe("paired production deployment", () => {
     expect(commands[5]).toContain(
       "--env OMNIAGENT_WORKER_CANONICAL_BASE_URL=https://omniagent-os.vercel.app",
     );
+    expect(commands[5]).toContain(
+      "--env OMNIAGENT_WORKER_RELEASE_HOLD=true",
+    );
     expect(commands[5]).toContain("--strategy bluegreen");
     expect(commands[6]).toContain(
       "wait for staged gateway active+optional-previous token readiness at /healthz revision=test-release region=iad protocol=1",
@@ -74,6 +77,33 @@ describe("paired production deployment", () => {
       command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
       command.includes("npm run test:production-smoke"),
     );
+    const canonicalPreviewIndex = commands.findIndex((command) =>
+      command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
+      command.includes("npm run benchmark:preview"),
+    );
+    const canonicalDashboardIndex = commands.findIndex((command) =>
+      command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
+      command.includes("npm run benchmark:dashboard"),
+    );
+    const workerActivationIndex = commands.findIndex((command) =>
+      command.includes("fly ssh console --app omniagent-os-worker") &&
+      command.includes("kill -USR1") &&
+      command.includes("/tmp/asael-worker-release-activated") &&
+      command.includes("expected_revision='test-release'"),
+    );
+    const workerActivationCommand = commands[workerActivationIndex];
+    const commandMarker = " --command ";
+    const activationShell = workerActivationCommand
+      ? workerActivationCommand.slice(
+          workerActivationCommand.indexOf(commandMarker) + commandMarker.length,
+        )
+      : "";
+    const activationSyntax = await runProcess(
+      "/bin/sh",
+      ["-n", "-c", activationShell],
+      process.env,
+    );
+    expect(activationSyntax.code).toBe(0);
     const stagedGatewayIndex = commands.findIndex((command) =>
       command.includes("wait for staged gateway") &&
       command.includes("token readiness") &&
@@ -129,6 +159,9 @@ describe("paired production deployment", () => {
     expect(canonicalWorkerSettleIndex).toBeGreaterThan(canonicalGatewayIndex);
     expect(canonicalPaidIndex).toBeGreaterThan(canonicalWorkerSettleIndex);
     expect(canonicalSmokeIndex).toBeGreaterThan(canonicalPaidIndex);
+    expect(canonicalPreviewIndex).toBeGreaterThan(canonicalSmokeIndex);
+    expect(canonicalDashboardIndex).toBeGreaterThan(canonicalPreviewIndex);
+    expect(workerActivationIndex).toBeGreaterThan(canonicalDashboardIndex);
     expect(
       commands.filter((command) => command.includes("fly deploy")),
     ).toHaveLength(1);
@@ -640,6 +673,7 @@ describe("paired production deployment", () => {
       deployScript.indexOf("} catch (error) {"),
       deployScript.indexOf("console.log(\n  `Production release"),
     );
+    expect(rollback).not.toContain("workerReleaseActivationArgs");
     const vercelRollbackIndex = rollback.indexOf(
       '"promote",\n        previousVercelDeployment',
     );
@@ -731,6 +765,13 @@ describe("paired production deployment", () => {
     expect(deployScript).toContain("store: false");
     expect(deployScript).toContain("/tmp/asael-worker.pid");
     expect(deployScript).toContain("kill -HUP");
+    expect(deployScript).toContain("kill -USR1");
+    expect(deployScript).toContain(
+      '"OMNIAGENT_WORKER_RELEASE_HOLD=true"',
+    );
+    expect(deployScript).toContain(
+      '"OMNIAGENT_WORKER_RELEASE_HOLD=false"',
+    );
     expect(deployScript).toContain("workerRollbackArgs");
     expect(deployScript).toContain("fly.initial-cutover-rollback.toml");
     expect(deployScript).toContain(

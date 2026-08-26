@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-import { writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { startOpenAIEgressGateway } from "./openai-egress-gateway.mjs";
 
 const heartbeatFile = "/tmp/omniagent-worker-heartbeat";
 const workerPidFile = "/tmp/asael-worker.pid";
+const releaseActivationFile = "/tmp/asael-worker-release-activated";
 const initialBaseUrl = normalizeBaseUrl(
   process.env.OMNIAGENT_WORKER_BASE_URL ||
     process.env.NEXT_PUBLIC_APP_URL ||
@@ -87,6 +88,10 @@ const openAIEgressGatewayToken =
   process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN?.trim();
 const openAIEgressGatewayPreviousToken =
   process.env.OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN?.trim();
+const releaseHoldValue =
+  process.env.OMNIAGENT_WORKER_RELEASE_HOLD?.trim() || "false";
+const releaseHoldRequested = releaseHoldValue === "true";
+const canonicalRetryIntervalMs = 30_000;
 const laneHeartbeats = new Map();
 let heartbeatWrite = Promise.resolve();
 let heavyLaneQueue = Promise.resolve();
@@ -105,6 +110,14 @@ if (canonicalBaseUrl && !releaseRevision) {
     "OMNIAGENT_RELEASE_SHA is required when a canonical worker target is configured.",
   );
 }
+if (!["true", "false"].includes(releaseHoldValue)) {
+  fail("OMNIAGENT_WORKER_RELEASE_HOLD must be true or false.");
+}
+if (releaseHoldRequested && (!canonicalBaseUrl || !releaseRevision)) {
+  fail(
+    "OMNIAGENT_WORKER_RELEASE_HOLD=true requires a canonical worker target and release revision.",
+  );
+}
 
 if (!internalSecret) {
   fail("OMNIAGENT_INTERNAL_AUTH_SECRET is required so the worker can authenticate as system.");
@@ -114,6 +127,8 @@ if (openAIEgressGatewayPreviousToken && !openAIEgressGatewayToken) {
     "OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN requires OMNIAGENT_OPENAI_GATEWAY_TOKEN.",
   );
 }
+let releaseHeld =
+  releaseHoldRequested && !(await hasExactReleaseActivationMarker());
 await writeFile(workerPidFile, `${process.pid}\n`, { mode: 0o600 });
 const openAIEgressGateway = openAIEgressGatewayToken
   ? await startOpenAIEgressGateway({
@@ -126,7 +141,11 @@ let gatewayShutdown = Promise.resolve();
 const activeControllers = new Set();
 const shutdownController = new AbortController();
 let targetSwitchController = new AbortController();
+let releaseHoldController = new AbortController();
+let releaseWorkGeneration = 0;
+let lastAutomaticCanonicalRetryAt = 0;
 let canonicalActivation;
+let releaseActivation;
 function beginShutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -148,13 +167,25 @@ process.on("SIGHUP", () => {
     }));
   });
 });
+process.on("SIGUSR1", () => {
+  void activateReleaseWork("release activation signal").catch((error) => {
+    console.error(JSON.stringify({
+      level: "error",
+      message: "Release work activation failed.",
+      error: error instanceof Error ? error.message : "Unknown release activation error.",
+      releaseRevision,
+    }));
+  });
+});
 
 if (
   canonicalBaseUrl &&
-  canonicalBaseUrl !== workerDestination.baseUrl
+  canonicalBaseUrl !== workerDestination.baseUrl &&
+  (!releaseHoldRequested || !releaseHeld)
 ) {
   // A process or machine restart after promotion must not fall back to the
   // immutable staged URL. Revision-matched canonical health is the authority.
+  lastAutomaticCanonicalRetryAt = Date.now();
   await activateCanonicalWorkerTarget("restart recovery").catch((error) => {
     console.log(JSON.stringify({
       level: "info",
@@ -185,6 +216,8 @@ console.log(JSON.stringify({
   workerProtocol,
   releaseRevision,
   instanceId,
+  releaseHoldRequested,
+  releaseHeld,
 }));
 
 await Promise.all([
@@ -283,6 +316,84 @@ async function activateCanonicalWorkerTarget(reason) {
   }
 }
 
+async function activateReleaseWork(reason) {
+  if (!releaseHoldRequested) {
+    throw new Error("This worker was not started with a release hold.");
+  }
+  if (
+    !canonicalBaseUrl ||
+    workerDestination.baseUrl !== canonicalBaseUrl
+  ) {
+    throw new Error("Release work can only activate on the canonical target.");
+  }
+  if (releaseActivation) return releaseActivation;
+  releaseActivation = (async () => {
+    if (releaseHeld) {
+      const temporaryMarker = `${releaseActivationFile}.${process.pid}.tmp`;
+      await writeFile(temporaryMarker, `${releaseRevision}\n`, { mode: 0o600 });
+      await rename(temporaryMarker, releaseActivationFile);
+      releaseHeld = false;
+      releaseWorkGeneration += 1;
+      const sleepingOnReleaseHold = releaseHoldController;
+      releaseHoldController = new AbortController();
+      sleepingOnReleaseHold.abort(new Error("Release work activated."));
+    }
+    console.log(JSON.stringify({
+      level: "info",
+      message: "Canonical release work activated.",
+      reason,
+      target: workerDestination.target,
+      releaseRevision,
+    }));
+  })();
+  try {
+    return await releaseActivation;
+  } finally {
+    releaseActivation = undefined;
+  }
+}
+
+async function retryActivatedCanonicalTarget() {
+  if (
+    !releaseHoldRequested ||
+    releaseHeld ||
+    !canonicalBaseUrl ||
+    workerDestination.baseUrl === canonicalBaseUrl
+  ) {
+    return;
+  }
+  const now = Date.now();
+  if (
+    now - lastAutomaticCanonicalRetryAt < canonicalRetryIntervalMs
+  ) {
+    return;
+  }
+  lastAutomaticCanonicalRetryAt = now;
+  await activateCanonicalWorkerTarget("activated restart recovery retry").catch(
+    (error) => {
+      console.log(JSON.stringify({
+        level: "info",
+        message: "Canonical worker target retry is not ready; retaining staged target.",
+        error: error instanceof Error ? error.message : "Canonical target unavailable.",
+        releaseRevision,
+      }));
+    },
+  );
+}
+
+async function hasExactReleaseActivationMarker() {
+  try {
+    return (await readFile(releaseActivationFile, "utf8")).trim() === releaseRevision;
+  } catch {
+    return false;
+  }
+}
+
+function releaseWorkIsEnabled() {
+  if (!releaseHoldRequested) return true;
+  return !releaseHeld && workerDestination.baseUrl === canonicalBaseUrl;
+}
+
 function createWorkerDestination(baseUrl, generation) {
   return {
     baseUrl,
@@ -308,12 +419,16 @@ async function runTickLane(
   let tenantCursor;
   let targetGeneration = workerDestination.generation;
   while (!shuttingDown) {
+    if (lane === "fast") {
+      await retryActivatedCanonicalTarget();
+    }
     if (targetGeneration !== workerDestination.generation) {
       targetGeneration = workerDestination.generation;
       startup = true;
       tenantCursor = undefined;
     }
-    const startupAttempt = startup;
+    const releaseGeneration = releaseWorkGeneration;
+    const startupAttempt = startup || !releaseWorkIsEnabled();
     let nextDelayMs = startupAttempt
       ? Math.min(cadenceMs, intervalMs)
       : cadenceMs;
@@ -346,10 +461,19 @@ async function runTickLane(
         tenantCursor = undefined;
         continue;
       }
+      if (releaseGeneration !== releaseWorkGeneration) {
+        startup = true;
+        tenantCursor = undefined;
+        continue;
+      }
       if (response.ok) {
-        startup = false;
+        if (releaseWorkIsEnabled()) {
+          startup = false;
+        }
         if (startupAttempt) {
-          nextDelayMs = firstWorkDelayMs;
+          nextDelayMs = releaseWorkIsEnabled()
+            ? firstWorkDelayMs
+            : Math.max(cadenceMs, 30_000);
         }
         if (lane === "maintenance") {
           tenantCursor =
@@ -359,6 +483,9 @@ async function runTickLane(
         }
         await recordLaneState(lane, "succeeded", startedAt);
       } else {
+        if (!releaseWorkIsEnabled()) {
+          nextDelayMs = canonicalRetryIntervalMs;
+        }
         await recordLaneState(lane, "failed", startedAt);
       }
       console.log(JSON.stringify({
@@ -386,6 +513,9 @@ async function runTickLane(
         error: body?.error,
       }));
     } catch (error) {
+      if (!releaseWorkIsEnabled()) {
+        nextDelayMs = canonicalRetryIntervalMs;
+      }
       await recordLaneState(lane, "failed", startedAt).catch(() => undefined);
       console.error(JSON.stringify({
         level: "error",
@@ -396,7 +526,14 @@ async function runTickLane(
       }));
     }
     if (!shuttingDown) {
-      await sleepForWorkerEvent(nextDelayMs, targetGeneration);
+      if (releaseGeneration !== releaseWorkGeneration) {
+        continue;
+      }
+      await sleepForWorkerEvent(
+        nextDelayMs,
+        targetGeneration,
+        releaseGeneration,
+      );
     }
   }
 }
@@ -441,23 +578,40 @@ async function recordLaneState(lane, status, startedAt) {
 }
 
 async function runRetentionLoop(startupDelayMs) {
-  let delayMs = startupDelayMs;
+  let nextRunAt = Date.now() + startupDelayMs;
   let targetGeneration = workerDestination.generation;
   while (!shuttingDown) {
-    await sleepForWorkerEvent(delayMs, targetGeneration);
+    await sleepForWorkerEvent(
+      Math.max(0, nextRunAt - Date.now()),
+      targetGeneration,
+      releaseWorkGeneration,
+      false,
+    );
     if (shuttingDown) {
       break;
     }
+    if (targetGeneration !== workerDestination.generation) {
+      targetGeneration = workerDestination.generation;
+      continue;
+    }
+    if (Date.now() < nextRunAt) {
+      continue;
+    }
     targetGeneration = workerDestination.generation;
+    if (!releaseWorkIsEnabled()) {
+      nextRunAt = Date.now() + Math.max(intervalMs, 30_000);
+      continue;
+    }
     const retention = await runHeavyLane(runRetentionSweep);
     if (!retention) {
       break;
     }
-    delayMs = !retention.succeeded
+    const delayMs = !retention.succeeded
       ? Math.min(retentionIntervalMs, 5 * 60 * 1_000)
       : retention.moreAvailable
         ? 60 * 1_000
         : retentionIntervalMs;
+    nextRunAt = Date.now() + delayMs;
   }
 }
 
@@ -538,12 +692,24 @@ function normalizeNonNegativeInteger(value, fallback) {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function sleepForWorkerEvent(ms, expectedTargetGeneration) {
-  if (expectedTargetGeneration !== workerDestination.generation) {
+function sleepForWorkerEvent(
+  ms,
+  expectedTargetGeneration,
+  expectedReleaseGeneration = releaseWorkGeneration,
+  wakeForRelease = true,
+) {
+  if (
+    expectedTargetGeneration !== workerDestination.generation ||
+    expectedReleaseGeneration !== releaseWorkGeneration
+  ) {
     return Promise.resolve();
   }
   const targetSignal = targetSwitchController.signal;
-  if (expectedTargetGeneration !== workerDestination.generation) {
+  const releaseSignal = releaseHoldController.signal;
+  if (
+    expectedTargetGeneration !== workerDestination.generation ||
+    expectedReleaseGeneration !== releaseWorkGeneration
+  ) {
     return Promise.resolve();
   }
   return sleep(
@@ -551,6 +717,7 @@ function sleepForWorkerEvent(ms, expectedTargetGeneration) {
     AbortSignal.any([
       shutdownController.signal,
       targetSignal,
+      ...(wakeForRelease ? [releaseSignal] : []),
     ]),
   );
 }
