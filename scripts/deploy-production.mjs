@@ -225,6 +225,11 @@ if (dryRun) {
   printDryRunPaidAgentVerification(PRODUCTION_BASE_URL, revision);
   printVerificationCommands(PRODUCTION_BASE_URL);
   printDryRun("fly", workerReleaseActivationArgs());
+  printDryRunWorkerStartupWait("activated canonical worker");
+  printPostActivationVerification(
+    PRODUCTION_BASE_URL,
+    "<activation-started-at>",
+  );
   process.exit(0);
 }
 
@@ -335,24 +340,16 @@ try {
   await waitForWorkerStartupWindow("Canonical worker");
   await runPaidAgentVerification(productionBaseUrl);
   await runVerificationCommands(productionBaseUrl);
+  const workerActivationStartedAt = new Date().toISOString();
   await run("fly", workerReleaseActivationArgs());
+  await waitForWorkerStartupWindow("Activated canonical worker");
+  await runPostActivationVerification(
+    productionBaseUrl,
+    workerActivationStartedAt,
+  );
 } catch (error) {
   const rollbackErrors = [];
-  if (vercelPromoted) {
-    await run(
-      "vercel",
-      [
-        "promote",
-        previousVercelDeployment,
-        "--yes",
-        "--scope",
-        VERCEL_SCOPE,
-      ],
-      { environment: vercelEnvironment },
-    ).catch((rollbackError) => {
-      rollbackErrors.push(`Vercel rollback failed: ${errorMessage(rollbackError)}`);
-    });
-  }
+  let workerRollbackSucceeded = !workerMutationStarted;
   if (workerMutationStarted) {
     let gatewaySecretsRestored = true;
     if (rollbackOpenAIGateway) {
@@ -373,10 +370,31 @@ try {
           productionBaseUrl,
           initialOpenAIGatewayCutover,
         ),
-      ).catch((rollbackError) => {
+      ).then(() => {
+        workerRollbackSucceeded = true;
+      }).catch((rollbackError) => {
         rollbackErrors.push(`Fly rollback failed: ${errorMessage(rollbackError)}`);
       });
     }
+  }
+  if (vercelPromoted && workerRollbackSucceeded) {
+    await run(
+      "vercel",
+      [
+        "promote",
+        previousVercelDeployment,
+        "--yes",
+        "--scope",
+        VERCEL_SCOPE,
+      ],
+      { environment: vercelEnvironment },
+    ).catch((rollbackError) => {
+      rollbackErrors.push(`Vercel rollback failed: ${errorMessage(rollbackError)}`);
+    });
+  } else if (vercelPromoted) {
+    rollbackErrors.push(
+      "Vercel rollback was skipped because the active worker could not be safely rolled back first.",
+    );
   }
   if (!rollbackErrors.length && (vercelPromoted || workerMutationStarted)) {
     await runRollbackVerification(
@@ -923,6 +941,18 @@ async function runPaidAgentVerification(baseUrl) {
       LIVE_VERIFY_PAID_OPENAI: "CONFIRMED",
     },
   });
+}
+
+async function runPostActivationVerification(baseUrl, activatedAt) {
+  const environment = {
+    ...smokeEnvironment,
+    BASE_URL: baseUrl,
+    SMOKE_REQUEST_TIMEOUT_MS: "300000",
+    OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS: "true",
+    OMNIAGENT_WORKER_HEARTBEAT_NOT_BEFORE: activatedAt,
+  };
+  await run("npm", ["run", "smoke:security"], { environment });
+  await run("npm", ["run", "smoke:release"], { environment });
 }
 
 async function runRollbackVerification(
@@ -1489,6 +1519,17 @@ function printDryRunPaidAgentVerification(baseUrl, expectedRevision) {
     EXPECTED_REVISION: expectedRevision,
     LIVE_VERIFY_PAID_OPENAI: "CONFIRMED",
   });
+}
+
+function printPostActivationVerification(baseUrl, activatedAt) {
+  const environment = {
+    BASE_URL: baseUrl,
+    SMOKE_REQUEST_TIMEOUT_MS: "300000",
+    OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS: "true",
+    OMNIAGENT_WORKER_HEARTBEAT_NOT_BEFORE: activatedAt,
+  };
+  printDryRun("npm", ["run", "smoke:security"], environment);
+  printDryRun("npm", ["run", "smoke:release"], environment);
 }
 
 function printDryRunGatewayTokenStage(label) {

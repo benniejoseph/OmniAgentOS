@@ -112,7 +112,10 @@ checks.push(assert(workflow.status === 201, "tenant A can create workflow", stat
 workflowId = workflow.json?.run?.id;
 checks.push(assert(Boolean(workflowId), "workflow id returned", "missing workflow id"));
 
-const tenantBWorkflows = await jsonRequest("/api/workflows?limit=100", { tenantId: tenantB });
+const tenantBWorkflows = await jsonRequest(
+  "/api/workflows?limit=100&stats=false&queue=false",
+  { tenantId: tenantB },
+);
 checks.push(assert(tenantBWorkflows.status === 200, "tenant B can list workflows", statusDetail(tenantBWorkflows)));
 checks.push(assert(
   !tenantBWorkflows.json?.runs?.some((run) => run.id === workflowId),

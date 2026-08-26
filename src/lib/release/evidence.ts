@@ -74,6 +74,22 @@ export type ReleaseEvidenceReport = {
   recommendations: string[];
 };
 
+export type ReleaseEvidenceOptions = {
+  force?: boolean;
+  expectedWorkerTarget?: string;
+  requireActiveWorkerHeartbeats?: boolean;
+  workerHeartbeatNotBefore?: string;
+};
+
+type ActiveWorkerHeartbeatRequirement = {
+  required: boolean;
+  notBefore?: string;
+  notBeforeMs?: number;
+  notBeforeProvided: boolean;
+  notBeforeValid: boolean;
+  cacheKey: string;
+};
+
 const advisorySloPolicyIds = new Set([
   "auth_failure_pressure",
   "security_policy_blocks",
@@ -94,12 +110,18 @@ const releaseEvidenceInFlight = new Map<
 
 export async function getReleaseEvidenceReport(
   tenantId: string,
-  options: { force?: boolean; expectedWorkerTarget?: string } = {},
+  options: ReleaseEvidenceOptions = {},
 ): Promise<ReleaseEvidenceReport> {
   const expectedWorkerTarget = normalizeWorkerTarget(
     options.expectedWorkerTarget || getDeploymentEvidence().url,
   );
-  const cacheKey = `${tenantId}\n${expectedWorkerTarget || "unknown-target"}`;
+  const activeWorkerHeartbeatRequirement =
+    getActiveWorkerHeartbeatRequirement(options);
+  const cacheKey = [
+    tenantId,
+    expectedWorkerTarget || "unknown-target",
+    activeWorkerHeartbeatRequirement.cacheKey,
+  ].join("\n");
   const inFlight = releaseEvidenceInFlight.get(cacheKey);
   if (inFlight) {
     return inFlight;
@@ -112,6 +134,7 @@ export async function getReleaseEvidenceReport(
   const collection = collectReleaseEvidenceReport(
     tenantId,
     expectedWorkerTarget,
+    activeWorkerHeartbeatRequirement,
   )
     .then((report) => {
       releaseEvidenceCache.set(cacheKey, {
@@ -131,7 +154,8 @@ export async function getReleaseEvidenceReport(
 
 async function collectReleaseEvidenceReport(
   tenantId: string,
-  expectedWorkerTarget?: string,
+  expectedWorkerTarget: string | undefined,
+  activeWorkerHeartbeatRequirement: ActiveWorkerHeartbeatRequirement,
 ): Promise<ReleaseEvidenceReport> {
   const checkedAt = new Date().toISOString();
   const deployment = getDeploymentEvidence();
@@ -169,13 +193,43 @@ async function collectReleaseEvidenceReport(
   const requiredWorkerLanes = ["fast", "background", "maintenance"] as const;
   const workerLaneReadiness = requiredWorkerLanes.map((lane) => {
     const heartbeat = workerHeartbeats.find((item) => item.lane === lane);
-    const ageMs = heartbeat
-      ? Date.now() - Date.parse(heartbeat.recordedAt)
+    const recordedAtMs = heartbeat
+      ? Date.parse(heartbeat.recordedAt)
+      : Number.NaN;
+    const ageMs = Number.isFinite(recordedAtMs)
+      ? Date.now() - recordedAtMs
       : Number.POSITIVE_INFINITY;
+    const requiresActivePhase =
+      activeWorkerHeartbeatRequirement.required && lane !== "maintenance";
+    const phaseMatches =
+      !requiresActivePhase || heartbeat?.phase === "active";
+    const recordedAtOrAfterNotBefore =
+      !requiresActivePhase ||
+      (activeWorkerHeartbeatRequirement.notBeforeValid &&
+        activeWorkerHeartbeatRequirement.notBeforeMs !== undefined &&
+        Number.isFinite(recordedAtMs) &&
+        recordedAtMs >= activeWorkerHeartbeatRequirement.notBeforeMs);
+    const baseReady =
+      Number.isFinite(ageMs) &&
+      ageMs <= workerHeartbeatMaxAgeMs &&
+      heartbeat?.protocol === expectedWorkerProtocol &&
+      Boolean(
+        heartbeat?.revision &&
+          deployment.commitSha &&
+          heartbeat.revision === deployment.commitSha,
+      ) &&
+      Boolean(
+        heartbeat?.target &&
+          expectedWorkerTarget &&
+          normalizeWorkerTarget(heartbeat.target) === expectedWorkerTarget,
+      );
     return {
       lane,
       heartbeat,
       ageMs,
+      requiredPhase: requiresActivePhase ? "active" as const : undefined,
+      phaseMatches,
+      recordedAtOrAfterNotBefore,
       protocolMatches: heartbeat?.protocol === expectedWorkerProtocol,
       revisionMatches: Boolean(
         heartbeat?.revision &&
@@ -187,20 +241,7 @@ async function collectReleaseEvidenceReport(
           expectedWorkerTarget &&
           normalizeWorkerTarget(heartbeat.target) === expectedWorkerTarget,
       ),
-      ready:
-        Number.isFinite(ageMs) &&
-        ageMs <= workerHeartbeatMaxAgeMs &&
-        heartbeat?.protocol === expectedWorkerProtocol &&
-        Boolean(
-          heartbeat?.revision &&
-            deployment.commitSha &&
-            heartbeat.revision === deployment.commitSha,
-        ) &&
-        Boolean(
-          heartbeat?.target &&
-            expectedWorkerTarget &&
-            normalizeWorkerTarget(heartbeat.target) === expectedWorkerTarget,
-        ),
+      ready: baseReady && phaseMatches && recordedAtOrAfterNotBefore,
     };
   });
   const workerProtocolMatches = workerLaneReadiness.every(
@@ -211,6 +252,12 @@ async function collectReleaseEvidenceReport(
   );
   const workerTargetMatches = workerLaneReadiness.every(
     (item) => item.targetMatches,
+  );
+  const workerActivePhaseMatches = workerLaneReadiness.every(
+    (item) => item.phaseMatches,
+  );
+  const workerHeartbeatNotBeforeMatches = workerLaneReadiness.every(
+    (item) => item.recordedAtOrAfterNotBefore,
   );
   const workerReady = workerLaneReadiness.every((item) => item.ready);
 
@@ -302,12 +349,31 @@ async function collectReleaseEvidenceReport(
       name: "Dedicated worker readiness",
       status: workerReady ? "pass" : "fail",
       summary: workerReady
-        ? "Dedicated worker heartbeat is fresh and matches this release revision, target, and worker protocol."
-        : "Dedicated worker heartbeat is missing, stale, target/revision-mismatched, or uses an unsupported protocol.",
+        ? activeWorkerHeartbeatRequirement.required
+          ? "Dedicated worker fast and background lanes completed successful post-activation ticks; maintenance registration is ready."
+          : "Dedicated worker heartbeat is fresh and matches this release revision, target, and worker protocol."
+        : activeWorkerHeartbeatRequirement.required &&
+            !activeWorkerHeartbeatRequirement.notBeforeValid
+          ? "Post-activation worker evidence requires a valid heartbeat not-before timestamp."
+          : activeWorkerHeartbeatRequirement.required &&
+              (!workerActivePhaseMatches ||
+                !workerHeartbeatNotBeforeMatches)
+            ? "Dedicated worker fast and background lanes have not both completed successful post-activation ticks."
+            : "Dedicated worker heartbeat is missing, stale, target/revision-mismatched, or uses an unsupported protocol.",
       details: {
         expectedProtocol: expectedWorkerProtocol,
         expectedRevision: deployment.commitSha,
         expectedTarget: expectedWorkerTarget,
+        requireActiveHeartbeats: activeWorkerHeartbeatRequirement.required,
+        activeHeartbeatRequiredLanes:
+          activeWorkerHeartbeatRequirement.required
+            ? ["fast", "background"]
+            : [],
+        heartbeatNotBefore: activeWorkerHeartbeatRequirement.notBefore,
+        heartbeatNotBeforeProvided:
+          activeWorkerHeartbeatRequirement.notBeforeProvided,
+        heartbeatNotBeforeValid:
+          activeWorkerHeartbeatRequirement.notBeforeValid,
         heartbeats: workerHeartbeats,
         lanes: workerLaneReadiness.map((item) => ({
           ...item,
@@ -317,6 +383,8 @@ async function collectReleaseEvidenceReport(
         protocolMatches: workerProtocolMatches,
         revisionMatches: workerRevisionMatches,
         targetMatches: workerTargetMatches,
+        activePhaseMatches: workerActivePhaseMatches,
+        heartbeatNotBeforeMatches: workerHeartbeatNotBeforeMatches,
       },
     },
     {
@@ -446,6 +514,38 @@ function releaseEvidenceTtlMs() {
     process.env.OMNIAGENT_RELEASE_EVIDENCE_TTL_MS,
     30_000,
   );
+}
+
+function getActiveWorkerHeartbeatRequirement(
+  options: Pick<
+    ReleaseEvidenceOptions,
+    "requireActiveWorkerHeartbeats" | "workerHeartbeatNotBefore"
+  >,
+): ActiveWorkerHeartbeatRequirement {
+  const required = options.requireActiveWorkerHeartbeats === true;
+  const rawNotBefore = options.workerHeartbeatNotBefore?.trim();
+  const parsedNotBeforeMs = rawNotBefore
+    ? Date.parse(rawNotBefore)
+    : Number.NaN;
+  const parsedNotBeforeValid = Number.isFinite(parsedNotBeforeMs);
+  const notBeforeValid = !required || parsedNotBeforeValid;
+  const notBefore = parsedNotBeforeValid
+    ? new Date(parsedNotBeforeMs).toISOString()
+    : undefined;
+  return {
+    required,
+    notBefore,
+    notBeforeMs: parsedNotBeforeValid ? parsedNotBeforeMs : undefined,
+    notBeforeProvided: Boolean(rawNotBefore),
+    notBeforeValid,
+    cacheKey: required
+      ? `active-required:${parsedNotBeforeValid
+        ? parsedNotBeforeMs
+        : rawNotBefore
+          ? "invalid"
+          : "missing"}`
+      : "active-not-required",
+  };
 }
 
 function getDeploymentEvidence(): ReleaseEvidenceReport["deployment"] {

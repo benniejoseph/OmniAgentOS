@@ -23,11 +23,36 @@ async function GETHandler(request: Request) {
   }
 
   try {
-    const force =
-      new URL(request.url).searchParams.get("refresh") === "true";
+    const requestUrl = new URL(request.url);
+    const force = requestUrl.searchParams.get("refresh") === "true";
+    const requireActiveWorkerHeartbeats =
+      requestUrl.searchParams.get("requireActiveWorker") === "true";
+    const rawWorkerHeartbeatNotBefore = requestUrl.searchParams
+      .get("workerHeartbeatNotBefore")
+      ?.trim();
+    const workerHeartbeatNotBeforeMs = rawWorkerHeartbeatNotBefore
+      ? Date.parse(rawWorkerHeartbeatNotBefore)
+      : Number.NaN;
+    if (
+      requireActiveWorkerHeartbeats &&
+      (!rawWorkerHeartbeatNotBefore ||
+        rawWorkerHeartbeatNotBefore.length > 80 ||
+        !Number.isFinite(workerHeartbeatNotBeforeMs))
+    ) {
+      return Response.json(
+        {
+          error: "Active worker evidence requires a valid not-before timestamp.",
+        },
+        { status: 400 },
+      );
+    }
     const report = await getReleaseEvidenceReport(context.tenantId, {
       force,
-      expectedWorkerTarget: new URL(request.url).origin,
+      expectedWorkerTarget: requestUrl.origin,
+      requireActiveWorkerHeartbeats,
+      workerHeartbeatNotBefore: requireActiveWorkerHeartbeats
+        ? new Date(workerHeartbeatNotBeforeMs).toISOString()
+        : undefined,
     });
     await recordRuntimeEventSafely({
       category: "api",

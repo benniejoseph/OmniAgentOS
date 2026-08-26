@@ -61,6 +61,7 @@ function heartbeat(
   return {
     instanceId: "current-worker",
     lane: "fast",
+    phase: "active",
     protocol: "1",
     revision: "current-release",
     target: "https://omniagent-current.vercel.app",

@@ -11,6 +11,7 @@ import { getDataPath } from "@/lib/storage/paths";
 export type WorkerHeartbeat = {
   instanceId: string;
   lane: WorkerLane;
+  phase: WorkerHeartbeatPhase;
   protocol?: string;
   revision?: string;
   target?: string;
@@ -18,6 +19,7 @@ export type WorkerHeartbeat = {
 };
 
 export type WorkerLane = "fast" | "background" | "maintenance" | "all";
+export type WorkerHeartbeatPhase = "startup" | "active";
 
 type WorkerHeartbeatFilter = {
   protocol?: string;
@@ -32,13 +34,18 @@ export function workerHeartbeatId(instanceId: string, lane: WorkerLane = "all") 
     .slice(0, 32)}`;
 }
 
+type StoredWorkerHeartbeat = Omit<WorkerHeartbeat, "phase"> & {
+  phase?: WorkerHeartbeatPhase;
+};
+
 type WorkerHeartbeatLedger = {
-  latestByLane?: Partial<Record<WorkerLane, WorkerHeartbeat>>;
+  latestByLane?: Partial<Record<WorkerLane, StoredWorkerHeartbeat>>;
 };
 
 export async function recordWorkerHeartbeat(input: {
   instanceId: string;
   lane: WorkerLane;
+  phase: WorkerHeartbeatPhase;
   protocol?: string;
   revision?: string;
   target?: string;
@@ -46,6 +53,7 @@ export async function recordWorkerHeartbeat(input: {
   const heartbeat: WorkerHeartbeat = {
     instanceId: input.instanceId.slice(0, 160),
     lane: input.lane,
+    phase: input.phase,
     protocol: input.protocol?.slice(0, 40) || undefined,
     revision: input.revision?.slice(0, 160) || undefined,
     target: normalizeWorkerTarget(input.target),
@@ -71,6 +79,7 @@ export async function recordWorkerHeartbeat(input: {
               status: "healthy",
               instanceId: heartbeat.instanceId,
               lane: heartbeat.lane,
+              phase: heartbeat.phase,
               protocol: heartbeat.protocol,
               revision: heartbeat.revision,
               target: heartbeat.target,
@@ -134,6 +143,7 @@ export async function getLatestWorkerHeartbeats(
       return {
         instanceId: String(component.instanceId || "unknown"),
         lane,
+        phase: workerHeartbeatPhase(component.phase),
         protocol: component.protocol
           ? String(component.protocol)
           : undefined,
@@ -155,7 +165,12 @@ export async function getLatestWorkerHeartbeats(
     {},
   );
   return selectLatestWorkerHeartbeats(
-    Object.values(ledger.latestByLane || {}),
+    Object.values(ledger.latestByLane || {})
+      .filter((heartbeat): heartbeat is StoredWorkerHeartbeat => Boolean(heartbeat))
+      .map((heartbeat) => ({
+        ...heartbeat,
+        phase: workerHeartbeatPhase(heartbeat.phase),
+      })),
     filter,
   );
 }
@@ -202,6 +217,10 @@ function workerLane(value: unknown): WorkerLane {
     value === "maintenance"
     ? value
     : "all";
+}
+
+function workerHeartbeatPhase(value: unknown): WorkerHeartbeatPhase {
+  return value === "active" ? "active" : "startup";
 }
 
 function normalizeWorkerTarget(value: unknown) {

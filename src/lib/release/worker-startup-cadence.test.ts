@@ -211,19 +211,16 @@ describe("dedicated worker startup cadence", () => {
     expect(fastRanDuringHeavyWork).toBe(true);
   }, 10_000);
 
-  it("keeps a staged release to throttled startup registrations while held", async () => {
+  it("registers each staged lane once while held", async () => {
     const observations: Array<{
       lane: string;
       startup: boolean | undefined;
       target: string | undefined;
     }> = [];
     const revision = `held-staged-${process.pid}`;
-    const stagedServer = await startWorkerServer(
-      (lane, startup, target) => {
-        observations.push({ lane, startup, target });
-      },
-      { responseStatus: () => 503 },
-    );
+    const stagedServer = await startWorkerServer((lane, startup, target) => {
+      observations.push({ lane, startup, target });
+    });
     const canonicalServer = await startWorkerServer(() => undefined, {
       healthRevision: "previous-release",
     });
@@ -251,6 +248,37 @@ describe("dedicated worker startup cadence", () => {
       expect(observation.startup).toBe(true);
       expect(observation.target).toBe(stagedServer.baseUrl);
     }
+
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+  }, 10_000);
+
+  it("retries a failed held registration without rapid polling", async () => {
+    const fastAttempts: number[] = [];
+    const revision = `held-retry-${process.pid}`;
+    const stagedServer = await startWorkerServer(
+      (lane) => {
+        if (lane === "fast") fastAttempts.push(Date.now());
+      },
+      { responseStatus: () => 503 },
+    );
+    const canonicalServer = await startWorkerServer(() => undefined, {
+      healthRevision: "previous-release",
+    });
+    const child = startWorker(stagedServer.baseUrl, {
+      NODE_OPTIONS: acceleratedWorkerClock(100),
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
+      OMNIAGENT_RELEASE_SHA: revision,
+      OMNIAGENT_WORKER_RELEASE_HOLD: "true",
+      OMNIAGENT_WORKER_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "600000",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "600000",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "600000",
+    });
+
+    await waitFor(() => fastAttempts.length >= 2);
+    expect(fastAttempts[1] - fastAttempts[0]).toBeGreaterThanOrEqual(250);
 
     const exit = once(child, "exit");
     child.kill("SIGTERM");
@@ -308,6 +336,93 @@ describe("dedicated worker startup cadence", () => {
     const exit = once(child, "exit");
     child.kill("SIGTERM");
     await exit;
+  }, 10_000);
+
+  it("retries a transient canonical mismatch after one SIGHUP", async () => {
+    const revision = `held-canonical-retry-${process.pid}`;
+    const staged: Array<{ lane: string; startup: boolean | undefined }> = [];
+    const canonical: Array<{ lane: string; startup: boolean | undefined }> = [];
+    let healthAttempts = 0;
+    const stagedServer = await startWorkerServer((lane, startup) => {
+      staged.push({ lane, startup });
+    });
+    const canonicalServer = await startWorkerServer(
+      (lane, startup) => {
+        canonical.push({ lane, startup });
+      },
+      {
+        healthRevision: () => {
+          healthAttempts += 1;
+          return healthAttempts === 1 ? "previous-release" : revision;
+        },
+      },
+    );
+    const child = startWorker(stagedServer.baseUrl, {
+      NODE_OPTIONS: acceleratedWorkerClock(100),
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
+      OMNIAGENT_RELEASE_SHA: revision,
+      OMNIAGENT_WORKER_RELEASE_HOLD: "true",
+      OMNIAGENT_WORKER_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "0",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "0",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "0",
+    });
+
+    await waitFor(() => staged.length === 3);
+    expect(child.kill("SIGHUP")).toBe(true);
+    await waitFor(() =>
+      new Set(canonical.map(({ lane }) => lane)).size === 3,
+    );
+
+    expect(healthAttempts).toBe(2);
+    expect(staged).toHaveLength(3);
+    expect(canonical.every(({ startup }) => startup === true)).toBe(true);
+    expect(child.exitCode).toBeNull();
+
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+  }, 10_000);
+
+  it("stops canonical promotion retries cleanly during shutdown", async () => {
+    const revision = `held-canonical-shutdown-${process.pid}`;
+    let stagedRegistered = false;
+    let healthAttempts = 0;
+    const stagedServer = await startWorkerServer((lane) => {
+      if (lane === "fast") stagedRegistered = true;
+    });
+    const canonicalServer = await startWorkerServer(() => undefined, {
+      healthRevision: () => {
+        healthAttempts += 1;
+        return "previous-release";
+      },
+    });
+    const child = startWorker(stagedServer.baseUrl, {
+      NODE_OPTIONS: acceleratedWorkerClock(100),
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
+      OMNIAGENT_RELEASE_SHA: revision,
+      OMNIAGENT_WORKER_RELEASE_HOLD: "true",
+      OMNIAGENT_WORKER_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "600000",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "600000",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "600000",
+    });
+
+    await waitFor(() => stagedRegistered);
+    expect(child.kill("SIGHUP")).toBe(true);
+    await waitFor(() => healthAttempts >= 1);
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    const exited = await Promise.race([
+      exit.then(() => true),
+      delay(2_000).then(() => false),
+    ]);
+    const attemptsAtExit = healthAttempts;
+    await delay(100);
+
+    expect(exited).toBe(true);
+    expect(healthAttempts).toBe(attemptsAtExit);
   }, 10_000);
 
   it("re-registers canonical while held and activates work only after SIGUSR1", async () => {
@@ -519,9 +634,7 @@ describe("dedicated worker startup cadence", () => {
 
     expect(workerScript).toContain("Math.floor(backgroundIntervalMs / 2)");
     expect(workerScript).toContain("if (startupDelayMs > 0)");
-    expect(workerScript).toContain(
-      "await sleepForWorkerEvent(\n        nextDelayMs,\n        targetGeneration,\n        releaseGeneration,\n      )",
-    );
+    expect(workerScript).toContain("await sleepForWorkerEvent(");
     expect(workerScript).not.toContain("cadenceMs - (Date.now() - startedAt)");
     expect(workerScript).toContain("...(startupAttempt ? { startup: true } : {})");
     expect(workerScript).toContain(
@@ -534,8 +647,16 @@ describe("dedicated worker startup cadence", () => {
     expect(workerScript).toContain('process.on("SIGUSR1"');
     expect(workerScript).toContain("activateCanonicalWorkerTarget");
     expect(workerScript).toContain("activateReleaseWork");
-    expect(workerScript).toContain("Math.max(cadenceMs, 30_000)");
+    expect(workerScript).toContain(
+      "await waitForWorkerEvent(targetGeneration, releaseGeneration)",
+    );
     expect(workerScript).toContain("const canonicalRetryIntervalMs = 30_000");
+    expect(workerScript).toContain(
+      "const canonicalPromotionRetryWindowMs = 70_000",
+    );
+    expect(workerScript).toContain(
+      "if (canonicalPromotionActivation) return canonicalPromotionActivation",
+    );
     expect(workerScript).toContain(
       "!releaseHoldRequested || !releaseHeld",
     );
