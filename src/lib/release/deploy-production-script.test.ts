@@ -83,6 +83,7 @@ describe("paired production deployment", () => {
     expect(sessionRoute).toContain('headerContext?.source === "headers"');
     expect(evaluationSmoke).toContain("response.status === 202");
     expect(evaluationSmoke).toContain("waitForEvaluationJob");
+    expect(evaluationSmoke).toContain("driveBackgroundQueueAttempt <= 3");
     expect(evaluationSmoke).toContain("/api/operations/jobs/");
     expect(evaluationSmoke).toContain('"x-omni-internal-auth"');
     expect(evaluationSmoke).toContain('"x-omni-worker-protocol"');
