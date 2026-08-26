@@ -27,6 +27,7 @@
     "test:coverage": "NODE_ENV=test VERCEL= VERCEL_ENV= vitest run --coverage",
     "test:integration": "NODE_ENV=test VERCEL= VERCEL_ENV= vitest run --config vitest.integration.config.ts",
     "test:e2e": "playwright test",
+    "test:e2e:hydration": "CI=1 playwright test tests/e2e/smoke.spec.ts --project=chromium --grep \"Today hydrates timestamp labels\"",
     "test:e2e:list": "playwright test --list",
     "benchmark:preview": "node scripts/benchmark-preview.mjs",
     "benchmark:dashboard": "node scripts/benchmark-dashboard.mjs",
@@ -37,7 +38,7 @@
     "db:backup": "node scripts/db-backup.mjs",
     "db:restore-drill": "node scripts/db-restore-drill.mjs",
     "deploy:production": "node scripts/deploy-production.mjs",
-    "verify": "npm run typecheck && npm run lint && npm run test:coverage && npm run test:integration && npm run check:worker && npm run check:operations && npm run build && npm run audit:production",
+    "verify": "npm run typecheck && npm run lint && npm run test:coverage && npm run test:integration && npm run check:worker && npm run check:operations && npm run build && npm run test:e2e:hydration && npm run audit:production",
     "eval:agents": "node scripts/run-evals.mjs",
     "worker": "node scripts/worker.mjs"
   },

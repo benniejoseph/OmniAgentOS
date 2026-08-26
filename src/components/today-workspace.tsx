@@ -24,6 +24,11 @@ import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { useWorkspaceReadiness } from "@/components/app-shell/use-workspace-readiness";
 import { WorkspaceReadinessCard } from "@/components/app-shell/workspace-readiness-card";
 import { useLiveRefresh } from "@/components/use-live-refresh";
+import {
+  formatTodayDue,
+  formatTodayRelative,
+  formatTodayTime,
+} from "@/lib/today/presentation";
 import type { TodaySnapshot } from "@/lib/today/snapshot";
 
 type JsonRecord = Record<string, unknown>;
@@ -115,6 +120,8 @@ export function TodayWorkspace({
   const open = visibleItems.filter((item) => item.status === "open");
   const reminders = open.filter((item) => item.kind === "reminder");
   const progress = visibleItems.length ? completed / visibleItems.length : 0;
+  const presentationTimezone = today.preferences.timezone;
+  const relativeAsOf = now?.getTime() ?? Date.parse(today.generatedAt);
 
   function maybeGenerateBrief(nextToday: TodaySnapshot) {
     if (
@@ -384,7 +391,7 @@ export function TodayWorkspace({
               <p className="today-brief-summary">{today.brief.summary}</p>
               <div className="today-brief-meta">
                 <span>{today.brief.generatedBy === "ai" ? "Synthesized by Asael" : "Built from your focus list"}</span>
-                <span>{formatTime(today.brief.generatedAt)}</span>
+                <span><time dateTime={today.brief.generatedAt}>{formatTodayTime(today.brief.generatedAt, presentationTimezone)}</time></span>
                 <button type="button" onClick={() => void generateBrief(true)} disabled={generatingBrief}>
                   {generatingBrief ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />} Refresh
                 </button>
@@ -458,7 +465,7 @@ export function TodayWorkspace({
             {visibleItems.length ? visibleItems.map((item) => (
               <button key={item.id} type="button" onClick={() => void toggleItem(item)} className={clsx("today-focus-item", item.status === "done" && "is-done", item.reminderState && `is-${item.reminderState}`)}>
                 <span className="today-check">{item.status === "done" ? <Check size={14} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}</span>
-                <span className="today-item-copy"><strong>{item.title}</strong><small>{item.kind}{item.dueAt ? ` · ${formatDue(item.dueAt)}` : ""}{dueStateLabel(item.reminderState)}</small></span>
+                <span className="today-item-copy"><strong>{item.title}</strong><small>{item.kind}{item.dueAt ? ` · ${formatTodayDue(item.dueAt, presentationTimezone)}` : ""}{dueStateLabel(item.reminderState)}</small></span>
                 <span className={clsx("today-priority", `priority-${item.priority}`)}>{item.priority}</span>
               </button>
             )) : (
@@ -471,7 +478,7 @@ export function TodayWorkspace({
           <div className="today-section-heading compact"><div><p className="today-kicker">Agenda</p><h2>Time and attention</h2></div></div>
           <div className="today-timeline">
             {reminders.length ? reminders.slice(0, 6).map((item) => (
-              <div key={item.id} className={clsx("today-timeline-item", item.reminderState && `is-${item.reminderState}`)}><span>{item.dueAt ? formatTime(item.dueAt) : "Anytime"}</span><div><strong>{item.title}</strong><small>{item.reminderState === "overdue" ? "Overdue" : item.reminderState === "due_soon" ? "Due soon" : `${item.priority} priority`}</small></div></div>
+              <div key={item.id} className={clsx("today-timeline-item", item.reminderState && `is-${item.reminderState}`)}><span>{item.dueAt ? formatTodayTime(item.dueAt, presentationTimezone) : "Anytime"}</span><div><strong>{item.title}</strong><small>{item.reminderState === "overdue" ? "Overdue" : item.reminderState === "due_soon" ? "Due soon" : `${item.priority} priority`}</small></div></div>
             )) : <div className="today-timeline-item"><span>Open</span><div><strong>No reminders scheduled</strong><small>Your timeline has room.</small></div></div>}
           </div>
           <div className="today-attention">
@@ -506,7 +513,7 @@ export function TodayWorkspace({
 
         <TodayContextSection icon={MessageSquareText} eyebrow="Continue" title="Recent conversations">
           {today.threads.length ? today.threads.slice(0, 5).map((thread) => (
-            <Link key={thread.id} href={`/app/command?thread=${encodeURIComponent(thread.id)}`} className="today-context-row"><div><strong>{thread.title}</strong><small>{formatRelative(thread.updatedAt)}</small></div><ArrowRight size={14} aria-hidden="true" /></Link>
+            <Link key={thread.id} href={`/app/command?thread=${encodeURIComponent(thread.id)}`} className="today-context-row"><div><strong>{thread.title}</strong><small>{formatTodayRelative(thread.updatedAt, relativeAsOf)}</small></div><ArrowRight size={14} aria-hidden="true" /></Link>
           )) : <ContextEmpty>Your recent conversations will appear here.</ContextEmpty>}
         </TodayContextSection>
       </section>
@@ -550,7 +557,4 @@ function errorMessage(error: unknown) { return error instanceof Error ? error.me
 function localDayKey(value: Date | null) { return value ? `${value.getFullYear()}-${value.getMonth()}-${value.getDate()}` : ""; }
 function greeting(now: Date | null) { if (!now) return "Today"; const hour = now.getHours(); return hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"; }
 function briefLine(active: number, approvals: number, reminders: number) { return `${active} active ${active === 1 ? "run" : "runs"}, ${approvals} awaiting approval, and ${reminders} ${reminders === 1 ? "reminder" : "reminders"} on your timeline.`; }
-function formatTime(value: string) { return new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
-function formatDue(value: string) { return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
-function formatRelative(value: string) { const delta = Date.now() - Date.parse(value); const minutes = Math.max(0, Math.round(delta / 60_000)); if (minutes < 60) return `${Math.max(1, minutes)}m ago`; const hours = Math.round(minutes / 60); return hours < 24 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`; }
 function dueStateLabel(value?: TodayItem["reminderState"]) { return value === "overdue" ? " · overdue" : value === "due_soon" ? " · due soon" : ""; }
