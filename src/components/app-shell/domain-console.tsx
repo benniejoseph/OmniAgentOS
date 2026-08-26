@@ -1020,7 +1020,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
     icon: Database,
     endpoints: [
       { key: "session", label: "Session", path: "/api/auth/session" },
-      { key: "capabilities", label: "Capabilities", path: "/api/capabilities" },
+      { key: "capabilities", label: "Capabilities", path: "/api/capabilities?view=settings" },
       { key: "health", label: "Health", path: "/api/health" },
       { key: "release", label: "Release evidence", path: "/api/release/evidence" },
     ],
@@ -1162,21 +1162,40 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
             } satisfies ResourceState,
           ] as const;
         }
+        let resource: ResourceState;
         try {
-          const data = await readJson(endpoint.path, { signal: controller.signal });
-          return [endpoint.key, { status: "ready", data } satisfies ResourceState] as const;
+          const data = await readJson(endpoint.path, {
+            signal: AbortSignal.any([
+              controller.signal,
+              AbortSignal.timeout(15_000),
+            ]),
+          });
+          resource = { status: "ready", data };
         } catch (error) {
           const message = error instanceof HttpError || error instanceof Error ? error.message : "Request failed.";
           const code = error instanceof HttpError ? error.status : undefined;
-          return [endpoint.key, { status: "error", error: message, code } satisfies ResourceState] as const;
+          resource = {
+            status: "error",
+            error:
+              error instanceof DOMException && error.name === "TimeoutError"
+                ? `${endpoint.label} took too long to respond.`
+                : message,
+            code,
+          };
         }
+        if (!controller.signal.aborted) {
+          setResources((current) => ({
+            ...current,
+            [endpoint.key]: resource,
+          }));
+        }
+        return [endpoint.key, resource] as const;
       }),
     );
 
     if (controller.signal.aborted) {
       return;
     }
-    setResources(Object.fromEntries(entries));
     setLastRefresh(new Date().toLocaleTimeString());
     setAnnouncement(
       entries.some(([, resource]) => resource.status === "error")

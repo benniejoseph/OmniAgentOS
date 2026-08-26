@@ -1219,6 +1219,60 @@ test("every navigation destination renders a focused page without horizontal ove
   }
 });
 
+test("integrations reveals Google status while slower catalogs continue loading", async ({ page }) => {
+  await signIn(page);
+  await page.route("**/api/oauth", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        providers: [
+          {
+            id: "google",
+            label: "Google",
+            configured: true,
+            authorizeUrl: "/api/oauth/google/authorize",
+            scopes: [],
+          },
+        ],
+        grants: [
+          {
+            id: "google-test-grant",
+            provider: "google",
+            scopes: [
+              "https://www.googleapis.com/auth/gmail.readonly",
+              "https://www.googleapis.com/auth/calendar.events.readonly",
+              "https://www.googleapis.com/auth/drive.readonly",
+            ],
+            status: "active",
+            syncStatus: "healthy",
+            syncedItems: 3,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+      }),
+    }),
+  );
+  await page.route("**/api/tools", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ tools: [], audits: {} }),
+    });
+  });
+
+  await page.goto("/app/connectors");
+  await expect(page.getByRole("heading", { name: "Google workspace" })).toBeVisible();
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible({
+    timeout: 3_000,
+  });
+  await expect(
+    page.getByText("Discovered tools: Loading", { exact: true }),
+  ).toBeVisible();
+});
+
 test("owner can compose a skill, create an agent, and assign work from the visual arsenal", async ({ page }) => {
   await signIn(page);
   const suffix = Date.now().toString(36);
