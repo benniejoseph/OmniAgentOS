@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -13,8 +12,9 @@ import {
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { appNav, appNavGroups, primaryNavHrefs, primaryNavItems } from "@/lib/navigation";
+import { appNav, appNavGroups, primaryNavItems } from "@/lib/navigation";
 import { CommandPalette } from "@/components/app-shell/command-palette";
+import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefetch-link";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { NotificationCenter } from "@/components/app-shell/notification-center";
@@ -261,7 +261,6 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
                         <Link
                           key={item.href}
                           href={item.href}
-                          prefetch={primaryNavHrefs.includes(item.href)}
                           onClick={closeMobileNavigation}
                           aria-current={active ? "page" : undefined}
                           className={clsx(
@@ -343,7 +342,6 @@ function NavGroup({ group, pathname }: { group: (typeof appNavGroups)[number]; p
               <Link
                 key={item.href}
                 href={item.href}
-                prefetch={primaryNavHrefs.includes(item.href)}
                 title={item.description}
                 aria-current={active ? "page" : undefined}
                 className={clsx(

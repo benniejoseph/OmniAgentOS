@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRef, useState, useSyncExternalStore } from "react";
 import type { ReactNode, RefObject } from "react";
 import {
@@ -12,6 +11,7 @@ import {
 } from "lucide-react";
 import type { WorkspaceReadiness } from "@/lib/workspace/readiness";
 import type { WorkspaceReadinessState } from "@/components/app-shell/use-workspace-readiness";
+import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefetch-link";
 
 const compactPreferenceKey = "omniagent.workspace-readiness.compact.v1";
 

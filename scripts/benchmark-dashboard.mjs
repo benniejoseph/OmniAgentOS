@@ -7,6 +7,7 @@ import {
   getSmokeBaseUrl,
   positiveInteger,
 } from "./smoke-helpers.mjs";
+import { evaluateDashboardReleaseGate } from "./benchmark-dashboard-gate.mjs";
 
 const baseUrl = getSmokeBaseUrl();
 const budgets = JSON.parse(
@@ -31,9 +32,18 @@ if (!reusableCookie && (!email || !password) && !internalSecret) {
   );
 }
 
-const samples = positiveInteger(process.env.BENCHMARK_BROWSER_SAMPLES, 5, 20);
-const warmups = positiveInteger(process.env.BENCHMARK_BROWSER_WARMUPS, 1, 5);
 const enforce = process.env.BENCHMARK_ENFORCE !== "false";
+const requestedSamples = positiveInteger(
+  process.env.BENCHMARK_BROWSER_SAMPLES,
+  20,
+  200,
+);
+const samples = enforce ? Math.max(requestedSamples, 20) : requestedSamples;
+const warmups = positiveInteger(
+  process.env.BENCHMARK_BROWSER_WARMUPS,
+  2,
+  20,
+);
 const bypassSecret =
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
 const browser = await chromium.launch({ headless: true });
@@ -77,41 +87,49 @@ try {
   }
 
   const page = await context.newPage();
-  for (let index = 0; index < warmups; index += 1) {
+  const firstLoad = await measureDashboard(page);
+  for (let index = 1; index < warmups; index += 1) {
     await measureDashboard(page);
   }
   const measurements = [];
   for (let index = 0; index < samples; index += 1) {
     measurements.push(await measureDashboard(page));
   }
-  const durations = measurements
-    .map((measurement) => measurement.durationMs)
-    .sort((left, right) => left - right);
-  const serverDurations = measurements
-    .map((measurement) => measurement.serverDurationMs)
-    .filter(Number.isFinite)
-    .sort((left, right) => left - right);
   const result = {
     name: "dashboard-usable",
     path: "/app",
-    samples,
-    p50Ms: percentile(durations, 0.5),
-    p95Ms: percentile(durations, 0.95),
-    maxMs: Math.round(durations.at(-1) || 0),
-    budgetMs: budgets.releaseDashboardUsableMs,
-    serverP95Ms: serverDurations.length
-      ? percentile(serverDurations, 0.95)
-      : undefined,
-    serverTimingSamples: serverDurations.length,
-    serverP95BudgetMs: budgets.authenticatedReadP95Ms,
+    requestedSamples,
+    enforced: enforce,
+    ...evaluateDashboardReleaseGate({
+      firstLoad,
+      hotMeasurements: measurements,
+      warmups,
+      minimumSamples: enforce ? 20 : 1,
+      budgets: {
+        firstLoadMs: budgets.releaseDashboardFirstLoadMs,
+        hotP50Ms: budgets.dashboardUsableMs,
+        hotP95Ms: budgets.releaseDashboardUsableMs,
+        hotMaxMs: budgets.releaseDashboardMaxMs,
+        documentP95Ms: budgets.authenticatedReadP95Ms,
+      },
+    }),
   };
-  result.passed =
-    result.p95Ms <= result.budgetMs &&
-    (result.serverP95Ms === undefined ||
-      result.serverP95Ms <= result.serverP95BudgetMs);
   console.log(
-    `${result.passed ? "PASS" : "FAIL"} ${result.name}: p50=${result.p50Ms}ms p95=${result.p95Ms}ms budget=${result.budgetMs}ms; server p95=${result.serverP95Ms ?? "missing"}ms budget=${result.serverP95BudgetMs}ms`,
+    `${result.passed ? "PASS" : "FAIL"} ${result.name}: n=${result.samples} warmups=${result.warmups} first=${result.firstLoadMs}ms/${result.budgets.firstLoadMs}ms; hot p50=${result.p50Ms}ms/${result.budgets.hotP50Ms}ms p95=${result.p95Ms}ms/${result.budgets.hotP95Ms}ms max=${result.maxMs}ms/${result.budgets.hotMaxMs}ms; document p95=${result.documentP95Ms}ms/${result.budgets.documentP95Ms}ms; Server-Timing=${result.serverTiming.coverage} (${result.serverTiming.samples}/${result.samples})`,
   );
+  console.log(JSON.stringify({
+    event: "benchmark.dashboard.samples",
+    requestedSamples: result.requestedSamples,
+    samples: result.samples,
+    minimumSamples: result.minimumSamples,
+    warmups: result.warmups,
+    firstLoad: result.firstLoad,
+    hotDurationsMs: result.hotDurationsMs,
+    documentDurationsMs: result.documentDurationsMs,
+    serverDurationsMs: result.serverDurationsMs,
+    budgets: result.budgets,
+    checks: result.checks,
+  }));
   const output = process.env.BENCHMARK_DASHBOARD_OUTPUT?.trim();
   if (output) {
     await writeFile(
@@ -160,9 +178,20 @@ async function measureDashboard(page) {
       .locator('[data-testid="activity-workspace"] h1')
       .waitFor({ state: "visible" });
     await page
-      .locator('[data-testid="activity-workspace"][aria-busy="false"]')
+      .locator('[data-testid="activity-workspace"][data-hydrated="true"][aria-busy="false"]')
       .waitFor({ state: "visible" });
     const durationMs = performance.now() - startedAt;
+    const documentResponseMs = await page.evaluate(() => {
+      const navigation = performance.getEntriesByType("navigation")[0];
+      return navigation && Number.isFinite(navigation.responseStart)
+        ? navigation.responseStart
+        : null;
+    });
+    if (!Number.isFinite(documentResponseMs) || documentResponseMs <= 0) {
+      throw new Error(
+        "dashboard NavigationTiming responseStart was unavailable during dashboard benchmark.",
+      );
+    }
     await page.waitForLoadState("load");
     await page.waitForTimeout(250);
     if (hydrationRequests.length) {
@@ -173,6 +202,7 @@ async function measureDashboard(page) {
     const serverTiming = await response.headerValue("server-timing");
     return {
       durationMs,
+      documentResponseMs,
       serverDurationMs: parseServerDuration(serverTiming),
       serverTiming: serverTiming || undefined,
     };
@@ -207,15 +237,4 @@ function parseServerDuration(header) {
   );
   const duration = Number(match?.[1]);
   return Number.isFinite(duration) ? duration : undefined;
-}
-
-function percentile(sorted, quantile) {
-  if (!sorted.length) {
-    return 0;
-  }
-  const index = Math.min(
-    sorted.length - 1,
-    Math.max(0, Math.ceil(sorted.length * quantile) - 1),
-  );
-  return Math.round(sorted[index]);
 }

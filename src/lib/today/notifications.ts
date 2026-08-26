@@ -28,11 +28,18 @@ export async function getNotificationCenter(options: {
   processDue?: boolean;
 }) {
   const now = options.now || new Date();
-  const preferences = await getTodayPreferences(options);
-  if (options.processDue !== false) {
+  let preferences: TodayPreferences;
+  let notifications: PersonalNotification[];
+  if (options.processDue === false) {
+    [preferences, notifications] = await Promise.all([
+      getTodayPreferences(options),
+      listNotifications(60, options),
+    ]);
+  } else {
+    preferences = await getTodayPreferences(options);
     await processDueNotifications({ ...options, now });
+    notifications = await listNotifications(60, options);
   }
-  const notifications = await listNotifications(60, options);
   return {
     generatedAt: now.toISOString(),
     notifications,

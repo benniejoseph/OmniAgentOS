@@ -87,6 +87,8 @@ describe("frontend performance budgets", () => {
       releaseApiP95Ms: 1_500,
       dashboardUsableMs: 1_500,
       releaseDashboardUsableMs: 2_500,
+      releaseDashboardMaxMs: 5_000,
+      releaseDashboardFirstLoadMs: 4_000,
       firstSseStatusMs: 1_000,
       completionVisibilityMs: 1_000,
       workflowPickupP95Ms: 10_000,
@@ -154,7 +156,18 @@ describe("frontend performance budgets", () => {
     expect(previewBenchmark).not.toContain("discarding the attempt");
     expect(dashboardBenchmark).toContain('path: "/app"');
     expect(dashboardBenchmark).toContain("budgets.releaseDashboardUsableMs");
-    expect(dashboardBenchmark).toContain("serverP95BudgetMs");
+    expect(dashboardBenchmark).toContain("budgets.releaseDashboardMaxMs");
+    expect(dashboardBenchmark).toContain("budgets.releaseDashboardFirstLoadMs");
+    expect(dashboardBenchmark).toContain("budgets.dashboardUsableMs");
+    expect(dashboardBenchmark).toContain("budgets.authenticatedReadP95Ms");
+    expect(dashboardBenchmark).toContain("BENCHMARK_BROWSER_SAMPLES");
+    expect(dashboardBenchmark).toContain("Math.max(requestedSamples, 20)");
+    expect(dashboardBenchmark).toContain("BENCHMARK_BROWSER_WARMUPS");
+    expect(dashboardBenchmark).toContain("const firstLoad = await measureDashboard(page)");
+    expect(dashboardBenchmark).toContain('data-hydrated="true"');
+    expect(dashboardBenchmark).toContain("performance.getEntriesByType");
+    expect(dashboardBenchmark).toContain("documentResponseMs");
+    expect(dashboardBenchmark).toContain("hotMeasurements: measurements");
     expect(dashboardBenchmark).toContain('pathname === "/api/today"');
     expect(dashboardBenchmark).toContain('pathname === "/api/workspace-summary"');
     expect(dashboardBenchmark).toContain("dashboard performed duplicate hydration reads");
@@ -195,5 +208,28 @@ describe("frontend performance budgets", () => {
     );
     expect(domainConsole).toContain("settingsSnapshotDegraded");
     expect(domainConsole).toContain("settingsRetryCount.current < 3");
+  });
+
+  it("prefetches database-backed workspace routes only after user intent", async () => {
+    const [intentLink, appShell, today, readiness] = await Promise.all([
+      readFile(
+        path.resolve("src/components/app-shell/intent-prefetch-link.tsx"),
+        "utf8",
+      ),
+      readFile(path.resolve("src/components/app-shell/app-shell.tsx"), "utf8"),
+      readFile(path.resolve("src/components/today-workspace.tsx"), "utf8"),
+      readFile(
+        path.resolve("src/components/app-shell/workspace-readiness-card.tsx"),
+        "utf8",
+      ),
+    ]);
+
+    expect(intentLink).toContain("prefetch={active ? null : false}");
+    expect(intentLink).toContain("onMouseEnter");
+    expect(intentLink).toContain("onFocus");
+    for (const surface of [appShell, today, readiness]) {
+      expect(surface).toContain("IntentPrefetchLink as Link");
+      expect(surface).not.toContain("prefetch={true}");
+    }
   });
 });

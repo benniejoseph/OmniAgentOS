@@ -52,6 +52,8 @@ const emptyPreferences: NotificationPreferences = {
   reminderLeadMinutes: 30,
 };
 
+const INITIAL_NOTIFICATION_REFRESH_DELAY_MS = 5_000;
+
 export function NotificationCenter() {
   const { session, status: sessionStatus } = useWorkspaceSession();
   const [center, setCenter] = useState<CenterPayload>({
@@ -108,7 +110,10 @@ export function NotificationCenter() {
     } catch (loadError) {
       if (!controller.signal.aborted) setError(message(loadError));
     } finally {
-      if (loadControllerRef.current === controller) setLoading(false);
+      if (loadControllerRef.current === controller) {
+        loadControllerRef.current = null;
+        setLoading(false);
+      }
     }
   }
 
@@ -116,9 +121,11 @@ export function NotificationCenter() {
     if (sessionStatus !== "ready" || !available) return;
     const stored = window.localStorage.getItem("omni-desktop-alerts") === "true";
     const initial = window.setTimeout(() => {
-      setDesktopAlerts(stored && window.Notification?.permission === "granted");
-      void load();
-    }, 0);
+      setDesktopAlerts((current) =>
+        current || (stored && window.Notification?.permission === "granted")
+      );
+      if (!loadedOnceRef.current && !loadControllerRef.current) void load();
+    }, INITIAL_NOTIFICATION_REFRESH_DELAY_MS);
     const interval = window.setInterval(() => void load({ quiet: true }), 60_000);
     const onFocus = () => void load({ quiet: true });
     window.addEventListener("focus", onFocus);
@@ -255,7 +262,10 @@ export function NotificationCenter() {
         ref={buttonRef}
         type="button"
         className="notification-trigger"
-        onClick={() => { setOpen(true); void load({ quiet: true }); }}
+        onClick={() => {
+          setOpen(true);
+          void load({ quiet: loadedOnceRef.current });
+        }}
         aria-label={`Notifications${center.unreadCount ? `, ${center.unreadCount} unread` : ""}`}
         aria-expanded={open}
       >

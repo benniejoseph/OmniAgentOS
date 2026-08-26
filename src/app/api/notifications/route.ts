@@ -23,6 +23,9 @@ async function GETHandler(request: Request) {
   const center = await getNotificationCenter({
     tenantId: context.tenantId,
     actorId: context.actorId,
+    // Reminder generation is owned by the scheduled workflow worker. Keep the
+    // interactive inbox read side-effect free and off the dashboard critical path.
+    processDue: false,
   });
   return Response.json(center, { headers: { "cache-control": "private, no-store" } });
 }
