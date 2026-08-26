@@ -318,7 +318,7 @@ export async function getMemory(id: string, options: { tenantId?: string } = {})
 
 export async function correctMemory(
   id: string,
-  correction: { title?: string; content?: string; confidence?: number; validTo?: string; contradiction?: boolean },
+  correction: { title?: string; content?: string; confidence?: number; validTo?: string; contradiction?: boolean; embedding?: number[] },
   options: { tenantId?: string; actorId?: string } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
@@ -340,6 +340,7 @@ export async function correctMemory(
     validTo: correction.validTo,
     supersedesId: correction.contradiction ? undefined : existing.id,
     contradictionOfId: correction.contradiction ? existing.id : undefined,
+    embedding: correction.embedding,
   });
   const oldStatus: NonNullable<MemoryRecord["claimStatus"]> = correction.contradiction ? "contradicted" : "superseded";
   if (hasDatabaseUrl()) {

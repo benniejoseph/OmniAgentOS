@@ -98,11 +98,13 @@ describe("memory persistence safety (file mode)", () => {
     const result = await store.correctMemory(original.id, {
       content: "Planning happens on Friday.",
       confidence: 1,
+      embedding: [0.25, 0.75],
     }, { tenantId: "tenant-claims", actorId: "user-1" });
 
     expect(result?.previous.claimStatus).toBe("superseded");
     expect(result?.corrected.supersedesId).toBe(original.id);
     expect(result?.corrected.assertedBy).toBe("user");
+    expect(result?.corrected.embedding).toEqual([0.25, 0.75]);
     const recalled = await store.searchMemories("planning happens", { tenantId: "tenant-claims" });
     expect(recalled.map((item) => item.record.id)).toEqual([result?.corrected.id]);
   });

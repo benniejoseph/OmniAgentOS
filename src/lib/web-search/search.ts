@@ -20,7 +20,7 @@ export type LiveWebSearchResult = {
 };
 
 const freshnessPattern = /\b(today|tonight|yesterday|tomorrow|now|current|currently|latest|newest|recent|recently|breaking|live|real[-\s]?time|up[-\s]?to[-\s]?date|as of|this week|this month|this year|released|launch(?:ed)?|announc(?:ed|ement)|price|pricing|stock|market|weather|score|schedule|deadline|version|changelog|news|web search|search (?:the )?web|browse|look up|verify|multiple sources|sources|citations?)\b/i;
-const noWebPattern = /\b(do not|don't|dont|without|no)\s+(?:use\s+)?(?:web|internet|browser|search|live search)\b|\bfrom memory only\b|\boffline\b/i;
+const noWebPattern = /\b(do not|don't|dont|without|no)\s+(?:use\s+)?(?:the\s+)?(?:web|internet|browser|search|live search|external tools?|any tools?)\b|\bfrom memory only\b|\boffline\b/i;
 
 /** The gpt-4o family does not accept the `filters` param on the hosted web_search tool. */
 function supportsWebSearchFilters(model: string) {

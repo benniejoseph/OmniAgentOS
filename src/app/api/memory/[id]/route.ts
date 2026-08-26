@@ -3,6 +3,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { queueMemoryGraphRebuild } from "@/lib/memory/graph";
 import { correctMemory, forgetMemory, getMemory } from "@/lib/memory/store";
+import { embedTexts } from "@/lib/openai/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -38,7 +39,12 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   if (!parsed.success) return Response.json({ error: "Invalid correction", details: parsed.error.flatten() }, { status: 400 });
   let context;
   try { context = await authorize(request, id, "write.memory"); } catch (error) { return forbiddenResponse(error); }
-  const result = await correctMemory(id, parsed.data, { tenantId: context.tenantId, actorId: context.actorId });
+  const existing = await getMemory(id, { tenantId: context.tenantId });
+  if (!existing) return Response.json({ error: "Memory not found." }, { status: 404 });
+  const embedding = (await embedTexts([
+    `${parsed.data.title || existing.title}\n\n${parsed.data.content || existing.content}`,
+  ]))?.[0] || existing.embedding;
+  const result = await correctMemory(id, { ...parsed.data, embedding }, { tenantId: context.tenantId, actorId: context.actorId });
   if (!result) return Response.json({ error: "Memory not found." }, { status: 404 });
   await queueMemoryGraphRebuild({ tenantId: context.tenantId });
   return Response.json({ previous: publicMemory(result.previous), corrected: publicMemory(result.corrected) });
