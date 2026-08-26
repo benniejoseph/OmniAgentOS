@@ -9,6 +9,7 @@
   "releaseDashboardFirstLoadTargetMs": 4000,
   "releaseDashboardFirstLoadMs": 5000,
   "releaseDashboardFirstResponseMs": 2000,
+  "releaseDashboardDocumentP95Ms": 1000,
   "releaseDashboardFirstPostResponseReadyMs": 3500,
   "releaseDashboardRecoveryMs": 2500,
   "firstSseStatusMs": 1000,
