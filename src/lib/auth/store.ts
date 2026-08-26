@@ -265,12 +265,20 @@ async function getSessionIdentityInScope(token: string): Promise<AuthSessionIden
       Date.now() - new Date(normalizeDate(row.last_seen_at)).getTime() >=
       sessionTouchIntervalMs
     ) {
-      await getSql()`
-        UPDATE omni_auth_sessions
-        SET last_seen_at = NOW()
-        WHERE id = ${String(row.session_id)}
-          AND last_seen_at < NOW() - INTERVAL '5 minutes'
-      `;
+      try {
+        await getSql()`
+          UPDATE omni_auth_sessions
+          SET last_seen_at = NOW()
+          WHERE id = ${String(row.session_id)}
+            AND last_seen_at < NOW() - INTERVAL '5 minutes'
+        `;
+      } catch {
+        // Activity timestamps are ancillary. A lock/statement timeout must not
+        // invalidate a session that was already authenticated successfully.
+        console.warn(
+          "Session activity timestamp could not be refreshed; continuing with the validated session.",
+        );
+      }
     }
     return identityFromJoinedRow(row);
   }

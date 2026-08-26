@@ -6,6 +6,7 @@ const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_E
 const password = process.env.SMOKE_ADMIN_PASSWORD || process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
 const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
 const syntheticHeaders = createSyntheticHeaders("security");
+const SECURITY_REQUEST_TIMEOUT_MS = 30_000;
 
 const protectedReads = [
   "/api/memory",
@@ -207,9 +208,12 @@ async function expectStatus(path, { expected, label }) {
 }
 
 async function request(path, init) {
+  const method = String(init?.method || "GET").toUpperCase();
   try {
     return await smokeFetch(baseUrl, path, {
       ...init,
+      timeoutMs: SECURITY_REQUEST_TIMEOUT_MS,
+      retryTransport: method === "GET" || method === "HEAD",
       headers: {
         ...syntheticHeaders,
         ...(init?.headers || {}),

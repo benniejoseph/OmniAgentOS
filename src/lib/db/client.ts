@@ -50,6 +50,12 @@ const databaseScope = new AsyncLocalStorage<DatabaseScope>();
 const DEFAULT_SCHEMA_VERIFICATION_TIMEOUT_MS = 10_000;
 const MIN_SCHEMA_VERIFICATION_TIMEOUT_MS = 1_000;
 const MAX_SCHEMA_VERIFICATION_TIMEOUT_MS = 60_000;
+const DEFAULT_DATABASE_STATEMENT_TIMEOUT_MS = 15_000;
+const MIN_DATABASE_STATEMENT_TIMEOUT_MS = 1_000;
+const MAX_DATABASE_STATEMENT_TIMEOUT_MS = 60_000;
+const DEFAULT_DATABASE_LOCK_TIMEOUT_MS = 1_000;
+const MIN_DATABASE_LOCK_TIMEOUT_MS = 100;
+const MAX_DATABASE_LOCK_TIMEOUT_MS = 10_000;
 
 // ---------------------------------------------------------------------------
 // Public exports (unchanged API surface)
@@ -150,6 +156,33 @@ export function getDatabaseSchemaVerificationTimeoutMs() {
     Math.max(Math.round(configured), MIN_SCHEMA_VERIFICATION_TIMEOUT_MS),
     MAX_SCHEMA_VERIFICATION_TIMEOUT_MS,
   );
+}
+
+export function getDatabaseStatementTimeoutMs() {
+  const configured = Number(
+    process.env.OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS,
+  );
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_DATABASE_STATEMENT_TIMEOUT_MS;
+  }
+  return Math.min(
+    Math.max(Math.round(configured), MIN_DATABASE_STATEMENT_TIMEOUT_MS),
+    MAX_DATABASE_STATEMENT_TIMEOUT_MS,
+  );
+}
+
+export function getDatabaseLockTimeoutMs(
+  statementTimeoutMs = getDatabaseStatementTimeoutMs(),
+) {
+  const configured = Number(process.env.OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS);
+  const lockTimeoutMs =
+    Number.isFinite(configured) && configured > 0
+      ? Math.min(
+          Math.max(Math.round(configured), MIN_DATABASE_LOCK_TIMEOUT_MS),
+          MAX_DATABASE_LOCK_TIMEOUT_MS,
+        )
+      : DEFAULT_DATABASE_LOCK_TIMEOUT_MS;
+  return Math.min(lockTimeoutMs, statementTimeoutMs);
 }
 
 export async function closeDatabaseClient() {
@@ -1163,11 +1196,15 @@ export async function applyDatabaseScope(sql: AnyPg, scope?: DatabaseScope) {
   const systemScope = scope?.kind === "system";
   const tenantId = systemScope ? "" : scope?.tenantId || "";
   const systemReason = systemScope ? scope.reason : "";
+  const statementTimeoutMs = getDatabaseStatementTimeoutMs();
+  const lockTimeoutMs = getDatabaseLockTimeoutMs(statementTimeoutMs);
   await sql`
     SELECT
       set_config('omni.tenant_id', ${tenantId}, true),
       set_config('omni.system_scope', ${systemScope ? "true" : "false"}, true),
-      set_config('omni.system_reason', ${systemReason}, true)
+      set_config('omni.system_reason', ${systemReason}, true),
+      set_config('statement_timeout', ${String(statementTimeoutMs)}, true),
+      set_config('lock_timeout', ${String(lockTimeoutMs)}, true)
   `;
 }
 

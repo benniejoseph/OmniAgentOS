@@ -3,8 +3,10 @@ import {
   applyDatabaseScope,
   databaseSchemaMigrations,
   enterDatabaseTenantContext,
+  getDatabaseLockTimeoutMs,
   getDatabasePoolMax,
   getDatabaseSchemaVerificationTimeoutMs,
+  getDatabaseStatementTimeoutMs,
   getDatabaseTenantContext,
   getPendingSchemaMigrationVersions,
   isDatabaseMutation,
@@ -50,6 +52,36 @@ describe("database pool sizing", () => {
       vi.unstubAllEnvs();
     }
   });
+
+  it("bounds transaction-local statement and lock timeouts", () => {
+    try {
+      vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "");
+      vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "");
+      expect(getDatabaseStatementTimeoutMs()).toBe(15_000);
+      expect(getDatabaseLockTimeoutMs()).toBe(1_000);
+
+      vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "250");
+      vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "25");
+      expect(getDatabaseStatementTimeoutMs()).toBe(1_000);
+      expect(getDatabaseLockTimeoutMs()).toBe(100);
+
+      vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "90000");
+      vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "20000");
+      expect(getDatabaseStatementTimeoutMs()).toBe(60_000);
+      expect(getDatabaseLockTimeoutMs()).toBe(10_000);
+
+      vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "2000");
+      vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "5000");
+      expect(getDatabaseLockTimeoutMs()).toBe(2_000);
+
+      vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "invalid");
+      vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "invalid");
+      expect(getDatabaseStatementTimeoutMs()).toBe(15_000);
+      expect(getDatabaseLockTimeoutMs()).toBe(1_000);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe("database scope application", () => {
@@ -63,21 +95,42 @@ describe("database scope application", () => {
       return Promise.resolve([]);
     }) as Parameters<typeof applyDatabaseScope>[0];
 
-    await applyDatabaseScope(sql, {
-      kind: "tenant",
-      tenantId: "tenant-a",
-    });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].text.match(/set_config/g)).toHaveLength(3);
-    expect(calls[0].params).toEqual(["tenant-a", "false", ""]);
+    vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "12345");
+    vi.stubEnv("OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS", "750");
+    try {
+      await applyDatabaseScope(sql, {
+        kind: "tenant",
+        tenantId: "tenant-a",
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].text.match(/set_config/g)).toHaveLength(5);
+      expect(calls[0].text).toContain("set_config('statement_timeout'");
+      expect(calls[0].text).toContain("set_config('lock_timeout'");
+      expect(calls[0].params).toEqual([
+        "tenant-a",
+        "false",
+        "",
+        "12345",
+        "750",
+      ]);
 
-    calls.length = 0;
-    await applyDatabaseScope(sql, {
-      kind: "system",
-      reason: "maintenance",
-    });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].params).toEqual(["", "true", "maintenance"]);
+      calls.length = 0;
+      await applyDatabaseScope(sql, {
+        kind: "system",
+        reason: "maintenance",
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].text.match(/set_config/g)).toHaveLength(5);
+      expect(calls[0].params).toEqual([
+        "",
+        "true",
+        "maintenance",
+        "12345",
+        "750",
+      ]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
