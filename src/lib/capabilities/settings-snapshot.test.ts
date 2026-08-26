@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -35,8 +35,15 @@ const readySnapshot = {
   },
 };
 
+beforeEach(() => {
+  // Keep source assertions deterministic even when the release runner injects
+  // production database credentials into the test process.
+  vi.stubEnv("DATABASE_URL", "");
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
 });
 
