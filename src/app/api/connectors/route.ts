@@ -4,9 +4,7 @@ import { mcpContractReviewSummary } from "@/lib/connectors/contract-review";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   createMcpConnectorRecord,
-  getMcpConnectorStats,
   listMcpConnectors,
-  listMcpConnectorsRequiringReview,
   listMcpTools,
   recordMcpConnectorError,
   saveMcpConnector,
@@ -43,12 +41,15 @@ async function GETHandler(request: Request) {
     return forbiddenResponse(error);
   }
 
-  const [recentConnectors, reviewConnectors, tools, stats] = await Promise.all([
-    listMcpConnectors(20, { tenantId: context.tenantId }),
-    listMcpConnectorsRequiringReview({ tenantId: context.tenantId }),
+  const [allConnectors, tools] = await Promise.all([
+    listMcpConnectors(100, { tenantId: context.tenantId }),
     listMcpTools(undefined, { tenantId: context.tenantId }),
-    getMcpConnectorStats({ tenantId: context.tenantId }),
   ]);
+  const reviewConnectorIds = new Set(
+    tools.filter((tool) => tool.status === "pending_review").map((tool) => tool.connectorId),
+  );
+  const reviewConnectors = allConnectors.filter((connector) => reviewConnectorIds.has(connector.id));
+  const recentConnectors = allConnectors.slice(0, 20);
   const connectors = [
     ...new Map(
       [...reviewConnectors, ...recentConnectors].map((connector) => [
@@ -57,6 +58,16 @@ async function GETHandler(request: Request) {
       ]),
     ).values(),
   ];
+  const activeConnectorIds = new Set(
+    allConnectors.filter((connector) => connector.status === "active").map((connector) => connector.id),
+  );
+  const stats = {
+    total: allConnectors.length,
+    active: activeConnectorIds.size,
+    error: allConnectors.filter((connector) => connector.status === "error").length,
+    toolCount: tools.filter((tool) => tool.status === "active" && activeConnectorIds.has(tool.connectorId)).length,
+    latest: allConnectors.slice(0, 5),
+  };
 
   return Response.json({
     connectors: connectors.map((connector) => ({

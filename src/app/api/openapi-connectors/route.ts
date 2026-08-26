@@ -5,9 +5,7 @@ import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding"
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   createOpenApiConnectorRecord,
-  getOpenApiConnectorStats,
   listOpenApiConnectors,
-  listOpenApiConnectorsRequiringReview,
   listOpenApiOperations,
   recordOpenApiConnectorError,
   saveOpenApiConnector,
@@ -66,13 +64,15 @@ async function GETHandler(request: Request) {
     return forbiddenResponse(error);
   }
 
-  const [recentConnectors, reviewConnectors, operations, stats] =
-    await Promise.all([
-    listOpenApiConnectors(20, { tenantId: context.tenantId }),
-    listOpenApiConnectorsRequiringReview({ tenantId: context.tenantId }),
+  const [allConnectors, operations] = await Promise.all([
+    listOpenApiConnectors(100, { tenantId: context.tenantId }),
     listOpenApiOperations(undefined, { tenantId: context.tenantId }),
-    getOpenApiConnectorStats({ tenantId: context.tenantId }),
   ]);
+  const reviewConnectorIds = new Set(
+    operations.filter((operation) => operation.status === "pending_review").map((operation) => operation.connectorId),
+  );
+  const reviewConnectors = allConnectors.filter((connector) => reviewConnectorIds.has(connector.id));
+  const recentConnectors = allConnectors.slice(0, 20);
   const connectors = [
     ...new Map(
       [...reviewConnectors, ...recentConnectors].map((connector) => [
@@ -81,6 +81,18 @@ async function GETHandler(request: Request) {
       ]),
     ).values(),
   ];
+  const activeConnectorIds = new Set(
+    allConnectors.filter((connector) => connector.status === "active").map((connector) => connector.id),
+  );
+  const stats = {
+    total: allConnectors.length,
+    active: activeConnectorIds.size,
+    error: allConnectors.filter((connector) => connector.status === "error").length,
+    operationCount: operations.filter(
+      (operation) => operation.status === "active" && activeConnectorIds.has(operation.connectorId),
+    ).length,
+    latest: allConnectors.slice(0, 5),
+  };
 
   return Response.json({
     connectors: connectors.map((connector) => ({
