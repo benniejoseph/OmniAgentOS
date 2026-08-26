@@ -200,6 +200,7 @@ describe("paired production deployment", () => {
       "SMOKE_EXPECTED_REVISION: expectedRevision",
     );
     expect(deployScript).toContain("asael-release-evidence-");
+    expect(deployScript).toContain('SMOKE_REQUEST_TIMEOUT_MS: "60000"');
     expect(deployScript).not.toContain('"cron secret"');
     expect(deployScript).toContain("SMOKE_SESSION_OUTPUT");
     expect(deployScript).toContain("BENCHMARK_SESSION_FILE");

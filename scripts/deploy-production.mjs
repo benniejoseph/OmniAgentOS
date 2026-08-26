@@ -115,7 +115,13 @@ let workerMutationStarted = false;
 let vercelPromoted = false;
 try {
   await run("npm", ["run", "smoke:release"], {
-    environment: { BASE_URL: productionBaseUrl },
+    environment: {
+      BASE_URL: productionBaseUrl,
+      // Release evidence intentionally performs ordered database, worker, SLO,
+      // and provider checks. Its normal cold path can exceed the generic 15s
+      // HTTP smoke deadline without indicating an unhealthy deployment.
+      SMOKE_REQUEST_TIMEOUT_MS: "60000",
+    },
   });
   await run("npm", ["run", "verify"]);
   const deploymentOutput = await capture(
