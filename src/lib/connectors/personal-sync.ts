@@ -100,8 +100,18 @@ async function googleMail(headers: Record<string, string>, historyId?: string, s
     const profile = await providerJson("https://gmail.googleapis.com/gmail/v1/users/me/profile", headers, signal);
     nextHistoryId = String(profile.body.historyId || "") || undefined;
   }
-  const details = await Promise.all(ids.slice(0, 20).map((id) => providerJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`, headers, signal).then((response) => response.body)));
-  return { historyId: nextHistoryId, items: details.map(googleMessage) };
+  const items = await Promise.all(ids.slice(0, 20).map(async (id): Promise<SyncItem> => {
+    const response = await providerJson(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`,
+      headers,
+      signal,
+      [404],
+    );
+    return response.status === 404
+      ? { id, kind: "mail", title: "Removed email", content: "", deleted: true }
+      : googleMessage(response.body);
+  }));
+  return { historyId: nextHistoryId, items };
 }
 
 async function googleCalendar(headers: Record<string, string>, syncToken?: string, signal?: AbortSignal) {
@@ -139,7 +149,12 @@ async function googleDrive(headers: Record<string, string>, modifiedAfter?: stri
     let extracted = "";
     if (id && exportMime) {
       const exportUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}/export?mimeType=${encodeURIComponent(exportMime)}`;
-      extracted = (await providerText(exportUrl, headers, signal)).slice(0, 100_000);
+      try {
+        extracted = (await providerText(exportUrl, headers, signal)).slice(0, 100_000);
+      } catch {
+        // A file can disappear or deny export after it was listed. Preserve
+        // its useful metadata and let the next sync reconcile it.
+      }
     }
     if (id && !extracted) {
       const size = Number(file.size || 0);
