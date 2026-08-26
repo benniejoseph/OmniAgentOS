@@ -1139,12 +1139,10 @@ function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): Sq
         return await fn(pg);
       }
       const scope = databaseScope.getStore();
-      return await withReservedDatabaseConnection(pg, (reserved) =>
-        reserved.begin(async (tx: AnyPg) => {
-          await applyDatabaseScope(tx, scope);
-          return fn(tx);
-        })
-      );
+      return await withReservedDatabaseTransaction(pg, async (tx) => {
+        await applyDatabaseScope(tx, scope);
+        return fn(tx);
+      });
     } finally {
       recordDatabaseTiming(performance.now() - startedAt, mutation);
     }
@@ -1175,13 +1173,12 @@ function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): Sq
     if (typeof queriesOrFn !== "function") {
       throw new Error("Database transactions require an async callback.");
     }
-    return withReservedDatabaseConnection(pg, (reserved) =>
-      reserved.begin(async (tx: AnyPg) => {
-        await applyDatabaseScope(tx, scope);
-        const txScoped = createTenantScopedSqlClient(tx, true);
-        return (queriesOrFn as (s: SqlClient) => unknown)(txScoped);
-      })
-    );
+    return withReservedDatabaseTransaction(pg, async (tx) => {
+      await applyDatabaseScope(tx, scope);
+      const txScoped = createTenantScopedSqlClient(tx, true);
+      const result = (queriesOrFn as (s: SqlClient) => unknown)(txScoped);
+      return Array.isArray(result) ? Promise.all(result) : result;
+    });
   };
 
   return scoped;
@@ -1197,6 +1194,28 @@ async function withReservedDatabaseConnection<T>(
   } finally {
     releaseReservedDatabaseConnection(reserved);
   }
+}
+
+async function withReservedDatabaseTransaction<T>(
+  pg: AnyPg,
+  operation: (reserved: AnyPg) => Promise<T>,
+): Promise<T> {
+  return withReservedDatabaseConnection(pg, async (reserved) => {
+    await reserved.unsafe("BEGIN");
+    try {
+      const result = await operation(reserved);
+      await reserved.unsafe("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        await reserved.unsafe("ROLLBACK");
+      } catch {
+        // Preserve the operation/commit error. The reserved connection is
+        // released below and postgres.js will discard it if it is unusable.
+      }
+      throw error;
+    }
+  });
 }
 
 async function reserveDatabaseConnection(pg: AnyPg): Promise<AnyPg> {
