@@ -122,6 +122,26 @@ describe("memory graph tenant isolation (file mode)", () => {
     ).rejects.toThrow("cannot mix records from different tenants");
   });
 
+  it("rebuilds immediately when the durable queue is unavailable", async () => {
+    const graph = await import("@/lib/memory/graph");
+    const store = await import("@/lib/memory/store");
+    const record = await store.saveMemory({
+      ...memory("tenant-queued", "memory-queued"),
+      title: "Queued correction verification",
+      content: "Queued correction rebuilds remain consistent in file mode",
+    });
+
+    const result = await graph.queueMemoryGraphRebuild({
+      tenantId: "tenant-queued",
+    });
+    const nodes = await graph.listMemoryGraphNodes(100, {
+      tenantId: "tenant-queued",
+    });
+
+    expect(result).toMatchObject({ queued: false, tenantId: "tenant-queued" });
+    expect(nodes.some((node) => node.memoryIds.includes(record.id))).toBe(true);
+  });
+
   it("keeps graph evidence counters stable when indexing is replayed", async () => {
     const graph = await import("@/lib/memory/graph");
     const record = memory("tenant-replay", "memory-replay");
