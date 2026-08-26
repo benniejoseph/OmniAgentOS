@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { assertTrustedSessionMutation } from "@/lib/security/guard";
+import {
+  assertTrustedSessionMutation,
+  shouldDeferAllowedAudit,
+} from "@/lib/security/guard";
 
 const originalAppUrl = process.env.NEXT_PUBLIC_APP_URL;
 
@@ -65,6 +68,23 @@ describe("cookie-authenticated mutation origin checks", () => {
     expect(() =>
       assertTrustedSessionMutation(mutationRequest("https://evil.example.test")),
     ).toThrow(/trusted application origin/i);
+  });
+});
+
+describe("allowed audit scheduling", () => {
+  it("defers only routine safe reads", () => {
+    expect(
+      shouldDeferAllowedAudit({ method: "GET" }, "read", 0),
+    ).toBe(true);
+    expect(
+      shouldDeferAllowedAudit({ method: "POST" }, "read", 0),
+    ).toBe(false);
+    expect(
+      shouldDeferAllowedAudit({ method: "GET" }, "manage.security", 0),
+    ).toBe(false);
+    expect(
+      shouldDeferAllowedAudit({ method: "HEAD" }, "read", 2),
+    ).toBe(false);
   });
 });
 
