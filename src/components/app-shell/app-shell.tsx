@@ -172,7 +172,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
                 href="/app/command"
                 className="hidden min-h-11 items-center justify-center rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink transition hover:brightness-105 sm:inline-flex"
               >
-                  Ask Asael
+                  Talk to Asael
               </Link>
             </div>
           </div>

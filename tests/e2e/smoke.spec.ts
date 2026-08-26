@@ -244,11 +244,12 @@ test("public and mobile application navigation stay usable", async ({ page }) =>
   await expect(mobileNavigation).toBeVisible();
   await expect(mobileNavigation.getByRole("link")).toHaveCount(5);
   await expect(mobileNavigation.getByRole("link", { name: "Today" })).toBeVisible();
-  await expect(mobileNavigation.getByRole("link", { name: "Ask" })).toBeVisible();
+  await expect(mobileNavigation.getByRole("link", { name: "Talk" })).toBeVisible();
+  await expect(mobileNavigation.getByRole("link", { name: "Capture" })).toBeVisible();
   await page.getByRole("button", { name: "Open workspace menu" }).click();
   await expect(page.getByRole("navigation", { name: "Complete workspace navigation" }).getByRole("link", { name: "Inbox" })).toBeVisible();
   await page.getByRole("button", { name: "Close workspace menu" }).last().click();
-  await mobileNavigation.getByRole("link", { name: "Ask" }).click();
+  await mobileNavigation.getByRole("link", { name: "Talk" }).click();
   await expect(page).toHaveURL(/\/app\/command$/);
 });
 
@@ -441,6 +442,35 @@ test("Projects persists an Atlas plan and guarded task progress", async ({ page 
   ]);
   await expect(page.locator(".project-execution-deck")).toHaveClass(/is-running|is-waiting_approval/);
   await expect(page.locator(".project-task-live, .project-task-action").first()).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("Missions creates a durable outcome without exposing executor internals", async ({ page }) => {
+  await signIn(page);
+  await page.goto("/app/missions", { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { level: 1, name: "Missions" })).toBeVisible();
+
+  await page.getByRole("button", { name: "New mission" }).first().click();
+  const title = `Mission QA ${Date.now().toString(36)}`;
+  await page.getByRole("textbox", { name: "Mission", exact: true }).fill(title);
+  await page.getByRole("textbox", { name: "Observable outcome" }).fill("Produce a concise operating brief with evidence receipts.");
+  await page.getByRole("button", { name: "Create draft" }).click();
+
+  await expect(page).toHaveURL(/\/app\/missions\/[0-9a-f-]+$/);
+  await expect(page.getByRole("heading", { level: 2, name: title })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Live work surfaces" })).toBeVisible();
+  await expect(page.getByText("Terminal", { exact: true })).toBeVisible();
+  await expect(page.getByText("Files", { exact: true })).toBeVisible();
+  await expect(page.getByText("Browser", { exact: true })).toBeVisible();
+
+  const detailIsSafe = await page.evaluate(async () => {
+    const response = await fetch(window.location.pathname.replace("/app/", "/api/"));
+    const body = await response.text();
+    return response.ok && !body.includes("fenceToken") && !body.includes("sourceKey");
+  });
+  expect(detailIsSafe).toBe(true);
+
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

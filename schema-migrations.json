@@ -128,5 +128,10 @@
     "version": 26,
     "name": "custom_agent_and_skill_studio",
     "checksum": "b9330011742af71d64d932ad34bd55d374d7b936d2db88a7e502f50a29aec04c"
+  },
+  {
+    "version": 27,
+    "name": "unified_mission_kernel",
+    "checksum": "bffd05b4ebbfa5a4e081b7cb73c6d302344d6d898b891518904e5fb057b3f860"
   }
 ]

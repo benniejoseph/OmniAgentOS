@@ -13,6 +13,7 @@ import {
   createProjectTasks,
   getProject,
   listProjectArtifacts,
+  listProjectSummaries,
   listProjectTasks,
   listProjects,
   ProjectTransitionError,
@@ -52,6 +53,38 @@ describe("personal projects", () => {
     const project = await createProject({ tenantId: "personal", actorId: "owner", title: "Private goal", objective: "Only the owner can see this." });
     await expect(getProject(project.id, { tenantId: "personal", actorId: "someone-else" })).resolves.toBeUndefined();
     await expect(listProjects(10, { tenantId: "personal", actorId: "someone-else" })).resolves.toEqual([]);
+  });
+
+  it("returns compact project summaries without embedding task or artifact bodies", async () => {
+    const project = await createProject({
+      tenantId: "personal",
+      actorId: "owner",
+      title: "Fast mission list",
+      objective: "Open the workspace without loading every output.",
+    });
+    const [task] = await createProjectTasks(project.id, [
+      { title: "Measure the payload" },
+      { title: "Ship the bounded view" },
+    ], { tenantId: "personal" });
+    await updateProjectTask(project.id, task.id, { status: "done" }, {
+      tenantId: "personal",
+      actorId: "owner",
+    });
+    const summaries = await listProjectSummaries(10, {
+      tenantId: "personal",
+      actorId: "owner",
+    });
+    expect(summaries).toEqual([
+      expect.objectContaining({
+        id: project.id,
+        taskCount: 2,
+        completedTaskCount: 1,
+        activeTaskCount: 0,
+        artifactCount: 0,
+      }),
+    ]);
+    expect(summaries[0]).not.toHaveProperty("tasks");
+    expect(summaries[0]).not.toHaveProperty("artifacts");
   });
 
   it("creates a deterministic specialist plan without duplicate tasks", async () => {

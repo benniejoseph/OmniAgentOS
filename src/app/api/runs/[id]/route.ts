@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { foldRunProjection } from "@/lib/events/projections";
 import { listStreamEvents } from "@/lib/events/store";
+import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
 import {
   cancelOperationJobByDedupeKey,
   getAgentResumeJobDedupeKey,
@@ -57,11 +59,16 @@ async function GETHandler(
   // verifiable proof the stored run matches its event history.
   const events = await listStreamEvents(`run:${id}`, { tenantId: auth.tenantId });
   const replayed = foldRunProjection(events);
-  // Terminal states are fully determined by their run.done/run.error events;
+  const response = run.response || "";
+  const responseMatches = replayed.responseSha256
+    ? replayed.responseLength === response.length &&
+      replayed.responseSha256 === createHash("sha256").update(response).digest("hex")
+    : replayed.response === response;
+  // Terminal states are fully determined by run.done/run.error/run.canceled;
   // waiting_approval/running/resuming carry continuation state not on the log.
   const consistent =
     replayed.status === run.status &&
-    (replayed.status !== "completed" || replayed.response === run.response) &&
+    (replayed.status !== "completed" || responseMatches) &&
     (replayed.status !== "failed" || replayed.error === run.error);
 
   return Response.json({
@@ -140,20 +147,47 @@ async function DELETEHandler(
     return Response.json({ error: "Run not found." }, { status: 404 });
   }
   if (["completed", "failed", "canceled"].includes(run.status)) {
+    if (run.status === "canceled") {
+      await ensureRunCancellationEvent(run.id, run.error || "Canceled by the operator.", auth.tenantId);
+      await syncMissionExecutorSafely({
+        executorType: "agent_run",
+        executorId: run.id,
+        status: "canceled",
+      }, { tenantId: auth.tenantId, actorId: auth.actorId });
+    }
     return Response.json({ run: publicAgentRun(run), canceledJobs: 0 });
   }
 
   const reason = "Canceled by the operator.";
+  const executionId = run.continuation?.pendingToolCall.executionId;
   const canceled = await cancelAgentRun(run.id, reason);
   if (!canceled) {
     const current = await getAgentRun(id, { tenantId: auth.tenantId });
+    if (current?.status === "canceled") {
+      const canceledJobs = executionId
+        ? await cancelOperationJobByDedupeKey(
+            getAgentResumeJobDedupeKey(executionId),
+            reason,
+            { tenantId: auth.tenantId },
+          )
+        : [];
+      await ensureRunCancellationEvent(current.id, current.error || reason, auth.tenantId);
+      await syncMissionExecutorSafely({
+        executorType: "agent_run",
+        executorId: current.id,
+        status: "canceled",
+      }, { tenantId: auth.tenantId, actorId: auth.actorId });
+      return Response.json({
+        run: publicAgentRun(current),
+        canceledJobs: canceledJobs.length,
+      });
+    }
     return Response.json({
       run: current ? publicAgentRun(current) : publicAgentRun(run),
       canceledJobs: 0,
     });
   }
 
-  const executionId = run.continuation?.pendingToolCall.executionId;
   const canceledJobs = executionId
     ? await cancelOperationJobByDedupeKey(
         getAgentResumeJobDedupeKey(executionId),
@@ -161,14 +195,25 @@ async function DELETEHandler(
         { tenantId: auth.tenantId },
       )
     : [];
-  await appendRunEvent(run.id, {
-    type: "status",
-    label: "Canceled",
-    detail: reason,
-  });
+  await ensureRunCancellationEvent(run.id, reason, auth.tenantId);
+  await syncMissionExecutorSafely({
+    executorType: "agent_run",
+    executorId: run.id,
+    status: "canceled",
+  }, { tenantId: auth.tenantId, actorId: auth.actorId });
   const current = await getAgentRun(id, { tenantId: auth.tenantId });
   return Response.json({
     run: publicAgentRun(current || { ...run, status: "canceled", error: reason }),
     canceledJobs: canceledJobs.length,
   });
+}
+
+async function ensureRunCancellationEvent(
+  runId: string,
+  message: string,
+  tenantId: string,
+) {
+  const events = await listStreamEvents(`run:${runId}`, { tenantId });
+  if (events.some((event) => event.type === "run.canceled")) return;
+  await appendRunEvent(runId, { type: "canceled", message }, { tenantId });
 }

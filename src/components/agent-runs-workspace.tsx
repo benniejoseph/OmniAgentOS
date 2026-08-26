@@ -47,7 +47,7 @@ type RunFeedback = {
 type TabKey = "goal" | "context" | "plan" | "execute" | "evidence";
 
 type StreamEvent =
-  | { type: "run"; runId?: string; threadId?: string }
+  | { type: "run"; runId?: string; threadId?: string; missionId?: string }
   | { type: "status"; label?: string; detail?: string }
   | { type: "memory"; title?: string; count?: number }
   | { type: "model"; model: string; provider?: "openai" | "google"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number }
@@ -65,7 +65,7 @@ type StreamEvent =
     }
   | { type: "waiting_approval"; executionId?: string; toolId?: string; message?: string }
   | { type: "done"; response?: string; grounding?: GroundingReport }
-  | { type: "delegated"; threadId?: string; workflowId?: string; acknowledgement?: string; reason?: string }
+  | { type: "delegated"; threadId?: string; workflowId?: string; missionId?: string; acknowledgement?: string; reason?: string }
   | { type: "error"; message?: string };
 
 const tabs: Array<{ key: TabKey; label: string; icon: typeof TerminalSquare }> = [
@@ -106,10 +106,12 @@ const starterGoals = [
 export function AgentRunsWorkspace({
   initialAgentId,
   initialThreadId,
+  initialMissionId,
   initialGoal,
 }: {
   initialAgentId?: AgentId;
   initialThreadId?: string;
+  initialMissionId?: string;
   initialGoal?: string;
 }) {
   const {
@@ -151,6 +153,7 @@ export function AgentRunsWorkspace({
   const initialThreadLoadedRef = useRef(false);
   const responseAudioRef = useRef<HTMLAudioElement | null>(null);
   const responseAudioUrlRef = useRef<string | undefined>(undefined);
+  const agentRequestIdRef = useRef<string>("");
 
   useEffect(() => {
     if (!initialAgentId || agentDisplayName(initialAgentId) !== "Custom agent") return;
@@ -433,6 +436,7 @@ export function AgentRunsWorkspace({
     setRunFeedback(undefined);
     setStreamEvents([]);
     setWaitingApproval(undefined);
+    agentRequestIdRef.current = "";
   }
 
   function changeMode(nextMode: AgentMode) {
@@ -448,6 +452,7 @@ export function AgentRunsWorkspace({
     setRunFeedback(undefined);
     setStreamEvents([]);
     setWaitingApproval(undefined);
+    agentRequestIdRef.current = "";
   }
 
   function changeApprovalRequired(nextValue: boolean) {
@@ -604,6 +609,8 @@ export function AgentRunsWorkspace({
     }
     setActiveTab("execute");
     setRunAnnouncement("Agent run started.");
+    const requestId = agentRequestIdRef.current || crypto.randomUUID();
+    agentRequestIdRef.current = requestId;
     setTurns((current) => [
       ...current,
       { id: `pending-user-${Date.now()}`, role: "user", content: submittedGoal, createdAt: new Date().toISOString() },
@@ -616,7 +623,9 @@ export function AgentRunsWorkspace({
         body: JSON.stringify({
           mode,
           threadId: threadId || undefined,
+          missionId: initialMissionId || undefined,
           message: submittedGoal,
+          requestId,
           strategy: "auto",
           agentId: preferredAgentId,
         }),
@@ -644,6 +653,7 @@ export function AgentRunsWorkspace({
         setStreamEvents((current) => [...current.slice(-199), event]);
         if (event.type === "delegated") {
           terminalEvent = "delegated";
+          agentRequestIdRef.current = "";
           const acknowledgement = event.acknowledgement || "This task is continuing as a durable workflow.";
           if (event.threadId) setThreadId(event.threadId);
           if (event.workflowId) setWorkflowRun({ run: { id: event.workflowId } });
@@ -658,6 +668,7 @@ export function AgentRunsWorkspace({
         }
         if (event.type === "done") {
           terminalEvent = "done";
+          agentRequestIdRef.current = "";
           flushPendingDeltas();
           setAgentResponse(event.response || "");
           setGrounding(event.grounding);
@@ -676,11 +687,13 @@ export function AgentRunsWorkspace({
         }
         if (event.type === "waiting_approval") {
           terminalEvent = "waiting_approval";
+          agentRequestIdRef.current = "";
           setWaitingApproval(event);
           setRunAnnouncement("Agent run paused for approval.");
         }
         if (event.type === "error") {
           terminalEvent = "error";
+          agentRequestIdRef.current = "";
           setError(event.message || "Agent run failed.");
           setRunAnnouncement("Agent run failed.");
         }
@@ -750,6 +763,7 @@ export function AgentRunsWorkspace({
       setTurns(arrayPath(result, "turns") as unknown as ThreadTurn[]);
       setAgentResponse("");
       setActiveTab("goal");
+      agentRequestIdRef.current = "";
     } catch (threadError) {
       setError(threadError instanceof Error ? threadError.message : "Conversation could not be loaded.");
     }

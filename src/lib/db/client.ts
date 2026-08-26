@@ -93,6 +93,10 @@ export const tenantRootPolicyTables = [
   "omni_personal_notifications",
   "omni_projects",
   "omni_project_artifacts",
+  "omni_missions",
+  "omni_mission_tasks",
+  "omni_mission_attempts",
+  "omni_mission_artifacts",
   "omni_custom_skills",
   "omni_custom_agents",
 ] as const;
@@ -498,6 +502,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[25],
       up: async (sql) => {
         await ensureAgentSkillStudio(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[26],
+      up: async (sql) => {
+        await ensureMissionKernel(sql);
         await ensureTenantIsolationPolicies(sql);
       },
     },
@@ -2343,6 +2354,109 @@ async function ensureAgentSkillStudio(sql: SqlClient) {
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS omni_custom_agents_owner_updated_idx ON omni_custom_agents (tenant_id, actor_id, updated_at DESC)`;
+}
+
+async function ensureMissionKernel(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_missions (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      objective TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'queued', 'running', 'waiting', 'succeeded', 'failed', 'canceled', 'archived')),
+      priority TEXT NOT NULL DEFAULT 'normal'
+        CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+      source TEXT NOT NULL DEFAULT 'user',
+      source_key TEXT NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      started_at TIMESTAMPTZ,
+      terminal_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, source_key)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_missions_owner_status_idx ON omni_missions (tenant_id, actor_id, status, updated_at DESC)`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_mission_tasks (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      mission_id TEXT NOT NULL REFERENCES omni_missions(id) ON DELETE CASCADE,
+      parent_task_id TEXT REFERENCES omni_mission_tasks(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      instructions TEXT NOT NULL DEFAULT '',
+      definition_of_done TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'blocked', 'succeeded', 'failed', 'canceled')),
+      priority TEXT NOT NULL DEFAULT 'normal'
+        CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+      position INTEGER NOT NULL DEFAULT 0,
+      source_key TEXT NOT NULL,
+      dependency_ids TEXT[] NOT NULL DEFAULT '{}',
+      input JSONB NOT NULL DEFAULT '{}'::jsonb,
+      started_at TIMESTAMPTZ,
+      terminal_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, mission_id, source_key)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mission_tasks_mission_status_idx ON omni_mission_tasks (tenant_id, actor_id, mission_id, status, position, created_at)`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_mission_attempts (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      mission_id TEXT NOT NULL REFERENCES omni_missions(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES omni_mission_tasks(id) ON DELETE CASCADE,
+      executor_key TEXT NOT NULL,
+      executor_type TEXT NOT NULL DEFAULT 'agent',
+      executor_id TEXT NOT NULL,
+      fence_token TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued', 'running', 'waiting', 'succeeded', 'failed', 'canceled')),
+      agent_run_id TEXT REFERENCES omni_agent_runs(id) ON DELETE SET NULL,
+      workflow_run_id TEXT REFERENCES omni_workflow_runs(id) ON DELETE SET NULL,
+      input JSONB NOT NULL DEFAULT '{}'::jsonb,
+      output JSONB,
+      error TEXT,
+      started_at TIMESTAMPTZ,
+      terminal_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, task_id, executor_key)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mission_attempts_mission_status_idx ON omni_mission_attempts (tenant_id, actor_id, mission_id, status, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mission_attempts_task_created_idx ON omni_mission_attempts (tenant_id, actor_id, task_id, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mission_attempts_executor_idx ON omni_mission_attempts (tenant_id, actor_id, executor_type, executor_id, created_at DESC)`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_mission_artifacts (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      mission_id TEXT NOT NULL REFERENCES omni_missions(id) ON DELETE CASCADE,
+      task_id TEXT REFERENCES omni_mission_tasks(id) ON DELETE SET NULL,
+      attempt_id TEXT REFERENCES omni_mission_attempts(id) ON DELETE SET NULL,
+      source_key TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'result',
+      title TEXT NOT NULL,
+      uri TEXT,
+      mime_type TEXT,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, mission_id, source_key)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mission_artifacts_mission_created_idx ON omni_mission_artifacts (tenant_id, actor_id, mission_id, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mission_artifacts_attempt_idx ON omni_mission_artifacts (tenant_id, actor_id, attempt_id) WHERE attempt_id IS NOT NULL`;
 }
 
 async function ensureConversationThreads(sql: SqlClient) {

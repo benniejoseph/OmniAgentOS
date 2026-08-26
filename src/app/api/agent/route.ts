@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AGENT_MAX_MESSAGE_CHARS, AGENT_MAX_MESSAGES, AGENT_RUNS_PER_MINUTE, hasOpenAIKey } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
@@ -7,6 +8,17 @@ import {
   RateLimitStoreUnavailableError,
 } from "@/lib/http/rate-limit";
 import { encodeSse, sseResponse } from "@/lib/http/sse";
+import {
+  createMission,
+  ensureMissionTask,
+  getMission,
+  transitionMission,
+} from "@/lib/missions/store";
+import {
+  attachMissionExecutor,
+  syncMissionExecutor,
+} from "@/lib/missions/runtime";
+import type { Mission, MissionTask } from "@/lib/missions/types";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import { getAgentPerformance } from "@/lib/agents/performance";
 import {
@@ -32,6 +44,8 @@ const chatMessageSchema = z.object({
 const requestSchema = z.object({
   messages: z.array(chatMessageSchema).min(1).max(AGENT_MAX_MESSAGES).optional(),
   threadId: z.string().uuid().optional(),
+  missionId: z.string().uuid().optional(),
+  requestId: z.string().trim().min(1).max(200).regex(/^[a-zA-Z0-9._:-]+$/).optional(),
   message: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS).optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
   agentId: z.string().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
@@ -51,6 +65,16 @@ async function POSTHandler(request: Request) {
   if (!parsed.success) {
     return Response.json(
       { error: "Invalid request", details: parsed.error.flatten() },
+      { status: 400 },
+    );
+  }
+
+  let requestId: string;
+  try {
+    requestId = resolveRequestId(request, parsed.data.requestId);
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : "Invalid request id." },
       { status: 400 },
     );
   }
@@ -160,6 +184,16 @@ async function POSTHandler(request: Request) {
           preliminaryDecision,
           hasOpenAIKey() ? await getAgentPerformance(context.tenantId) : [],
         );
+        const missionOwner = {
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+        };
+        let mission = parsed.data.missionId
+          ? await getMission(parsed.data.missionId, missionOwner)
+          : undefined;
+        if (parsed.data.missionId && !mission) throw new Error("Mission not found.");
+        if (mission) assertMissionAcceptsWork(mission);
+        let missionTask: MissionTask | undefined;
         if (parsed.data.message) {
           const { appendThreadTurn, createThread, getThread, listThreadTurns } = await import("@/lib/threads/store");
           const safeMessage = String(redactSensitive(parsed.data.message));
@@ -170,19 +204,51 @@ async function POSTHandler(request: Request) {
             thread = await createThread({ tenantId: context.tenantId, actorId: context.actorId, title: safeMessage, mode: parsed.data.mode || "orchestrate" });
             threadId = thread.id;
           }
-          await appendThreadTurn({ tenantId: context.tenantId, threadId: thread.id, role: "user", content: safeMessage });
+          const userTurn = await appendThreadTurn({ tenantId: context.tenantId, threadId: thread.id, role: "user", content: safeMessage });
+          const needsMission = Boolean(parsed.data.missionId) || decision.route === "durable_workflow";
+          if (needsMission) {
+            mission = mission || await createMission({
+                ...missionOwner,
+                title: missionTitle(safeMessage),
+                objective: safeMessage,
+                priority: decision.route === "durable_workflow" ? "high" : "normal",
+                source: "talk",
+                sourceKey: `agent-request:${requestId}`,
+                metadata: { threadId: thread.id, turnId: userTurn.id, requestId, route: decision.route },
+              });
+            if (!mission) throw new Error("Mission not found.");
+            assertMissionAcceptsWork(mission);
+            const executionMessage = parsed.data.missionId
+              ? missionInstruction(mission, safeMessage)
+              : safeMessage;
+            missionTask = await ensureMissionTask(mission.id, {
+              sourceKey: `agent-request:${requestId}`,
+              title: missionTitle(safeMessage),
+              instructions: executionMessage,
+              definitionOfDone: "Deliver the requested outcome, preserve evidence, and report blockers honestly.",
+              priority: mission.priority,
+              input: { threadId: thread.id, turnId: userTurn.id, route: decision.route },
+            }, missionOwner);
+          }
           if (decision.route === "durable_workflow") {
+            if (!mission || !missionTask) throw new Error("Durable mission initialization failed.");
+            const executionMessage = parsed.data.missionId
+              ? missionInstruction(mission, safeMessage)
+              : safeMessage;
             const { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } = await import("@/lib/workflows/queue");
             const { createWorkflowRun } = await import("@/lib/workflows/store");
             const detail = await createWorkflowRun({
               tenantId: context.tenantId,
-              goal: safeMessage,
+              goal: executionMessage,
               mode,
               requireApproval: decision.requiresApproval || customAgent?.approvalPolicy === "always",
               metadata: {
                 source: "atomic_supervisor",
                 threadId: thread.id,
+                requestId,
                 actorId: context.actorId,
+                missionId: mission.id,
+                missionTaskId: missionTask.id,
                 primaryAgentId: customAgent?.id || decision.primaryAgentId,
                 customAgentName: customAgent?.name,
                 skillIds: customSkills.map((skill) => skill.id),
@@ -190,8 +256,21 @@ async function POSTHandler(request: Request) {
                 specialistIds: decision.specialistIds,
                 learning: decision.learning,
               },
-              idempotencyKey: `supervisor:${thread.id}:${Date.now()}`,
+              idempotencyKey: `supervisor:${context.actorId}:${requestId}`,
             });
+            if (detail.run.goal !== executionMessage.trim()) {
+              throw new Error("requestId was already used for a different instruction. Submit this work with a new requestId.");
+            }
+            await attachMissionExecutor({
+              taskId: missionTask.id,
+              executorType: "workflow_run",
+              executorId: detail.run.id,
+              status: "queued",
+              payload: { route: decision.route, threadId: thread.id },
+            }, missionOwner);
+            if (mission.status === "draft") {
+              mission = await transitionMission(mission.id, "queued", missionOwner);
+            }
             await enqueueWorkflowRunTick(detail.run.id, "supervisor_delegated", undefined, context.tenantId);
             scheduleWorkflowQueueDrain(undefined, context.tenantId);
             const acknowledgement = decision.requiresApproval || customAgent?.approvalPolicy === "always"
@@ -207,6 +286,7 @@ async function POSTHandler(request: Request) {
               type: "delegated",
               threadId: thread.id,
               workflowId: detail.run.id,
+              missionId: mission.id,
               acknowledgement,
               reason: decision.reasons[0] || "Durable execution selected.",
             })));
@@ -215,6 +295,23 @@ async function POSTHandler(request: Request) {
           const turns = await listThreadTurns(thread.id, { tenantId: context.tenantId, limit: AGENT_MAX_MESSAGES * 2 });
           safeMessages = compileThreadContext(turns, { maxMessages: AGENT_MAX_MESSAGES }).messages;
         }
+        if (parsed.data.missionId && (!mission || !missionTask)) {
+          if (!mission) throw new Error("Mission not found.");
+          assertMissionAcceptsWork(mission);
+          missionTask = await ensureMissionTask(mission.id, {
+            sourceKey: `agent-request:${requestId}`,
+            title: missionTitle(requestMessage),
+            instructions: requestMessage,
+            definitionOfDone: "Deliver the requested outcome with a verifiable terminal result.",
+            input: { route: decision.route },
+          }, missionOwner);
+        }
+        if (parsed.data.missionId && mission) {
+          safeMessages = includeMissionContext(safeMessages, mission);
+        }
+        let directExecutorId = "";
+        let directTerminal = false;
+        let directMissionAttachment: Promise<{ error?: unknown }> | undefined;
         for await (const event of runAgent(
           {
             mode: parsed.data.mode,
@@ -229,7 +326,76 @@ async function POSTHandler(request: Request) {
           },
           request.signal,
         )) {
+          if (event.type === "run") {
+            directExecutorId = event.runId;
+            controller.enqueue(encoder.encode(encodeSse(
+              mission ? { ...event, missionId: mission.id } : event,
+            )));
+            if (mission && missionTask) {
+              directMissionAttachment = attachMissionExecutor({
+                taskId: missionTask.id,
+                executorType: "agent_run",
+                executorId: event.runId,
+                status: "running",
+                payload: { threadId, route: decision.route },
+              }, missionOwner).then(
+                () => ({}),
+                (error) => ({ error }),
+              );
+            }
+            continue;
+          } else if (event.type === "waiting_approval" && directExecutorId && directMissionAttachment) {
+            await requireMissionAttachment(directMissionAttachment);
+            await syncMissionExecutor({
+              executorType: "agent_run",
+              executorId: directExecutorId,
+              status: "waiting",
+            }, missionOwner);
+          } else if (event.type === "done" && directExecutorId && directMissionAttachment) {
+            await requireMissionAttachment(directMissionAttachment);
+            directTerminal = true;
+            await syncMissionExecutor({
+              executorType: "agent_run",
+              executorId: directExecutorId,
+              status: "succeeded",
+              output: {
+                responseLength: event.response.length,
+                responseSha256: createHash("sha256").update(event.response).digest("hex"),
+                groundingStatus: event.grounding?.status,
+              },
+            }, missionOwner);
+          } else if (event.type === "error" && directExecutorId && directMissionAttachment) {
+            await requireMissionAttachment(directMissionAttachment);
+            directTerminal = true;
+            await syncMissionExecutor({
+              executorType: "agent_run",
+              executorId: directExecutorId,
+              status: "failed",
+              error: event.message,
+            }, missionOwner);
+          } else if (event.type === "status" && event.label === "Canceled" && directExecutorId && directMissionAttachment) {
+            await requireMissionAttachment(directMissionAttachment);
+            directTerminal = true;
+            await syncMissionExecutor({
+              executorType: "agent_run",
+              executorId: directExecutorId,
+              status: "canceled",
+            }, missionOwner);
+          }
           controller.enqueue(encoder.encode(encodeSse(event)));
+        }
+        if (directExecutorId && directMissionAttachment && !directTerminal && mission) {
+          await requireMissionAttachment(directMissionAttachment);
+          // Waiting approvals remain resumable. Every other non-terminal exit is
+          // treated as a canceled execution receipt rather than left running.
+          const waiting = await getMission(mission.id, missionOwner);
+          if (waiting?.status !== "waiting") {
+            await syncMissionExecutor({
+              executorType: "agent_run",
+              executorId: directExecutorId,
+              status: "canceled",
+            }, missionOwner);
+          }
         }
       } catch (error) {
         controller.enqueue(
@@ -251,6 +417,57 @@ async function POSTHandler(request: Request) {
   });
 
   return sseResponse(stream);
+}
+
+function missionTitle(message: string) {
+  const compact = message.replace(/\s+/g, " ").trim();
+  return compact.slice(0, 90) || "New Asael mission";
+}
+
+function resolveRequestId(request: Request, bodyRequestId?: string) {
+  const headerRequestId = request.headers.get("idempotency-key")?.trim();
+  if (headerRequestId && (headerRequestId.length > 200 || !/^[a-zA-Z0-9._:-]+$/.test(headerRequestId))) {
+    throw new Error("Idempotency-Key must be 200 characters or fewer and use letters, numbers, dot, underscore, colon, or hyphen.");
+  }
+  if (bodyRequestId && headerRequestId && bodyRequestId !== headerRequestId) {
+    throw new Error("requestId and Idempotency-Key must match when both are provided.");
+  }
+  return bodyRequestId || headerRequestId || randomUUID();
+}
+
+function assertMissionAcceptsWork(mission: Mission) {
+  if (["succeeded", "failed", "canceled", "archived"].includes(mission.status)) {
+    throw new Error("This mission is terminal. Create a new mission to continue the outcome.");
+  }
+}
+
+function includeMissionContext(messages: SafeChatMessages, mission: Mission) {
+  const contextual = [...messages];
+  const lastUserIndex = contextual.findLastIndex((message) => message.role === "user");
+  const context = missionContext(mission);
+  if (lastUserIndex < 0) {
+    return [{ role: "user" as const, content: context }, ...contextual];
+  }
+  contextual[lastUserIndex] = {
+    ...contextual[lastUserIndex],
+    content: `${context}\n\nCurrent instruction:\n${contextual[lastUserIndex].content}`.slice(0, AGENT_MAX_MESSAGE_CHARS),
+  };
+  return contextual;
+}
+
+function missionInstruction(mission: Mission, instruction: string) {
+  return `${missionContext(mission)}\n\nCurrent instruction:\n${instruction}`.slice(0, AGENT_MAX_MESSAGE_CHARS);
+}
+
+function missionContext(mission: Mission) {
+  return `Selected mission: ${mission.title}\nMission objective: ${mission.objective}`;
+}
+
+type SafeChatMessages = Array<{ role: "user" | "assistant"; content: string }>;
+
+async function requireMissionAttachment(attachment: Promise<{ error?: unknown }>) {
+  const result = await attachment;
+  if (result.error) throw result.error;
 }
 
 function isBuiltInAgentId(value?: string): value is "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne" {
