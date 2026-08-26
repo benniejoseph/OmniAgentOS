@@ -128,7 +128,9 @@ try {
         hotP50Ms: budgets.dashboardUsableMs,
         hotP95Ms: budgets.releaseDashboardUsableMs,
         hotMaxMs: budgets.releaseDashboardMaxMs,
-        documentP95Ms: budgets.authenticatedReadP95Ms,
+        // NavigationTiming includes client-to-edge transit and SSR. Keep this
+        // distinct from the API Server-Timing processing budget.
+        documentP95Ms: budgets.releaseDashboardDocumentP95Ms,
       },
     }),
   };

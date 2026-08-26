@@ -13,7 +13,7 @@ const budgets = {
   hotP50Ms: 1_500,
   hotP95Ms: 2_500,
   hotMaxMs: 5_000,
-  documentP95Ms: 500,
+  documentP95Ms: 1_000,
 };
 
 describe("dashboard release gate", () => {
@@ -93,7 +93,7 @@ describe("dashboard release gate", () => {
       firstLoad: measurement(2_000, 300),
       recoveryLoad: measurement(1_100, 300),
       hotMeasurements: Array.from({ length: 20 }, () =>
-        measurement(1_000, 501),
+        measurement(1_001, 1_001),
       ),
       warmups: 2,
       minimumSamples: 20,
@@ -101,7 +101,7 @@ describe("dashboard release gate", () => {
     });
 
     expect(result.documentDurationsMs).toHaveLength(20);
-    expect(result.documentP95Ms).toBe(501);
+    expect(result.documentP95Ms).toBe(1_001);
     expect(result.checks.documentP95).toBe(false);
     expect(result.passed).toBe(false);
   });

@@ -91,6 +91,7 @@ describe("frontend performance budgets", () => {
       releaseDashboardFirstLoadTargetMs: 4_000,
       releaseDashboardFirstLoadMs: 5_000,
       releaseDashboardFirstResponseMs: 2_000,
+      releaseDashboardDocumentP95Ms: 1_000,
       releaseDashboardFirstPostResponseReadyMs: 3_500,
       releaseDashboardRecoveryMs: 2_500,
       firstSseStatusMs: 1_000,
@@ -142,6 +143,7 @@ describe("frontend performance budgets", () => {
     expect(reporter).toContain("onINP(report)");
     expect(reporter).not.toContain("new PerformanceObserver");
     expect(previewBenchmark).toContain("serverP95BudgetMs");
+    expect(previewBenchmark).toContain("budgets.authenticatedReadP95Ms");
     expect(previewBenchmark).toContain("parseServerDuration");
     expect(previewBenchmark).toContain("validateSettingsCapabilities");
     expect(previewBenchmark).toContain(
@@ -173,7 +175,10 @@ describe("frontend performance budgets", () => {
     );
     expect(dashboardBenchmark).toContain("budgets.releaseDashboardRecoveryMs");
     expect(dashboardBenchmark).toContain("budgets.dashboardUsableMs");
-    expect(dashboardBenchmark).toContain("budgets.authenticatedReadP95Ms");
+    expect(dashboardBenchmark).toContain(
+      "budgets.releaseDashboardDocumentP95Ms",
+    );
+    expect(dashboardBenchmark).not.toContain("budgets.authenticatedReadP95Ms");
     expect(dashboardBenchmark).toContain("BENCHMARK_BROWSER_SAMPLES");
     expect(dashboardBenchmark).toContain("Math.max(requestedSamples, 20)");
     expect(dashboardBenchmark).toContain("BENCHMARK_BROWSER_WARMUPS");
