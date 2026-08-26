@@ -546,25 +546,30 @@ async function searchMemoriesDb(
 
 async function searchMemoriesLexicalDb(query: string, limit: number, tenantId: string) {
   const rows = await getSql()`
-    SELECT *,
-           CASE
-             WHEN ${query} = '' THEN 0
-             ELSE ts_rank_cd(
-               to_tsvector('english', title || ' ' || content),
-               plainto_tsquery('english', ${query})
-             )
-           END AS lexical_score,
-           1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800) AS recency_score
-    FROM omni_memories
-    WHERE tenant_id = ${tenantId}
-      AND claim_status = 'active'
-      AND (valid_from IS NULL OR valid_from <= NOW())
-      AND (valid_to IS NULL OR valid_to > NOW())
-      AND (
-        ${query} = ''
-        OR to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', ${query})
-      )
-    ORDER BY (lexical_score * (0.35 + confidence * 0.65)) DESC, importance DESC, updated_at DESC
+    SELECT ranked.*
+    FROM (
+      SELECT *,
+             CASE
+               WHEN ${query} = '' THEN 0
+               ELSE ts_rank_cd(
+                 to_tsvector('english', title || ' ' || content),
+                 plainto_tsquery('english', ${query})
+               )
+             END AS lexical_score,
+             1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800) AS recency_score
+      FROM omni_memories
+      WHERE tenant_id = ${tenantId}
+        AND claim_status = 'active'
+        AND (valid_from IS NULL OR valid_from <= NOW())
+        AND (valid_to IS NULL OR valid_to > NOW())
+        AND (
+          ${query} = ''
+          OR to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', ${query})
+        )
+    ) ranked
+    ORDER BY (ranked.lexical_score * (0.35 + ranked.confidence * 0.65)) DESC,
+             ranked.importance DESC,
+             ranked.updated_at DESC
     LIMIT ${limit}
   `;
 
