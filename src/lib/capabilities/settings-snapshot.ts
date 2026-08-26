@@ -17,7 +17,7 @@ const defaultStatementTimeoutMs = 5_000;
 type SettingsStorageSource = "postgres" | "local";
 type SettingsStorageFailureReason = "timeout" | "error";
 
-type ReadySettingsStorageSnapshot = {
+export type ReadySettingsStorageSnapshot = {
   vectorStore: {
     configured: boolean;
     extensionInstalled?: boolean;
@@ -91,16 +91,20 @@ export type SettingsStorageSnapshot =
 
 type SettingsSnapshotOptions = {
   timeoutMs?: number;
-  loader?: (tenantId: string) => Promise<ReadySettingsStorageSnapshot>;
+  loader?: (
+    tenantId: string,
+  ) => Promise<
+    ReadySettingsStorageSnapshot | ReadySettingsStorageSnapshotResult
+  >;
 };
 
-type CachedReadySettingsStorageSnapshot = {
+export type ReadySettingsStorageSnapshotResult = {
   checkedAt: string;
   snapshot: ReadySettingsStorageSnapshot;
 };
 
 const readySnapshotCache =
-  new AsyncTtlCache<CachedReadySettingsStorageSnapshot>(15_000, 64);
+  new AsyncTtlCache<ReadySettingsStorageSnapshotResult>(15_000, 64);
 
 class SettingsSnapshotTimeoutError extends Error {
   constructor() {
@@ -123,12 +127,15 @@ export async function loadSettingsStorageSnapshot(
   try {
     const cached = await Promise.race([
       readySnapshotCache.get(tenantId, async () => {
-        const snapshot = await (options.loader || readSettingsStorageSnapshot)(
+        const loaded = await (options.loader || readSettingsStorageSnapshot)(
           tenantId,
         );
+        if (isReadySnapshotResult(loaded)) {
+          return loaded;
+        }
         return {
           checkedAt: new Date().toISOString(),
-          snapshot,
+          snapshot: loaded,
         };
       }),
       new Promise<never>((_, reject) => {
@@ -163,6 +170,16 @@ export async function loadSettingsStorageSnapshot(
       clearTimeout(timeout);
     }
   }
+}
+
+function isReadySnapshotResult(
+  value: ReadySettingsStorageSnapshot | ReadySettingsStorageSnapshotResult,
+): value is ReadySettingsStorageSnapshotResult {
+  return (
+    "snapshot" in value &&
+    typeof value.checkedAt === "string" &&
+    value.checkedAt.trim().length > 0
+  );
 }
 
 export async function readSettingsStorageSnapshot(
