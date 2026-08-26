@@ -176,7 +176,7 @@ describe("database pool acquisition", () => {
     }
   });
 
-  it("times out a queued reservation and releases a slot granted after the deadline", async () => {
+  it("bounds ghost reservations and skips a canceled FIFO waiter", async () => {
     vi.useFakeTimers();
     const pool = createMockPoolClient([{ ok: true }]);
     let grantReservation: (reserved: typeof pool.reserved) => void = () =>
@@ -184,32 +184,59 @@ describe("database pool acquisition", () => {
     const pendingReservation = new Promise<typeof pool.reserved>((resolve) => {
       grantReservation = resolve;
     });
-    pool.pg.reserve.mockImplementation(() => pendingReservation);
+    pool.pg.reserve
+      .mockImplementationOnce(() => pendingReservation)
+      .mockImplementationOnce(() => Promise.resolve(pool.reserved));
     vi.doMock("postgres", () => ({ default: vi.fn(() => pool.pg) }));
     vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
-    vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "1000");
+    vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "1");
+    vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "500");
     vi.resetModules();
 
     try {
       const isolatedClient = await import("@/lib/db/client");
-      const query = isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
-        isolatedClient.getSql()`SELECT 1`,
+      const firstQuery = isolatedClient.runWithDatabaseTenantScope(
+        "tenant-a",
+        () => isolatedClient.getSql()`SELECT 1`,
       );
-      const rejection = expect(query).rejects.toMatchObject({
+      const firstRejection = expect(firstQuery).rejects.toMatchObject({
         code: "DATABASE_ACQUIRE_TIMEOUT",
-        message: "Database connection acquisition timed out after 1000ms.",
+        message: "Database connection acquisition timed out after 500ms.",
       });
+      await vi.advanceTimersByTimeAsync(0);
 
-      await vi.advanceTimersByTimeAsync(1_000);
-      await rejection;
+      const canceledQuery = isolatedClient.runWithDatabaseTenantScope(
+        "tenant-a",
+        () => isolatedClient.getSql()`SELECT 2`,
+      );
+      const canceledRejection = expect(canceledQuery).rejects.toMatchObject({
+        code: "DATABASE_ACQUIRE_TIMEOUT",
+      });
+      await vi.advanceTimersByTimeAsync(250);
+
+      const succeedingQuery = isolatedClient.runWithDatabaseTenantScope(
+        "tenant-a",
+        () => isolatedClient.getSql()`SELECT 3`,
+      );
+
+      await vi.advanceTimersByTimeAsync(250);
+      await Promise.all([firstRejection, canceledRejection]);
+      expect(pool.pg.reserve).toHaveBeenCalledOnce();
       expect(pool.statements).toEqual([]);
       expect(pool.reserved.release).not.toHaveBeenCalled();
 
+      await vi.advanceTimersByTimeAsync(100);
       grantReservation(pool.reserved);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(pool.statements).toEqual([]);
-      expect(pool.reserved.release).toHaveBeenCalledOnce();
+      await expect(succeedingQuery).resolves.toEqual([{ ok: true }]);
+
+      expect(pool.pg.reserve).toHaveBeenCalledTimes(2);
+      expect(statementKinds(pool.statements)).toEqual([
+        "BEGIN",
+        "SCOPE",
+        "QUERY",
+        "COMMIT",
+      ]);
+      expect(pool.reserved.release).toHaveBeenCalledTimes(2);
     } finally {
       vi.doUnmock("postgres");
       vi.unstubAllEnvs();
