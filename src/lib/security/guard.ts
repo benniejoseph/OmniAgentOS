@@ -50,6 +50,16 @@ export async function authorizeRequest({
       throw error;
     }
 
+    // Release security probes deliberately exercise protected routes without
+    // credentials. Once their synthetic marker has been verified, the ordinary
+    // "Authentication required" response is already the expected evidence;
+    // synchronously persisting a redundant denial would make that 401 depend on
+    // database availability. Other synthetic failures and all real-user
+    // failures still take the durable observability path below.
+    if (isExpectedSyntheticAuthenticationDenial(request, error)) {
+      throw error;
+    }
+
     await measureRequestStage("audit", () =>
       recordSecurityEventSafely({
         request,
@@ -253,6 +263,17 @@ function isVerifiedSyntheticRequest(request: Request) {
   const expected = process.env.OMNIAGENT_INTERNAL_AUTH_SECRET?.trim();
   const provided = request.headers.get("x-omni-synthetic-auth")?.trim();
   return Boolean(expected && provided && expected === provided);
+}
+
+function isExpectedSyntheticAuthenticationDenial(
+  request: Request,
+  error: SecurityPolicyError,
+) {
+  return (
+    error.status === 401 &&
+    error.message === "Authentication required." &&
+    isVerifiedSyntheticRequest(request)
+  );
 }
 
 function allowedReadAuditSampleRate() {
