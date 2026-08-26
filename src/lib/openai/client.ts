@@ -1,6 +1,12 @@
 import OpenAI from "openai";
 import type { ResponseFormatTextJSONSchemaConfig } from "openai/resources/responses/responses";
-import { AGENT_MODEL, EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, hasOpenAIKey } from "@/lib/config";
+import {
+  AGENT_MODEL,
+  EMBEDDING_DIMENSIONS,
+  EMBEDDING_MODEL,
+  getOpenAIGatewayConfig,
+  hasOpenAIKey,
+} from "@/lib/config";
 import { estimateModelCostUsd, type ModelUsage } from "@/lib/openai/model-router";
 
 let client: OpenAI | null = null;
@@ -31,8 +37,17 @@ export function getOpenAIClient() {
   }
 
   if (!client) {
+    const gateway = getOpenAIGatewayConfig();
     client = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
+      ...(gateway
+        ? {
+            baseURL: gateway.baseURL,
+            defaultHeaders: {
+              "x-asael-gateway-token": gateway.token,
+            },
+          }
+        : {}),
     });
     const createResponse = client.responses.create.bind(client.responses);
     client.responses.create = ((body, options) =>

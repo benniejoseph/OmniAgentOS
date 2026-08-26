@@ -1,6 +1,6 @@
-# Deployment (Vercel + Neon)
+# Deployment (Vercel + Supabase + Fly)
 
-Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the worker image. The expected topology is a Next.js web deployment, TLS-enabled Postgres with pgvector, and one or more dedicated workers. The daily Vercel cron remains only a backstop.
+Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the worker image. Vercel Functions run in Singapore (`sin1`) beside the existing Supabase Singapore Postgres project; the existing Fly application remains in US Ashburn (`iad`) and provides both the durable worker and bounded OpenAI US egress gateway. This topology adds no service: static assets remain globally cached, database traffic stays regional, and only OpenAI traffic crosses to the existing US Fly machine. The daily Vercel cron remains only a backstop.
 
 ## Required production configuration
 
@@ -10,6 +10,9 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_MAINTENANCE_DATABASE_URL`: the same logical database through a dedicated non-superuser role with `BYPASSRLS`. All-tenant worker and retention operations fail closed without it.
 - `OMNIAGENT_BACKUP_DATABASE_URL`: the same logical database through a separate non-superuser `BYPASSRLS` backup role.
 - `OPENAI_API_KEY`: required for live agent, embedding, and web-search calls. Without it, responses are simulated.
+- `OMNIAGENT_OPENAI_GATEWAY_URL`: required for the `sin1` topology and pinned to `https://omniagent-os-worker.fly.dev/v1`. An explicit `:443` and one trailing slash canonicalize to that value; alternate hosts, ports, paths, credentials, query strings, and fragments fail closed.
+- `OMNIAGENT_OPENAI_GATEWAY_TOKEN`: an independent URL-safe 32-256 character secret stored with the same value in Vercel and Fly. Proxy routes require it; it is never returned in release evidence.
+- `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN`: optional Fly-only overlap secret during a token rotation. When present it must independently be URL-safe, 32-256 characters, and different from the primary token. Never set it on Vercel.
 - `CRON_SECRET`: authenticates the scheduled `/api/workflows/tick` backstop.
 - `OMNIAGENT_INTERNAL_AUTH_SECRET`: shared by the worker and production smoke runner. Generate an independent high-entropy value.
 - `OMNIAGENT_BOOTSTRAP_EMAIL` and `OMNIAGENT_BOOTSTRAP_PASSWORD`: required before first auth-store access. Confirm the persisted admin, then rotate or remove bootstrap credentials.
@@ -17,14 +20,14 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_ACCESS_REQUEST_FILE`: optional durable fallback path for local/non-database deployments. With `DATABASE_URL`, access requests are tenant-scoped in Postgres and appear in the admin Inbox for review.
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. It is public and build-inlined, not a secret.
 
-Production always enables auth even when `OMNIAGENT_AUTH_ENABLED=false`. Vercel forwarding headers are trusted automatically; other reverse proxies must overwrite client forwarding headers before `OMNIAGENT_TRUST_PROXY_HEADERS=true` is enabled. Do not enable `OMNIAGENT_TRUST_UNSIGNED_IDENTITY_HEADERS`, `OMNIAGENT_CONNECTOR_ALLOW_HTTP`, or `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS` in production.
+Keep `OPENAI_API_KEY` on Vercel and inject it temporarily into the trusted release shell for the bounded paid provider probe; never store it on Fly. The gateway validates `x-asael-gateway-token` and forwards the caller's existing OpenAI `Authorization` header, so Fly does not need or store a second copy of the OpenAI key. Production always enables auth even when `OMNIAGENT_AUTH_ENABLED=false`. Vercel forwarding headers are trusted automatically; other reverse proxies must overwrite client forwarding headers before `OMNIAGENT_TRUST_PROXY_HEADERS=true` is enabled. Do not enable `OMNIAGENT_TRUST_UNSIGNED_IDENTITY_HEADERS`, `OMNIAGENT_CONNECTOR_ALLOW_HTTP`, or `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS` in production.
 
 ## Supported configuration
 
 `.env.example` is the complete copyable reference. Runtime groups are:
 
-- Models and retrieval: `OPENAI_AGENT_MODEL`, `OPENAI_WEB_SEARCH_MODEL`, `OPENAI_EMBEDDING_MODEL`, `OPENAI_EMBEDDING_DIMENSIONS`, and `OMNIAGENT_WEB_SEARCH_TIMEOUT_MS`.
-- Database reads: `OMNIAGENT_DATABASE_POOL_MAX` bounds each process's runtime and maintenance pools. Production defaults to 4 so overlapping requests cannot be starved by a long workflow tick; size it against the upstream pooler's connection budget. `OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS` bounds the cancellable application admission queue plus postgres.js pool-slot reservation for every tenant- and system-scoped query or callback transaction (20s by default, clamped to 0.5-30s). The 20s default accommodates the observed cold IAD-to-Singapore connection while remaining below the 30s consequential-route ceiling; warm requests do not wait for this deadline. Admission waiters that time out never enter postgres.js, and a late reservation retains its bounded permit until the connection is released, preventing ghost reservations from poisoning a warm instance. Every tenant- and system-scoped transaction applies `OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS` (15s by default, clamped to 1-60s) and `OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS` (1s by default, clamped to 0.1-10s and never above the statement timeout) on the database server, bounding server-side statement execution and lock acquisition after a connection is leased. Request/platform deadlines remain responsible for other transport waits. `OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS` is the production migration-marker verification watchdog and resets timed-out checks so later requests can retry. `OMNIAGENT_SETTINGS_CAPABILITY_TIMEOUT_MS` bounds the tenant-scoped Settings response and returns explicit unavailable fields when the database misses that deadline; `OMNIAGENT_SETTINGS_CAPABILITY_STATEMENT_TIMEOUT_MS` may lower the shared database deadline for the aggregate query. `OMNIAGENT_TODAY_SNAPSHOT_STATEMENT_TIMEOUT_MS` provides the same shorter override for the single owner-scoped Today projection query.
+- Models and retrieval: `OPENAI_AGENT_MODEL`, `OPENAI_WEB_SEARCH_MODEL`, `OPENAI_EMBEDDING_MODEL`, `OPENAI_EMBEDDING_DIMENSIONS`, `OMNIAGENT_OPENAI_GATEWAY_URL`, `OMNIAGENT_OPENAI_GATEWAY_TOKEN`, optional Fly-only `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN`, `OMNIAGENT_OPENAI_GATEWAY_HEALTH_TIMEOUT_MS`, and `OMNIAGENT_WEB_SEARCH_TIMEOUT_MS`.
+- Database reads: `OMNIAGENT_DATABASE_POOL_MAX` bounds each process's runtime and maintenance pools. Production defaults to 4 so overlapping requests cannot be starved by a long workflow tick; size it against the upstream pooler's connection budget. `OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS` bounds the cancellable application admission queue plus postgres.js pool-slot reservation for every tenant- and system-scoped query or callback transaction (20s by default, clamped to 0.5-30s). The 20s ceiling remains a rollback-safe bound from the former IAD-to-Singapore topology; warm requests do not wait for it. An independent `sin1` canary completed the security and tenant-scoped connector/workflow CRUD checks with a 15.7ms database `Server-Timing` sample, validating the regional direction while remaining too small a sample to justify lowering the rollback bound. Re-baseline it only after sustained production measurements prove a tighter safe value. Admission waiters that time out never enter postgres.js, and a late reservation retains its bounded permit until the connection is released, preventing ghost reservations from poisoning a warm instance. Every tenant- and system-scoped transaction applies `OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS` (15s by default, clamped to 1-60s) and `OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS` (1s by default, clamped to 0.1-10s and never above the statement timeout) on the database server, bounding server-side statement execution and lock acquisition after a connection is leased. Request/platform deadlines remain responsible for other transport waits. `OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS` is the production migration-marker verification watchdog and resets timed-out checks so later requests can retry. `OMNIAGENT_SETTINGS_CAPABILITY_TIMEOUT_MS` bounds the tenant-scoped Settings response and returns explicit unavailable fields when the database misses that deadline; `OMNIAGENT_SETTINGS_CAPABILITY_STATEMENT_TIMEOUT_MS` may lower the shared database deadline for the aggregate query. `OMNIAGENT_TODAY_SNAPSHOT_STATEMENT_TIMEOUT_MS` provides the same shorter override for the single owner-scoped Today projection query.
 - Agent limits: `OMNIAGENT_AGENT_MAX_TOOL_STEPS`, `OMNIAGENT_AGENT_MAX_MESSAGE_CHARS`, `OMNIAGENT_AGENT_MAX_MESSAGES`, `OMNIAGENT_AGENT_RUNS_PER_MINUTE`, `OMNIAGENT_AGENT_REASONING_EFFORT`, and `OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS`.
 - Workflow limits: `OMNIAGENT_QUEUE_LEASE_SECONDS`, `OMNIAGENT_WORKFLOW_DRAIN_LIMIT`, `OMNIAGENT_WORKFLOW_PLANNER_TIMEOUT_MS`, and `OMNIAGENT_WORKFLOW_EXECUTOR_TIMEOUT_MS`.
 - Identity: `OMNIAGENT_DEFAULT_TENANT`, `OMNIAGENT_DEFAULT_ACTOR`, `OMNIAGENT_DEFAULT_ROLE`, `OMNIAGENT_SESSION_DAYS`, bootstrap name/tenant, and auth mode.
@@ -81,17 +84,91 @@ npm run start
 npm run worker
 ```
 
-The Fly worker image is pinned to Node 24.13.0, contains only the worker script, and runs as the non-root `node` user. Every successful queue tick updates an owner-only heartbeat; the container health check fails when that heartbeat is stale, so a healthy web app cannot mask a wedged worker. `fly.toml` contains only non-secret settings; configure `OMNIAGENT_INTERNAL_AUTH_SECRET` with `fly secrets`.
+The Fly image is pinned to Node 24.13.0 and runs as the non-root `node` user. It hosts the worker and the small OpenAI egress gateway in the existing 256 MB machine. Every successful queue tick updates an owner-only heartbeat; the container health check fails when that heartbeat is stale, so a healthy gateway cannot mask a wedged worker. `fly.toml` contains only non-secret settings; configure `OMNIAGENT_INTERNAL_AUTH_SECRET` and gateway tokens with Fly secrets.
 
-Worker routes fence mutations by `OMNIAGENT_WORKER_PROTOCOL_VERSION`. The Git revision remains in heartbeat and request metadata for diagnostics, but compatible worker and web revisions can deploy independently. Use the paired deployment command from a completely clean working tree. Before changing either platform, it validates the production URL and smoke credentials and captures the current Fly image and Vercel deployment for rollback. It verifies the release, creates an unpromoted production-target Vercel deployment, points the newly deployed Fly worker at that exact canary, runs production smoke plus API and browser dashboard budgets, and only then promotes the canary. This ordering also provides a safe first cutover from revision-fenced workers to protocol-fenced workers. A failed gate restores the previous worker image; a failed post-promotion check restores both releases.
+Perform the gateway secret setup once. Generate a fresh token in memory, stage it on Fly through stdin, send the identical value to Vercel through stdin as a sensitive production variable, and then unset it. Do not configure a previous token for the initial release. The commands themselves contain no secret value:
+
+```bash
+gateway_token="$(openssl rand -hex 32)"
+printf 'OMNIAGENT_OPENAI_GATEWAY_TOKEN=%s\n' "$gateway_token" |
+  fly secrets import --app omniagent-os-worker --stage
+printf '%s' "$gateway_token" |
+  vercel env add OMNIAGENT_OPENAI_GATEWAY_TOKEN production --sensitive --force --scope benniejosephs-projects
+# Save gateway_token in the owner's password manager before this line.
+unset gateway_token
+
+printf '%s\n' 'https://omniagent-os-worker.fly.dev/v1' |
+  vercel env add OMNIAGENT_OPENAI_GATEWAY_URL production --force --scope benniejosephs-projects
+```
+
+Store that generated token in the owner's password manager at the marked line before unsetting it. Vercel intentionally does not return `--sensitive` values through `vercel env pull` or `vercel env run`, while the paired release runner needs the token locally to validate the complete `sin1` configuration and send the shared header without printing it. For a normal release, load only the active token. `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN` must be absent; the release runner stages removal of any obsolete Fly overlap secret. Always unset the variables afterward:
+
+```bash
+printf 'Gateway token: '
+IFS= read -r -s gateway_token
+printf '\n'
+export OMNIAGENT_OPENAI_GATEWAY_TOKEN="$gateway_token"
+export OMNIAGENT_OPENAI_GATEWAY_URL='https://omniagent-os-worker.fly.dev/v1'
+unset OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN
+npm run deploy:production
+unset OMNIAGENT_OPENAI_GATEWAY_TOKEN OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN OMNIAGENT_OPENAI_GATEWAY_URL gateway_token
+```
+
+For the first gateway rollout only, also export
+`OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER=CONFIRMED`. This explicit flag skips
+the impossible prior-gateway check because the currently promoted release still
+uses direct OpenAI access. If that rollout fails, the runner uses
+`fly.initial-cutover-rollback.toml` to restore the previous service-free worker
+image after restoring the previous Vercel release. The flag is rejected during
+a token rotation and must be unset immediately after the first successful
+rollout. It must never be configured as a persistent Vercel or Fly variable.
+
+Do not place either token in `.env`, a command argument, shell history, CI output, or `BASE_URL`. The release runner sends Fly secret values only over suppressed stdin; values are never put in a subprocess argument or diagnostic. Supply `OPENAI_API_KEY` from the owner's secret manager to the same release process without writing it to a file or command argument. This remains compatible with Vercel's non-exportable sensitive-variable behavior without weakening the stored variable to a readable value.
+
+Do not set `OPENAI_API_KEY` on Fly. `/healthz` is the intentionally minimal, non-sensitive Fly liveness route and returns only status, service, Fly region, release revision, and gateway protocol. `/v1/*` proxy requests require `x-asael-gateway-token` plus the OpenAI `Authorization` header supplied by Vercel. Gateway readiness also calls the allowlisted model-readiness path without an OpenAI Authorization header: HTTP 400 proves that the supplied gateway token reached the authorization boundary without making an upstream or paid request.
+
+### Two-phase gateway token rotation
+
+Use an overlap release; never replace the Fly primary token before the new Vercel deployment exists:
+
+1. Retrieve the token embedded in the currently promoted Vercel deployment from the owner's password manager and keep it as the rollback token.
+2. Generate and save a distinct candidate token. Update only Vercel's sensitive production `OMNIAGENT_OPENAI_GATEWAY_TOKEN`; existing deployments retain their original environment snapshot.
+3. In the release shell, set the candidate as primary and the currently promoted token as previous:
+
+   ```bash
+   export OMNIAGENT_OPENAI_GATEWAY_TOKEN="$candidate_gateway_token"
+   export OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN="$rollback_gateway_token"
+   export OMNIAGENT_OPENAI_GATEWAY_URL='https://omniagent-os-worker.fly.dev/v1'
+   npm run deploy:production
+   unset OMNIAGENT_OPENAI_GATEWAY_TOKEN OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN OMNIAGENT_OPENAI_GATEWAY_URL candidate_gateway_token rollback_gateway_token
+   ```
+
+4. The release runner stages both Fly secrets via stdin, deploys the candidate worker, and authenticates both tokens before staged smoke, promotion, and canonical smoke. The prior Vercel deployment therefore remains usable throughout promotion.
+5. If rollback is required, the runner first promotes the prior Vercel deployment while Fly still accepts its token, swaps the Fly secrets so that rollback becomes primary and candidate becomes previous, restores the prior worker image, and authenticates the restored web/gateway revision pair before smoke preflight.
+6. Retain both password-manager entries through the rollback window. On the next successful non-rotation release, omit `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN`; the runner stages its removal before deploying. Do not retire it manually between the paired release stages.
+
+Worker routes fence mutations by `OMNIAGENT_WORKER_PROTOCOL_VERSION`. The Git revision remains in heartbeat and request metadata for diagnostics, but compatible worker and web revisions can deploy independently. Use the paired deployment command from a completely clean working tree. Before changing either platform, it validates the production URL, smoke credentials, pinned gateway origin, token formats, OpenAI probe key, and current rollback-token reachability; it also captures the current Fly image and Vercel deployment for rollback. It verifies the release, creates an unpromoted production-target Vercel deployment, stages the primary/previous Fly token set, and uses Fly's blue/green strategy plus the `/healthz` service check so the existing gateway stays routable until the candidate is healthy. The candidate worker targets the exact web canary while retaining the canonical URL for a revision-gated switch. The runner polls `/healthz` until service `asael-openai-egress`, Fly region `iad`, the exact release revision, and protocol `1` all match. It separately authenticates each configured token without an OpenAI request, then performs one bounded, stateless paid Responses API sentinel (`store: false`, at most 16 output tokens) through the primary token. Only after these checks does it run production smoke plus API and browser dashboard budgets. After Vercel promotion it sends the worker a targeted `SIGHUP`; the worker verifies canonical health/revision and moves every lane in place without restarting the co-hosted gateway. The canonical target is also recovered revision-safely after a later process restart. Gateway authentication and the paid sentinel repeat after that rebind; rollback repeats the token-pair check without spending on another model call. A failed staged gate restores the previous worker image and primary token without exposing the web release; a failed post-promotion check restores both releases and verifies the restored gateway pairing.
 
 ```bash
 npm run deploy:production
 ```
 
 Set `BASE_URL` to the canonical production HTTPS origin and provide the smoke
-credentials, internal secret, and `RELEASE_EVIDENCE_OUTPUT` described below.
-The paired deployment waits 75 seconds after each Fly restart by default
+credentials, internal secret, pinned gateway URL, active token, optional
+rotation-only previous token, `OPENAI_API_KEY`, and `RELEASE_EVIDENCE_OUTPUT`
+described below. `vercel.json` is authoritative for the `sin1` function region;
+the release preflight fails closed when that topology lacks either gateway value.
+Gateway readiness defaults to a 120-second total deadline, one-second polling,
+and five-second request deadline; the bounded overrides are
+`OMNIAGENT_DEPLOY_GATEWAY_READINESS_TIMEOUT_MS`,
+`OMNIAGENT_DEPLOY_GATEWAY_READINESS_POLL_MS`, and
+`OMNIAGENT_DEPLOY_GATEWAY_READINESS_REQUEST_TIMEOUT_MS`.
+The paid sentinel defaults to model `gpt-4o-mini` and a 60-second deadline;
+override them with `OMNIAGENT_DEPLOY_OPENAI_SMOKE_MODEL` and
+`OMNIAGENT_DEPLOY_PAID_INFERENCE_TIMEOUT_MS` only when the reviewed provider
+configuration requires it.
+The paired deployment waits 75 seconds after the staged Fly replacement and
+again after the in-place canonical target switch by default
 (`OMNIAGENT_DEPLOY_WORKER_STARTUP_SETTLE_MS`) so the staggered fast,
 background, and maintenance startup registrations are visible before the
 target-specific release gate runs.
@@ -131,6 +208,7 @@ Expected production state is:
 - protected APIs reject anonymous access;
 - the smoke administrator can authenticate and receives secure cookie attributes;
 - internal smoke auth is configured;
+- the OpenAI egress gateway is safely configured, reachable in `iad`, and matches the web release revision and gateway protocol;
 - database tenant isolation and the latest tenant-isolation evaluation pass;
 - observability SLO and report-signing gates pass;
 - the release gate reports `passed` and `approved: true`.
