@@ -88,7 +88,11 @@ describe("frontend performance budgets", () => {
       dashboardUsableMs: 1_500,
       releaseDashboardUsableMs: 2_500,
       releaseDashboardMaxMs: 5_000,
-      releaseDashboardFirstLoadMs: 4_000,
+      releaseDashboardFirstLoadTargetMs: 4_000,
+      releaseDashboardFirstLoadMs: 5_000,
+      releaseDashboardFirstResponseMs: 2_000,
+      releaseDashboardFirstPostResponseReadyMs: 3_500,
+      releaseDashboardRecoveryMs: 2_500,
       firstSseStatusMs: 1_000,
       completionVisibilityMs: 1_000,
       workflowPickupP95Ms: 10_000,
@@ -158,12 +162,29 @@ describe("frontend performance budgets", () => {
     expect(dashboardBenchmark).toContain("budgets.releaseDashboardUsableMs");
     expect(dashboardBenchmark).toContain("budgets.releaseDashboardMaxMs");
     expect(dashboardBenchmark).toContain("budgets.releaseDashboardFirstLoadMs");
+    expect(dashboardBenchmark).toContain(
+      "budgets.releaseDashboardFirstLoadTargetMs",
+    );
+    expect(dashboardBenchmark).toContain(
+      "budgets.releaseDashboardFirstResponseMs",
+    );
+    expect(dashboardBenchmark).toContain(
+      "budgets.releaseDashboardFirstPostResponseReadyMs",
+    );
+    expect(dashboardBenchmark).toContain("budgets.releaseDashboardRecoveryMs");
     expect(dashboardBenchmark).toContain("budgets.dashboardUsableMs");
     expect(dashboardBenchmark).toContain("budgets.authenticatedReadP95Ms");
     expect(dashboardBenchmark).toContain("BENCHMARK_BROWSER_SAMPLES");
     expect(dashboardBenchmark).toContain("Math.max(requestedSamples, 20)");
     expect(dashboardBenchmark).toContain("BENCHMARK_BROWSER_WARMUPS");
+    expect(dashboardBenchmark).toContain(
+      "enforce && requestedWarmups !== 2",
+    );
     expect(dashboardBenchmark).toContain("const firstLoad = await measureDashboard(page)");
+    expect(dashboardBenchmark).toContain(
+      "const warmup = await measureDashboard(page)",
+    );
+    expect(dashboardBenchmark).toContain("recoveryLoad = warmup");
     expect(dashboardBenchmark).toContain('data-hydrated="true"');
     expect(dashboardBenchmark).toContain("performance.getEntriesByType");
     expect(dashboardBenchmark).toContain("documentResponseMs");

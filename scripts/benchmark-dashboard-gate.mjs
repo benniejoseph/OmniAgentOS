@@ -5,12 +5,17 @@
  */
 export function evaluateDashboardReleaseGate({
   firstLoad,
+  recoveryLoad,
   hotMeasurements,
   warmups,
   minimumSamples,
   budgets,
 }) {
   const normalizedFirstLoad = normalizeMeasurement(firstLoad, "first load");
+  const normalizedRecoveryLoad = normalizeMeasurement(
+    recoveryLoad,
+    "recovery load",
+  );
   const normalizedHotMeasurements = hotMeasurements.map((measurement, index) =>
     normalizeMeasurement(measurement, `hot sample ${index + 1}`),
   );
@@ -19,11 +24,21 @@ export function evaluateDashboardReleaseGate({
   }
 
   const normalizedWarmups = positiveInteger(warmups, "warmups");
+  if (normalizedWarmups < 2) {
+    throw new Error(
+      "Dashboard release gate requires at least two warmups so recovery is measured.",
+    );
+  }
   const normalizedMinimumSamples = positiveInteger(
     minimumSamples,
     "minimumSamples",
   );
   const normalizedBudgets = normalizeBudgets(budgets);
+  if (normalizedBudgets.firstLoadTargetMs > normalizedBudgets.firstLoadMs) {
+    throw new Error(
+      "Dashboard first-load optimization target cannot exceed its release ceiling.",
+    );
+  }
   const hotDurationsMs = normalizedHotMeasurements.map(
     (measurement) => measurement.durationMs,
   );
@@ -41,9 +56,27 @@ export function evaluateDashboardReleaseGate({
   const documentP95Ms = nearestRankPercentile(documentDurationsMs, 0.95);
   const documentMaxMs = Math.ceil(Math.max(...documentDurationsMs));
   const firstLoadMs = Math.ceil(normalizedFirstLoad.durationMs);
+  const firstResponseMs = Math.ceil(normalizedFirstLoad.documentResponseMs);
+  if (
+    normalizedFirstLoad.documentResponseMs > normalizedFirstLoad.durationMs
+  ) {
+    throw new Error(
+      "Dashboard first-load response time cannot exceed its usable duration.",
+    );
+  }
+  const firstPostResponseReadyMs = Math.ceil(
+    normalizedFirstLoad.durationMs - normalizedFirstLoad.documentResponseMs,
+  );
+  const recoveryLoadMs = Math.ceil(normalizedRecoveryLoad.durationMs);
+  const firstLoadTargetMet =
+    firstLoadMs <= normalizedBudgets.firstLoadTargetMs;
   const checks = {
     sampleCount: normalizedHotMeasurements.length >= normalizedMinimumSamples,
     firstLoad: firstLoadMs <= normalizedBudgets.firstLoadMs,
+    firstResponse: firstResponseMs <= normalizedBudgets.firstResponseMs,
+    firstPostResponseReady:
+      firstPostResponseReadyMs <= normalizedBudgets.firstPostResponseReadyMs,
+    recoveryLoad: recoveryLoadMs <= normalizedBudgets.recoveryLoadMs,
     hotP50: p50Ms <= normalizedBudgets.hotP50Ms,
     hotP95: p95Ms <= normalizedBudgets.hotP95Ms,
     hotMax: maxMs <= normalizedBudgets.hotMaxMs,
@@ -62,6 +95,11 @@ export function evaluateDashboardReleaseGate({
     warmups: normalizedWarmups,
     firstLoad: normalizedFirstLoad,
     firstLoadMs,
+    firstLoadTargetMet,
+    firstResponseMs,
+    firstPostResponseReadyMs,
+    recoveryLoad: normalizedRecoveryLoad,
+    recoveryLoadMs,
     hotDurationsMs,
     documentDurationsMs,
     serverDurationsMs,
@@ -139,7 +177,23 @@ function normalizeBudgets(budgets) {
     throw new Error("Dashboard release budgets are required.");
   }
   return {
+    firstLoadTargetMs: finiteNonNegative(
+      budgets.firstLoadTargetMs,
+      "first-load target",
+    ),
     firstLoadMs: finiteNonNegative(budgets.firstLoadMs, "first-load budget"),
+    firstResponseMs: finiteNonNegative(
+      budgets.firstResponseMs,
+      "first-response budget",
+    ),
+    firstPostResponseReadyMs: finiteNonNegative(
+      budgets.firstPostResponseReadyMs,
+      "first post-response-ready budget",
+    ),
+    recoveryLoadMs: finiteNonNegative(
+      budgets.recoveryLoadMs,
+      "recovery-load budget",
+    ),
     hotP50Ms: finiteNonNegative(budgets.hotP50Ms, "hot p50 budget"),
     hotP95Ms: finiteNonNegative(budgets.hotP95Ms, "hot p95 budget"),
     hotMaxMs: finiteNonNegative(budgets.hotMaxMs, "hot max budget"),

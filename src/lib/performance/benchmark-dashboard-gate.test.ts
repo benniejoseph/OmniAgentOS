@@ -5,7 +5,11 @@ import {
 } from "../../../scripts/benchmark-dashboard-gate.mjs";
 
 const budgets = {
-  firstLoadMs: 4_000,
+  firstLoadTargetMs: 4_000,
+  firstLoadMs: 5_000,
+  firstResponseMs: 2_000,
+  firstPostResponseReadyMs: 3_500,
+  recoveryLoadMs: 2_500,
   hotP50Ms: 1_500,
   hotP95Ms: 2_500,
   hotMaxMs: 5_000,
@@ -26,6 +30,7 @@ describe("dashboard release gate", () => {
   it("fails a catastrophic maximum even when hot p50 and p95 pass", () => {
     const result = evaluateDashboardReleaseGate({
       firstLoad: measurement(2_000, 300),
+      recoveryLoad: measurement(1_100, 300),
       hotMeasurements: [
         ...Array.from({ length: 19 }, () => measurement(1_000, 300)),
         measurement(6_000, 300),
@@ -46,9 +51,10 @@ describe("dashboard release gate", () => {
     expect(result.passed).toBe(false);
   });
 
-  it("fails an over-budget first load despite healthy hot samples", () => {
+  it("fails an over-ceiling first load despite healthy hot samples", () => {
     const result = evaluateDashboardReleaseGate({
-      firstLoad: measurement(4_001, 300),
+      firstLoad: measurement(5_001, 1_600),
+      recoveryLoad: measurement(1_100, 300),
       hotMeasurements: healthyMeasurements(),
       warmups: 2,
       minimumSamples: 20,
@@ -63,6 +69,7 @@ describe("dashboard release gate", () => {
   it("enforces the warm p50 independently from the looser p95 and max", () => {
     const result = evaluateDashboardReleaseGate({
       firstLoad: measurement(2_000, 300),
+      recoveryLoad: measurement(1_100, 300),
       hotMeasurements: [
         ...Array.from({ length: 9 }, () => measurement(1_000, 300)),
         ...Array.from({ length: 11 }, () => measurement(1_600, 300)),
@@ -84,6 +91,7 @@ describe("dashboard release gate", () => {
   it("requires every hot sample to meet the document-response p95 gate", () => {
     const result = evaluateDashboardReleaseGate({
       firstLoad: measurement(2_000, 300),
+      recoveryLoad: measurement(1_100, 300),
       hotMeasurements: Array.from({ length: 20 }, () =>
         measurement(1_000, 501),
       ),
@@ -106,6 +114,7 @@ describe("dashboard release gate", () => {
     expect(() =>
       evaluateDashboardReleaseGate({
         firstLoad: measurement(2_000, 300),
+        recoveryLoad: measurement(1_100, 300),
         hotMeasurements: [missingDocumentTiming, ...samples.slice(1)],
         warmups: 2,
         minimumSamples: 20,
@@ -117,6 +126,7 @@ describe("dashboard release gate", () => {
   it("reports partial Server-Timing coverage without using it as a gate", () => {
     const result = evaluateDashboardReleaseGate({
       firstLoad: measurement(2_000, 300),
+      recoveryLoad: measurement(1_100, 300),
       hotMeasurements: Array.from({ length: 20 }, (_, index) =>
         measurement(1_000, 300, index < 10 ? 200 : undefined),
       ),
@@ -144,6 +154,7 @@ describe("dashboard release gate", () => {
   it("fails closed when an enforced run contains fewer than 20 hot samples", () => {
     const result = evaluateDashboardReleaseGate({
       firstLoad: measurement(2_000, 300),
+      recoveryLoad: measurement(1_100, 300),
       hotMeasurements: healthyMeasurements().slice(0, 19),
       warmups: 2,
       minimumSamples: 20,
@@ -151,6 +162,59 @@ describe("dashboard release gate", () => {
     });
 
     expect(result.checks.sampleCount).toBe(false);
+    expect(result.passed).toBe(false);
+  });
+
+  it("passes the observed cold outlier with a visible target warning", () => {
+    const result = evaluateDashboardReleaseGate({
+      firstLoad: measurement(4_681, 1_549.9),
+      recoveryLoad: measurement(900, 300),
+      hotMeasurements: healthyMeasurements(),
+      warmups: 2,
+      minimumSamples: 20,
+      budgets,
+    });
+
+    expect(result).toMatchObject({
+      firstLoadMs: 4_681,
+      firstLoadTargetMet: false,
+      firstResponseMs: 1_550,
+      firstPostResponseReadyMs: 3_132,
+      recoveryLoadMs: 900,
+      passed: true,
+    });
+  });
+
+  it.each([
+    {
+      label: "first response",
+      firstLoad: measurement(3_000, 2_001),
+      recoveryLoad: measurement(900, 300),
+      check: "firstResponse" as const,
+    },
+    {
+      label: "first post-response readiness",
+      firstLoad: measurement(4_500, 999),
+      recoveryLoad: measurement(900, 300),
+      check: "firstPostResponseReady" as const,
+    },
+    {
+      label: "recovery",
+      firstLoad: measurement(3_000, 1_000),
+      recoveryLoad: measurement(2_501, 300),
+      check: "recoveryLoad" as const,
+    },
+  ])("fails an independent $label regression", ({ firstLoad, recoveryLoad, check }) => {
+    const result = evaluateDashboardReleaseGate({
+      firstLoad,
+      recoveryLoad,
+      hotMeasurements: healthyMeasurements(),
+      warmups: 2,
+      minimumSamples: 20,
+      budgets,
+    });
+
+    expect(result.checks[check]).toBe(false);
     expect(result.passed).toBe(false);
   });
 });
