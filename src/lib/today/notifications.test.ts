@@ -4,6 +4,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { updateTodayPreferences } from "@/lib/today/briefs";
 import {
+  getNotificationCenter,
   isQuietHoursActive,
   listNotifications,
   processDueNotifications,
@@ -65,6 +66,41 @@ describe("personal notification center", () => {
       tenantId: "personal", actorId: "owner", now: new Date("2026-08-25T09:15:00.000Z"),
     });
     expect((await listNotifications(10, { tenantId: "personal", actorId: "owner" }))[0]).toMatchObject({ status: "unread", urgency: "overdue" });
+  });
+
+  it("keeps interactive notification reads separate from reminder generation", async () => {
+    await updateTodayPreferences({
+      timezone: "UTC",
+      quietHoursEnabled: false,
+      notificationsEnabled: true,
+      reminderLeadMinutes: 30,
+    }, { tenantId: "personal", actorId: "owner" });
+    await createTodayItem({
+      tenantId: "personal",
+      actorId: "owner",
+      title: "Prepare the daily review",
+      kind: "reminder",
+      dueAt: "2026-08-25T09:15:00.000Z",
+    });
+    const now = new Date("2026-08-25T09:00:00.000Z");
+
+    await expect(getNotificationCenter({
+      tenantId: "personal",
+      actorId: "owner",
+      now,
+      processDue: false,
+    })).resolves.toMatchObject({ notifications: [], unreadCount: 0 });
+
+    await processDueNotifications({ tenantId: "personal", actorId: "owner", now });
+    await expect(getNotificationCenter({
+      tenantId: "personal",
+      actorId: "owner",
+      now,
+      processDue: false,
+    })).resolves.toMatchObject({
+      unreadCount: 1,
+      notifications: [expect.objectContaining({ title: "Prepare the daily review" })],
+    });
   });
 
   it("completes the underlying Today item from a notification", async () => {

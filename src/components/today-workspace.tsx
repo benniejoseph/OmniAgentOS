@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
@@ -20,6 +19,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { clsx } from "clsx";
+import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefetch-link";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { useWorkspaceReadiness } from "@/components/app-shell/use-workspace-readiness";
 import { WorkspaceReadinessCard } from "@/components/app-shell/workspace-readiness-card";
@@ -79,6 +79,7 @@ export function TodayWorkspace({
   const [dueAt, setDueAt] = useState("");
   const [announcement, setAnnouncement] = useState("Today is ready.");
   const [now, setNow] = useState<Date | null>(null);
+  const [hydrated, setHydrated] = useState(false);
   const todayRequestRef = useRef<AbortController | null>(null);
   const summaryRequestRef = useRef<AbortController | null>(null);
   const summaryRefreshRef = useRef<() => Promise<void>>(async () => undefined);
@@ -189,7 +190,10 @@ export function TodayWorkspace({
   }
 
   useEffect(() => {
-    const clockTimer = window.setTimeout(() => setNow(new Date()), 0);
+    const clockTimer = window.setTimeout(() => {
+      setNow(new Date());
+      setHydrated(true);
+    }, 0);
     const minuteTimer = window.setInterval(() => setNow(new Date()), 60_000);
     return () => {
       window.clearInterval(minuteTimer);
@@ -329,7 +333,12 @@ export function TodayWorkspace({
   }
 
   return (
-    <main className="today-shell workspace-enter" data-testid="activity-workspace" aria-busy={loading}>
+    <main
+      className="today-shell workspace-enter"
+      data-testid="activity-workspace"
+      data-hydrated={hydrated}
+      aria-busy={loading}
+    >
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
       <header className="today-brief">
