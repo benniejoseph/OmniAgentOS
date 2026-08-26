@@ -87,7 +87,11 @@ describe("paired production deployment", () => {
     expect(deployScript).toContain('"--scope", VERCEL_SCOPE');
     expect(deployScript).toContain("previousWorkerImage");
     expect(deployScript).toContain("previousVercelDeployment");
+    expect(deployScript).toContain("previousHealthRevision");
     expect(deployScript).toContain("runRollbackVerification");
+    expect(deployScript).toContain(
+      "SMOKE_EXPECTED_REVISION: expectedRevision",
+    );
     expect(deployScript).toContain("asael-release-evidence-");
     expect(deployScript).not.toContain('"cron secret"');
     expect(deployScript).toContain("SMOKE_SESSION_OUTPUT");
