@@ -63,7 +63,12 @@ const DEFAULT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS = 15_000;
 const MIN_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS = 1_000;
 const MAX_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS = 60_000;
 const DEFAULT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS = 20;
-const VERCEL_DATABASE_POOL_IDLE_TIMEOUT_SECONDS = 5;
+// Vercel may freeze a function isolate while postgres.js's JavaScript idle
+// timer is armed. When that isolate thaws after the deadline, the timer can
+// close the sole pool connection while a new reserve is being queued. Disable
+// the driver timer there and let the platform lifecycle or a connection error
+// retire the socket; durable runtimes still reap idle connections normally.
+const VERCEL_DATABASE_POOL_IDLE_TIMEOUT_SECONDS = 0;
 
 // ---------------------------------------------------------------------------
 // Public exports (unchanged API surface)
@@ -1090,6 +1095,11 @@ function createPostgresClient(databaseUrl: string, label: string) {
     ssl: databaseSslConfiguration(databaseUrl, label),
     max: getDatabasePoolMax(),
     idle_timeout: getDatabasePoolIdleTimeoutSeconds(),
+    // postgres.js implements max_lifetime with another JavaScript timer. As
+    // with idle_timeout, that timer can expire while a Vercel isolate is
+    // frozen and race the first reservation after thaw. Durable processes keep
+    // the driver's randomized default so long-lived sockets are still rotated.
+    ...(process.env.VERCEL ? { max_lifetime: null } : {}),
     connect_timeout: 10,
     // Under prepare:false (required by the pooler) the driver returns json/jsonb
     // columns as raw strings instead of parsed values. Parse them back to objects/
@@ -1254,11 +1264,14 @@ async function withReservedDatabaseTransaction<T>(
 type DatabaseAdmissionGate = {
   active: number;
   capacity: number;
+  retired: boolean;
+  retirementError?: Error;
   waiters: DatabaseAdmissionWaiter[];
 };
 
 type DatabaseAdmissionWaiter = {
   canceled: boolean;
+  fail: (error: Error) => boolean;
   grant: () => boolean;
   timer?: ReturnType<typeof setTimeout>;
 };
@@ -1286,6 +1299,7 @@ function getDatabaseAdmissionGate(pg: AnyPg): DatabaseAdmissionGate {
   const gate = {
     active: 0,
     capacity: getDatabasePoolMax(),
+    retired: false,
     waiters: [],
   } satisfies DatabaseAdmissionGate;
   databaseAdmissionGates.set(key, gate);
@@ -1307,6 +1321,14 @@ function createDatabaseAdmissionPermit(
 }
 
 function drainDatabaseAdmissionGate(gate: DatabaseAdmissionGate) {
+  if (gate.retired) {
+    const error =
+      gate.retirementError || databaseAcquireTimeoutError(getDatabaseAcquireTimeoutMs());
+    while (gate.waiters.length > 0) {
+      gate.waiters.shift()?.fail(error);
+    }
+    return;
+  }
   while (gate.active < gate.capacity && gate.waiters.length > 0) {
     const waiter = gate.waiters.shift();
     if (!waiter || waiter.canceled) continue;
@@ -1321,18 +1343,26 @@ function acquireDatabaseAdmission(
   timeoutMs: number,
 ): Promise<DatabaseAdmissionPermit> {
   const gate = getDatabaseAdmissionGate(pg);
+  if (gate.retired) {
+    return Promise.reject(
+      gate.retirementError || databaseAcquireTimeoutError(timeoutMs),
+    );
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     const waiter: DatabaseAdmissionWaiter = {
       canceled: false,
+      fail: (error) => {
+        if (settled) return false;
+        settled = true;
+        waiter.canceled = true;
+        if (waiter.timer) clearTimeout(waiter.timer);
+        reject(error);
+        return true;
+      },
       grant: () => {
         if (settled || Date.now() >= deadline) {
-          if (!settled) {
-            settled = true;
-            waiter.canceled = true;
-            if (waiter.timer) clearTimeout(waiter.timer);
-            reject(databaseAcquireTimeoutError(timeoutMs));
-          }
+          waiter.fail(databaseAcquireTimeoutError(timeoutMs));
           return false;
         }
         settled = true;
@@ -1350,12 +1380,9 @@ function acquireDatabaseAdmission(
 
     gate.waiters.push(waiter);
     waiter.timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      waiter.canceled = true;
       const waiterIndex = gate.waiters.indexOf(waiter);
       if (waiterIndex >= 0) gate.waiters.splice(waiterIndex, 1);
-      reject(databaseAcquireTimeoutError(timeoutMs));
+      waiter.fail(databaseAcquireTimeoutError(timeoutMs));
     }, Math.max(0, deadline - Date.now()));
   });
 }
@@ -1379,7 +1406,9 @@ async function reserveDatabaseConnection(pg: AnyPg): Promise<{
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(databaseAcquireTimeoutError(timeoutMs));
+      const timeoutError = databaseAcquireTimeoutError(timeoutMs);
+      retireTimedOutVercelDatabaseClient(pg, timeoutError);
+      reject(timeoutError);
     }, remainingMs);
 
     void pendingReservation.then(
@@ -1391,7 +1420,9 @@ async function reserveDatabaseConnection(pg: AnyPg): Promise<{
           if (!settled) {
             settled = true;
             clearTimeout(timer);
-            reject(databaseAcquireTimeoutError(timeoutMs));
+            const timeoutError = databaseAcquireTimeoutError(timeoutMs);
+            retireTimedOutVercelDatabaseClient(pg, timeoutError);
+            reject(timeoutError);
           }
           releaseReservedDatabaseConnection(reserved);
           admission.release();
@@ -1414,6 +1445,51 @@ async function reserveDatabaseConnection(pg: AnyPg): Promise<{
       },
     );
   });
+}
+
+function retireTimedOutVercelDatabaseClient(pg: AnyPg, error: Error) {
+  // A postgres.js reserve cannot be canceled independently. On Vercel's
+  // enforced one-slot pools, a reserve caught behind a thaw-time connection
+  // close can otherwise retain the sole admission permit indefinitely. Rotate
+  // only the exact poisoned singleton; durable and wider pools may have valid
+  // concurrent work and must never be terminated by one caller's timeout.
+  if (!process.env.VERCEL || getDatabasePoolMax() !== 1) return;
+
+  const runtimeClientTimedOut = sqlClient === pg;
+  const maintenanceClientTimedOut = maintenanceSqlClient === pg;
+  if (!runtimeClientTimedOut && !maintenanceClientTimedOut) return;
+
+  retireDatabaseAdmissionGate(pg, error);
+
+  if (runtimeClientTimedOut) {
+    sqlClient = null;
+    scopedSqlClient = null;
+    schemaReady = null;
+  }
+  if (maintenanceClientTimedOut) {
+    maintenanceSqlClient = null;
+    maintenanceScopedSqlClient = null;
+  }
+
+  try {
+    // timeout: 0 makes postgres.js destroy the old pool and reject queued
+    // reservations. Their existing rejection handlers release the admission
+    // permits; the next getSql() call builds a fresh client and gate.
+    void Promise.resolve(pg.end({ timeout: 0 })).catch(() => undefined);
+  } catch {
+    // The singleton is already detached. Preserve the acquisition-timeout
+    // error even if a mocked or damaged client throws while being retired.
+  }
+}
+
+function retireDatabaseAdmissionGate(pg: AnyPg, error: Error) {
+  const gate = databaseAdmissionGates.get(pg as object);
+  if (!gate || gate.retired) return;
+  gate.retired = true;
+  gate.retirementError = error;
+  while (gate.waiters.length > 0) {
+    gate.waiters.shift()?.fail(error);
+  }
 }
 
 function releaseReservedDatabaseConnection(reserved: AnyPg) {

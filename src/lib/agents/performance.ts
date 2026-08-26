@@ -21,10 +21,14 @@ export type AgentPerformance = {
 };
 
 export async function getAgentPerformance(tenantId?: string): Promise<AgentPerformance[]> {
-  const [runs, artifacts] = await Promise.all([
-    listAgentRuns(200, { tenantId }),
-    listTenantProjectArtifacts({ tenantId, limit: 1_000 }),
-  ]);
+  // Vercel intentionally uses a single database connection per route isolate.
+  // Keep these independent root reads sequential so the second one receives a
+  // fresh acquisition deadline instead of spending it queued behind the first.
+  const runs = await listAgentRuns(200, { tenantId });
+  const artifacts = await listTenantProjectArtifacts({
+    tenantId,
+    limit: 1_000,
+  });
   return arsenalAgents.map((agent) => {
     const primary = runs.filter((run) => (run.agentId || "atlas") === agent.id);
     const participated = runs.filter((run) => (run.specialistIds || [run.agentId || "atlas"]).includes(agent.id));
