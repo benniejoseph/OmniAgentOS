@@ -59,7 +59,7 @@ describe("background operation jobs", () => {
       },
     });
     expect(completed?.payload.request).toBeUndefined();
-  }, 15_000);
+  });
 
   it("rejects an idempotency key reused for different ingestion content", async () => {
     const jobs = await import("@/lib/operations/background-jobs");
