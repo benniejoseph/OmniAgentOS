@@ -93,7 +93,7 @@ describe("frontend performance budgets", () => {
   });
 
   it("uses finalized Web Vitals and a browser dashboard release gate", async () => {
-    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge, workspaceSummary] =
+    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge, workspaceSummary, todayRoute] =
       await Promise.all([
         readFile(
           path.resolve(
@@ -114,6 +114,7 @@ describe("frontend performance budgets", () => {
           path.resolve("src/lib/workspace/summary.ts"),
           "utf8",
         ),
+        readFile(path.resolve("src/app/api/today/route.ts"), "utf8"),
       ]);
     expect(reporter).toContain('from "web-vitals"');
     expect(reporter).toContain("onCLS(report)");
@@ -132,5 +133,7 @@ describe("frontend performance budgets", () => {
     expect(workspaceSummary).toContain("unstable_cache");
     expect(workspaceSummary).toContain('["workspace-summary-v1"]');
     expect(workspaceSummary).toContain("{ revalidate: 15 }");
+    expect(todayRoute).toContain('["today-dashboard-v1"]');
+    expect(todayRoute).toContain("{ revalidate: 15 }");
   });
 });
