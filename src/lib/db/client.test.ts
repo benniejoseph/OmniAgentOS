@@ -57,7 +57,7 @@ describe("database pool sizing", () => {
   it("bounds database connection acquisition timeouts", () => {
     try {
       vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "");
-      expect(getDatabaseAcquireTimeoutMs()).toBe(5_000);
+      expect(getDatabaseAcquireTimeoutMs()).toBe(12_000);
 
       vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "100");
       expect(getDatabaseAcquireTimeoutMs()).toBe(500);
@@ -66,7 +66,7 @@ describe("database pool sizing", () => {
       expect(getDatabaseAcquireTimeoutMs()).toBe(30_000);
 
       vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "invalid");
-      expect(getDatabaseAcquireTimeoutMs()).toBe(5_000);
+      expect(getDatabaseAcquireTimeoutMs()).toBe(12_000);
     } finally {
       vi.unstubAllEnvs();
     }

@@ -126,24 +126,119 @@ describe("dedicated worker startup cadence", () => {
     expect(startupMarkers.slice(0, 3)).toEqual([true, true, undefined]);
   }, 10_000);
 
+  it("delays first maintenance work until startup registration succeeds", async () => {
+    const maintenance: Array<{ startup: boolean | undefined; at: number }> = [];
+    const { baseUrl } = await startWorkerServer(
+      (lane, startup) => {
+        if (lane === "maintenance") {
+          maintenance.push({ startup, at: Date.now() });
+        }
+      },
+      {
+        responseStatus: (lane, attempt) =>
+          lane === "maintenance" && attempt === 1 ? 503 : 200,
+      },
+    );
+    const child = startWorker(baseUrl, {
+      OMNIAGENT_WORKER_INTERVAL_MS: "100",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "5000",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "100",
+      OMNIAGENT_WORKER_MAINTENANCE_FIRST_RUN_DELAY_MS: "300",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "5000",
+    });
+
+    await waitFor(() => maintenance.length >= 3);
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+
+    expect(maintenance.slice(0, 3).map(({ startup }) => startup)).toEqual([
+      true,
+      true,
+      undefined,
+    ]);
+    expect(maintenance[1].at - maintenance[0].at).toBeGreaterThanOrEqual(75);
+    expect(maintenance[2].at - maintenance[1].at).toBeGreaterThanOrEqual(250);
+  }, 10_000);
+
+  it("serializes heavy lanes while the fast lane remains independent", async () => {
+    let heavyInFlight = 0;
+    let maxHeavyInFlight = 0;
+    let fastRanDuringHeavyWork = false;
+    const completedHeavyLanes = new Set<string>();
+    const isHeavyWork = (lane: string, startup: boolean | undefined) =>
+      startup !== true && ["background", "maintenance", "retention"].includes(lane);
+    const { baseUrl } = await startWorkerServer(
+      (lane, startup) => {
+        if (isHeavyWork(lane, startup)) {
+          heavyInFlight += 1;
+          maxHeavyInFlight = Math.max(maxHeavyInFlight, heavyInFlight);
+        } else if (lane === "fast" && startup !== true && heavyInFlight > 0) {
+          fastRanDuringHeavyWork = true;
+        }
+      },
+      {
+        responseDelayMs: (lane, _attempt, startup) =>
+          isHeavyWork(lane, startup) ? 150 : 0,
+        onResponse: (lane, startup) => {
+          if (isHeavyWork(lane, startup)) {
+            heavyInFlight -= 1;
+            completedHeavyLanes.add(lane);
+          }
+        },
+      },
+    );
+    const child = startWorker(baseUrl, {
+      OMNIAGENT_WORKER_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "0",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "0",
+      OMNIAGENT_WORKER_MAINTENANCE_FIRST_RUN_DELAY_MS: "50",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "50",
+    });
+
+    await waitFor(() =>
+      completedHeavyLanes.size === 3 && fastRanDuringHeavyWork,
+    );
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+
+    expect(maxHeavyInFlight).toBe(1);
+    expect(completedHeavyLanes).toEqual(
+      new Set(["background", "maintenance", "retention"]),
+    );
+    expect(fastRanDuringHeavyWork).toBe(true);
+  }, 10_000);
+
   it("pins conservative production defaults", async () => {
-    const [workerScript, flyConfig] = await Promise.all([
+    const [workerScript, flyConfig, workerImage, releaseEvidence] = await Promise.all([
       readFile("scripts/worker.mjs", "utf8"),
       readFile("fly.toml", "utf8"),
+      readFile("Dockerfile.worker", "utf8"),
+      readFile("src/lib/release/evidence.ts", "utf8"),
     ]);
 
     expect(workerScript).toContain("Math.floor(backgroundIntervalMs / 2)");
     expect(workerScript).toContain("if (startupDelayMs > 0)");
-    expect(workerScript).toContain("await sleep(cadenceMs, shutdownController.signal)");
+    expect(workerScript).toContain("await sleep(nextDelayMs, shutdownController.signal)");
     expect(workerScript).not.toContain("cadenceMs - (Date.now() - startedAt)");
-    expect(workerScript).toContain("...(startup ? { startup: true } : {})");
+    expect(workerScript).toContain("...(startupAttempt ? { startup: true } : {})");
     expect(workerScript).toContain("if (response.ok) {\n        startup = false;");
-    expect(workerScript).toContain("maintenanceIntervalMs,\n);");
+    expect(workerScript).toContain("maintenanceFirstRunDelayMs");
+    expect(workerScript).toContain("await runHeavyLane(executeTick)");
+    expect(workerScript).toContain("await runHeavyLane(runRetentionSweep)");
+    expect(workerScript).toContain("15 * 60 * 1_000");
     expect(workerScript).toContain("10 * 60 * 1_000");
     expect(flyConfig).toContain('OMNIAGENT_WORKER_BACKGROUND_INTERVAL_MS = "15000"');
     expect(flyConfig).toContain('OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS = "7500"');
+    expect(flyConfig).toContain('OMNIAGENT_WORKER_MAINTENANCE_INTERVAL_MS = "300000"');
     expect(flyConfig).toContain('OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS = "60000"');
+    expect(flyConfig).toContain('OMNIAGENT_WORKER_MAINTENANCE_FIRST_RUN_DELAY_MS = "900000"');
     expect(flyConfig).toContain('OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS = "600000"');
+    expect(flyConfig).toContain('OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS = "2100000"');
+    expect(workerImage).toContain("OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS||2100000");
+    expect(releaseEvidence).toContain("2_100_000");
   });
 });
 
@@ -152,9 +247,11 @@ async function startWorkerServer(
   {
     responseDelayMs = 0,
     responseStatus = () => 200,
+    onResponse = () => undefined,
   }: {
-    responseDelayMs?: number;
-    responseStatus?: (lane: string, attempt: number) => number;
+    responseDelayMs?: number | ((lane: string, attempt: number, startup: boolean | undefined) => number);
+    responseStatus?: (lane: string, attempt: number, startup: boolean | undefined) => number;
+    onResponse?: (lane: string, startup: boolean | undefined) => void;
   } = {},
 ) {
   const attempts = new Map<string, number>();
@@ -173,11 +270,15 @@ async function startWorkerServer(
     const attempt = (attempts.get(lane) || 0) + 1;
     attempts.set(lane, attempt);
     onRequest(lane, body.startup);
-    if (responseDelayMs > 0) {
-      await delay(responseDelayMs);
+    const requestDelayMs = typeof responseDelayMs === "function"
+      ? responseDelayMs(lane, attempt, body.startup)
+      : responseDelayMs;
+    if (requestDelayMs > 0) {
+      await delay(requestDelayMs);
     }
-    response.writeHead(responseStatus(lane, attempt), { "content-type": "application/json" });
+    response.writeHead(responseStatus(lane, attempt, body.startup), { "content-type": "application/json" });
     response.end(JSON.stringify({ result: { moreAvailable: false } }));
+    onResponse(lane, body.startup);
   });
   servers.add(server);
   server.listen(0, "127.0.0.1");

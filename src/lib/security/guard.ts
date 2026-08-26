@@ -1,6 +1,5 @@
 import { after } from "next/server";
 import {
-  redactSensitive,
   requirePermission,
   resolveSecurityContext,
   SecurityPolicyError,
@@ -210,17 +209,82 @@ async function recordAuditSafely(args: Parameters<typeof recordSecurityAudit>[0]
   try {
     await recordSecurityAudit(args);
   } catch (error) {
+    console.warn(JSON.stringify({
+      level: "warn",
+      event: "security.audit_write_failed",
+      outcome: options.failClosed ? "blocked" : "continued",
+      action: safeDiagnosticToken(args.action),
+      resourceType: safeDiagnosticToken(args.resourceType),
+      ...classifyAuditWriteFailure(error),
+    }));
     if (options.failClosed) {
       throw new SecurityPolicyError(
         "The security audit ledger is unavailable, so this consequential action was not executed.",
         503,
       );
     }
-    console.warn(
-      "Security audit write failed.",
-      redactSensitive(error instanceof Error ? error.message : error),
-    );
   }
+}
+
+function classifyAuditWriteFailure(error: unknown): {
+  category:
+    | "connection_acquire_timeout"
+    | "statement_timeout"
+    | "lock_timeout"
+    | "connection"
+    | "unknown";
+  code?: string;
+} {
+  const rawCode =
+    error && typeof error === "object" && "code" in error
+      ? String(error.code).trim().toUpperCase()
+      : "";
+  const code = /^[A-Z0-9_]{2,32}$/.test(rawCode) ? rawCode : undefined;
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+
+  if (
+    code === "DATABASE_ACQUIRE_TIMEOUT" ||
+    message.includes("connection acquisition timed out")
+  ) {
+    return { category: "connection_acquire_timeout", code };
+  }
+  if (code === "55P03" || message.includes("lock timeout")) {
+    return { category: "lock_timeout", code };
+  }
+  if (
+    code === "57014" ||
+    message.includes("statement timeout") ||
+    message.includes("canceling statement")
+  ) {
+    return { category: "statement_timeout", code };
+  }
+  if (
+    (code && (
+      /^08[A-Z0-9]{3}$/.test(code) ||
+      [
+        "ECONNREFUSED",
+        "ECONNRESET",
+        "EHOSTUNREACH",
+        "ENETUNREACH",
+        "EPIPE",
+        "ETIMEDOUT",
+        "EAI_AGAIN",
+        "57P01",
+        "57P02",
+        "57P03",
+      ].includes(code)
+    )) ||
+    message.includes("connection") ||
+    message.includes("socket") ||
+    message.includes("network")
+  ) {
+    return { category: "connection", code };
+  }
+  return { category: "unknown", code };
+}
+
+function safeDiagnosticToken(value: string) {
+  return /^[a-z0-9._:-]{1,80}$/i.test(value) ? value : "unknown";
 }
 
 function requiresDurableAudit(action: string, riskLevel?: number) {

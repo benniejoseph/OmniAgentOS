@@ -152,7 +152,7 @@ async function collectReleaseEvidenceReport(
   );
   const workerHeartbeatMaxAgeMs = normalizePositiveInteger(
     process.env.OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS,
-    420_000,
+    2_100_000,
   );
   const expectedWorkerProtocol =
     process.env.OMNIAGENT_WORKER_PROTOCOL_VERSION?.trim() ||
