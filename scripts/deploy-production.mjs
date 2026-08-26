@@ -688,7 +688,13 @@ function workerCanonicalTargetArgs() {
     "--app",
     flyApp,
     "--command",
-    `read worker_pid < ${WORKER_PID_FILE} && kill -HUP "$worker_pid"`,
+    workerShellCommand([
+      "set -eu",
+      `worker_pid=$(cat ${WORKER_PID_FILE})`,
+      'case "$worker_pid" in ""|*[!0-9]*) exit 1;; esac',
+      'kill -0 "$worker_pid"',
+      'kill -HUP "$worker_pid"',
+    ]),
   ];
 }
 
@@ -700,18 +706,30 @@ function workerReleaseActivationArgs() {
     "--app",
     flyApp,
     "--command",
-    [
+    workerShellCommand([
       "set -eu",
       `expected_revision='${expectedRevision}'`,
-      `read worker_pid < ${WORKER_PID_FILE}`,
+      `worker_pid=$(cat ${WORKER_PID_FILE})`,
       'case "$worker_pid" in ""|*[!0-9]*) exit 1;; esac',
       'kill -0 "$worker_pid"',
       'kill -USR1 "$worker_pid"',
       "attempt=0",
       `while [ "$attempt" -lt 20 ]; do marker_revision=""; if IFS= read -r marker_revision < ${WORKER_RELEASE_ACTIVATION_FILE} && [ "$marker_revision" = "$expected_revision" ] && kill -0 "$worker_pid"; then exit 0; fi; attempt=$((attempt + 1)); sleep 1; done`,
       "exit 1",
-    ].join("; "),
+    ]),
   ];
+}
+
+function workerShellCommand(commands) {
+  const script = commands.join("; ");
+  // fly ssh console executes --command directly rather than through a shell.
+  // Launch Alpine's POSIX shell explicitly so builtins, substitutions, and
+  // control flow are interpreted instead of being treated as executables.
+  return `sh -c ${singleQuoteShellArgument(script)}`;
+}
+
+function singleQuoteShellArgument(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function workerRollbackArgs(image, baseUrl, initialCutover) {
