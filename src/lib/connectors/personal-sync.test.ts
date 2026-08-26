@@ -48,6 +48,50 @@ describe("personal OAuth synchronization", () => {
     expect(mocks.remove).toHaveBeenCalledWith("oauth:google:calendar:e0", { tenantId: "personal" });
     expect(mocks.updateState).toHaveBeenLastCalledWith(expect.objectContaining({ status: "healthy", syncedItems: 3 }));
   });
+
+  it("reconciles a removed Gmail message without failing the full sync", async () => {
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/messages?")) return json({ messages: [{ id: "gone" }] });
+      if (url.endsWith("/profile")) return json({ historyId: "h3" });
+      if (url.includes("/messages/gone")) return json({}, 404);
+      if (url.includes("calendar")) return json({ nextSyncToken: "c3", items: [] });
+      if (url.includes("/drive/v3/files")) return json({ files: [] });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await expect(
+      syncPersonalProvider({ tenantId: "personal", actorId: "owner", provider: "google" }),
+    ).resolves.toMatchObject({ imported: 0, removed: 1 });
+    expect(mocks.remove).toHaveBeenCalledWith("oauth:google:mail:gone", {
+      tenantId: "personal",
+    });
+    expect(mocks.updateState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "healthy" }),
+    );
+  });
+
+  it("keeps Drive metadata when a listed Google document cannot be exported", async () => {
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/messages?")) return json({ messages: [] });
+      if (url.endsWith("/profile")) return json({ historyId: "h4" });
+      if (url.includes("calendar")) return json({ nextSyncToken: "c4", items: [] });
+      if (url.includes("/drive/v3/files?")) return json({ files: [{ id: "d404", name: "Moved brief", mimeType: "application/vnd.google-apps.document", modifiedTime: "2026-08-26T10:00:00Z" }] });
+      if (url.includes("/drive/v3/files/d404/export")) return new Response("missing", { status: 404 });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await expect(
+      syncPersonalProvider({ tenantId: "personal", actorId: "owner", provider: "google" }),
+    ).resolves.toMatchObject({ imported: 1, removed: 0 });
+    expect(mocks.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: "oauth:google:drive:d404",
+        content: expect.stringContaining("File: Moved brief"),
+      }),
+    );
+  });
 });
 
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } }); }

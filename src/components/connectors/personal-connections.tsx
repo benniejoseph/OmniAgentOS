@@ -204,12 +204,18 @@ export function PersonalConnections({
                 connected={connected}
                 configured={provider?.configured}
                 syncStatus={grant?.syncStatus}
+                loading={Boolean(loading && !provider)}
               />
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-            {connected ? (
+            {loading && !provider ? (
+              <span className="inline-flex min-h-11 items-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold text-muted">
+                <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+                Checking connection…
+              </span>
+            ) : connected ? (
               <>
                 <button
                   type="button"
@@ -318,7 +324,7 @@ export function PersonalConnections({
         <div className="mt-5 grid gap-px overflow-hidden rounded-md border border-line bg-line md:grid-cols-3">
           <ConnectionFact
             label="Connection"
-            value={connected ? `Added ${formatDate(grant?.createdAt)}` : "Not connected"}
+            value={loading && !provider ? "Checking…" : connected ? `Added ${formatDate(grant?.createdAt)}` : "Not connected"}
           />
           <ConnectionFact
             label="Last sync"
@@ -373,12 +379,16 @@ function ConnectionStatus({
   connected,
   configured,
   syncStatus,
+  loading,
 }: {
   connected: boolean;
   configured?: boolean;
   syncStatus?: OAuthGrant["syncStatus"];
+  loading?: boolean;
 }) {
-  const label = !configured
+  const label = loading
+    ? "Checking"
+    : !configured
     ? "Unavailable"
     : !connected
       ? "Not connected"
@@ -387,7 +397,7 @@ function ConnectionStatus({
         : syncStatus === "syncing"
           ? "Syncing"
           : "Connected";
-  const live = connected && syncStatus !== "error";
+  const live = !loading && connected && syncStatus !== "error";
   return (
     <span
       className={clsx(
