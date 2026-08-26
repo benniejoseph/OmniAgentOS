@@ -53,6 +53,7 @@ describe("paired production deployment", () => {
       securitySmoke,
       previewBenchmark,
       dashboardBenchmark,
+      sessionRoute,
       workerScript,
       workerImage,
     ] =
@@ -62,6 +63,7 @@ describe("paired production deployment", () => {
         readFile("scripts/smoke-security.mjs", "utf8"),
         readFile("scripts/benchmark-preview.mjs", "utf8"),
         readFile("scripts/benchmark-dashboard.mjs", "utf8"),
+        readFile("src/app/api/auth/session/route.ts", "utf8"),
         readFile("scripts/worker.mjs", "utf8"),
         readFile("Dockerfile.worker", "utf8"),
       ]);
@@ -78,6 +80,7 @@ describe("paired production deployment", () => {
     expect(securitySmoke).toContain("SMOKE_SESSION_OUTPUT");
     expect(previewBenchmark).toContain("BENCHMARK_SESSION_FILE");
     expect(dashboardBenchmark).toContain("BENCHMARK_SESSION_FILE");
+    expect(sessionRoute).toContain('headerContext?.source === "headers"');
     expect(evaluationSmoke).toContain("response.status === 202");
     expect(evaluationSmoke).toContain("waitForEvaluationJob");
     expect(evaluationSmoke).toContain("/api/operations/jobs/");
