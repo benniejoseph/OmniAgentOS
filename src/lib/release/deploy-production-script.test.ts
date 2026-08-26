@@ -164,6 +164,31 @@ describe("paired production deployment", () => {
     });
   });
 
+  it("fails fast with an actionable error when readiness access is denied", async () => {
+    await withHealthServer((_request, response) => {
+      response.writeHead(403, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "protected" }));
+    }, async (baseUrl) => {
+      const result = await runProcess(
+        process.execPath,
+        [
+          "scripts/deploy-production.mjs",
+          "--readiness-probe",
+          baseUrl,
+          "release-ready",
+        ],
+        readinessEnvironment({ timeoutMs: 3_000 }),
+      );
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        "readiness access was denied with HTTP 403",
+      );
+      expect(result.stderr).toContain("VERCEL_AUTOMATION_BYPASS_SECRET");
+      expect(result.stderr).not.toContain("before initialization");
+    });
+  });
+
   it("rejects untracked drift and polls asynchronous evaluation smoke jobs", async () => {
     const [
       deployScript,

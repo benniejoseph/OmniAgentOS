@@ -5,6 +5,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+class ReadinessAccessError extends Error {
+  constructor(status) {
+    super(`Readiness access denied with HTTP ${status}.`);
+    this.name = "ReadinessAccessError";
+    this.status = status;
+  }
+}
+
 const VERCEL_ORG_ID = "team_hFIwf5wwfzIn2I1WDZwY8pAv";
 const VERCEL_PROJECT_ID = "prj_BF3Uy9PhUUitqFAeA0g0LafaL4co";
 const VERCEL_SCOPE = "benniejosephs-projects";
@@ -486,14 +494,6 @@ async function waitForDeploymentReadiness(
   throw new Error(
     `${label} did not become healthy at revision ${expectedRevision} within ${readinessTimeoutMs}ms after ${attempts} attempt(s). Last observation: ${lastHealthObservation || lastObservation}.`,
   );
-}
-
-class ReadinessAccessError extends Error {
-  constructor(status) {
-    super(`Readiness access denied with HTTP ${status}.`);
-    this.name = "ReadinessAccessError";
-    this.status = status;
-  }
 }
 
 function readinessHeaders(useDeploymentBypass) {
