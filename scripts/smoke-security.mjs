@@ -1,5 +1,10 @@
 import { writeFile } from "node:fs/promises";
-import { failSmoke, getSmokeBaseUrl, smokeFetch } from "./smoke-helpers.mjs";
+import {
+  discardSmokeResponseBody,
+  failSmoke,
+  getSmokeBaseUrl,
+  smokeFetch,
+} from "./smoke-helpers.mjs";
 
 const baseUrl = getSmokeBaseUrl();
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
@@ -61,6 +66,7 @@ const unauthWrite = await request("/api/memory", {
   body: JSON.stringify({ title: "smoke", content: "unauthorized write should fail" }),
 });
 checks.push(assert(unauthWrite.status === 401, "anonymous memory write is blocked", `expected 401, got ${unauthWrite.status}`));
+await discardResponseBody(unauthWrite, "anonymous memory write");
 
 if (email && password) {
   const login = await request("/api/auth/login", {
@@ -85,6 +91,7 @@ if (email && password) {
       mode: 0o600,
     });
   }
+  await discardResponseBody(login, "admin login");
   const authHeaders = {
     "content-type": "application/json",
     cookie,
@@ -102,6 +109,7 @@ if (email && password) {
     : authHeaders;
   const authenticatedRead = await request("/api/memory?limit=1", { headers: { cookie } });
   checks.push(assert(authenticatedRead.status === 200, "authenticated memory read succeeds", `expected 200, got ${authenticatedRead.status}`));
+  await discardResponseBody(authenticatedRead, "authenticated memory read");
 
   for (const path of ["/api/connectors", "/api/openapi-connectors"]) {
     const catalogue = await request(path, { headers: { cookie } });
@@ -120,6 +128,7 @@ if (email && password) {
     "authenticated observability read is protected",
     `expected 200 or 403, got ${observabilityRead.status}`,
   ));
+  await discardResponseBody(observabilityRead, "authenticated observability read");
 
   const forbiddenSecret = await request("/api/connectors", {
     method: "POST",
@@ -133,6 +142,7 @@ if (email && password) {
     }),
   });
   checks.push(assert(forbiddenSecret.status === 400, "connector cannot reference platform secrets", `expected 400, got ${forbiddenSecret.status}`));
+  await discardResponseBody(forbiddenSecret, "forbidden connector secret");
 
   const privateEndpoint = await request("/api/connectors", {
     method: "POST",
@@ -145,6 +155,7 @@ if (email && password) {
     }),
   });
   checks.push(assert(privateEndpoint.status === 400, "connector blocks private endpoints", `expected 400, got ${privateEndpoint.status}`));
+  await discardResponseBody(privateEndpoint, "private connector endpoint");
 } else if (internalSecret) {
   const internalHeaders = {
     "content-type": "application/json",
@@ -156,6 +167,7 @@ if (email && password) {
   };
   const authenticatedRead = await request("/api/memory?limit=1", { headers: internalHeaders });
   checks.push(assert(authenticatedRead.status === 200, "internal authenticated memory read succeeds", `expected 200, got ${authenticatedRead.status}`));
+  await discardResponseBody(authenticatedRead, "internal authenticated memory read");
   for (const path of ["/api/connectors", "/api/openapi-connectors"]) {
     const catalogue = await request(path, { headers: internalHeaders });
     const text = await catalogue.text();
@@ -178,12 +190,14 @@ if (email && password) {
     }),
   });
   checks.push(assert(forbiddenSecret.status === 400, "connector cannot reference platform secrets", `expected 400, got ${forbiddenSecret.status}`));
+  await discardResponseBody(forbiddenSecret, "forbidden connector secret");
   const privateEndpoint = await request("/api/connectors", {
     method: "POST",
     headers: internalHeaders,
     body: JSON.stringify({ name: "Smoke private endpoint", endpoint: "http://127.0.0.1:9999/mcp", authType: "none", discover: false }),
   });
   checks.push(assert(privateEndpoint.status === 400, "connector blocks private endpoints", `expected 400, got ${privateEndpoint.status}`));
+  await discardResponseBody(privateEndpoint, "private connector endpoint");
 } else {
   checks.push({
     ok: false,
@@ -204,7 +218,21 @@ if (failures.length) {
 
 async function expectStatus(path, { expected, label }) {
   const response = await request(path);
-  return assert(response.status === expected, label, `expected ${expected}, got ${response.status}`);
+  const result = assert(response.status === expected, label, `expected ${expected}, got ${response.status}`);
+  await discardResponseBody(response, label);
+  return result;
+}
+
+async function discardResponseBody(response, label) {
+  try {
+    await discardSmokeResponseBody(response, { label });
+  } catch (error) {
+    failSmoke(
+      error instanceof Error
+        ? error.message
+        : `${label} response body could not be consumed.`,
+    );
+  }
 }
 
 async function request(path, init) {

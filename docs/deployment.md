@@ -24,7 +24,7 @@ Production always enables auth even when `OMNIAGENT_AUTH_ENABLED=false`. Vercel 
 `.env.example` is the complete copyable reference. Runtime groups are:
 
 - Models and retrieval: `OPENAI_AGENT_MODEL`, `OPENAI_WEB_SEARCH_MODEL`, `OPENAI_EMBEDDING_MODEL`, `OPENAI_EMBEDDING_DIMENSIONS`, and `OMNIAGENT_WEB_SEARCH_TIMEOUT_MS`.
-- Database reads: `OMNIAGENT_DATABASE_POOL_MAX` bounds each process's runtime and maintenance pools. Production defaults to 4 so overlapping requests cannot be starved by a long workflow tick; size it against the upstream pooler's connection budget. Every tenant- and system-scoped transaction applies `OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS` (15s by default, clamped to 1-60s) and `OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS` (1s by default, clamped to 0.1-10s and never above the statement timeout) on the database server, bounding server-side statement execution and lock acquisition after a connection is leased. Request/platform deadlines remain responsible for connection-pool and transport waits. `OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS` is the production migration-marker verification watchdog and resets timed-out checks so later requests can retry. `OMNIAGENT_SETTINGS_CAPABILITY_TIMEOUT_MS` bounds the tenant-scoped Settings response and returns explicit unavailable fields when the database misses that deadline; `OMNIAGENT_SETTINGS_CAPABILITY_STATEMENT_TIMEOUT_MS` may lower the shared database deadline for the aggregate query. `OMNIAGENT_TODAY_SNAPSHOT_STATEMENT_TIMEOUT_MS` provides the same shorter override for the single owner-scoped Today projection query.
+- Database reads: `OMNIAGENT_DATABASE_POOL_MAX` bounds each process's runtime and maintenance pools. Production defaults to 4 so overlapping requests cannot be starved by a long workflow tick; size it against the upstream pooler's connection budget. `OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS` bounds postgres.js pool-slot reservation for every tenant- and system-scoped query or callback transaction (5s by default, clamped to 0.5-30s). A reservation granted after the deadline is released immediately so timed-out work cannot retain pool capacity. Every tenant- and system-scoped transaction applies `OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS` (15s by default, clamped to 1-60s) and `OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS` (1s by default, clamped to 0.1-10s and never above the statement timeout) on the database server, bounding server-side statement execution and lock acquisition after a connection is leased. Request/platform deadlines remain responsible for other transport waits. `OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS` is the production migration-marker verification watchdog and resets timed-out checks so later requests can retry. `OMNIAGENT_SETTINGS_CAPABILITY_TIMEOUT_MS` bounds the tenant-scoped Settings response and returns explicit unavailable fields when the database misses that deadline; `OMNIAGENT_SETTINGS_CAPABILITY_STATEMENT_TIMEOUT_MS` may lower the shared database deadline for the aggregate query. `OMNIAGENT_TODAY_SNAPSHOT_STATEMENT_TIMEOUT_MS` provides the same shorter override for the single owner-scoped Today projection query.
 - Agent limits: `OMNIAGENT_AGENT_MAX_TOOL_STEPS`, `OMNIAGENT_AGENT_MAX_MESSAGE_CHARS`, `OMNIAGENT_AGENT_MAX_MESSAGES`, `OMNIAGENT_AGENT_RUNS_PER_MINUTE`, `OMNIAGENT_AGENT_REASONING_EFFORT`, and `OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS`.
 - Workflow limits: `OMNIAGENT_QUEUE_LEASE_SECONDS`, `OMNIAGENT_WORKFLOW_DRAIN_LIMIT`, `OMNIAGENT_WORKFLOW_PLANNER_TIMEOUT_MS`, and `OMNIAGENT_WORKFLOW_EXECUTOR_TIMEOUT_MS`.
 - Identity: `OMNIAGENT_DEFAULT_TENANT`, `OMNIAGENT_DEFAULT_ACTOR`, `OMNIAGENT_DEFAULT_ROLE`, `OMNIAGENT_SESSION_DAYS`, bootstrap name/tenant, and auth mode.
@@ -91,6 +91,10 @@ npm run deploy:production
 
 Set `BASE_URL` to the canonical production HTTPS origin and provide the smoke
 credentials, internal secret, and `RELEASE_EVIDENCE_OUTPUT` described below.
+The paired deployment waits 75 seconds after each Fly restart by default
+(`OMNIAGENT_DEPLOY_WORKER_STARTUP_SETTLE_MS`) so the staggered fast,
+background, and maintenance startup registrations are visible before the
+target-specific release gate runs.
 When the platform exposes `CRON_SECRET` to the release runner, preflight probes
 that credential directly; for write-only platform secrets it verifies the
 promoted deployment's `cron_auth` release gate instead. When deployment
@@ -98,7 +102,7 @@ protection applies to staged production deployments, set
 `VERCEL_AUTOMATION_BYPASS_SECRET` for the release runner and configure the same
 name as a Fly secret so worker requests can reach the canary.
 
-The worker emits one JSON startup record and one record per lane tick. Fast workflow and continuation pickup runs every five seconds, durable consolidation/ingestion/evaluation jobs run on an independent background lane, and SLO/alert/recovery maintenance runs every minute. It also runs a bounded, all-tenant sensitive-data retention sweep every six hours by default. Alert on:
+The worker emits one JSON startup record and one record per lane tick. Fast workflow and continuation pickup runs after a five-second post-attempt pause. Durable consolidation/ingestion/evaluation uses a 15-second background cadence after a 7.5-second startup delay. SLO/alert/recovery maintenance starts after 60 seconds and then pauses for 60 seconds after each attempt. The bounded, all-tenant sensitive-data retention sweep starts ten minutes after a restart and then runs every six hours by default. These startup delays prevent a Fly restart from launching four database-heavy lanes simultaneously. Alert on:
 
 - no successful tick for more than twice `OMNIAGENT_WORKER_INTERVAL_MS`;
 - repeated non-2xx tick responses or thrown fetches;
@@ -107,7 +111,7 @@ The worker emits one JSON startup record and one record per lane tick. Fast work
 - authentication failures after secret rotation.
 - failed retention sweeps or a sweep that has not succeeded within twice `OMNIAGENT_WORKER_RETENTION_INTERVAL_MS`.
 
-The fast and background lane defaults are 5 seconds, while maintenance defaults to 60 seconds. `OMNIAGENT_WORKER_LIMIT` is capped at 3 so one tick cannot create unbounded fan-out. Coordinate lane cadence, lease duration, database capacity, and worker replica count before scaling.
+The fast, background, and maintenance cadence values are delays after a completed attempt, rather than start-to-start intervals, so a slow lane cannot busy-loop. `OMNIAGENT_WORKER_LIMIT` is capped at 3 so one tick cannot create unbounded fan-out. Coordinate lane cadence, startup delays, lease duration, database capacity, and worker replica count before scaling.
 
 `vercel.json` schedules a daily tick as a recovery backstop. A daily-only deployment can leave unattended work waiting up to 24 hours.
 

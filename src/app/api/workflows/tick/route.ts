@@ -63,6 +63,7 @@ const tickSchema = z.object({
   alertDispatchLimit: z.number().int().min(1).max(50).optional(),
   scope: z.enum(["tenant", "all_tenants"]).optional(),
   lane: z.enum(["fast", "background", "maintenance", "all"]).optional(),
+  startup: z.boolean().optional(),
   timeBudgetMs: z.number().int().min(1_000).max(240_000).optional(),
   tenantCursor: z.string().min(1).max(120).optional(),
   maintenanceTenantLimit: z.number().int().min(1).max(100).optional(),
@@ -273,6 +274,48 @@ async function POSTHandler(request: Request) {
         );
       }
       const lane = parsed.data.lane || "all";
+      const workerInstance = request.headers.get(
+        "x-omni-worker-instance",
+      );
+      const requestTarget = new URL(request.url).origin;
+      const declaredWorkerTarget = normalizeWorkerTarget(
+        request.headers.get("x-omni-worker-target"),
+      );
+      if (declaredWorkerTarget && declaredWorkerTarget !== requestTarget) {
+        return Response.json(
+          {
+            error: "Worker target mismatch",
+            message: "The worker is registered for a different application origin.",
+          },
+          { status: 409 },
+        );
+      }
+      const workerHeartbeatInput = workerInstance
+        ? {
+            instanceId: workerInstance,
+            lane,
+            protocol:
+              request.headers.get("x-omni-worker-protocol") || undefined,
+            revision:
+              request.headers.get("x-omni-worker-revision") || undefined,
+            target: requestTarget,
+          }
+        : undefined;
+      if (parsed.data.startup) {
+        if (!workerHeartbeatInput) {
+          return Response.json(
+            { error: "Worker startup registration requires an instance identity." },
+            { status: 400 },
+          );
+        }
+        const workerHeartbeat = await recordWorkerHeartbeat(workerHeartbeatInput);
+        return Response.json({
+          startup: true,
+          lane,
+          workerHeartbeat,
+          count: 0,
+        });
+      }
       const scheduled = await runAllTenantScheduledWork({
         lane,
         trigger: "dedicated_worker",
@@ -287,18 +330,8 @@ async function POSTHandler(request: Request) {
         maintenanceTenantLimit: parsed.data.maintenanceTenantLimit || 25,
         timeBudgetMs: parsed.data.timeBudgetMs || 240_000,
       });
-      const workerInstance = request.headers.get(
-        "x-omni-worker-instance",
-      );
-      const workerHeartbeat = workerInstance
-        ? await recordWorkerHeartbeat({
-            instanceId: workerInstance,
-            lane,
-            protocol:
-              request.headers.get("x-omni-worker-protocol") || undefined,
-            revision:
-              request.headers.get("x-omni-worker-revision") || undefined,
-          })
+      const workerHeartbeat = workerHeartbeatInput
+        ? await recordWorkerHeartbeat(workerHeartbeatInput)
         : undefined;
       await recordRuntimeEventSafely({
         category: "workflow",
@@ -456,6 +489,18 @@ async function POSTHandler(request: Request) {
       { error: error instanceof Error ? error.message : "Workflow tick failed." },
       { status: 500 },
     );
+  }
+}
+
+function normalizeWorkerTarget(value: string | null) {
+  if (!value?.trim()) return undefined;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "https:" || url.protocol === "http:"
+      ? url.origin
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 

@@ -89,36 +89,44 @@ const releaseEvidenceInFlight = new Map<
 
 export async function getReleaseEvidenceReport(
   tenantId: string,
-  options: { force?: boolean } = {},
+  options: { force?: boolean; expectedWorkerTarget?: string } = {},
 ): Promise<ReleaseEvidenceReport> {
-  const inFlight = releaseEvidenceInFlight.get(tenantId);
+  const expectedWorkerTarget = normalizeWorkerTarget(
+    options.expectedWorkerTarget || getDeploymentEvidence().url,
+  );
+  const cacheKey = `${tenantId}\n${expectedWorkerTarget || "unknown-target"}`;
+  const inFlight = releaseEvidenceInFlight.get(cacheKey);
   if (inFlight) {
     return inFlight;
   }
-  const cached = releaseEvidenceCache.get(tenantId);
+  const cached = releaseEvidenceCache.get(cacheKey);
   if (!options.force && cached && cached.expiresAt > Date.now()) {
     return cached.report;
   }
 
-  const collection = collectReleaseEvidenceReport(tenantId)
+  const collection = collectReleaseEvidenceReport(
+    tenantId,
+    expectedWorkerTarget,
+  )
     .then((report) => {
-      releaseEvidenceCache.set(tenantId, {
+      releaseEvidenceCache.set(cacheKey, {
         expiresAt: Date.now() + releaseEvidenceTtlMs(),
         report,
       });
       return report;
     })
     .finally(() => {
-      if (releaseEvidenceInFlight.get(tenantId) === collection) {
-        releaseEvidenceInFlight.delete(tenantId);
+      if (releaseEvidenceInFlight.get(cacheKey) === collection) {
+        releaseEvidenceInFlight.delete(cacheKey);
       }
     });
-  releaseEvidenceInFlight.set(tenantId, collection);
+  releaseEvidenceInFlight.set(cacheKey, collection);
   return collection;
 }
 
 async function collectReleaseEvidenceReport(
   tenantId: string,
+  expectedWorkerTarget?: string,
 ): Promise<ReleaseEvidenceReport> {
   const checkedAt = new Date().toISOString();
   const deployment = getDeploymentEvidence();
@@ -165,10 +173,25 @@ async function collectReleaseEvidenceReport(
           deployment.commitSha &&
           heartbeat.revision === deployment.commitSha,
       ),
+      targetMatches: Boolean(
+        heartbeat?.target &&
+          expectedWorkerTarget &&
+          normalizeWorkerTarget(heartbeat.target) === expectedWorkerTarget,
+      ),
       ready:
         Number.isFinite(ageMs) &&
         ageMs <= workerHeartbeatMaxAgeMs &&
-        heartbeat?.protocol === expectedWorkerProtocol,
+        heartbeat?.protocol === expectedWorkerProtocol &&
+        Boolean(
+          heartbeat?.revision &&
+            deployment.commitSha &&
+            heartbeat.revision === deployment.commitSha,
+        ) &&
+        Boolean(
+          heartbeat?.target &&
+            expectedWorkerTarget &&
+            normalizeWorkerTarget(heartbeat.target) === expectedWorkerTarget,
+        ),
     };
   });
   const workerProtocolMatches = workerLaneReadiness.every(
@@ -176,6 +199,9 @@ async function collectReleaseEvidenceReport(
   );
   const workerRevisionMatches = workerLaneReadiness.every(
     (item) => item.revisionMatches,
+  );
+  const workerTargetMatches = workerLaneReadiness.every(
+    (item) => item.targetMatches,
   );
   const workerReady = workerLaneReadiness.every((item) => item.ready);
 
@@ -252,11 +278,12 @@ async function collectReleaseEvidenceReport(
       name: "Dedicated worker readiness",
       status: workerReady ? "pass" : "fail",
       summary: workerReady
-        ? "Dedicated worker heartbeat is fresh and uses a compatible worker protocol."
-        : "Dedicated worker heartbeat is missing, stale, or uses an unsupported protocol.",
+        ? "Dedicated worker heartbeat is fresh and matches this release revision, target, and worker protocol."
+        : "Dedicated worker heartbeat is missing, stale, target/revision-mismatched, or uses an unsupported protocol.",
       details: {
         expectedProtocol: expectedWorkerProtocol,
         expectedRevision: deployment.commitSha,
+        expectedTarget: expectedWorkerTarget,
         heartbeats: workerHeartbeats,
         lanes: workerLaneReadiness.map((item) => ({
           ...item,
@@ -265,6 +292,7 @@ async function collectReleaseEvidenceReport(
         maxAgeMs: workerHeartbeatMaxAgeMs,
         protocolMatches: workerProtocolMatches,
         revisionMatches: workerRevisionMatches,
+        targetMatches: workerTargetMatches,
       },
     },
     {
@@ -416,6 +444,19 @@ function normalizePositiveInteger(
 ) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizeWorkerTarget(value?: string) {
+  if (!value?.trim()) return undefined;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return undefined;
+    }
+    return url.origin;
+  } catch {
+    return undefined;
+  }
 }
 
 function buildReleaseRecommendations(gates: ReleaseEvidenceGate[], tenantIsolationRecommendations: string[]) {

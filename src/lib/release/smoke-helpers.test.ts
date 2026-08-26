@@ -2,7 +2,10 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { smokeFetch } from "../../../scripts/smoke-helpers.mjs";
+import {
+  discardSmokeResponseBody,
+  smokeFetch,
+} from "../../../scripts/smoke-helpers.mjs";
 
 const servers = new Set<ReturnType<typeof createServer>>();
 
@@ -18,6 +21,37 @@ afterEach(async () => {
 });
 
 describe("smoke transport retry", () => {
+  it("consumes bounded status-only bodies so sequential checks release connections", async () => {
+    const response = new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+
+    await expect(discardSmokeResponseBody(response, {
+      label: "anonymous memory read",
+      maxBytes: 1_000,
+    })).resolves.toBeUndefined();
+    expect(response.bodyUsed).toBe(true);
+
+    await expect(discardSmokeResponseBody(
+      new Response("too large", {
+        headers: { "content-length": "100" },
+      }),
+      { label: "oversized probe", maxBytes: 10 },
+    )).rejects.toThrow("oversized probe returned an unexpectedly large response body");
+
+    await expect(discardSmokeResponseBody(
+      new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(8));
+          controller.enqueue(new Uint8Array(8));
+          controller.close();
+        },
+      })),
+      { label: "chunked probe", maxBytes: 10 },
+    )).rejects.toThrow("chunked probe returned an unexpectedly large response body");
+  });
+
   it("retries one fast reset for an opted-in GET", async () => {
     let requests = 0;
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -199,6 +233,8 @@ describe("smoke transport retry", () => {
     expect(source).toContain(
       'retryTransport: method === "GET" || method === "HEAD"',
     );
+    expect(source).toContain("await discardResponseBody(response, label)");
+    expect(source).toContain("await discardSmokeResponseBody(response, { label })");
   });
 });
 

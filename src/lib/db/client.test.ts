@@ -3,6 +3,7 @@ import {
   applyDatabaseScope,
   databaseSchemaMigrations,
   enterDatabaseTenantContext,
+  getDatabaseAcquireTimeoutMs,
   getDatabaseLockTimeoutMs,
   getDatabasePoolMax,
   getDatabaseSchemaVerificationTimeoutMs,
@@ -53,6 +54,24 @@ describe("database pool sizing", () => {
     }
   });
 
+  it("bounds database connection acquisition timeouts", () => {
+    try {
+      vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "");
+      expect(getDatabaseAcquireTimeoutMs()).toBe(5_000);
+
+      vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "100");
+      expect(getDatabaseAcquireTimeoutMs()).toBe(500);
+
+      vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "90000");
+      expect(getDatabaseAcquireTimeoutMs()).toBe(30_000);
+
+      vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "invalid");
+      expect(getDatabaseAcquireTimeoutMs()).toBe(5_000);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("bounds transaction-local statement and lock timeouts", () => {
     try {
       vi.stubEnv("OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS", "");
@@ -83,6 +102,191 @@ describe("database pool sizing", () => {
     }
   });
 });
+
+describe("database pool acquisition", () => {
+  it("reserves and releases the correct pool for tenant queries and system transactions", async () => {
+    const runtime = createMockPoolClient([{ source: "runtime" }]);
+    const maintenance = createMockPoolClient([{ source: "maintenance" }]);
+    const postgresFactory = vi
+      .fn()
+      .mockReturnValueOnce(runtime.pg)
+      .mockReturnValueOnce(maintenance.pg);
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.stubEnv(
+      "OMNIAGENT_MAINTENANCE_DATABASE_URL",
+      "postgresql://maintenance.invalid/asael",
+    );
+    vi.resetModules();
+    const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql()`SELECT 'runtime' AS source`,
+        ),
+      ).resolves.toEqual([{ source: "runtime" }]);
+      await expect(
+        isolatedClient.runWithDatabaseSystemScope(
+          "unit-test maintenance lookup",
+          () =>
+            isolatedClient.getSql().transaction(
+              (sql: ReturnType<typeof isolatedClient.getSql>) => sql`
+                SELECT 'maintenance' AS source
+              `,
+            ),
+        ),
+      ).resolves.toEqual([{ source: "maintenance" }]);
+
+      expect(postgresFactory).toHaveBeenCalledTimes(2);
+      expect(runtime.pg.reserve).toHaveBeenCalledOnce();
+      expect(runtime.reserved.begin).toHaveBeenCalledOnce();
+      expect(runtime.reserved.release).toHaveBeenCalledOnce();
+      expect(maintenance.pg.reserve).toHaveBeenCalledOnce();
+      expect(maintenance.reserved.begin).toHaveBeenCalledOnce();
+      expect(maintenance.reserved.release).toHaveBeenCalledOnce();
+      expect(runtime.statements[0].params.slice(0, 3)).toEqual([
+        "tenant-a",
+        "false",
+        "",
+      ]);
+      expect(maintenance.statements[0].params.slice(0, 3)).toEqual([
+        "",
+        "true",
+        "unit-test maintenance lookup",
+      ]);
+    } finally {
+      consoleInfo.mockRestore();
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it("times out a queued reservation and releases a slot granted after the deadline", async () => {
+    vi.useFakeTimers();
+    const pool = createMockPoolClient([{ ok: true }]);
+    let grantReservation: (reserved: typeof pool.reserved) => void = () =>
+      undefined;
+    const pendingReservation = new Promise<typeof pool.reserved>((resolve) => {
+      grantReservation = resolve;
+    });
+    pool.pg.reserve.mockImplementation(() => pendingReservation);
+    vi.doMock("postgres", () => ({ default: vi.fn(() => pool.pg) }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "1000");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      const query = isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+        isolatedClient.getSql()`SELECT 1`,
+      );
+      const rejection = expect(query).rejects.toMatchObject({
+        code: "DATABASE_ACQUIRE_TIMEOUT",
+        message: "Database connection acquisition timed out after 1000ms.",
+      });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await rejection;
+      expect(pool.reserved.begin).not.toHaveBeenCalled();
+      expect(pool.reserved.release).not.toHaveBeenCalled();
+
+      grantReservation(pool.reserved);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(pool.reserved.begin).not.toHaveBeenCalled();
+      expect(pool.reserved.release).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
+      vi.resetModules();
+    }
+  });
+
+  it("releases an acquired slot exactly once when a callback transaction throws", async () => {
+    const pool = createMockPoolClient([]);
+    vi.doMock("postgres", () => ({ default: vi.fn(() => pool.pg) }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql().transaction(() => {
+            throw new Error("transaction callback failed");
+          }),
+        ),
+      ).rejects.toThrow("transaction callback failed");
+
+      expect(pool.pg.reserve).toHaveBeenCalledOnce();
+      expect(pool.reserved.begin).toHaveBeenCalledOnce();
+      expect(pool.reserved.release).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it("propagates an early reservation failure without beginning or releasing", async () => {
+    const pool = createMockPoolClient([]);
+    const reservationError = new Error("pool connection failed");
+    pool.pg.reserve.mockRejectedValue(reservationError);
+    vi.doMock("postgres", () => ({ default: vi.fn(() => pool.pg) }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "5000");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql()`SELECT 1`,
+        ),
+      ).rejects.toBe(reservationError);
+
+      expect(pool.pg.reserve).toHaveBeenCalledOnce();
+      expect(pool.reserved.begin).not.toHaveBeenCalled();
+      expect(pool.reserved.release).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+});
+
+function createMockPoolClient(resultRows: Record<string, unknown>[]) {
+  const statements: Array<{ text: string; params: unknown[] }> = [];
+  const transactionSql = Object.assign(
+    vi.fn((strings: TemplateStringsArray, ...params: unknown[]) => {
+      const text = strings.join("?");
+      statements.push({ text, params });
+      return Promise.resolve(
+        text.includes("set_config") ? [] : resultRows,
+      );
+    }),
+    {
+      unsafe: vi.fn(() => Promise.resolve(resultRows)),
+    },
+  );
+  const reserved = {
+    begin: vi.fn(
+      async (callback: (sql: typeof transactionSql) => unknown) =>
+        callback(transactionSql),
+    ),
+    release: vi.fn(),
+  };
+  const pg = Object.assign(vi.fn(), {
+    reserve: vi.fn(() => Promise.resolve(reserved)),
+    end: vi.fn(() => Promise.resolve()),
+  });
+  return { pg, reserved, statements };
+}
 
 describe("database scope application", () => {
   it("sets all transaction-local scope values in one statement", async () => {

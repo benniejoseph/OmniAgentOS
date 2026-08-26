@@ -39,9 +39,10 @@ afterEach(() => {
 describe("release evidence", () => {
   it("serializes collectors to keep shared database pool pressure bounded", async () => {
     const revision = "release-revision";
-    const workerRevision = "worker-revision";
+    const workerRevision = revision;
     vi.stubEnv("VERCEL", "1");
     vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("VERCEL_URL", "release.example.test");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", revision);
     vi.stubEnv("OMNIAGENT_INTERNAL_AUTH_SECRET", "configured");
     vi.stubEnv("CRON_SECRET", "configured");
@@ -131,6 +132,7 @@ describe("release evidence", () => {
           lane,
           protocol: "1",
           revision: workerRevision,
+          target: "https://release.example.test",
           recordedAt: new Date().toISOString(),
         })),
       ),
@@ -159,7 +161,98 @@ describe("release evidence", () => {
       status: "pass",
       details: {
         protocolMatches: true,
+        revisionMatches: true,
+        targetMatches: true,
+      },
+    });
+
+    mocks.getLatestWorkerHeartbeats.mockResolvedValue(
+      ["fast", "background", "maintenance"].map((lane) => ({
+        instanceId: "worker",
+        lane,
+        protocol: "1",
+        revision: "different-release",
+        target: "https://release.example.test",
+        recordedAt: new Date().toISOString(),
+      })),
+    );
+    const mismatched = await getReleaseEvidenceReport("revision-mismatch");
+    expect(mismatched.releaseGate.approved).toBe(false);
+    expect(
+      mismatched.gates.find((gate) => gate.id === "dedicated_worker"),
+    ).toMatchObject({
+      status: "fail",
+      details: {
+        protocolMatches: true,
         revisionMatches: false,
+        targetMatches: true,
+      },
+    });
+
+    mocks.getLatestWorkerHeartbeats.mockResolvedValue(
+      ["fast", "background", "maintenance"].map((lane) => ({
+        instanceId: "worker",
+        lane,
+        protocol: "1",
+        revision,
+        target: "https://staged.example.test",
+        recordedAt: new Date().toISOString(),
+      })),
+    );
+    const stagedReady = await getReleaseEvidenceReport(
+      "target-cache-isolation",
+      { expectedWorkerTarget: "https://staged.example.test" },
+    );
+    expect(stagedReady.releaseGate.approved).toBe(true);
+    expect(
+      stagedReady.gates.find((gate) => gate.id === "dedicated_worker"),
+    ).toMatchObject({
+      status: "pass",
+      details: { targetMatches: true },
+    });
+
+    const canonicalMismatch = await getReleaseEvidenceReport(
+      "target-cache-isolation",
+      { expectedWorkerTarget: "https://release.example.test" },
+    );
+    expect(canonicalMismatch.releaseGate.approved).toBe(false);
+    expect(
+      canonicalMismatch.gates.find((gate) => gate.id === "dedicated_worker"),
+    ).toMatchObject({
+      status: "fail",
+      details: {
+        protocolMatches: true,
+        revisionMatches: true,
+        targetMatches: false,
+      },
+    });
+
+    mocks.getLatestWorkerHeartbeats.mockResolvedValue(
+      ["fast", "background", "maintenance"].map((lane) => ({
+        instanceId: "worker",
+        lane,
+        protocol: "1",
+        revision,
+        target: "https://release.example.test",
+        recordedAt: new Date().toISOString(),
+      })),
+    );
+    const canonicalTarget = await getReleaseEvidenceReport(
+      "target-cache-isolation",
+      {
+        force: true,
+        expectedWorkerTarget: "https://release.example.test",
+      },
+    );
+    expect(canonicalTarget.releaseGate.approved).toBe(true);
+    expect(
+      canonicalTarget.gates.find((gate) => gate.id === "dedicated_worker"),
+    ).toMatchObject({
+      status: "pass",
+      details: {
+        protocolMatches: true,
+        revisionMatches: true,
+        targetMatches: true,
       },
     });
   });
