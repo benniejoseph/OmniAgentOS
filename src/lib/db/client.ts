@@ -1188,11 +1188,12 @@ async function withReservedDatabaseConnection<T>(
   pg: AnyPg,
   operation: (reserved: AnyPg) => Promise<T>,
 ): Promise<T> {
-  const reserved = await reserveDatabaseConnection(pg);
+  const { reserved, releaseAdmission } = await reserveDatabaseConnection(pg);
   try {
     return await operation(reserved);
   } finally {
     releaseReservedDatabaseConnection(reserved);
+    releaseAdmission();
   }
 }
 
@@ -1218,8 +1219,127 @@ async function withReservedDatabaseTransaction<T>(
   });
 }
 
-async function reserveDatabaseConnection(pg: AnyPg): Promise<AnyPg> {
+type DatabaseAdmissionGate = {
+  active: number;
+  capacity: number;
+  waiters: DatabaseAdmissionWaiter[];
+};
+
+type DatabaseAdmissionWaiter = {
+  canceled: boolean;
+  grant: () => boolean;
+  timer?: ReturnType<typeof setTimeout>;
+};
+
+type DatabaseAdmissionPermit = {
+  release: () => void;
+};
+
+const databaseAdmissionGates = new WeakMap<object, DatabaseAdmissionGate>();
+
+function databaseAcquireTimeoutError(timeoutMs: number) {
+  return Object.assign(
+    new Error(
+      `Database connection acquisition timed out after ${timeoutMs}ms.`,
+    ),
+    { code: "DATABASE_ACQUIRE_TIMEOUT" },
+  );
+}
+
+function getDatabaseAdmissionGate(pg: AnyPg): DatabaseAdmissionGate {
+  const key = pg as object;
+  const existing = databaseAdmissionGates.get(key);
+  if (existing) return existing;
+
+  const gate = {
+    active: 0,
+    capacity: getDatabasePoolMax(),
+    waiters: [],
+  } satisfies DatabaseAdmissionGate;
+  databaseAdmissionGates.set(key, gate);
+  return gate;
+}
+
+function createDatabaseAdmissionPermit(
+  gate: DatabaseAdmissionGate,
+): DatabaseAdmissionPermit {
+  let released = false;
+  return {
+    release: () => {
+      if (released) return;
+      released = true;
+      gate.active = Math.max(0, gate.active - 1);
+      drainDatabaseAdmissionGate(gate);
+    },
+  };
+}
+
+function drainDatabaseAdmissionGate(gate: DatabaseAdmissionGate) {
+  while (gate.active < gate.capacity && gate.waiters.length > 0) {
+    const waiter = gate.waiters.shift();
+    if (!waiter || waiter.canceled) continue;
+    if (!waiter.grant()) continue;
+    gate.active += 1;
+  }
+}
+
+function acquireDatabaseAdmission(
+  pg: AnyPg,
+  deadline: number,
+  timeoutMs: number,
+): Promise<DatabaseAdmissionPermit> {
+  const gate = getDatabaseAdmissionGate(pg);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const waiter: DatabaseAdmissionWaiter = {
+      canceled: false,
+      grant: () => {
+        if (settled || Date.now() >= deadline) {
+          if (!settled) {
+            settled = true;
+            waiter.canceled = true;
+            if (waiter.timer) clearTimeout(waiter.timer);
+            reject(databaseAcquireTimeoutError(timeoutMs));
+          }
+          return false;
+        }
+        settled = true;
+        if (waiter.timer) clearTimeout(waiter.timer);
+        resolve(createDatabaseAdmissionPermit(gate));
+        return true;
+      },
+    };
+
+    if (gate.active < gate.capacity && waiter.grant()) {
+      gate.active += 1;
+      return;
+    }
+    if (settled) return;
+
+    gate.waiters.push(waiter);
+    waiter.timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      waiter.canceled = true;
+      const waiterIndex = gate.waiters.indexOf(waiter);
+      if (waiterIndex >= 0) gate.waiters.splice(waiterIndex, 1);
+      reject(databaseAcquireTimeoutError(timeoutMs));
+    }, Math.max(0, deadline - Date.now()));
+  });
+}
+
+async function reserveDatabaseConnection(pg: AnyPg): Promise<{
+  reserved: AnyPg;
+  releaseAdmission: () => void;
+}> {
   const timeoutMs = getDatabaseAcquireTimeoutMs();
+  const deadline = Date.now() + timeoutMs;
+  const admission = await acquireDatabaseAdmission(pg, deadline, timeoutMs);
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    admission.release();
+    throw databaseAcquireTimeoutError(timeoutMs);
+  }
   const pendingReservation = Promise.resolve().then(() => pg.reserve());
 
   return new Promise((resolve, reject) => {
@@ -1227,34 +1347,38 @@ async function reserveDatabaseConnection(pg: AnyPg): Promise<AnyPg> {
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(
-        Object.assign(
-          new Error(
-            `Database connection acquisition timed out after ${timeoutMs}ms.`,
-          ),
-          { code: "DATABASE_ACQUIRE_TIMEOUT" },
-        ),
-      );
-    }, timeoutMs);
+      reject(databaseAcquireTimeoutError(timeoutMs));
+    }, remainingMs);
 
     void pendingReservation.then(
       (reserved) => {
-        if (settled) {
+        if (settled || Date.now() >= deadline) {
           // postgres.js does not expose cancellation for a queued reserve(). If
           // the pool grants this slot after our deadline, release it immediately
           // so a timed-out request cannot permanently consume pool capacity.
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            reject(databaseAcquireTimeoutError(timeoutMs));
+          }
           releaseReservedDatabaseConnection(reserved);
+          admission.release();
           return;
         }
         settled = true;
         clearTimeout(timer);
-        resolve(reserved);
+        resolve({ reserved, releaseAdmission: admission.release });
       },
       (error) => {
+        admission.release();
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        reject(error);
+        reject(
+          Date.now() >= deadline
+            ? databaseAcquireTimeoutError(timeoutMs)
+            : error,
+        );
       },
     );
   });
