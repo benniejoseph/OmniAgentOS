@@ -8,6 +8,7 @@ const baseUrl = normalizeBaseUrl(
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.BASE_URL,
 );
+const workerTarget = baseUrl ? new URL(baseUrl).origin : undefined;
 const internalSecret = process.env.OMNIAGENT_INTERNAL_AUTH_SECRET?.trim();
 const vercelBypassSecret =
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
@@ -28,7 +29,11 @@ const intervalMs = normalizePositiveInteger(
 );
 const backgroundIntervalMs = normalizePositiveInteger(
   process.env.OMNIAGENT_WORKER_BACKGROUND_INTERVAL_MS,
-  5_000,
+  15_000,
+);
+const backgroundStartupDelayMs = normalizeNonNegativeInteger(
+  process.env.OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS,
+  Math.floor(backgroundIntervalMs / 2),
 );
 const maintenanceIntervalMs = Math.max(
   normalizePositiveInteger(
@@ -36,6 +41,10 @@ const maintenanceIntervalMs = Math.max(
     60_000,
   ),
   30_000,
+);
+const maintenanceStartupDelayMs = normalizeNonNegativeInteger(
+  process.env.OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS,
+  maintenanceIntervalMs,
 );
 const requestTimeoutMs = Math.min(
   normalizePositiveInteger(process.env.OMNIAGENT_WORKER_REQUEST_TIMEOUT_MS, 300_000),
@@ -51,6 +60,10 @@ const enableRetention = process.env.OMNIAGENT_WORKER_RETENTION !== "false";
 const retentionIntervalMs = Math.max(
   normalizePositiveInteger(process.env.OMNIAGENT_WORKER_RETENTION_INTERVAL_MS, 6 * 60 * 60 * 1_000),
   60 * 60 * 1_000,
+);
+const retentionStartupDelayMs = normalizeNonNegativeInteger(
+  process.env.OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS,
+  10 * 60 * 1_000,
 );
 const laneHeartbeats = new Map();
 let heartbeatWrite = Promise.resolve();
@@ -81,12 +94,15 @@ console.log(JSON.stringify({
   baseUrl,
   intervalMs,
   backgroundIntervalMs,
+  backgroundStartupDelayMs,
   maintenanceIntervalMs,
+  maintenanceStartupDelayMs,
   limit,
   slo: enableSlo,
   alerts: enableAlerts,
   retention: enableRetention,
   retentionIntervalMs,
+  retentionStartupDelayMs,
   workerProtocol,
   releaseRevision,
   instanceId,
@@ -98,26 +114,32 @@ await Promise.all([
     slo: false,
     alerts: false,
     timeBudgetMs: 45_000,
-  }),
+  }, 0),
   runTickLane("background", backgroundIntervalMs, {
     limit: 1,
     slo: false,
     alerts: false,
     timeBudgetMs: 240_000,
-  }),
+  }, backgroundStartupDelayMs),
   runTickLane("maintenance", maintenanceIntervalMs, {
     limit,
     slo: enableSlo,
     alerts: enableAlerts,
     maintenanceTenantLimit: limit,
     timeBudgetMs: 240_000,
-  }),
-  enableRetention ? runRetentionLoop() : Promise.resolve(),
+  }, maintenanceStartupDelayMs),
+  enableRetention
+    ? runRetentionLoop(retentionStartupDelayMs)
+    : Promise.resolve(),
 ]);
 
 console.log(JSON.stringify({ level: "info", message: "Asael worker stopped." }));
 
-async function runTickLane(lane, cadenceMs, laneOptions) {
+async function runTickLane(lane, cadenceMs, laneOptions, startupDelayMs) {
+  if (startupDelayMs > 0) {
+    await sleep(startupDelayMs, shutdownController.signal);
+  }
+  let startup = true;
   let tenantCursor;
   while (!shuttingDown) {
     const startedAt = Date.now();
@@ -129,11 +151,13 @@ async function runTickLane(lane, cadenceMs, laneOptions) {
           ...laneOptions,
           scope: "all_tenants",
           lane,
+          ...(startup ? { startup: true } : {}),
           ...(lane === "maintenance" ? { tenantCursor } : {}),
         },
         1_000_000,
       );
       if (response.ok) {
+        startup = false;
         if (lane === "maintenance") {
           tenantCursor =
             typeof body?.nextTenantCursor === "string"
@@ -176,8 +200,9 @@ async function runTickLane(lane, cadenceMs, laneOptions) {
         error: error instanceof Error ? error.message : "Unknown worker error.",
       }));
     }
-    const remainingMs = Math.max(0, cadenceMs - (Date.now() - startedAt));
-    await sleep(remainingMs, shutdownController.signal);
+    if (!shuttingDown) {
+      await sleep(cadenceMs, shutdownController.signal);
+    }
   }
 }
 
@@ -203,8 +228,8 @@ async function recordLaneState(lane, status, startedAt) {
   await heartbeatWrite;
 }
 
-async function runRetentionLoop() {
-  let delayMs = 0;
+async function runRetentionLoop(startupDelayMs) {
+  let delayMs = startupDelayMs;
   while (!shuttingDown) {
     await sleep(delayMs, shutdownController.signal);
     if (shuttingDown) {
@@ -256,6 +281,9 @@ function workerHeaders() {
     "x-omni-user-role": "system",
     "x-omni-worker-instance": instanceId,
     "x-omni-worker-protocol": workerProtocol,
+    ...(workerTarget
+      ? { "x-omni-worker-target": workerTarget }
+      : {}),
     ...(vercelBypassSecret
       ? { "x-vercel-protection-bypass": vercelBypassSecret }
       : {}),
@@ -284,6 +312,11 @@ function normalizeBaseUrl(value) {
 function normalizePositiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizeNonNegativeInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function sleep(ms, signal) {

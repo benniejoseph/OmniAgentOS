@@ -2,6 +2,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_TIMEOUT_MS = 300_000;
 const TRANSPORT_RETRY_DELAY_MS = 250;
 const MAX_FAST_TRANSPORT_FAILURE_MS = 10_000;
+const DEFAULT_MAX_DISCARDED_RESPONSE_BYTES = 1_000_000;
 const retryableTransportCodes = new Set([
   "EAI_AGAIN",
   "ECONNREFUSED",
@@ -129,6 +130,44 @@ export async function smokeFetch(baseUrl, path, init = {}) {
 export function failSmoke(message) {
   console.error(`FAIL ${message}`);
   process.exit(1);
+}
+
+export async function discardSmokeResponseBody(
+  response,
+  {
+    label = "Smoke response",
+    maxBytes = DEFAULT_MAX_DISCARDED_RESPONSE_BYTES,
+  } = {},
+) {
+  const boundedMaxBytes = positiveInteger(
+    maxBytes,
+    DEFAULT_MAX_DISCARDED_RESPONSE_BYTES,
+    10_000_000,
+  );
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > boundedMaxBytes
+  ) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error(`${label} returned an unexpectedly large response body.`);
+  }
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  let receivedBytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      receivedBytes += value.byteLength;
+      if (receivedBytes > boundedMaxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`${label} returned an unexpectedly large response body.`);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 export function positiveInteger(value, fallback, maximum = Number.MAX_SAFE_INTEGER) {

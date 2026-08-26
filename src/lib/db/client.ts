@@ -50,6 +50,9 @@ const databaseScope = new AsyncLocalStorage<DatabaseScope>();
 const DEFAULT_SCHEMA_VERIFICATION_TIMEOUT_MS = 10_000;
 const MIN_SCHEMA_VERIFICATION_TIMEOUT_MS = 1_000;
 const MAX_SCHEMA_VERIFICATION_TIMEOUT_MS = 60_000;
+const DEFAULT_DATABASE_ACQUIRE_TIMEOUT_MS = 5_000;
+const MIN_DATABASE_ACQUIRE_TIMEOUT_MS = 500;
+const MAX_DATABASE_ACQUIRE_TIMEOUT_MS = 30_000;
 const DEFAULT_DATABASE_STATEMENT_TIMEOUT_MS = 15_000;
 const MIN_DATABASE_STATEMENT_TIMEOUT_MS = 1_000;
 const MAX_DATABASE_STATEMENT_TIMEOUT_MS = 60_000;
@@ -143,6 +146,19 @@ export function getDatabasePoolMax() {
   // Production runtimes can serve overlapping requests in one process. A
   // single connection lets a long workflow tick starve unrelated reads.
   return process.env.NODE_ENV === "production" ? 4 : 1;
+}
+
+export function getDatabaseAcquireTimeoutMs() {
+  const configured = Number(
+    process.env.OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS,
+  );
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_DATABASE_ACQUIRE_TIMEOUT_MS;
+  }
+  return Math.min(
+    Math.max(Math.round(configured), MIN_DATABASE_ACQUIRE_TIMEOUT_MS),
+    MAX_DATABASE_ACQUIRE_TIMEOUT_MS,
+  );
 }
 
 export function getDatabaseSchemaVerificationTimeoutMs() {
@@ -1123,10 +1139,12 @@ function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): Sq
         return await fn(pg);
       }
       const scope = databaseScope.getStore();
-      return await pg.begin(async (tx: AnyPg) => {
-        await applyDatabaseScope(tx, scope);
-        return fn(tx);
-      });
+      return await withReservedDatabaseConnection(pg, (reserved) =>
+        reserved.begin(async (tx: AnyPg) => {
+          await applyDatabaseScope(tx, scope);
+          return fn(tx);
+        })
+      );
     } finally {
       recordDatabaseTiming(performance.now() - startedAt, mutation);
     }
@@ -1157,14 +1175,79 @@ function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): Sq
     if (typeof queriesOrFn !== "function") {
       throw new Error("Database transactions require an async callback.");
     }
-    return pg.begin(async (tx: AnyPg) => {
-      await applyDatabaseScope(tx, scope);
-      const txScoped = createTenantScopedSqlClient(tx, true);
-      return (queriesOrFn as (s: SqlClient) => unknown)(txScoped);
-    });
+    return withReservedDatabaseConnection(pg, (reserved) =>
+      reserved.begin(async (tx: AnyPg) => {
+        await applyDatabaseScope(tx, scope);
+        const txScoped = createTenantScopedSqlClient(tx, true);
+        return (queriesOrFn as (s: SqlClient) => unknown)(txScoped);
+      })
+    );
   };
 
   return scoped;
+}
+
+async function withReservedDatabaseConnection<T>(
+  pg: AnyPg,
+  operation: (reserved: AnyPg) => Promise<T>,
+): Promise<T> {
+  const reserved = await reserveDatabaseConnection(pg);
+  try {
+    return await operation(reserved);
+  } finally {
+    releaseReservedDatabaseConnection(reserved);
+  }
+}
+
+async function reserveDatabaseConnection(pg: AnyPg): Promise<AnyPg> {
+  const timeoutMs = getDatabaseAcquireTimeoutMs();
+  const pendingReservation = Promise.resolve().then(() => pg.reserve());
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(
+        Object.assign(
+          new Error(
+            `Database connection acquisition timed out after ${timeoutMs}ms.`,
+          ),
+          { code: "DATABASE_ACQUIRE_TIMEOUT" },
+        ),
+      );
+    }, timeoutMs);
+
+    void pendingReservation.then(
+      (reserved) => {
+        if (settled) {
+          // postgres.js does not expose cancellation for a queued reserve(). If
+          // the pool grants this slot after our deadline, release it immediately
+          // so a timed-out request cannot permanently consume pool capacity.
+          releaseReservedDatabaseConnection(reserved);
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(reserved);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function releaseReservedDatabaseConnection(reserved: AnyPg) {
+  try {
+    reserved.release();
+  } catch {
+    // A closed/broken connection is already unavailable to the pool. Never let
+    // release cleanup replace the query result or the acquisition-timeout error.
+  }
 }
 
 export function isDatabaseMutation(statement: string) {

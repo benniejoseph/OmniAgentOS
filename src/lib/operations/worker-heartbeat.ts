@@ -13,6 +13,7 @@ export type WorkerHeartbeat = {
   lane: WorkerLane;
   protocol?: string;
   revision?: string;
+  target?: string;
   recordedAt: string;
 };
 
@@ -34,12 +35,14 @@ export async function recordWorkerHeartbeat(input: {
   lane: WorkerLane;
   protocol?: string;
   revision?: string;
+  target?: string;
 }) {
   const heartbeat: WorkerHeartbeat = {
     instanceId: input.instanceId.slice(0, 160),
     lane: input.lane,
     protocol: input.protocol?.slice(0, 40) || undefined,
     revision: input.revision?.slice(0, 160) || undefined,
+    target: normalizeWorkerTarget(input.target),
     recordedAt: new Date().toISOString(),
   };
   if (hasDatabaseUrl()) {
@@ -64,6 +67,7 @@ export async function recordWorkerHeartbeat(input: {
               lane: heartbeat.lane,
               protocol: heartbeat.protocol,
               revision: heartbeat.revision,
+              target: heartbeat.target,
             }]}::jsonb,
             '{}'::jsonb,
             '[]'::jsonb,
@@ -132,6 +136,7 @@ export async function getLatestWorkerHeartbeats() {
           revision: component.revision
             ? String(component.revision)
             : undefined,
+          target: normalizeWorkerTarget(component.target),
           recordedAt:
             row.created_at instanceof Date
               ? row.created_at.toISOString()
@@ -163,4 +168,17 @@ function workerLane(value: unknown): WorkerLane {
     value === "maintenance"
     ? value
     : "all";
+}
+
+function normalizeWorkerTarget(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return undefined;
+    }
+    return url.origin.slice(0, 300);
+  } catch {
+    return undefined;
+  }
 }

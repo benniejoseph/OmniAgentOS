@@ -25,7 +25,10 @@ async function GETHandler(request: Request) {
   try {
     const force =
       new URL(request.url).searchParams.get("refresh") === "true";
-    const report = await getReleaseEvidenceReport(context.tenantId, { force });
+    const report = await getReleaseEvidenceReport(context.tenantId, {
+      force,
+      expectedWorkerTarget: new URL(request.url).origin,
+    });
     await recordRuntimeEventSafely({
       category: "api",
       action: "release.evidence.read",

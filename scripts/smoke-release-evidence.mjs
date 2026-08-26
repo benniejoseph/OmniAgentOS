@@ -17,7 +17,7 @@ if (!headers) {
   failSmoke("release evidence smoke requires valid administrator credentials or SMOKE_INTERNAL_AUTH_SECRET.");
 }
 
-const response = await request("/api/release/evidence", { headers });
+const response = await request("/api/release/evidence?refresh=true", { headers });
 const json = await readJson(response);
 const report = json?.report;
 const gateById = new Map((report?.gates || []).map((gate) => [gate.id, gate]));

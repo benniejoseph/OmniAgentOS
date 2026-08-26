@@ -200,6 +200,7 @@ describe("paired production deployment", () => {
       workspaceSession,
       workerScript,
       workerImage,
+      releaseEvidenceSmoke,
     ] =
       await Promise.all([
         readFile("scripts/deploy-production.mjs", "utf8"),
@@ -211,6 +212,7 @@ describe("paired production deployment", () => {
         readFile("src/lib/auth/workspace-session.ts", "utf8"),
         readFile("scripts/worker.mjs", "utf8"),
         readFile("Dockerfile.worker", "utf8"),
+        readFile("scripts/smoke-release-evidence.mjs", "utf8"),
       ]);
 
     expect(deployScript).toContain('"--porcelain"');
@@ -243,6 +245,9 @@ describe("paired production deployment", () => {
     expect(evaluationSmoke).toContain('method: "POST"');
     expect(workerScript).toContain('recordLaneState(lane, "running"');
     expect(workerImage).toContain("['fast','background','maintenance'].every");
+    expect(releaseEvidenceSmoke).toContain(
+      'request("/api/release/evidence?refresh=true"',
+    );
   });
 });
 

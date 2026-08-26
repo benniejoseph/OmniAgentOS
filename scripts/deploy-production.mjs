@@ -40,6 +40,12 @@ const readinessRequestTimeoutMs = boundedInteger(
   500,
   30_000,
 );
+const workerStartupSettleMs = boundedInteger(
+  process.env.OMNIAGENT_DEPLOY_WORKER_STARTUP_SETTLE_MS,
+  75_000,
+  0,
+  180_000,
+);
 const vercelEnvironment = {
   VERCEL_ORG_ID,
   VERCEL_PROJECT_ID,
@@ -79,6 +85,7 @@ if (dryRun) {
   const staged = "https://staged-deployment.example";
   printDryRunReadinessWait("staged web", staged, revision);
   printDryRun("fly", workerDeployArgs(staged));
+  printDryRunWorkerStartupWait("staged worker");
   printVerificationCommands(staged);
   printDryRun(
     "vercel",
@@ -97,6 +104,7 @@ if (dryRun) {
       "https://production.example",
     ),
   );
+  printDryRunWorkerStartupWait("canonical worker");
   printVerificationCommands("https://production.example");
   process.exit(0);
 }
@@ -144,6 +152,7 @@ try {
   workerMutationStarted = true;
   await run("fly", workerDeployArgs(stagedBaseUrl));
   const stagedWorkerImage = await getCurrentWorkerImage();
+  await waitForWorkerStartupWindow("Staged worker");
   await runVerificationCommands(stagedBaseUrl);
 
   // Only expose the web release after the exact staged web/worker pair passes.
@@ -161,6 +170,7 @@ try {
     "fly",
     workerImageDeployArgs(stagedWorkerImage, productionBaseUrl),
   );
+  await waitForWorkerStartupWindow("Canonical worker");
   await runVerificationCommands(productionBaseUrl);
 } catch (error) {
   const rollbackErrors = [];
@@ -611,6 +621,20 @@ function printDryRunReadinessWait(label, baseUrl, expectedRevision) {
   console.log(
     `DRY RUN wait for ${label} readiness at ${baseUrl}/api/health revision=${expectedRevision} timeout=${readinessTimeoutMs}ms`,
   );
+}
+
+function printDryRunWorkerStartupWait(label) {
+  console.log(
+    `DRY RUN wait for ${label} startup registration window ${workerStartupSettleMs}ms`,
+  );
+}
+
+async function waitForWorkerStartupWindow(label) {
+  if (workerStartupSettleMs <= 0) return;
+  console.log(
+    `${label} is settling for ${workerStartupSettleMs}ms before target-specific verification.`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, workerStartupSettleMs));
 }
 
 function normalizeReadinessProbeUrl(value) {
