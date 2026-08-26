@@ -32,8 +32,8 @@ export default defineConfig({
   webServer: startsManagedServer
     ? {
         command: process.env.CI
-          ? `npm run start -- --hostname 127.0.0.1 --port ${port}`
-          : `npm run dev -- --hostname 127.0.0.1 --port ${port}`,
+          ? `node node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port ${port}`
+          : `node node_modules/next/dist/bin/next dev --hostname 127.0.0.1 --port ${port}`,
         url: managedBaseUrl,
         reuseExistingServer: process.env.PLAYWRIGHT_REUSE_SERVER === "true",
         timeout: 120_000,
