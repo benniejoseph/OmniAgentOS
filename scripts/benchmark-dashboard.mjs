@@ -39,11 +39,15 @@ const requestedSamples = positiveInteger(
   200,
 );
 const samples = enforce ? Math.max(requestedSamples, 20) : requestedSamples;
-const warmups = positiveInteger(
+const requestedWarmups = positiveInteger(
   process.env.BENCHMARK_BROWSER_WARMUPS,
   2,
   20,
 );
+if (enforce && requestedWarmups !== 2) {
+  failSmoke("enforced dashboard benchmarks require exactly two warmups.");
+}
+const warmups = Math.max(requestedWarmups, 2);
 const bypassSecret =
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim();
 const browser = await chromium.launch({ headless: true });
@@ -88,8 +92,15 @@ try {
 
   const page = await context.newPage();
   const firstLoad = await measureDashboard(page);
+  let recoveryLoad;
   for (let index = 1; index < warmups; index += 1) {
-    await measureDashboard(page);
+    const warmup = await measureDashboard(page);
+    if (index === 1) {
+      recoveryLoad = warmup;
+    }
+  }
+  if (!recoveryLoad) {
+    failSmoke("dashboard benchmark did not capture a recovery load.");
   }
   const measurements = [];
   for (let index = 0; index < samples; index += 1) {
@@ -99,14 +110,21 @@ try {
     name: "dashboard-usable",
     path: "/app",
     requestedSamples,
+    requestedWarmups,
     enforced: enforce,
     ...evaluateDashboardReleaseGate({
       firstLoad,
+      recoveryLoad,
       hotMeasurements: measurements,
       warmups,
       minimumSamples: enforce ? 20 : 1,
       budgets: {
+        firstLoadTargetMs: budgets.releaseDashboardFirstLoadTargetMs,
         firstLoadMs: budgets.releaseDashboardFirstLoadMs,
+        firstResponseMs: budgets.releaseDashboardFirstResponseMs,
+        firstPostResponseReadyMs:
+          budgets.releaseDashboardFirstPostResponseReadyMs,
+        recoveryLoadMs: budgets.releaseDashboardRecoveryMs,
         hotP50Ms: budgets.dashboardUsableMs,
         hotP95Ms: budgets.releaseDashboardUsableMs,
         hotMaxMs: budgets.releaseDashboardMaxMs,
@@ -114,16 +132,28 @@ try {
       },
     }),
   };
+  if (!result.firstLoadTargetMet && result.checks.firstLoad) {
+    console.warn(
+      `WARN ${result.name}: first navigation ${result.firstLoadMs}ms exceeded the ${result.budgets.firstLoadTargetMs}ms optimization target but remained within the ${result.budgets.firstLoadMs}ms release ceiling.`,
+    );
+  }
   console.log(
-    `${result.passed ? "PASS" : "FAIL"} ${result.name}: n=${result.samples} warmups=${result.warmups} first=${result.firstLoadMs}ms/${result.budgets.firstLoadMs}ms; hot p50=${result.p50Ms}ms/${result.budgets.hotP50Ms}ms p95=${result.p95Ms}ms/${result.budgets.hotP95Ms}ms max=${result.maxMs}ms/${result.budgets.hotMaxMs}ms; document p95=${result.documentP95Ms}ms/${result.budgets.documentP95Ms}ms; Server-Timing=${result.serverTiming.coverage} (${result.serverTiming.samples}/${result.samples})`,
+    `${result.passed ? "PASS" : "FAIL"} ${result.name}: n=${result.samples} warmups=${result.warmups} first=${result.firstLoadMs}ms/${result.budgets.firstLoadMs}ms (target ${result.budgets.firstLoadTargetMs}ms; response ${result.firstResponseMs}ms/${result.budgets.firstResponseMs}ms; post-response-ready ${result.firstPostResponseReadyMs}ms/${result.budgets.firstPostResponseReadyMs}ms) recovery=${result.recoveryLoadMs}ms/${result.budgets.recoveryLoadMs}ms; hot p50=${result.p50Ms}ms/${result.budgets.hotP50Ms}ms p95=${result.p95Ms}ms/${result.budgets.hotP95Ms}ms max=${result.maxMs}ms/${result.budgets.hotMaxMs}ms; document p95=${result.documentP95Ms}ms/${result.budgets.documentP95Ms}ms; Server-Timing=${result.serverTiming.coverage} (${result.serverTiming.samples}/${result.samples})`,
   );
   console.log(JSON.stringify({
     event: "benchmark.dashboard.samples",
     requestedSamples: result.requestedSamples,
     samples: result.samples,
     minimumSamples: result.minimumSamples,
+    requestedWarmups: result.requestedWarmups,
     warmups: result.warmups,
     firstLoad: result.firstLoad,
+    firstLoadMs: result.firstLoadMs,
+    firstLoadTargetMet: result.firstLoadTargetMet,
+    firstResponseMs: result.firstResponseMs,
+    firstPostResponseReadyMs: result.firstPostResponseReadyMs,
+    recoveryLoad: result.recoveryLoad,
+    recoveryLoadMs: result.recoveryLoadMs,
     hotDurationsMs: result.hotDurationsMs,
     documentDurationsMs: result.documentDurationsMs,
     serverDurationsMs: result.serverDurationsMs,
