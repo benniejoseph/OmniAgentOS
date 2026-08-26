@@ -19,6 +19,12 @@ export type WorkerHeartbeat = {
 
 export type WorkerLane = "fast" | "background" | "maintenance" | "all";
 
+type WorkerHeartbeatFilter = {
+  protocol?: string;
+  revision?: string;
+  target?: string;
+};
+
 export function workerHeartbeatId(instanceId: string, lane: WorkerLane = "all") {
   return `worker_heartbeat_${createHash("sha256")
     .update(`${instanceId.trim() || "dedicated-worker"}:${lane}`)
@@ -101,7 +107,9 @@ export async function recordWorkerHeartbeat(input: {
   return heartbeat;
 }
 
-export async function getLatestWorkerHeartbeats() {
+export async function getLatestWorkerHeartbeats(
+  filter: WorkerHeartbeatFilter = {},
+) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await runWithDatabaseSystemScope(
@@ -115,8 +123,7 @@ export async function getLatestWorkerHeartbeats() {
           LIMIT 100
         `,
     );
-    const latestByLane = new Map<WorkerLane, WorkerHeartbeat>();
-    for (const row of rows) {
+    const candidates = rows.map((row) => {
       const component =
         Array.isArray(row?.components) &&
         row.components[0] &&
@@ -124,34 +131,61 @@ export async function getLatestWorkerHeartbeats() {
           ? row.components[0] as Record<string, unknown>
           : {};
       const lane = workerLane(component.lane);
-      if (latestByLane.has(lane)) {
-        continue;
-      }
-      latestByLane.set(lane, {
-          instanceId: String(component.instanceId || "unknown"),
-          lane,
-          protocol: component.protocol
-            ? String(component.protocol)
-            : undefined,
-          revision: component.revision
-            ? String(component.revision)
-            : undefined,
-          target: normalizeWorkerTarget(component.target),
-          recordedAt:
-            row.created_at instanceof Date
-              ? row.created_at.toISOString()
-              : new Date(String(row.created_at)).toISOString(),
-      });
-    }
-    return [...latestByLane.values()];
+      return {
+        instanceId: String(component.instanceId || "unknown"),
+        lane,
+        protocol: component.protocol
+          ? String(component.protocol)
+          : undefined,
+        revision: component.revision
+          ? String(component.revision)
+          : undefined,
+        target: normalizeWorkerTarget(component.target),
+        recordedAt:
+          row.created_at instanceof Date
+            ? row.created_at.toISOString()
+            : new Date(String(row.created_at)).toISOString(),
+      } satisfies WorkerHeartbeat;
+    });
+    return selectLatestWorkerHeartbeats(candidates, filter);
   }
 
-  return Object.values((
-    await readJsonFile<WorkerHeartbeatLedger>(
-      getDataPath("worker-heartbeat.json"),
-      {},
-    )
-  ).latestByLane || {});
+  const ledger = await readJsonFile<WorkerHeartbeatLedger>(
+    getDataPath("worker-heartbeat.json"),
+    {},
+  );
+  return selectLatestWorkerHeartbeats(
+    Object.values(ledger.latestByLane || {}),
+    filter,
+  );
+}
+
+export function selectLatestWorkerHeartbeats(
+  candidates: WorkerHeartbeat[],
+  filter: WorkerHeartbeatFilter = {},
+) {
+  const expectedTarget = normalizeWorkerTarget(filter.target);
+  const targetFilterRequested = filter.target !== undefined;
+  const latestByLane = new Map<WorkerLane, WorkerHeartbeat>();
+  for (const heartbeat of candidates) {
+    if (
+      (filter.protocol && heartbeat.protocol !== filter.protocol) ||
+      (filter.revision && heartbeat.revision !== filter.revision) ||
+      (targetFilterRequested &&
+        (!expectedTarget ||
+          normalizeWorkerTarget(heartbeat.target) !== expectedTarget))
+    ) {
+      continue;
+    }
+    const current = latestByLane.get(heartbeat.lane);
+    if (
+      !current ||
+      Date.parse(heartbeat.recordedAt) > Date.parse(current.recordedAt)
+    ) {
+      latestByLane.set(heartbeat.lane, heartbeat);
+    }
+  }
+  return [...latestByLane.values()];
 }
 
 export async function getLatestWorkerHeartbeat() {
