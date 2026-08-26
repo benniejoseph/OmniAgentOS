@@ -203,8 +203,8 @@ if (dryRun) {
     workerDeployArgs(staged, PRODUCTION_BASE_URL),
   );
   printDryRunGatewayPairReadiness("staged gateway", revision);
-  printDryRunPaidOpenAIInference("staged gateway", revision);
   printDryRunWorkerStartupWait("staged worker");
+  printDryRunPaidAgentVerification(staged, revision);
   printVerificationCommands(staged);
   printDryRun(
     "vercel",
@@ -218,8 +218,8 @@ if (dryRun) {
   );
   printDryRun("fly", workerCanonicalTargetArgs());
   printDryRunGatewayPairReadiness("canonical gateway", revision);
-  printDryRunPaidOpenAIInference("canonical gateway", revision);
   printDryRunWorkerStartupWait("canonical worker");
+  printDryRunPaidAgentVerification(PRODUCTION_BASE_URL, revision);
   printVerificationCommands(PRODUCTION_BASE_URL);
   process.exit(0);
 }
@@ -227,7 +227,6 @@ if (dryRun) {
 const releaseConfiguration = validateReleaseConfiguration();
 const productionBaseUrl = releaseConfiguration.baseUrl;
 const openAIGateway = releaseConfiguration.openAIGateway;
-const openAIKey = releaseConfiguration.openAIKey;
 const initialOpenAIGatewayCutover =
   releaseConfiguration.initialOpenAIGatewayCutover;
 const worktreeChanges = await capture("git", [
@@ -294,22 +293,16 @@ try {
   }
   await run("fly", workerDeployArgs(stagedBaseUrl, productionBaseUrl));
   if (openAIGateway) {
-    const readiness = await waitForOpenAIGatewayTokenPair(
+    await waitForOpenAIGatewayTokenPair(
       openAIGateway,
       revision,
       {
         label: "Staged gateway",
       },
     );
-    await runPaidOpenAIGatewayInference({
-      gateway: openAIGateway,
-      openAIKey,
-      expectedRevision: revision,
-      readiness,
-      label: "Staged gateway",
-    });
   }
   await waitForWorkerStartupWindow("Staged worker");
+  await runPaidAgentVerification(stagedBaseUrl);
   await runVerificationCommands(stagedBaseUrl);
 
   // Only expose the web release after the exact staged web/worker pair passes.
@@ -327,22 +320,16 @@ try {
   // restart the co-hosted OpenAI gateway on the single production machine.
   await run("fly", workerCanonicalTargetArgs());
   if (openAIGateway) {
-    const readiness = await waitForOpenAIGatewayTokenPair(
+    await waitForOpenAIGatewayTokenPair(
       openAIGateway,
       revision,
       {
         label: "Canonical gateway",
       },
     );
-    await runPaidOpenAIGatewayInference({
-      gateway: openAIGateway,
-      openAIKey,
-      expectedRevision: revision,
-      readiness,
-      label: "Canonical gateway",
-    });
   }
   await waitForWorkerStartupWindow("Canonical worker");
+  await runPaidAgentVerification(productionBaseUrl);
   await runVerificationCommands(productionBaseUrl);
 } catch (error) {
   const rollbackErrors = [];
@@ -474,10 +461,6 @@ function validateReleaseConfiguration() {
     process.env.OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN,
     OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV,
   );
-  const openAIKey = validateOpenAIKey(
-    process.env.OPENAI_API_KEY,
-    Boolean(openAIGateway),
-  );
   const initialOpenAIGatewayCutover = validateInitialOpenAIGatewayCutover({
     value: process.env.OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER,
     gateway: openAIGateway,
@@ -488,7 +471,6 @@ function validateReleaseConfiguration() {
   }
   return {
     baseUrl,
-    openAIKey,
     initialOpenAIGatewayCutover,
     openAIGateway: openAIGateway
       ? withPreviousGatewayToken(openAIGateway, previousToken)
@@ -900,6 +882,16 @@ async function runVerificationCommands(baseUrl) {
   } finally {
     await rm(sessionDirectory, { recursive: true, force: true });
   }
+}
+
+async function runPaidAgentVerification(baseUrl) {
+  await run("npm", ["run", "smoke:paid-agent"], {
+    environment: {
+      BASE_URL: baseUrl,
+      EXPECTED_REVISION: revision,
+      LIVE_VERIFY_PAID_OPENAI: "CONFIRMED",
+    },
+  });
 }
 
 async function runRollbackVerification(
@@ -1460,10 +1452,12 @@ function printDryRunGatewayPairReadiness(label, expectedRevision) {
   );
 }
 
-function printDryRunPaidOpenAIInference(label, expectedRevision) {
-  console.log(
-    `DRY RUN bounded paid OpenAI inference through ${label} provider=openai model=${paidInferenceModel} maxOutputTokens=${PAID_INFERENCE_MAX_OUTPUT_TOKENS} store=false appData=none revision=${expectedRevision}`,
-  );
+function printDryRunPaidAgentVerification(baseUrl, expectedRevision) {
+  printDryRun("npm", ["run", "smoke:paid-agent"], {
+    BASE_URL: baseUrl,
+    EXPECTED_REVISION: expectedRevision,
+    LIVE_VERIFY_PAID_OPENAI: "CONFIRMED",
+  });
 }
 
 function printDryRunGatewayTokenStage(label) {

@@ -96,16 +96,29 @@ describe("paired production deployment", () => {
       command.includes("fly deploy") &&
       command.includes("OMNIAGENT_WORKER_BASE_URL=https://staged-deployment.example"),
     );
+    const stagedWorkerSettleIndex = commands.findIndex((command) =>
+      command.includes("wait for staged worker target registration window"),
+    );
     const stagedPaidIndex = commands.findIndex((command) =>
-      command.includes("bounded paid OpenAI inference through staged gateway"),
+      command.includes("BASE_URL=https://staged-deployment.example") &&
+      command.includes("EXPECTED_REVISION=test-release") &&
+      command.includes("LIVE_VERIFY_PAID_OPENAI=CONFIRMED") &&
+      command.includes("npm run smoke:paid-agent"),
+    );
+    const canonicalWorkerSettleIndex = commands.findIndex((command) =>
+      command.includes("wait for canonical worker target registration window"),
     );
     const canonicalPaidIndex = commands.findIndex((command) =>
-      command.includes("bounded paid OpenAI inference through canonical gateway"),
+      command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
+      command.includes("EXPECTED_REVISION=test-release") &&
+      command.includes("LIVE_VERIFY_PAID_OPENAI=CONFIRMED") &&
+      command.includes("npm run smoke:paid-agent"),
     );
     expect(gatewayTokenStageIndex).toBeGreaterThan(3);
     expect(stagedWorkerIndex).toBeGreaterThan(gatewayTokenStageIndex);
     expect(stagedGatewayIndex).toBeGreaterThan(stagedWorkerIndex);
-    expect(stagedPaidIndex).toBeGreaterThan(stagedGatewayIndex);
+    expect(stagedWorkerSettleIndex).toBeGreaterThan(stagedGatewayIndex);
+    expect(stagedPaidIndex).toBeGreaterThan(stagedWorkerSettleIndex);
     expect(stagedSmokeIndex).toBeGreaterThan(stagedPaidIndex);
     expect(stagedPreviewIndex).toBeGreaterThan(stagedSmokeIndex);
     expect(stagedDashboardIndex).toBeGreaterThan(stagedPreviewIndex);
@@ -113,13 +126,15 @@ describe("paired production deployment", () => {
     expect(canonicalReadinessIndex).toBeGreaterThan(promoteIndex);
     expect(canonicalWorkerIndex).toBeGreaterThan(canonicalReadinessIndex);
     expect(canonicalGatewayIndex).toBeGreaterThan(canonicalWorkerIndex);
-    expect(canonicalPaidIndex).toBeGreaterThan(canonicalGatewayIndex);
+    expect(canonicalWorkerSettleIndex).toBeGreaterThan(canonicalGatewayIndex);
+    expect(canonicalPaidIndex).toBeGreaterThan(canonicalWorkerSettleIndex);
     expect(canonicalSmokeIndex).toBeGreaterThan(canonicalPaidIndex);
     expect(
       commands.filter((command) => command.includes("fly deploy")),
     ).toHaveLength(1);
     expect(result.stdout).not.toContain("--image registry.fly.io");
     expect(result.stdout).not.toContain("OMNIAGENT_OPENAI_GATEWAY_TOKEN=");
+    expect(result.stdout).not.toContain("OPENAI_API_KEY=");
   });
 
   it("requires a complete safe gateway configuration for the Singapore topology", async () => {
@@ -132,7 +147,7 @@ describe("paired production deployment", () => {
       OMNIAGENT_RELEASE_SHA: "release-ready",
       BASE_URL: "https://omniagent-os.vercel.app",
       OMNIAGENT_INTERNAL_AUTH_SECRET: "internal-test-secret",
-      OPENAI_API_KEY: "sk-test-openai-key-for-release-probe",
+      OPENAI_API_KEY: "",
       RELEASE_EVIDENCE_OUTPUT: evidenceOutput,
       OMNIAGENT_OPENAI_GATEWAY_URL: "",
       OMNIAGENT_OPENAI_GATEWAY_TOKEN: "",
@@ -710,6 +725,8 @@ describe("paired production deployment", () => {
     expect(deployScript).toContain("stageFlyGatewayTokenOverlap");
     expect(deployScript).toContain("createRollbackGatewayConfiguration");
     expect(deployScript).toContain("runPaidOpenAIGatewayInference");
+    expect(deployScript).toContain("runPaidAgentVerification");
+    expect(deployScript).toContain('["run", "smoke:paid-agent"]');
     expect(deployScript).toContain("PAID_INFERENCE_MAX_OUTPUT_TOKENS = 16");
     expect(deployScript).toContain("store: false");
     expect(deployScript).toContain("/tmp/asael-worker.pid");
