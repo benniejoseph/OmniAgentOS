@@ -15,6 +15,7 @@ import type {
   ProjectAutonomyMode,
   ProjectExecutionStatus,
   ProjectStatus,
+  ProjectSummary,
   ProjectTask,
   ProjectTaskPriority,
   ProjectTaskStatus,
@@ -93,6 +94,64 @@ export async function listProjects(
     .filter((item) => item.tenantId === tenantId && item.actorId === actorId)
     .sort(compareProjects)
     .slice(0, bounded);
+}
+
+export async function listProjectSummaries(
+  limit = 50,
+  options: { tenantId?: string; actorId: string },
+): Promise<ProjectSummary[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const actorId = safeText(options.actorId, 200);
+  const bounded = Math.min(Math.max(limit, 1), 50);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT projects.*,
+        COALESCE(tasks.task_count, 0)::integer AS task_count,
+        COALESCE(tasks.completed_task_count, 0)::integer AS completed_task_count,
+        COALESCE(tasks.active_task_count, 0)::integer AS active_task_count,
+        COALESCE(artifacts.artifact_count, 0)::integer AS artifact_count
+      FROM omni_projects projects
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS task_count,
+          COUNT(*) FILTER (WHERE status = 'done') AS completed_task_count,
+          COUNT(*) FILTER (WHERE status = 'doing') AS active_task_count
+        FROM omni_project_tasks
+        WHERE tenant_id = ${tenantId} AND project_id = projects.id
+      ) tasks ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS artifact_count
+        FROM omni_project_artifacts
+        WHERE tenant_id = ${tenantId} AND project_id = projects.id
+      ) artifacts ON TRUE
+      WHERE projects.tenant_id = ${tenantId} AND projects.actor_id = ${actorId}
+      ORDER BY
+        CASE projects.status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END,
+        projects.updated_at DESC
+      LIMIT ${bounded}
+    `;
+    return rows.map(projectSummaryFromRow);
+  }
+  const ledger = await readLedger();
+  return ledger.projects
+    .filter((item) => item.tenantId === tenantId && item.actorId === actorId)
+    .sort(compareProjects)
+    .slice(0, bounded)
+    .map((project) => {
+      const tasks = ledger.tasks.filter((task) =>
+        task.tenantId === tenantId && task.projectId === project.id
+      );
+      return {
+        ...project,
+        taskCount: tasks.length,
+        completedTaskCount: tasks.filter((task) => task.status === "done").length,
+        activeTaskCount: tasks.filter((task) => task.status === "doing").length,
+        artifactCount: ledger.artifacts.filter((artifact) =>
+          artifact.tenantId === tenantId && artifact.projectId === project.id
+        ).length,
+      };
+    });
 }
 
 export async function listExecutingProjects(
@@ -228,36 +287,40 @@ export async function updateProjectExecution(
 
 export async function listProjectTasks(
   projectId: string,
-  options: { tenantId?: string },
+  options: { tenantId?: string; limit?: number },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const limit = Math.min(Math.max(options.limit || 500, 1), 1_000);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT * FROM omni_project_tasks
       WHERE tenant_id = ${tenantId} AND project_id = ${projectId}
       ORDER BY position ASC, created_at ASC
+      LIMIT ${limit}
     `;
     return rows.map(taskFromRow);
   }
   const ledger = await readLedger();
   return ledger.tasks
     .filter((item) => item.tenantId === tenantId && item.projectId === projectId)
-    .sort((left, right) => left.position - right.position || left.createdAt.localeCompare(right.createdAt));
+    .sort((left, right) => left.position - right.position || left.createdAt.localeCompare(right.createdAt))
+    .slice(0, limit);
 }
 
 export async function listProjectArtifacts(
   projectId: string,
-  options: { tenantId?: string },
+  options: { tenantId?: string; limit?: number },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const limit = Math.min(Math.max(options.limit || 250, 1), 500);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT * FROM omni_project_artifacts
       WHERE tenant_id = ${tenantId} AND project_id = ${projectId}
       ORDER BY created_at DESC
-      LIMIT 250
+      LIMIT ${limit}
     `;
     return rows.map(artifactFromRow);
   }
@@ -265,7 +328,7 @@ export async function listProjectArtifacts(
   return ledger.artifacts
     .filter((artifact) => artifact.tenantId === tenantId && artifact.projectId === projectId)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-    .slice(0, 250);
+    .slice(0, limit);
 }
 
 export async function listProjectCollections(
@@ -713,6 +776,15 @@ function updateLedger(mutate: (ledger: ProjectLedger) => ProjectLedger) {
 }
 function projectFromRow(row: Record<string, unknown>): PersonalProject {
   return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), title: safeText(row.title, 180), objective: safeText(row.objective, 2_000), status: String(row.status) as ProjectStatus, autonomyMode: String(row.autonomy_mode || "manual") as ProjectAutonomyMode, executionStatus: String(row.execution_status || "idle") as ProjectExecutionStatus, taskBudget: Number(row.task_budget || 12), tasksDispatched: Number(row.tasks_dispatched || 0), maxParallelTasks: Number(row.max_parallel_tasks || 1), requireApproval: row.require_approval === undefined ? true : Boolean(row.require_approval), lastSyncedAt: optionalDateValue(row.last_synced_at), targetDate: optionalDateValue(row.target_date), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at), completedAt: optionalDateValue(row.completed_at) };
+}
+function projectSummaryFromRow(row: Record<string, unknown>): ProjectSummary {
+  return {
+    ...projectFromRow(row),
+    taskCount: Number(row.task_count || 0),
+    completedTaskCount: Number(row.completed_task_count || 0),
+    activeTaskCount: Number(row.active_task_count || 0),
+    artifactCount: Number(row.artifact_count || 0),
+  };
 }
 function taskFromRow(row: Record<string, unknown>): ProjectTask {
   return { id: String(row.id), tenantId: String(row.tenant_id), projectId: String(row.project_id), title: safeText(row.title, 240), detail: safeText(row.detail, 1_000), status: String(row.status) as ProjectTaskStatus, priority: String(row.priority) as ProjectTaskPriority, agentId: String(row.agent_id) as SupervisorAgentId, position: Number(row.position), origin: String(row.origin) === "agent" ? "agent" : "manual", dueAt: optionalDateValue(row.due_at), dependsOn: jsonStringArray(row.dependency_ids), workflowRunId: optionalText(row.workflow_run_id), workflowStatus: optionalText(row.workflow_status) as ProjectTask["workflowStatus"], executionError: optionalText(row.execution_error), dispatchedAt: optionalDateValue(row.dispatched_at), dispatchAttempt: Number(row.dispatch_attempt || 0), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at), completedAt: optionalDateValue(row.completed_at) };

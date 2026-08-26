@@ -102,11 +102,42 @@ describe("foldRunProjection", () => {
     ]);
   });
 
+  it("rebuilds the privacy-preserving response receipt used by current runs", () => {
+    const projection = foldRunProjection([
+      runEvent(1, "done", {
+        responseLength: 8,
+        responseSha256: "1".repeat(64),
+      }),
+    ]);
+    expect(projection).toMatchObject({
+      status: "completed",
+      responseLength: 8,
+      responseSha256: "1".repeat(64),
+    });
+    expect(projection.response).toBeUndefined();
+  });
+
   it("rebuilds a failed run's status and error", () => {
     const events = [runEvent(1, "error", { message: "boom" })];
     const projection = foldRunProjection(events);
     expect(projection.status).toBe("failed");
     expect(projection.error).toBe("boom");
+  });
+
+  it("rebuilds a canceled run and clears a pending approval", () => {
+    const projection = foldRunProjection([
+      runEvent(1, "waiting_approval", {
+        executionId: "exec-cancel",
+        toolId: "write",
+        message: "needs approval",
+      }),
+      runEvent(2, "canceled", { message: "Canceled by the operator." }),
+    ]);
+    expect(projection).toMatchObject({
+      status: "canceled",
+      error: "Canceled by the operator.",
+    });
+    expect(projection.waitingApproval).toBeUndefined();
   });
 
   it("rebuilds a run waiting on approval", () => {

@@ -100,6 +100,68 @@ describe("agent run approval continuations (file mode)", () => {
     });
   });
 
+  it("fails the linked mission when a durable resume was interrupted", async () => {
+    const tenantId = "resume-mission";
+    const actorId = "tester";
+    const store = await import("@/lib/runs/store");
+    const missions = await import("@/lib/missions/store");
+    const missionRuntime = await import("@/lib/missions/runtime");
+    const resumeQueue = await import("@/lib/orchestration/resume-queue");
+    const mission = await missions.createMission({
+      tenantId,
+      actorId,
+      title: "Resume safely",
+      objective: "Finish only once after approval.",
+      sourceKey: "resume-interrupted-test",
+    });
+    const task = await missions.ensureMissionTask(mission.id, {
+      sourceKey: "resume-interrupted-task",
+      title: "Resume the approved run",
+    }, { tenantId, actorId });
+    const run = await store.createAgentRun({
+      tenantId,
+      mode: "orchestrate",
+      prompt: "resume safely",
+      messages: [{ role: "user", content: "resume safely" }],
+    });
+    await missionRuntime.attachMissionExecutor({
+      taskId: task.id,
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "running",
+    }, { tenantId, actorId });
+    await store.markAgentRunWaitingForApproval(run.id, {
+      response: "partial",
+      continuation: {
+        ...continuationFor("exec-mission-interrupted"),
+        context: {
+          tenantId,
+          actorId,
+          role: "operator",
+        },
+      },
+    });
+    expect(await store.markAgentRunResuming(run.id)).toBe(true);
+
+    const result = await resumeQueue.processAgentResumeQueue({
+      tenantId,
+      limit: 1,
+    });
+
+    expect(result.completed).toBe(1);
+    await expect(store.getAgentRun(run.id, { tenantId })).resolves.toMatchObject({
+      status: "failed",
+      error: expect.stringMatching(/side effects were not replayed/i),
+    });
+    await expect(
+      missions.getMissionDetail(mission.id, { tenantId, actorId }),
+    ).resolves.toMatchObject({
+      mission: { status: "failed" },
+      tasks: [expect.objectContaining({ status: "failed" })],
+      attempts: [expect.objectContaining({ status: "failed" })],
+    });
+  });
+
   it("pre-arms durable resume work and preserves old waiting runs", async () => {
     const store = await import("@/lib/runs/store");
     const queue = await import("@/lib/operations/job-queue");

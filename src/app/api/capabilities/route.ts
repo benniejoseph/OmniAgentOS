@@ -1,4 +1,5 @@
 import { unstable_cache } from "next/cache";
+import { resolveCapability, searchCapabilities } from "@/lib/capabilities/catalog";
 import { GEMINI_FAST_MODEL, GEMINI_IMAGE_MODEL, hasGeminiKey, hasGoogleMediaKey, hasOpenAIKey } from "@/lib/config";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
@@ -22,7 +23,7 @@ import { getContextEngineStats } from "@/lib/rag/context-engine";
 import { getKnowledgeStats } from "@/lib/rag/store";
 import { getRunStats } from "@/lib/runs/store";
 import { getSecurityStats } from "@/lib/security/audit-store";
-import { canPerform, resolveSecurityContext, rbacRules, secretVaultPolicy, securityErrorResponse } from "@/lib/security/context";
+import { canPerform, requirePermission, resolveSecurityContext, rbacRules, secretVaultPolicy, securityErrorResponse } from "@/lib/security/context";
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
 import { getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { getWorkflowPlanStats } from "@/lib/workflows/planner";
@@ -48,11 +49,17 @@ async function GETHandler(request: Request) {
   let securityContext;
   try {
     securityContext = await resolveSecurityContext(request);
+    requirePermission(securityContext, "read");
   } catch (error) {
     return securityErrorResponse(error);
   }
   const canReadSecurity = canPerform(securityContext.role, "read.security");
-  const view = new URL(request.url).searchParams.get("view");
+  const searchParams = new URL(request.url).searchParams;
+  const view = searchParams.get("view");
+
+  if (view === "catalog") {
+    return capabilityCatalogResponse(searchParams, securityContext.tenantId);
+  }
 
   if (view === "settings") {
     return Response.json(
@@ -73,6 +80,53 @@ async function GETHandler(request: Request) {
       context: securityContext,
     },
   }, { headers: { "cache-control": "private, no-store" } });
+}
+
+async function capabilityCatalogResponse(
+  searchParams: URLSearchParams,
+  tenantId: string,
+) {
+  const allowlist = parseCapabilityAllowlist(searchParams);
+  const id = searchParams.get("id")?.trim();
+
+  if (id) {
+    const capability = await resolveCapability({ tenantId, id, allowlist });
+    if (!capability) {
+      return Response.json(
+        { error: "Capability not found" },
+        { status: 404, headers: privateNoStoreHeaders() },
+      );
+    }
+    return Response.json(
+      { capability },
+      { headers: privateNoStoreHeaders() },
+    );
+  }
+
+  const limitValue = searchParams.get("limit");
+  const limit = limitValue === null ? undefined : Number(limitValue);
+  const result = await searchCapabilities({
+    tenantId,
+    query: searchParams.get("q") || searchParams.get("query") || undefined,
+    limit,
+    allowlist,
+  });
+  return Response.json(result, { headers: privateNoStoreHeaders() });
+}
+
+function parseCapabilityAllowlist(searchParams: URLSearchParams) {
+  const values = [
+    ...searchParams.getAll("allow"),
+    ...searchParams.getAll("allowlist"),
+  ];
+  if (!values.length) {
+    return undefined;
+  }
+  return values.flatMap((value) => value.split(","));
+}
+
+function privateNoStoreHeaders() {
+  return { "cache-control": "private, no-store" };
 }
 
 async function loadSettingsCapabilities(tenantId: string) {

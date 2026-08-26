@@ -32,11 +32,12 @@ export type AgentCouncilEvent = {
 };
 
 export type AgentEvent =
-  | { type: "run"; runId: string; threadId?: string }
+  | { type: "run"; runId: string; threadId?: string; missionId?: string }
   | {
       type: "delegated";
       threadId: string;
       workflowId: string;
+      missionId?: string;
       acknowledgement: string;
       reason: string;
     }
@@ -49,6 +50,7 @@ export type AgentEvent =
   | AgentToolEvent
   | { type: "waiting_approval"; executionId: string; toolId: string; message: string }
   | { type: "done"; response: string; grounding?: GroundingReport }
+  | { type: "canceled"; message: string }
   | { type: "error"; message: string };
 
 export type AgentRunRequest = {

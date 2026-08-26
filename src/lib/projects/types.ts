@@ -36,6 +36,13 @@ export type PersonalProject = {
   completedAt?: string;
 };
 
+export type ProjectSummary = PersonalProject & {
+  taskCount: number;
+  completedTaskCount: number;
+  activeTaskCount: number;
+  artifactCount: number;
+};
+
 export type ProjectTask = {
   id: string;
   tenantId: string;

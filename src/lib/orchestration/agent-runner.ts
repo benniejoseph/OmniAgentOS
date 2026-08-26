@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, hasGeminiKey, hasOpenAIKey } from "@/lib/config";
 import { getAgentLearningGuidance } from "@/lib/agents/learning";
 import { listMcpGovernedTools, listOpenApiGovernedTools } from "@/lib/connectors/governed-tools";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { generateGeminiText } from "@/lib/google/ai";
+import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
 import {
   streamResponseTurn,
   type ConversationItem,
@@ -163,7 +165,14 @@ export async function* runAgent(
       limit: 8,
       tenantId: request.tenantId,
     });
-    const toolboxPromise = buildAgentToolbox(request.tenantId);
+    const configuredToolIds = request.agentProfile ? [...new Set([
+      ...request.agentProfile.toolIds,
+      ...request.agentProfile.skills.flatMap((skill) => skill.toolIds),
+    ])] : undefined;
+    const toolboxPromise = buildAgentToolbox(request.tenantId, {
+      query,
+      preferredToolIds: configuredToolIds,
+    });
     const feedbackGuidancePromise = hasOpenAIKey()
       ? getAgentLearningGuidance(request.agentId || "atlas", {
           tenantId: request.tenantId,
@@ -224,17 +233,13 @@ export async function* runAgent(
     );
     let agentToolPolicy: AgentRunContinuation["toolPolicy"];
     if (request.agentProfile) {
-      const configuredToolIds = [...new Set([
-        ...request.agentProfile.toolIds,
-        ...request.agentProfile.skills.flatMap((skill) => skill.toolIds),
-      ])];
       toolbox = filterAgentToolboxAllowed(
         toolbox,
-        configuredToolIds,
+        configuredToolIds || [],
         request.agentProfile.approvalPolicy === "read_only" || request.agentProfile.autonomy === "assist",
       );
       agentToolPolicy = {
-        allowedToolIds: configuredToolIds,
+        allowedToolIds: configuredToolIds || [],
         readOnly: request.agentProfile.approvalPolicy === "read_only" || request.agentProfile.autonomy === "assist",
         forceApproval: request.agentProfile.approvalPolicy === "always",
       };
@@ -692,7 +697,10 @@ export async function* runAgent(
   } catch (error) {
     if (abortSignal?.aborted) {
       const message = "Agent run canceled after the client stopped the request.";
-      await cancelAgentRun(run.id, message);
+      const canceled = await cancelAgentRun(run.id, message);
+      if (canceled) {
+        await appendRunEvent(run.id, { type: "canceled", message });
+      }
       yield await emit({ type: "status", label: "Canceled", detail: message });
       return;
     }
@@ -751,6 +759,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
     const message = "Cannot resume approved agent run because OPENAI_API_KEY is not configured.";
     await failAgentRun(run.id, message);
     await appendRunEvent(run.id, { type: "error", message });
+    await syncMissionExecutorSafely({
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "failed",
+      error: message,
+    }, { tenantId, actorId: continuation.context.actorId });
     return { resumed: false, reason: message };
   }
 
@@ -763,8 +777,16 @@ async function resumeAgentRunAfterToolApprovalInScope({
     label: "resuming after approval",
     detail: `Tool approval ${executionId} resolved; continuing the same agent run.`,
   });
+  await syncMissionExecutorSafely({
+    executorType: "agent_run",
+    executorId: run.id,
+    status: "running",
+  }, { tenantId, actorId: continuation.context.actorId });
 
-  let toolbox = await buildAgentToolbox(continuation.context.tenantId);
+  let toolbox = await buildAgentToolbox(continuation.context.tenantId, {
+    query: run.prompt,
+    preferredToolIds: continuation.toolPolicy?.allowedToolIds,
+  });
   if (continuation.toolPolicy) {
     toolbox = filterAgentToolboxAllowed(
       toolbox,
@@ -914,6 +936,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
           toolId: definition.id,
           message: "Run paused for the next queued function call approval.",
         });
+        await syncMissionExecutorSafely({
+          executorType: "agent_run",
+          executorId: run.id,
+          status: "waiting",
+        }, { tenantId, actorId: continuation.context.actorId });
         return { resumed: true, status: "waiting_approval" };
       }
 
@@ -1037,6 +1064,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
             toolId: definition.id,
             message: "Run paused again for a newly required approval.",
           });
+          await syncMissionExecutorSafely({
+            executorType: "agent_run",
+            executorId: run.id,
+            status: "waiting",
+          }, { tenantId, actorId: continuation.context.actorId });
           return { resumed: true, status: "waiting_approval" };
         }
 
@@ -1087,6 +1119,15 @@ async function resumeAgentRunAfterToolApprovalInScope({
       response,
     });
     await appendRunEvent(run.id, { type: "done", response });
+    await syncMissionExecutorSafely({
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "succeeded",
+      output: {
+        responseLength: response.length,
+        responseSha256: createHash("sha256").update(response).digest("hex"),
+      },
+    }, { tenantId, actorId: continuation.context.actorId });
     await consolidation;
     return { resumed: true, status: "completed" };
   } catch (error) {
@@ -1094,6 +1135,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
     await flushDeltas().catch(() => undefined);
     await failAgentRun(run.id, message);
     await appendRunEvent(run.id, { type: "error", message });
+    await syncMissionExecutorSafely({
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "failed",
+      error: message,
+    }, { tenantId, actorId: continuation.context.actorId });
     return { resumed: true, status: "failed", error: message };
   }
 }
@@ -1160,6 +1207,15 @@ export async function rejectAgentRunApproval({
   const message = reason ? `Approval rejected: ${reason}` : "Approval rejected by operator.";
   await failAgentRun(run.id, message);
   await appendRunEvent(run.id, { type: "error", message });
+  const actorId = run.continuation?.context.actorId;
+  if (actorId) {
+    await syncMissionExecutorSafely({
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "failed",
+      error: message,
+    }, { tenantId, actorId });
+  }
   return { rejected: true, runId: run.id };
 }
 
@@ -1170,7 +1226,11 @@ type ToolboxEntry = {
 
 async function buildAgentToolbox(
   tenantId?: string,
-  options?: { excludeToolIds?: readonly string[] },
+  options?: {
+    excludeToolIds?: readonly string[];
+    query?: string;
+    preferredToolIds?: readonly string[];
+  },
 ): Promise<{
   tools: ToolboxEntry[];
   openAITools: ResponseFunctionTool[];
@@ -1182,9 +1242,24 @@ async function buildAgentToolbox(
   ]);
 
   const excluded = new Set(options?.excludeToolIds ?? []);
-  const definitions = [...getGovernedTools(), ...mcpTools, ...openApiTools].filter(
+  const nativeDefinitions = getGovernedTools().filter(
     (tool) => tool.status === "active" && tool.riskLevel < 3 && !excluded.has(tool.id),
   );
+  const preferred = new Set(options?.preferredToolIds || []);
+  const externalLimit = preferred.size ? 12 : 6;
+  const externalDefinitions = [...mcpTools, ...openApiTools]
+    .filter((tool) =>
+      tool.status === "active" &&
+      tool.riskLevel < 3 &&
+      !excluded.has(tool.id) &&
+      (!preferred.size || preferred.has(tool.id))
+    )
+    .map((tool) => ({ tool, score: toolRelevanceScore(tool, options?.query || "") }))
+    .filter((candidate) => preferred.size || candidate.score > 0)
+    .sort((left, right) => right.score - left.score || left.tool.id.localeCompare(right.tool.id))
+    .slice(0, externalLimit)
+    .map((candidate) => candidate.tool);
+  const definitions = [...nativeDefinitions, ...externalDefinitions];
 
   const used = new Set<string>();
   const tools: ToolboxEntry[] = definitions.map((definition) => {
@@ -1211,6 +1286,20 @@ async function buildAgentToolbox(
     })),
     byFunctionName: new Map(tools.map((entry) => [entry.functionName, entry])),
   };
+}
+
+function toolRelevanceScore(tool: ToolDefinition, query: string) {
+  const haystack = `${tool.id} ${tool.name} ${tool.description} ${tool.category}`.toLowerCase();
+  const normalizedQuery = query.toLowerCase().replace(/[^a-z0-9_.:-]+/g, " ").trim();
+  if (!normalizedQuery) return 0;
+  const tokens = [...new Set(normalizedQuery.split(/\s+/).filter((token) => token.length > 2))].slice(0, 24);
+  let score = haystack.includes(normalizedQuery) ? 100 : 0;
+  for (const token of tokens) {
+    if (tool.id.toLowerCase().includes(token)) score += 12;
+    if (tool.name.toLowerCase().includes(token)) score += 8;
+    if (tool.description.toLowerCase().includes(token)) score += 3;
+  }
+  return score;
 }
 
 function filterAgentToolbox(

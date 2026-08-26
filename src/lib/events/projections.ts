@@ -69,7 +69,10 @@ export type RunToolCallProjection = {
 
 export type RunProjection = {
   status: RunStatus;
+  /** Present only for legacy event streams that stored the completed text. */
   response?: string;
+  responseLength?: number;
+  responseSha256?: string;
   error?: string;
   memoryContextCount: number;
   toolCalls: RunToolCallProjection[];
@@ -121,13 +124,26 @@ export function foldRunProjection(events: DomainEvent[]): RunProjection {
         break;
       case "done":
         projection.status = "completed";
-        projection.response = String(payload.response || "");
+        projection.response = typeof payload.response === "string"
+          ? payload.response
+          : undefined;
+        projection.responseLength = typeof payload.responseLength === "number"
+          ? payload.responseLength
+          : projection.response?.length;
+        projection.responseSha256 = typeof payload.responseSha256 === "string"
+          ? payload.responseSha256
+          : undefined;
         projection.error = undefined;
         projection.waitingApproval = undefined;
         break;
       case "error":
         projection.status = "failed";
         projection.error = String(payload.message || "");
+        projection.waitingApproval = undefined;
+        break;
+      case "canceled":
+        projection.status = "canceled";
+        projection.error = String(payload.message || "Canceled.");
         projection.waitingApproval = undefined;
         break;
       default:

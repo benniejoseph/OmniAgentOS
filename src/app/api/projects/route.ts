@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { createProject, listProjectCollections, listProjects } from "@/lib/projects/store";
+import { createProject, listProjectCollections, listProjects, listProjectSummaries } from "@/lib/projects/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -21,6 +21,18 @@ async function GETHandler(request: Request) {
     context = await authorizeRequest({ request, action: "read", resourceType: "projects" });
   } catch (error) {
     return forbiddenResponse(error);
+  }
+  const url = new URL(request.url);
+  if (url.searchParams.get("view") === "summary") {
+    const requestedLimit = Number(url.searchParams.get("limit"));
+    const limit = Number.isFinite(requestedLimit) ? requestedLimit : 50;
+    return Response.json({
+      projects: await listProjectSummaries(limit, {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+      }),
+      generatedAt: new Date().toISOString(),
+    }, { headers: { "cache-control": "private, no-store" } });
   }
   const projects = await listProjects(80, { tenantId: context.tenantId, actorId: context.actorId });
   const collections = await listProjectCollections(projects.map((project) => project.id), { tenantId: context.tenantId });

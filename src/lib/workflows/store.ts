@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { appendDomainEventSafely } from "@/lib/events/store";
+import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
@@ -515,7 +516,11 @@ export async function transitionWorkflowRun(
         )
       RETURNING *
     `;
-    return rows[0] ? workflowRunFromRow(rows[0]) : null;
+    const transitioned = rows[0] ? workflowRunFromRow(rows[0]) : null;
+    if (transitioned) {
+      await syncWorkflowMissionTransition(existing.run, transitioned);
+    }
+    return transitioned;
   }
 
   let transitioned: WorkflowRunRecord | null = null;
@@ -538,7 +543,49 @@ export async function transitionWorkflowRun(
     });
     return ledger;
   });
+  if (transitioned) {
+    await syncWorkflowMissionTransition(existing.run, transitioned);
+  }
   return transitioned;
+}
+
+async function syncWorkflowMissionTransition(
+  previous: WorkflowRunRecord,
+  current: WorkflowRunRecord,
+) {
+  if (previous.status === current.status) return;
+  const metadata = current.input.metadata;
+  const missionId = typeof metadata?.missionId === "string" ? metadata.missionId : "";
+  const actorId = typeof metadata?.actorId === "string" ? metadata.actorId : "";
+  if (!missionId || !actorId) return;
+  const status = current.status === "completed"
+    ? "succeeded"
+    : current.status === "waiting_approval" || current.status === "paused"
+      ? "waiting"
+      : current.status === "failed" || current.status === "canceled" || current.status === "running"
+        ? current.status
+        : undefined;
+  if (!status) return;
+  await syncMissionExecutorSafely({
+    executorType: "workflow_run",
+    executorId: current.id,
+    status,
+    output: current.status === "completed" ? workflowResultReceipt(current.result) : undefined,
+    error: current.status === "failed" ? current.error : undefined,
+  }, { tenantId: current.tenantId, actorId });
+}
+
+function workflowResultReceipt(result?: Record<string, unknown>) {
+  if (!result) return { verified: true };
+  const report = typeof result.report === "string" ? result.report : "";
+  return {
+    verified: true,
+    reportLength: report.length,
+    reportSha256: report ? createHash("sha256").update(report).digest("hex") : undefined,
+    memoryId: typeof result.memoryId === "string" ? result.memoryId : undefined,
+    dynamicPlanId: typeof result.dynamicPlanId === "string" ? result.dynamicPlanId : undefined,
+    planExecutionStatus: typeof result.planExecutionStatus === "string" ? result.planExecutionStatus : undefined,
+  };
 }
 
 export async function reclaimWorkflowRunForQueueDelivery(

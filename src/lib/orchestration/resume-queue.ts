@@ -13,6 +13,7 @@ import {
   rejectAgentRunApproval,
   resumeAgentRunAfterToolApproval,
 } from "@/lib/orchestration/agent-runner";
+import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
 import {
   appendRunEvent,
   failAgentRun,
@@ -163,8 +164,15 @@ async function processAgentResumeJob(
     if (run.status === "resuming") {
       const message =
         "Approved run resume was interrupted; side effects were not replayed.";
+      const actorId = run.continuation.context.actorId;
       await failAgentRun(run.id, message);
       await appendRunEvent(run.id, { type: "error", message });
+      await syncMissionExecutorSafely({
+        executorType: "agent_run",
+        executorId: run.id,
+        status: "failed",
+        error: message,
+      }, { tenantId: job.tenantId, actorId });
       return completeResumeJob(job, message, base);
     }
 

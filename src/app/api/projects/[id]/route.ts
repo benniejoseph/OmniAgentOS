@@ -1,10 +1,17 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { ProjectTransitionError, updateProject } from "@/lib/projects/store";
+import {
+  getProject,
+  listProjectArtifacts,
+  listProjectTasks,
+  ProjectTransitionError,
+  updateProject,
+} from "@/lib/projects/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
 
 const updateSchema = z.object({
@@ -13,6 +20,31 @@ const updateSchema = z.object({
   status: z.enum(["draft", "active", "completed", "archived"]).optional(),
   targetDate: z.string().datetime().nullable().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, { message: "A change is required." });
+
+async function GETHandler(request: Request, route: { params: Promise<{ id: string }> }) {
+  const { id } = await route.params;
+  let context;
+  try {
+    context = await authorizeRequest({
+      request,
+      action: "read",
+      resourceType: "project",
+      resourceId: id,
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+  const scope = { tenantId: context.tenantId, actorId: context.actorId };
+  const project = await getProject(id, scope);
+  if (!project) return Response.json({ error: "Project not found." }, { status: 404 });
+  const [tasks, artifacts] = await Promise.all([
+    listProjectTasks(id, { tenantId: context.tenantId, limit: 30 }),
+    listProjectArtifacts(id, { tenantId: context.tenantId, limit: 100 }),
+  ]);
+  return Response.json({ project: { ...project, tasks, artifacts } }, {
+    headers: { "cache-control": "private, no-store" },
+  });
+}
 
 async function PATCHHandler(request: Request, route: { params: Promise<{ id: string }> }) {
   const { id } = await route.params;

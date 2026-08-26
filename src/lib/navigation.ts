@@ -57,16 +57,16 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/agents",
-    label: "Agents",
-    shortLabel: "Agents",
+    label: "Arsenal",
+    shortLabel: "Arsenal",
     description: "Your specialists, capabilities, and learning loops.",
     icon: Bot,
   },
   {
     href: "/app/command",
-    label: "Ask",
-    shortLabel: "Ask",
-    description: "Think, research, or hand off an outcome.",
+    label: "Talk",
+    shortLabel: "Talk",
+    description: "Think with Asael or hand off an outcome.",
     icon: TerminalSquare,
   },
   {
@@ -77,10 +77,10 @@ export const appNav: AppNavItem[] = [
     icon: Activity,
   },
   {
-    href: "/app/projects",
-    label: "Projects",
-    shortLabel: "Projects",
-    description: "Goals, plans, and delegated work in one place.",
+    href: "/app/missions",
+    label: "Missions",
+    shortLabel: "Missions",
+    description: "Durable outcomes, delegated work, and evidence.",
     icon: FolderKanban,
   },
   {
@@ -151,7 +151,7 @@ export const appNav: AppNavItem[] = [
 
 // The five-item everyday loop stays reachable on mobile. Everything else is
 // progressively disclosed by the kind of work it supports.
-export const primaryNavHrefs = ["/app", "/app/command", "/app/capture", "/app/projects", "/app/memory"];
+export const primaryNavHrefs = ["/app", "/app/command", "/app/capture", "/app/missions", "/app/memory"];
 export const primaryNavItems = primaryNavHrefs.map((href) => {
   const item = appNav.find((entry) => entry.href === href);
   if (!item) throw new Error(`Missing primary navigation item for ${href}`);
@@ -161,7 +161,10 @@ export const primaryNavItems = primaryNavHrefs.map((href) => {
 export const appNavGroups: AppNavGroup[] = [
   {
     label: "Workspace",
-    items: primaryNavItems,
+    items: [
+      ...primaryNavItems,
+      appNav.find((item) => item.href === "/app/agents")!,
+    ],
   },
   {
     label: "Automation",
@@ -171,7 +174,6 @@ export const appNavGroups: AppNavGroup[] = [
         "/app/workflows",
         "/app/connectors",
         "/app/tools",
-        "/app/agents",
       ].includes(item.href),
     ),
   },
