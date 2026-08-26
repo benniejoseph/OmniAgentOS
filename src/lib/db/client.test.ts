@@ -46,13 +46,13 @@ describe("database pool sizing", () => {
     }
   });
 
-  it("closes idle Vercel pool connections sooner without changing durable runtimes", () => {
+  it("disables the Vercel idle timer without changing durable runtimes", () => {
     try {
       vi.stubEnv("VERCEL", "");
       expect(getDatabasePoolIdleTimeoutSeconds()).toBe(20);
 
       vi.stubEnv("VERCEL", "1");
-      expect(getDatabasePoolIdleTimeoutSeconds()).toBe(5);
+      expect(getDatabasePoolIdleTimeoutSeconds()).toBe(0);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -175,12 +175,20 @@ describe("database pool acquisition", () => {
       expect(postgresFactory).toHaveBeenNthCalledWith(
         1,
         "postgresql://runtime.invalid/asael",
-        expect.objectContaining({ max: 1, idle_timeout: 5 }),
+        expect.objectContaining({
+          max: 1,
+          idle_timeout: 0,
+          max_lifetime: null,
+        }),
       );
       expect(postgresFactory).toHaveBeenNthCalledWith(
         2,
         "postgresql://maintenance.invalid/asael",
-        expect.objectContaining({ max: 1, idle_timeout: 5 }),
+        expect.objectContaining({
+          max: 1,
+          idle_timeout: 0,
+          max_lifetime: null,
+        }),
       );
       expect(runtime.pg.reserve).toHaveBeenCalledOnce();
       expect(runtime.reserved).not.toHaveProperty("begin");
@@ -214,6 +222,118 @@ describe("database pool acquisition", () => {
       consoleInfo.mockRestore();
       vi.doUnmock("postgres");
       vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it("leaves the postgres.js max lifetime default intact on durable runtimes", async () => {
+    const pool = createMockPoolClient([{ ok: true }]);
+    const postgresFactory = vi.fn(
+      (databaseUrl: string, options: Record<string, unknown>) => {
+        void databaseUrl;
+        void options;
+        return pool.pg;
+      },
+    );
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.stubEnv("VERCEL", "");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql()`SELECT 1`,
+        ),
+      ).resolves.toEqual([{ ok: true }]);
+
+      const options = postgresFactory.mock.calls[0]?.[1] as
+        | Record<string, unknown>
+        | undefined;
+      expect(options).toEqual(
+        expect.objectContaining({ idle_timeout: 20 }),
+      );
+      expect(options).not.toHaveProperty("max_lifetime");
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it("retires a timed-out Vercel pool and its waiters before replacing it", async () => {
+    vi.useFakeTimers();
+    const retiredPool = createMockPoolClient([]);
+    const replacementPool = createMockPoolClient([{ ok: true }]);
+    let rejectRetiredReservation: (error: Error) => void = () => undefined;
+    retiredPool.pg.reserve.mockImplementation(
+      () =>
+        new Promise<typeof retiredPool.reserved>((_resolve, reject) => {
+          rejectRetiredReservation = reject;
+        }),
+    );
+    retiredPool.pg.end.mockImplementation(() => {
+      rejectRetiredReservation(new Error("retired pool destroyed"));
+      return Promise.resolve();
+    });
+    const postgresFactory = vi
+      .fn()
+      .mockReturnValueOnce(retiredPool.pg)
+      .mockReturnValueOnce(replacementPool.pg);
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS", "500");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      const retiredClient = isolatedClient.getSql();
+      const timedOutQuery = isolatedClient.runWithDatabaseTenantScope(
+        "tenant-a",
+        () => retiredClient`SELECT 1`,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const waitingQuery = isolatedClient.runWithDatabaseTenantScope(
+        "tenant-a",
+        () => retiredClient`SELECT 2`,
+      );
+      const timeoutMatch = {
+        code: "DATABASE_ACQUIRE_TIMEOUT",
+        message: "Database connection acquisition timed out after 500ms.",
+      };
+      const timedOutRejection = expect(timedOutQuery).rejects.toMatchObject(
+        timeoutMatch,
+      );
+      const waitingRejection = expect(waitingQuery).rejects.toMatchObject(
+        timeoutMatch,
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      await Promise.all([timedOutRejection, waitingRejection]);
+
+      expect(retiredPool.pg.reserve).toHaveBeenCalledOnce();
+      expect(retiredPool.pg.end).toHaveBeenCalledOnce();
+      expect(retiredPool.pg.end).toHaveBeenCalledWith({ timeout: 0 });
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          retiredClient`SELECT 3`,
+        ),
+      ).rejects.toMatchObject(timeoutMatch);
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql()`SELECT 4`,
+        ),
+      ).resolves.toEqual([{ ok: true }]);
+
+      expect(postgresFactory).toHaveBeenCalledTimes(2);
+      expect(replacementPool.pg.reserve).toHaveBeenCalledOnce();
+      expect(retiredPool.pg.reserve).toHaveBeenCalledOnce();
+      expect(replacementPool.reserved.release).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
       vi.resetModules();
     }
   });
@@ -279,6 +399,7 @@ describe("database pool acquisition", () => {
         "COMMIT",
       ]);
       expect(pool.reserved.release).toHaveBeenCalledTimes(2);
+      expect(pool.pg.end).not.toHaveBeenCalled();
     } finally {
       vi.doUnmock("postgres");
       vi.unstubAllEnvs();
