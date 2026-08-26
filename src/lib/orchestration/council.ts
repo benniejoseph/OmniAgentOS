@@ -136,6 +136,7 @@ export async function reviseCouncilResponse(input: {
   response: string;
   verdict: CouncilVerdict;
   contributions: CouncilContribution[];
+  contextBlock: string;
   abortSignal?: AbortSignal;
 }) {
   const raw = await createStructuredResponse({
@@ -145,6 +146,7 @@ export async function reviseCouncilResponse(input: {
       `<candidate_response>\n${escapeUntrustedPromptText(input.response.slice(0, 18_000))}\n</candidate_response>`,
       `<sentinel_verdict>\n${escapeUntrustedPromptText(JSON.stringify(input.verdict))}\n</sentinel_verdict>`,
       `<council_contributions>\n${escapeUntrustedPromptText(JSON.stringify(input.contributions).slice(0, 12_000))}\n</council_contributions>`,
+      `<retrieved_context>\n${escapeUntrustedPromptText(input.contextBlock.slice(0, 12_000))}\n</retrieved_context>`,
     ].join("\n\n"),
     name: "council_revised_response",
     schema: {

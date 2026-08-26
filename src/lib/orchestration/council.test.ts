@@ -47,7 +47,8 @@ describe("agent council", () => {
     }];
     const verdict = await reviewCouncilResponse({ goal: "Answer", response: "Draft", contributions, contextBlock: "Evidence" });
     expect(verdict).toMatchObject({ passed: false, score: 0.45, requiredChanges: ["Cite the source."] });
-    await expect(reviseCouncilResponse({ goal: "Answer", response: "Draft", verdict, contributions }))
+    await expect(reviseCouncilResponse({ goal: "Answer", response: "Draft", verdict, contributions, contextBlock: "[memory:1] Exact evidence" }))
       .resolves.toBe("Revised response [memory:1].");
+    expect(mocks.createStructuredResponse.mock.calls[1]?.[0]?.input).toContain("[memory:1] Exact evidence");
   });
 });

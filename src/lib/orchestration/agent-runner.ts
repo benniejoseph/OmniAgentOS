@@ -623,6 +623,7 @@ export async function* runAgent(
             response,
             verdict,
             contributions: councilContributions,
+            contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
             abortSignal,
           });
         }
