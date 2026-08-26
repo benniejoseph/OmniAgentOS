@@ -39,6 +39,9 @@ const OPENAI_GATEWAY_INITIAL_CUTOVER_ENV =
   "OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER";
 const PAID_INFERENCE_SENTINEL = "ASAEL_RELEASE_OK";
 const PAID_INFERENCE_MAX_OUTPUT_TOKENS = 16;
+const WORKER_PID_FILE = "/tmp/asael-worker.pid";
+const WORKER_RELEASE_ACTIVATION_FILE =
+  "/tmp/asael-worker-release-activated";
 const dryRun = process.argv.includes("--dry-run");
 const configurationProbe = process.argv.includes("--configuration-probe");
 const readinessProbeIndex = process.argv.indexOf("--readiness-probe");
@@ -221,6 +224,7 @@ if (dryRun) {
   printDryRunWorkerStartupWait("canonical worker");
   printDryRunPaidAgentVerification(PRODUCTION_BASE_URL, revision);
   printVerificationCommands(PRODUCTION_BASE_URL);
+  printDryRun("fly", workerReleaseActivationArgs());
   process.exit(0);
 }
 
@@ -331,6 +335,7 @@ try {
   await waitForWorkerStartupWindow("Canonical worker");
   await runPaidAgentVerification(productionBaseUrl);
   await runVerificationCommands(productionBaseUrl);
+  await run("fly", workerReleaseActivationArgs());
 } catch (error) {
   const rollbackErrors = [];
   if (vercelPromoted) {
@@ -650,6 +655,8 @@ function workerDeployArgs(baseUrl, canonicalBaseUrl) {
           `OMNIAGENT_WORKER_CANONICAL_BASE_URL=${canonicalBaseUrl}`,
         ]
       : []),
+    "--env",
+    "OMNIAGENT_WORKER_RELEASE_HOLD=true",
     "--strategy",
     "bluegreen",
     "--yes",
@@ -663,7 +670,29 @@ function workerCanonicalTargetArgs() {
     "--app",
     flyApp,
     "--command",
-    'read worker_pid < /tmp/asael-worker.pid && kill -HUP "$worker_pid"',
+    `read worker_pid < ${WORKER_PID_FILE} && kill -HUP "$worker_pid"`,
+  ];
+}
+
+function workerReleaseActivationArgs() {
+  const expectedRevision = normalizeExpectedRevision(revision);
+  return [
+    "ssh",
+    "console",
+    "--app",
+    flyApp,
+    "--command",
+    [
+      "set -eu",
+      `expected_revision='${expectedRevision}'`,
+      `read worker_pid < ${WORKER_PID_FILE}`,
+      'case "$worker_pid" in ""|*[!0-9]*) exit 1;; esac',
+      'kill -0 "$worker_pid"',
+      'kill -USR1 "$worker_pid"',
+      "attempt=0",
+      `while [ "$attempt" -lt 20 ]; do marker_revision=""; if IFS= read -r marker_revision < ${WORKER_RELEASE_ACTIVATION_FILE} && [ "$marker_revision" = "$expected_revision" ] && kill -0 "$worker_pid"; then exit 0; fi; attempt=$((attempt + 1)); sleep 1; done`,
+      "exit 1",
+    ].join("; "),
   ];
 }
 
@@ -691,6 +720,8 @@ function workerRollbackArgs(image, baseUrl, initialCutover) {
     `OMNIAGENT_WORKER_BASE_URL=${baseUrl}`,
     "--env",
     `OMNIAGENT_WORKER_CANONICAL_BASE_URL=${baseUrl}`,
+    "--env",
+    "OMNIAGENT_WORKER_RELEASE_HOLD=false",
     "--yes",
   ];
 }

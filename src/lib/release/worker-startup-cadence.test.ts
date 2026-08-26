@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -211,7 +211,221 @@ describe("dedicated worker startup cadence", () => {
     expect(fastRanDuringHeavyWork).toBe(true);
   }, 10_000);
 
-  it("rebinds every lane on SIGHUP without terminating the worker", async () => {
+  it("keeps a staged release to throttled startup registrations while held", async () => {
+    const observations: Array<{
+      lane: string;
+      startup: boolean | undefined;
+      target: string | undefined;
+    }> = [];
+    const revision = `held-staged-${process.pid}`;
+    const stagedServer = await startWorkerServer(
+      (lane, startup, target) => {
+        observations.push({ lane, startup, target });
+      },
+      { responseStatus: () => 503 },
+    );
+    const canonicalServer = await startWorkerServer(() => undefined, {
+      healthRevision: "previous-release",
+    });
+    const child = startWorker(stagedServer.baseUrl, {
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
+      OMNIAGENT_RELEASE_SHA: revision,
+      OMNIAGENT_WORKER_RELEASE_HOLD: "true",
+      OMNIAGENT_WORKER_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "0",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "0",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "0",
+    });
+
+    await waitFor(() =>
+      new Set(observations.map(({ lane }) => lane)).size === 3,
+    );
+    await delay(300);
+
+    expect(observations).toHaveLength(3);
+    expect(new Set(observations.map(({ lane }) => lane))).toEqual(
+      new Set(["fast", "background", "maintenance"]),
+    );
+    for (const observation of observations) {
+      expect(observation.startup).toBe(true);
+      expect(observation.target).toBe(stagedServer.baseUrl);
+    }
+
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+  }, 10_000);
+
+  it("retries canonical recovery after an activated process restart", async () => {
+    const revision = `activated-retry-${process.pid}`;
+    const canonicalRequests: Array<{
+      startup: boolean | undefined;
+      at: number;
+    }> = [];
+    const canonicalHealthRequests: number[] = [];
+    let healthAttempt = 0;
+    const stagedServer = await startWorkerServer(() => undefined);
+    const canonicalServer = await startWorkerServer(
+      (_lane, startup) => {
+        canonicalRequests.push({ startup, at: Date.now() });
+      },
+      {
+        healthRevision: () => {
+          canonicalHealthRequests.push(Date.now());
+          healthAttempt += 1;
+          return healthAttempt === 1 ? "previous-release" : revision;
+        },
+      },
+    );
+    await writeFile(
+      "/tmp/asael-worker-release-activated",
+      `${revision}\n`,
+      { mode: 0o600 },
+    );
+    const child = startWorker(stagedServer.baseUrl, {
+      NODE_OPTIONS: acceleratedWorkerClock(100),
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
+      OMNIAGENT_RELEASE_SHA: revision,
+      OMNIAGENT_WORKER_RELEASE_HOLD: "true",
+      OMNIAGENT_WORKER_INTERVAL_MS: "10000",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "600000",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "600000",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "600000",
+    });
+
+    await waitFor(() =>
+      canonicalRequests.some(({ startup }) => startup !== true),
+    );
+
+    expect(canonicalHealthRequests).toHaveLength(2);
+    expect(
+      canonicalHealthRequests[1] - canonicalHealthRequests[0],
+    ).toBeGreaterThanOrEqual(250);
+    expect(canonicalRequests[0]?.startup).toBe(true);
+    expect(child.exitCode).toBeNull();
+
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+  }, 10_000);
+
+  it("re-registers canonical while held and activates work only after SIGUSR1", async () => {
+    const revision = `held-canonical-${process.pid}`;
+    const staged: Array<{ lane: string; startup: boolean | undefined }> = [];
+    const canonical: Array<{ lane: string; startup: boolean | undefined }> = [];
+    let canonicalRevision = "previous-release";
+    const stagedServer = await startWorkerServer((lane, startup) => {
+      staged.push({ lane, startup });
+    });
+    const canonicalServer = await startWorkerServer((lane, startup) => {
+      canonical.push({ lane, startup });
+    }, { healthRevision: () => canonicalRevision });
+    const heldEnvironment = {
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
+      OMNIAGENT_RELEASE_SHA: revision,
+      OMNIAGENT_WORKER_RELEASE_HOLD: "true",
+      OMNIAGENT_WORKER_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "0",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "0",
+      OMNIAGENT_WORKER_MAINTENANCE_FIRST_RUN_DELAY_MS: "50",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "0",
+    };
+    const child = startWorker(stagedServer.baseUrl, heldEnvironment);
+
+    await waitFor(() => staged.length === 3);
+    canonicalRevision = revision;
+    expect(child.kill("SIGHUP")).toBe(true);
+    await waitFor(() =>
+      new Set(canonical.map(({ lane }) => lane)).size === 3,
+    );
+    await delay(200);
+
+    expect(canonical.every(({ startup }) => startup === true)).toBe(true);
+    expect(canonical.some(({ lane }) => lane === "retention")).toBe(false);
+    expect(staged.every(({ startup }) => startup === true)).toBe(true);
+
+    expect(child.kill("SIGUSR1")).toBe(true);
+    await waitFor(() =>
+      canonical.some(({ startup }) => startup !== true),
+    );
+    expect(staged.every(({ startup }) => startup === true)).toBe(true);
+    expect(canonical.some(({ lane }) => lane === "retention")).toBe(false);
+    expect(
+      (await readFile("/tmp/asael-worker-release-activated", "utf8")).trim(),
+    ).toBe(revision);
+
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+
+    const stagedCount = staged.length;
+    const canonicalCount = canonical.length;
+    const restarted = startWorker(stagedServer.baseUrl, heldEnvironment);
+    await waitFor(() =>
+      canonical.slice(canonicalCount).some(({ startup }) => startup !== true),
+    );
+    expect(staged).toHaveLength(stagedCount);
+
+    const restartedExit = once(restarted, "exit");
+    restarted.kill("SIGTERM");
+    await restartedExit;
+  }, 15_000);
+
+  it("discards an in-flight held registration before activating canonical work", async () => {
+    const revision = `held-in-flight-${process.pid}`;
+    const canonicalFast: Array<{
+      startup: boolean | undefined;
+      at: number;
+    }> = [];
+    let canonicalRevision = "previous-release";
+    let stagedFastRegistered = false;
+    const stagedServer = await startWorkerServer((lane) => {
+      if (lane === "fast") stagedFastRegistered = true;
+    });
+    const canonicalServer = await startWorkerServer(
+      (lane, startup) => {
+        if (lane === "fast") {
+          canonicalFast.push({ startup, at: Date.now() });
+        }
+      },
+      {
+        healthRevision: () => canonicalRevision,
+        responseDelayMs: (lane, attempt, startup) =>
+          lane === "fast" && attempt === 1 && startup === true ? 250 : 0,
+      },
+    );
+    const child = startWorker(stagedServer.baseUrl, {
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
+      OMNIAGENT_RELEASE_SHA: revision,
+      OMNIAGENT_WORKER_RELEASE_HOLD: "true",
+      OMNIAGENT_WORKER_INTERVAL_MS: "300",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "5000",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "5000",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "5000",
+    });
+
+    await waitFor(() => stagedFastRegistered);
+    canonicalRevision = revision;
+    expect(child.kill("SIGHUP")).toBe(true);
+    await waitFor(() => canonicalFast.length === 1);
+    expect(child.kill("SIGUSR1")).toBe(true);
+    await waitFor(() => canonicalFast.length >= 3);
+
+    expect(canonicalFast.slice(0, 3).map(({ startup }) => startup)).toEqual([
+      true,
+      true,
+      undefined,
+    ]);
+    expect(canonicalFast[2].at - canonicalFast[1].at).toBeGreaterThanOrEqual(250);
+
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+  }, 10_000);
+
+  it("rebinds every tick lane on SIGHUP without terminating the worker", async () => {
     const staged = new Map<string, { startup: boolean | undefined; target: string | undefined }>();
     const canonical = new Map<string, { startup: boolean | undefined; target: string | undefined }>();
     let canonicalRevision = "previous-release";
@@ -238,11 +452,11 @@ describe("dedicated worker startup cadence", () => {
     await waitFor(() => staged.size === 4);
     canonicalRevision = "release-ready";
     expect(child.kill("SIGHUP")).toBe(true);
-    await waitFor(() => canonical.size === 4);
+    await waitFor(() => canonical.size === 3);
 
     expect(child.exitCode).toBeNull();
     expect(new Set(canonical.keys())).toEqual(
-      new Set(["fast", "background", "maintenance", "retention"]),
+      new Set(["fast", "background", "maintenance"]),
     );
     for (const lane of ["fast", "background", "maintenance"]) {
       expect(canonical.get(lane)?.startup).toBe(true);
@@ -306,16 +520,28 @@ describe("dedicated worker startup cadence", () => {
     expect(workerScript).toContain("Math.floor(backgroundIntervalMs / 2)");
     expect(workerScript).toContain("if (startupDelayMs > 0)");
     expect(workerScript).toContain(
-      "await sleepForWorkerEvent(nextDelayMs, targetGeneration)",
+      "await sleepForWorkerEvent(\n        nextDelayMs,\n        targetGeneration,\n        releaseGeneration,\n      )",
     );
     expect(workerScript).not.toContain("cadenceMs - (Date.now() - startedAt)");
     expect(workerScript).toContain("...(startupAttempt ? { startup: true } : {})");
-    expect(workerScript).toContain("if (response.ok) {\n        startup = false;");
+    expect(workerScript).toContain(
+      "if (releaseWorkIsEnabled()) {\n          startup = false;",
+    );
     expect(workerScript).toContain("maintenanceFirstRunDelayMs");
     expect(workerScript).toContain("await runHeavyLane(executeTick)");
     expect(workerScript).toContain("await runHeavyLane(runRetentionSweep)");
     expect(workerScript).toContain('process.on("SIGHUP"');
+    expect(workerScript).toContain('process.on("SIGUSR1"');
     expect(workerScript).toContain("activateCanonicalWorkerTarget");
+    expect(workerScript).toContain("activateReleaseWork");
+    expect(workerScript).toContain("Math.max(cadenceMs, 30_000)");
+    expect(workerScript).toContain("const canonicalRetryIntervalMs = 30_000");
+    expect(workerScript).toContain(
+      "!releaseHoldRequested || !releaseHeld",
+    );
+    expect(workerScript).toContain(
+      'const releaseActivationFile = "/tmp/asael-worker-release-activated"',
+    );
     expect(workerScript).toContain("body?.revision !== releaseRevision");
     expect(workerScript).toContain('const workerPidFile = "/tmp/asael-worker.pid"');
     expect(workerScript).toContain("OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN");
@@ -443,6 +669,7 @@ function startWorker(baseUrl: string, overrides: Record<string, string>) {
       OMNIAGENT_WORKER_REQUEST_TIMEOUT_MS: "3000",
       OMNIAGENT_WORKER_TARGET_SWITCH_TIMEOUT_MS: "1000",
       OMNIAGENT_RELEASE_SHA: "",
+      OMNIAGENT_WORKER_RELEASE_HOLD: "false",
       OMNIAGENT_OPENAI_GATEWAY_TOKEN: "",
       OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN: "",
       VERCEL_AUTOMATION_BYPASS_SECRET: "",
@@ -466,4 +693,16 @@ async function waitFor(predicate: () => boolean) {
 
 function delay(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function acceleratedWorkerClock(scale: number) {
+  const source = [
+    "const realNow = Date.now.bind(Date)",
+    "const realSetTimeout = globalThis.setTimeout.bind(globalThis)",
+    "const epoch = realNow()",
+    `const scale = ${scale}`,
+    "Date.now = () => epoch + (realNow() - epoch) * scale",
+    "globalThis.setTimeout = (callback, delay, ...args) => realSetTimeout(callback, Number(delay) / scale, ...args)",
+  ].join(";");
+  return `--import=data:text/javascript,${encodeURIComponent(source)}`;
 }
