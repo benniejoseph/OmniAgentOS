@@ -12,6 +12,7 @@ describe("workspace readiness", () => {
       knowledgeTotal: 0,
       activeMcpConnectors: 0,
       activeOpenApiConnectors: 1,
+      activeOAuthConnectors: 0,
       completedAgentRuns: 0,
       completedWorkflows: 1,
       evaluationTotal: 1,
@@ -36,6 +37,7 @@ describe("workspace readiness", () => {
       knowledgeTotal: 0,
       activeMcpConnectors: 0,
       activeOpenApiConnectors: 0,
+      activeOAuthConnectors: 0,
       completedAgentRuns: 0,
       completedWorkflows: 0,
       evaluationTotal: 0,
@@ -58,12 +60,27 @@ describe("workspace readiness", () => {
         knowledgeTotal: aggregate,
         activeMcpConnectors: aggregate,
         activeOpenApiConnectors: aggregate,
+        activeOAuthConnectors: aggregate,
         completedAgentRuns: aggregate,
         completedWorkflows: aggregate,
         evaluationTotal: aggregate,
       },
     );
-    expect(calls).toEqual(Array(7).fill("tenant-a"));
+    expect(calls).toEqual(Array(8).fill("tenant-a"));
     expect(readiness.checks.identity).toBe(true);
+  });
+
+  it("treats a personal Google grant as an active connector", () => {
+    expect(calculateWorkspaceReadiness({
+      identityReady: true,
+      memoryTotal: 0,
+      knowledgeTotal: 0,
+      activeMcpConnectors: 0,
+      activeOpenApiConnectors: 0,
+      activeOAuthConnectors: 1,
+      completedAgentRuns: 0,
+      completedWorkflows: 0,
+      evaluationTotal: 0,
+    }).checks.connector).toBe(true);
   });
 });

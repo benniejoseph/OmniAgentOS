@@ -71,6 +71,22 @@ const availableTargets = [
           cookie,
           headers: internalHeaders,
         },
+        {
+          name: "settings-capabilities",
+          path: "/api/capabilities?view=settings",
+          p95BudgetMs: budgets.releaseApiP95Ms,
+          serverP95BudgetMs: budgets.authenticatedReadP95Ms,
+          cookie,
+          headers: internalHeaders,
+        },
+        {
+          name: "workspace-readiness",
+          path: "/api/workspace-readiness",
+          p95BudgetMs: budgets.releaseApiP95Ms,
+          serverP95BudgetMs: budgets.authenticatedReadP95Ms,
+          cookie,
+          headers: internalHeaders,
+        },
       ]
     : []),
 ];

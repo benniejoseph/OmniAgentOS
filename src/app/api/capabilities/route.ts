@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { GEMINI_FAST_MODEL, GEMINI_IMAGE_MODEL, hasGeminiKey, hasGoogleMediaKey, hasOpenAIKey } from "@/lib/config";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
@@ -31,6 +32,24 @@ import { getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 
+const loadCachedVectorStoreStatus = unstable_cache(
+  getVectorStoreStatus,
+  ["vector-store-status-v1"],
+  { revalidate: 60 },
+);
+
+const loadCachedSettingsCapabilities = unstable_cache(
+  loadSettingsCapabilities,
+  ["settings-capabilities-v1"],
+  { revalidate: 15 },
+);
+
+const loadCachedFullCapabilities = unstable_cache(
+  loadFullCapabilities,
+  ["full-capabilities-v1"],
+  { revalidate: 15 },
+);
+
 async function GETHandler(request: Request) {
   let securityContext;
   try {
@@ -39,8 +58,48 @@ async function GETHandler(request: Request) {
     return securityErrorResponse(error);
   }
   const canReadSecurity = canPerform(securityContext.role, "read.security");
+  const view = new URL(request.url).searchParams.get("view");
+
+  if (view === "settings") {
+    return Response.json(
+      await loadCachedSettingsCapabilities(securityContext.tenantId),
+      { headers: { "cache-control": "private, no-store" } },
+    );
+  }
+
+  const snapshot = await loadCachedFullCapabilities(
+    securityContext.tenantId,
+    canReadSecurity,
+  );
 
   return Response.json({
+    ...snapshot,
+    security: {
+      ...snapshot.security,
+      context: securityContext,
+    },
+  }, { headers: { "cache-control": "private, no-store" } });
+}
+
+async function loadSettingsCapabilities(tenantId: string) {
+  const [vectorStore, memory, knowledge] = await Promise.all([
+    loadCachedVectorStoreStatus(),
+    getMemoryStats({ tenantId }),
+    getKnowledgeStats({ tenantId }),
+  ]);
+  return settingsCapabilities({ vectorStore, memory, knowledge });
+}
+
+function settingsCapabilities({
+  vectorStore,
+  memory,
+  knowledge,
+}: {
+  vectorStore: Awaited<ReturnType<typeof getVectorStoreStatus>>;
+  memory: Awaited<ReturnType<typeof getMemoryStats>>;
+  knowledge: Awaited<ReturnType<typeof getKnowledgeStats>>;
+}) {
+  return {
     openaiConfigured: hasOpenAIKey(),
     geminiConfigured: hasGeminiKey(),
     googleMediaConfigured: hasGoogleMediaKey(),
@@ -48,34 +107,88 @@ async function GETHandler(request: Request) {
     liveWebSearchConfigured: hasOpenAIKey(),
     databaseConfigured: hasDatabaseUrl(),
     storageBackend: getStorageBackend(),
-    vectorStore: await getVectorStoreStatus(),
-    memory: await getMemoryStats({ tenantId: securityContext.tenantId }),
-    memoryGraph: await getMemoryGraphStats({ tenantId: securityContext.tenantId }),
-    knowledge: await getKnowledgeStats({ tenantId: securityContext.tenantId }),
-    contextEngine: await getContextEngineStats({ tenantId: securityContext.tenantId }),
-    runs: await getRunStats({ tenantId: securityContext.tenantId }),
-    toolExecutions: await getToolExecutionStats({ tenantId: securityContext.tenantId }),
-    mcpConnectors: await getMcpConnectorStats({ tenantId: securityContext.tenantId }),
-    openApiConnectors: await getOpenApiConnectorStats({ tenantId: securityContext.tenantId }),
-    workflows: await getWorkflowStats({ tenantId: securityContext.tenantId }),
-    workflowPlans: await getWorkflowPlanStats({ tenantId: securityContext.tenantId }),
-    workflowPlanExecutions: await getWorkflowPlanNodeExecutionStats({ tenantId: securityContext.tenantId }),
-    workflowTriggers: await getWorkflowTriggerStats({ tenantId: securityContext.tenantId }),
-    operationJobs: await getOperationJobStats({ tenantId: securityContext.tenantId }),
-    health: await getHealthStats({ tenantId: securityContext.tenantId }),
-    incidents: await getIncidentStats({ tenantId: securityContext.tenantId }),
-    alerts: await getAlertDeliveryStats({ tenantId: securityContext.tenantId }),
-    observability: await getObservabilityStats({ tenantId: securityContext.tenantId }),
-    observabilitySlo: await getObservabilitySloSnapshot({ tenantId: securityContext.tenantId }),
-    evaluations: await getEvalStats({ tenantId: securityContext.tenantId }),
+    vectorStore,
+    memory,
+    knowledge,
+  };
+}
+
+async function loadFullCapabilities(
+  tenantId: string,
+  canReadSecurity: boolean,
+) {
+  const [
+    vectorStore,
+    memory,
+    memoryGraph,
+    knowledge,
+    contextEngine,
+    runs,
+    toolExecutions,
+    mcpConnectors,
+    openApiConnectors,
+    workflows,
+    workflowPlans,
+    workflowPlanExecutions,
+    workflowTriggers,
+    operationJobs,
+    health,
+    incidents,
+    alerts,
+    observability,
+    observabilitySlo,
+    evaluations,
+    securityStats,
+  ] = await Promise.all([
+    loadCachedVectorStoreStatus(),
+    getMemoryStats({ tenantId }),
+    getMemoryGraphStats({ tenantId }),
+    getKnowledgeStats({ tenantId }),
+    getContextEngineStats({ tenantId }),
+    getRunStats({ tenantId }),
+    getToolExecutionStats({ tenantId }),
+    getMcpConnectorStats({ tenantId }),
+    getOpenApiConnectorStats({ tenantId }),
+    getWorkflowStats({ tenantId }),
+    getWorkflowPlanStats({ tenantId }),
+    getWorkflowPlanNodeExecutionStats({ tenantId }),
+    getWorkflowTriggerStats({ tenantId }),
+    getOperationJobStats({ tenantId }),
+    getHealthStats({ tenantId }),
+    getIncidentStats({ tenantId }),
+    getAlertDeliveryStats({ tenantId }),
+    getObservabilityStats({ tenantId }),
+    getObservabilitySloSnapshot({ tenantId }),
+    getEvalStats({ tenantId }),
+    canReadSecurity ? getSecurityStats(tenantId) : Promise.resolve(undefined),
+  ]);
+
+  return {
+    ...settingsCapabilities({ vectorStore, memory, knowledge }),
+    memoryGraph,
+    contextEngine,
+    runs,
+    toolExecutions,
+    mcpConnectors,
+    openApiConnectors,
+    workflows,
+    workflowPlans,
+    workflowPlanExecutions,
+    workflowTriggers,
+    operationJobs,
+    health,
+    incidents,
+    alerts,
+    observability,
+    observabilitySlo,
+    evaluations,
     security: {
-      context: securityContext,
-      stats: canReadSecurity ? await getSecurityStats(securityContext.tenantId) : undefined,
+      stats: securityStats,
       policy: {
         rbacRules,
         secretVault: secretVaultPolicy(),
       },
     },
     registry: getCapabilityRegistry(),
-  });
+  };
 }

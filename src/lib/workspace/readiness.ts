@@ -5,6 +5,8 @@ import { getMemoryStats } from "@/lib/memory/store";
 import { getKnowledgeStats } from "@/lib/rag/store";
 import { getRunStats } from "@/lib/runs/store";
 import { getWorkflowStats } from "@/lib/workflows/store";
+import { listOAuthGrantsForTenant } from "@/lib/connectors/oauth-store";
+import { unstable_cache } from "next/cache";
 
 export type WorkspaceReadinessChecks = {
   identity: boolean;
@@ -28,6 +30,7 @@ export type WorkspaceReadinessInput = {
   knowledgeTotal: number;
   activeMcpConnectors: number;
   activeOpenApiConnectors: number;
+  activeOAuthConnectors: number;
   completedAgentRuns: number;
   completedWorkflows: number;
   evaluationTotal: number;
@@ -38,6 +41,7 @@ export type WorkspaceReadinessDependencies = {
   knowledgeTotal: (tenantId: string) => Promise<number>;
   activeMcpConnectors: (tenantId: string) => Promise<number>;
   activeOpenApiConnectors: (tenantId: string) => Promise<number>;
+  activeOAuthConnectors: (tenantId: string) => Promise<number>;
   completedAgentRuns: (tenantId: string) => Promise<number>;
   completedWorkflows: (tenantId: string) => Promise<number>;
   evaluationTotal: (tenantId: string) => Promise<number>;
@@ -52,6 +56,8 @@ const defaultDependencies: WorkspaceReadinessDependencies = {
     (await getMcpConnectorStats({ tenantId })).active,
   activeOpenApiConnectors: async (tenantId) =>
     (await getOpenApiConnectorStats({ tenantId })).active,
+  activeOAuthConnectors: async (tenantId) =>
+    (await listOAuthGrantsForTenant(tenantId)).length,
   completedAgentRuns: async (tenantId) =>
     (await getRunStats({ tenantId })).byStatus.completed || 0,
   completedWorkflows: async (tenantId) =>
@@ -67,7 +73,10 @@ export function calculateWorkspaceReadiness(
     identity: input.identityReady,
     knowledge: input.memoryTotal + input.knowledgeTotal > 0,
     connector:
-      input.activeMcpConnectors + input.activeOpenApiConnectors > 0,
+      input.activeMcpConnectors +
+        input.activeOpenApiConnectors +
+        input.activeOAuthConnectors >
+      0,
     firstRun: input.completedAgentRuns + input.completedWorkflows > 0,
     evaluation: input.evaluationTotal > 0,
   };
@@ -90,11 +99,41 @@ export async function loadWorkspaceReadiness(
   },
   dependencies: WorkspaceReadinessDependencies = defaultDependencies,
 ): Promise<WorkspaceReadiness> {
+  if (dependencies === defaultDependencies) {
+    return loadCachedWorkspaceReadiness(tenantId, identityReady);
+  }
+  return loadWorkspaceReadinessSources(
+    { tenantId, identityReady },
+    dependencies,
+  );
+}
+
+const loadCachedWorkspaceReadiness = unstable_cache(
+  (tenantId: string, identityReady: boolean) =>
+    loadWorkspaceReadinessSources(
+      { tenantId, identityReady },
+      defaultDependencies,
+    ),
+  ["workspace-readiness-v2"],
+  { revalidate: 15 },
+);
+
+async function loadWorkspaceReadinessSources(
+  {
+    tenantId,
+    identityReady,
+  }: {
+    tenantId: string;
+    identityReady: boolean;
+  },
+  dependencies: WorkspaceReadinessDependencies,
+): Promise<WorkspaceReadiness> {
   const [
     memoryTotal,
     knowledgeTotal,
     activeMcpConnectors,
     activeOpenApiConnectors,
+    activeOAuthConnectors,
     completedAgentRuns,
     completedWorkflows,
     evaluationTotal,
@@ -103,6 +142,7 @@ export async function loadWorkspaceReadiness(
     dependencies.knowledgeTotal(tenantId),
     dependencies.activeMcpConnectors(tenantId),
     dependencies.activeOpenApiConnectors(tenantId),
+    dependencies.activeOAuthConnectors(tenantId),
     dependencies.completedAgentRuns(tenantId),
     dependencies.completedWorkflows(tenantId),
     dependencies.evaluationTotal(tenantId),
@@ -114,6 +154,7 @@ export async function loadWorkspaceReadiness(
     knowledgeTotal,
     activeMcpConnectors,
     activeOpenApiConnectors,
+    activeOAuthConnectors,
     completedAgentRuns,
     completedWorkflows,
     evaluationTotal,
