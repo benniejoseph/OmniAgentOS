@@ -605,7 +605,12 @@ async function executeStep(
         contextBlock: specialistContext.contextBlock,
       };
     }
-    const retrieval = await buildContextPack(detail.run.goal, { limit: 6, tenantId: detail.run.tenantId });
+    const contextSelection = workflowContextSelection(detail);
+    const retrieval = await buildContextPack(contextSelection?.query || detail.run.goal, {
+      limit: 6,
+      tenantId: detail.run.tenantId,
+      evidenceIds: contextSelection?.evidenceIds,
+    });
     return {
       contextCount: retrieval.results.length + specialistContext.count,
       memoryCount: retrieval.memoryResults.length,
@@ -777,6 +782,7 @@ async function verifyWithModel({
 
 async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
   const profile = workflowAgentProfile(detail);
+  const contextSelection = workflowContextSelection(detail);
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const replanEvent = [...detail.events]
     .reverse()
@@ -809,13 +815,17 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
     selectedPlan ||
     await buildDynamicWorkflowPlan({
       tenantId: detail.run.tenantId,
-      goal: `${detail.run.goal}${replanFeedback}`,
+      goal: detail.run.goal,
       mode: detail.run.input.mode || "orchestrate",
       workflowRunId: detail.run.id,
       requireApproval: detail.run.approvalRequired,
+      contextSelection,
       allowedToolIds: profile ? [...new Set([...profile.toolIds, ...profile.skills.flatMap((skill) => skill.toolIds)])] : undefined,
       readOnlyTools: profile ? profile.approvalPolicy === "read_only" || profile.autonomy === "assist" : undefined,
-      agentInstructions: profile ? [profile.instructions, ...profile.skills.map((skill) => `${skill.name}: ${skill.instructions}`)].join("\n\n") : undefined,
+      agentInstructions: [
+        profile ? [profile.instructions, ...profile.skills.map((skill) => `${skill.name}: ${skill.instructions}`)].join("\n\n") : "",
+        replanFeedback.trim(),
+      ].filter(Boolean).join("\n\n") || undefined,
       reuseExisting: !replanEvent,
       abortSignal,
     });
@@ -1018,6 +1028,52 @@ function workflowAgentProfile(detail: WorkflowRunDetail): AgentRunRequest["agent
     || !Array.isArray(profile.toolIds) || !validSkills
   ) return undefined;
   return profile as AgentRunRequest["agentProfile"];
+}
+
+function workflowContextSelection(detail: WorkflowRunDetail): AgentRunRequest["contextSelection"] | undefined {
+  const value = detail.run.input.metadata?.contextSelection;
+  if (value === undefined) return undefined;
+
+  const noSavedContext = {
+    query: detail.run.goal,
+    evidenceIds: [],
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return noSavedContext;
+
+  const selection = value as Record<string, unknown>;
+  if (
+    typeof selection.query !== "string"
+    || !selection.query.trim()
+    || selection.query.length > 4_000
+    || !Array.isArray(selection.evidenceIds)
+    || selection.evidenceIds.length > 24
+  ) return noSavedContext;
+
+  const evidenceIds = selection.evidenceIds.map((id) => typeof id === "string" ? id.trim() : "");
+  if (
+    evidenceIds.some((id) => id.length > 200 || !/^(?:memory|knowledge|graph):[^\s]+$/.test(id))
+    || new Set(evidenceIds).size !== evidenceIds.length
+    || !contextSelectionMatchesGoal(selection.query, detail.run.goal)
+  ) return noSavedContext;
+
+  return {
+    query: selection.query.trim(),
+    evidenceIds,
+  };
+}
+
+function contextSelectionMatchesGoal(selectionQuery: string, goal: string) {
+  const normalizedSelection = normalizeTaskQuery(selectionQuery);
+  if (normalizedSelection === normalizeTaskQuery(goal)) return true;
+
+  const marker = "Current instruction:";
+  const markerIndex = goal.lastIndexOf(marker);
+  return markerIndex >= 0
+    && normalizedSelection === normalizeTaskQuery(goal.slice(markerIndex + marker.length));
+}
+
+function normalizeTaskQuery(value: string) {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function escapeUntrustedPromptText(value: string) {

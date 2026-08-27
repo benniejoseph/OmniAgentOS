@@ -30,6 +30,10 @@ import type {
 type BuildWorkflowPlanInput = {
   tenantId?: string;
   goal: string;
+  contextSelection?: {
+    query: string;
+    evidenceIds: string[];
+  };
   mode?: WorkflowDynamicPlan["mode"];
   workflowRunId?: string;
   requireApproval?: boolean;
@@ -127,8 +131,9 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
   if (!goal) {
     throw new Error("Workflow goal is required.");
   }
+  const contextSelection = validateContextSelection(input.contextSelection, goal);
 
-  if (input.workflowRunId && input.reuseExisting !== false) {
+  if (input.workflowRunId && input.reuseExisting !== false && !contextSelection) {
     const existing = await getWorkflowPlanForRun(input.workflowRunId, { tenantId });
     if (existing) {
       return existing;
@@ -136,7 +141,11 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
   }
 
   const mode = input.mode || "orchestrate";
-  const context = await buildContextPack(goal, { limit: 8, tenantId });
+  const context = await buildContextPack(contextSelection?.query || goal, {
+    limit: 8,
+    tenantId,
+    evidenceIds: contextSelection?.evidenceIds,
+  });
   const availableCandidates = await getPlannerToolCandidates(goal, context.contextBlock, {
     tenantId,
     preferredToolIds: input.allowedToolIds,
@@ -190,6 +199,42 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
   };
 
   return saveWorkflowPlan(record);
+}
+
+function validateContextSelection(
+  selection: BuildWorkflowPlanInput["contextSelection"],
+  goal: string,
+) {
+  if (!selection) return undefined;
+
+  const query = String(redactSensitive(selection.query.trim())).slice(0, 4_000);
+  const evidenceIds = selection.evidenceIds.map((id) => id.trim());
+  if (
+    !query
+    || selection.query.length > 4_000
+    || evidenceIds.length > 24
+    || evidenceIds.some((id) => id.length > 200 || !/^(?:memory|knowledge|graph):[^\s]+$/.test(id))
+    || new Set(evidenceIds).size !== evidenceIds.length
+    || !contextSelectionMatchesGoal(query, goal)
+  ) {
+    throw new Error("The reviewed context does not match this workflow goal.");
+  }
+
+  return { query, evidenceIds };
+}
+
+function contextSelectionMatchesGoal(selectionQuery: string, goal: string) {
+  const normalizedSelection = normalizeTaskQuery(selectionQuery);
+  if (normalizedSelection === normalizeTaskQuery(goal)) return true;
+
+  const marker = "Current instruction:";
+  const markerIndex = goal.lastIndexOf(marker);
+  return markerIndex >= 0
+    && normalizedSelection === normalizeTaskQuery(goal.slice(markerIndex + marker.length));
+}
+
+function normalizeTaskQuery(value: string) {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 export async function listWorkflowPlans(limit = 20, options: TenantScopedOptions = {}) {

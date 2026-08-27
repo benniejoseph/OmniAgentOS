@@ -47,6 +47,15 @@ const chatMessageSchema = z.object({
   content: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS),
 }).strict();
 
+const contextSelectionSchema = z.object({
+  query: z.string().trim().min(1).max(4_000),
+  evidenceIds: z.array(z.string().trim().min(1).max(200).regex(/^(?:memory|knowledge|graph):[^\s]+$/))
+    .max(24)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: "Context evidence IDs must be unique.",
+    }),
+}).strict();
+
 const requestSchema = z.object({
   messages: z.array(chatMessageSchema).min(1).max(AGENT_MAX_MESSAGES).optional(),
   threadId: z.string().uuid().optional(),
@@ -57,6 +66,7 @@ const requestSchema = z.object({
   agentId: z.string().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
+  contextSelection: contextSelectionSchema.optional(),
 }).strict().refine((value) => Boolean(value.message || value.messages?.length), { message: "A message is required." });
 
 async function POSTHandler(request: Request) {
@@ -74,6 +84,26 @@ async function POSTHandler(request: Request) {
       { status: 400 },
     );
   }
+
+  const requestMessage = parsed.data.message || parsed.data.messages?.at(-1)?.content || "";
+  if (
+    parsed.data.contextSelection &&
+    normalizeTaskQuery(parsed.data.contextSelection.query) !== normalizeTaskQuery(requestMessage)
+  ) {
+    return Response.json(
+      {
+        error: "Context selection is out of date.",
+        message: "The reviewed context does not match this task. Rebuild the task context before starting.",
+      },
+      { status: 409 },
+    );
+  }
+  const contextSelection = parsed.data.contextSelection
+    ? {
+        query: parsed.data.contextSelection.query,
+        evidenceIds: parsed.data.contextSelection.evidenceIds,
+      }
+    : undefined;
 
   let requestId: string;
   try {
@@ -126,7 +156,6 @@ async function POSTHandler(request: Request) {
   }
 
   const mode = parsed.data.mode || "orchestrate";
-  const requestMessage = parsed.data.message || parsed.data.messages?.at(-1)?.content || "";
   const requestedBuiltInAgent = isBuiltInAgentId(parsed.data.agentId) ? parsed.data.agentId : undefined;
   const customAgent = parsed.data.agentId && !requestedBuiltInAgent
     ? await getCustomAgent(parsed.data.agentId, { tenantId: context.tenantId, actorId: context.actorId })
@@ -276,11 +305,15 @@ async function POSTHandler(request: Request) {
                 specialistTaskIds: durableSpecialists.map((item) => item.taskId),
                 specialistRunIds: durableSpecialists.map((item) => item.runId),
                 learning: decision.learning,
+                ...(contextSelection ? { contextSelection } : {}),
               },
               idempotencyKey: `supervisor:${context.actorId}:${requestId}`,
             });
             if (detail.run.goal !== executionMessage.trim()) {
               throw new Error("requestId was already used for a different instruction. Submit this work with a new requestId.");
+            }
+            if (!sameContextSelection(detail.run.input.metadata?.contextSelection, contextSelection)) {
+              throw new Error("requestId was already used with a different context selection. Submit this work with a new requestId.");
             }
             await bindDurableSpecialistsToWorkflow(
               durableSpecialists,
@@ -345,6 +378,7 @@ async function POSTHandler(request: Request) {
             mode: parsed.data.mode,
             threadId,
             messages: safeMessages,
+            contextSelection,
             tenantId: context.tenantId,
             actorId: context.actorId,
             role: context.role,
@@ -450,6 +484,27 @@ async function POSTHandler(request: Request) {
 function missionTitle(message: string) {
   const compact = message.replace(/\s+/g, " ").trim();
   return compact.slice(0, 90) || "New Asael mission";
+}
+
+function normalizeTaskQuery(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function sameContextSelection(
+  stored: unknown,
+  expected: { query: string; evidenceIds: string[] } | undefined,
+) {
+  if (!expected) return stored === undefined;
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return false;
+
+  const value = stored as Record<string, unknown>;
+  if (typeof value.query !== "string" || !Array.isArray(value.evidenceIds)) return false;
+  const storedIds = value.evidenceIds.filter((id): id is string => typeof id === "string").sort();
+  const expectedIds = [...expected.evidenceIds].sort();
+  return normalizeTaskQuery(String(redactSensitive(value.query))) === normalizeTaskQuery(String(redactSensitive(expected.query)))
+    && storedIds.length === value.evidenceIds.length
+    && storedIds.length === expectedIds.length
+    && storedIds.every((id, index) => id === expectedIds[index]);
 }
 
 function resolveRequestId(request: Request, bodyRequestId?: string) {

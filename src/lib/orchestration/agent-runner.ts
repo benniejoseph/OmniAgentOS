@@ -187,10 +187,12 @@ export async function* runAgent(
       yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
     }
     const useLiveWeb = shouldUseLiveWebSearch(query) && hasOpenAIKey();
+    const retrievalQuery = request.contextSelection?.query || query;
     const retrievalPromise = durableMemoryEnabled
-      ? buildContextPack(query, {
+      ? buildContextPack(retrievalQuery, {
           limit: 8,
           tenantId: request.tenantId,
+          evidenceIds: request.contextSelection?.evidenceIds,
         })
       : Promise.resolve(fallbackContextPack(query));
     const configuredToolIds = request.agentProfile ? [...new Set([
