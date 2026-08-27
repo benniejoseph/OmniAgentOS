@@ -21,8 +21,6 @@ import {
 import { clsx } from "clsx";
 import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefetch-link";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
-import { useWorkspaceReadiness } from "@/components/app-shell/use-workspace-readiness";
-import { WorkspaceReadinessCard } from "@/components/app-shell/workspace-readiness-card";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import {
   formatTodayDue,
@@ -93,7 +91,6 @@ export function TodayWorkspace({
   );
   const briefAttemptRef = useRef("");
   const workspaceAvailable = Boolean(session && (!session.authEnabled || session.authenticated));
-  const readiness = useWorkspaceReadiness({ enabled: workspaceAvailable });
 
   const runs = sourceData(summary, "runs");
   const workflows = sourceData(summary, "workflows");
@@ -366,8 +363,14 @@ export function TodayWorkspace({
         </div>
         <div className="today-intro">
           <p className="today-kicker">{greeting(now)}</p>
-          <h1>{open.length ? `${open.length} things deserve your attention.` : "Your field is clear."}</h1>
-          <p>{briefLine(activeWork.length, approvals.length, reminders.length)}</p>
+          <h1>Today</h1>
+          <p>
+            {open.length
+              ? `${open.length} ${open.length === 1 ? "item needs" : "items need"} your attention. ${completed} completed today.`
+              : completed
+                ? `Everything is clear. You completed ${completed} ${completed === 1 ? "item" : "items"} today.`
+                : "Everything is clear. Add a task or start new work when you are ready."}
+          </p>
         </div>
         <div className="today-actions">
           <button type="button" onClick={() => void load({ force: true, showLoading: true, announce: true })} disabled={loading} className="today-icon-button" aria-label="Refresh Today">
@@ -375,12 +378,11 @@ export function TodayWorkspace({
           </button>
           <Link href="/app/capture" className="action-link">Capture</Link>
           <Link href="/app/command" className="primary-button" aria-label="Start task">
-            Ask Asael <ArrowRight size={15} aria-hidden="true" />
+            Start a task <ArrowRight size={15} aria-hidden="true" />
           </Link>
         </div>
       </header>
 
-      {workspaceAvailable ? <WorkspaceReadinessCard state={readiness.state} onRefresh={readiness.refresh} /> : null}
       {todayError || summaryError ? (
         <div className="today-error" role="alert">
           <strong>Some context is unavailable.</strong>
@@ -388,13 +390,67 @@ export function TodayWorkspace({
         </div>
       ) : null}
 
+      <section className="today-overview" aria-labelledby="today-overview-title">
+        <div className="today-overview-heading">
+          <div>
+            <h2 id="today-overview-title">Workspace overview</h2>
+            <p>What needs attention and what is moving across the app.</p>
+          </div>
+        </div>
+        <div className="today-overview-list">
+          <TodayOverviewLink
+            icon={Circle}
+            label="Open today"
+            value={open.length}
+            detail={`${completed} completed`}
+            href="#today-focus"
+          />
+          <TodayOverviewLink
+            icon={Workflow}
+            label="Work in progress"
+            value={activeWork.length}
+            detail="Agents and workflows"
+            href="/app/workflows"
+          />
+          <TodayOverviewLink
+            icon={Bell}
+            label="Approvals"
+            value={approvals.length}
+            detail="Waiting for review"
+            href="/app/approvals"
+            attention={approvals.length > 0}
+          />
+          <TodayOverviewLink
+            icon={FolderKanban}
+            label="Projects"
+            value={today.projects?.length || 0}
+            detail="Active projects in view"
+            href="/app/projects"
+          />
+          <TodayOverviewLink
+            icon={BrainCircuit}
+            label="Memory"
+            value={today.memories.length}
+            detail="Recent memories in view"
+            href="/app/memory"
+          />
+          <TodayOverviewLink
+            icon={MessageSquareText}
+            label="Conversations"
+            value={today.threads.length}
+            detail="Recent threads"
+            href="/app/command"
+          />
+        </div>
+      </section>
+
       <section className="today-generated-brief" aria-labelledby="daily-brief-title">
         <div className="today-brief-lead">
           <div className="today-brief-title-row">
             <div className="today-brief-mark" aria-hidden="true"><Sunrise size={21} /></div>
             <div>
-              <p className="today-kicker">Daily brief</p>
-              <h2 id="daily-brief-title">A clear starting point</h2>
+              <p className="today-kicker">Plan for the day</p>
+              <h2 id="daily-brief-title">Daily brief</h2>
             </div>
           </div>
           {today.brief ? (
@@ -420,7 +476,7 @@ export function TodayWorkspace({
         </div>
 
         <div className="today-brief-focus" aria-label="Brief priorities">
-          <p className="today-brief-label">First moves</p>
+          <p className="today-brief-label">Priorities</p>
           {today.brief?.focus.length ? today.brief.focus.slice(0, 3).map((item, index) => (
             <div className="today-brief-priority" key={`${item.title}-${index}`}>
               <span>{String(index + 1).padStart(2, "0")}</span>
@@ -431,12 +487,12 @@ export function TodayWorkspace({
 
         <div className="today-brief-side">
           <div>
-            <p className="today-brief-label"><AlertTriangle size={12} aria-hidden="true" /> Watch</p>
-            {today.brief?.watchouts.length ? today.brief.watchouts.slice(0, 2).map((item) => <p key={item} className="today-watchout">{item}</p>) : <p className="today-brief-placeholder">Nothing urgent is hiding.</p>}
+            <p className="today-brief-label"><AlertTriangle size={12} aria-hidden="true" /> Risks and blockers</p>
+            {today.brief?.watchouts.length ? today.brief.watchouts.slice(0, 2).map((item) => <p key={item} className="today-watchout">{item}</p>) : <p className="today-brief-placeholder">No risks or blockers found.</p>}
           </div>
-          {today.brief?.resurfaced[0] ? <div className="today-resurfaced"><p className="today-brief-label">Resurfaced</p><strong>{today.brief.resurfaced[0].title}</strong><p>{today.brief.resurfaced[0].context}</p></div> : null}
+          {today.brief?.resurfaced[0] ? <div className="today-resurfaced"><p className="today-brief-label">From your memory</p><strong>{today.brief.resurfaced[0].title}</strong><p>{today.brief.resurfaced[0].context}</p></div> : null}
           <details className="today-brief-schedule">
-            <summary><Settings2 size={13} aria-hidden="true" /> Schedule</summary>
+            <summary><Settings2 size={13} aria-hidden="true" /> Brief settings</summary>
             <form onSubmit={saveSchedule}>
               <label className="today-switch-row"><span>Automatic brief</span><input type="checkbox" checked={today.preferences.briefEnabled} onChange={(event) => updatePreference("briefEnabled", event.currentTarget.checked)} /></label>
               <label><span>Time</span><input type="time" value={today.preferences.briefTime} onChange={(event) => updatePreference("briefTime", event.currentTarget.value)} /></label>
@@ -451,26 +507,44 @@ export function TodayWorkspace({
       </section>
 
       <section className="today-grid">
-        <div className="today-focus">
+        <div className="today-focus" id="today-focus">
           <div className="today-section-heading">
-            <div><p className="today-kicker">Focus</p><h2>What moves today forward</h2></div>
+            <div>
+              <h2>Tasks and reminders</h2>
+              <p className="today-section-copy">{open.length} open and {completed} completed today.</p>
+            </div>
             <ProgressRing value={progress} completed={completed} total={visibleItems.length} />
           </div>
 
-          <form className="today-capture-row" onSubmit={addItem}>
-            <Plus size={17} aria-hidden="true" />
-            <label className="sr-only" htmlFor="today-item-title">Add a focus item</label>
-            <input id="today-item-title" value={title} onChange={(event) => setTitle(event.currentTarget.value)} placeholder="Add a focus item..." maxLength={280} />
-            <select aria-label="Item type" value={kind} onChange={(event) => setKind(event.currentTarget.value as TodayItem["kind"])}>
-              <option value="task">Task</option><option value="reminder">Reminder</option>
-            </select>
-            <select aria-label="Priority" value={priority} onChange={(event) => setPriority(event.currentTarget.value as TodayItem["priority"])}>
-              <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
-            </select>
-            <label className="sr-only" htmlFor="today-due-at">Due time</label>
-            <input id="today-due-at" name="dueAt" type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.currentTarget.value)} />
-            <button type="submit" disabled={saving || !title.trim()}>{saving ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : "Add"}</button>
-          </form>
+          <div className="today-capture-panel">
+            <div className="today-capture-heading">
+              <Plus size={17} aria-hidden="true" />
+              <div><strong>Add to Today</strong><span>Create a task or reminder with an optional due time.</span></div>
+            </div>
+            <form className="today-capture-row" onSubmit={addItem}>
+              <label className="today-capture-field today-capture-title">
+                <span>What needs to happen?</span>
+                <input aria-label="Add a focus item" id="today-item-title" value={title} onChange={(event) => setTitle(event.currentTarget.value)} placeholder="Write a clear task or reminder" maxLength={280} />
+              </label>
+              <label className="today-capture-field">
+                <span>Type</span>
+                <select aria-label="Item type" value={kind} onChange={(event) => setKind(event.currentTarget.value as TodayItem["kind"])}>
+                  <option value="task">Task</option><option value="reminder">Reminder</option>
+                </select>
+              </label>
+              <label className="today-capture-field">
+                <span>Priority</span>
+                <select aria-label="Priority" value={priority} onChange={(event) => setPriority(event.currentTarget.value as TodayItem["priority"])}>
+                  <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
+                </select>
+              </label>
+              <label className="today-capture-field today-capture-due">
+                <span>Due date and time</span>
+                <input aria-label="Due time" id="today-due-at" name="dueAt" type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.currentTarget.value)} />
+              </label>
+              <button type="submit" disabled={saving || !title.trim()}>{saving ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : "Add"}</button>
+            </form>
+          </div>
 
           <div className="today-focus-list" aria-label="Focus items">
             {visibleItems.length ? visibleItems.map((item) => (
@@ -480,13 +554,13 @@ export function TodayWorkspace({
                 <span className={clsx("today-priority", `priority-${item.priority}`)}>{item.priority}</span>
               </button>
             )) : (
-              <div className="today-empty"><Sparkles size={20} aria-hidden="true" /><p>No focus items yet.</p><span>Add one above or ask Asael to help plan the day.</span></div>
+              <div className="today-empty"><Sparkles size={20} aria-hidden="true" /><p>No tasks or reminders yet.</p><span>Add your first item above.</span></div>
             )}
           </div>
         </div>
 
         <aside className="today-agenda">
-          <div className="today-section-heading compact"><div><p className="today-kicker">Agenda</p><h2>Time and attention</h2></div></div>
+          <div className="today-section-heading compact"><div><h2>Schedule</h2><p className="today-section-copy">Reminders with a time appear here.</p></div></div>
           <div className="today-timeline">
             {reminders.length ? reminders.slice(0, 6).map((item) => (
               <div key={item.id} className={clsx("today-timeline-item", item.reminderState && `is-${item.reminderState}`)}><span>{item.dueAt ? formatTodayTime(item.dueAt, presentationTimezone) : "Anytime"}</span><div><strong>{item.title}</strong><small>{item.reminderState === "overdue" ? "Overdue" : item.reminderState === "due_soon" ? "Due soon" : `${item.priority} priority`}</small></div></div>
@@ -494,14 +568,17 @@ export function TodayWorkspace({
           </div>
           <div className="today-attention">
             <Bell size={15} aria-hidden="true" />
-            <div><strong>{approvals.length} waiting for you</strong><p>Approvals and consequential actions remain paused.</p></div>
-            <Link href="/app/approvals">Review</Link>
+            <div>
+              <strong>{approvals.length ? `${approvals.length} ${approvals.length === 1 ? "approval" : "approvals"} waiting` : "No approvals waiting"}</strong>
+              <p>{approvals.length ? "Review consequential actions before they continue." : "There are no paused actions to review."}</p>
+            </div>
+            <Link href="/app/approvals">View</Link>
           </div>
         </aside>
       </section>
 
       <section className="today-context-grid">
-        <TodayContextSection icon={Workflow} eyebrow="Live work" title="Agents and automations">
+        <TodayContextSection icon={Workflow} title="Work in progress" description="Agents and workflows currently active." href="/app/workflows">
           {visibleWork.length ? visibleWork.slice(0, 5).map((item, index) => (
             <Link key={text(item.id) || index} href={item.goal ? "/app/workflows" : "/app/command"} className="today-context-row">
               <span className="today-live-dot" /><div><strong>{text(item.goal || item.prompt, "Untitled work")}</strong><small>{text(item.status, "active").replaceAll("_", " ")}</small></div><ArrowRight size={14} aria-hidden="true" />
@@ -510,19 +587,19 @@ export function TodayWorkspace({
           {sourceErrors.map(({ source, error }) => <p key={source} className="today-source-error">{source}: {error}</p>)}
         </TodayContextSection>
 
-        <TodayContextSection icon={FolderKanban} eyebrow="Projects" title="Goals in motion">
+        <TodayContextSection icon={FolderKanban} title="Projects" description="Progress and the next task in each active project." href="/app/projects">
           {today.projects?.length ? today.projects.map((project) => (
             <Link key={project.id} href="/app/projects" className="today-project-row"><div><strong>{project.title}</strong><p>{project.nextTask || project.objective}</p><span><i style={{ width: `${project.totalTasks ? project.completedTasks / project.totalTasks * 100 : 0}%` }} /></span></div><small>{project.completedTasks}/{project.totalTasks}</small></Link>
           )) : <ContextEmpty>Your active projects and next milestones will appear here.</ContextEmpty>}
         </TodayContextSection>
 
-        <TodayContextSection icon={BrainCircuit} eyebrow="Resurface" title="Worth remembering">
+        <TodayContextSection icon={BrainCircuit} title="Memory" description="Recent knowledge Asael may use." href="/app/memory">
           {today.memories.length ? today.memories.slice(0, 4).map((memory) => (
             <Link key={memory.id} href="/app/memory" className="today-memory-row"><div><strong>{memory.title}</strong><p>{memory.content}</p></div><span>{memory.type}</span></Link>
           )) : <ContextEmpty>Capture a note and useful knowledge will resurface here.</ContextEmpty>}
         </TodayContextSection>
 
-        <TodayContextSection icon={MessageSquareText} eyebrow="Continue" title="Recent conversations">
+        <TodayContextSection icon={MessageSquareText} title="Conversations" description="Pick up where you left off." href="/app/command">
           {today.threads.length ? today.threads.slice(0, 5).map((thread) => (
             <Link key={thread.id} href={`/app/command?thread=${encodeURIComponent(thread.id)}`} className="today-context-row"><div><strong>{thread.title}</strong><small>{formatTodayRelative(thread.updatedAt, relativeAsOf)}</small></div><ArrowRight size={14} aria-hidden="true" /></Link>
           )) : <ContextEmpty>Your recent conversations will appear here.</ContextEmpty>}
@@ -537,8 +614,54 @@ function ProgressRing({ value, completed, total }: { value: number; completed: n
   return <div className="today-progress" aria-label={`${completed} of ${total} focus items completed`}><svg viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="18" /><circle className="progress-value" cx="22" cy="22" r="18" style={{ strokeDasharray: circumference, strokeDashoffset: circumference * (1 - value) }} /></svg><span>{total ? `${Math.round(value * 100)}%` : "—"}</span></div>;
 }
 
-function TodayContextSection({ icon: Icon, eyebrow, title, children }: { icon: typeof Workflow; eyebrow: string; title: string; children: React.ReactNode }) {
-  return <section className="today-context-section"><div className="today-context-heading"><Icon size={16} aria-hidden="true" /><div><p>{eyebrow}</p><h2>{title}</h2></div></div><div className="today-context-content">{children}</div></section>;
+function TodayOverviewLink({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  href,
+  attention = false,
+}: {
+  icon: typeof Workflow;
+  label: string;
+  value: number;
+  detail: string;
+  href: string;
+  attention?: boolean;
+}) {
+  return (
+    <Link href={href} className={clsx("today-overview-item", attention && "needs-attention")}>
+      <span className="today-overview-icon"><Icon size={17} aria-hidden="true" /></span>
+      <span className="today-overview-copy"><strong>{label}</strong><small>{detail}</small></span>
+      <span className="today-overview-value">{value}</span>
+      <ArrowRight size={14} aria-hidden="true" />
+    </Link>
+  );
+}
+
+function TodayContextSection({
+  icon: Icon,
+  title,
+  description,
+  href,
+  children,
+}: {
+  icon: typeof Workflow;
+  title: string;
+  description: string;
+  href: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="today-context-section">
+      <div className="today-context-heading">
+        <Icon size={18} aria-hidden="true" />
+        <div><h2>{title}</h2><p>{description}</p></div>
+        <Link href={href}>View all</Link>
+      </div>
+      <div className="today-context-content">{children}</div>
+    </section>
+  );
 }
 
 function ContextEmpty({ children }: { children: React.ReactNode }) {
@@ -567,5 +690,4 @@ function text(value: unknown, fallback = "") { return typeof value === "string" 
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : "Today could not be refreshed."; }
 function localDayKey(value: Date | null) { return value ? `${value.getFullYear()}-${value.getMonth()}-${value.getDate()}` : ""; }
 function greeting(now: Date | null) { if (!now) return "Today"; const hour = now.getHours(); return hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"; }
-function briefLine(active: number, approvals: number, reminders: number) { return `${active} active ${active === 1 ? "run" : "runs"}, ${approvals} awaiting approval, and ${reminders} ${reminders === 1 ? "reminder" : "reminders"} on your timeline.`; }
 function dueStateLabel(value?: TodayItem["reminderState"]) { return value === "overdue" ? " · overdue" : value === "due_soon" ? " · due soon" : ""; }
