@@ -990,11 +990,20 @@ async function completeWorkflow(
     const threadId = detail?.run.input.metadata?.threadId;
     if (typeof threadId === "string" && threadId) {
       try {
+        const workflowTurnId = `workflow:${runId}`;
+        await appendThreadTurn({
+          tenantId,
+          threadId,
+          role: "user",
+          content: detail.run.goal,
+          runId: workflowTurnId,
+        });
         await appendThreadTurn({
           tenantId,
           threadId,
           role: "assistant",
           content: String(reportOutput?.report || "Workflow completed."),
+          runId: workflowTurnId,
         });
       } catch (error) {
         console.error("Workflow thread result persistence failed.", error instanceof Error ? error.message : "Unknown persistence error.");

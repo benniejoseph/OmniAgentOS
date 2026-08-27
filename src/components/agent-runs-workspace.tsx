@@ -4,7 +4,11 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowUp,
   Brain,
+  CheckCircle2,
+  ChevronRight,
+  Clock3,
   FileText,
   GitBranch,
   Loader2,
@@ -23,6 +27,7 @@ import {
   ThumbsUp,
   Volume2,
   Workflow,
+  X,
 } from "lucide-react";
 import { clsx } from "clsx";
 import {
@@ -32,7 +37,7 @@ import {
 
 type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
-type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string };
+type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string; runId?: string };
 type AgentMode = "orchestrate" | "research" | "execute" | "learn";
 type AgentId = string;
 type GroundingReport = {
@@ -76,33 +81,6 @@ const tabs: Array<{ key: TabKey; label: string; icon: typeof TerminalSquare }> =
   { key: "plan", label: "Plan", icon: GitBranch },
   { key: "execute", label: "Activity", icon: Play },
   { key: "evidence", label: "Result", icon: FileText },
-];
-
-const starterGoals = [
-  {
-    label: "Research a decision",
-    description: "Compare sources and recommend a next step.",
-    mode: "research" as AgentMode,
-    goal: "Research current human-in-the-loop agent UX patterns, compare credible sources, and recommend the three changes that would most improve this workspace. Do not modify external systems.",
-  },
-  {
-    label: "Check release readiness",
-    description: "Summarize evidence, blockers, and safe actions.",
-    mode: "orchestrate" as AgentMode,
-    goal: "Prepare a production release readiness report using evaluations, SLOs, incidents, and security evidence. Identify blockers and three safe next actions without changing external systems.",
-  },
-  {
-    label: "Investigate a failure",
-    description: "Find likely causes and propose remediation.",
-    mode: "research" as AgentMode,
-    goal: "Inspect recent workflow failures, identify the most likely root cause, and produce a bounded remediation plan with verification steps. Do not apply changes.",
-  },
-  {
-    label: "Summarize workspace knowledge",
-    description: "Show what is known and what is missing.",
-    mode: "learn" as AgentMode,
-    goal: "Search workspace memory and knowledge for this project, summarize what is known, identify missing context, and suggest what should be added next.",
-  },
 ];
 
 export function AgentRunsWorkspace({
@@ -151,6 +129,7 @@ export function AgentRunsWorkspace({
   const [threadId, setThreadId] = useState(initialThreadId || "");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [turns, setTurns] = useState<ThreadTurn[]>([]);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const contextControllerRef = useRef<AbortController | null>(null);
   const contextVersionRef = useRef(0);
@@ -163,6 +142,11 @@ export function AgentRunsWorkspace({
   const responseAudioUrlRef = useRef<string | undefined>(undefined);
   const agentRequestIdRef = useRef<string>("");
   const directRunStatusRef = useRef("");
+  const currentRunIdRef = useRef("");
+  const detailsDialogRef = useRef<HTMLElement | null>(null);
+  const detailsReturnFocusRef = useRef<HTMLElement | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const transcriptPinnedRef = useRef(true);
 
   useEffect(() => {
     if (!initialAgentId || agentDisplayName(initialAgentId) !== "Custom agent") return;
@@ -200,6 +184,27 @@ export function AgentRunsWorkspace({
     activeWorkflowId &&
       !["completed", "failed", "canceled"].includes(activeWorkflowStatus),
   );
+  const directRunInProgress = Boolean(
+    loading === "agent" || waitingApproval || (activeAgentRunId && !agentRunTerminal),
+  );
+  const conversationLocked = workflowInProgress || directRunInProgress;
+  const workflowReport = stringPath(workflowRun, "run.result.report", "");
+  const currentAssistantResponse = workflowReport || agentResponse;
+  const currentResponseIsLastTurn = Boolean(
+    currentAssistantResponse &&
+      turns.at(-1)?.role === "assistant" &&
+      turns.at(-1)?.content === currentAssistantResponse,
+  );
+  const visibleTurns = currentResponseIsLastTurn ? turns.slice(0, -1) : turns;
+  const activityVisible = Boolean(
+    loading === "agent" || streamEvents.length > 0 || workflowRun,
+  );
+  const activityTerminal = workflowRun
+    ? ["completed", "failed", "canceled"].includes(activeWorkflowStatus)
+    : agentRunTerminal && loading !== "agent";
+  const activityCount = workflowRun
+    ? arrayPath(workflowRun, "steps").length + arrayPath(workflowRun, "events").length
+    : streamEvents.filter((event) => event.type !== "delta").length;
 
   const runPosture = useMemo(() => {
     if (workflowRun) {
@@ -291,6 +296,48 @@ export function AgentRunsWorkspace({
   }, [sessionStatus, session, role]);
 
   useEffect(() => {
+    if (!detailsOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusFrame = window.requestAnimationFrame(() => {
+      detailsDialogRef.current?.focus();
+    });
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDetailsOpen(false);
+      if (event.key !== "Tab") return;
+      const focusable = detailsDialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable?.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", closeOnEscape);
+      document.body.style.overflow = previousOverflow;
+      detailsReturnFocusRef.current?.focus();
+    };
+  }, [detailsOpen]);
+
+  useEffect(() => {
+    if (!transcriptPinnedRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const transcript = transcriptRef.current;
+      if (transcript) transcript.scrollTop = transcript.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [agentResponse, currentAssistantResponse, loading, streamEvents.length, turns.length]);
+
+  useEffect(() => {
     if (
       !activeWorkflowId ||
       ["completed", "failed", "canceled"].includes(activeWorkflowStatus)
@@ -326,6 +373,24 @@ export function AgentRunsWorkspace({
         setWorkflowRun(next);
         if (nextStatus && nextStatus !== activeWorkflowStatus) {
           void refreshEvidence();
+          if (["completed", "failed", "canceled"].includes(nextStatus) && threadId) {
+            void refreshThreadTurns(threadId);
+          }
+          if (nextStatus === "completed") {
+            const report = stringPath(next, "run.result.report", "");
+            if (report) {
+              setAgentResponse(report);
+              setTurns((current) => current.at(-1)?.content === report
+                ? current
+                : [...current, {
+                    id: `workflow-${activeWorkflowId}-${Date.now()}`,
+                    role: "assistant",
+                    content: report,
+                    createdAt: new Date().toISOString(),
+                    runId: `workflow:${activeWorkflowId}`,
+                  }]);
+            }
+          }
           setRunAnnouncement(`Workflow is now ${nextStatus.replace(/_/g, " ")}.`);
         }
       } catch (pollError) {
@@ -397,7 +462,7 @@ export function AgentRunsWorkspace({
           if (response) {
             setTurns((current) => current.at(-1)?.content === response
               ? current
-              : [...current, { id: `assistant-${Date.now()}`, role: "assistant", content: response, createdAt: new Date().toISOString() }]);
+              : [...current, { id: `assistant-${Date.now()}`, role: "assistant", content: response, createdAt: new Date().toISOString(), runId: activeAgentRunId }]);
           }
           setRunAnnouncement("Agent run completed. Review the result and evidence.");
           void refreshEvidence();
@@ -541,6 +606,17 @@ export function AgentRunsWorkspace({
     }
   }
 
+  function openTaskDetails(tab: TabKey) {
+    detailsReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setActiveTab(tab);
+    setDetailsOpen(true);
+  }
+
+  function closeTaskDetails() {
+    setDetailsOpen(false);
+  }
+
   function changeGoal(nextGoal: string) {
     if (nextGoal === goal) {
       return;
@@ -548,20 +624,13 @@ export function AgentRunsWorkspace({
     contextControllerRef.current?.abort();
     contextVersionRef.current += 1;
     setGoal(nextGoal);
+    setError(undefined);
     setContextPack(undefined);
     setContextQuery("");
     setSelectedContextIds([]);
     setContextLoading(false);
     setContextError(undefined);
     setWorkflowPlan(undefined);
-    setWorkflowRun(undefined);
-    setWorkflowSyncError(undefined);
-    setAgentResponse("");
-    setGrounding(undefined);
-    setActiveAgentRunId("");
-    setRunFeedback(undefined);
-    setStreamEvents([]);
-    setWaitingApproval(undefined);
     agentRequestIdRef.current = "";
   }
 
@@ -571,13 +640,6 @@ export function AgentRunsWorkspace({
     }
     setMode(nextMode);
     setWorkflowPlan(undefined);
-    setWorkflowRun(undefined);
-    setWorkflowSyncError(undefined);
-    setAgentResponse("");
-    setActiveAgentRunId("");
-    setRunFeedback(undefined);
-    setStreamEvents([]);
-    setWaitingApproval(undefined);
     agentRequestIdRef.current = "";
   }
 
@@ -587,13 +649,6 @@ export function AgentRunsWorkspace({
     }
     setApprovalRequired(nextValue);
     setWorkflowPlan(undefined);
-    setWorkflowRun(undefined);
-    setWorkflowSyncError(undefined);
-    setAgentResponse("");
-    setActiveAgentRunId("");
-    setRunFeedback(undefined);
-    setStreamEvents([]);
-    setWaitingApproval(undefined);
   }
 
   async function buildContext({
@@ -605,13 +660,13 @@ export function AgentRunsWorkspace({
   } = {}) {
     if (readPermission) {
       setContextError(readPermission);
-      if (reveal) setActiveTab("context");
+      if (reveal) openTaskDetails("context");
       return undefined;
     }
     const taskQuery = query.trim();
     if (!taskQuery) {
       setContextError("Write the task first so Asael can find relevant context.");
-      if (reveal) setActiveTab("context");
+      if (reveal) openTaskDetails("context");
       return undefined;
     }
     const version = ++contextVersionRef.current;
@@ -620,7 +675,7 @@ export function AgentRunsWorkspace({
     contextControllerRef.current = controller;
     setContextLoading(true);
     setContextError(undefined);
-    if (reveal) setActiveTab("context");
+    if (reveal) openTaskDetails("context");
     setRunAnnouncement("Finding context for this task.");
     try {
       const result = await readJson("/api/retrieval/plan", {
@@ -641,8 +696,6 @@ export function AgentRunsWorkspace({
       setContextQuery(taskQuery);
       setSelectedContextIds(evidenceIds);
       setWorkflowPlan(undefined);
-      setWorkflowRun(undefined);
-      setWorkflowSyncError(undefined);
       setRunAnnouncement(
         evidenceIds.length
           ? `Context is ready. ${evidenceIds.length} matching items are selected.`
@@ -677,8 +730,6 @@ export function AgentRunsWorkspace({
       nextIds.filter((id, index, values) => allowed.has(id) && values.indexOf(id) === index),
     );
     setWorkflowPlan(undefined);
-    setWorkflowRun(undefined);
-    setWorkflowSyncError(undefined);
     setRunAnnouncement("Context selection updated. Only checked items will be used.");
   }
 
@@ -698,7 +749,7 @@ export function AgentRunsWorkspace({
     }
     const taskQuery = goal.trim();
     if (contextLoading) {
-      setActiveTab("context");
+      openTaskDetails("context");
       setRunAnnouncement("Wait for task context to finish loading, then preview the plan.");
       return;
     }
@@ -729,7 +780,7 @@ export function AgentRunsWorkspace({
       setWorkflowPlan(nextPlan);
       setWorkflowRun(undefined);
       setWorkflowSyncError(undefined);
-      setActiveTab("plan");
+      openTaskDetails("plan");
       setRunAnnouncement(
         nextPlanStatus === "planned"
           ? "Workflow plan is ready for review."
@@ -758,7 +809,7 @@ export function AgentRunsWorkspace({
             )
           : "Generate and review a workflow plan before starting it.",
       );
-      setActiveTab("plan");
+      openTaskDetails("plan");
       return;
     }
     if (activeWorkflowId) {
@@ -769,13 +820,38 @@ export function AgentRunsWorkspace({
     const contextSelection = contextSelectionForTask(taskQuery);
     if (!contextSelection) {
       setError("The task changed after this plan was prepared. Review fresh context and generate the plan again.");
-      setActiveTab("context");
+      openTaskDetails("context");
       return;
     }
     setLoading("workflow");
     setError(undefined);
+    setAgentResponse("");
+    setGrounding(undefined);
+    setStreamEvents([{ type: "status", label: "Starting workflow", detail: "Preparing durable work." }]);
+    setTurns((current) => current.at(-1)?.role === "user" && current.at(-1)?.content === taskQuery
+      ? current
+      : [...current, {
+          id: `pending-workflow-user-${Date.now()}`,
+          role: "user",
+          content: taskQuery,
+          createdAt: new Date().toISOString(),
+        }]);
     setRunAnnouncement("Starting the durable workflow.");
     try {
+      let workflowThreadId = threadId;
+      if (!workflowThreadId) {
+        const threadResult = asRecord(await readJson("/api/threads", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: taskQuery.slice(0, 200), mode }),
+        }));
+        workflowThreadId = stringPath(threadResult, "thread.id", "");
+        if (!workflowThreadId) {
+          throw new Error("The conversation could not be created.");
+        }
+        setThreadId(workflowThreadId);
+        void refreshThreads();
+      }
       const result = await readJson("/api/workflows", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -786,11 +862,13 @@ export function AgentRunsWorkspace({
           requireApproval: approvalRequired,
           metadata: {
             source: "agent-runs-workspace",
+            threadId: workflowThreadId,
             contextSelection,
           },
         }),
       });
       setWorkflowRun(asRecord(result));
+      setGoal("");
       setActiveTab("execute");
       void refreshEvidence();
       setRunAnnouncement("Workflow started. Activity and results are available from the workspace navigation.");
@@ -813,7 +891,7 @@ export function AgentRunsWorkspace({
       return;
     }
     if (contextLoading) {
-      setActiveTab("context");
+      openTaskDetails("context");
       setRunAnnouncement("Wait for task context to finish loading, then run the task.");
       return;
     }
@@ -831,8 +909,11 @@ export function AgentRunsWorkspace({
     setError(undefined);
     setWorkflowPlan(undefined);
     setWorkflowRun(undefined);
+    setWorkflowSyncError(undefined);
     setAgentResponse("");
+    setGrounding(undefined);
     setActiveAgentRunId("");
+    currentRunIdRef.current = "";
     setRunFeedback(undefined);
     setStreamEvents([{ type: "status", label: "Starting", detail: "Opening the durable conversation." }]);
     directRunStatusRef.current = "";
@@ -876,6 +957,7 @@ export function AgentRunsWorkspace({
       let terminalEvent: "done" | "delegated" | "waiting_approval" | "error" | undefined;
       await readSse(response.body, (event) => {
         if (event.type === "run" && event.runId) {
+          currentRunIdRef.current = event.runId;
           setActiveAgentRunId(event.runId);
           if (event.threadId) {
             setThreadId(event.threadId);
@@ -911,7 +993,7 @@ export function AgentRunsWorkspace({
           if (event.response) {
             setTurns((current) => [
               ...current,
-              { id: `assistant-${Date.now()}`, role: "assistant", content: event.response || "", createdAt: new Date().toISOString() },
+              { id: `assistant-${Date.now()}`, role: "assistant", content: event.response || "", createdAt: new Date().toISOString(), runId: currentRunIdRef.current || undefined },
             ]);
           }
           setGoal("");
@@ -959,15 +1041,15 @@ export function AgentRunsWorkspace({
     }
   }
 
-  async function listenToResponse() {
-    if (!agentResponse.trim() || speechLoading) return;
+  async function listenToResponse(text = currentAssistantResponse) {
+    if (!text.trim() || speechLoading) return;
     if (responseAudioRef.current && !responseAudioRef.current.paused) {
       responseAudioRef.current.pause();
       return;
     }
     setSpeechLoading(true);
     try {
-      const response = await fetch("/api/media/speech", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: agentResponse }) });
+      const response = await fetch("/api/media/speech", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
       if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(stringValue(asRecord(body).error, "Speech playback failed.")); }
       const blob = await response.blob();
       if (responseAudioUrlRef.current) URL.revokeObjectURL(responseAudioUrlRef.current);
@@ -990,6 +1072,16 @@ export function AgentRunsWorkspace({
     }
   }
 
+  async function refreshThreadTurns(id: string) {
+    try {
+      const result = asRecord(await readJson(`/api/threads/${encodeURIComponent(id)}`));
+      if (id !== threadId) return;
+      setTurns(arrayPath(result, "turns") as unknown as ThreadTurn[]);
+    } catch {
+      // Keep the current transcript visible and let the next poll or reopen retry.
+    }
+  }
+
   async function loadThread(id: string) {
     try {
       const result = asRecord(await readJson(`/api/threads/${encodeURIComponent(id)}`));
@@ -1009,11 +1101,13 @@ export function AgentRunsWorkspace({
       setWorkflowRun(undefined);
       setWorkflowSyncError(undefined);
       setActiveAgentRunId("");
+      currentRunIdRef.current = "";
       directRunStatusRef.current = "";
       setStreamEvents([]);
       setWaitingApproval(undefined);
       setGrounding(undefined);
       setActiveTab("execute");
+      setDetailsOpen(false);
       agentRequestIdRef.current = "";
     } catch (threadError) {
       setError(threadError instanceof Error ? threadError.message : "Conversation could not be loaded.");
@@ -1037,10 +1131,12 @@ export function AgentRunsWorkspace({
     setWorkflowRun(undefined);
     setWorkflowSyncError(undefined);
     setActiveAgentRunId("");
+    currentRunIdRef.current = "";
     directRunStatusRef.current = "";
     setWaitingApproval(undefined);
     setGrounding(undefined);
     setActiveTab("context");
+    setDetailsOpen(false);
     setError(undefined);
   }
 
@@ -1152,22 +1248,13 @@ export function AgentRunsWorkspace({
       <section className="border-b border-line/80 pb-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight">Command</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Asael</h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">
-              Ask Asael a question or hand off a task. Review the plan, activity, and evidence when you need more control.
+              One conversation for questions, follow-ups, plans, and finished work.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <StatusPill label={runPosture.label} tone={runPosture.tone} />
-            <button
-              type="button"
-              onClick={() => void refreshEvidence()}
-              disabled={evidenceState === "loading"}
-              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised"
-            >
-              {evidenceState === "loading" ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
-              Refresh status
-            </button>
           </div>
         </div>
 
@@ -1220,77 +1307,155 @@ export function AgentRunsWorkspace({
           </div>
         </aside>
 
-        <div className="grid min-w-0 items-start gap-5 2xl:grid-cols-[minmax(0,1fr)_25rem]">
-          <section className="min-w-0 overflow-hidden rounded-xl border border-line/80 bg-surface">
-            <header className="flex items-center justify-between gap-4 border-b border-line/80 px-4 py-3 sm:px-5">
+        <div className="min-w-0">
+          <section className="min-w-0 overflow-hidden rounded-2xl border border-line/80 bg-surface shadow-[0_24px_70px_-52px_rgba(0,0,0,0.45)]">
+            <header className="flex items-center justify-between gap-4 border-b border-line/80 px-4 py-3.5 sm:px-6">
               <div className="flex min-w-0 items-center gap-3">
-                <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+                <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
                   <MessageSquareText size={16} aria-hidden="true" />
                 </span>
                 <div className="min-w-0">
                   <h2 className="truncate text-sm font-semibold">
-                    {threads.find((thread) => thread.id === threadId)?.title || "New task"}
+                    {threads.find((thread) => thread.id === threadId)?.title || "New conversation"}
                   </h2>
-                  <p className="mt-0.5 text-xs text-muted">Asael keeps the conversation and task together.</p>
+                  <p className="mt-0.5 text-xs text-muted">Ask, refine, and continue in the same thread.</p>
                 </div>
               </div>
+              <button
+                type="button"
+                onClick={() => openTaskDetails(activityVisible ? "execute" : "context")}
+                className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
+                aria-haspopup="dialog"
+              >
+                <Brain size={14} aria-hidden="true" />
+                Details
+              </button>
             </header>
 
-            <div className="min-h-64 max-h-[34rem] space-y-5 overflow-y-auto px-4 py-5 sm:px-6" aria-live="polite">
-              {turns.map((turn) => (
+            <div
+              ref={transcriptRef}
+              onScroll={(event) => {
+                const target = event.currentTarget;
+                transcriptPinnedRef.current =
+                  target.scrollHeight - target.scrollTop - target.clientHeight < 96;
+              }}
+              className="min-h-[25rem] max-h-[calc(100vh-17rem)] overflow-y-auto px-4 py-6 sm:px-7 sm:py-8"
+            >
+              <div className="mx-auto max-w-3xl space-y-7">
+              {visibleTurns.map((turn) => (
                 <article key={turn.id} className={clsx("flex", turn.role === "user" ? "justify-end" : "justify-start")}>
-                  <div className={clsx("max-w-3xl rounded-lg px-4 py-3", turn.role === "user" ? "bg-foreground text-background" : "bg-background text-foreground")}>
-                    <p className={clsx("mb-1 text-xs font-semibold", turn.role === "user" ? "text-background/65" : "text-primary")}>{turn.role === "user" ? "You" : "Asael"}</p>
-                    <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
-                  </div>
+                  {turn.role === "user" ? (
+                    <div className="max-w-[88%] rounded-2xl rounded-br-md bg-foreground px-4 py-3 text-background sm:max-w-[78%]">
+                      <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-background/60">You</p>
+                      <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
+                    </div>
+                  ) : (
+                    <div className="min-w-0 max-w-full sm:pl-1">
+                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Asael</p>
+                      <ConversationMessageContent content={turn.content} />
+                    </div>
+                  )}
                 </article>
               ))}
-              {agentResponse && turns.at(-1)?.content !== agentResponse ? (
+
+              {activityVisible ? (
+                <InlineTaskProgress
+                  terminal={activityTerminal}
+                  tone={runPosture.tone}
+                  summary={taskProgressSummary({ workflowRun, streamEvents, loading })}
+                  count={activityCount}
+                  onOpen={() => openTaskDetails("execute")}
+                />
+              ) : null}
+
+              {waitingApproval || activeWorkflowStatus === "waiting_approval" ? (
+                <div className="ml-0 flex max-w-2xl items-start justify-between gap-4 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 sm:ml-8">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+                    <div>
+                      <p className="text-sm font-semibold">Approval needed</p>
+                      <p className="mt-1 text-xs leading-5 text-muted">
+                        {waitingApproval ? streamEventLabel(waitingApproval) : "Review the pending workflow action before work can continue."}
+                      </p>
+                    </div>
+                  </div>
+                  <Link href="/app/approvals" className="action-link shrink-0">Review</Link>
+                </div>
+              ) : null}
+
+              {currentAssistantResponse ? (
                 <article className="flex justify-start">
-                  <div className="max-w-3xl rounded-lg bg-background px-4 py-3">
-                    <p className="mb-1 text-xs font-semibold text-primary">Asael</p>
-                    <p className="whitespace-pre-wrap text-sm leading-6">{agentResponse}</p>
+                  <div className="min-w-0 max-w-full sm:pl-1">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Asael</p>
+                      {loading === "agent" ? (
+                        <span className="inline-flex items-center gap-2 text-xs text-muted">
+                          <span className="size-1.5 animate-pulse rounded-full bg-primary" />
+                          Writing
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-2">
+                      <ConversationMessageContent content={currentAssistantResponse} />
+                    </div>
+                    <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line/70 pt-3">
+                      <button
+                        type="button"
+                        onClick={() => void listenToResponse(currentAssistantResponse)}
+                        disabled={speechLoading}
+                        className="inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
+                        aria-label="Listen to Asael's response"
+                      >
+                        {speechLoading ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Volume2 size={13} aria-hidden="true" />}
+                        Listen
+                      </button>
+                      {grounding ? (
+                        <span className="inline-flex min-h-9 items-center rounded-full bg-surface-raised px-3 text-xs font-medium text-muted">
+                          {groundingLabel(grounding.status)}
+                        </span>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => openTaskDetails("evidence")}
+                        className="inline-flex min-h-9 items-center gap-1 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
+                        aria-haspopup="dialog"
+                      >
+                        Evidence <ChevronRight size={13} aria-hidden="true" />
+                      </button>
+                    </div>
+                    {grounding?.sources.some((source) => grounding.citedIds.includes(source.citationId)) ? (
+                      <details className="mt-3 rounded-xl border border-line/80 bg-background px-3">
+                        <summary className="flex min-h-10 cursor-pointer items-center justify-between text-xs font-semibold">
+                          Sources used
+                          <span className="text-muted">{grounding.citedIds.length}</span>
+                        </summary>
+                        <div className="space-y-2 border-t border-line/70 py-3">
+                          {grounding.sources.filter((source) => grounding.citedIds.includes(source.citationId)).map((source) => (
+                            <div key={source.citationId} className="rounded-lg bg-surface px-3 py-2 text-xs">
+                              <p className="font-medium text-foreground">{source.title}</p>
+                              <p className="mt-1 font-mono text-muted">[{source.citationId}] · {source.kind} · {Math.round(source.confidence * 100)}%</p>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    ) : null}
+                    {agentResponse && activeAgentRunId && agentRunCompleted ? (
+                      <RunFeedbackPanel feedback={runFeedback} saving={feedbackSaving} onSave={saveRunFeedback} />
+                    ) : null}
                   </div>
                 </article>
               ) : null}
-              {!turns.length && !agentResponse ? (
-                <div className="grid min-h-52 place-items-center text-center">
+              {!turns.length && !currentAssistantResponse ? (
+                <div className="grid min-h-64 place-items-center text-center">
                   <div>
-                    <span className="mx-auto grid size-11 place-items-center rounded-xl bg-primary/10 text-primary"><Sparkles size={18} aria-hidden="true" /></span>
-                    <h2 className="mt-4 text-lg font-semibold tracking-tight">What should Asael handle?</h2>
-                    <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Ask a question, explore a decision, or describe a finished outcome. You can refine the task in this conversation.</p>
+                    <span className="mx-auto grid size-11 place-items-center rounded-full bg-primary/10 text-primary"><Sparkles size={18} aria-hidden="true" /></span>
+                    <h2 className="mt-4 text-xl font-semibold tracking-tight">What should we work through?</h2>
+                    <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Start with a question or outcome. Follow up naturally—Asael keeps this conversation together.</p>
                   </div>
                 </div>
               ) : null}
+              </div>
             </div>
-
-            {loading === "agent" || streamEvents.length > 0 || workflowRun ? (
-              <button
-                type="button"
-                onClick={() => setActiveTab("execute")}
-                className="flex w-full items-center justify-between gap-4 border-t border-line/80 bg-surface-raised px-4 py-3 text-left transition hover:bg-primary/10 sm:px-5"
-              >
-                <span className="flex min-w-0 items-center gap-3">
-                  <span className={clsx(
-                    "size-2.5 shrink-0 rounded-full",
-                    runPosture.tone === "success"
-                      ? "bg-success"
-                      : runPosture.tone === "danger"
-                        ? "bg-danger"
-                        : runPosture.tone === "warning"
-                          ? "bg-warning"
-                          : "bg-primary",
-                  )} />
-                  <span className="min-w-0">
-                    <span className="block text-xs font-semibold uppercase tracking-wide text-muted">Live task progress</span>
-                    <span className="mt-0.5 block truncate text-sm font-medium">
-                      {taskProgressSummary({ workflowRun, streamEvents, loading })}
-                    </span>
-                  </span>
-                </span>
-                <span className="shrink-0 text-xs font-semibold text-primary">View activity</span>
-              </button>
-            ) : null}
 
             <GoalStage
               goal={goal}
@@ -1309,13 +1474,14 @@ export function AgentRunsWorkspace({
               workflowDisabledReason={workflowPermission}
               workflowReady={reviewedPlanReady}
               workflowStarted={Boolean(activeWorkflowId)}
-              workflowInProgress={workflowInProgress}
+              workflowInProgress={conversationLocked}
+              hasConversation={turns.length > 0 || Boolean(currentAssistantResponse)}
               onGoalChange={changeGoal}
               onModeChange={changeMode}
               onApprovalChange={changeApprovalRequired}
               onClearPreferredAgent={() => { setPreferredAgentId(undefined); setPreferredAgentName(undefined); }}
               onContext={() => void buildContext()}
-              onReviewContext={() => setActiveTab("context")}
+              onReviewContext={() => openTaskDetails("context")}
               onPlan={() => void buildPlan()}
               onAgent={() => void runAgent()}
               onStop={stopAgent}
@@ -1323,10 +1489,36 @@ export function AgentRunsWorkspace({
             />
           </section>
 
-          <section className="command-details min-w-0 overflow-hidden rounded-xl border border-line/80 bg-surface 2xl:sticky 2xl:top-24">
-            <div className="border-b border-line/80 px-4 pt-4">
-              <h2 className="text-sm font-semibold">Task details</h2>
-              <p className="mt-1 text-xs leading-5 text-muted">Review what Asael found, plans, does, and produces.</p>
+          {detailsOpen ? (
+          <div
+            className="fixed inset-0 z-[90] flex items-end justify-center bg-foreground/35 p-0 backdrop-blur-sm sm:items-center sm:p-6"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) closeTaskDetails();
+            }}
+          >
+          <section
+            ref={detailsDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="task-details-title"
+            tabIndex={-1}
+            className="command-details max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-t-2xl border border-line/80 bg-surface shadow-2xl outline-none sm:rounded-2xl"
+          >
+            <div className="border-b border-line/80 px-4 pt-4 sm:px-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 id="task-details-title" className="text-base font-semibold">Task details</h2>
+                  <p className="mt-1 text-xs leading-5 text-muted">Context, plan, observable activity, and evidence for this conversation.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeTaskDetails}
+                  className="grid size-10 shrink-0 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground"
+                  aria-label="Close task details"
+                >
+                  <X size={17} aria-hidden="true" />
+                </button>
+              </div>
               <nav className="mt-3 flex max-w-full gap-1 overflow-x-auto" aria-label="Task details" role="tablist">
             {tabs.map((tab, index) => {
               const Icon = tab.icon;
@@ -1505,7 +1697,7 @@ export function AgentRunsWorkspace({
             ) : null}
 
             {activeTab === "execute" ? (
-              <StagePanel title="Activity" description="Live work, approvals, and the detailed answer.">
+              <StagePanel title="Activity" description="Observable work, approvals, and technical detail. The answer stays in the conversation.">
                 <div className="mb-4 flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -1513,12 +1705,12 @@ export function AgentRunsWorkspace({
                     disabled={
                       Boolean(loading) ||
                       Boolean(runPermission) ||
-                      workflowInProgress
+                      conversationLocked
                     }
                     title={
                       runPermission ||
-                      (workflowInProgress
-                        ? "Wait for the active workflow to finish or cancel it first."
+                      (conversationLocked
+                        ? "Wait for the active work to finish or cancel it first."
                         : undefined)
                     }
                     className="primary-button"
@@ -1597,61 +1789,24 @@ export function AgentRunsWorkspace({
                   running={loading === "agent"}
                 />
                 <CouncilExecutionMap events={streamEvents} />
-                <div className="grid gap-4">
-                  <details className="rounded-md border border-line bg-background">
-                    <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 px-3 text-sm font-semibold">
-                      <span>Technical activity</span>
-                      <span className="text-xs font-normal text-muted">{streamEvents.filter((event) => event.type !== "delta").length} events</span>
-                    </summary>
-                    <div className="max-h-96 space-y-2 overflow-auto border-t border-line p-3">
-                      {streamEvents.some((event) => event.type !== "delta") ? (
-                        streamEvents.filter((event) => event.type !== "delta").map((event, index) => (
-                          <div key={`${event.type}-${index}`} className="rounded-md border border-line bg-surface p-2 text-xs leading-5">
-                            <span className="font-mono text-primary">{event.type}</span>
-                            <p className="mt-1 text-muted">{streamEventLabel(event)}</p>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="rounded-md border border-dashed border-line p-4 text-sm text-muted">No stream events yet.</div>
-                      )}
-                    </div>
-                  </details>
-                  <div className="rounded-md border border-line bg-background p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-semibold">Agent response</p>
-                      <div className="flex items-center gap-2">
-                      {agentResponse ? <button type="button" onClick={() => void listenToResponse()} disabled={speechLoading} className="action-button" aria-label="Listen to agent response">{speechLoading ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}Listen</button> : null}
-                      {grounding ? (
-                        <StatusPill
-                          label={groundingLabel(grounding.status)}
-                          tone={grounding.status === "verified" ? "success" : grounding.status === "not_required" ? "neutral" : "warning"}
-                        />
-                      ) : null}
-                      </div>
-                    </div>
-                    <div className="mt-3 min-h-64 max-h-96 overflow-auto rounded-md border border-line bg-surface p-3 text-sm leading-6 text-muted">
-                      {agentResponse || "Run the agent to stream an answer here."}
-                    </div>
-                    {grounding?.sources.some((source) => grounding.citedIds.includes(source.citationId)) ? (
-                      <div className="mt-3 space-y-2" aria-label="Answer sources">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-muted">Sources used</p>
-                        {grounding.sources.filter((source) => grounding.citedIds.includes(source.citationId)).map((source) => (
-                          <div key={source.citationId} className="rounded-md border border-line bg-surface px-3 py-2 text-xs">
-                            <p className="font-medium text-foreground">{source.title}</p>
-                            <p className="mt-0.5 font-mono text-muted">[{source.citationId}] · {source.kind} · {Math.round(source.confidence * 100)}%</p>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    {agentResponse && activeAgentRunId && agentRunCompleted ? (
-                      <RunFeedbackPanel
-                        feedback={runFeedback}
-                        saving={feedbackSaving}
-                        onSave={saveRunFeedback}
-                      />
-                    ) : null}
+                <details className="rounded-md border border-line bg-background">
+                  <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 px-3 text-sm font-semibold">
+                    <span>Technical activity</span>
+                    <span className="text-xs font-normal text-muted">{streamEvents.filter((event) => event.type !== "delta").length} events</span>
+                  </summary>
+                  <div className="max-h-96 space-y-2 overflow-auto border-t border-line p-3">
+                    {streamEvents.some((event) => event.type !== "delta") ? (
+                      streamEvents.filter((event) => event.type !== "delta").map((event, index) => (
+                        <div key={`${event.type}-${index}`} className="rounded-md border border-line bg-surface p-2 text-xs leading-5">
+                          <span className="font-mono text-primary">{event.type}</span>
+                          <p className="mt-1 text-muted">{streamEventLabel(event)}</p>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded-md border border-dashed border-line p-4 text-sm text-muted">No stream events yet.</div>
+                    )}
                   </div>
-                </div>
+                </details>
               </StagePanel>
             ) : null}
 
@@ -1691,9 +1846,211 @@ export function AgentRunsWorkspace({
             ) : null}
           </div>
           </section>
+          </div>
+          ) : null}
         </div>
       </section>
     </div>
+  );
+}
+
+function InlineTaskProgress({
+  terminal,
+  tone,
+  summary,
+  count,
+  onOpen,
+}: {
+  terminal: boolean;
+  tone: Tone;
+  summary: string;
+  count: number;
+  onOpen: () => void;
+}) {
+  const title = terminal
+    ? tone === "danger"
+      ? "Work stopped"
+      : tone === "warning"
+        ? "Waiting for input"
+        : `Worked through ${count || 1} ${count === 1 ? "update" : "updates"}`
+    : "Asael is working";
+  return (
+    <article className="flex justify-start">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="group ml-0 flex max-w-2xl items-center gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-surface-raised sm:ml-8"
+        aria-haspopup="dialog"
+      >
+        <span className={clsx(
+          "grid size-8 shrink-0 place-items-center rounded-full",
+          terminal
+            ? tone === "danger"
+              ? "bg-danger/10 text-danger"
+              : tone === "warning"
+                ? "bg-warning/10 text-warning"
+                : "bg-success/10 text-success"
+            : "bg-primary/10 text-primary",
+        )}>
+          {terminal ? (
+            <CheckCircle2 size={15} aria-hidden="true" />
+          ) : (
+            <Clock3 size={15} className="animate-pulse" aria-hidden="true" />
+          )}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold">{title}</span>
+          <span className="mt-0.5 block truncate text-xs text-muted">{summary}</span>
+        </span>
+        <span className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-primary">
+          View activity <ChevronRight size={13} className="transition group-hover:translate-x-0.5" aria-hidden="true" />
+        </span>
+      </button>
+    </article>
+  );
+}
+
+function ConversationMessageContent({ content }: { content: string }) {
+  const lines = content.replaceAll("\r\n", "\n").split("\n");
+  const blocks: React.ReactNode[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    if (line.trimStart().startsWith("```")) {
+      const language = line.trim().slice(3).trim();
+      const code: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trimStart().startsWith("```")) {
+        code.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      blocks.push(
+        <div key={`code-${index}`} className="my-4 overflow-hidden rounded-xl border border-line bg-foreground text-background">
+          {language ? <div className="border-b border-background/15 px-4 py-2 font-mono text-[10px] uppercase tracking-wide text-background/60">{language}</div> : null}
+          <pre className="overflow-x-auto p-4 text-xs leading-6"><code>{code.join("\n")}</code></pre>
+        </div>,
+      );
+      continue;
+    }
+
+    const heading = /^(#{1,3})\s+(.+)$/.exec(line.trim());
+    if (heading) {
+      const level = heading[1].length;
+      const className = level === 1
+        ? "mt-7 text-xl font-semibold tracking-tight first:mt-0"
+        : level === 2
+          ? "mt-6 text-lg font-semibold tracking-tight first:mt-0"
+          : "mt-5 text-sm font-semibold uppercase tracking-[0.1em] text-muted first:mt-0";
+      blocks.push(level === 1
+        ? <h2 key={`heading-${index}`} className={className}><MessageInline text={heading[2]} /></h2>
+        : level === 2
+          ? <h3 key={`heading-${index}`} className={className}><MessageInline text={heading[2]} /></h3>
+          : <h4 key={`heading-${index}`} className={className}><MessageInline text={heading[2]} /></h4>);
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\s*[-*]\s+/, ""));
+        index += 1;
+      }
+      blocks.push(
+        <ul key={`bullets-${index}`} className="my-4 space-y-2 pl-5 text-sm leading-7 text-foreground/90">
+          {items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`} className="list-disc pl-1"><MessageInline text={item} /></li>)}
+        </ul>,
+      );
+      continue;
+    }
+
+    if (/^\s*\d+[.)]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\s*\d+[.)]\s+/, ""));
+        index += 1;
+      }
+      blocks.push(
+        <ol key={`numbers-${index}`} className="my-4 space-y-2 pl-5 text-sm leading-7 text-foreground/90">
+          {items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`} className="list-decimal pl-1"><MessageInline text={item} /></li>)}
+        </ol>,
+      );
+      continue;
+    }
+
+    if (line.trim().startsWith(">")) {
+      const quote: string[] = [];
+      while (index < lines.length && lines[index].trim().startsWith(">")) {
+        quote.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      blocks.push(
+        <blockquote key={`quote-${index}`} className="my-4 border-l-2 border-primary pl-4 text-sm italic leading-7 text-muted">
+          <MessageInline text={quote.join(" ")} />
+        </blockquote>,
+      );
+      continue;
+    }
+
+    if (/^\s*---+\s*$/.test(line)) {
+      blocks.push(<hr key={`rule-${index}`} className="my-6 border-line" />);
+      index += 1;
+      continue;
+    }
+
+    const paragraph: string[] = [line.trim()];
+    index += 1;
+    while (index < lines.length && lines[index].trim() && !messageBlockStarts(lines, index)) {
+      paragraph.push(lines[index].trim());
+      index += 1;
+    }
+    blocks.push(
+      <p key={`paragraph-${index}`} className="my-3 text-sm leading-7 text-foreground/90 first:mt-0 last:mb-0">
+        <MessageInline text={paragraph.join(" ")} />
+      </p>,
+    );
+  }
+
+  return <div className="min-w-0 max-w-[72ch]">{blocks}</div>;
+}
+
+function MessageInline({ text }: { text: string }) {
+  const tokens = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)\s]+\))/g);
+  return (
+    <>
+      {tokens.map((token, index) => {
+        if (token.startsWith("**") && token.endsWith("**")) {
+          return <strong key={`${token}-${index}`} className="font-semibold text-foreground">{token.slice(2, -2)}</strong>;
+        }
+        if (token.startsWith("`") && token.endsWith("`")) {
+          return <code key={`${token}-${index}`} className="rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[0.88em] text-foreground">{token.slice(1, -1)}</code>;
+        }
+        const link = /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/.exec(token);
+        if (link) {
+          return <a key={`${token}-${index}`} href={link[2]} target="_blank" rel="noreferrer" className="font-medium text-primary underline decoration-primary/35 underline-offset-4 hover:decoration-primary">{link[1]}</a>;
+        }
+        return token;
+      })}
+    </>
+  );
+}
+
+function messageBlockStarts(lines: string[], index: number) {
+  const line = lines[index].trim();
+  return (
+    line.startsWith("```") ||
+    /^(#{1,3})\s+/.test(line) ||
+    /^[-*]\s+/.test(line) ||
+    /^\d+[.)]\s+/.test(line) ||
+    line.startsWith(">") ||
+    /^---+$/.test(line)
   );
 }
 
@@ -1982,6 +2339,7 @@ function GoalStage({
   workflowReady,
   workflowStarted,
   workflowInProgress,
+  hasConversation,
   onGoalChange,
   onModeChange,
   onApprovalChange,
@@ -2010,6 +2368,7 @@ function GoalStage({
   workflowReady: boolean;
   workflowStarted: boolean;
   workflowInProgress: boolean;
+  hasConversation: boolean;
   onGoalChange: (value: string) => void;
   onModeChange: (value: AgentMode) => void;
   onApprovalChange: (value: boolean) => void;
@@ -2023,298 +2382,139 @@ function GoalStage({
 }) {
   const goalMissing = !goal.trim();
   const draftLocked = Boolean(loading) || workflowInProgress;
+  const contextLabel = contextLoading
+    ? "Finding context"
+    : contextError
+      ? "No saved context"
+      : contextReady
+        ? `Context ${contextSelectedCount}/${contextTotalCount}`
+        : "Context";
   return (
-    <section className="border-t border-line/80 bg-background px-4 py-4 sm:px-5 sm:py-5" aria-labelledby="command-composer-title">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 id="command-composer-title" className="text-sm font-semibold">Give Asael a task</h2>
-          <p className="mt-1 text-xs leading-5 text-muted">Describe the outcome and any limits. You can keep it simple or review the plan first.</p>
-        </div>
-        <span className="rounded-full bg-surface-raised px-2.5 py-1 text-xs font-medium text-muted">
-          {mode === "orchestrate" ? "General" : mode === "research" ? "Research" : mode === "execute" ? "Tools" : "Knowledge"}
-          {approvalRequired ? " · approvals on" : " · approvals off"}
-        </span>
-      </div>
-
-      {preferredAgentId ? (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-primary/10 px-3 py-2.5">
-          <div>
-            <p className="text-xs font-medium text-primary">Assigned agent</p>
-            <p className="mt-0.5 text-sm font-semibold">{preferredAgentName || agentDisplayName(preferredAgentId)}</p>
-          </div>
-          <button type="button" onClick={onClearPreferredAgent} className="min-h-9 rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10">
-            Route automatically
-          </button>
-        </div>
-      ) : null}
-
-      {goalMissing ? <div className="mt-4" aria-labelledby="sample-use-cases">
-        <div className="flex flex-wrap items-end justify-between gap-2">
-          <p id="sample-use-cases" className="text-sm font-semibold">
-            Start with an example
-          </p>
-          <p className="text-xs text-muted">Choose one, then edit it</p>
-        </div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          {starterGoals.map((starter) => (
-            <button
-              key={starter.label}
-              type="button"
-              onClick={() => {
-                onGoalChange(starter.goal);
-                onModeChange(starter.mode);
-              }}
-              disabled={draftLocked}
-              aria-pressed={goal === starter.goal}
-              className={clsx(
-                "rounded-lg border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60",
-                goal === starter.goal
-                  ? "border-primary bg-primary/10"
-                  : "border-line bg-background hover:bg-surface-raised",
-              )}
-            >
-              <span className="block text-sm font-semibold">{starter.label}</span>
-              <span className="mt-1 block text-xs leading-5 text-muted">
-                {starter.description}
+    <section className="border-t border-line/80 bg-background px-3 py-3 sm:px-5 sm:py-4" aria-labelledby="command-composer-title">
+      <div className="mx-auto max-w-3xl">
+        <h2 id="command-composer-title" className="sr-only">Message Asael</h2>
+        <div className="rounded-2xl border border-line bg-surface shadow-[0_12px_36px_-30px_rgba(0,0,0,0.5)] focus-within:border-primary/60">
+          {preferredAgentId ? (
+            <div className="flex items-center justify-between gap-3 border-b border-line/70 px-3 py-2">
+              <span className="text-xs text-muted">
+                Working with <strong className="font-semibold text-foreground">{preferredAgentName || agentDisplayName(preferredAgentId)}</strong>
               </span>
-            </button>
-          ))}
-        </div>
-      </div> : null}
-
-      <label className="mt-4 block">
-        <span className="sr-only">Task outcome</span>
-        <textarea
-          value={goal}
-          onChange={(event) => onGoalChange(event.currentTarget.value)}
-          rows={5}
-          required
-          disabled={draftLocked}
-          aria-describedby="run-goal-help"
-          placeholder="Describe what should be produced, important constraints, and how you will know it is complete."
-          className="w-full resize-y rounded-lg border border-line bg-surface px-3.5 py-3 text-sm leading-6 outline-none transition focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
-        />
-        <span id="run-goal-help" className="mt-2 block text-xs leading-5 text-muted">
-          {workflowInProgress
-            ? "This draft is locked while its workflow is active."
-            : "Include constraints or expected evidence when they matter. Do not include secrets."}
-        </span>
-      </label>
-
-      {!goalMissing ? (
-        <div className={clsx(
-          "mt-3 flex flex-col gap-3 rounded-lg border px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between",
-          contextError
-            ? "border-warning/45 bg-warning/10"
-            : contextReady
-              ? "border-line bg-surface"
-              : "border-primary/30 bg-primary/5",
-        )}>
-          <div className="flex min-w-0 items-start gap-3">
-            {contextLoading ? (
-              <Loader2 size={16} className="mt-0.5 shrink-0 animate-spin text-primary" aria-hidden="true" />
-            ) : (
-              <Brain size={16} className="mt-0.5 shrink-0 text-primary" aria-hidden="true" />
-            )}
-            <div className="min-w-0">
-              <p className="text-xs font-semibold">
-                {contextLoading
-                  ? "Finding matching context"
-                  : contextError
-                    ? "Running without saved context"
-                    : contextReady
-                      ? `${contextSelectedCount} of ${contextTotalCount} context items selected`
-                      : "Context will be built for this task"}
-              </p>
-              <p className="mt-1 text-xs leading-5 text-muted">
-                {contextLoading
-                  ? "Asael is checking saved memory and knowledge for this exact task."
-                  : contextError
-                    ? "Refresh if you want to retry. Unavailable context will not be used."
-                    : contextReady
-                      ? "Review the list and uncheck anything that does not belong."
-                      : "Wait a moment, or open Context to prepare it now."}
-              </p>
+              <button type="button" onClick={onClearPreferredAgent} className="min-h-8 rounded-full px-2 text-xs font-semibold text-primary hover:bg-primary/10">
+                Route automatically
+              </button>
             </div>
-          </div>
-          <button
-            type="button"
-            onClick={contextReady || contextError ? onReviewContext : onContext}
-            disabled={contextLoading || Boolean(readDisabledReason)}
-            title={readDisabledReason}
-            className="action-button shrink-0"
-          >
-            {contextReady || contextError ? "Review context" : "Prepare context"}
-          </button>
-        </div>
-      ) : null}
+          ) : null}
 
-      <details className="mt-3 rounded-lg border border-line bg-surface px-3">
-        <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 text-sm font-semibold">
-          <span>Task options</span>
-          <span className="text-xs font-normal text-muted">
-            Agent mode, approvals, and context
-          </span>
-        </summary>
-        <div className="grid gap-3 border-t border-line py-4 sm:grid-cols-2">
-          <label className="text-sm font-semibold">
-            Approach
-            <select
-              value={mode}
+          <label className="block">
+            <span className="sr-only">Message Asael</span>
+            <textarea
+              value={goal}
+              onChange={(event) => onGoalChange(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  if (!draftLocked && !goalMissing && !runDisabledReason) onAgent();
+                }
+              }}
+              rows={3}
+              required
               disabled={draftLocked}
-              onChange={(event) =>
-                onModeChange(event.currentTarget.value as AgentMode)
-              }
-              className="mt-2 min-h-11 w-full rounded-md border border-line bg-background px-3 text-sm font-normal"
-            >
-              <option value="orchestrate">General task</option>
-              <option value="research">Research and compare</option>
-              <option value="execute">Use approved tools</option>
-              <option value="learn">Use and update knowledge</option>
-            </select>
-          </label>
-          <label className="flex min-h-16 items-center justify-between gap-4 rounded-md border border-line bg-background px-3 py-2 text-sm">
-            <span>
-              <span className="block font-semibold">Require approval</span>
-              <span className="mt-1 block text-xs leading-5 text-muted">
-                Pause durable workflows before gated actions.
-              </span>
-            </span>
-            <input
-              type="checkbox"
-              checked={approvalRequired}
-              disabled={draftLocked}
-              onChange={(event) =>
-                onApprovalChange(event.currentTarget.checked)
-              }
-              className="size-4 shrink-0 accent-[var(--primary)]"
+              placeholder={hasConversation ? "Ask a follow-up…" : "Message Asael…"}
+              className="max-h-48 min-h-24 w-full resize-none bg-transparent px-4 py-3.5 text-sm leading-6 outline-none placeholder:text-muted/75 disabled:cursor-not-allowed disabled:opacity-60"
             />
           </label>
-        </div>
-        <button
-          type="button"
-          onClick={onContext}
-          disabled={
-            Boolean(loading) || contextLoading || goalMissing || Boolean(readDisabledReason)
-          }
-          title={goalMissing ? "Enter a task first." : readDisabledReason}
-          className="action-button mb-4"
-        >
-          {contextLoading ? (
-            <Loader2
-              size={14}
-              className="animate-spin"
-              aria-hidden="true"
-            />
-          ) : (
-            <Brain size={14} aria-hidden="true" />
-          )}
-          Refresh context
-        </button>
-      </details>
 
-      <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-        <button
-          type="button"
-          onClick={onAgent}
-          disabled={
-            Boolean(loading) ||
-            goalMissing ||
-            Boolean(runDisabledReason) ||
-            workflowInProgress
-          }
-          title={
-            goalMissing
-              ? "Enter a task first."
-              : runDisabledReason ||
-                (workflowInProgress
-                  ? "Wait for the active workflow to finish or cancel it first."
-                  : undefined)
-          }
-          className="primary-button"
-        >
-          {loading === "agent" ? (
-            <Loader2
-              size={14}
-              className="animate-spin"
-              aria-hidden="true"
-            />
-          ) : (
-            <Play size={14} aria-hidden="true" />
-          )}
-          Run task
-        </button>
-        {loading === "agent" ? (
-          <button type="button" onClick={onStop} className="action-button border-danger/50 text-danger">
-            <Square size={13} aria-hidden="true" />
-            Stop run
-          </button>
-        ) : null}
-        <button
-          type="button"
-          onClick={onPlan}
-          disabled={
-            Boolean(loading) ||
-            goalMissing ||
-            Boolean(workflowDisabledReason) ||
-            workflowInProgress
-          }
-          title={
-            goalMissing
-              ? "Enter a goal first."
-              : workflowDisabledReason ||
-                (workflowInProgress
-                  ? "Wait for the active workflow to finish or cancel it first."
-                  : undefined)
-          }
-          className="action-button"
-        >
-          {loading === "plan" ? (
-            <Loader2
-              size={14}
-              className="animate-spin"
-              aria-hidden="true"
-            />
-          ) : (
-            <GitBranch size={14} aria-hidden="true" />
-          )}
-          Preview plan
-        </button>
-        {workflowReady || workflowStarted ? (
-          <button
-            type="button"
-            onClick={onWorkflow}
-            disabled={
-              Boolean(loading) ||
-              goalMissing ||
-              Boolean(workflowDisabledReason) ||
-              !workflowReady ||
-              workflowStarted
-            }
-            title={
-              workflowDisabledReason ||
-              (workflowStarted
-                ? "Generate a new plan before starting another workflow."
-                : undefined)
-            }
-            className="action-button"
-          >
-            {loading === "workflow" ? (
-              <Loader2
-                size={14}
-                className="animate-spin"
-                aria-hidden="true"
-              />
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line/70 px-2.5 py-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <label className="sr-only" htmlFor="command-mode">Approach</label>
+              <select
+                id="command-mode"
+                value={mode}
+                disabled={draftLocked}
+                onChange={(event) => onModeChange(event.currentTarget.value as AgentMode)}
+                className="min-h-9 rounded-full border-0 bg-surface-raised px-3 text-xs font-semibold text-muted outline-none hover:text-foreground"
+              >
+                <option value="orchestrate">General</option>
+                <option value="research">Research</option>
+                <option value="execute">Tools</option>
+                <option value="learn">Knowledge</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => onApprovalChange(!approvalRequired)}
+                disabled={draftLocked}
+                className={clsx(
+                  "min-h-9 rounded-full px-3 text-xs font-semibold transition",
+                  approvalRequired ? "bg-primary/10 text-primary" : "bg-surface-raised text-muted hover:text-foreground",
+                )}
+                aria-pressed={approvalRequired}
+              >
+                Approvals {approvalRequired ? "on" : "off"}
+              </button>
+              <button
+                type="button"
+                onClick={contextReady || contextError ? onReviewContext : onContext}
+                disabled={contextLoading || goalMissing || Boolean(readDisabledReason)}
+                title={goalMissing ? "Write a message first." : readDisabledReason}
+                className={clsx(
+                  "inline-flex min-h-9 items-center gap-1.5 rounded-full px-3 text-xs font-semibold transition",
+                  contextReady ? "bg-success/10 text-success" : contextError ? "bg-warning/10 text-warning" : "bg-surface-raised text-muted hover:text-foreground",
+                )}
+              >
+                {contextLoading ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Brain size={13} aria-hidden="true" />}
+                {contextLabel}
+              </button>
+              <button
+                type="button"
+                onClick={onPlan}
+                disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || workflowInProgress}
+                title={goalMissing ? "Write a message first." : workflowDisabledReason}
+                className="inline-flex min-h-9 items-center gap-1.5 rounded-full bg-surface-raised px-3 text-xs font-semibold text-muted transition hover:text-foreground disabled:opacity-50"
+              >
+                {loading === "plan" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <GitBranch size={13} aria-hidden="true" />}
+                Plan
+              </button>
+              {workflowReady || (workflowStarted && workflowInProgress) ? (
+                <button
+                  type="button"
+                  onClick={onWorkflow}
+                  disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || !workflowReady || workflowStarted}
+                  className="inline-flex min-h-9 items-center gap-1.5 rounded-full bg-primary/10 px-3 text-xs font-semibold text-primary disabled:opacity-50"
+                >
+                  <Workflow size={13} aria-hidden="true" />
+                  {workflowStarted ? "Workflow active" : "Start plan"}
+                </button>
+              ) : null}
+            </div>
+
+            {loading === "agent" ? (
+              <button type="button" onClick={onStop} className="grid size-10 shrink-0 place-items-center rounded-full bg-danger text-white" aria-label="Stop response">
+                <Square size={13} aria-hidden="true" />
+              </button>
             ) : (
-              <Workflow size={14} aria-hidden="true" />
+              <button
+                type="button"
+                onClick={onAgent}
+                disabled={draftLocked || goalMissing || Boolean(runDisabledReason)}
+                title={goalMissing ? "Write a message first." : runDisabledReason}
+                className="grid size-10 shrink-0 place-items-center rounded-full bg-foreground text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
+                aria-label={hasConversation ? "Send follow-up" : "Send message"}
+              >
+                <ArrowUp size={17} aria-hidden="true" />
+              </button>
             )}
-            {workflowStarted ? "Workflow started" : "Start reviewed plan"}
-          </button>
-        ) : null}
+          </div>
+        </div>
+        <p className="mt-2 px-2 text-center text-[11px] leading-5 text-muted">
+          {workflowInProgress
+            ? "This conversation is locked while active work finishes or waits for approval."
+            : "Enter sends · Shift + Enter adds a line · Saved context is always optional"}
+        </p>
       </div>
-      <p className="mt-3 text-xs leading-5 text-muted">
-        Run task for a direct answer. Preview plan for work that should continue in the background or require review.
-      </p>
     </section>
   );
 }
@@ -2369,11 +2569,11 @@ function RunFeedbackPanel({
   const [correction, setCorrection] = useState(feedback?.correction || "");
 
   return (
-    <section className="mt-3 border-t border-line pt-3" aria-labelledby="run-feedback-title">
+    <section className="mt-4 rounded-xl border border-line/80 bg-background px-3 py-3" aria-labelledby="run-feedback-title">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p id="run-feedback-title" className="text-sm font-semibold">Train this agent</p>
-          <p className="mt-1 text-xs text-muted">Your signal shapes future routing and responses.</p>
+          <p id="run-feedback-title" className="text-sm font-semibold">Help Asael improve</p>
+          <p className="mt-1 text-xs text-muted">Was this response useful?</p>
         </div>
         <div className="flex gap-2">
           <button
@@ -2410,7 +2610,7 @@ function RunFeedbackPanel({
         </div>
       </div>
       {correctionOpen ? (
-        <div className="mt-3 rounded-md border border-line bg-surface p-3">
+        <div className="mt-3 rounded-lg border border-line bg-surface p-3">
           <label className="block text-xs font-semibold" htmlFor="run-feedback-correction">
             What should change next time?
           </label>
