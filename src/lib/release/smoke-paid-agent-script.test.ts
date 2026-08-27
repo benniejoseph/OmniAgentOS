@@ -310,6 +310,7 @@ function runProcess(
         EXPECTED_REVISION: revision,
         LIVE_VERIFY_PAID_OPENAI: "CONFIRMED",
         SMOKE_PAID_AGENT_ALLOW_LOOPBACK: "CONFIRMED",
+        SMOKE_INTERNAL_AUTH_SECRET: internalSecret,
         OMNIAGENT_INTERNAL_AUTH_SECRET: internalSecret,
         VERCEL_AUTOMATION_BYPASS_SECRET: bypassSecret,
         OPENAI_API_KEY: "",
