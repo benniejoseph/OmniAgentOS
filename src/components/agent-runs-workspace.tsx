@@ -68,6 +68,7 @@ type StreamEvent =
   | { type: "waiting_approval"; executionId?: string; toolId?: string; message?: string }
   | { type: "done"; response?: string; grounding?: GroundingReport }
   | { type: "delegated"; threadId?: string; workflowId?: string; missionId?: string; acknowledgement?: string; reason?: string }
+  | { type: "canceled"; message?: string }
   | { type: "error"; message?: string };
 
 const tabs: Array<{ key: TabKey; label: string; icon: typeof TerminalSquare }> = [
@@ -129,6 +130,10 @@ export function AgentRunsWorkspace({
   const [loading, setLoading] = useState<string>();
   const [error, setError] = useState<string>();
   const [contextPack, setContextPack] = useState<JsonRecord>();
+  const [contextQuery, setContextQuery] = useState("");
+  const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [contextError, setContextError] = useState<string>();
   const [workflowPlan, setWorkflowPlan] = useState<JsonRecord>();
   const [workflowRun, setWorkflowRun] = useState<JsonRecord>();
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
@@ -147,6 +152,8 @@ export function AgentRunsWorkspace({
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [turns, setTurns] = useState<ThreadTurn[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const contextControllerRef = useRef<AbortController | null>(null);
+  const contextVersionRef = useRef(0);
   const evidenceControllerRef = useRef<AbortController | null>(null);
   const evidenceVersionRef = useRef(0);
   const pendingDeltasRef = useRef<string[]>([]);
@@ -155,6 +162,7 @@ export function AgentRunsWorkspace({
   const responseAudioRef = useRef<HTMLAudioElement | null>(null);
   const responseAudioUrlRef = useRef<string | undefined>(undefined);
   const agentRequestIdRef = useRef<string>("");
+  const directRunStatusRef = useRef("");
 
   useEffect(() => {
     if (!initialAgentId || agentDisplayName(initialAgentId) !== "Custom agent") return;
@@ -167,9 +175,17 @@ export function AgentRunsWorkspace({
 
   const planNodes = arrayPath(workflowPlan, "plan.plan.nodes");
   const contextResults = arrayPath(contextPack, "pack.results");
+  const contextResultIds = contextResults
+    .map(contextEvidenceId)
+    .filter((id, index, values) => Boolean(id) && values.indexOf(id) === index);
+  const normalizedGoal = goal.trim();
+  const contextPreparedForGoal = Boolean(
+    normalizedGoal && contextQuery === normalizedGoal && !contextLoading,
+  );
   const approvalItems = arrayPath(evidence, "approvals.items");
   const runRows = arrayPath(evidence, "runs.runs");
   const agentRunCompleted = streamEvents.some((event) => event.type === "done");
+  const agentRunTerminal = streamEvents.some((event) => ["done", "error", "canceled"].includes(event.type));
   const reviewedPlanId = stringPath(workflowPlan, "plan.id", "");
   const reviewedPlanStatus = stringPath(workflowPlan, "plan.status", "");
   const reviewedPlanReady = Boolean(
@@ -216,6 +232,9 @@ export function AgentRunsWorkspace({
     if (streamEvents.some((event) => event.type === "error")) {
       return { label: "Failed", tone: "danger" as const };
     }
+    if (streamEvents.some((event) => event.type === "canceled")) {
+      return { label: "Canceled", tone: "neutral" as const };
+    }
     if (loading === "agent") {
       return { label: "Agent running", tone: "neutral" as const };
     }
@@ -259,6 +278,7 @@ export function AgentRunsWorkspace({
     }
     return () => {
       abortControllerRef.current?.abort();
+      contextControllerRef.current?.abort();
       evidenceControllerRef.current?.abort();
       if (deltaFlushTimerRef.current !== null) {
         window.clearTimeout(deltaFlushTimerRef.current);
@@ -294,7 +314,7 @@ export function AgentRunsWorkspace({
       try {
         const next = asRecord(
           await readJson(
-            `/api/workflows/${encodeURIComponent(activeWorkflowId)}?view=status`,
+            `/api/workflows/${encodeURIComponent(activeWorkflowId)}`,
             { signal: controller.signal },
           ),
         );
@@ -303,13 +323,7 @@ export function AgentRunsWorkspace({
         }
         setWorkflowSyncError(undefined);
         const nextStatus = stringPath(next, "run.status", "");
-        setWorkflowRun((current) => ({
-          ...asRecord(current),
-          run: {
-            ...asRecord(readPath(current, "run")),
-            ...asRecord(next.run),
-          },
-        }));
+        setWorkflowRun(next);
         if (nextStatus && nextStatus !== activeWorkflowStatus) {
           void refreshEvidence();
           setRunAnnouncement(`Workflow is now ${nextStatus.replace(/_/g, " ")}.`);
@@ -335,6 +349,112 @@ export function AgentRunsWorkspace({
     // Run identity and status control the polling lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorkflowId, activeWorkflowStatus]);
+
+  useEffect(() => {
+    if (!activeAgentRunId || loading === "agent" || agentRunTerminal) return;
+    let disposed = false;
+    let timer: number | undefined;
+    let controller: AbortController | undefined;
+    const schedule = () => {
+      if (!disposed) timer = window.setTimeout(() => void poll(), 3_000);
+    };
+    const poll = async () => {
+      if (document.visibilityState !== "visible") {
+        schedule();
+        return;
+      }
+      controller = new AbortController();
+      try {
+        const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(activeAgentRunId)}`, { signal: controller.signal }));
+        if (disposed) return;
+        const run = asRecord(payload.run);
+        const status = stringValue(run.status);
+        const statusChanged = Boolean(status && status !== directRunStatusRef.current);
+        if (status) directRunStatusRef.current = status;
+        if (status === "waiting_approval") {
+          const approval = asRecord(run.waitingApproval);
+          setWaitingApproval({
+            type: "waiting_approval",
+            executionId: stringValue(approval.executionId),
+            toolId: stringValue(approval.toolId),
+            message: `${stringValue(approval.toolName, "A gated action")} needs approval before the task can continue.`,
+          });
+          if (statusChanged) setRunAnnouncement("Agent run is waiting for approval.");
+        } else if (status === "running" || status === "resuming" || status === "queued") {
+          setWaitingApproval(undefined);
+          if (statusChanged) {
+            setRunAnnouncement(status === "resuming" ? "Approved. The task is resuming." : `Agent run is ${status}.`);
+          }
+        } else if (status === "completed") {
+          const response = stringValue(run.response);
+          const nextGrounding = asRecord(run.grounding) as unknown as GroundingReport;
+          setWaitingApproval(undefined);
+          setAgentResponse(response);
+          if (run.grounding) setGrounding(nextGrounding);
+          setStreamEvents((current) => current.some((event) => event.type === "done")
+            ? current
+            : [...current, { type: "done", response, grounding: run.grounding ? nextGrounding : undefined }]);
+          if (response) {
+            setTurns((current) => current.at(-1)?.content === response
+              ? current
+              : [...current, { id: `assistant-${Date.now()}`, role: "assistant", content: response, createdAt: new Date().toISOString() }]);
+          }
+          setRunAnnouncement("Agent run completed. Review the result and evidence.");
+          void refreshEvidence();
+          void refreshThreads();
+        } else if (status === "failed") {
+          const message = stringValue(run.error, "Agent run failed.");
+          setWaitingApproval(undefined);
+          setError(message);
+          setStreamEvents((current) => [...current, { type: "error", message }]);
+          setRunAnnouncement("Agent run failed.");
+        } else if (status === "canceled") {
+          setWaitingApproval(undefined);
+          setStreamEvents((current) => [...current, { type: "canceled", message: "The task was canceled." }]);
+          setRunAnnouncement("Agent run canceled.");
+        }
+      } catch {
+        // Keep the visible last-known state and retry while the run remains active.
+      } finally {
+        schedule();
+      }
+    };
+    void poll();
+    return () => {
+      disposed = true;
+      controller?.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+    // The run id and terminal state own this polling lifecycle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAgentRunId, agentRunTerminal, loading]);
+
+  useEffect(() => {
+    if (
+      sessionStatus !== "ready" ||
+      readPermission ||
+      !normalizedGoal ||
+      normalizedGoal.length < 8 ||
+      workflowInProgress ||
+      contextLoading ||
+      contextQuery === normalizedGoal
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void buildContext({ query: normalizedGoal, reveal: false });
+    }, 900);
+    return () => window.clearTimeout(timer);
+    // Context is intentionally rebuilt only when the active task changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    contextLoading,
+    contextQuery,
+    normalizedGoal,
+    readPermission,
+    sessionStatus,
+    workflowInProgress,
+  ]);
 
   function flushPendingDeltas() {
     if (!pendingDeltasRef.current.length) {
@@ -425,8 +545,14 @@ export function AgentRunsWorkspace({
     if (nextGoal === goal) {
       return;
     }
+    contextControllerRef.current?.abort();
+    contextVersionRef.current += 1;
     setGoal(nextGoal);
     setContextPack(undefined);
+    setContextQuery("");
+    setSelectedContextIds([]);
+    setContextLoading(false);
+    setContextError(undefined);
     setWorkflowPlan(undefined);
     setWorkflowRun(undefined);
     setWorkflowSyncError(undefined);
@@ -470,29 +596,95 @@ export function AgentRunsWorkspace({
     setWaitingApproval(undefined);
   }
 
-  async function buildContext() {
+  async function buildContext({
+    query = goal.trim(),
+    reveal = true,
+  }: {
+    query?: string;
+    reveal?: boolean;
+  } = {}) {
     if (readPermission) {
-      setError(readPermission);
-      return;
+      setContextError(readPermission);
+      if (reveal) setActiveTab("context");
+      return undefined;
     }
-    setLoading("context");
-    setError(undefined);
-    setRunAnnouncement("Building context.");
+    const taskQuery = query.trim();
+    if (!taskQuery) {
+      setContextError("Write the task first so Asael can find relevant context.");
+      if (reveal) setActiveTab("context");
+      return undefined;
+    }
+    const version = ++contextVersionRef.current;
+    contextControllerRef.current?.abort();
+    const controller = new AbortController();
+    contextControllerRef.current = controller;
+    setContextLoading(true);
+    setContextError(undefined);
+    if (reveal) setActiveTab("context");
+    setRunAnnouncement("Finding context for this task.");
     try {
       const result = await readJson("/api/retrieval/plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ query: goal, limit: 8, persistTrace: true }),
+        body: JSON.stringify({ query: taskQuery, limit: 8, persistTrace: false }),
+        signal: controller.signal,
       });
-      setContextPack(asRecord(result));
-      setActiveTab("context");
-      setRunAnnouncement("Context is ready for review.");
+      if (controller.signal.aborted || version !== contextVersionRef.current) {
+        return undefined;
+      }
+      const nextPack = asRecord(result);
+      const evidenceIds = arrayPath(nextPack, "pack.results")
+        .filter(contextMatchesTask)
+        .map(contextEvidenceId)
+        .filter((id, index, values) => Boolean(id) && values.indexOf(id) === index);
+      setContextPack(nextPack);
+      setContextQuery(taskQuery);
+      setSelectedContextIds(evidenceIds);
+      setWorkflowPlan(undefined);
+      setWorkflowRun(undefined);
+      setWorkflowSyncError(undefined);
+      setRunAnnouncement(
+        evidenceIds.length
+          ? `Context is ready. ${evidenceIds.length} matching items are selected.`
+          : "No saved context matched this task. Asael will start without saved context.",
+      );
+      return { query: taskQuery, evidenceIds };
     } catch (buildError) {
-      setError(buildError instanceof Error ? buildError.message : "Context retrieval failed.");
-      setRunAnnouncement("Context retrieval failed.");
+      if (controller.signal.aborted || version !== contextVersionRef.current) {
+        return undefined;
+      }
+      const message = buildError instanceof Error ? buildError.message : "Context retrieval failed.";
+      setContextPack(undefined);
+      setContextQuery(taskQuery);
+      setSelectedContextIds([]);
+      setContextError(message);
+      setRunAnnouncement("Context could not be loaded. This task will use no saved context.");
+      return { query: taskQuery, evidenceIds: [] };
     } finally {
-      setLoading(undefined);
+      if (version === contextVersionRef.current) {
+        setContextLoading(false);
+        if (contextControllerRef.current === controller) {
+          contextControllerRef.current = null;
+        }
+      }
     }
+  }
+
+  function updateContextSelection(nextIds: string[]) {
+    if (workflowInProgress || loading === "agent") return;
+    const allowed = new Set(contextResultIds);
+    setSelectedContextIds(
+      nextIds.filter((id, index, values) => allowed.has(id) && values.indexOf(id) === index),
+    );
+    setWorkflowPlan(undefined);
+    setWorkflowRun(undefined);
+    setWorkflowSyncError(undefined);
+    setRunAnnouncement("Context selection updated. Only checked items will be used.");
+  }
+
+  function contextSelectionForTask(query: string) {
+    if (contextQuery !== query || contextLoading) return undefined;
+    return { query, evidenceIds: selectedContextIds };
   }
 
   async function buildPlan() {
@@ -504,6 +696,20 @@ export function AgentRunsWorkspace({
       setError("Wait for the active workflow to finish or cancel it before replacing its plan.");
       return;
     }
+    const taskQuery = goal.trim();
+    if (contextLoading) {
+      setActiveTab("context");
+      setRunAnnouncement("Wait for task context to finish loading, then preview the plan.");
+      return;
+    }
+    const contextSelection = contextSelectionForTask(taskQuery);
+    if (!contextSelection) {
+      const prepared = await buildContext({ query: taskQuery, reveal: true });
+      if (prepared) {
+        setRunAnnouncement("Context preparation finished. Review the selection, then preview the plan again.");
+      }
+      return;
+    }
     setLoading("plan");
     setError(undefined);
     setRunAnnouncement("Generating a workflow plan.");
@@ -511,7 +717,12 @@ export function AgentRunsWorkspace({
       const result = await readJson("/api/workflows/plan", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ goal, mode, requireApproval: approvalRequired }),
+        body: JSON.stringify({
+          goal: taskQuery,
+          mode,
+          requireApproval: approvalRequired,
+          contextSelection,
+        }),
       });
       const nextPlan = asRecord(result);
       const nextPlanStatus = stringPath(nextPlan, "plan.status", "");
@@ -554,6 +765,13 @@ export function AgentRunsWorkspace({
       setError("This reviewed plan has already started. Generate a new plan to run again.");
       return;
     }
+    const taskQuery = goal.trim();
+    const contextSelection = contextSelectionForTask(taskQuery);
+    if (!contextSelection) {
+      setError("The task changed after this plan was prepared. Review fresh context and generate the plan again.");
+      setActiveTab("context");
+      return;
+    }
     setLoading("workflow");
     setError(undefined);
     setRunAnnouncement("Starting the durable workflow.");
@@ -562,11 +780,14 @@ export function AgentRunsWorkspace({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          goal,
+          goal: taskQuery,
           mode,
           planId: reviewedPlanId || undefined,
           requireApproval: approvalRequired,
-          metadata: { source: "agent-runs-workspace" },
+          metadata: {
+            source: "agent-runs-workspace",
+            contextSelection,
+          },
         }),
       });
       setWorkflowRun(asRecord(result));
@@ -586,21 +807,35 @@ export function AgentRunsWorkspace({
       setError(runPermission);
       return;
     }
+    const submittedGoal = goal.trim();
+    if (!submittedGoal) {
+      setError("Write a message before asking Asael.");
+      return;
+    }
+    if (contextLoading) {
+      setActiveTab("context");
+      setRunAnnouncement("Wait for task context to finish loading, then run the task.");
+      return;
+    }
+    const contextSelection = contextSelectionForTask(submittedGoal);
+    if (!contextSelection) {
+      const prepared = await buildContext({ query: submittedGoal, reveal: true });
+      if (prepared) {
+        setRunAnnouncement("Context preparation finished. Review the selection, then run the task again.");
+      }
+      return;
+    }
     const controller = new AbortController();
     abortControllerRef.current = controller;
     setLoading("agent");
     setError(undefined);
     setWorkflowPlan(undefined);
     setWorkflowRun(undefined);
-    const submittedGoal = goal.trim();
-    if (!submittedGoal) {
-      setError("Write a message before asking Asael.");
-      return;
-    }
     setAgentResponse("");
     setActiveAgentRunId("");
     setRunFeedback(undefined);
     setStreamEvents([{ type: "status", label: "Starting", detail: "Opening the durable conversation." }]);
+    directRunStatusRef.current = "";
     setWaitingApproval(undefined);
     pendingDeltasRef.current = [];
     if (deltaFlushTimerRef.current !== null) {
@@ -628,6 +863,7 @@ export function AgentRunsWorkspace({
           requestId,
           strategy: "auto",
           agentId: preferredAgentId,
+          contextSelection,
         }),
         signal: controller.signal,
       });
@@ -762,6 +998,21 @@ export function AgentRunsWorkspace({
       setMode((stringValue(thread.mode, "orchestrate") as AgentMode));
       setTurns(arrayPath(result, "turns") as unknown as ThreadTurn[]);
       setAgentResponse("");
+      contextControllerRef.current?.abort();
+      contextVersionRef.current += 1;
+      setContextPack(undefined);
+      setContextQuery("");
+      setSelectedContextIds([]);
+      setContextLoading(false);
+      setContextError(undefined);
+      setWorkflowPlan(undefined);
+      setWorkflowRun(undefined);
+      setWorkflowSyncError(undefined);
+      setActiveAgentRunId("");
+      directRunStatusRef.current = "";
+      setStreamEvents([]);
+      setWaitingApproval(undefined);
+      setGrounding(undefined);
       setActiveTab("execute");
       agentRequestIdRef.current = "";
     } catch (threadError) {
@@ -770,11 +1021,25 @@ export function AgentRunsWorkspace({
   }
 
   function newThread() {
+    contextControllerRef.current?.abort();
+    contextVersionRef.current += 1;
     setThreadId("");
     setTurns([]);
     setGoal("");
+    setContextPack(undefined);
+    setContextQuery("");
+    setSelectedContextIds([]);
+    setContextLoading(false);
+    setContextError(undefined);
     setAgentResponse("");
     setStreamEvents([]);
+    setWorkflowPlan(undefined);
+    setWorkflowRun(undefined);
+    setWorkflowSyncError(undefined);
+    setActiveAgentRunId("");
+    directRunStatusRef.current = "";
+    setWaitingApproval(undefined);
+    setGrounding(undefined);
     setActiveTab("context");
     setError(undefined);
   }
@@ -999,6 +1264,34 @@ export function AgentRunsWorkspace({
               ) : null}
             </div>
 
+            {loading === "agent" || streamEvents.length > 0 || workflowRun ? (
+              <button
+                type="button"
+                onClick={() => setActiveTab("execute")}
+                className="flex w-full items-center justify-between gap-4 border-t border-line/80 bg-surface-raised px-4 py-3 text-left transition hover:bg-primary/10 sm:px-5"
+              >
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className={clsx(
+                    "size-2.5 shrink-0 rounded-full",
+                    runPosture.tone === "success"
+                      ? "bg-success"
+                      : runPosture.tone === "danger"
+                        ? "bg-danger"
+                        : runPosture.tone === "warning"
+                          ? "bg-warning"
+                          : "bg-primary",
+                  )} />
+                  <span className="min-w-0">
+                    <span className="block text-xs font-semibold uppercase tracking-wide text-muted">Live task progress</span>
+                    <span className="mt-0.5 block truncate text-sm font-medium">
+                      {taskProgressSummary({ workflowRun, streamEvents, loading })}
+                    </span>
+                  </span>
+                </span>
+                <span className="shrink-0 text-xs font-semibold text-primary">View activity</span>
+              </button>
+            ) : null}
+
             <GoalStage
               goal={goal}
               mode={mode}
@@ -1006,6 +1299,11 @@ export function AgentRunsWorkspace({
               preferredAgentId={preferredAgentId}
               preferredAgentName={preferredAgentName}
               loading={loading}
+              contextLoading={contextLoading}
+              contextReady={contextPreparedForGoal}
+              contextSelectedCount={selectedContextIds.length}
+              contextTotalCount={contextResultIds.length}
+              contextError={contextError}
               readDisabledReason={readPermission}
               runDisabledReason={runPermission}
               workflowDisabledReason={workflowPermission}
@@ -1017,6 +1315,7 @@ export function AgentRunsWorkspace({
               onApprovalChange={changeApprovalRequired}
               onClearPreferredAgent={() => { setPreferredAgentId(undefined); setPreferredAgentName(undefined); }}
               onContext={() => void buildContext()}
+              onReviewContext={() => setActiveTab("context")}
               onPlan={() => void buildPlan()}
               onAgent={() => void runAgent()}
               onStop={stopAgent}
@@ -1063,28 +1362,59 @@ export function AgentRunsWorkspace({
             className="outline-none"
           >
             {activeTab === "context" ? (
-              <StagePanel title="Context" description="Information Asael will use for this task.">
-                <div className="mb-4 flex flex-wrap gap-2">
+              <StagePanel title="Context" description="Choose the saved information Asael may use. Low-match items start excluded, and every unchecked item is excluded server-side.">
+                <div className="mb-4 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => void buildContext()}
-                    disabled={Boolean(loading) || Boolean(readPermission)}
+                    disabled={Boolean(loading) || contextLoading || workflowInProgress || Boolean(readPermission)}
                     title={readPermission}
                     className="action-button"
                   >
-                    {loading === "context" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Brain size={14} aria-hidden="true" />}
+                    {contextLoading ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Brain size={14} aria-hidden="true" />}
                     Refresh context
                   </button>
-                  <StatusPill label={`${contextResults.length} evidence items`} tone={contextResults.length ? "success" : "neutral"} />
+                  <StatusPill
+                    label={`${selectedContextIds.length} of ${contextResultIds.length} selected`}
+                    tone={selectedContextIds.length ? "success" : "neutral"}
+                  />
+                  {contextResultIds.length ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => updateContextSelection(contextResultIds)}
+                        disabled={contextLoading || workflowInProgress || loading === "agent" || selectedContextIds.length === contextResultIds.length}
+                        className="min-h-10 rounded-md px-2 text-xs font-semibold text-primary transition hover:bg-primary/10 disabled:opacity-50"
+                      >
+                        Select all
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateContextSelection([])}
+                        disabled={contextLoading || workflowInProgress || loading === "agent" || selectedContextIds.length === 0}
+                        className="min-h-10 rounded-md px-2 text-xs font-semibold text-muted transition hover:bg-surface-raised disabled:opacity-50"
+                      >
+                        Clear
+                      </button>
+                    </>
+                  ) : null}
                 </div>
-                <ResultRows
-                  rows={contextResults.map((item) => ({
-                    title: stringValue(item.title, "Context item"),
-                    status: stringValue(item.kind, "evidence"),
-                    meta: stringValue(item.content, "No excerpt"),
-                    score: stringValue(item.confidence || item.score, ""),
-                  }))}
-                  empty="No context yet. Use Preview context in the task options."
+                {contextQuery ? (
+                  <p className="mb-3 line-clamp-3 rounded-md bg-background px-3 py-2 text-xs leading-5 text-muted">
+                    Built fresh for: <span className="font-medium text-foreground">{contextQuery}</span>
+                  </p>
+                ) : null}
+                {contextError ? (
+                  <div className="mb-3 rounded-md border border-warning/45 bg-warning/10 p-3 text-xs leading-5 text-muted" role="status">
+                    Saved context could not be loaded. This task will run without it unless you refresh. {contextError}
+                  </div>
+                ) : null}
+                <ContextSelectionList
+                  rows={contextResults}
+                  selectedIds={selectedContextIds}
+                  loading={contextLoading}
+                  disabled={workflowInProgress || loading === "agent"}
+                  onChange={updateContextSelection}
                 />
               </StagePanel>
             ) : null}
@@ -1261,6 +1591,11 @@ export function AgentRunsWorkspace({
                     </Link>
                   </div>
                 ) : null}
+                <TaskProgressTimeline
+                  events={streamEvents}
+                  workflowRun={workflowRun}
+                  running={loading === "agent"}
+                />
                 <CouncilExecutionMap events={streamEvents} />
                 <div className="grid gap-4">
                   <details className="rounded-md border border-line bg-background">
@@ -1362,6 +1697,243 @@ export function AgentRunsWorkspace({
   );
 }
 
+function ContextSelectionList({
+  rows,
+  selectedIds,
+  loading,
+  disabled,
+  onChange,
+}: {
+  rows: JsonRecord[];
+  selectedIds: string[];
+  loading: boolean;
+  disabled: boolean;
+  onChange: (ids: string[]) => void;
+}) {
+  if (loading && !rows.length) {
+    return (
+      <div className="flex min-h-28 items-center justify-center gap-2 rounded-md border border-dashed border-line bg-background text-sm text-muted">
+        <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+        Finding context for this task…
+      </div>
+    );
+  }
+  if (!rows.length) {
+    return (
+      <div className="rounded-md border border-dashed border-line bg-background p-4 text-sm leading-6 text-muted">
+        No saved memory or knowledge matched this task. The task will start with no saved context.
+      </div>
+    );
+  }
+  const selected = new Set(selectedIds);
+  return (
+    <fieldset className="divide-y divide-line overflow-hidden rounded-md border border-line bg-background">
+      <legend className="sr-only">Choose context for this task</legend>
+      {rows.slice(0, 12).map((item, index) => {
+        const id = contextEvidenceId(item);
+        const checked = selected.has(id);
+        const confidence = numberValue(item.supportScore ?? item.confidence ?? item.score, Number.NaN);
+        return (
+          <label
+            key={id || `${stringValue(item.title)}-${index}`}
+            className={clsx(
+              "flex cursor-pointer items-start gap-3 p-3 transition",
+              checked ? "bg-primary/5" : "bg-surface/60 opacity-70 hover:opacity-100",
+            )}
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              disabled={loading || disabled || !id}
+              onChange={(event) => {
+                onChange(
+                  event.currentTarget.checked
+                    ? [...selectedIds, id]
+                    : selectedIds.filter((selectedId) => selectedId !== id),
+                );
+              }}
+              className="mt-1 size-4 shrink-0 accent-[var(--primary)]"
+            />
+            <span className="min-w-0 flex-1">
+              <span className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-semibold">{stringValue(item.title, "Context item")}</span>
+                <span className={clsx(
+                  "rounded-md px-2 py-1 font-mono text-[11px]",
+                  checked ? "bg-primary/10 text-primary" : "bg-surface-raised text-muted",
+                )}>
+                  {checked ? "Included" : "Excluded"}
+                </span>
+              </span>
+              <span className="mt-1 line-clamp-3 block text-xs leading-5 text-muted">
+                {stringValue(item.content, "No excerpt available.")}
+              </span>
+              <span className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted">
+                <span className="rounded-md bg-surface-raised px-2 py-1">{stringValue(item.kind, "evidence")}</span>
+                {Number.isFinite(confidence) ? (
+                  <span className="rounded-md bg-surface-raised px-2 py-1">{Math.round(confidence * 100)}% match</span>
+                ) : null}
+              </span>
+            </span>
+          </label>
+        );
+      })}
+    </fieldset>
+  );
+}
+
+function TaskProgressTimeline({
+  events,
+  workflowRun,
+  running,
+}: {
+  events: StreamEvent[];
+  workflowRun?: JsonRecord;
+  running: boolean;
+}) {
+  const workflowSteps = arrayPath(workflowRun, "steps");
+  const workflowEvents = arrayPath(workflowRun, "events");
+  const workflow = asRecord(readPath(workflowRun, "run"));
+  if (workflowRun) {
+    const completed = workflowSteps.filter((step) => ["completed", "skipped"].includes(stringValue(step.status))).length;
+    const planStep = workflowSteps.find((step) => stringValue(step.stepKey) === "plan");
+    const planNodes = arrayPath(planStep, "output.plan.nodes");
+    const planNodeEvents = new Map<string, JsonRecord>();
+    for (const event of workflowEvents) {
+      const nodeId = stringPath(event, "payload.nodeId", "");
+      if (nodeId && stringValue(event.type).startsWith("workflow.plan_node.")) {
+        planNodeEvents.set(nodeId, event);
+      }
+    }
+    return (
+      <section className="mb-4 overflow-hidden rounded-md border border-line bg-background" aria-label="Workflow progress">
+        <header className="flex items-start justify-between gap-3 border-b border-line px-3 py-3">
+          <div>
+            <p className="text-sm font-semibold">Workflow progress</p>
+            <p className="mt-1 text-xs leading-5 text-muted">
+              {workflowSteps.length
+                ? `${completed} of ${workflowSteps.length} stages complete`
+                : "Loading the workflow stages…"}
+            </p>
+          </div>
+          <StatusPill
+            label={stringValue(workflow.status, "starting").replaceAll("_", " ")}
+            tone={toneForStatus(workflow.status)}
+          />
+        </header>
+        <ol className="divide-y divide-line">
+          {workflowSteps.length ? workflowSteps.map((step, index) => {
+            const status = stringValue(step.status, "pending");
+            const isCurrent = stringValue(workflow.currentStep) === stringValue(step.stepKey);
+            const error = stringValue(step.error);
+            const reason = stringPath(step, "output.reason", "");
+            return (
+              <li key={stringValue(step.id, `${stringValue(step.stepKey)}-${index}`)} className={clsx("flex gap-3 px-3 py-3", isCurrent && "bg-primary/5")}>
+                <span className={clsx(
+                  "mt-0.5 grid size-6 shrink-0 place-items-center rounded-full text-xs font-semibold",
+                  status === "completed" || status === "skipped"
+                    ? "bg-success/15 text-success"
+                    : status === "failed"
+                      ? "bg-danger/15 text-danger"
+                      : isCurrent || status === "running"
+                        ? "bg-primary/15 text-primary"
+                        : "bg-surface-raised text-muted",
+                )}>
+                  {status === "completed" || status === "skipped" ? "✓" : index + 1}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-sm font-semibold">{stringValue(step.label, humanizeWorkflowStep(stringValue(step.stepKey)))}</span>
+                    <span className="font-mono text-[11px] text-muted">{status.replaceAll("_", " ")}</span>
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-muted">
+                    {error || reason || (isCurrent ? "Asael is working on this stage now." : workflowStepDescription(stringValue(step.stepKey)))}
+                  </span>
+                </span>
+              </li>
+            );
+          }) : (
+            <li className="p-4 text-sm text-muted">The workflow was created. Detailed stages will appear after the first update.</li>
+          )}
+        </ol>
+        {planNodes.length ? (
+          <div className="border-t border-line px-3 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">Execution plan</p>
+            <div className="mt-2 space-y-2">
+              {planNodes.map((node, index) => {
+                const nodeId = stringValue(node.id);
+                const latest = planNodeEvents.get(nodeId);
+                const status = latest
+                  ? stringValue(latest.type).split(".").at(-1) || "pending"
+                  : "pending";
+                return (
+                  <div key={nodeId || `plan-node-${index}`} className="flex items-start justify-between gap-3 rounded-md bg-surface px-3 py-2.5">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold">{stringValue(node.label, `Plan step ${index + 1}`)}</p>
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">{stringValue(node.description, "Waiting to begin.")}</p>
+                    </div>
+                    <span className={clsx(
+                      "shrink-0 rounded-md px-2 py-1 font-mono text-[11px]",
+                      status === "completed"
+                        ? "bg-success/10 text-success"
+                        : status === "failed" || status === "interrupted"
+                          ? "bg-danger/10 text-danger"
+                          : status === "started"
+                            ? "bg-primary/10 text-primary"
+                            : "bg-surface-raised text-muted",
+                    )}>
+                      {status === "started" ? "running" : status}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+        {workflowEvents.length ? (
+          <div className="border-t border-line px-3 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">Latest updates</p>
+            <ul className="mt-2 space-y-1.5 text-xs leading-5 text-muted">
+              {workflowEvents.slice(-3).reverse().map((event, index) => (
+                <li key={stringValue(event.id, `${stringValue(event.type)}-${index}`)}>
+                  {workflowEventLabel(stringValue(event.type))}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </section>
+    );
+  }
+
+  const updates = events.filter((event) => event.type !== "delta");
+  return (
+    <section className="mb-4 overflow-hidden rounded-md border border-line bg-background" aria-label="Task progress">
+      <header className="flex items-start justify-between gap-3 border-b border-line px-3 py-3">
+        <div>
+          <p className="text-sm font-semibold">Live task progress</p>
+          <p className="mt-1 text-xs leading-5 text-muted">Plain-language updates as Asael works.</p>
+        </div>
+        {running ? <StatusPill label="working" tone="neutral" /> : null}
+      </header>
+      {updates.length ? (
+        <ol className="divide-y divide-line">
+          {updates.slice(-8).map((event, index) => (
+            <li key={`${event.type}-${index}`} className="flex gap-3 px-3 py-3">
+              <span className={clsx("mt-1 size-2.5 shrink-0 rounded-full", activityDotTone(event))} />
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold">{activityTitle(event)}</span>
+                <span className="mt-1 block text-xs leading-5 text-muted">{streamEventLabel(event)}</span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="p-4 text-sm text-muted">Progress updates will appear here as soon as the task starts.</p>
+      )}
+    </section>
+  );
+}
+
 function CouncilExecutionMap({ events }: { events: StreamEvent[] }) {
   const memberEvents = events.filter((event): event is Extract<StreamEvent, { type: "council_member" }> => event.type === "council_member");
   const latestByAgent = new Map<AgentId, Extract<StreamEvent, { type: "council_member" }>>();
@@ -1399,6 +1971,11 @@ function GoalStage({
   preferredAgentId,
   preferredAgentName,
   loading,
+  contextLoading,
+  contextReady,
+  contextSelectedCount,
+  contextTotalCount,
+  contextError,
   readDisabledReason,
   runDisabledReason,
   workflowDisabledReason,
@@ -1410,6 +1987,7 @@ function GoalStage({
   onApprovalChange,
   onClearPreferredAgent,
   onContext,
+  onReviewContext,
   onPlan,
   onAgent,
   onStop,
@@ -1421,6 +1999,11 @@ function GoalStage({
   preferredAgentId?: AgentId;
   preferredAgentName?: string;
   loading?: string;
+  contextLoading: boolean;
+  contextReady: boolean;
+  contextSelectedCount: number;
+  contextTotalCount: number;
+  contextError?: string;
   readDisabledReason?: string;
   runDisabledReason?: string;
   workflowDisabledReason?: string;
@@ -1432,6 +2015,7 @@ function GoalStage({
   onApprovalChange: (value: boolean) => void;
   onClearPreferredAgent: () => void;
   onContext: () => void;
+  onReviewContext: () => void;
   onPlan: () => void;
   onAgent: () => void;
   onStop: () => void;
@@ -1517,6 +2101,54 @@ function GoalStage({
         </span>
       </label>
 
+      {!goalMissing ? (
+        <div className={clsx(
+          "mt-3 flex flex-col gap-3 rounded-lg border px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between",
+          contextError
+            ? "border-warning/45 bg-warning/10"
+            : contextReady
+              ? "border-line bg-surface"
+              : "border-primary/30 bg-primary/5",
+        )}>
+          <div className="flex min-w-0 items-start gap-3">
+            {contextLoading ? (
+              <Loader2 size={16} className="mt-0.5 shrink-0 animate-spin text-primary" aria-hidden="true" />
+            ) : (
+              <Brain size={16} className="mt-0.5 shrink-0 text-primary" aria-hidden="true" />
+            )}
+            <div className="min-w-0">
+              <p className="text-xs font-semibold">
+                {contextLoading
+                  ? "Finding matching context"
+                  : contextError
+                    ? "Running without saved context"
+                    : contextReady
+                      ? `${contextSelectedCount} of ${contextTotalCount} context items selected`
+                      : "Context will be built for this task"}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-muted">
+                {contextLoading
+                  ? "Asael is checking saved memory and knowledge for this exact task."
+                  : contextError
+                    ? "Refresh if you want to retry. Unavailable context will not be used."
+                    : contextReady
+                      ? "Review the list and uncheck anything that does not belong."
+                      : "Wait a moment, or open Context to prepare it now."}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={contextReady || contextError ? onReviewContext : onContext}
+            disabled={contextLoading || Boolean(readDisabledReason)}
+            title={readDisabledReason}
+            className="action-button shrink-0"
+          >
+            {contextReady || contextError ? "Review context" : "Prepare context"}
+          </button>
+        </div>
+      ) : null}
+
       <details className="mt-3 rounded-lg border border-line bg-surface px-3">
         <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 text-sm font-semibold">
           <span>Task options</span>
@@ -1563,12 +2195,12 @@ function GoalStage({
           type="button"
           onClick={onContext}
           disabled={
-            Boolean(loading) || goalMissing || Boolean(readDisabledReason)
+            Boolean(loading) || contextLoading || goalMissing || Boolean(readDisabledReason)
           }
           title={goalMissing ? "Enter a task first." : readDisabledReason}
           className="action-button mb-4"
         >
-          {loading === "context" ? (
+          {contextLoading ? (
             <Loader2
               size={14}
               className="animate-spin"
@@ -1577,7 +2209,7 @@ function GoalStage({
           ) : (
             <Brain size={14} aria-hidden="true" />
           )}
-          Preview context
+          Refresh context
         </button>
       </details>
 
@@ -1972,10 +2604,95 @@ function streamEventLabel(event: StreamEvent) {
   if (event.type === "delegated") {
     return event.reason || "Task delegated to a durable workflow.";
   }
+  if (event.type === "canceled") {
+    return event.message || "Task canceled.";
+  }
   if (event.type === "error") {
     return event.message || "Agent run failed.";
   }
   return "Event received.";
+}
+
+function taskProgressSummary({
+  workflowRun,
+  streamEvents,
+  loading,
+}: {
+  workflowRun?: JsonRecord;
+  streamEvents: StreamEvent[];
+  loading?: string;
+}) {
+  if (workflowRun) {
+    const steps = arrayPath(workflowRun, "steps");
+    const completed = steps.filter((step) => ["completed", "skipped"].includes(stringValue(step.status))).length;
+    const current = steps.find((step) => stringValue(step.stepKey) === stringPath(workflowRun, "run.currentStep", ""));
+    if (current) return `${stringValue(current.label, "Workflow stage")} · ${completed} of ${steps.length} stages complete`;
+    const status = stringPath(workflowRun, "run.status", "starting").replaceAll("_", " ");
+    return steps.length ? `${completed} of ${steps.length} stages complete · ${status}` : `Workflow ${status}`;
+  }
+  const latest = [...streamEvents].reverse().find((event) => event.type !== "delta");
+  if (latest) return streamEventLabel(latest);
+  return loading === "agent" ? "Starting the task…" : "Task activity is available.";
+}
+
+function activityTitle(event: StreamEvent) {
+  if (event.type === "status") return event.label || "Task update";
+  if (event.type === "memory") return "Context prepared";
+  if (event.type === "model") return "Answer generated";
+  if (event.type === "council_member") return `${event.agentName} · ${event.status}`;
+  if (event.type === "council_verdict") return "Quality review";
+  if (event.type === "tool") return event.toolName || event.toolId || "Tool activity";
+  if (event.type === "waiting_approval") return "Waiting for approval";
+  if (event.type === "delegated") return "Moved to workflow";
+  if (event.type === "done") return "Task complete";
+  if (event.type === "canceled") return "Task canceled";
+  if (event.type === "error") return "Task failed";
+  return "Task started";
+}
+
+function activityDotTone(event: StreamEvent) {
+  if (event.type === "error" || event.type === "canceled") return "bg-danger";
+  if (event.type === "waiting_approval") return "bg-warning";
+  if (event.type === "done" || event.type === "council_verdict") return "bg-success";
+  if (event.type === "tool" && ["failed", "blocked"].includes(event.status || "")) return "bg-danger";
+  return "bg-primary";
+}
+
+function humanizeWorkflowStep(stepKey: string) {
+  return stepKey
+    .split("_")
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ") || "Workflow stage";
+}
+
+function workflowStepDescription(stepKey: string) {
+  const descriptions: Record<string, string> = {
+    preflight: "Checking permissions, safety, and the execution environment.",
+    retrieve_context: "Loading only the context selected for this task.",
+    plan: "Turning the request into clear, executable steps.",
+    approval_gate: "Waiting for required human review before gated actions.",
+    execute: "Carrying out the approved plan.",
+    verify: "Checking the result against the requested outcome.",
+    persist_report: "Saving the result and evidence for later review.",
+  };
+  return descriptions[stepKey] || "Waiting for this stage to begin.";
+}
+
+function workflowEventLabel(type: string) {
+  const labels: Record<string, string> = {
+    "step.started": "A workflow stage started.",
+    "step.completed": "A workflow stage completed.",
+    "step.failed": "A workflow stage failed.",
+    "step.retry_scheduled": "A failed stage is scheduled to retry.",
+    "workflow.waiting_approval": "The workflow is waiting for approval.",
+    "workflow.plan_node.started": "A plan step started.",
+    "workflow.plan_node.completed": "A plan step completed.",
+    "workflow.plan_node.failed": "A plan step failed.",
+    "workflow.plan_node.skipped": "A plan step was skipped.",
+    "workflow.plan_node.interrupted": "A plan step was interrupted.",
+  };
+  return labels[type] || type.replaceAll(".", " · ").replaceAll("_", " ");
 }
 
 function groundingLabel(status: GroundingReport["status"]) {
@@ -1993,6 +2710,20 @@ function agentDisplayName(agentId: AgentId) {
     sentinel: "Sentinel",
     mnemosyne: "Mnemosyne",
   }[agentId] || "Custom agent";
+}
+
+function contextEvidenceId(item: JsonRecord) {
+  const kind = stringValue(item.kind);
+  const id = stringValue(item.id);
+  return ["memory", "knowledge", "graph"].includes(kind) && id
+    ? `${kind}:${id}`
+    : "";
+}
+
+function contextMatchesTask(item: JsonRecord) {
+  const support = numberValue(item.supportScore, 0);
+  const confidence = numberValue(item.confidence, 0);
+  return support >= 0.2 && confidence >= 0.35;
 }
 
 function asRecord(value: unknown): JsonRecord {

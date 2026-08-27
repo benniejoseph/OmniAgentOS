@@ -13,8 +13,18 @@ export const maxDuration = 60;
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
+const contextSelectionSchema = z.object({
+  query: z.string().trim().min(1).max(4_000),
+  evidenceIds: z.array(z.string().trim().min(1).max(200).regex(/^(?:memory|knowledge|graph):[^\s]+$/))
+    .max(24)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: "Context evidence IDs must be unique.",
+    }),
+}).strict();
+
 const workflowPlanSchema = z.object({
   goal: z.string().min(1).max(4000),
+  contextSelection: contextSelectionSchema.optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
   workflowRunId: z.string().min(1).optional(),
   requireApproval: z.boolean().optional(),
@@ -60,6 +70,18 @@ async function POSTHandler(request: Request) {
       { status: 400 },
     );
   }
+  if (
+    parsed.data.contextSelection
+    && normalizeTaskQuery(parsed.data.contextSelection.query) !== normalizeTaskQuery(parsed.data.goal)
+  ) {
+    return Response.json(
+      {
+        error: "Context selection is out of date.",
+        message: "The reviewed context does not match this workflow goal. Rebuild context before planning.",
+      },
+      { status: 409 },
+    );
+  }
 
   let context;
   try {
@@ -80,6 +102,7 @@ async function POSTHandler(request: Request) {
   const plan = await buildDynamicWorkflowPlan({
     tenantId: context.tenantId,
     goal: parsed.data.goal,
+    contextSelection: parsed.data.contextSelection,
     mode: parsed.data.mode,
     workflowRunId: parsed.data.workflowRunId,
     requireApproval: parsed.data.requireApproval,
@@ -88,4 +111,8 @@ async function POSTHandler(request: Request) {
   });
 
   return Response.json({ plan, stats: await getWorkflowPlanStats({ tenantId: context.tenantId }) }, { status: 201 });
+}
+
+function normalizeTaskQuery(value: string) {
+  return value.replace(/\s+/g, " ").trim();
 }

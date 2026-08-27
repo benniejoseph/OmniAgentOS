@@ -55,6 +55,11 @@ export type AgentEvent =
 
 export type AgentRunRequest = {
   messages: ChatMessage[];
+  /** Server-validated saved-context selection using canonical `kind:id` evidence IDs. */
+  contextSelection?: {
+    query: string;
+    evidenceIds: string[];
+  };
   /** Internal durable dispatch: the worker has already CAS-claimed this run. */
   preclaimedRunId?: string;
   threadId?: string;

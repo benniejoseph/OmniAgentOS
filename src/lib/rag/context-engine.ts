@@ -30,6 +30,13 @@ type BuildContextPackOptions = {
   limit?: number;
   candidateLimit?: number;
   persistTrace?: boolean;
+  /**
+   * An explicit allowlist of canonical `kind:id` evidence IDs selected by the
+   * user. The IDs are resolved against fresh, tenant-scoped retrieval results;
+   * client-provided evidence content is never accepted. An empty list
+   * intentionally disables saved context for this task.
+   */
+  evidenceIds?: string[];
 };
 
 type RetrievalTraceLedger = {
@@ -70,11 +77,17 @@ export async function buildContextPack(
 ): Promise<ContextPack> {
   const startedAt = Date.now();
   const normalizedQuery = String(redactSensitive(query.trim())).slice(0, 4_000);
-  const limit = Math.min(Math.max(options.limit || 8, 1), 24);
+  const evidenceIds = options.evidenceIds === undefined
+    ? undefined
+    : [...new Set(options.evidenceIds
+        .map((id) => id.trim())
+        .filter((id) => /^(?:memory|knowledge|graph):[^\s]+$/.test(id)))]
+        .slice(0, 24);
+  const limit = Math.min(Math.max(options.limit || 8, evidenceIds?.length || 1), 24);
   const candidateLimit = Math.min(Math.max(options.candidateLimit || limit * 3, limit), 60);
   const profile = profileQuery(normalizedQuery);
 
-  if (!profile.shouldRetrieve) {
+  if (!profile.shouldRetrieve || evidenceIds?.length === 0) {
     const pack: ContextPack = {
       query: normalizedQuery,
       profile,
@@ -114,7 +127,23 @@ export async function buildContextPack(
     knowledgeResults,
     graphResults,
   });
-  const selected = selectDiverseEvidence(evidence, limit);
+  const evidenceIdSet = evidenceIds ? new Set(evidenceIds) : undefined;
+  const selected = selectDiverseEvidence(
+    evidenceIdSet ? evidence.filter((item) => evidenceIdSet.has(citationIdForEvidence(item))) : evidence,
+    limit,
+  );
+  const selectedIdSet = evidenceIdSet
+    ? new Set(selected.map(citationIdForEvidence))
+    : undefined;
+  const selectedMemoryResults = selectedIdSet
+    ? memoryResults.filter((result) => selectedIdSet.has(`memory:${result.record.id}`))
+    : memoryResults;
+  const selectedKnowledgeResults = selectedIdSet
+    ? knowledgeResults.filter((result) => selectedIdSet.has(`knowledge:${result.chunk.id}`))
+    : knowledgeResults;
+  const selectedGraphResults = selectedIdSet
+    ? graphResults.filter((result) => selectedIdSet.has(`graph:${result.node.id}`))
+    : graphResults;
   const traceResults = selected.map((item) => ({
     id: item.id,
     kind: item.kind,
@@ -142,9 +171,9 @@ export async function buildContextPack(
     query: normalizedQuery,
     profile,
     results: selected,
-    memoryResults,
-    knowledgeResults,
-    graphResults,
+    memoryResults: selectedMemoryResults,
+    knowledgeResults: selectedKnowledgeResults,
+    graphResults: selectedGraphResults,
     contextBlock: formatContextPack(selected, profile),
     trace,
   });
