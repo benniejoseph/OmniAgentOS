@@ -190,8 +190,9 @@ async function POSTHandler(request: Request) {
         connector: redactMcpConnector(await recordMcpConnectorError(connector, message)),
         tools: [],
         error: message,
+        discoveryFailed: true,
       },
-      { status: 202 },
+      { status: 502 },
     );
   }
 }

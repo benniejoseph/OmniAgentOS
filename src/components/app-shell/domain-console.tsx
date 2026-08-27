@@ -33,6 +33,7 @@ import {
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
 import type { NavIcon } from "@/lib/navigation";
+import { workflowControlRunsFrom } from "@/lib/workflows/client-controls";
 
 export type DomainConsoleKey =
   | "knowledge"
@@ -456,7 +457,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
       {
         id: "control-workflow",
         title: "Control workflow",
-        description: "Pause, resume, cancel, or retry a durable workflow run.",
+        description: "Choose a recent workflow run to see only the controls valid for its current state.",
         method: "POST",
         path: "/api/workflows/:id/signal",
         fields: [
@@ -569,23 +570,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
         description: "Registered Model Context Protocol servers and discovered tools.",
         emptyLabel: "No MCP connectors registered.",
         rows: (data) =>
-          arrayPath(data, "connectors.connectors").map((item) => {
-            const pending = numberPath(item, "review.pendingCount");
-            const contracts = arrayPath(item, "review.contracts")
-              .map((contract) => stringValue(contract.name))
-              .filter(Boolean)
-              .slice(0, 3)
-              .join(", ");
-            return {
-              title: stringValue(item.name, "MCP connector"),
-              status: pending ? "review required" : stringValue(item.status, "unknown"),
-              meta: pending
-                ? `${pending} pending${contracts ? `: ${contracts}` : ""} · connector ${stringValue(item.id)}`
-                : stringValue(item.endpoint, "endpoint"),
-              time: stringValue(item.updatedAt || item.createdAt),
-              tone: pending ? "warning" : toneForStatus(item.status),
-            };
-          }),
+          arrayPath(data, "connectors.connectors").map(mcpConnectorRow),
       },
       {
         title: "OpenAPI connectors",
@@ -1397,6 +1382,14 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
           : undefined,
         body: sendsJson ? JSON.stringify(body || {}) : undefined,
       });
+      const discoveryFailed = Boolean(readPath(result, "discoveryFailed"));
+      const payloadError = stringValue(
+        readPath(result, "error") ||
+          (discoveryFailed ? readPath(result, "message") : undefined),
+      );
+      if (discoveryFailed || payloadError) {
+        throw new Error(payloadError || `${action.title} failed.`);
+      }
       delete actionRequestKeys.current[action.id];
       const jobStatus = stringValue(readPath(result, "job.status"));
       const jobId = stringValue(readPath(result, "job.id"));
@@ -1437,6 +1430,9 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
         status: "error",
         message: error instanceof Error ? error.message : "Action failed.",
       });
+      if (action.id === "register-mcp") {
+        await load();
+      }
       setAnnouncement(`${action.title} failed.`);
     } finally {
       setRunningAction(undefined);
@@ -1742,6 +1738,9 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
                         ),
                       ]),
                     )}
+                    workflowRuns={workflowControlRunsFrom(
+                      readPath(data, "workflows.runs"),
+                    )}
                     onRun={(action, values) => void runAction(action, values)}
                   />
                 </div>
@@ -1961,8 +1960,7 @@ function ConnectorContractReviewPanel({
       ),
     })),
   ].filter(
-    ({ connector }) =>
-      numberValue(readPath(connector, "review.pendingCount"), 0) > 0,
+    ({ connector }) => isConnectorReviewable(connector),
   );
 
   if (!reviews.length) {
@@ -2060,6 +2058,33 @@ function ConnectorContractReviewPanel({
         })}
       </div>
     </Panel>
+  );
+}
+
+export function mcpConnectorRow(item: JsonRecord): Row {
+  const pending = numberValue(readPath(item, "review.pendingCount"), 0);
+  const connectorStatus = stringValue(item.status, "unknown");
+  const needsReview = pending > 0 && connectorStatus === "active";
+  const contracts = arrayPath(item, "review.contracts")
+    .map((contract) => stringValue(contract.name))
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(", ");
+  return {
+    title: stringValue(item.name, "MCP connector"),
+    status: needsReview ? "review required" : connectorStatus,
+    meta: needsReview
+      ? `${pending} pending${contracts ? `: ${contracts}` : ""} · connector ${stringValue(item.id)}`
+      : stringValue(item.endpoint, "endpoint"),
+    time: stringValue(item.updatedAt || item.createdAt),
+    tone: needsReview ? "warning" : toneForStatus(connectorStatus),
+  };
+}
+
+export function isConnectorReviewable(connector: JsonRecord) {
+  return (
+    textValue(connector.status) === "active" &&
+    numberValue(readPath(connector, "review.pendingCount"), 0) > 0
   );
 }
 

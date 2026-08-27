@@ -1,6 +1,11 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { BlockList, isIP, type LookupFunction } from "node:net";
-import { Agent } from "undici";
+import {
+  Agent,
+  fetch as undiciFetch,
+  type RequestInfo as UndiciRequestInfo,
+  type RequestInit as UndiciRequestInit,
+} from "undici";
 
 const blockedHostnames = new Set([
   "localhost",
@@ -14,6 +19,11 @@ const publicNetworkDispatcher = new Agent({
   connect: {
     lookup: publicAddressLookup,
   },
+  // Asking Node for every validated address preserves its family fallback
+  // behavior. Without this, a custom lookup returns one address and can pin a
+  // request to IPv6 even when the runtime only has IPv4 egress (or vice versa).
+  autoSelectFamily: true,
+  autoSelectFamilyAttemptTimeout: 1_000,
 });
 
 export async function assertPublicHttpUrl(value: string, label = "URL") {
@@ -72,15 +82,65 @@ export async function fetchPublicHttpUrl(
   if (init.redirect && init.redirect !== "manual") {
     throw new Error(`${label} redirects must be handled manually.`);
   }
-  return fetch(input, {
-    ...init,
+  const request = toUndiciRequest(input, init);
+  const response = await undiciFetch(request.input, {
+    ...request.init,
     cache: init.cache || "no-store",
     redirect: "manual",
-    // Node's fetch accepts an Undici dispatcher. The custom resolver below
-    // validates the exact address used for each new socket, closing the DNS
-    // rebinding gap between URL validation and connection establishment.
+    // Keep fetch and dispatcher on the same npm Undici implementation. Node's
+    // built-in fetch can use a different bundled Undici ABI (notably on Node
+    // 24), where an external Agent fails before connecting.
     dispatcher: publicNetworkDispatcher,
-  } as RequestInit & { dispatcher: Agent });
+  });
+  return response as unknown as Response;
+}
+
+function toUndiciRequest(
+  input: string | URL | Request,
+  init: RequestInit,
+): { input: UndiciRequestInfo; init: UndiciRequestInit } {
+  if (!(input instanceof Request)) {
+    return {
+      input,
+      init: toUndiciRequestInit(init),
+    };
+  }
+
+  const method = (init.method || input.method).toUpperCase();
+  const body = init.body !== undefined
+    ? init.body
+    : method === "GET" || method === "HEAD"
+      ? undefined
+      : input.body;
+  return {
+    input: input.url,
+    init: toUndiciRequestInit({
+      body,
+      cache: init.cache ?? input.cache,
+      credentials: init.credentials ?? input.credentials,
+      headers: init.headers ?? input.headers,
+      integrity: init.integrity ?? input.integrity,
+      keepalive: init.keepalive ?? input.keepalive,
+      method,
+      mode: init.mode ?? input.mode,
+      redirect: init.redirect ?? input.redirect,
+      referrer: init.referrer ?? input.referrer,
+      referrerPolicy: init.referrerPolicy ?? input.referrerPolicy,
+      signal: init.signal ?? input.signal,
+    }),
+  };
+}
+
+function toUndiciRequestInit(init: RequestInit): UndiciRequestInit {
+  const body = init.body as UndiciRequestInit["body"];
+  return {
+    ...init,
+    body,
+    headers: init.headers
+      ? Array.from(new Headers(init.headers).entries())
+      : undefined,
+    ...(body && typeof body === "object" ? { duplex: "half" as const } : {}),
+  } as UndiciRequestInit;
 }
 
 export function isPrivateIpAddress(value: string) {
@@ -108,35 +168,37 @@ function publicAddressLookup(
       callback(networkLookupError("IP address is blocked by outbound network policy."), "", 0);
       return;
     }
-    callback(null, normalizedHostname, isIP(normalizedHostname));
+    const family = isIP(normalizedHostname);
+    if (options.all) {
+      callback(null, [{ address: normalizedHostname, family }]);
+    } else {
+      callback(null, normalizedHostname, family);
+    }
     return;
   }
 
   void dnsLookup(normalizedHostname, {
     all: true,
-    verbatim: options.verbatim,
+    hints: options.hints,
+    // We apply an explicit, deterministic family preference after validating
+    // every answer. This makes the policy independent from platform DNS order.
+    verbatim: true,
   }).then(
     (addresses) => {
-      if (
-        !addresses.length ||
-        addresses.some((address) => isPrivateIpAddress(address.address))
-      ) {
-        callback(
-          networkLookupError("Hostname resolved to a blocked or unavailable address."),
-          "",
-          0,
-        );
-        return;
-      }
-
       const family = options.family === 4 || options.family === 6
         ? options.family
         : undefined;
-      const candidates = family
-        ? addresses.filter((address) => address.family === family)
-        : addresses;
-      if (!candidates.length) {
-        callback(networkLookupError("Hostname has no address in the requested family."), "", 0);
+      let candidates;
+      try {
+        candidates = selectPublicLookupCandidates(addresses, family);
+      } catch (error) {
+        callback(
+          error instanceof Error
+            ? error
+            : networkLookupError("Hostname lookup failed outbound network policy."),
+          "",
+          0,
+        );
         return;
       }
       if (options.all) {
@@ -155,6 +217,36 @@ function publicAddressLookup(
       );
     },
   );
+}
+
+export function selectPublicLookupCandidates(
+  addresses: ReadonlyArray<{ address: string; family: number }>,
+  family?: 4 | 6,
+) {
+  if (
+    !addresses.length ||
+    addresses.some((address) => isPrivateIpAddress(address.address))
+  ) {
+    throw networkLookupError("Hostname resolved to a blocked or unavailable address.");
+  }
+
+  const candidates = (family
+    ? addresses.filter((address) => address.family === family)
+    : addresses
+  ).toSorted(
+    (left, right) =>
+      addressFamilyPriority(left.family) - addressFamilyPriority(right.family),
+  );
+  if (!candidates.length) {
+    throw networkLookupError("Hostname has no address in the requested family.");
+  }
+  return candidates;
+}
+
+function addressFamilyPriority(family: number) {
+  // IPv4 is available in every supported deployment target. IPv6 remains in
+  // the candidate set so Node can still fall back to it for IPv6-only servers.
+  return family === 4 ? 0 : 1;
 }
 
 function networkLookupError(message: string) {

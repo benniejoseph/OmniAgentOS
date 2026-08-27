@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Bell,
@@ -60,6 +60,7 @@ export function NotificationCenter() {
     notifications: [], unreadCount: 0, quietHoursActive: false,
     preferences: emptyPreferences, generatedAt: "",
   });
+  const [settingsDraft, setSettingsDraft] = useState<NotificationPreferences>(emptyPreferences);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [actingId, setActingId] = useState("");
@@ -72,6 +73,9 @@ export function NotificationCenter() {
   const loadControllerRef = useRef<AbortController | null>(null);
   const knownUnreadRef = useRef(new Set<string>());
   const loadedOnceRef = useRef(false);
+  const settingsDirtyRef = useRef(false);
+  const settingsRevisionRef = useRef(0);
+  const persistedPreferencesRef = useRef<NotificationPreferences>(emptyPreferences);
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
 
   const attention = useMemo(() => center.notifications.filter((item) =>
@@ -81,11 +85,21 @@ export function NotificationCenter() {
     item.status === "acted" || item.status === "dismissed"
   ).slice(0, 8), [center.notifications]);
 
+  const closePanel = useCallback(() => {
+    const preferences = persistedPreferencesRef.current;
+    settingsDirtyRef.current = false;
+    setSettingsDraft(preferences);
+    setCenter((current) => ({ ...current, preferences }));
+    setOpen(false);
+    buttonRef.current?.focus();
+  }, []);
+
   async function load(options: { quiet?: boolean } = {}) {
     if (!available) return;
     loadControllerRef.current?.abort();
     const controller = new AbortController();
     loadControllerRef.current = controller;
+    const settingsRevision = settingsRevisionRef.current;
     if (!options.quiet) setLoading(true);
     try {
       const payload = await readJson("/api/notifications", {
@@ -105,7 +119,18 @@ export function NotificationCenter() {
       }
       knownUnreadRef.current = new Set(payload.notifications.filter((item) => item.status === "unread").map((item) => item.id));
       loadedOnceRef.current = true;
-      setCenter(payload);
+      const settingsAreCurrent = settingsRevision === settingsRevisionRef.current;
+      setCenter((current) => settingsAreCurrent
+        ? payload
+        : {
+            ...payload,
+            preferences: current.preferences,
+            quietHoursActive: current.quietHoursActive,
+          });
+      if (settingsAreCurrent) {
+        persistedPreferencesRef.current = payload.preferences;
+        if (!settingsDirtyRef.current) setSettingsDraft(payload.preferences);
+      }
       setError(undefined);
     } catch (loadError) {
       if (!controller.signal.aborted) setError(message(loadError));
@@ -148,8 +173,7 @@ export function NotificationCenter() {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
-        setOpen(false);
-        buttonRef.current?.focus();
+        closePanel();
         return;
       }
       if (event.key !== "Tab" || !panel) return;
@@ -172,7 +196,7 @@ export function NotificationCenter() {
       document.removeEventListener("keydown", onKeyDown);
       document.body.style.overflow = previousOverflow;
     };
-  }, [open]);
+  }, [closePanel, open]);
 
   async function act(item: PersonalNotification, action: "dismiss" | "snooze" | "complete") {
     setActingId(item.id);
@@ -217,21 +241,31 @@ export function NotificationCenter() {
 
   async function saveSettings(event: React.FormEvent) {
     event.preventDefault();
+    const nextPreferences = settingsDraft;
+    settingsRevisionRef.current += 1;
+    loadControllerRef.current?.abort();
+    loadControllerRef.current = null;
     setSavingSettings(true);
     try {
       const payload = await readJson("/api/today/brief", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          notificationsEnabled: center.preferences.notificationsEnabled,
-          quietHoursEnabled: center.preferences.quietHoursEnabled,
-          quietHoursStart: center.preferences.quietHoursStart,
-          quietHoursEnd: center.preferences.quietHoursEnd,
-          timezone: center.preferences.timezone,
-          reminderLeadMinutes: center.preferences.reminderLeadMinutes,
+          notificationsEnabled: nextPreferences.notificationsEnabled,
+          quietHoursEnabled: nextPreferences.quietHoursEnabled,
+          quietHoursStart: nextPreferences.quietHoursStart,
+          quietHoursEnd: nextPreferences.quietHoursEnd,
+          timezone: nextPreferences.timezone,
+          reminderLeadMinutes: nextPreferences.reminderLeadMinutes,
         }),
       });
-      setCenter((current) => ({ ...current, preferences: payload.preferences as NotificationPreferences }));
+      const preferences = payload.preferences as NotificationPreferences;
+      // Invalidate any settings GET that began while the PATCH was in flight.
+      settingsRevisionRef.current += 1;
+      persistedPreferencesRef.current = preferences;
+      settingsDirtyRef.current = false;
+      setSettingsDraft(preferences);
+      setCenter((current) => ({ ...current, preferences }));
       setAnnouncement("Notification settings saved.");
     } catch (settingsError) {
       setError(message(settingsError));
@@ -253,7 +287,8 @@ export function NotificationCenter() {
   }
 
   function updatePreference<Key extends keyof NotificationPreferences>(key: Key, value: NotificationPreferences[Key]) {
-    setCenter((current) => ({ ...current, preferences: { ...current.preferences, [key]: value } }));
+    settingsDirtyRef.current = true;
+    setSettingsDraft((current) => ({ ...current, [key]: value }));
   }
 
   return (
@@ -275,7 +310,7 @@ export function NotificationCenter() {
 
       {open && typeof document !== "undefined" ? createPortal((
         <div className="notification-layer">
-          <button type="button" className="notification-scrim" onClick={() => { setOpen(false); buttonRef.current?.focus(); }} aria-label="Close notifications" tabIndex={-1} />
+          <button type="button" className="notification-scrim" onClick={closePanel} aria-label="Close notifications" tabIndex={-1} />
           <aside ref={panelRef} className="notification-panel" role="dialog" aria-modal="true" aria-labelledby="notification-title">
             <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
             <header className="notification-header">
@@ -285,7 +320,7 @@ export function NotificationCenter() {
               </div>
               <div className="notification-header-actions">
                 {center.unreadCount ? <button type="button" onClick={() => void markAllRead()}><CheckCheck size={14} aria-hidden="true" /> Mark read</button> : null}
-                <button type="button" className="notification-close" onClick={() => { setOpen(false); buttonRef.current?.focus(); }} aria-label="Close notifications"><X size={18} aria-hidden="true" /></button>
+                <button type="button" className="notification-close" onClick={closePanel} aria-label="Close notifications"><X size={18} aria-hidden="true" /></button>
               </div>
             </header>
 
@@ -319,11 +354,11 @@ export function NotificationCenter() {
               <details className="notification-settings">
                 <summary><span><Settings2 size={14} aria-hidden="true" /> Delivery settings</span><ChevronRight size={14} aria-hidden="true" /></summary>
                 <form onSubmit={saveSettings}>
-                  <label className="notification-toggle"><span><strong>Reminder delivery</strong><small>Surface due items in this stream.</small></span><input type="checkbox" checked={center.preferences.notificationsEnabled} onChange={(event) => updatePreference("notificationsEnabled", event.currentTarget.checked)} /></label>
-                  <label className="notification-toggle"><span><strong>Quiet hours</strong><small>Hold new alerts until your quiet window ends.</small></span><input type="checkbox" checked={center.preferences.quietHoursEnabled} onChange={(event) => updatePreference("quietHoursEnabled", event.currentTarget.checked)} /></label>
-                  <div className="notification-time-grid"><label><span>From</span><input type="time" value={center.preferences.quietHoursStart} onChange={(event) => updatePreference("quietHoursStart", event.currentTarget.value)} /></label><label><span>Until</span><input type="time" value={center.preferences.quietHoursEnd} onChange={(event) => updatePreference("quietHoursEnd", event.currentTarget.value)} /></label></div>
-                  <label><span>Timezone</span><input value={center.preferences.timezone} onChange={(event) => updatePreference("timezone", event.currentTarget.value)} maxLength={120} /></label>
-                  <label><span>Reminder lead</span><select value={center.preferences.reminderLeadMinutes} onChange={(event) => updatePreference("reminderLeadMinutes", Number(event.currentTarget.value))}><option value={5}>5 minutes</option><option value={15}>15 minutes</option><option value={30}>30 minutes</option><option value={60}>1 hour</option><option value={120}>2 hours</option></select></label>
+                  <label className="notification-toggle"><span><strong>Reminder delivery</strong><small>Surface due items in this stream.</small></span><input type="checkbox" checked={settingsDraft.notificationsEnabled} onChange={(event) => updatePreference("notificationsEnabled", event.currentTarget.checked)} /></label>
+                  <label className="notification-toggle"><span><strong>Quiet hours</strong><small>Hold new alerts until your quiet window ends.</small></span><input type="checkbox" checked={settingsDraft.quietHoursEnabled} onChange={(event) => updatePreference("quietHoursEnabled", event.currentTarget.checked)} /></label>
+                  <div className="notification-time-grid"><label><span>From</span><input type="time" value={settingsDraft.quietHoursStart} onChange={(event) => updatePreference("quietHoursStart", event.currentTarget.value)} /></label><label><span>Until</span><input type="time" value={settingsDraft.quietHoursEnd} onChange={(event) => updatePreference("quietHoursEnd", event.currentTarget.value)} /></label></div>
+                  <label><span>Timezone</span><input value={settingsDraft.timezone} onChange={(event) => updatePreference("timezone", event.currentTarget.value)} maxLength={120} /></label>
+                  <label><span>Reminder lead</span><select value={settingsDraft.reminderLeadMinutes} onChange={(event) => updatePreference("reminderLeadMinutes", Number(event.currentTarget.value))}><option value={5}>5 minutes</option><option value={15}>15 minutes</option><option value={30}>30 minutes</option><option value={60}>1 hour</option><option value={120}>2 hours</option></select></label>
                   <button type="submit" disabled={savingSettings}>{savingSettings ? "Saving…" : "Save settings"}</button>
                   <button type="button" className="notification-desktop-button" onClick={() => void enableDesktopAlerts()}>{desktopAlerts ? "Desktop alerts enabled" : "Enable desktop alerts"}<small>While Asael is open</small></button>
                 </form>

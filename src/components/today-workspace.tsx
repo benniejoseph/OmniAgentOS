@@ -248,6 +248,14 @@ export function TodayWorkspace({
     event.preventDefault();
     const cleanTitle = title.trim();
     if (!cleanTitle) return;
+    const submittedDueAt = String(
+      new FormData(event.currentTarget as HTMLFormElement).get("dueAt") || "",
+    ).trim();
+    const dueTimestamp = submittedDueAt ? Date.parse(submittedDueAt) : undefined;
+    if (dueTimestamp !== undefined && !Number.isFinite(dueTimestamp)) {
+      setTodayError("Choose a valid due date and time.");
+      return;
+    }
     setSaving(true);
     try {
       const payload = await readJson("/api/today", {
@@ -257,7 +265,10 @@ export function TodayWorkspace({
           title: cleanTitle,
           kind,
           priority,
-          dueAt: dueAt ? new Date(dueAt).toISOString() : undefined,
+          // Read the submitted control rather than relying on a possibly stale
+          // controlled-state render. Browser date pickers and assistive input
+          // tools can update the native field immediately before submit.
+          dueAt: dueTimestamp === undefined ? undefined : new Date(dueTimestamp).toISOString(),
         }),
       });
       const item = payload.item as TodayItem;
@@ -457,7 +468,7 @@ export function TodayWorkspace({
               <option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
             </select>
             <label className="sr-only" htmlFor="today-due-at">Due time</label>
-            <input id="today-due-at" type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.currentTarget.value)} />
+            <input id="today-due-at" name="dueAt" type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.currentTarget.value)} />
             <button type="submit" disabled={saving || !title.trim()}>{saving ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : "Add"}</button>
           </form>
 
