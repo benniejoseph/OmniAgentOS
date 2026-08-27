@@ -753,6 +753,7 @@ summary:focus-visible,
 @media (prefers-reduced-motion: reduce) { .agent-custom-orbit button, .builder-dialog-backdrop, .builder-dialog { animation: none; transition: none; } }
 
 /* Live council: one execution canvas, with Atlas as the synthesis anchor. */
+.command-details { container-type: inline-size; }
 .council-execution { margin-bottom: 1rem; overflow: hidden; border: 1px solid oklch(from var(--primary) l c h / .24); border-radius: .8rem; background: var(--background); }
 .council-execution > header { display: flex; min-height: 2.8rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: 0 .85rem; }
 .council-execution > header > div { display: flex; align-items: center; gap: .45rem; color: var(--primary); font-size: .67rem; font-weight: 780; text-transform: uppercase; letter-spacing: .08em; }
@@ -778,6 +779,7 @@ summary:focus-visible,
 @keyframes council-reveal { from { opacity: 0; transform: translateY(4px); } }
 @media (prefers-reduced-motion: reduce) { .council-stage > svg path, .council-members article, .council-members article.is-thinking > span { animation: none; } }
 @media (max-width: 42rem) { .council-stage { min-height: auto; padding: .8rem; }.council-stage > svg, .council-hub { display: none; }.council-members { position: static; grid-template-columns: 1fr; gap: .45rem; }.council-members article, .council-members article:nth-child(even) { width: 100%; justify-self: stretch; }.council-execution > footer { align-items: start; }.council-execution > footer p { -webkit-line-clamp: 3; } }
+@container (max-width: 36rem) { .command-details .council-stage { min-height: auto; padding: .8rem; }.command-details .council-stage > svg, .command-details .council-hub { display: none; }.command-details .council-members { position: static; grid-template-columns: 1fr; gap: .45rem; }.command-details .council-members article, .command-details .council-members article:nth-child(even) { width: 100%; justify-self: stretch; }.command-details .council-execution > footer { align-items: start; } }
 
 /* Memory studio: index, graph canvas, and provenance inspector. */
 .memory-studio { min-height: calc(100svh - 4rem); background: var(--background); }
