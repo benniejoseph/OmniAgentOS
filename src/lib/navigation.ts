@@ -64,9 +64,9 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/command",
-    label: "Talk",
-    shortLabel: "Talk",
-    description: "Think with Asael or hand off an outcome.",
+    label: "Command",
+    shortLabel: "Command",
+    description: "Ask Asael a question or hand off a task.",
     icon: TerminalSquare,
   },
   {

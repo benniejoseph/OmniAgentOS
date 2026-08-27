@@ -8,8 +8,10 @@ import {
   FileText,
   GitBranch,
   Loader2,
+  MessageSquareText,
   Network,
   Play,
+  Plus,
   RefreshCw,
   Search,
   Hammer,
@@ -44,7 +46,7 @@ type RunFeedback = {
   correction?: string;
   updatedAt: string;
 };
-type TabKey = "goal" | "context" | "plan" | "execute" | "evidence";
+type TabKey = "context" | "plan" | "execute" | "evidence";
 
 type StreamEvent =
   | { type: "run"; runId?: string; threadId?: string; missionId?: string }
@@ -69,10 +71,9 @@ type StreamEvent =
   | { type: "error"; message?: string };
 
 const tabs: Array<{ key: TabKey; label: string; icon: typeof TerminalSquare }> = [
-  { key: "goal", label: "Task", icon: TerminalSquare },
   { key: "context", label: "Context", icon: Brain },
   { key: "plan", label: "Plan", icon: GitBranch },
-  { key: "execute", label: "Progress", icon: Play },
+  { key: "execute", label: "Activity", icon: Play },
   { key: "evidence", label: "Result", icon: FileText },
 ];
 
@@ -124,7 +125,7 @@ export function AgentRunsWorkspace({
   const [preferredAgentId, setPreferredAgentId] = useState<AgentId | undefined>(initialAgentId);
   const [preferredAgentName, setPreferredAgentName] = useState<string | undefined>(initialAgentId ? agentDisplayName(initialAgentId) : undefined);
   const [approvalRequired, setApprovalRequired] = useState(true);
-  const [activeTab, setActiveTab] = useState<TabKey>("goal");
+  const [activeTab, setActiveTab] = useState<TabKey>("context");
   const [loading, setLoading] = useState<string>();
   const [error, setError] = useState<string>();
   const [contextPack, setContextPack] = useState<JsonRecord>();
@@ -761,7 +762,7 @@ export function AgentRunsWorkspace({
       setMode((stringValue(thread.mode, "orchestrate") as AgentMode));
       setTurns(arrayPath(result, "turns") as unknown as ThreadTurn[]);
       setAgentResponse("");
-      setActiveTab("goal");
+      setActiveTab("execute");
       agentRequestIdRef.current = "";
     } catch (threadError) {
       setError(threadError instanceof Error ? threadError.message : "Conversation could not be loaded.");
@@ -774,7 +775,7 @@ export function AgentRunsWorkspace({
     setGoal("");
     setAgentResponse("");
     setStreamEvents([]);
-    setActiveTab("goal");
+    setActiveTab("context");
     setError(undefined);
   }
 
@@ -876,27 +877,19 @@ export function AgentRunsWorkspace({
 
   return (
     <div
-      className="mx-auto max-w-[90rem] px-4 py-7 sm:px-7 lg:px-10"
+      className="mx-auto max-w-[96rem] px-4 py-6 sm:px-7 lg:px-10"
       aria-busy={Boolean(loading)}
       data-testid="work-workspace"
     >
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {runAnnouncement}
       </p>
-      <section className="border-b border-line/80 pb-7">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+      <section className="border-b border-line/80 pb-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <div className="flex items-center gap-3">
-              <span className="grid size-10 place-items-center rounded-xl bg-primary text-primary-ink shadow-sm">
-                <TerminalSquare size={18} aria-hidden="true" />
-              </span>
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Ask Asael</p>
-                <h1 className="mt-1 text-3xl font-semibold tracking-tight">What are we working on?</h1>
-              </div>
-            </div>
-            <p className="mt-4 max-w-4xl text-sm leading-6 text-muted">
-              Ask a question, explore an idea, or hand off a task. You stay in control of every consequential action.
+            <h1 className="text-2xl font-semibold tracking-tight">Command</h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">
+              Ask Asael a question or hand off a task. Review the plan, activity, and evidence when you need more control.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -908,7 +901,7 @@ export function AgentRunsWorkspace({
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised"
             >
               {evidenceState === "loading" ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
-              Refresh
+              Refresh status
             </button>
           </div>
         </div>
@@ -942,35 +935,100 @@ export function AgentRunsWorkspace({
         ) : null}
       </section>
 
-      <section className="mx-auto mt-6 max-w-6xl">
-        <div className="mb-4 grid gap-4 lg:grid-cols-[15rem_minmax(0,1fr)]">
-          <aside className="min-w-0 border-b border-line pb-4 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-4" aria-label="Recent conversations">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold">Conversations</h2>
-              <button type="button" onClick={newThread} className="rounded-lg px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/10">New</button>
-            </div>
-            <div className="mt-3 flex gap-2 overflow-x-auto lg:block lg:space-y-1 lg:overflow-visible">
-              {threads.slice(0, 8).map((thread) => (
-                <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} className={clsx("min-w-44 rounded-xl px-3 py-2 text-left transition lg:block lg:w-full lg:min-w-0", thread.id === threadId ? "bg-foreground text-background" : "hover:bg-surface-raised")}>
-                  <span className="block truncate text-sm font-medium">{thread.title}</span>
-                  <span className={clsx("mt-1 block text-xs", thread.id === threadId ? "text-background/65" : "text-muted")}>{formatRelativeThreadTime(thread.updatedAt)}</span>
-                </button>
-              ))}
-              {!threads.length ? <p className="text-xs leading-5 text-muted">Your conversations will appear here.</p> : null}
-            </div>
-          </aside>
-          <div className="min-w-0 space-y-4" aria-live="polite">
-            {turns.map((turn) => (
-              <article key={turn.id} className={clsx("max-w-3xl", turn.role === "user" ? "ml-auto rounded-2xl bg-foreground px-4 py-3 text-background" : "border-l-2 border-primary pl-4")}>
-                <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
-              </article>
-            ))}
-            {agentResponse && turns.at(-1)?.content !== agentResponse ? <article className="max-w-3xl border-l-2 border-primary pl-4"><p className="whitespace-pre-wrap text-sm leading-6">{agentResponse}</p></article> : null}
-            {!turns.length && !agentResponse ? <div className="py-6"><p className="text-lg font-semibold tracking-tight">Start a conversation</p><p className="mt-1 text-sm text-muted">Asael remembers the thread, so you can refine, question, and continue.</p></div> : null}
+      <section className="mt-6 grid gap-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
+        <aside className="min-w-0 border-b border-line pb-4 lg:sticky lg:top-24 lg:self-start lg:border-b-0 lg:border-r lg:pb-0 lg:pr-4" aria-label="Recent conversations">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold">Conversations</h2>
+            <button type="button" onClick={newThread} className="inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-xs font-semibold text-primary transition hover:bg-primary/10">
+              <Plus size={14} aria-hidden="true" />
+              New
+            </button>
           </div>
-        </div>
-        <div className="soft-shadow min-w-0 overflow-hidden rounded-2xl border border-line/80 bg-surface">
-          <nav className="flex max-w-full gap-1 overflow-x-auto border-b border-line/80 px-3 py-2 sm:gap-2" aria-label="Agent run stages" role="tablist">
+          <div className="mt-3 flex gap-2 overflow-x-auto pb-1 lg:block lg:max-h-[calc(100vh-11rem)] lg:space-y-1 lg:overflow-y-auto lg:pb-0">
+            {threads.slice(0, 8).map((thread) => (
+              <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} className={clsx("min-w-44 rounded-lg px-3 py-2.5 text-left transition lg:block lg:w-full lg:min-w-0", thread.id === threadId ? "bg-foreground text-background" : "text-muted hover:bg-surface-raised hover:text-foreground")}>
+                <span className="block truncate text-sm font-semibold">{thread.title}</span>
+                <span className={clsx("mt-1 block text-xs", thread.id === threadId ? "text-background/65" : "text-muted")}>{formatRelativeThreadTime(thread.updatedAt)}</span>
+              </button>
+            ))}
+            {!threads.length ? <p className="max-w-48 py-2 text-xs leading-5 text-muted">Start a task and your conversations will appear here.</p> : null}
+          </div>
+        </aside>
+
+        <div className="grid min-w-0 items-start gap-5 2xl:grid-cols-[minmax(0,1fr)_25rem]">
+          <section className="min-w-0 overflow-hidden rounded-xl border border-line/80 bg-surface">
+            <header className="flex items-center justify-between gap-4 border-b border-line/80 px-4 py-3 sm:px-5">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+                  <MessageSquareText size={16} aria-hidden="true" />
+                </span>
+                <div className="min-w-0">
+                  <h2 className="truncate text-sm font-semibold">
+                    {threads.find((thread) => thread.id === threadId)?.title || "New task"}
+                  </h2>
+                  <p className="mt-0.5 text-xs text-muted">Asael keeps the conversation and task together.</p>
+                </div>
+              </div>
+            </header>
+
+            <div className="min-h-64 max-h-[34rem] space-y-5 overflow-y-auto px-4 py-5 sm:px-6" aria-live="polite">
+              {turns.map((turn) => (
+                <article key={turn.id} className={clsx("flex", turn.role === "user" ? "justify-end" : "justify-start")}>
+                  <div className={clsx("max-w-3xl rounded-lg px-4 py-3", turn.role === "user" ? "bg-foreground text-background" : "bg-background text-foreground")}>
+                    <p className={clsx("mb-1 text-xs font-semibold", turn.role === "user" ? "text-background/65" : "text-primary")}>{turn.role === "user" ? "You" : "Asael"}</p>
+                    <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
+                  </div>
+                </article>
+              ))}
+              {agentResponse && turns.at(-1)?.content !== agentResponse ? (
+                <article className="flex justify-start">
+                  <div className="max-w-3xl rounded-lg bg-background px-4 py-3">
+                    <p className="mb-1 text-xs font-semibold text-primary">Asael</p>
+                    <p className="whitespace-pre-wrap text-sm leading-6">{agentResponse}</p>
+                  </div>
+                </article>
+              ) : null}
+              {!turns.length && !agentResponse ? (
+                <div className="grid min-h-52 place-items-center text-center">
+                  <div>
+                    <span className="mx-auto grid size-11 place-items-center rounded-xl bg-primary/10 text-primary"><Sparkles size={18} aria-hidden="true" /></span>
+                    <h2 className="mt-4 text-lg font-semibold tracking-tight">What should Asael handle?</h2>
+                    <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Ask a question, explore a decision, or describe a finished outcome. You can refine the task in this conversation.</p>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <GoalStage
+              goal={goal}
+              mode={mode}
+              approvalRequired={approvalRequired}
+              preferredAgentId={preferredAgentId}
+              preferredAgentName={preferredAgentName}
+              loading={loading}
+              readDisabledReason={readPermission}
+              runDisabledReason={runPermission}
+              workflowDisabledReason={workflowPermission}
+              workflowReady={reviewedPlanReady}
+              workflowStarted={Boolean(activeWorkflowId)}
+              workflowInProgress={workflowInProgress}
+              onGoalChange={changeGoal}
+              onModeChange={changeMode}
+              onApprovalChange={changeApprovalRequired}
+              onClearPreferredAgent={() => { setPreferredAgentId(undefined); setPreferredAgentName(undefined); }}
+              onContext={() => void buildContext()}
+              onPlan={() => void buildPlan()}
+              onAgent={() => void runAgent()}
+              onStop={stopAgent}
+              onWorkflow={() => void startWorkflow()}
+            />
+          </section>
+
+          <section className="command-details min-w-0 overflow-hidden rounded-xl border border-line/80 bg-surface 2xl:sticky 2xl:top-24">
+            <div className="border-b border-line/80 px-4 pt-4">
+              <h2 className="text-sm font-semibold">Task details</h2>
+              <p className="mt-1 text-xs leading-5 text-muted">Review what Asael found, plans, does, and produces.</p>
+              <nav className="mt-3 flex max-w-full gap-1 overflow-x-auto" aria-label="Task details" role="tablist">
             {tabs.map((tab, index) => {
               const Icon = tab.icon;
               return (
@@ -985,51 +1043,27 @@ export function AgentRunsWorkspace({
                   aria-controls="run-stage-panel"
                   tabIndex={activeTab === tab.key ? 0 : -1}
                   className={clsx(
-                    "inline-flex min-h-10 shrink-0 items-center gap-1 rounded-xl px-2 text-sm font-semibold transition sm:gap-2 sm:px-3",
-                    activeTab === tab.key ? "bg-foreground text-background shadow-sm" : "text-muted hover:bg-surface-raised hover:text-foreground",
+                    "inline-flex min-h-10 shrink-0 items-center gap-2 border-b-2 px-2 text-xs font-semibold transition",
+                    activeTab === tab.key ? "border-primary text-foreground" : "border-transparent text-muted hover:text-foreground",
                   )}
                 >
-                  <Icon size={15} className="hidden sm:block" aria-hidden="true" />
+                  <Icon size={14} aria-hidden="true" />
                   {tab.label}
                 </button>
               );
             })}
-          </nav>
+              </nav>
+            </div>
 
           <div
             id="run-stage-panel"
             role="tabpanel"
             aria-labelledby={`run-tab-${activeTab}`}
             tabIndex={0}
-            className="p-4 outline-none"
+            className="outline-none"
           >
-            {activeTab === "goal" ? (
-              <GoalStage
-                goal={goal}
-                mode={mode}
-                approvalRequired={approvalRequired}
-                preferredAgentId={preferredAgentId}
-                preferredAgentName={preferredAgentName}
-                loading={loading}
-                readDisabledReason={readPermission}
-                runDisabledReason={runPermission}
-                workflowDisabledReason={workflowPermission}
-                workflowReady={reviewedPlanReady}
-                workflowStarted={Boolean(activeWorkflowId)}
-                workflowInProgress={workflowInProgress}
-                onGoalChange={changeGoal}
-                onModeChange={changeMode}
-                onApprovalChange={changeApprovalRequired}
-                onClearPreferredAgent={() => { setPreferredAgentId(undefined); setPreferredAgentName(undefined); }}
-                onContext={() => void buildContext()}
-                onPlan={() => void buildPlan()}
-                onAgent={() => void runAgent()}
-                onWorkflow={() => void startWorkflow()}
-              />
-            ) : null}
-
             {activeTab === "context" ? (
-              <StagePanel title="Context preview" description="Retrieved evidence that will shape planning and execution.">
+              <StagePanel title="Context" description="Information Asael will use for this task.">
                 <div className="mb-4 flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -1050,13 +1084,13 @@ export function AgentRunsWorkspace({
                     meta: stringValue(item.content, "No excerpt"),
                     score: stringValue(item.confidence || item.score, ""),
                   }))}
-                  empty="No context pack yet. Preview context from the Task stage."
+                  empty="No context yet. Use Preview context in the task options."
                 />
               </StagePanel>
             ) : null}
 
             {activeTab === "plan" ? (
-              <StagePanel title="Workflow plan" description="Policy-aware nodes, risk, approvals, and verification criteria.">
+              <StagePanel title="Plan" description="Steps, risk, approvals, and how the result will be checked.">
                 <div className="mb-4 flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -1135,13 +1169,13 @@ export function AgentRunsWorkspace({
                     meta: stringValue(item.description, "No description"),
                     score: Boolean(item.approvalRequired) ? "approval" : stringValue(item.policy, "auto"),
                   }))}
-                  empty="No plan generated yet. Use Preview plan from the Task stage."
+                  empty="No plan yet. Use Preview plan below the task."
                 />
               </StagePanel>
             ) : null}
 
             {activeTab === "execute" ? (
-              <StagePanel title="Execution" description="Run the agent stream, start durable workflow work, and process queued nodes.">
+              <StagePanel title="Activity" description="Live work, approvals, and the detailed answer.">
                 <div className="mb-4 flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -1228,11 +1262,14 @@ export function AgentRunsWorkspace({
                   </div>
                 ) : null}
                 <CouncilExecutionMap events={streamEvents} />
-                <div className="grid gap-4 lg:grid-cols-[0.86fr_1.14fr]">
-                  <div className="rounded-md border border-line bg-background p-3">
-                    <p className="text-sm font-semibold">Run stream</p>
-                    <div className="mt-3 max-h-96 space-y-2 overflow-auto">
-                      {streamEvents.length ? (
+                <div className="grid gap-4">
+                  <details className="rounded-md border border-line bg-background">
+                    <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 px-3 text-sm font-semibold">
+                      <span>Technical activity</span>
+                      <span className="text-xs font-normal text-muted">{streamEvents.filter((event) => event.type !== "delta").length} events</span>
+                    </summary>
+                    <div className="max-h-96 space-y-2 overflow-auto border-t border-line p-3">
+                      {streamEvents.some((event) => event.type !== "delta") ? (
                         streamEvents.filter((event) => event.type !== "delta").map((event, index) => (
                           <div key={`${event.type}-${index}`} className="rounded-md border border-line bg-surface p-2 text-xs leading-5">
                             <span className="font-mono text-primary">{event.type}</span>
@@ -1243,7 +1280,7 @@ export function AgentRunsWorkspace({
                         <div className="rounded-md border border-dashed border-line p-4 text-sm text-muted">No stream events yet.</div>
                       )}
                     </div>
-                  </div>
+                  </details>
                   <div className="rounded-md border border-line bg-background p-3">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm font-semibold">Agent response</p>
@@ -1284,7 +1321,7 @@ export function AgentRunsWorkspace({
             ) : null}
 
             {activeTab === "evidence" ? (
-              <StagePanel title="Results and evidence" description="Inline result history and approval blockers. Open focused admin views only when deeper release or runtime evidence is needed.">
+              <StagePanel title="Results and evidence" description="Recent answers, blocked actions, and workflow outcomes.">
                 <div className="mb-4 flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -1310,7 +1347,7 @@ export function AgentRunsWorkspace({
                   <Link href="/app/evaluations" className="action-link">Release evidence</Link>
                   <Link href="/app/observability" className="action-link">Monitoring</Link>
                 </div>
-                <div className="grid gap-4 lg:grid-cols-2">
+                <div className="grid gap-4">
                   <EvidenceCard title="Agent answers" rows={runRows.map((item) => evidenceRow(item, "prompt", "status"))} empty="No run records loaded." />
                   <EvidenceCard title="Blocked before result" rows={approvalItems.map((item) => evidenceRow(item, "title", "kind"))} empty="No approvals pending." />
                   <EvidenceCard title="Workflow outcomes" rows={arrayPath(evidence, "workflows.runs").map((item) => evidenceRow(item, "goal", "status"))} empty="No workflows loaded." />
@@ -1318,6 +1355,7 @@ export function AgentRunsWorkspace({
               </StagePanel>
             ) : null}
           </div>
+          </section>
         </div>
       </section>
     </div>
@@ -1374,6 +1412,7 @@ function GoalStage({
   onContext,
   onPlan,
   onAgent,
+  onStop,
   onWorkflow,
 }: {
   goal: string;
@@ -1395,32 +1434,42 @@ function GoalStage({
   onContext: () => void;
   onPlan: () => void;
   onAgent: () => void;
+  onStop: () => void;
   onWorkflow: () => void;
 }) {
   const goalMissing = !goal.trim();
   const draftLocked = Boolean(loading) || workflowInProgress;
   return (
-    <StagePanel
-      title="Describe the outcome"
-      description="Choose a safe sample or write the result you need. Planning and advanced controls stay optional."
-    >
+    <section className="border-t border-line/80 bg-background px-4 py-4 sm:px-5 sm:py-5" aria-labelledby="command-composer-title">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 id="command-composer-title" className="text-sm font-semibold">Give Asael a task</h2>
+          <p className="mt-1 text-xs leading-5 text-muted">Describe the outcome and any limits. You can keep it simple or review the plan first.</p>
+        </div>
+        <span className="rounded-full bg-surface-raised px-2.5 py-1 text-xs font-medium text-muted">
+          {mode === "orchestrate" ? "General" : mode === "research" ? "Research" : mode === "execute" ? "Tools" : "Knowledge"}
+          {approvalRequired ? " · approvals on" : " · approvals off"}
+        </span>
+      </div>
+
       {preferredAgentId ? (
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2.5">
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-primary/10 px-3 py-2.5">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-primary">Primary agent</p>
-            <p className="mt-1 text-sm font-semibold">{preferredAgentName || agentDisplayName(preferredAgentId)} is leading this task</p>
+            <p className="text-xs font-medium text-primary">Assigned agent</p>
+            <p className="mt-0.5 text-sm font-semibold">{preferredAgentName || agentDisplayName(preferredAgentId)}</p>
           </div>
-          <button type="button" onClick={onClearPreferredAgent} className="rounded-md px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/10">
-            Use automatic routing
+          <button type="button" onClick={onClearPreferredAgent} className="min-h-9 rounded-md px-2 text-xs font-semibold text-primary hover:bg-primary/10">
+            Route automatically
           </button>
         </div>
       ) : null}
-      <div aria-labelledby="sample-use-cases">
+
+      {goalMissing ? <div className="mt-4" aria-labelledby="sample-use-cases">
         <div className="flex flex-wrap items-end justify-between gap-2">
           <p id="sample-use-cases" className="text-sm font-semibold">
-            Sample use cases
+            Start with an example
           </p>
-          <p className="text-xs text-muted">Read-only starters you can edit</p>
+          <p className="text-xs text-muted">Choose one, then edit it</p>
         </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           {starterGoals.map((starter) => (
@@ -1434,7 +1483,7 @@ function GoalStage({
               disabled={draftLocked}
               aria-pressed={goal === starter.goal}
               className={clsx(
-                "rounded-md border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60",
+                "rounded-lg border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60",
                 goal === starter.goal
                   ? "border-primary bg-primary/10"
                   : "border-line bg-background hover:bg-surface-raised",
@@ -1447,44 +1496,44 @@ function GoalStage({
             </button>
           ))}
         </div>
-      </div>
+      </div> : null}
 
-      <label className="mt-6 block text-sm font-semibold">
-        Task outcome
+      <label className="mt-4 block">
+        <span className="sr-only">Task outcome</span>
         <textarea
           value={goal}
           onChange={(event) => onGoalChange(event.currentTarget.value)}
-          rows={6}
+          rows={5}
           required
           disabled={draftLocked}
           aria-describedby="run-goal-help"
           placeholder="Describe what should be produced, important constraints, and how you will know it is complete."
-          className="mt-2 w-full rounded-md border border-line bg-background px-3 py-3 text-sm leading-6 outline-none transition focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+          className="w-full resize-y rounded-lg border border-line bg-surface px-3.5 py-3 text-sm leading-6 outline-none transition focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
         />
-        <span id="run-goal-help" className="mt-2 block text-xs font-normal leading-5 text-muted">
+        <span id="run-goal-help" className="mt-2 block text-xs leading-5 text-muted">
           {workflowInProgress
             ? "This draft is locked while its workflow is active."
-            : "Describe the outcome, constraints, and evidence you expect. Do not include secrets."}
+            : "Include constraints or expected evidence when they matter. Do not include secrets."}
         </span>
       </label>
 
-      <details className="mt-4 rounded-md border border-line bg-background p-3">
+      <details className="mt-3 rounded-lg border border-line bg-surface px-3">
         <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 text-sm font-semibold">
-          <span>Run settings</span>
-          <span className="font-mono text-xs font-normal text-muted">
-            {mode} · approvals {approvalRequired ? "on" : "off"}
+          <span>Task options</span>
+          <span className="text-xs font-normal text-muted">
+            Agent mode, approvals, and context
           </span>
         </summary>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 border-t border-line py-4 sm:grid-cols-2">
           <label className="text-sm font-semibold">
-            How the agent should work
+            Approach
             <select
               value={mode}
               disabled={draftLocked}
               onChange={(event) =>
                 onModeChange(event.currentTarget.value as AgentMode)
               }
-              className="mt-2 min-h-11 w-full rounded-md border border-line bg-surface px-3 text-sm font-normal"
+              className="mt-2 min-h-11 w-full rounded-md border border-line bg-background px-3 text-sm font-normal"
             >
               <option value="orchestrate">General task</option>
               <option value="research">Research and compare</option>
@@ -1492,7 +1541,7 @@ function GoalStage({
               <option value="learn">Use and update knowledge</option>
             </select>
           </label>
-          <label className="flex min-h-16 items-center justify-between gap-4 rounded-md border border-line bg-surface px-3 py-2 text-sm">
+          <label className="flex min-h-16 items-center justify-between gap-4 rounded-md border border-line bg-background px-3 py-2 text-sm">
             <span>
               <span className="block font-semibold">Require approval</span>
               <span className="mt-1 block text-xs leading-5 text-muted">
@@ -1517,7 +1566,7 @@ function GoalStage({
             Boolean(loading) || goalMissing || Boolean(readDisabledReason)
           }
           title={goalMissing ? "Enter a task first." : readDisabledReason}
-          className="action-button mt-4"
+          className="action-button mb-4"
         >
           {loading === "context" ? (
             <Loader2
@@ -1563,6 +1612,12 @@ function GoalStage({
           )}
           Run task
         </button>
+        {loading === "agent" ? (
+          <button type="button" onClick={onStop} className="action-button border-danger/50 text-danger">
+            <Square size={13} aria-hidden="true" />
+            Stop run
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={onPlan}
@@ -1626,16 +1681,15 @@ function GoalStage({
         ) : null}
       </div>
       <p className="mt-3 text-xs leading-5 text-muted">
-        Run task for a direct answer. Preview a plan when the work should be
-        durable, reviewable, and resumable.
+        Run task for a direct answer. Preview plan for work that should continue in the background or require review.
       </p>
-    </StagePanel>
+    </section>
   );
 }
 
 function StagePanel({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-lg border border-line bg-surface p-4">
+    <section className="p-4 sm:p-5">
       <div className="mb-4">
         <h2 className="text-sm font-semibold">{title}</h2>
         <p className="mt-1 text-xs leading-5 text-muted">{description}</p>
