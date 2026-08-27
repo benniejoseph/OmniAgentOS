@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { assertPublicHttpUrl, isPrivateIpAddress } from "@/lib/security/network";
+import {
+  assertPublicHttpUrl,
+  isPrivateIpAddress,
+  selectPublicLookupCandidates,
+} from "@/lib/security/network";
 
 describe("isPrivateIpAddress", () => {
   it("flags private and special-use IPv4 ranges", () => {
@@ -70,5 +74,28 @@ describe("assertPublicHttpUrl", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("selectPublicLookupCandidates", () => {
+  it("prefers IPv4 while retaining IPv6 as a validated fallback", () => {
+    const candidates = selectPublicLookupCandidates([
+      { address: "2606:4700:4700::1111", family: 6 },
+      { address: "93.184.216.35", family: 4 },
+      { address: "93.184.216.34", family: 4 },
+    ]);
+
+    expect(candidates).toEqual([
+      { address: "93.184.216.35", family: 4 },
+      { address: "93.184.216.34", family: 4 },
+      { address: "2606:4700:4700::1111", family: 6 },
+    ]);
+  });
+
+  it("fails closed when any DNS answer is private", () => {
+    expect(() => selectPublicLookupCandidates([
+      { address: "93.184.216.34", family: 4 },
+      { address: "10.0.0.8", family: 4 },
+    ])).toThrow(/blocked or unavailable/);
   });
 });

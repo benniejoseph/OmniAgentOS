@@ -429,49 +429,116 @@ test("Today hydrates timestamp labels in a non-UTC browser", async ({ browser, b
   }
 });
 
-test("notification center delivers and completes an actionable reminder", async ({ page }) => {
+test("notification center delivers and completes an actionable reminder", async ({ browser, baseURL }) => {
   test.slow();
-  const title = `Review the private brief ${crypto.randomUUID().slice(0, 6)}`;
-  await signIn(page);
-  await page.goto("/app", { waitUntil: "networkidle" });
-
-  await page.getByRole("button", { name: /^Notifications/ }).click();
-  let dialog = page.getByRole("dialog", { name: "Notifications" });
-  await expect(dialog).toBeVisible();
-  await dialog.getByText("Delivery settings", { exact: true }).click();
-  const quietHours = dialog.getByLabel(/^Quiet hours/);
-  if (await quietHours.isChecked()) await quietHours.uncheck();
-  await dialog.getByRole("button", { name: "Save settings" }).click();
-  await dialog.getByRole("button", { name: "Close notifications" }).click();
-
-  const dueAt = await page.evaluate(() => {
-    const date = new Date(Date.now() - 60_000);
-    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-    return local.toISOString().slice(0, 16);
+  const context = await browser.newContext({
+    baseURL,
+    timezoneId: "Asia/Kolkata",
   });
-  await page.getByLabel("Add a focus item").fill(title);
-  await page.getByLabel("Item type").selectOption("reminder");
-  await page.getByLabel("Due time").fill(dueAt);
-  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const page = await context.newPage();
+  const title = `Review the private brief ${crypto.randomUUID().slice(0, 6)}`;
+  try {
+    await signIn(page);
+    await page.goto("/app", { waitUntil: "networkidle" });
 
-  await page.getByRole("button", { name: /^Notifications/ }).click();
-  dialog = page.getByRole("dialog", { name: "Notifications" });
-  const reminder = dialog.getByRole("article").filter({ hasText: title });
-  await expect(reminder).toBeVisible();
-  await expect(reminder).toContainText("Overdue");
-  await reminder.getByRole("button", { name: "Complete" }).click();
-  await expect(dialog.getByText("Recent history")).toBeVisible();
-  await expect(dialog.locator(".notification-history")).toContainText(title);
-  await expect(dialog.locator(".notification-history")).toContainText("Completed");
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
-  await expect(page.getByRole("button", { name: /^Notifications/ })).toBeFocused();
+    await page.getByRole("button", { name: /^Notifications/ }).click();
+    let dialog = page.getByRole("dialog", { name: "Notifications" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByText("Delivery settings", { exact: true }).click();
+    const quietHours = dialog.getByLabel(/^Quiet hours/);
+    if (await quietHours.isChecked()) await quietHours.uncheck();
+    const reminderLead = dialog.getByLabel("Reminder lead");
+    const nextReminderLead = await reminderLead.inputValue() === "15" ? "60" : "15";
+    await reminderLead.selectOption(nextReminderLead);
+    await Promise.all([
+      page.waitForResponse((response) =>
+        new URL(response.url()).pathname === "/api/today/brief" &&
+        response.request().method() === "PATCH" &&
+        response.ok(),
+      ),
+      dialog.getByRole("button", { name: "Save settings" }).click(),
+    ]);
+    await dialog.getByRole("button", { name: "Close notifications" }).click();
 
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: /^Notifications/ }).click();
-  dialog = page.getByRole("dialog", { name: "Notifications" });
-  await expect(dialog).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const persistedSettingsResponse = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/notifications" &&
+      response.request().method() === "GET" &&
+      response.ok(),
+    );
+    await page.getByRole("button", { name: /^Notifications/ }).click();
+    const persistedSettings = await (await persistedSettingsResponse).json() as {
+      preferences?: { reminderLeadMinutes?: number };
+    };
+    expect(persistedSettings.preferences?.reminderLeadMinutes)
+      .toBe(Number(nextReminderLead));
+    dialog = page.getByRole("dialog", { name: "Notifications" });
+    await dialog.getByText("Delivery settings", { exact: true }).click();
+    await expect(dialog.getByLabel("Reminder lead")).toHaveValue(nextReminderLead);
+    await dialog.getByRole("button", { name: "Close notifications" }).click();
+
+    const due = await page.evaluate(() => {
+      const date = new Date(Date.now() - 60_000);
+      const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+      const localValue = local.toISOString().slice(0, 16);
+      return {
+        localValue,
+        expectedIso: new Date(localValue).toISOString(),
+        timezoneOffsetMinutes: date.getTimezoneOffset(),
+      };
+    });
+    expect(due.timezoneOffsetMinutes).toBe(-330);
+    await page.getByLabel("Add a focus item").fill(title);
+    await page.getByLabel("Item type").selectOption("reminder");
+    // Reproduce native date-picker/assistive input that updates the DOM control
+    // immediately before React's controlled state has synchronized.
+    await page.getByLabel("Due time").evaluate((element, value) => {
+      (element as HTMLInputElement).value = value;
+    }, due.localValue);
+    const createResponsePromise = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/today" &&
+      response.request().method() === "POST" &&
+      response.ok(),
+    );
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    const createPayload = await (await createResponsePromise).json() as {
+      item?: { dueAt?: string };
+    };
+    expect(createPayload.item?.dueAt).toBe(due.expectedIso);
+
+    const tick = await page.request.get("/api/workflows/tick", {
+      headers: {
+        authorization: "Bearer playwright-local-only-cron-secret",
+      },
+    });
+    expect(tick.ok()).toBeTruthy();
+
+    const refreshedNotifications = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/notifications" &&
+      response.request().method() === "GET" &&
+      response.ok(),
+    );
+    await page.getByRole("button", { name: /^Notifications/ }).click();
+    await refreshedNotifications;
+    dialog = page.getByRole("dialog", { name: "Notifications" });
+    const reminder = dialog.getByRole("article").filter({ hasText: title });
+    await expect(reminder).toBeVisible();
+    await expect(reminder).toContainText("Overdue");
+    await reminder.getByRole("button", { name: "Complete" }).click();
+    await expect(dialog.getByText("Recent history")).toBeVisible();
+    await expect(dialog.locator(".notification-history")).toContainText(title);
+    await expect(dialog.locator(".notification-history")).toContainText("Completed");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole("button", { name: /^Notifications/ })).toBeFocused();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: /^Notifications/ }).click();
+    dialog = page.getByRole("dialog", { name: "Notifications" });
+    await expect(dialog).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  } finally {
+    await context.close();
+  }
 });
 
 test("Projects persists an Atlas plan and guarded task progress", async ({ page }) => {
@@ -1206,8 +1273,41 @@ test("reviewed workflow plans bind to one visible run", async ({ page }) => {
   await expect(
     page.getByText(
       /Workflow (queued|running|completed|paused|failed|canceled)|Approval required/,
-    ).first(),
+  ).first(),
   ).toBeVisible();
+});
+
+test("workflow controls only offer transitions valid for the selected run", async ({ page }) => {
+  await signIn(page);
+  await page.route("**/api/workflows?limit=16", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            id: "workflow-waiting-approval",
+            goal: "Review the guarded release",
+            status: "waiting_approval",
+            currentStep: "approval_gate",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        stats: { active: 1, waitingApproval: 1 },
+      }),
+    });
+  });
+
+  await page.goto("/app/workflows");
+  await page.getByRole("button", { name: "Load advanced controls" }).click();
+  const control = page.locator("form#control-workflow");
+  await expect(control).toContainText(
+    "This run is already paused at an approval gate.",
+  );
+  await expect(control.getByLabel("Available action").locator("option"))
+    .toHaveText(["Approve", "Cancel"]);
+  await expect(control.getByRole("option", { name: "Pause" })).toHaveCount(0);
 });
 
 test("mobile workspace menu reaches advanced routes and signs out", async ({ page }) => {
@@ -1451,7 +1551,23 @@ test("owner can compose a skill, create an agent, and assign work from the visua
   await agentDialog.getByRole("button", { name: "Create agent" }).click();
   await expect(page.getByRole("status")).toContainText(`${agentName} created.`);
 
-  await page.locator(".arsenal-roster-item", { hasText: agentName }).click();
+  const rosterAgent = page.locator(".arsenal-roster-item", { hasText: agentName });
+  await expect(rosterAgent).toBeVisible();
+  await rosterAgent.click();
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  const editAgentDialog = page.getByRole("dialog", { name: "Agent" });
+  await editAgentDialog.getByLabel("Role").fill("Updated daily chief of staff");
+  await editAgentDialog.getByLabel("Description").fill(
+    "Keeps the owner focused and updates the inspector immediately.",
+  );
+  await editAgentDialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("status")).toContainText(`${agentName} updated.`);
+  await expect(page.locator(".arsenal-inspector")).toContainText(
+    "Updated daily chief of staff",
+  );
+  await expect(page.locator(".arsenal-inspector")).toContainText(
+    "updates the inspector immediately",
+  );
   await page.getByRole("link", { name: `Assign work to ${agentName}` }).click();
   await expect(page).toHaveURL(/\/app\/command\?agent=/);
   await expect(page.getByText(`${agentName} is leading this task`)).toBeVisible();

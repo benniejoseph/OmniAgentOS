@@ -7,18 +7,22 @@ import type {
   DomainAction,
   FormValue,
 } from "@/components/app-shell/domain-console";
+import { WorkflowControlActionForm } from "@/components/app-shell/workflow-control-action-form";
+import type { WorkflowControlRun } from "@/lib/workflows/client-controls";
 
 export function DomainActionForms({
   actions,
   defaultValues,
   runningAction,
   disabledReasons,
+  workflowRuns = [],
   onRun,
 }: {
   actions: DomainAction[];
   defaultValues: Record<string, Record<string, FormValue>>;
   runningAction?: string;
   disabledReasons: Record<string, string | undefined>;
+  workflowRuns?: WorkflowControlRun[];
   onRun: (
     action: DomainAction,
     values: Record<string, FormValue>,
@@ -26,16 +30,28 @@ export function DomainActionForms({
 }) {
   return (
     <div className="space-y-3">
-      {actions.map((action) => (
-        <ActionForm
-          key={action.id}
-          action={action}
-          defaultValues={defaultValues[action.id]}
-          loading={runningAction === action.id}
-          disabledReason={disabledReasons[action.id]}
-          onRun={(values) => onRun(action, values)}
-        />
-      ))}
+      {actions.map((action) =>
+        action.id === "control-workflow" ? (
+          <WorkflowControlActionForm
+            key={action.id}
+            action={action}
+            runs={workflowRuns}
+            defaultValues={defaultValues[action.id]}
+            loading={runningAction === action.id}
+            disabledReason={disabledReasons[action.id]}
+            onRun={(values) => onRun(action, values)}
+          />
+        ) : (
+          <ActionForm
+            key={action.id}
+            action={action}
+            defaultValues={defaultValues[action.id]}
+            loading={runningAction === action.id}
+            disabledReason={disabledReasons[action.id]}
+            onRun={(values) => onRun(action, values)}
+          />
+        ),
+      )}
     </div>
   );
 }

@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
+import { upsertById } from "@/lib/agents/client-state";
 import { arsenalAgents, type ArsenalAgent } from "@/lib/agents/arsenal";
 import type { AgentPerformance } from "@/lib/agents/performance";
 import type { AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
@@ -34,6 +35,13 @@ type ToolOption = {
 };
 type AgentView = ArsenalAgent & { custom?: CustomAgentDefinition };
 type EditorState = { kind: "agent" | "skill"; id?: string };
+type BuilderSaveResult =
+  | {
+      kind: "agent";
+      agent: CustomAgentDefinition;
+      message: string;
+    }
+  | { kind: "skill"; skill: AgentSkill; message: string };
 
 const builtInIcons = {
   atlas: Sparkles,
@@ -54,6 +62,8 @@ export function AgentArsenalWorkspace() {
   );
   const [editor, setEditor] = useState<EditorState>();
   const [message, setMessage] = useState<string>();
+  const loadController = useRef<AbortController | null>(null);
+  const loadVersion = useRef(0);
 
   const agents = useMemo<AgentView[]>(
     () => [
@@ -83,27 +93,55 @@ export function AgentArsenalWorkspace() {
     (item) => item.agentId === selected.id,
   );
 
-  async function load() {
+  async function load(saved?: BuilderSaveResult) {
+    const version = ++loadVersion.current;
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
     try {
       const [agentPayload, skillPayload, toolPayload, performancePayload] =
         await Promise.all([
-          readJson<{ agents?: CustomAgentDefinition[] }>("/api/agents"),
-          readJson<{ skills?: AgentSkill[] }>("/api/skills"),
-          readJson<{ tools?: ToolOption[] }>("/api/tools"),
-          readJson<{ agents?: AgentPerformance[] }>("/api/agents/performance"),
+          readJson<{ agents?: CustomAgentDefinition[] }>("/api/agents", {
+            signal: controller.signal,
+          }),
+          readJson<{ skills?: AgentSkill[] }>("/api/skills", {
+            signal: controller.signal,
+          }),
+          readJson<{ tools?: ToolOption[] }>("/api/tools", {
+            signal: controller.signal,
+          }),
+          readJson<{ agents?: AgentPerformance[] }>(
+            "/api/agents/performance",
+            { signal: controller.signal },
+          ),
         ]);
-      setCustomAgents(agentPayload.agents || []);
-      setSkills(skillPayload.skills || []);
+      if (controller.signal.aborted || version !== loadVersion.current) return;
+      const nextAgents = agentPayload.agents || [];
+      const nextSkills = skillPayload.skills || [];
+      setCustomAgents(
+        saved?.kind === "agent"
+          ? upsertById(nextAgents, saved.agent)
+          : nextAgents,
+      );
+      setSkills(
+        saved?.kind === "skill"
+          ? upsertById(nextSkills, saved.skill)
+          : nextSkills,
+      );
       setTools(toolPayload.tools || []);
       setPerformance(performancePayload.agents || []);
       setState("ready");
     } catch {
+      if (controller.signal.aborted || version !== loadVersion.current) return;
       setState("unavailable");
     }
   }
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      loadController.current?.abort();
+    };
   }, []);
 
   async function removeSelectedAgent() {
@@ -388,10 +426,16 @@ export function AgentArsenalWorkspace() {
           skills={skills}
           tools={tools}
           onClose={() => setEditor(undefined)}
-          onSaved={async (text) => {
+          onSaved={async (result) => {
             setEditor(undefined);
-            setMessage(text);
-            await load();
+            setMessage(result.message);
+            if (result.kind === "agent") {
+              setCustomAgents((current) => upsertById(current, result.agent));
+              setSelectedId(result.agent.id);
+            } else {
+              setSkills((current) => upsertById(current, result.skill));
+            }
+            await load(result);
           }}
         />
       ) : null}
@@ -412,7 +456,7 @@ function BuilderDialog({
   skills: AgentSkill[];
   tools: ToolOption[];
   onClose: () => void;
-  onSaved: (message: string) => Promise<void>;
+  onSaved: (result: BuilderSaveResult) => Promise<void>;
 }) {
   const existingAgent =
     editor.kind === "agent"
@@ -526,15 +570,27 @@ function BuilderDialog({
               knowledgeTags: existingSkill?.knowledgeTags || [],
             };
       const base = editor.kind === "agent" ? "/api/agents" : "/api/skills";
-      await mutate(
-        editor.id ? `${base}/${encodeURIComponent(editor.id)}` : base,
-        {
-          method: editor.id ? "PATCH" : "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      await onSaved(`${name} ${editor.id ? "updated" : "created"}.`);
+      const request = {
+        method: editor.id ? "PATCH" : "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      };
+      const message = `${name} ${editor.id ? "updated" : "created"}.`;
+      if (editor.kind === "agent") {
+        const payload = await mutate<{ agent?: CustomAgentDefinition }>(
+          editor.id ? `${base}/${encodeURIComponent(editor.id)}` : base,
+          request,
+        );
+        if (!payload.agent) throw new Error("The saved agent was not returned.");
+        await onSaved({ kind: "agent", agent: payload.agent, message });
+      } else {
+        const payload = await mutate<{ skill?: AgentSkill }>(
+          editor.id ? `${base}/${encodeURIComponent(editor.id)}` : base,
+          request,
+        );
+        if (!payload.skill) throw new Error("The saved skill was not returned.");
+        await onSaved({ kind: "skill", skill: payload.skill, message });
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Save failed.");
       setSaving(false);
@@ -992,8 +1048,8 @@ function InspectorList({
     </section>
   );
 }
-async function readJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { cache: "no-store" });
+async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, { ...init, cache: "no-store" });
   const payload = (await response.json().catch(() => ({}))) as T & {
     error?: string;
     message?: string;
@@ -1002,7 +1058,7 @@ async function readJson<T>(url: string): Promise<T> {
     throw new Error(payload.message || payload.error || "Request failed.");
   return payload;
 }
-async function mutate(url: string, init: RequestInit) {
+async function mutate<T = unknown>(url: string, init: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const payload = (await response.json().catch(() => ({}))) as {
     error?: string;
@@ -1010,5 +1066,5 @@ async function mutate(url: string, init: RequestInit) {
   };
   if (!response.ok)
     throw new Error(payload.message || payload.error || "Request failed.");
-  return payload;
+  return payload as T;
 }

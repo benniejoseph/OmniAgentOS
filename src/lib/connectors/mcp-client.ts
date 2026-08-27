@@ -329,10 +329,56 @@ function sanitizedConnectorError(
   secretValues: Array<string | undefined>,
 ) {
   const message = redactExactSecrets(
-    error instanceof Error ? error.message : "MCP connector request failed.",
+    connectorErrorMessage(error),
     secretValues,
   );
   return new Error(String(message).slice(0, 2_000));
+}
+
+function connectorErrorMessage(error: unknown) {
+  const chain: unknown[] = [];
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && !seen.has(current) && chain.length < 6) {
+    seen.add(current);
+    chain.push(current);
+    current = current && typeof current === "object"
+      ? (current as { cause?: unknown }).cause
+      : undefined;
+  }
+
+  const codes = chain
+    .map((item) => item && typeof item === "object"
+      ? String((item as { code?: unknown }).code || "")
+      : "")
+    .filter(Boolean);
+  if (codes.some((code) => code === "UND_ERR_CONNECT_TIMEOUT" || code === "ETIMEDOUT")) {
+    return "MCP endpoint connection timed out.";
+  }
+  const connectionCode = codes.find((code) => [
+    "EAI_AGAIN",
+    "EAI_FAIL",
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "ENOTFOUND",
+    "EPIPE",
+  ].includes(code));
+  if (connectionCode) {
+    return `MCP endpoint connection failed (${connectionCode}).`;
+  }
+
+  const errors = chain.filter((item): item is Error => item instanceof Error);
+  if (errors.some((item) => item.name === "AbortError" || item.name === "TimeoutError")) {
+    return "MCP request timed out or was cancelled.";
+  }
+
+  const primary = errors[0]?.message.trim();
+  if (primary?.toLowerCase() === "fetch failed") {
+    return "MCP endpoint request failed before receiving a response.";
+  }
+  return primary || "MCP connector request failed.";
 }
 
 function createValidatedMcpFetch(
