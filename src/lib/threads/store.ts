@@ -100,7 +100,13 @@ export async function listThreadTurns(threadId: string, options: { tenantId?: st
   const limit = Math.min(Math.max(options.limit || 40, 1), 100);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`SELECT * FROM omni_thread_turns WHERE thread_id = ${threadId} AND tenant_id = ${tenantId} ORDER BY created_at ASC LIMIT ${limit}`;
+    const rows = await getSql()`SELECT * FROM (
+      SELECT * FROM omni_thread_turns
+      WHERE thread_id = ${threadId} AND tenant_id = ${tenantId}
+      ORDER BY created_at DESC
+      LIMIT ${limit}
+    ) AS recent_turns
+    ORDER BY created_at ASC`;
     return rows.map(turnFromRow);
   }
   const ledger = await readLedger();
