@@ -21,6 +21,7 @@ import {
   getWorkflowPlanById,
   validateWorkflowPlan,
 } from "@/lib/workflows/planner";
+import { getThread } from "@/lib/threads/store";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -108,6 +109,21 @@ async function POSTHandler(request: Request) {
         metadataKeys: Object.keys(parsed.data.metadata || {}).slice(0, 50),
       },
     });
+    const requestedThreadId = parsed.data.metadata?.threadId;
+    if (requestedThreadId !== undefined) {
+      if (typeof requestedThreadId !== "string" || !requestedThreadId.trim()) {
+        return Response.json(
+          { error: "Workflow metadata threadId must identify a conversation." },
+          { status: 400 },
+        );
+      }
+      const thread = await getThread(requestedThreadId.trim(), {
+        tenantId: context.tenantId,
+      });
+      if (!thread || thread.actorId !== context.actorId) {
+        return Response.json({ error: "Thread not found." }, { status: 404 });
+      }
+    }
     const selectedPlan = parsed.data.planId
       ? await getWorkflowPlanById(parsed.data.planId, {
           tenantId: context.tenantId,

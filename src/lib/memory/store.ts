@@ -70,6 +70,40 @@ export async function listMemories(options: TenantScopedOptions = {}) {
     .map(sanitizeMemoryRecord);
 }
 
+export async function listThreadMemories(
+  threadId: string,
+  options: Pick<TenantScopedOptions, "tenantId" | "limit" | "sql"> = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const limit = Math.min(Math.max(options.limit || 100, 1), 100);
+  const evidenceRef = `thread:${threadId.trim().slice(0, 200)}`;
+
+  if (hasDatabaseUrl()) {
+    if (!options.sql) {
+      await ensureDatabaseSchema();
+    }
+    const sql = options.sql || getSql();
+    const rows = await sql`
+      SELECT *
+      FROM omni_memories
+      WHERE tenant_id = ${tenantId}
+        AND claim_status <> 'forgotten'
+        AND ${evidenceRef} = ANY(evidence_refs)
+      ORDER BY updated_at DESC
+      LIMIT ${limit}
+    `;
+    return rows.map(memoryFromRow);
+  }
+
+  const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
+  return memories
+    .map(sanitizeMemoryRecord)
+    .filter((memory) => normalizeTenantId(memory.tenantId) === tenantId)
+    .filter((memory) => memory.claimStatus !== "forgotten")
+    .filter((memory) => memory.evidenceRefs?.includes(evidenceRef))
+    .slice(0, limit);
+}
+
 function memoryRecordFromInput(
   input: CreateMemoryInput,
   now: string,

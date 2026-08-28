@@ -93,8 +93,7 @@ export async function* runAgent(
     modelPolicy: request.agentProfile?.modelPolicy,
   });
   const providerConfigured = hasOpenAIKey() || hasGeminiKey() || hasAnthropicKey();
-  const durableMemoryEnabled =
-    providerConfigured && request.agentProfile?.memoryScope !== "session";
+  const durableMemoryEnabled = request.agentProfile?.memoryScope !== "session";
   const run = request.preclaimedRunId
     ? await requirePreclaimedAgentRun(request.preclaimedRunId, {
         tenantId: request.tenantId,
