@@ -509,8 +509,8 @@ function getCaptureLedgerFile() { return getDataPath("capture-recordings.json");
 function getCaptureAudioDirectory(recordingId: string) { return getDataPath("capture-audio", normalizeId(recordingId)); }
 function emptyLedger(): CaptureLedger { return { recordings: [], segments: [] }; }
 async function readCaptureLedger() { return readJsonFile<CaptureLedger>(getCaptureLedgerFile(), emptyLedger()); }
-function withoutAudioPath(segment: CaptureLedger["segments"][number]): CaptureSegment { const { audioPath: _audioPath, ...publicSegment } = segment; return publicSegment; }
-function stripSegments(detail: CaptureRecordingDetail): CaptureRecording { const { segments: _segments, ...recording } = detail; return recording; }
+function withoutAudioPath(segment: CaptureLedger["segments"][number]): CaptureSegment { const { audioPath, ...publicSegment } = segment; void audioPath; return publicSegment; }
+function stripSegments(detail: CaptureRecordingDetail): CaptureRecording { const { segments, ...recording } = detail; void segments; return recording; }
 function normalizeId(value: string) { const id = value.trim(); if (!/^[a-zA-Z0-9_-]{1,200}$/.test(id)) throw new CaptureRecordingError("Invalid recording id."); return id; }
 function normalizeTenantId(value: string) { return value.trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default"; }
 function normalizeActorId(value: string) { return value.trim().slice(0, 240) || "anonymous"; }

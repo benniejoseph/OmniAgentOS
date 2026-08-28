@@ -22,21 +22,22 @@ export default async function MissionPage({
     return <MissionWorkspace initialMissionId={id} initialMissions={[]} initialCapabilities={[]} />;
   }
   const initial = await runWithDatabaseTenantScope(tenantId, async () => {
-    const eventCursorPromise = listStreamEvents(`mission:${id}`, {
+    // These reads share a deliberately single-slot serverless database pool.
+    // Keep them sequential so queued work does not burn its own acquisition
+    // deadline while an earlier reservation is still active.
+    const missions = await listMissions(50, { tenantId, actorId });
+    const capabilityResult = await searchCapabilities({ tenantId, limit: 50 });
+    const latestEvents = await listStreamEvents(`mission:${id}`, {
       tenantId,
       actorId,
       limit: 1,
       order: "desc",
     });
-    const detailPromise = eventCursorPromise.then(() =>
-      getMissionDetail(id, { tenantId, actorId }, { tasks: 30, attempts: 100, artifacts: 50 })
-    );
-    const [missions, capabilityResult, latestEvents, detail] = await Promise.all([
-      listMissions(50, { tenantId, actorId }),
-      searchCapabilities({ tenantId, limit: 50 }),
-      eventCursorPromise,
-      detailPromise,
-    ]);
+    const detail = await getMissionDetail(id, { tenantId, actorId }, {
+      tasks: 100,
+      attempts: 250,
+      artifacts: 150,
+    });
     return {
       initialMissions: missions.map(toMissionSummaryView),
       initialCapabilities: capabilityResult.capabilities,

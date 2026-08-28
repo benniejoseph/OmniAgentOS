@@ -518,9 +518,11 @@ function toolCandidate(tool: ToolDefinition, terms: string[]): PlannerToolCandid
       ? 0.18
       : tool.category === "web"
         ? 0.16
-      : tool.category === "runs"
-        ? 0.08
-        : 0;
+        : tool.category === "missions"
+          ? 0.12
+          : tool.category === "runs"
+            ? 0.08
+            : 0;
   const activeBoost = tool.status === "active" ? 0.18 : -0.2;
   const score = overlap.length * 0.12 + categoryBoost + activeBoost - tool.riskLevel * 0.03;
   return {

@@ -16,6 +16,7 @@ import type {
   MissionPriority,
   MissionStatus,
   MissionTask,
+  MissionTaskBlockerKind,
   MissionTaskStatus,
 } from "@/lib/missions/types";
 import { redactSensitive } from "@/lib/security/context";
@@ -23,6 +24,22 @@ import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
 type MissionOwner = { tenantId?: string; actorId: string };
+
+export type MissionTaskUpdate = {
+  expectedUpdatedAt?: string;
+  title?: string;
+  instructions?: string;
+  definitionOfDone?: string;
+  priority?: MissionPriority;
+  dependencyIds?: string[];
+  position?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type MissionTaskReviewResult = {
+  task: MissionTask;
+  review: MissionArtifact;
+};
 
 const TERMINAL_MISSION_STATUSES = new Set<MissionStatus>([
   "succeeded",
@@ -185,11 +202,12 @@ export async function getMissionDetail(
   const mission = await getMission(missionId, owner);
   if (!mission) return undefined;
   if (hasDatabaseUrl()) {
-    const [tasks, attempts, artifacts] = await Promise.all([
-      listMissionTasks(mission.id, owner, limits.tasks),
-      listMissionAttempts(mission.id, owner, limits.attempts),
-      listMissionArtifacts(mission.id, owner, limits.artifacts),
-    ]);
+    // The hosted runtime deliberately uses a one-connection pool per isolate.
+    // Start these reads serially so sibling acquisitions cannot time out while
+    // the first query owns the only connection.
+    const tasks = await listMissionTasks(mission.id, owner, limits.tasks);
+    const attempts = await listMissionAttempts(mission.id, owner, limits.attempts);
+    const artifacts = await listMissionArtifacts(mission.id, owner, limits.artifacts);
     return { mission, tasks, attempts, artifacts };
   }
   const ledger = await readLedger();
@@ -213,6 +231,8 @@ export async function ensureMissionTask(
     parentTaskId?: string;
     dependencyIds?: string[];
     input?: Record<string, unknown>;
+    status?: "triage" | "pending";
+    metadata?: Record<string, unknown>;
   },
   options: MissionOwner,
 ): Promise<MissionTask> {
@@ -230,12 +250,13 @@ export async function ensureMissionTask(
     title: requiredText(input.title, 280, "Task title"),
     instructions: safeTextBlock(input.instructions, 8_000),
     definitionOfDone: safeTextBlock(input.definitionOfDone, 2_000),
-    status: "pending",
+    status: input.status || "pending",
     priority: input.priority || "normal",
     position: boundedInteger(input.position, 0, 0, 100_000),
     sourceKey: requiredKey(input.sourceKey, "Task source key"),
     dependencyIds: sanitizeIds(input.dependencyIds),
     input: boundedObject(input.input, 128_000),
+    metadata: sanitizeMissionTaskMetadata(input.metadata),
     createdAt: now,
     updatedAt: now,
   };
@@ -261,12 +282,13 @@ export async function ensureMissionTask(
           INSERT INTO omni_mission_tasks (
             id, tenant_id, actor_id, mission_id, parent_task_id, title, instructions,
             definition_of_done, status, priority, position, source_key, dependency_ids,
-            input, created_at, updated_at
+            input, metadata, created_at, updated_at
           ) VALUES (
             ${task.id}, ${task.tenantId}, ${task.actorId}, ${task.missionId},
             ${task.parentTaskId || null}, ${task.title}, ${task.instructions},
             ${task.definitionOfDone}, ${task.status}, ${task.priority}, ${task.position},
-            ${task.sourceKey}, ${task.dependencyIds}, ${task.input}::jsonb, ${now}, ${now}
+            ${task.sourceKey}, ${task.dependencyIds}, ${task.input}::jsonb,
+            ${task.metadata}::jsonb, ${now}, ${now}
           )
           ON CONFLICT (tenant_id, actor_id, mission_id, source_key) DO NOTHING
           RETURNING *
@@ -361,7 +383,278 @@ export async function getMissionTask(
     return rows[0] ? taskFromRow(rows[0]) : undefined;
   }
   const ledger = await readLedger();
-  return ledger.tasks.find((task) => task.id === id && owns(task, owner));
+  const task = ledger.tasks.find((item) => item.id === id && owns(item, owner));
+  return task ? normalizeStoredTask(task) : undefined;
+}
+
+export async function updateMissionTask(
+  taskId: string,
+  input: MissionTaskUpdate,
+  options: MissionOwner,
+): Promise<MissionTask> {
+  const owner = normalizeOwner(options);
+  const id = requiredKey(taskId, "Task id");
+  const changedFields = missionTaskUpdateFields(input);
+  if (!changedFields.length) {
+    throw new Error("At least one mission task field must be updated.");
+  }
+
+  let saved: MissionTask;
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    saved = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const targetRows = await sql`
+        SELECT mission_id FROM omni_mission_tasks
+        WHERE id = ${id} AND tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
+      `;
+      if (!targetRows[0]) throw new MissionNotFoundError("Mission task not found.");
+      const missionRows = await sql`
+        SELECT * FROM omni_mission_tasks
+        WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
+          AND mission_id = ${String(targetRows[0].mission_id)}
+        ORDER BY id ASC
+        FOR UPDATE
+      `;
+      const currentRow = missionRows.find((row) => String(row.id) === id);
+      if (!currentRow) throw new MissionNotFoundError("Mission task not found.");
+      const current = taskFromRow(currentRow);
+      assertExpectedTaskVersion(current, input.expectedUpdatedAt);
+      const now = nextUpdatedAt(current.updatedAt);
+      const next = buildMissionTaskUpdate(current, input, now);
+
+      if (input.dependencyIds !== undefined) {
+        validateTaskGraph(next, missionRows.map(taskFromRow));
+      }
+
+      const updated = await sql`
+        UPDATE omni_mission_tasks
+        SET title = ${next.title}, instructions = ${next.instructions},
+          definition_of_done = ${next.definitionOfDone}, priority = ${next.priority},
+          dependency_ids = ${next.dependencyIds}, position = ${next.position},
+          metadata = ${next.metadata}::jsonb, updated_at = ${now}
+        WHERE id = ${current.id} AND tenant_id = ${owner.tenantId}
+          AND actor_id = ${owner.actorId} AND updated_at = ${current.updatedAt}
+        RETURNING *
+      `;
+      if (!updated[0]) {
+        throw new MissionConflictError("Mission task changed concurrently.");
+      }
+      return taskFromRow(updated[0]);
+    }) as MissionTask;
+  } else {
+    let updated: MissionTask | undefined;
+    await updateLedger((ledger) => {
+      const index = ledger.tasks.findIndex((task) => task.id === id && owns(task, owner));
+      if (index < 0) throw new MissionNotFoundError("Mission task not found.");
+      const current = normalizeStoredTask(ledger.tasks[index]);
+      assertExpectedTaskVersion(current, input.expectedUpdatedAt);
+      const next = buildMissionTaskUpdate(current, input, nextUpdatedAt(current.updatedAt));
+      if (input.dependencyIds !== undefined) {
+        validateTaskGraph(
+          next,
+          ledger.tasks
+            .filter((task) => task.missionId === current.missionId && owns(task, owner))
+            .map(normalizeStoredTask),
+        );
+      }
+      updated = next;
+      return { ...ledger, tasks: replaceAt(ledger.tasks, index, next) };
+    });
+    if (!updated) throw new MissionConflictError("Mission task update was not persisted.");
+    saved = updated;
+  }
+
+  await appendMissionLifecycleEventForOwner(saved.missionId, owner, "mission.task.updated", {
+    taskId: saved.id,
+    fields: changedFields,
+  });
+  return saved;
+}
+
+export async function appendMissionTaskComment(
+  taskId: string,
+  input: { body: string; sourceKey?: string },
+  options: MissionOwner,
+): Promise<MissionArtifact> {
+  const owner = normalizeOwner(options);
+  const task = await requireMissionTask(taskId, owner);
+  const comment = await recordMissionArtifact({
+    ...owner,
+    missionId: task.missionId,
+    taskId: task.id,
+    sourceKey: optionalKey(input.sourceKey) || `task-comment:${randomUUID()}`,
+    kind: "task_comment",
+    title: "Task comment",
+    data: { body: requiredTextBlock(input.body, 8_000, "Comment") },
+  });
+  await appendMissionLifecycleEventForOwner(task.missionId, owner, "mission.task.comment.created", {
+    taskId: task.id,
+    commentId: comment.id,
+  });
+  return comment;
+}
+
+export async function recordMissionTaskHandoff(
+  taskId: string,
+  input: {
+    summary: string;
+    verification?: string;
+    recovery?: string;
+    residualRisk?: string;
+    artifactIds?: string[];
+    attemptId?: string;
+    sourceKey?: string;
+  },
+  options: MissionOwner,
+): Promise<MissionArtifact> {
+  const owner = normalizeOwner(options);
+  const task = await requireMissionTask(taskId, owner);
+  const handoff = await recordMissionArtifact({
+    ...owner,
+    missionId: task.missionId,
+    taskId: task.id,
+    attemptId: optionalKey(input.attemptId),
+    sourceKey: optionalKey(input.sourceKey) || `task-handoff:${randomUUID()}`,
+    kind: "task_handoff",
+    title: "Task handoff",
+    data: compactDefined({
+      summary: requiredTextBlock(input.summary, 8_000, "Handoff summary"),
+      verification: optionalText(input.verification, 4_000),
+      recovery: optionalText(input.recovery, 4_000),
+      residualRisk: optionalText(input.residualRisk, 4_000),
+      artifactIds: sanitizeIds(input.artifactIds).slice(0, 50),
+    }),
+  });
+  await appendMissionLifecycleEventForOwner(task.missionId, owner, "mission.task.handoff.recorded", {
+    taskId: task.id,
+    handoffId: handoff.id,
+    attemptId: handoff.attemptId,
+  });
+  return handoff;
+}
+
+export async function requestMissionTaskReview(
+  taskId: string,
+  input: {
+    summary?: string;
+    reviewerKey?: string;
+    reviewerName?: string;
+    sourceKey?: string;
+  },
+  options: MissionOwner,
+): Promise<MissionTaskReviewResult> {
+  const owner = normalizeOwner(options);
+  const current = await requireMissionTask(taskId, owner);
+  if (!["pending", "running", "review"].includes(current.status)) {
+    throw new MissionTransitionError("Only pending or running work can request review.");
+  }
+  const requestedAt = new Date().toISOString();
+  const updated = await updateMissionTask(current.id, {
+    expectedUpdatedAt: current.updatedAt,
+    metadata: {
+      reviewRequired: true,
+      reviewerKey: input.reviewerKey,
+      reviewerName: input.reviewerName,
+      reviewRequestedAt: requestedAt,
+      reviewSummary: input.summary,
+      changesRequestedReason: null,
+      blocker: null,
+    },
+  }, owner);
+  const task = updated.status === "review"
+    ? updated
+    : await transitionMissionTask(updated.id, "review", owner);
+  const review = await recordMissionArtifact({
+    ...owner,
+    missionId: task.missionId,
+    taskId: task.id,
+    sourceKey: optionalKey(input.sourceKey) || `review-request:${randomUUID()}`,
+    kind: "review_request",
+    title: "Review requested",
+    data: compactDefined({
+      action: "request",
+      summary: optionalText(input.summary, 4_000),
+      reviewerKey: optionalKey(input.reviewerKey),
+      reviewerName: optionalText(input.reviewerName, 160),
+      requestedAt,
+    }),
+  });
+  await appendMissionLifecycleEventForOwner(task.missionId, owner, "mission.task.review.requested", {
+    taskId: task.id,
+    reviewId: review.id,
+  });
+  return { task, review };
+}
+
+export async function approveMissionTaskReview(
+  taskId: string,
+  input: { summary?: string; sourceKey?: string },
+  options: MissionOwner,
+): Promise<MissionTaskReviewResult> {
+  const owner = normalizeOwner(options);
+  const current = await requireMissionTask(taskId, owner);
+  if (current.status !== "review") {
+    throw new MissionTransitionError("Only a task in review can be approved.");
+  }
+  const updated = await updateMissionTask(current.id, {
+    expectedUpdatedAt: current.updatedAt,
+    metadata: {
+      reviewSummary: input.summary,
+      changesRequestedReason: null,
+      blocker: null,
+    },
+  }, owner);
+  const task = await transitionMissionTask(updated.id, "succeeded", owner);
+  const review = await recordMissionArtifact({
+    ...owner,
+    missionId: task.missionId,
+    taskId: task.id,
+    sourceKey: optionalKey(input.sourceKey) || `review-approval:${randomUUID()}`,
+    kind: "review_approval",
+    title: "Review approved",
+    data: compactDefined({ action: "approve", summary: optionalText(input.summary, 4_000) }),
+  });
+  await appendMissionLifecycleEventForOwner(task.missionId, owner, "mission.task.review.approved", {
+    taskId: task.id,
+    reviewId: review.id,
+  });
+  return { task, review };
+}
+
+export async function requestMissionTaskChanges(
+  taskId: string,
+  input: { reason: string; sourceKey?: string },
+  options: MissionOwner,
+): Promise<MissionTaskReviewResult> {
+  const owner = normalizeOwner(options);
+  const current = await requireMissionTask(taskId, owner);
+  if (current.status !== "review") {
+    throw new MissionTransitionError("Changes can only be requested for a task in review.");
+  }
+  const reason = requiredTextBlock(input.reason, 4_000, "Changes requested reason");
+  const updated = await updateMissionTask(current.id, {
+    expectedUpdatedAt: current.updatedAt,
+    metadata: {
+      reviewRequired: true,
+      changesRequestedReason: reason,
+      blocker: null,
+    },
+  }, owner);
+  const task = await transitionMissionTask(updated.id, "pending", owner);
+  const review = await recordMissionArtifact({
+    ...owner,
+    missionId: task.missionId,
+    taskId: task.id,
+    sourceKey: optionalKey(input.sourceKey) || `review-changes:${randomUUID()}`,
+    kind: "review_changes_requested",
+    title: "Changes requested",
+    data: { action: "request_changes", reason },
+  });
+  await appendMissionLifecycleEventForOwner(task.missionId, owner, "mission.task.review.changes_requested", {
+    taskId: task.id,
+    reviewId: review.id,
+  });
+  return { task, review };
 }
 
 export async function startMissionAttempt(
@@ -379,6 +672,9 @@ export async function startMissionAttempt(
   const owner = normalizeOwner(options);
   const task = await getMissionTask(taskId, owner);
   if (!task) throw new MissionNotFoundError("Mission task not found.");
+  if (task.status === "triage" || task.status === "review") {
+    throw new MissionTransitionError(`A task in ${task.status} cannot start an execution attempt.`);
+  }
   const executorKey = requiredKey(input.executorKey, "Attempt executor key");
   const existing = await findAttemptByExecutorKey(task.id, executorKey, owner);
   if (existing) return existing;
@@ -407,29 +703,54 @@ export async function startMissionAttempt(
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      INSERT INTO omni_mission_attempts (
-        id, tenant_id, actor_id, mission_id, task_id, executor_key, executor_type,
-        executor_id, fence_token, status, agent_run_id, workflow_run_id, input,
-        created_at, updated_at
-      ) VALUES (
-        ${attempt.id}, ${attempt.tenantId}, ${attempt.actorId}, ${attempt.missionId},
-        ${attempt.taskId}, ${attempt.executorKey}, ${attempt.executorType},
-        ${attempt.executorId}, ${attempt.fenceToken}, ${attempt.status},
-        ${attempt.agentRunId || null}, ${attempt.workflowRunId || null},
-        ${attempt.input}::jsonb, ${now}, ${now}
-      )
-      ON CONFLICT (tenant_id, actor_id, task_id, executor_key) DO NOTHING
-      RETURNING *
-    `;
-    if (rows[0]) {
-      created = true;
-      saved = attemptFromRow(rows[0]);
-    } else {
-      const raced = await findAttemptByExecutorKey(task.id, executorKey, owner);
-      if (!raced) throw new MissionConflictError("Attempt executor key collided.");
-      saved = raced;
-    }
+    const transactionResult = await getSql().transaction(
+      async (sql: ReturnType<typeof getSql>) => {
+        const taskRows = await sql`
+          SELECT status FROM omni_mission_tasks
+          WHERE id = ${task.id} AND tenant_id = ${owner.tenantId}
+            AND actor_id = ${owner.actorId}
+          FOR UPDATE
+        `;
+        if (!taskRows[0]) throw new MissionNotFoundError("Mission task not found.");
+        const taskStatus = String(taskRows[0].status) as MissionTaskStatus;
+        if (taskStatus === "triage" || taskStatus === "review") {
+          throw new MissionTransitionError(
+            `A task in ${taskStatus} cannot start an execution attempt.`,
+          );
+        }
+        if (TERMINAL_TASK_STATUSES.has(taskStatus)) {
+          throw new MissionTransitionError("A terminal task cannot start a new attempt.");
+        }
+        const rows = await sql`
+          INSERT INTO omni_mission_attempts (
+            id, tenant_id, actor_id, mission_id, task_id, executor_key, executor_type,
+            executor_id, fence_token, status, agent_run_id, workflow_run_id, input,
+            created_at, updated_at
+          ) VALUES (
+            ${attempt.id}, ${attempt.tenantId}, ${attempt.actorId}, ${attempt.missionId},
+            ${attempt.taskId}, ${attempt.executorKey}, ${attempt.executorType},
+            ${attempt.executorId}, ${attempt.fenceToken}, ${attempt.status},
+            ${attempt.agentRunId || null}, ${attempt.workflowRunId || null},
+            ${attempt.input}::jsonb, ${now}, ${now}
+          )
+          ON CONFLICT (tenant_id, actor_id, task_id, executor_key) DO NOTHING
+          RETURNING *
+        `;
+        if (rows[0]) {
+          return { created: true, saved: attemptFromRow(rows[0]) };
+        }
+        const existing = await sql`
+          SELECT * FROM omni_mission_attempts
+          WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
+            AND task_id = ${task.id} AND executor_key = ${executorKey}
+          LIMIT 1
+        `;
+        if (!existing[0]) throw new MissionConflictError("Attempt executor key collided.");
+        return { created: false, saved: attemptFromRow(existing[0]) };
+      },
+    ) as { created: boolean; saved: MissionAttempt };
+    created = transactionResult.created;
+    saved = transactionResult.saved;
   } else {
     saved = attempt;
     await updateLedger((ledger) => {
@@ -442,6 +763,11 @@ export async function startMissionAttempt(
       }
       const currentTask = ledger.tasks.find((item) => item.id === task.id && owns(item, owner));
       if (!currentTask) throw new MissionNotFoundError("Mission task not found.");
+      if (currentTask.status === "triage" || currentTask.status === "review") {
+        throw new MissionTransitionError(
+          `A task in ${currentTask.status} cannot start an execution attempt.`,
+        );
+      }
       if (TERMINAL_TASK_STATUSES.has(currentTask.status)) {
         throw new MissionTransitionError("A terminal task cannot start a new attempt.");
       }
@@ -604,6 +930,7 @@ export async function transitionMissionTask(
   const owner = normalizeOwner(options);
   const current = await getMissionTask(taskId, owner);
   if (!current) throw new MissionNotFoundError("Mission task not found.");
+  assertTaskReviewGate(current, status);
   assertTaskTransition(current.status, status);
   if (current.status === status) return current;
   if (status === "running") {
@@ -636,6 +963,7 @@ export async function transitionMissionTask(
       const index = ledger.tasks.findIndex((item) => item.id === current.id && owns(item, owner));
       if (index < 0) throw new MissionNotFoundError("Mission task not found.");
       const latest = ledger.tasks[index];
+      assertTaskReviewGate(latest, status);
       assertTaskTransition(latest.status, status);
       if (latest.status === status) {
         saved = latest;
@@ -908,6 +1236,12 @@ async function requireMission(missionId: string, owner: Required<MissionOwner>) 
   return mission;
 }
 
+async function requireMissionTask(taskId: string, owner: Required<MissionOwner>) {
+  const task = await getMissionTask(taskId, owner);
+  if (!task) throw new MissionNotFoundError("Mission task not found.");
+  return task;
+}
+
 async function findAttemptByExecutorKey(
   taskId: string,
   executorKey: string,
@@ -930,12 +1264,44 @@ async function findAttemptByExecutorKey(
 }
 
 async function validateTaskReferences(task: MissionTask, owner: Required<MissionOwner>) {
-  const referenced = [...task.dependencyIds, ...(task.parentTaskId ? [task.parentTaskId] : [])];
-  if (!referenced.length) return;
   const tasks = await listMissionTasks(task.missionId, owner);
-  const allowed = new Set(tasks.map((item) => item.id));
-  const invalid = referenced.find((id) => !allowed.has(id));
-  if (invalid) throw new MissionNotFoundError("Task dependency not found in mission.");
+  validateTaskGraph(task, [...tasks, task]);
+}
+
+function validateTaskGraph(candidate: MissionTask, tasks: MissionTask[]) {
+  const byId = new Map(
+    tasks
+      .filter((task) => task.missionId === candidate.missionId)
+      .map((task) => [task.id, task.id === candidate.id ? candidate : normalizeStoredTask(task)]),
+  );
+  byId.set(candidate.id, candidate);
+
+  const references = [
+    ...candidate.dependencyIds,
+    ...(candidate.parentTaskId ? [candidate.parentTaskId] : []),
+  ];
+  if (references.includes(candidate.id)) {
+    throw new MissionConflictError("A task cannot depend on or parent itself.");
+  }
+  if (references.some((id) => !byId.has(id))) {
+    throw new MissionNotFoundError("Task dependency not found in mission.");
+  }
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (taskId: string) => {
+    if (visiting.has(taskId)) {
+      throw new MissionConflictError("Task dependencies cannot contain a cycle.");
+    }
+    if (visited.has(taskId)) return;
+    const task = byId.get(taskId);
+    if (!task) return;
+    visiting.add(taskId);
+    for (const linkedId of task.dependencyIds) visit(linkedId);
+    visiting.delete(taskId);
+    visited.add(taskId);
+  };
+  for (const taskId of byId.keys()) visit(taskId);
 }
 
 async function assertTaskDependenciesSucceeded(
@@ -1008,15 +1374,29 @@ function assertMissionTransition(from: MissionStatus, to: MissionStatus) {
 
 function assertTaskTransition(from: MissionTaskStatus, to: MissionTaskStatus) {
   const transitions: Record<MissionTaskStatus, MissionTaskStatus[]> = {
-    pending: ["running", "blocked", "succeeded", "failed", "canceled"],
-    running: ["blocked", "succeeded", "failed", "canceled"],
-    blocked: ["pending", "running", "failed", "canceled"],
+    triage: ["pending", "canceled"],
+    pending: ["triage", "running", "blocked", "review", "succeeded", "failed", "canceled"],
+    running: ["blocked", "review", "succeeded", "failed", "canceled"],
+    blocked: ["triage", "pending", "running", "failed", "canceled"],
+    review: ["pending", "running", "succeeded", "failed", "canceled"],
     succeeded: [],
     failed: [],
     canceled: [],
   };
   if (from !== to && !transitions[from]?.includes(to)) {
     throw new MissionTransitionError(`Mission task cannot move from ${from} to ${to}.`);
+  }
+}
+
+function assertTaskReviewGate(task: MissionTask, to: MissionTaskStatus) {
+  if (
+    to === "succeeded" &&
+    task.status !== "review" &&
+    task.metadata.reviewRequired === true
+  ) {
+    throw new MissionTransitionError(
+      "A review-required task must enter review before it can succeed.",
+    );
   }
 }
 
@@ -1076,11 +1456,185 @@ function hasAttemptPatch(patch: {
     patch.workflowRunId !== undefined;
 }
 
+function missionTaskUpdateFields(input: MissionTaskUpdate) {
+  const fields: Array<keyof MissionTaskUpdate> = [
+    "title",
+    "instructions",
+    "definitionOfDone",
+    "priority",
+    "dependencyIds",
+    "position",
+    "metadata",
+  ];
+  return fields.filter((field) => input[field] !== undefined);
+}
+
+function buildMissionTaskUpdate(
+  current: MissionTask,
+  input: MissionTaskUpdate,
+  updatedAt: string,
+): MissionTask {
+  return {
+    ...current,
+    title: input.title === undefined
+      ? current.title
+      : requiredText(input.title, 280, "Task title"),
+    instructions: input.instructions === undefined
+      ? current.instructions
+      : safeTextBlock(input.instructions, 8_000),
+    definitionOfDone: input.definitionOfDone === undefined
+      ? current.definitionOfDone
+      : safeTextBlock(input.definitionOfDone, 2_000),
+    priority: input.priority === undefined
+      ? current.priority
+      : normalizeMissionPriority(input.priority),
+    dependencyIds: input.dependencyIds === undefined
+      ? current.dependencyIds
+      : sanitizeIds(input.dependencyIds),
+    position: input.position === undefined
+      ? current.position
+      : boundedInteger(input.position, current.position, 0, 100_000),
+    metadata: input.metadata === undefined
+      ? sanitizeMissionTaskMetadata(current.metadata)
+      : sanitizeMissionTaskMetadata(input.metadata, current.metadata),
+    updatedAt,
+  };
+}
+
+function assertExpectedTaskVersion(task: MissionTask, expectedUpdatedAt?: string) {
+  if (!expectedUpdatedAt) return;
+  const expected = Date.parse(expectedUpdatedAt);
+  const actual = Date.parse(task.updatedAt);
+  if (!Number.isFinite(expected) || !Number.isFinite(actual)) {
+    throw new Error("Mission task version must be an ISO timestamp.");
+  }
+  if (expected !== actual) {
+    throw new MissionConflictError("Mission task changed after it was loaded.");
+  }
+}
+
+function nextUpdatedAt(previous: string) {
+  const now = Date.now();
+  const prior = Date.parse(previous);
+  return new Date(Number.isFinite(prior) && prior >= now ? prior + 1 : now).toISOString();
+}
+
+function normalizeMissionPriority(value: MissionPriority): MissionPriority {
+  if (!["low", "normal", "high", "urgent"].includes(value)) {
+    throw new Error("Mission task priority is invalid.");
+  }
+  return value;
+}
+
+export function sanitizeMissionTaskMetadata(
+  value: unknown,
+  base?: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = base === undefined ? {} : sanitizeMissionTaskMetadata(base);
+  const patch = boundedObject(value, 32_000);
+
+  applyMetadataText(result, patch, "assigneeKey", 200, false);
+  applyMetadataText(result, patch, "assigneeName", 160, false);
+  applyMetadataText(result, patch, "reviewerKey", 200, false);
+  applyMetadataText(result, patch, "reviewerName", 160, false);
+  applyMetadataText(result, patch, "reviewSummary", 4_000, true);
+  applyMetadataText(result, patch, "changesRequestedReason", 4_000, true);
+  applyMetadataDate(result, patch, "scheduledAt");
+  applyMetadataDate(result, patch, "reviewRequestedAt");
+
+  if (Object.hasOwn(patch, "skillIds") && patch.skillIds !== undefined) {
+    if (patch.skillIds === null) delete result.skillIds;
+    else if (Array.isArray(patch.skillIds)) {
+      const skillIds = sanitizeIds(patch.skillIds.map(String)).slice(0, 50);
+      if (skillIds.length) result.skillIds = skillIds;
+      else delete result.skillIds;
+    } else {
+      throw new Error("Mission task skillIds must be an array.");
+    }
+  }
+
+  if (Object.hasOwn(patch, "reviewRequired") && patch.reviewRequired !== undefined) {
+    if (patch.reviewRequired === null) delete result.reviewRequired;
+    else if (typeof patch.reviewRequired === "boolean") {
+      result.reviewRequired = patch.reviewRequired;
+    } else {
+      throw new Error("Mission task reviewRequired must be boolean.");
+    }
+  }
+
+  if (Object.hasOwn(patch, "blocker") && patch.blocker !== undefined) {
+    if (patch.blocker === null) {
+      delete result.blocker;
+    } else if (patch.blocker && typeof patch.blocker === "object" && !Array.isArray(patch.blocker)) {
+      const blocker = patch.blocker as Record<string, unknown>;
+      const kind = safeText(blocker.kind, 40) as MissionTaskBlockerKind;
+      const reason = safeTextBlock(blocker.reason, 4_000);
+      if (!["dependency", "needs_input", "capability", "transient"].includes(kind) || !reason) {
+        throw new Error("Mission task blocker requires a supported kind and reason.");
+      }
+      result.blocker = { kind, reason };
+    } else {
+      throw new Error("Mission task blocker is invalid.");
+    }
+  }
+
+  return boundedObject(result, 32_000);
+}
+
+function applyMetadataText(
+  result: Record<string, unknown>,
+  patch: Record<string, unknown>,
+  key: string,
+  max: number,
+  multiline: boolean,
+) {
+  if (!Object.hasOwn(patch, key) || patch[key] === undefined) return;
+  if (patch[key] === null) {
+    delete result[key];
+    return;
+  }
+  const normalized = multiline ? safeTextBlock(patch[key], max) : safeText(patch[key], max);
+  if (normalized) result[key] = normalized;
+  else delete result[key];
+}
+
+function applyMetadataDate(
+  result: Record<string, unknown>,
+  patch: Record<string, unknown>,
+  key: string,
+) {
+  if (!Object.hasOwn(patch, key) || patch[key] === undefined) return;
+  if (patch[key] === null || patch[key] === "") {
+    delete result[key];
+    return;
+  }
+  const timestamp = Date.parse(String(patch[key]));
+  if (!Number.isFinite(timestamp)) {
+    throw new Error(`Mission task ${key} must be an ISO timestamp.`);
+  }
+  result[key] = new Date(timestamp).toISOString();
+}
+
+function compactDefined(value: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== null),
+  );
+}
+
+function normalizeStoredTask(task: MissionTask): MissionTask {
+  return {
+    ...task,
+    dependencyIds: sanitizeIds(task.dependencyIds),
+    input: boundedObject(task.input, 128_000),
+    metadata: sanitizeMissionTaskMetadata(task.metadata),
+  };
+}
+
 async function readLedger(): Promise<MissionLedger> {
   const ledger = await readJsonFile<MissionLedger>(getMissionsFile(), emptyLedger());
   return {
     missions: ledger.missions || [],
-    tasks: ledger.tasks || [],
+    tasks: (ledger.tasks || []).map(normalizeStoredTask),
     attempts: ledger.attempts || [],
     artifacts: ledger.artifacts || [],
   };
@@ -1090,7 +1644,7 @@ function updateLedger(mutate: (ledger: MissionLedger) => MissionLedger) {
   return updateJsonFile<MissionLedger>(getMissionsFile(), emptyLedger(), async (ledger) => {
     const next = mutate({
       missions: ledger.missions || [],
-      tasks: ledger.tasks || [],
+      tasks: (ledger.tasks || []).map(normalizeStoredTask),
       attempts: ledger.attempts || [],
       artifacts: ledger.artifacts || [],
     });
@@ -1146,6 +1700,7 @@ function taskFromRow(row: Record<string, unknown>): MissionTask {
     sourceKey: String(row.source_key),
     dependencyIds: stringArray(row.dependency_ids),
     input: jsonObject(row.input),
+    metadata: sanitizeMissionTaskMetadata(jsonObject(row.metadata)),
     startedAt: optionalDateValue(row.started_at),
     terminalAt: optionalDateValue(row.terminal_at),
     createdAt: dateValue(row.created_at),

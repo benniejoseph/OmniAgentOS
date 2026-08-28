@@ -84,6 +84,99 @@ export const governedTools: ToolDefinition[] = [
     }),
   },
   {
+    id: "missions.list",
+    name: "List Missions",
+    description:
+      "List safe summaries of the current user's missions, optionally filtered by mission status.",
+    category: "missions",
+    status: "active",
+    riskLevel: 0,
+    dryRunSupported: true,
+    approvalRequired: false,
+    reversible: true,
+    inputSchema: objectSchema({
+      limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+      status: {
+        type: "string",
+        enum: ["draft", "queued", "running", "waiting", "succeeded", "failed", "canceled", "archived"],
+      },
+    }),
+  },
+  {
+    id: "mission.show",
+    name: "Show Mission",
+    description:
+      "Read a safe mission-board view with task, attempt, artifact, and comment summaries for one mission owned by the current user.",
+    category: "missions",
+    status: "active",
+    riskLevel: 0,
+    dryRunSupported: true,
+    approvalRequired: false,
+    reversible: true,
+    inputSchema: {
+      ...objectSchema({
+        missionId: { type: "string", format: "uuid", description: "Exact mission ID to read." },
+      }),
+      required: ["missionId"],
+    },
+  },
+  {
+    id: "mission.task.create",
+    name: "Create Mission Task",
+    description:
+      "Create one triage task on a mission owned by the current user. The task is idempotent for this tool call and cannot be marked complete by this tool.",
+    category: "missions",
+    status: "active",
+    riskLevel: 1,
+    dryRunSupported: true,
+    approvalRequired: false,
+    reversible: false,
+    inputSchema: {
+      ...objectSchema({
+        missionId: { type: "string", format: "uuid", description: "Exact mission ID that will own the task." },
+        title: { type: "string", minLength: 1, maxLength: 280 },
+        instructions: { type: "string", minLength: 1, maxLength: 8_000 },
+        definitionOfDone: { type: "string", minLength: 1, maxLength: 2_000 },
+        priority: { type: "string", enum: ["low", "normal", "high", "urgent"], default: "normal" },
+        dependencyIds: {
+          type: "array",
+          maxItems: 50,
+          uniqueItems: true,
+          items: { type: "string", format: "uuid" },
+        },
+        assigneeKey: { type: "string", minLength: 1, maxLength: 160 },
+        skillIds: {
+          type: "array",
+          maxItems: 30,
+          uniqueItems: true,
+          items: { type: "string", minLength: 1, maxLength: 120 },
+        },
+        reviewRequired: { type: "boolean", default: false },
+      }),
+      required: ["missionId", "title"],
+    },
+  },
+  {
+    id: "mission.task.comment",
+    name: "Comment on Mission Task",
+    description:
+      "Append a bounded comment to a task on a mission owned by the current user without changing task execution state.",
+    category: "missions",
+    status: "active",
+    riskLevel: 1,
+    dryRunSupported: true,
+    approvalRequired: false,
+    reversible: false,
+    inputSchema: {
+      ...objectSchema({
+        missionId: { type: "string", format: "uuid", description: "Exact owning mission ID." },
+        taskId: { type: "string", format: "uuid", description: "Exact task ID to comment on." },
+        body: { type: "string", minLength: 1, maxLength: 4_000 },
+      }),
+      required: ["missionId", "taskId", "body"],
+    },
+  },
+  {
     id: "runs.list",
     name: "List Runs",
     description: "Read recent run ledger entries.",
