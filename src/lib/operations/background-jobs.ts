@@ -5,7 +5,6 @@ import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { runEvaluationSuite } from "@/lib/evaluations/runner";
 import {
   consolidateAgentRunMemory,
-  shouldConsolidateRunMemory,
 } from "@/lib/memory/consolidator";
 import type { AgentMode } from "@/lib/orchestration/types";
 import { ingestTextDocument } from "@/lib/rag/retriever";
@@ -131,8 +130,6 @@ export async function enqueueMemoryConsolidationJob({
   tenantId,
   runId,
   mode,
-  prompt,
-  response,
 }: {
   tenantId?: string;
   runId: string;
@@ -140,9 +137,6 @@ export async function enqueueMemoryConsolidationJob({
   prompt: string;
   response: string;
 }) {
-  if (!shouldConsolidateRunMemory(prompt, response)) {
-    return null;
-  }
   const request = memoryConsolidationJobRequestSchema.parse({
     runId,
     mode,
@@ -359,6 +353,7 @@ async function executeBackgroundOperation(
     );
     const { consolidation } = await consolidateAgentRunMemory({
       runId: run.id,
+      threadId: run.threadId,
       tenantId: job.tenantId,
       mode: run.mode,
       prompt: run.prompt,

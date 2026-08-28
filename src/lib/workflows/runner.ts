@@ -945,7 +945,17 @@ async function persistWorkflowReport(detail: WorkflowRunDetail, abortSignal?: Ab
     `Execution: ${String(executeOutput?.response || executeOutput?.deliverable || "No execution output.")}`,
     `Verification: ${JSON.stringify(verifyOutput || {})}`,
   ].filter(Boolean).join("\n\n");
-  const embedding = (await embedTexts([content], abortSignal))?.[0];
+  let embedding: number[] | undefined;
+  try {
+    embedding = (await embedTexts([content], abortSignal))?.[0];
+  } catch (error) {
+    if (abortSignal?.aborted) {
+      throw abortSignal.reason || error;
+    }
+    // A workflow report remains durable and lexically searchable even when
+    // the optional embedding provider is temporarily unavailable.
+  }
+  const threadId = detail.run.input.metadata?.threadId;
   const memory = await saveMemory({
     id: `workflow_report_${detail.run.id}`,
     tenantId: detail.run.tenantId,
@@ -955,6 +965,12 @@ async function persistWorkflowReport(detail: WorkflowRunDetail, abortSignal?: Ab
     tags: ["workflow", "durable", detail.run.workflowType],
     source: "workflow",
     importance: 0.7,
+    evidenceRefs: [
+      `workflow:${detail.run.id}`,
+      ...(typeof threadId === "string" && threadId.trim()
+        ? [`thread:${threadId.trim()}`]
+        : []),
+    ],
     embedding,
   });
 
@@ -990,20 +1006,17 @@ async function completeWorkflow(
     const threadId = detail?.run.input.metadata?.threadId;
     if (typeof threadId === "string" && threadId) {
       try {
-        const workflowTurnId = `workflow:${runId}`;
         await appendThreadTurn({
           tenantId,
           threadId,
           role: "user",
           content: detail.run.goal,
-          runId: workflowTurnId,
         });
         await appendThreadTurn({
           tenantId,
           threadId,
           role: "assistant",
           content: String(reportOutput?.report || "Workflow completed."),
-          runId: workflowTurnId,
         });
       } catch (error) {
         console.error("Workflow thread result persistence failed.", error instanceof Error ? error.message : "Unknown persistence error.");

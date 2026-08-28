@@ -6,14 +6,21 @@ import {
   AlertTriangle,
   ArrowUp,
   Brain,
+  Check,
   CheckCircle2,
   ChevronRight,
   Clock3,
+  Database,
   FileText,
   GitBranch,
+  History,
   Loader2,
+  Map as MapIcon,
   MessageSquareText,
+  MessagesSquare,
   Network,
+  PanelLeftClose,
+  PanelLeftOpen,
   Play,
   Plus,
   RefreshCw,
@@ -25,6 +32,7 @@ import {
   TerminalSquare,
   ThumbsDown,
   ThumbsUp,
+  Trash2,
   Volume2,
   Workflow,
   X,
@@ -34,6 +42,7 @@ import {
   permissionMessage,
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
+import { ConversationCanvas } from "@/components/conversation-canvas";
 
 type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
@@ -51,7 +60,16 @@ type RunFeedback = {
   correction?: string;
   updatedAt: string;
 };
-type TabKey = "context" | "plan" | "execute" | "evidence";
+type ConversationMemory = {
+  id: string;
+  type: string;
+  title: string;
+  content: string;
+  source: string;
+  updatedAt: string;
+  claimStatus?: string;
+};
+type TabKey = "memory" | "context" | "plan" | "execute" | "evidence";
 
 type StreamEvent =
   | { type: "run"; runId?: string; threadId?: string; missionId?: string }
@@ -77,6 +95,7 @@ type StreamEvent =
   | { type: "error"; message?: string };
 
 const tabs: Array<{ key: TabKey; label: string; icon: typeof TerminalSquare }> = [
+  { key: "memory", label: "Memory", icon: Database },
   { key: "context", label: "Context", icon: Brain },
   { key: "plan", label: "Plan", icon: GitBranch },
   { key: "execute", label: "Activity", icon: Play },
@@ -129,6 +148,14 @@ export function AgentRunsWorkspace({
   const [threadId, setThreadId] = useState(initialThreadId || "");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [turns, setTurns] = useState<ThreadTurn[]>([]);
+  const [conversationView, setConversationView] = useState<"chat" | "map">("chat");
+  const [conversationsCollapsed, setConversationsCollapsed] = useState(false);
+  const [mobileConversationsOpen, setMobileConversationsOpen] = useState(false);
+  const [conversationMemories, setConversationMemories] = useState<ConversationMemory[]>([]);
+  const [memoryState, setMemoryState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [memoryError, setMemoryError] = useState<string>();
+  const [forgettingMemoryId, setForgettingMemoryId] = useState("");
+  const [confirmForgetMemoryId, setConfirmForgetMemoryId] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const contextControllerRef = useRef<AbortController | null>(null);
@@ -147,6 +174,8 @@ export function AgentRunsWorkspace({
   const detailsReturnFocusRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const transcriptPinnedRef = useRef(true);
+  const conversationsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const conversationsSheetRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!initialAgentId || agentDisplayName(initialAgentId) !== "Custom agent") return;
@@ -271,6 +300,57 @@ export function AgentRunsWorkspace({
     workflowPlan,
     workflowRun,
   ]);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem("asael-conversations-collapsed");
+    setConversationsCollapsed(stored === "true");
+  }, []);
+
+  useEffect(() => {
+    if (sessionStatus !== "ready" || readPermission || !threadId) {
+      setConversationMemories([]);
+      setMemoryState(threadId ? "idle" : "ready");
+      return;
+    }
+    void refreshConversationMemories(threadId);
+    // The selected conversation owns its memory view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId, sessionStatus, readPermission]);
+
+  useEffect(() => {
+    if (!mobileConversationsOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusFrame = window.requestAnimationFrame(() => conversationsSheetRef.current?.focus());
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMobileConversationsOpen(false);
+        conversationsButtonRef.current?.focus();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = conversationsSheetRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable?.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [mobileConversationsOpen]);
 
   useEffect(() => {
     if (sessionStatus === "ready") {
@@ -611,6 +691,9 @@ export function AgentRunsWorkspace({
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setActiveTab(tab);
     setDetailsOpen(true);
+    if (tab === "memory" && threadId) {
+      void refreshConversationMemories(threadId);
+    }
   }
 
   function closeTaskDetails() {
@@ -1065,10 +1148,53 @@ export function AgentRunsWorkspace({
 
   async function refreshThreads() {
     try {
-      const result = asRecord(await readJson("/api/threads?limit=20"));
+      const result = asRecord(await readJson("/api/threads?limit=100"));
       setThreads(arrayPath(result, "threads") as unknown as ThreadSummary[]);
     } catch {
       // Threads are convenience navigation; agent execution reports its own errors.
+    }
+  }
+
+  function toggleConversationsColumn() {
+    setConversationsCollapsed((current) => {
+      const next = !current;
+      window.localStorage.setItem("asael-conversations-collapsed", String(next));
+      return next;
+    });
+  }
+
+  async function refreshConversationMemories(id = threadId) {
+    if (!id) {
+      setConversationMemories([]);
+      setMemoryState("ready");
+      return;
+    }
+    setMemoryState("loading");
+    setMemoryError(undefined);
+    try {
+      const result = asRecord(await readJson(`/api/memory?threadId=${encodeURIComponent(id)}&limit=100`));
+      if (id !== threadId) return;
+      setConversationMemories(arrayPath(result, "memories") as unknown as ConversationMemory[]);
+      setMemoryState("ready");
+    } catch (memoryLoadError) {
+      if (id !== threadId) return;
+      setMemoryError(memoryLoadError instanceof Error ? memoryLoadError.message : "Conversation memory could not be loaded.");
+      setMemoryState("error");
+    }
+  }
+
+  async function forgetConversationMemory(memoryId: string) {
+    setForgettingMemoryId(memoryId);
+    setMemoryError(undefined);
+    try {
+      await readJson(`/api/memory/${encodeURIComponent(memoryId)}`, { method: "DELETE" });
+      setConversationMemories((current) => current.filter((memory) => memory.id !== memoryId));
+      setConfirmForgetMemoryId("");
+      setRunAnnouncement("Memory forgotten. It will no longer influence future conversations.");
+    } catch (memoryDeleteError) {
+      setMemoryError(memoryDeleteError instanceof Error ? memoryDeleteError.message : "Memory could not be forgotten.");
+    } finally {
+      setForgettingMemoryId("");
     }
   }
 
@@ -1108,6 +1234,8 @@ export function AgentRunsWorkspace({
       setGrounding(undefined);
       setActiveTab("execute");
       setDetailsOpen(false);
+      setMobileConversationsOpen(false);
+      setConversationView("chat");
       agentRequestIdRef.current = "";
     } catch (threadError) {
       setError(threadError instanceof Error ? threadError.message : "Conversation could not be loaded.");
@@ -1137,6 +1265,10 @@ export function AgentRunsWorkspace({
     setGrounding(undefined);
     setActiveTab("context");
     setDetailsOpen(false);
+    setMobileConversationsOpen(false);
+    setConversationView("chat");
+    setConversationMemories([]);
+    setMemoryState("ready");
     setError(undefined);
   }
 
@@ -1287,18 +1419,26 @@ export function AgentRunsWorkspace({
         ) : null}
       </section>
 
-      <section className="mt-6 grid gap-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
-        <aside className="min-w-0 border-b border-line pb-4 lg:sticky lg:top-24 lg:self-start lg:border-b-0 lg:border-r lg:pb-0 lg:pr-4" aria-label="Recent conversations">
+      <section className={clsx(
+        "mt-6 grid gap-5 transition-[grid-template-columns]",
+        conversationsCollapsed ? "lg:grid-cols-1" : "lg:grid-cols-[14rem_minmax(0,1fr)]",
+      )}>
+        {!conversationsCollapsed ? (
+        <aside className="hidden min-w-0 lg:sticky lg:top-24 lg:block lg:self-start lg:border-r lg:pr-4" aria-label="Recent conversations">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold">Conversations</h2>
-            <button type="button" onClick={newThread} className="inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-xs font-semibold text-primary transition hover:bg-primary/10">
-              <Plus size={14} aria-hidden="true" />
-              New
-            </button>
+            <div className="flex items-center gap-1">
+              <button type="button" onClick={newThread} className="grid size-9 place-items-center rounded-full text-primary transition hover:bg-primary/10" aria-label="New conversation" title="New conversation">
+                <Plus size={15} aria-hidden="true" />
+              </button>
+              <button type="button" onClick={toggleConversationsColumn} className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground" aria-label="Collapse conversations" title="Collapse conversations">
+                <PanelLeftClose size={15} aria-hidden="true" />
+              </button>
+            </div>
           </div>
-          <div className="mt-3 flex gap-2 overflow-x-auto pb-1 lg:block lg:max-h-[calc(100vh-11rem)] lg:space-y-1 lg:overflow-y-auto lg:pb-0">
-            {threads.slice(0, 8).map((thread) => (
-              <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} className={clsx("min-w-44 rounded-lg px-3 py-2.5 text-left transition lg:block lg:w-full lg:min-w-0", thread.id === threadId ? "bg-foreground text-background" : "text-muted hover:bg-surface-raised hover:text-foreground")}>
+          <div className="mt-3 max-h-[calc(100vh-11rem)] space-y-1 overflow-y-auto pr-1">
+            {threads.map((thread) => (
+              <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} className={clsx("block w-full rounded-xl px-3 py-2.5 text-left transition", thread.id === threadId ? "bg-foreground text-background" : "text-muted hover:bg-surface-raised hover:text-foreground")}>
                 <span className="block truncate text-sm font-semibold">{thread.title}</span>
                 <span className={clsx("mt-1 block text-xs", thread.id === threadId ? "text-background/65" : "text-muted")}>{formatRelativeThreadTime(thread.updatedAt)}</span>
               </button>
@@ -1306,32 +1446,84 @@ export function AgentRunsWorkspace({
             {!threads.length ? <p className="max-w-48 py-2 text-xs leading-5 text-muted">Start a task and your conversations will appear here.</p> : null}
           </div>
         </aside>
+        ) : null}
 
         <div className="min-w-0">
           <section className="min-w-0 overflow-hidden rounded-2xl border border-line/80 bg-surface shadow-[0_24px_70px_-52px_rgba(0,0,0,0.45)]">
-            <header className="flex items-center justify-between gap-4 border-b border-line/80 px-4 py-3.5 sm:px-6">
+            <header className="flex items-center justify-between gap-3 border-b border-line/80 px-3 py-2.5 sm:px-5">
               <div className="flex min-w-0 items-center gap-3">
+                <button
+                  ref={conversationsButtonRef}
+                  type="button"
+                  onClick={() => setMobileConversationsOpen(true)}
+                  className="grid size-9 shrink-0 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground lg:hidden"
+                  aria-label="Open conversations"
+                  aria-haspopup="dialog"
+                >
+                  <History size={16} aria-hidden="true" />
+                </button>
+                {conversationsCollapsed ? (
+                  <button
+                    type="button"
+                    onClick={toggleConversationsColumn}
+                    className="hidden size-9 shrink-0 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground lg:grid"
+                    aria-label="Show conversations"
+                    title="Show conversations"
+                  >
+                    <PanelLeftOpen size={16} aria-hidden="true" />
+                  </button>
+                ) : null}
                 <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
-                  <MessageSquareText size={16} aria-hidden="true" />
+                  {conversationView === "map" ? <MapIcon size={16} aria-hidden="true" /> : <MessageSquareText size={16} aria-hidden="true" />}
                 </span>
                 <div className="min-w-0">
                   <h2 className="truncate text-sm font-semibold">
-                    {threads.find((thread) => thread.id === threadId)?.title || "New conversation"}
+                    {conversationView === "map" ? "Conversation map" : threads.find((thread) => thread.id === threadId)?.title || "New conversation"}
                   </h2>
-                  <p className="mt-0.5 text-xs text-muted">Ask, refine, and continue in the same thread.</p>
+                  <p className="hidden truncate text-xs text-muted sm:block">{conversationView === "map" ? "See how your conversations connect." : "Ask, refine, and continue in the same thread."}</p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => openTaskDetails(activityVisible ? "execute" : "context")}
-                className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
-                aria-haspopup="dialog"
-              >
-                <Brain size={14} aria-hidden="true" />
-                Details
-              </button>
+              <div className="flex shrink-0 items-center gap-1">
+                <div className="flex items-center rounded-full bg-surface-raised p-1" role="group" aria-label="Conversation view">
+                  <button type="button" onClick={() => setConversationView("chat")} className={clsx("inline-flex min-h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition", conversationView === "chat" ? "bg-surface text-foreground shadow-sm" : "text-muted hover:text-foreground")} aria-pressed={conversationView === "chat"}>
+                    <MessagesSquare size={13} aria-hidden="true" /><span className="hidden sm:inline">Chat</span>
+                  </button>
+                  <button type="button" onClick={() => setConversationView("map")} className={clsx("inline-flex min-h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition", conversationView === "map" ? "bg-surface text-foreground shadow-sm" : "text-muted hover:text-foreground")} aria-pressed={conversationView === "map"}>
+                    <MapIcon size={13} aria-hidden="true" /><span className="hidden sm:inline">Map</span>
+                  </button>
+                </div>
+                {threadId ? (
+                  <button type="button" onClick={() => openTaskDetails("memory")} className="inline-flex min-h-9 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground" aria-haspopup="dialog" title="Conversation memory">
+                    <Database size={14} aria-hidden="true" />
+                    <span className="hidden sm:inline">Memory</span>
+                    {conversationMemories.length ? <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">{conversationMemories.length}</span> : null}
+                  </button>
+                ) : null}
+                <button type="button" onClick={newThread} className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground" aria-label="New conversation" title="New conversation">
+                  <Plus size={16} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openTaskDetails(activityVisible ? "execute" : "context")}
+                  className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground"
+                  aria-haspopup="dialog"
+                  aria-label="Open conversation details"
+                  title="Conversation details"
+                >
+                  <Brain size={15} aria-hidden="true" />
+                </button>
+              </div>
             </header>
 
+            {conversationView === "map" ? (
+              <ConversationCanvas
+                threads={threads}
+                activeThreadId={threadId}
+                onNew={newThread}
+                onSelect={(id) => void loadThread(id)}
+              />
+            ) : (
+            <>
             <div
               ref={transcriptRef}
               onScroll={(event) => {
@@ -1487,6 +1679,8 @@ export function AgentRunsWorkspace({
               onStop={stopAgent}
               onWorkflow={() => void startWorkflow()}
             />
+            </>
+            )}
           </section>
 
           {detailsOpen ? (
@@ -1553,6 +1747,75 @@ export function AgentRunsWorkspace({
             tabIndex={0}
             className="outline-none"
           >
+            {activeTab === "memory" ? (
+              <StagePanel title="Conversation memory" description="What Asael learned from this conversation. Forgetting a memory removes it from future conversations everywhere, while the chat transcript stays intact.">
+                <div className="mb-4 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void refreshConversationMemories()}
+                    disabled={!threadId || memoryState === "loading" || Boolean(readPermission)}
+                    title={readPermission}
+                    className="action-button"
+                  >
+                    <RefreshCw size={14} className={memoryState === "loading" ? "animate-spin" : ""} aria-hidden="true" />
+                    Refresh memory
+                  </button>
+                  <StatusPill
+                    label={threadId ? `${conversationMemories.length} remembered` : "No conversation yet"}
+                    tone={conversationMemories.length ? "success" : "neutral"}
+                  />
+                </div>
+                {memoryError ? (
+                  <div className="mb-4 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm leading-6 text-muted" role="status">{memoryError}</div>
+                ) : null}
+                {!threadId ? (
+                  <div className="rounded-xl border border-dashed border-line bg-background p-5 text-sm leading-6 text-muted">Start a conversation and its memories will appear here after Asael responds.</div>
+                ) : memoryState === "loading" && !conversationMemories.length ? (
+                  <div className="flex min-h-32 items-center justify-center gap-2 text-sm text-muted"><Loader2 size={16} className="animate-spin" aria-hidden="true" /> Loading conversation memory…</div>
+                ) : conversationMemories.length ? (
+                  <div className="space-y-2">
+                    {conversationMemories.map((memory) => {
+                      const confirming = confirmForgetMemoryId === memory.id;
+                      const forgetting = forgettingMemoryId === memory.id;
+                      return (
+                        <article key={memory.id} className="rounded-xl border border-line/80 bg-background p-4">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-primary">{memory.type}</span>
+                                <span className="text-[11px] text-muted">{formatRelativeThreadTime(memory.updatedAt)}</span>
+                              </div>
+                              <h3 className="mt-2 text-sm font-semibold">{memory.title}</h3>
+                              <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-muted">{memory.content}</p>
+                            </div>
+                            {!confirming ? (
+                              <button type="button" onClick={() => setConfirmForgetMemoryId(memory.id)} className="grid size-9 shrink-0 place-items-center rounded-full text-muted transition hover:bg-danger/10 hover:text-danger" aria-label={`Forget ${memory.title}`} title="Forget this memory everywhere">
+                                <Trash2 size={14} aria-hidden="true" />
+                              </button>
+                            ) : null}
+                          </div>
+                          {confirming ? (
+                            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-line/70 pt-3">
+                              <p className="text-xs leading-5 text-muted">Forget this everywhere? The conversation itself will not be deleted.</p>
+                              <div className="flex gap-2">
+                                <button type="button" onClick={() => setConfirmForgetMemoryId("")} className="min-h-9 rounded-full px-3 text-xs font-semibold text-muted hover:bg-surface-raised">Keep</button>
+                                <button type="button" onClick={() => void forgetConversationMemory(memory.id)} disabled={forgetting} className="inline-flex min-h-9 items-center gap-1.5 rounded-full bg-danger px-3 text-xs font-semibold text-white disabled:opacity-50">
+                                  {forgetting ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Check size={13} aria-hidden="true" />}
+                                  Forget
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-line bg-background p-5 text-sm leading-6 text-muted">Nothing has been saved from this conversation yet. New replies are remembered automatically; refresh in a moment if Asael is still processing them.</div>
+                )}
+              </StagePanel>
+            ) : null}
+
             {activeTab === "context" ? (
               <StagePanel title="Context" description="Choose the saved information Asael may use. Low-match items start excluded, and every unchecked item is excluded server-side.">
                 <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -1850,6 +2113,49 @@ export function AgentRunsWorkspace({
           ) : null}
         </div>
       </section>
+
+      {mobileConversationsOpen ? (
+        <div className="fixed inset-0 z-[60] lg:hidden">
+          <button
+            type="button"
+            className="absolute inset-0 bg-foreground/35 backdrop-blur-sm"
+            onClick={() => {
+              setMobileConversationsOpen(false);
+              conversationsButtonRef.current?.focus();
+            }}
+            aria-label="Close conversations"
+            tabIndex={-1}
+          />
+          <section
+            ref={conversationsSheetRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mobile-conversations-title"
+            tabIndex={-1}
+            className="absolute inset-y-0 left-0 flex w-[min(88vw,22rem)] flex-col border-r border-line bg-surface shadow-2xl outline-none"
+          >
+            <header className="flex min-h-16 items-center justify-between gap-3 border-b border-line px-4">
+              <div>
+                <h2 id="mobile-conversations-title" className="text-sm font-semibold">Conversations</h2>
+                <p className="mt-0.5 text-xs text-muted">Return to any thread.</p>
+              </div>
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={newThread} className="grid size-10 place-items-center rounded-full text-primary hover:bg-primary/10" aria-label="New conversation"><Plus size={16} aria-hidden="true" /></button>
+                <button type="button" onClick={() => { setMobileConversationsOpen(false); conversationsButtonRef.current?.focus(); }} className="grid size-10 place-items-center rounded-full text-muted hover:bg-surface-raised hover:text-foreground" aria-label="Close conversations"><X size={17} aria-hidden="true" /></button>
+              </div>
+            </header>
+            <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
+              {threads.map((thread) => (
+                <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} className={clsx("block w-full rounded-xl px-3 py-3 text-left transition", thread.id === threadId ? "bg-foreground text-background" : "text-muted hover:bg-surface-raised hover:text-foreground")}>
+                  <span className="block truncate text-sm font-semibold">{thread.title}</span>
+                  <span className={clsx("mt-1 block text-xs", thread.id === threadId ? "text-background/65" : "text-muted")}>{formatRelativeThreadTime(thread.updatedAt)}</span>
+                </button>
+              ))}
+              {!threads.length ? <p className="p-3 text-sm leading-6 text-muted">Start a conversation and it will appear here.</p> : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2390,12 +2696,12 @@ function GoalStage({
         ? `Context ${contextSelectedCount}/${contextTotalCount}`
         : "Context";
   return (
-    <section className="border-t border-line/80 bg-background px-3 py-3 sm:px-5 sm:py-4" aria-labelledby="command-composer-title">
+    <section className="border-t border-line/70 bg-background/95 px-3 py-2 backdrop-blur sm:px-5" aria-labelledby="command-composer-title">
       <div className="mx-auto max-w-3xl">
         <h2 id="command-composer-title" className="sr-only">Message Asael</h2>
-        <div className="rounded-2xl border border-line bg-surface shadow-[0_12px_36px_-30px_rgba(0,0,0,0.5)] focus-within:border-primary/60">
+        <div className="rounded-[1.35rem] border border-line bg-surface shadow-[0_10px_32px_-28px_rgba(0,0,0,0.5)] focus-within:border-primary/60">
           {preferredAgentId ? (
-            <div className="flex items-center justify-between gap-3 border-b border-line/70 px-3 py-2">
+            <div className="flex items-center justify-between gap-3 border-b border-line/70 px-3 py-1.5">
               <span className="text-xs text-muted">
                 Working with <strong className="font-semibold text-foreground">{preferredAgentName || agentDisplayName(preferredAgentId)}</strong>
               </span>
@@ -2420,23 +2726,23 @@ function GoalStage({
                   if (!draftLocked && !goalMissing && !runDisabledReason) onAgent();
                 }
               }}
-              rows={3}
+              rows={2}
               required
               disabled={draftLocked}
               placeholder={hasConversation ? "Ask a follow-up…" : "Message Asael…"}
-              className="max-h-48 min-h-24 w-full resize-none bg-transparent px-4 py-3.5 text-sm leading-6 outline-none placeholder:text-muted/75 disabled:cursor-not-allowed disabled:opacity-60"
+              className="max-h-40 min-h-14 w-full resize-none bg-transparent px-4 pb-2 pt-3 text-sm leading-6 outline-none placeholder:text-muted/75 disabled:cursor-not-allowed disabled:opacity-60"
             />
           </label>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line/70 px-2.5 py-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <div className="flex items-center justify-between gap-2 px-2 pb-2">
+            <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
               <label className="sr-only" htmlFor="command-mode">Approach</label>
               <select
                 id="command-mode"
                 value={mode}
                 disabled={draftLocked}
                 onChange={(event) => onModeChange(event.currentTarget.value as AgentMode)}
-                className="min-h-9 rounded-full border-0 bg-surface-raised px-3 text-xs font-semibold text-muted outline-none hover:text-foreground"
+                className="min-h-8 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-[11px] font-semibold text-muted outline-none hover:text-foreground"
               >
                 <option value="orchestrate">General</option>
                 <option value="research">Research</option>
@@ -2448,12 +2754,14 @@ function GoalStage({
                 onClick={() => onApprovalChange(!approvalRequired)}
                 disabled={draftLocked}
                 className={clsx(
-                  "min-h-9 rounded-full px-3 text-xs font-semibold transition",
+                  "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-semibold transition",
                   approvalRequired ? "bg-primary/10 text-primary" : "bg-surface-raised text-muted hover:text-foreground",
                 )}
                 aria-pressed={approvalRequired}
+                title={`Approvals ${approvalRequired ? "on" : "off"}`}
               >
-                Approvals {approvalRequired ? "on" : "off"}
+                <ShieldCheck size={12} aria-hidden="true" />
+                <span className="hidden md:inline">Approvals {approvalRequired ? "on" : "off"}</span>
               </button>
               <button
                 type="button"
@@ -2461,29 +2769,30 @@ function GoalStage({
                 disabled={contextLoading || goalMissing || Boolean(readDisabledReason)}
                 title={goalMissing ? "Write a message first." : readDisabledReason}
                 className={clsx(
-                  "inline-flex min-h-9 items-center gap-1.5 rounded-full px-3 text-xs font-semibold transition",
+                  "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-semibold transition",
                   contextReady ? "bg-success/10 text-success" : contextError ? "bg-warning/10 text-warning" : "bg-surface-raised text-muted hover:text-foreground",
                 )}
               >
                 {contextLoading ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Brain size={13} aria-hidden="true" />}
-                {contextLabel}
+                <span className="hidden md:inline">{contextLabel}</span>
+                {contextReady ? <span className="md:hidden">{contextSelectedCount}/{contextTotalCount}</span> : null}
               </button>
               <button
                 type="button"
                 onClick={onPlan}
                 disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || workflowInProgress}
                 title={goalMissing ? "Write a message first." : workflowDisabledReason}
-                className="inline-flex min-h-9 items-center gap-1.5 rounded-full bg-surface-raised px-3 text-xs font-semibold text-muted transition hover:text-foreground disabled:opacity-50"
+                className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-surface-raised px-2.5 text-[11px] font-semibold text-muted transition hover:text-foreground disabled:opacity-50"
               >
                 {loading === "plan" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <GitBranch size={13} aria-hidden="true" />}
-                Plan
+                <span className="hidden sm:inline">Plan</span>
               </button>
               {workflowReady || (workflowStarted && workflowInProgress) ? (
                 <button
                   type="button"
                   onClick={onWorkflow}
                   disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || !workflowReady || workflowStarted}
-                  className="inline-flex min-h-9 items-center gap-1.5 rounded-full bg-primary/10 px-3 text-xs font-semibold text-primary disabled:opacity-50"
+                  className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-2.5 text-[11px] font-semibold text-primary disabled:opacity-50"
                 >
                   <Workflow size={13} aria-hidden="true" />
                   {workflowStarted ? "Workflow active" : "Start plan"}
@@ -2492,7 +2801,7 @@ function GoalStage({
             </div>
 
             {loading === "agent" ? (
-              <button type="button" onClick={onStop} className="grid size-10 shrink-0 place-items-center rounded-full bg-danger text-white" aria-label="Stop response">
+              <button type="button" onClick={onStop} className="grid size-9 shrink-0 place-items-center rounded-full bg-danger text-white" aria-label="Stop response">
                 <Square size={13} aria-hidden="true" />
               </button>
             ) : (
@@ -2501,7 +2810,7 @@ function GoalStage({
                 onClick={onAgent}
                 disabled={draftLocked || goalMissing || Boolean(runDisabledReason)}
                 title={goalMissing ? "Write a message first." : runDisabledReason}
-                className="grid size-10 shrink-0 place-items-center rounded-full bg-foreground text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
+                className="grid size-9 shrink-0 place-items-center rounded-full bg-foreground text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
                 aria-label={hasConversation ? "Send follow-up" : "Send message"}
               >
                 <ArrowUp size={17} aria-hidden="true" />
@@ -2509,11 +2818,7 @@ function GoalStage({
             )}
           </div>
         </div>
-        <p className="mt-2 px-2 text-center text-[11px] leading-5 text-muted">
-          {workflowInProgress
-            ? "This conversation is locked while active work finishes or waits for approval."
-            : "Enter sends · Shift + Enter adds a line · Saved context is always optional"}
-        </p>
+        {workflowInProgress ? <p className="mt-1.5 px-2 text-center text-[10px] leading-4 text-muted">This conversation is locked while active work finishes or waits for approval.</p> : null}
       </div>
     </section>
   );

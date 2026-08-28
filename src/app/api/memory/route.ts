@@ -6,10 +6,11 @@ import {
   parseJsonBody,
 } from "@/lib/http/body";
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
-import { listMemories, saveMemory, searchMemories } from "@/lib/memory/store";
+import { listMemories, listThreadMemories, saveMemory, searchMemories } from "@/lib/memory/store";
 import { embedTexts } from "@/lib/openai/client";
 import { redactSensitive } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { getThread } from "@/lib/threads/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -41,9 +42,29 @@ async function GETHandler(request: Request) {
 
   const url = new URL(request.url);
   const query = url.searchParams.get("q")?.trim().slice(0, 4_000);
+  const requestedThreadId = url.searchParams.get("threadId");
+  const threadId = requestedThreadId?.trim().slice(0, 200);
   const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, {
     max: 100,
   });
+
+  if (requestedThreadId !== null) {
+    if (!threadId) {
+      return Response.json({ error: "A threadId is required." }, { status: 400 });
+    }
+    const thread = await getThread(threadId, { tenantId: context.tenantId });
+    if (!thread || thread.actorId !== context.actorId) {
+      return Response.json({ error: "Thread not found." }, { status: 404 });
+    }
+    return Response.json({
+      memories: (
+        await listThreadMemories(threadId, {
+          tenantId: context.tenantId,
+          limit: Math.min(Math.max(limit, 1), 100),
+        })
+      ).map(publicMemoryRecord),
+    });
+  }
 
   if (query) {
     const safeQuery = String(redactSensitive(query));

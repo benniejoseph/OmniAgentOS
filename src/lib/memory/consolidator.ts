@@ -46,6 +46,7 @@ export function shouldConsolidateRunMemory(prompt: string, response: string) {
 export async function consolidateAgentRunMemory({
   tenantId,
   runId,
+  threadId,
   mode,
   prompt,
   response,
@@ -53,6 +54,7 @@ export async function consolidateAgentRunMemory({
 }: {
   tenantId?: string;
   runId: string;
+  threadId?: string;
   mode: AgentMode;
   prompt: string;
   response: string;
@@ -64,7 +66,7 @@ export async function consolidateAgentRunMemory({
     `User request: ${safePrompt}`,
     `Assistant response: ${safeResponse}`,
   ].join("\n\n");
-  const embedding = (await embedTexts([episodeContent], abortSignal))?.[0];
+  const embedding = (await embedMemoryTexts([episodeContent], abortSignal))?.[0];
   abortSignal?.throwIfAborted();
   const episode = await saveMemory({
     id: `agent_run_${runId}`,
@@ -77,12 +79,13 @@ export async function consolidateAgentRunMemory({
     importance: 0.42,
     confidence: 0.55,
     assertedBy: "agent",
-    evidenceRefs: [`run:${runId}`],
+    evidenceRefs: threadEvidenceRefs(runId, threadId),
     embedding,
   });
   const consolidation = await consolidateRunMemory({
     tenantId,
     runId,
+    threadId,
     mode,
     prompt: safePrompt,
     response: safeResponse,
@@ -94,6 +97,7 @@ export async function consolidateAgentRunMemory({
 export async function consolidateRunMemory({
   tenantId,
   runId,
+  threadId,
   mode,
   prompt,
   response,
@@ -101,6 +105,7 @@ export async function consolidateRunMemory({
 }: {
   tenantId?: string;
   runId: string;
+  threadId?: string;
   mode: AgentMode;
   prompt: string;
   response: string;
@@ -108,6 +113,12 @@ export async function consolidateRunMemory({
 }): Promise<ConsolidationResult> {
   if (!prompt.trim() || !response.trim()) {
     return { summary: "No run content to consolidate.", saved: [], skipped: true };
+  }
+
+  // Every durable conversation gets an episode. Claim extraction remains
+  // deliberately selective so brief acknowledgements do not become facts.
+  if (!shouldConsolidateRunMemory(prompt, response)) {
+    return { summary: "Conversation episode stored; no durable claims extracted.", saved: [], skipped: true };
   }
 
   if (!hasModelProviderFeature("json_schema")) {
@@ -138,6 +149,7 @@ export async function consolidateRunMemory({
     const saved = await persistConsolidatedItems({
       tenantId,
       runId,
+      threadId,
       mode,
       prompt: safePrompt,
       items,
@@ -165,6 +177,7 @@ export async function consolidateRunMemory({
 async function persistConsolidatedItems({
   tenantId,
   runId,
+  threadId,
   mode,
   prompt,
   items,
@@ -172,6 +185,7 @@ async function persistConsolidatedItems({
 }: {
   tenantId?: string;
   runId: string;
+  threadId?: string;
   mode: AgentMode;
   prompt: string;
   items: ConsolidatedItem[];
@@ -198,12 +212,12 @@ async function persistConsolidatedItems({
     importance: clamp01(item.importance),
     confidence: clamp01(item.confidence),
     assertedBy: "agent" as const,
-    evidenceRefs: [`run:${runId}`],
+    evidenceRefs: threadEvidenceRefs(runId, threadId),
   }));
   const existing = await listMemories({ tenantId, includeInactive: true, limit: 500 });
   const reconciledInputs = reconcileConsolidatedMemoryClaims(memoryInputs, existing);
   if (!reconciledInputs.length) return [];
-  const embeddings = await embedTexts(
+  const embeddings = await embedMemoryTexts(
     reconciledInputs.map((item) => `${item.title}\n\n${item.content}`),
     abortSignal,
   );
@@ -220,6 +234,26 @@ async function persistConsolidatedItems({
   await indexMemoryGraphRecords(saved, "memory.consolidator");
 
   return saved;
+}
+
+function threadEvidenceRefs(runId: string, threadId?: string) {
+  return [
+    `run:${runId}`,
+    ...(threadId?.trim() ? [`thread:${threadId.trim()}`] : []),
+  ];
+}
+
+async function embedMemoryTexts(input: string[], abortSignal?: AbortSignal) {
+  try {
+    return await embedTexts(input, abortSignal);
+  } catch (error) {
+    if (abortSignal?.aborted) {
+      throw abortSignal.reason || error;
+    }
+    // Embeddings improve retrieval, but must not prevent durable memory from
+    // being recorded when the embedding provider is temporarily unavailable.
+    return null;
+  }
 }
 
 export function reconcileConsolidatedMemoryClaims(

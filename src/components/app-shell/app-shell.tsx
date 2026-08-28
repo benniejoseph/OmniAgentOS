@@ -8,6 +8,8 @@ import {
   LogIn,
   LogOut,
   Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   UserRound,
   X,
 } from "lucide-react";
@@ -26,10 +28,19 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
   const activeItem = appNav.find((item) => isActivePath(pathname, item.href));
   const { session, status: sessionStatus, error: sessionError, role, signOut } = useWorkspaceSession();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string>();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobilePanelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDesktopNavCollapsed(window.localStorage.getItem("omni-desktop-nav-collapsed") === "true");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     if (!mobileOpen) {
       return;
@@ -99,6 +110,19 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
     }, 0);
   }
 
+  function toggleDesktopNavigation() {
+    setDesktopNavCollapsed((collapsed) => {
+      const next = !collapsed;
+      window.localStorage.setItem("omni-desktop-nav-collapsed", String(next));
+      return next;
+    });
+  }
+
+  function expandDesktopNavigation() {
+    setDesktopNavCollapsed(false);
+    window.localStorage.setItem("omni-desktop-nav-collapsed", "false");
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <a
@@ -108,39 +132,79 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
         Skip to workspace
       </a>
 
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 border-r border-line/80 bg-surface lg:flex lg:flex-col">
-        <div className="flex h-16 items-center gap-3 border-b border-line px-5">
+      <aside
+        id="desktop-workspace-navigation"
+        className={clsx(
+          "fixed inset-y-0 left-0 z-30 hidden border-r border-line/80 bg-surface transition-[width] duration-200 motion-reduce:transition-none lg:flex lg:flex-col",
+          desktopNavCollapsed ? "w-20" : "w-60",
+        )}
+      >
+        <div
+          className={clsx(
+            "flex h-16 items-center border-b border-line",
+            desktopNavCollapsed ? "justify-center px-2" : "gap-3 px-5",
+          )}
+        >
           <Link
             href="/app"
-            className="flex min-w-0 items-center gap-3 rounded-md focus-visible:outline-none"
+            className={clsx(
+              "flex min-w-0 items-center rounded-md focus-visible:outline-none",
+              desktopNavCollapsed ? "justify-center" : "gap-3",
+            )}
             aria-label="Asael workspace home"
+            title={desktopNavCollapsed ? "Asael workspace home" : undefined}
           >
             <AsaelMark size={36} priority />
-            <span className="min-w-0">
-                  <span className="block truncate text-sm font-semibold tracking-tight">Asael</span>
-                  <span className="block truncate text-xs text-muted">Your second brain</span>
-            </span>
+            {!desktopNavCollapsed ? (
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-semibold tracking-tight">Asael</span>
+                <span className="block truncate text-xs text-muted">Your second brain</span>
+              </span>
+            ) : null}
           </Link>
         </div>
-        <nav className="min-h-0 flex-1 space-y-5 overflow-y-auto px-3 py-4" aria-label="Application navigation">
-          {appNavGroups.map((group) => (
-            <NavGroup key={group.label} group={group} pathname={pathname} />
-          ))}
+        <nav
+          className={clsx(
+            "min-h-0 flex-1 overflow-y-auto py-4",
+            desktopNavCollapsed ? "space-y-3 px-2" : "space-y-5 px-3",
+          )}
+          aria-label="Application navigation"
+        >
+          {desktopNavCollapsed ? (
+            <CompactNavigation pathname={pathname} />
+          ) : (
+            appNavGroups.map((group) => <NavGroup key={group.label} group={group} pathname={pathname} />)
+          )}
         </nav>
-        <div className="border-t border-line p-3">
-          <AccountPanel
-            session={session}
-            sessionStatus={sessionStatus}
-            sessionError={sessionError}
-            role={role}
-            signingOut={signingOut}
-            signOutError={signOutError}
-            onSignOut={() => void handleSignOut()}
-          />
+        <div className={clsx("border-t border-line", desktopNavCollapsed ? "p-2" : "p-3")}>
+          {desktopNavCollapsed ? (
+            <CompactAccountAffordance
+              session={session}
+              sessionStatus={sessionStatus}
+              sessionError={sessionError}
+              role={role}
+              onExpand={expandDesktopNavigation}
+            />
+          ) : (
+            <AccountPanel
+              session={session}
+              sessionStatus={sessionStatus}
+              sessionError={sessionError}
+              role={role}
+              signingOut={signingOut}
+              signOutError={signOutError}
+              onSignOut={() => void handleSignOut()}
+            />
+          )}
         </div>
       </aside>
 
-      <div className="lg:pl-60">
+      <div
+        className={clsx(
+          "transition-[padding] duration-200 motion-reduce:transition-none",
+          desktopNavCollapsed ? "lg:pl-20" : "lg:pl-60",
+        )}
+      >
         {banner}
         <header className="sticky top-0 z-20 border-b border-line/70 bg-background/85 backdrop-blur-xl">
           <div className="flex min-h-16 items-center justify-between gap-3 px-3 py-2 sm:px-6 lg:px-8">
@@ -156,6 +220,21 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
                 data-testid="workspace-menu-trigger"
               >
                 <Menu size={19} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                onClick={toggleDesktopNavigation}
+                className="hidden size-9 shrink-0 place-items-center rounded-md border border-line bg-surface text-muted transition hover:bg-surface-raised hover:text-foreground lg:grid"
+                aria-label={desktopNavCollapsed ? "Expand workspace navigation" : "Collapse workspace navigation"}
+                aria-expanded={!desktopNavCollapsed}
+                aria-controls="desktop-workspace-navigation"
+                title={desktopNavCollapsed ? "Expand navigation" : "Collapse navigation"}
+              >
+                {desktopNavCollapsed ? (
+                  <PanelLeftOpen size={17} aria-hidden="true" />
+                ) : (
+                  <PanelLeftClose size={17} aria-hidden="true" />
+                )}
               </button>
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold">{activeItem?.label || "Workspace"}</p>
@@ -289,6 +368,126 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
         </div>
       ) : null}
     </div>
+  );
+}
+
+function CompactNavigation({ pathname }: { pathname: string }) {
+  return (
+    <>
+      {appNavGroups.map((group, groupIndex) => (
+        <div
+          key={group.label}
+          role="group"
+          aria-label={group.label}
+          className={clsx("space-y-1", groupIndex > 0 && "border-t border-line/70 pt-3")}
+        >
+          {group.items.map((item) => {
+            const Icon = item.icon;
+            const active = isActivePath(pathname, item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                aria-label={item.label}
+                aria-current={active ? "page" : undefined}
+                title={`${item.label} — ${item.description}`}
+                className={clsx(
+                  "group relative grid min-h-11 w-full place-items-center rounded-md transition",
+                  active
+                    ? "bg-primary text-primary-ink shadow-sm"
+                    : "text-muted hover:bg-surface-raised hover:text-foreground",
+                )}
+              >
+                <Icon size={18} aria-hidden="true" />
+                <span className="sr-only">{item.label}</span>
+                {active ? (
+                  <span
+                    className="absolute -left-2 h-5 w-0.5 rounded-r-full bg-primary"
+                    aria-hidden="true"
+                  />
+                ) : null}
+              </Link>
+            );
+          })}
+        </div>
+      ))}
+    </>
+  );
+}
+
+function CompactAccountAffordance({
+  session,
+  sessionStatus,
+  sessionError,
+  role,
+  onExpand,
+}: {
+  session: ReturnType<typeof useWorkspaceSession>["session"];
+  sessionStatus: ReturnType<typeof useWorkspaceSession>["status"];
+  sessionError?: string;
+  role: ReturnType<typeof useWorkspaceSession>["role"];
+  onExpand: () => void;
+}) {
+  if (sessionStatus === "loading") {
+    return (
+      <div
+        className="grid min-h-11 w-full place-items-center rounded-md border border-line bg-background text-muted"
+        role="status"
+        aria-label="Checking account session"
+        title="Checking account session"
+      >
+        <UserRound size={17} className="animate-pulse" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  if (sessionStatus === "error" || !session) {
+    return (
+      <button
+        type="button"
+        onClick={onExpand}
+        className="relative grid min-h-11 w-full place-items-center rounded-md border border-danger/40 bg-danger/10 text-danger transition hover:bg-danger/15"
+        aria-label="Open account controls; session unavailable"
+        title={sessionError || "Session unavailable"}
+      >
+        <UserRound size={17} aria-hidden="true" />
+        <span className="absolute right-2 top-2 size-1.5 rounded-full bg-danger" aria-hidden="true" />
+      </button>
+    );
+  }
+
+  if (session.authEnabled && !session.authenticated) {
+    return (
+      <Link
+        href="/login"
+        className="grid min-h-11 w-full place-items-center rounded-md border border-line bg-background text-muted transition hover:bg-surface-raised hover:text-foreground"
+        aria-label="Sign in"
+        title="Sign in"
+      >
+        <LogIn size={17} aria-hidden="true" />
+      </Link>
+    );
+  }
+
+  const accountName =
+    session.user?.name ||
+    session.user?.email ||
+    session.context?.actorId ||
+    (session.authEnabled ? "Workspace member" : "Local workspace");
+  const tenantName = session.tenant?.name || session.tenant?.slug || session.context?.tenantId;
+  const accountContext = session.authEnabled ? tenantName || "Workspace" : "Local mode";
+
+  return (
+    <button
+      type="button"
+      onClick={onExpand}
+      className="relative grid min-h-11 w-full place-items-center rounded-md border border-line bg-background text-muted transition hover:bg-surface-raised hover:text-foreground"
+      aria-label={`Open account controls for ${accountName}`}
+      title={`${accountName} · ${accountContext} · ${role}`}
+    >
+      <UserRound size={17} aria-hidden="true" />
+      <span className="absolute bottom-2 right-2 size-1.5 rounded-full bg-primary" aria-hidden="true" />
+    </button>
   );
 }
 
