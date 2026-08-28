@@ -43,6 +43,7 @@ import {
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
 import { ConversationCanvas } from "@/components/conversation-canvas";
+import { VoiceMode } from "@/components/voice/voice-mode";
 
 type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
@@ -206,6 +207,7 @@ export function AgentRunsWorkspace({
   );
   const readPermission = permissionMessage(session, sessionStatus, "read");
   const runPermission = permissionMessage(session, sessionStatus, "run.agent");
+  const voicePermission = permissionMessage(session, sessionStatus, "write.memory");
   const workflowPermission = permissionMessage(session, sessionStatus, "manage.workflow");
   const activeWorkflowId = stringPath(workflowRun, "run.id", "");
   const activeWorkflowStatus = stringPath(workflowRun, "run.status", "");
@@ -963,28 +965,36 @@ export function AgentRunsWorkspace({
     }
   }
 
-  async function runAgent() {
+  async function runAgent(options?: {
+    submittedGoal?: string;
+    prepareContextAutomatically?: boolean;
+  }) {
     if (runPermission) {
       setError(runPermission);
       return;
     }
-    const submittedGoal = goal.trim();
+    const submittedGoal = (options?.submittedGoal ?? goal).trim();
     if (!submittedGoal) {
       setError("Write a message before asking Asael.");
       return;
     }
-    if (contextLoading) {
+    if (contextLoading && !options?.prepareContextAutomatically) {
       openTaskDetails("context");
       setRunAnnouncement("Wait for task context to finish loading, then run the task.");
       return;
     }
-    const contextSelection = contextSelectionForTask(submittedGoal);
+    let contextSelection = contextSelectionForTask(submittedGoal);
     if (!contextSelection) {
-      const prepared = await buildContext({ query: submittedGoal, reveal: true });
-      if (prepared) {
+      const prepared = await buildContext({
+        query: submittedGoal,
+        reveal: !options?.prepareContextAutomatically,
+      });
+      if (prepared && options?.prepareContextAutomatically) {
+        contextSelection = prepared;
+      } else if (prepared) {
         setRunAnnouncement("Context preparation finished. Review the selection, then run the task again.");
       }
-      return;
+      if (!contextSelection) return;
     }
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -1663,6 +1673,7 @@ export function AgentRunsWorkspace({
               contextError={contextError}
               readDisabledReason={readPermission}
               runDisabledReason={runPermission}
+              voiceDisabledReason={runPermission || voicePermission}
               workflowDisabledReason={workflowPermission}
               workflowReady={reviewedPlanReady}
               workflowStarted={Boolean(activeWorkflowId)}
@@ -1676,6 +1687,12 @@ export function AgentRunsWorkspace({
               onReviewContext={() => openTaskDetails("context")}
               onPlan={() => void buildPlan()}
               onAgent={() => void runAgent()}
+              onVoiceTranscript={(transcript) => {
+                const existingDraft = goal.trim();
+                const voiceGoal = existingDraft ? `${existingDraft}\n\n${transcript}` : transcript;
+                changeGoal(voiceGoal);
+                void runAgent({ submittedGoal: voiceGoal, prepareContextAutomatically: true });
+              }}
               onStop={stopAgent}
               onWorkflow={() => void startWorkflow()}
             />
@@ -2641,6 +2658,7 @@ function GoalStage({
   contextError,
   readDisabledReason,
   runDisabledReason,
+  voiceDisabledReason,
   workflowDisabledReason,
   workflowReady,
   workflowStarted,
@@ -2654,6 +2672,7 @@ function GoalStage({
   onReviewContext,
   onPlan,
   onAgent,
+  onVoiceTranscript,
   onStop,
   onWorkflow,
 }: {
@@ -2670,6 +2689,7 @@ function GoalStage({
   contextError?: string;
   readDisabledReason?: string;
   runDisabledReason?: string;
+  voiceDisabledReason?: string;
   workflowDisabledReason?: string;
   workflowReady: boolean;
   workflowStarted: boolean;
@@ -2683,6 +2703,7 @@ function GoalStage({
   onReviewContext: () => void;
   onPlan: () => void;
   onAgent: () => void;
+  onVoiceTranscript: (transcript: string) => void;
   onStop: () => void;
   onWorkflow: () => void;
 }) {
@@ -2805,16 +2826,23 @@ function GoalStage({
                 <Square size={13} aria-hidden="true" />
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={onAgent}
-                disabled={draftLocked || goalMissing || Boolean(runDisabledReason)}
-                title={goalMissing ? "Write a message first." : runDisabledReason}
-                className="grid size-9 shrink-0 place-items-center rounded-full bg-foreground text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
-                aria-label={hasConversation ? "Send follow-up" : "Send message"}
-              >
-                <ArrowUp size={17} aria-hidden="true" />
-              </button>
+              <div className="flex shrink-0 items-center gap-1">
+                <VoiceMode
+                  disabled={draftLocked || contextLoading || Boolean(voiceDisabledReason)}
+                  disabledReason={voiceDisabledReason}
+                  onTranscript={onVoiceTranscript}
+                />
+                <button
+                  type="button"
+                  onClick={onAgent}
+                  disabled={draftLocked || goalMissing || Boolean(runDisabledReason)}
+                  title={goalMissing ? "Write a message first." : runDisabledReason}
+                  className="grid size-9 shrink-0 place-items-center rounded-full bg-foreground text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
+                  aria-label={hasConversation ? "Send follow-up" : "Send message"}
+                >
+                  <ArrowUp size={17} aria-hidden="true" />
+                </button>
+              </div>
             )}
           </div>
         </div>

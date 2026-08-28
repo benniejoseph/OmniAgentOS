@@ -92,7 +92,10 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
       characterCount: safeChunkContent.length,
       embedding:
         safeChunkContent === chunk.content ? chunk.embedding : undefined,
-      metadata: { documentTitle: document.title },
+      metadata: {
+        ...document.metadata,
+        documentTitle: document.title,
+      },
       createdAt: now,
       updatedAt: now,
     };

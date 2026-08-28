@@ -133,5 +133,10 @@
     "version": 27,
     "name": "unified_mission_kernel",
     "checksum": "bffd05b4ebbfa5a4e081b7cb73c6d302344d6d898b891518904e5fb057b3f860"
+  },
+  {
+    "version": 28,
+    "name": "durable_capture_recordings",
+    "checksum": "9fd3a1c7e5b204689fd3a1c7e5b204689fd3a1c7e5b204689fd3a1c7e5b20468"
   }
 ]

@@ -3,6 +3,11 @@ import { getAppBaseUrl } from "@/lib/config";
 import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload";
 
 export type OAuthProvider = "google";
+export const GOOGLE_PHOTOS_PICKER_SCOPE =
+  "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
+
+const oauthReturnPaths = new Set(["/app/capture", "/app/connectors"]);
+
 export const oauthProviders = {
   google: {
     label: "Google",
@@ -14,6 +19,7 @@ export const oauthProviders = {
       "https://www.googleapis.com/auth/gmail.readonly",
       "https://www.googleapis.com/auth/calendar.events.readonly",
       "https://www.googleapis.com/auth/drive.readonly",
+      GOOGLE_PHOTOS_PICKER_SCOPE,
     ],
   },
 } as const;
@@ -21,13 +27,26 @@ export const oauthProviders = {
 export function isOAuthProvider(value: string): value is OAuthProvider { return value === "google"; }
 export function oauthConfigured(provider: OAuthProvider) { const config = oauthProviders[provider]; return Boolean(process.env[config.clientIdEnv]?.trim() && process.env[config.clientSecretEnv]?.trim()); }
 
-export function createOAuthAuthorization(provider: OAuthProvider, identity: { tenantId: string; actorId: string }) {
+export function createOAuthAuthorization(
+  provider: OAuthProvider,
+  identity: { tenantId: string; actorId: string; returnTo?: string },
+) {
   const config = oauthProviders[provider];
   const clientId = process.env[config.clientIdEnv]?.trim();
   if (!clientId || !process.env[config.clientSecretEnv]?.trim()) throw new Error(`${config.label} OAuth is not configured.`);
   const verifier = randomBytes(48).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
-  const state = sealJsonPayload({ ...identity, provider, verifier, expiresAt: Date.now() + 10 * 60_000 }, `oauth:${provider}`);
+  const state = sealJsonPayload(
+    {
+      tenantId: identity.tenantId,
+      actorId: identity.actorId,
+      provider,
+      verifier,
+      returnTo: normalizeOAuthReturnTo(identity.returnTo),
+      expiresAt: Date.now() + 10 * 60_000,
+    },
+    `oauth:${provider}`,
+  );
   const redirectUri = `${getAppBaseUrl()}/api/oauth/${provider}/callback`;
   const url = new URL(config.authorizeUrl);
   url.searchParams.set("client_id", clientId); url.searchParams.set("redirect_uri", redirectUri);
@@ -39,10 +58,37 @@ export function createOAuthAuthorization(provider: OAuthProvider, identity: { te
 }
 
 export function openOAuthState(provider: OAuthProvider, encoded: string) {
-  const sealed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
-  const state = openJsonPayload(sealed, `oauth:${provider}`) as { tenantId: string; actorId: string; provider: string; verifier: string; expiresAt: number };
-  if (state.provider !== provider || state.expiresAt < Date.now() || !state.verifier) throw new Error("OAuth authorization state is invalid or expired.");
-  return state;
+  try {
+    if (!/^[A-Za-z0-9_-]{40,8000}$/.test(encoded)) throw new Error("Invalid state encoding.");
+    const sealed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    const state = openJsonPayload(sealed, `oauth:${provider}`) as {
+      tenantId: string;
+      actorId: string;
+      provider: string;
+      verifier: string;
+      returnTo?: string;
+      expiresAt: number;
+    };
+    if (
+      state.provider !== provider ||
+      typeof state.tenantId !== "string" ||
+      typeof state.actorId !== "string" ||
+      typeof state.verifier !== "string" ||
+      !state.verifier ||
+      !Number.isFinite(state.expiresAt) ||
+      state.expiresAt < Date.now()
+    ) {
+      throw new Error("Invalid state payload.");
+    }
+    return { ...state, returnTo: normalizeOAuthReturnTo(state.returnTo) };
+  } catch {
+    throw new Error("OAuth authorization state is invalid or expired.");
+  }
+}
+
+export function normalizeOAuthReturnTo(value?: string | null) {
+  const candidate = String(value || "").trim();
+  return oauthReturnPaths.has(candidate) ? candidate : "/app/connectors";
 }
 
 export async function exchangeOAuthCode(provider: OAuthProvider, code: string, verifier: string) {

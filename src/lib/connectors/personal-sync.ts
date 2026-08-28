@@ -205,7 +205,33 @@ function gmailParts(part: Record<string, unknown>, mimeType: string): string[] {
 function gmailAttachments(payload: Record<string, unknown>): string[] { return array(payload.parts).map(record).flatMap((part) => { const nested = gmailAttachments(part); const filename = String(part.filename || "").trim(); const body = record(part.body); return filename ? [`- ${filename} · ${String(part.mimeType || "file")} · ${Number(body.size || 0)} bytes`, ...nested] : nested; }); }
 function decodeBase64Url(value: string) { try { return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8").trim(); } catch { return ""; } }
 function stripHtml(value: string) { return value.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim(); }
-function downloadableDriveFile(mimeType: string, extension: string, size: number) { if (size > 5 * 1024 * 1024) return undefined; if (mimeType === "application/pdf") return { extension: "pdf", mimeType }; if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return { extension: "docx", mimeType }; if (mimeType.startsWith("text/")) return { extension: extension || "txt", mimeType }; return undefined; }
+function downloadableDriveFile(mimeType: string, extension: string, size: number) {
+  if (size > 5 * 1024 * 1024) return undefined;
+  const normalizedExtension = extension.trim().toLowerCase();
+  const knownMimeTypes: Record<string, string> = {
+    "application/pdf": "pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/vnd.openxmlformats-officedocument.presentationml.slideshow": "ppsx",
+    "application/vnd.oasis.opendocument.text": "odt",
+    "application/vnd.oasis.opendocument.spreadsheet": "ods",
+    "application/vnd.oasis.opendocument.presentation": "odp",
+    "application/epub+zip": "epub",
+    "application/rtf": "rtf",
+    "message/rfc822": "eml",
+    "text/calendar": "ics",
+    "text/vcard": "vcf",
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+  };
+  const inferred = knownMimeTypes[mimeType];
+  if (inferred) return { extension: inferred, mimeType };
+  if (mimeType.startsWith("text/")) return { extension: normalizedExtension || "txt", mimeType };
+  return undefined;
+}
 function parseCursor(value?: string): SyncCursor { if (!value) return {}; try { const parsed = JSON.parse(value); return parsed && typeof parsed === "object" ? parsed as SyncCursor : {}; } catch { return {}; } }
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function array(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }

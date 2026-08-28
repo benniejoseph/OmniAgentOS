@@ -11,7 +11,7 @@ export const TRANSCRIPTION_MODEL =
   process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
 export const OCR_MODEL = process.env.OPENAI_OCR_MODEL || "gpt-4o-mini";
 export const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || "gemini-3.5-flash-lite";
-export const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-lite-image";
+export const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
 export const ANTHROPIC_FAST_MODEL = process.env.ANTHROPIC_FAST_MODEL || "claude-haiku-4-5";
 export const ANTHROPIC_REASONING_MODEL = process.env.ANTHROPIC_REASONING_MODEL || "claude-sonnet-5";
 export const EMBEDDING_DIMENSIONS = normalizePositiveInteger(

@@ -1,51 +1,144 @@
 "use client";
 
-import Image from "next/image";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, CheckCircle2, Download, FileText, ImageIcon, Loader2, Mic, Paperclip, RefreshCw, Sparkles, Square, Upload, X } from "lucide-react";
+import {
+  AudioLines,
+  CheckCircle2,
+  CircleAlert,
+  Clock3,
+  Database,
+  Download,
+  FileStack,
+  FileText,
+  HardDrive,
+  Library,
+  Loader2,
+  NotebookPen,
+  Paperclip,
+  ScanLine,
+  Search,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
+import { ConnectedSources, type OAuthGrantItem, type OAuthProviderItem } from "@/components/capture/connected-sources";
+import { LongRecordingStudio } from "@/components/capture/long-recording-studio";
+import { VisualStudio } from "@/components/capture/visual-studio";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { listOfflineCaptures, queueOfflineCapture, removeOfflineCapture, type OfflineCapture } from "@/lib/capture/offline";
 
-type DocumentItem = { id: string; title: string; source: string; sourceType: string; updatedAt: string; chunkCount: number };
-type OAuthProviderItem = { id: string; label: string; configured: boolean; authorizeUrl: string; scopes: string[] };
-type OAuthGrantItem = { id: string; provider: string; scopes: string[]; updatedAt: string; syncStatus?: "idle" | "syncing" | "healthy" | "error"; syncError?: string; lastSyncedAt?: string; syncedItems?: number };
+type DocumentItem = {
+  id: string;
+  title: string;
+  source: string;
+  sourceType: string;
+  updatedAt: string;
+  chunkCount: number;
+  totalCharacters?: number;
+};
+
+type KnowledgeStats = { documents: number; chunks: number; characters: number; embedded: number };
+
+type CaptureAsset = {
+  id: string;
+  filename: string;
+  mediaType: string;
+  extension: string;
+  byteCount: number;
+  storageKind: "database" | "filesystem";
+  status: "stored" | "queued" | "indexed" | "unsupported" | "failed";
+  extractionStatus: "pending" | "completed" | "unsupported" | "failed";
+  error?: string;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CaptureJob = {
+  id: string;
+  type?: string;
+  status: "queued" | "running" | "completed" | "failed" | "canceled";
+  progress?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  attempt?: number;
+  maxAttempts?: number;
+  lastError?: string;
+  updatedAt?: string;
+};
+
+type CaptureMode = "note" | "record" | "upload";
+type Notice = { tone: "success" | "warning" | "error"; text: string };
 
 export function CaptureWorkspace() {
   const { session, status } = useWorkspaceSession();
+  const [mode, setMode] = useState<CaptureMode>("note");
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [tags, setTags] = useState("");
   const [file, setFile] = useState<File>();
   const [dragging, setDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [recording, setRecording] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
-  const [message, setMessage] = useState<{ tone: "success" | "error"; text: string }>();
+  const [captureNotice, setCaptureNotice] = useState<Notice>();
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [assets, setAssets] = useState<CaptureAsset[]>([]);
+  const [knowledgeStats, setKnowledgeStats] = useState<KnowledgeStats>();
   const [oauthProviders, setOAuthProviders] = useState<OAuthProviderItem[]>([]);
   const [oauthGrants, setOAuthGrants] = useState<OAuthGrantItem[]>([]);
-  const [syncingProvider, setSyncingProvider] = useState<string>();
+  const [loadingWorkspace, setLoadingWorkspace] = useState(false);
+  const [loadError, setLoadError] = useState<string>();
   const [offlinePending, setOfflinePending] = useState(0);
-  const [imagePrompt, setImagePrompt] = useState("");
-  const [imageRatio, setImageRatio] = useState<"1:1" | "16:9" | "9:16" | "4:3" | "3:4">("1:1");
-  const [generatingImage, setGeneratingImage] = useState(false);
-  const [generatedImage, setGeneratedImage] = useState<{ dataUrl: string; model: string }>();
+  const [activeJob, setActiveJob] = useState<CaptureJob>();
+  const [geminiConfigured, setGeminiConfigured] = useState<boolean>();
+  const [geminiImageModel, setGeminiImageModel] = useState<string>();
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const [deletingAsset, setDeletingAsset] = useState<string>();
   const inputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
-  const recorderRef = useRef<MediaRecorder | undefined>(undefined);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const blocked = permissionMessage(session, status, "write.memory");
+  const completedJobRef = useRef<string | undefined>(undefined);
+  const captureBlocked = permissionMessage(session, status, "write.memory");
+  const visualBlocked = permissionMessage(session, status, "run.agent");
 
-  const loadRecent = useCallback(async () => {
+  const loadWorkspace = useCallback(async () => {
     if (status !== "ready" || !session) return;
-    const [knowledgeResponse, oauthResponse] = await Promise.all([
-      fetch("/api/knowledge?limit=8", { cache: "no-store" }),
-      fetch("/api/oauth", { cache: "no-store" }),
+    setLoadingWorkspace(true);
+    setLoadError(undefined);
+    const results = await Promise.allSettled([
+      fetch("/api/knowledge?limit=30", { cache: "no-store" }).then(async (response) => {
+        if (!response.ok) throw new Error("Knowledge library could not be loaded.");
+        const payload = await response.json() as { documents?: DocumentItem[]; stats?: KnowledgeStats };
+        setDocuments(Array.isArray(payload.documents) ? payload.documents : []);
+        setKnowledgeStats(payload.stats);
+      }),
+      fetch("/api/capture?limit=30", { cache: "no-store" }).then(async (response) => {
+        if (!response.ok) throw new Error("Original files could not be loaded.");
+        const payload = await response.json() as { assets?: CaptureAsset[] };
+        setAssets(Array.isArray(payload.assets) ? payload.assets : []);
+      }),
+      fetch("/api/oauth", { cache: "no-store" }).then(async (response) => {
+        if (!response.ok) throw new Error("Connected sources could not be loaded.");
+        const payload = await response.json() as { providers?: OAuthProviderItem[]; grants?: OAuthGrantItem[] };
+        setOAuthProviders(Array.isArray(payload.providers) ? payload.providers : []);
+        setOAuthGrants(Array.isArray(payload.grants) ? payload.grants : []);
+      }),
+      fetch("/api/capabilities?view=settings", { cache: "no-store" }).then(async (response) => {
+        if (!response.ok) throw new Error("Media capabilities could not be loaded.");
+        const payload = await response.json() as { geminiConfigured?: boolean; googleModels?: { image?: string } };
+        setGeminiConfigured(Boolean(payload.geminiConfigured));
+        setGeminiImageModel(payload.googleModels?.image);
+      }),
     ]);
-    if (knowledgeResponse.ok) { const body = await knowledgeResponse.json(); setDocuments(Array.isArray(body.documents) ? body.documents : []); }
-    if (oauthResponse.ok) { const body = await oauthResponse.json(); setOAuthProviders(Array.isArray(body.providers) ? body.providers : []); setOAuthGrants(Array.isArray(body.grants) ? body.grants : []); }
+    if (results.every((result) => result.status === "rejected")) {
+      setLoadError("Capture data is temporarily unavailable. Your unsaved draft has not been changed.");
+    }
+    setLoadingWorkspace(false);
   }, [session, status]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadWorkspace(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadWorkspace]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -59,13 +152,11 @@ export function CaptureWorkspace() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadRecent(), 0);
-    return () => window.clearTimeout(timer);
-  }, [loadRecent]);
-
-  useEffect(() => {
     let active = true;
-    const refreshCount = async () => { const captures = await listOfflineCaptures().catch(() => []); if (active) setOfflinePending(captures.length); };
+    const refreshCount = async () => {
+      const captures = await listOfflineCaptures().catch(() => []);
+      if (active) setOfflinePending(captures.length);
+    };
     const flush = () => { void flushOfflineCaptures().then(refreshCount); };
     void refreshCount();
     window.addEventListener("online", flush);
@@ -73,99 +164,52 @@ export function CaptureWorkspace() {
     return () => { active = false; window.removeEventListener("online", flush); };
   }, []);
 
+  useEffect(() => {
+    if (!activeJob || !["queued", "running"].includes(activeJob.status)) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/operations/jobs/${encodeURIComponent(activeJob.id)}`, { cache: "no-store" });
+        const payload = (await response.json().catch(() => ({}))) as { job?: CaptureJob };
+        if (response.ok && payload.job) setActiveJob(payload.job);
+      } catch {
+        // The queued work remains durable; a later poll can recover.
+      }
+    }, 2_000);
+    return () => window.clearTimeout(timer);
+  }, [activeJob]);
+
+  useEffect(() => {
+    if (!activeJob || !["completed", "failed", "canceled"].includes(activeJob.status) || completedJobRef.current === activeJob.id) return;
+    completedJobRef.current = activeJob.id;
+    if (activeJob.status === "completed") {
+      setCaptureNotice({ tone: "success", text: "Capture indexed. It is now available as context in Command conversations." });
+    } else {
+      setCaptureNotice({ tone: "error", text: activeJob.lastError || "Indexing did not complete. The original file is still stored in your Capture library." });
+    }
+    void loadWorkspace();
+  }, [activeJob, loadWorkspace]);
+
+  const filteredDocuments = useMemo(() => documents.filter((document) => {
+    const query = libraryQuery.trim().toLowerCase();
+    if (query && !`${document.title} ${document.source}`.toLowerCase().includes(query)) return false;
+    return sourceFilter === "all" || documentSource(document.source) === sourceFilter;
+  }), [documents, libraryQuery, sourceFilter]);
+
   function chooseFile(next?: File) {
-    setMessage(undefined);
+    setCaptureNotice(undefined);
     setFile(next);
-    if (next && !title) setTitle(next.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "));
-  }
-
-  async function toggleRecording() {
-    if (recording) return recorderRef.current?.stop();
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      return setMessage({ tone: "error", text: "Audio recording is not supported by this browser." });
+    if (next) {
+      setMode("upload");
+      if (!title) setTitle(next.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "));
     }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      audioChunksRef.current = [];
-      recorder.ondataavailable = (event) => { if (event.data.size) audioChunksRef.current.push(event.data); };
-      recorder.onstop = () => {
-        stream.getTracks().forEach((track) => track.stop());
-        setRecording(false);
-        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
-        void transcribeAudio(blob);
-      };
-      recorderRef.current = recorder;
-      recorder.start();
-      setRecording(true);
-      setMessage(undefined);
-    } catch {
-      setMessage({ tone: "error", text: "Microphone access was not granted." });
-    }
-  }
-
-  async function transcribeAudio(blob: Blob) {
-    setTranscribing(true);
-    setMessage(undefined);
-    const form = new FormData();
-    const extension = blob.type.includes("mp4") ? "m4a" : blob.type.includes("ogg") ? "ogg" : "webm";
-    form.set("audio", new File([blob], `voice-note.${extension}`, { type: blob.type || "audio/webm" }));
-    try {
-      const response = await fetch("/api/capture/transcribe", { method: "POST", body: form });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(String(body.error || "Transcription failed."));
-      setContent((current) => current ? `${current}\n\n${body.text}` : String(body.text));
-      setMessage({ tone: "success", text: "Voice note transcribed. Review it, then save when ready." });
-    } catch (error) {
-      setMessage({ tone: "error", text: error instanceof Error ? error.message : "Transcription failed." });
-    } finally {
-      setTranscribing(false);
-    }
-  }
-
-  async function syncProvider(provider: string) {
-    setSyncingProvider(provider); setMessage(undefined);
-    try {
-      const response = await fetch(`/api/oauth/${encodeURIComponent(provider)}/sync`, { method: "POST" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Connected source sync failed.");
-      setMessage({ tone: "success", text: `Google synced ${Number(payload.imported || 0)} new or changed items${payload.removed ? ` and removed ${payload.removed}` : ""}.` });
-      await loadRecent();
-    } catch (syncError) {
-      setMessage({ tone: "error", text: syncError instanceof Error ? syncError.message : "Connected source sync failed." });
-      await loadRecent();
-    } finally { setSyncingProvider(undefined); }
-  }
-
-  async function createImage() {
-    if (!imagePrompt.trim()) return;
-    setGeneratingImage(true); setMessage(undefined);
-    try {
-      const response = await fetch("/api/media/image", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt: imagePrompt.trim(), aspectRatio: imageRatio }) });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(String(payload.error || "Image generation failed."));
-      setGeneratedImage({ dataUrl: String(payload.image), model: String(payload.model || "Gemini") });
-      setMessage({ tone: "success", text: "Visual created. Download it or move it into the capture inbox." });
-    } catch (error) {
-      setMessage({ tone: "error", text: error instanceof Error ? error.message : "Image generation failed." });
-    } finally { setGeneratingImage(false); }
-  }
-
-  async function attachGeneratedImage() {
-    if (!generatedImage) return;
-    const blob = await fetch(generatedImage.dataUrl).then((response) => response.blob());
-    chooseFile(new File([blob], `asael-${Date.now()}.jpg`, { type: blob.type || "image/jpeg" }));
-    if (!title.trim()) setTitle(imagePrompt.trim().slice(0, 120));
-    setGeneratedImage(undefined);
-    setMessage({ tone: "success", text: "Generated visual moved into the capture inbox. Add tags, then save it to memory." });
   }
 
   async function submitCapture(event: React.FormEvent) {
     event.preventDefault();
-    if (blocked) return setMessage({ tone: "error", text: blocked });
-    if (!file && !content.trim()) return setMessage({ tone: "error", text: "Write a note or attach a supported text file." });
+    if (captureBlocked) return setCaptureNotice({ tone: "error", text: captureBlocked });
+    if (!file && !content.trim()) return setCaptureNotice({ tone: "error", text: "Write a note or choose a file to preserve." });
     setSubmitting(true);
-    setMessage(undefined);
+    setCaptureNotice(undefined);
     if (!navigator.onLine) {
       await queueCurrentCapture();
       setSubmitting(false);
@@ -173,19 +217,27 @@ export function CaptureWorkspace() {
     }
     const form = captureForm({ title: title.trim(), content: content.trim(), tags: tags.trim(), file });
     try {
-      const response = await fetch("/api/capture", {
-        method: "POST", body: form,
-        headers: { "idempotency-key": crypto.randomUUID() },
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(String(body.error || "Capture failed."));
-      setTitle(""); setContent(""); setTags(""); setFile(undefined);
-      if (inputRef.current) inputRef.current.value = "";
-      setMessage({ tone: "success", text: `“${body.capture?.title || "Capture"}” is queued for indexing.` });
-      window.setTimeout(() => void loadRecent(), 1800);
-    } catch (error) {
-      if (!navigator.onLine || error instanceof TypeError) await queueCurrentCapture();
-      else setMessage({ tone: "error", text: error instanceof Error ? error.message : "Capture failed." });
+      const response = await fetch("/api/capture", { method: "POST", body: form, headers: { "idempotency-key": crypto.randomUUID() } });
+      const payload = (await response.json().catch(() => ({}))) as {
+        job?: CaptureJob;
+        asset?: CaptureAsset;
+        capture?: { title?: string };
+        ingestion?: { status?: string; reason?: string };
+        error?: string;
+      };
+      if (!response.ok) throw new Error(payload.error || "Capture failed.");
+      resetCaptureDraft();
+      if (payload.job) {
+        completedJobRef.current = undefined;
+        setActiveJob(payload.job);
+        setCaptureNotice({ tone: "success", text: `“${payload.capture?.title || payload.asset?.filename || "Capture"}” is stored and queued for indexing.` });
+      } else if (payload.asset) {
+        setCaptureNotice({ tone: "warning", text: `Original file stored, but it was not indexed${payload.ingestion?.reason ? `: ${payload.ingestion.reason}` : "."}` });
+      }
+      await loadWorkspace();
+    } catch (submitError) {
+      if (!navigator.onLine || submitError instanceof TypeError) await queueCurrentCapture();
+      else setCaptureNotice({ tone: "error", text: submitError instanceof Error ? submitError.message : "Capture failed." });
     } finally {
       setSubmitting(false);
     }
@@ -193,132 +245,240 @@ export function CaptureWorkspace() {
 
   async function queueCurrentCapture() {
     await queueOfflineCapture({ title: title.trim(), content: content.trim(), tags: tags.trim(), file });
-    setTitle(""); setContent(""); setTags(""); setFile(undefined);
-    if (inputRef.current) inputRef.current.value = "";
-    const pending = await listOfflineCaptures(); setOfflinePending(pending.length);
-    setMessage({ tone: "success", text: "Saved privately on this device. Asael will index it when you are back online." });
+    resetCaptureDraft();
+    const pending = await listOfflineCaptures();
+    setOfflinePending(pending.length);
+    setCaptureNotice({ tone: "success", text: "Saved privately on this device. Asael will store and index it when you are back online." });
   }
 
+  function resetCaptureDraft() {
+    setTitle("");
+    setContent("");
+    setTags("");
+    setFile(undefined);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  async function deleteAsset(id: string) {
+    setDeletingAsset(id);
+    try {
+      const response = await fetch(`/api/capture/assets/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "The file could not be deleted.");
+      setCaptureNotice({ tone: "success", text: "Original file, indexed knowledge, and linked memory were removed." });
+      await loadWorkspace();
+    } catch (deleteError) {
+      setCaptureNotice({ tone: "error", text: deleteError instanceof Error ? deleteError.message : "The file could not be deleted." });
+    } finally {
+      setDeletingAsset(undefined);
+    }
+  }
+
+  const googleGrant = oauthGrants.find((grant) => grant.provider === "google" && grant.status !== "revoked");
+  const activeSourceCount = googleGrant
+    ? 3 + (googleGrant.scopes.some((scope) => scope.endsWith("/auth/photospicker.mediaitems.readonly")) ? 1 : 0)
+    : 0;
+
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 lg:py-10">
-      <header className="border-b border-line pb-6">
-        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Capture inbox</p>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Save it before it disappears.</h1>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">Notes and text files become searchable knowledge with source provenance.</p>
-        {offlinePending ? <p className="mt-3 inline-flex items-center rounded-full bg-warning/10 px-2.5 py-1 text-xs font-semibold text-warning">{offlinePending} offline capture{offlinePending === 1 ? "" : "s"} waiting to sync</p> : null}
+    <div className="mx-auto w-full max-w-[96rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8 2xl:px-10">
+      <header className="flex flex-col gap-5 border-b border-line pb-6 xl:flex-row xl:items-end xl:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Capture</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Turn anything worth keeping into usable context.</h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">Record conversations, preserve original files, connect Google, and index everything with provenance. Saved knowledge becomes selectable context in Command.</p>
+        </div>
+        <div className="grid grid-cols-3 divide-x divide-line rounded-lg border border-line bg-surface">
+          <Metric value={knowledgeStats?.documents} label="Documents" />
+          <Metric value={knowledgeStats?.chunks} label="RAG chunks" />
+          <Metric value={activeSourceCount} label="Sources active" />
+        </div>
       </header>
 
-      <form onSubmit={submitCapture} className="py-7">
-        <div className="mb-4 flex items-center gap-3">
-          <button type="button" onClick={() => void toggleRecording()} disabled={transcribing || Boolean(file)} className={clsx("action-button", recording && "border-danger/60 text-danger")}>
-            {transcribing ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : recording ? <Square size={14} aria-hidden="true" /> : <Mic size={15} aria-hidden="true" />}
-            {transcribing ? "Transcribing…" : recording ? "Stop recording" : "Record voice note"}
-          </button>
-          <p className="text-xs text-muted">Transcription is editable and is not saved until you choose Save to memory.</p>
-        </div>
-        <label htmlFor="capture-content" className="sr-only">Note content</label>
-        <textarea
-          id="capture-content" value={content} onChange={(event) => setContent(event.target.value)}
-          disabled={Boolean(file) || submitting} rows={7}
-          placeholder={file ? "Remove the attachment to write a note instead." : "Write a thought, paste meeting notes, or record a decision…"}
-          className="w-full resize-y bg-transparent text-lg leading-8 outline-none placeholder:text-muted/65 disabled:cursor-not-allowed disabled:opacity-50"
-        />
+      {loadError ? <p role="alert" className="mt-4 border-l-2 border-danger bg-danger/5 px-3 py-2 text-sm text-danger">{loadError}</p> : null}
+      {offlinePending ? <p className="mt-4 inline-flex items-center gap-2 rounded-full bg-warning/10 px-3 py-1.5 text-xs font-semibold text-warning"><HardDrive size={13} aria-hidden="true" />{offlinePending} offline capture{offlinePending === 1 ? "" : "s"} waiting to sync</p> : null}
 
-        <div
-          onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
-          onDragOver={(event) => event.preventDefault()}
-          onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }}
-          onDrop={(event) => { event.preventDefault(); setDragging(false); chooseFile(event.dataTransfer.files[0]); }}
-          className={clsx("mt-4 flex min-h-20 items-center justify-between gap-3 rounded-lg border border-dashed px-4 transition-colors", dragging ? "border-primary bg-primary/5" : "border-line bg-surface")}
-        >
-          {file ? (
-            <div className="flex min-w-0 items-center gap-3"><FileText size={18} className="shrink-0 text-primary" aria-hidden="true" /><div className="min-w-0"><p className="truncate text-sm font-medium">{file.name}</p><p className="text-xs text-muted">{formatBytes(file.size)} · ready to upload</p></div></div>
+      <section className="grid gap-6 py-7 xl:grid-cols-[minmax(0,1.45fr)_minmax(20rem,.55fr)]" aria-labelledby="capture-composer-title">
+        <form onSubmit={mode === "record" ? (event) => event.preventDefault() : submitCapture} className="min-w-0">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div><h2 id="capture-composer-title" className="text-xl font-semibold tracking-tight">Capture something</h2><p className="mt-1 text-sm text-muted">Choose the shape of what you are saving. One clear workspace expands for each mode.</p></div>
+            <div className="inline-flex w-fit rounded-lg border border-line bg-surface p-1" role="tablist" aria-label="Capture type">
+              <ModeButton active={mode === "note"} onClick={() => { setFile(undefined); setMode("note"); }} icon={NotebookPen} label="Note" />
+              <ModeButton active={mode === "record"} onClick={() => setMode("record")} icon={AudioLines} label="Record" />
+              <ModeButton active={mode === "upload"} onClick={() => setMode("upload")} icon={Upload} label="Upload" />
+            </div>
+          </div>
+
+          {mode === "record" ? (
+            <LongRecordingStudio disabledReason={captureBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onIndexed={loadWorkspace} />
           ) : (
-            <div className="flex items-center gap-3"><Upload size={18} className="text-muted" aria-hidden="true" /><div><p className="text-sm font-medium">Drop a document, email, event, or image</p><p className="text-xs text-muted">PDF, DOCX, EML, ICS, PNG, JPG, WebP, or text · 5 MB max</p></div></div>
-          )}
-          <div className="flex shrink-0 items-center gap-2">
-            {file ? <button type="button" onClick={() => chooseFile(undefined)} className="grid size-11 place-items-center rounded-md hover:bg-surface-raised" aria-label="Remove attachment"><X size={17} /></button> : null}
-            <button type="button" onClick={() => inputRef.current?.click()} className="action-button"><Paperclip size={15} aria-hidden="true" />Choose file</button>
-            <button type="button" onClick={() => cameraInputRef.current?.click()} className="action-button"><Camera size={15} aria-hidden="true" />Scan</button>
-            <input ref={inputRef} data-testid="capture-file-input" type="file" className="sr-only" aria-label="Choose a file to capture" accept=".pdf,.docx,.eml,.ics,.png,.jpg,.jpeg,.webp,.txt,.md,.markdown,.csv,.json,.html,.htm,.yaml,.yml" onChange={(event) => chooseFile(event.target.files?.[0])} />
-            <input ref={cameraInputRef} type="file" className="sr-only" aria-label="Scan an image with the camera" accept="image/*" capture="environment" onChange={(event) => chooseFile(event.target.files?.[0])} />
-          </div>
-        </div>
+            <div className="mt-5 overflow-hidden rounded-xl border border-line bg-surface">
+              {mode === "note" ? (
+                <div className="p-5 sm:p-6">
+                  <label htmlFor="capture-content" className="text-xs font-semibold text-muted">Note</label>
+                  <textarea id="capture-content" value={content} onChange={(event) => setContent(event.target.value)} disabled={submitting} rows={10} placeholder="Write a thought, paste meeting notes, record a decision, or describe something you want Asael to remember…" className="mt-3 w-full resize-y bg-transparent text-lg leading-8 text-foreground outline-none placeholder:text-muted/60 disabled:opacity-60" />
+                  <button type="button" onClick={() => inputRef.current?.click()} className="mt-3 action-button"><Paperclip size={15} aria-hidden="true" />Attach a file instead</button>
+                </div>
+              ) : (
+                <div className="p-5 sm:p-6">
+                  <div onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { event.preventDefault(); setDragging(false); chooseFile(event.dataTransfer.files[0]); }} className={clsx("flex min-h-52 flex-col items-center justify-center rounded-lg border border-dashed px-5 py-8 text-center transition-colors", dragging ? "border-primary bg-primary/5" : "border-line bg-background")}>
+                    {file ? (
+                      <><span className="grid size-12 place-items-center rounded-lg bg-primary/10 text-primary"><FileText size={23} aria-hidden="true" /></span><p className="mt-3 max-w-full truncate font-semibold">{file.name}</p><p className="mt-1 text-xs text-muted">{formatBytes(file.size)} · ready to store</p><button type="button" onClick={() => chooseFile(undefined)} className="mt-3 action-button"><X size={15} aria-hidden="true" />Remove</button></>
+                    ) : (
+                      <><span className="grid size-12 place-items-center rounded-lg bg-surface-raised text-primary"><Upload size={23} aria-hidden="true" /></span><p className="mt-3 font-semibold">Drop any file here</p><p className="mt-1 max-w-lg text-sm leading-6 text-muted">Every original up to 5 MB is preserved. Documents, email, calendar files, images, office formats and common code or text files are indexed; unsupported formats stay available in your library.</p><div className="mt-4 flex flex-wrap justify-center gap-2"><button type="button" onClick={() => inputRef.current?.click()} className="primary-button"><Paperclip size={15} aria-hidden="true" />Choose file</button><button type="button" onClick={() => cameraInputRef.current?.click()} className="action-button"><ScanLine size={15} aria-hidden="true" />Scan with camera</button></div></>
+                    )}
+                  </div>
+                  <label className="mt-4 block text-xs font-semibold text-muted">Capture note <span className="font-normal">(optional)</span><textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={20_000} rows={3} placeholder="Why this matters, what to remember, or how Asael should use it…" className="mt-2 w-full resize-y rounded-lg border border-line bg-background px-3 py-3 text-sm leading-6 text-foreground outline-none focus:border-primary" /></label>
+                </div>
+              )}
 
-        <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          <label className="text-xs font-medium text-muted">Title <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} placeholder="Optional — generated when blank" className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-3 text-sm text-foreground outline-none focus:border-primary" /></label>
-          <label className="text-xs font-medium text-muted">Tags <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="project, meeting, decision" className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-3 text-sm text-foreground outline-none focus:border-primary" /></label>
-        </div>
-
-        <div className="mt-5 flex flex-col gap-3 border-t border-line pt-5 sm:flex-row sm:items-center sm:justify-between">
-          <div aria-live="polite" className={clsx("min-h-5 text-sm", message?.tone === "success" ? "text-success" : "text-danger")}>{message?.text}</div>
-          <button type="submit" disabled={submitting || Boolean(blocked)} title={blocked} className="primary-button min-w-36">{submitting ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}{submitting ? "Saving…" : "Save to memory"}</button>
-        </div>
-      </form>
-
-      <section className="border-t border-line py-7" aria-labelledby="visual-studio-title">
-        <div className="grid gap-6 lg:grid-cols-[0.92fr_1.08fr] lg:items-start">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Gemini visual studio</p>
-            <h2 id="visual-studio-title" className="mt-2 text-xl font-semibold tracking-tight">Turn an idea into an image.</h2>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-muted">Create a private working visual, then download it or place it directly into your capture inbox.</p>
-            <label className="mt-5 block text-xs font-medium text-muted">Describe the visual
-              <textarea value={imagePrompt} onChange={(event) => setImagePrompt(event.target.value)} maxLength={4_000} rows={4} placeholder="A calm, cinematic dashboard illustration showing a network of personal AI agents…" className="mt-2 w-full resize-y rounded-lg border border-line bg-surface px-3 py-3 text-sm leading-6 text-foreground outline-none focus:border-primary" />
-            </label>
-            <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
-              <label className="text-xs font-medium text-muted">Aspect ratio
-                <select value={imageRatio} onChange={(event) => setImageRatio(event.target.value as typeof imageRatio)} className="mt-2 block min-h-11 rounded-md border border-line bg-surface px-3 text-sm text-foreground">
-                  <option value="1:1">Square · 1:1</option><option value="16:9">Landscape · 16:9</option><option value="9:16">Portrait · 9:16</option><option value="4:3">Classic · 4:3</option><option value="3:4">Tall · 3:4</option>
-                </select>
-              </label>
-              <button type="button" onClick={() => void createImage()} disabled={generatingImage || imagePrompt.trim().length < 3 || Boolean(blocked)} className="primary-button min-h-11">
-                {generatingImage ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Sparkles size={16} aria-hidden="true" />}{generatingImage ? "Creating…" : "Create visual"}
-              </button>
-            </div>
-          </div>
-          <div className="relative grid min-h-72 place-items-center overflow-hidden rounded-xl border border-line bg-[radial-gradient(circle_at_top_right,color-mix(in_oklab,var(--color-primary)_16%,transparent),transparent_52%)] p-3">
-            {generatedImage ? <>
-              <Image src={generatedImage.dataUrl} alt={`AI-generated visual: ${imagePrompt}`} width={1024} height={1024} unoptimized className="max-h-[32rem] w-auto rounded-lg object-contain shadow-2xl" />
-              <div className="absolute inset-x-3 bottom-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-background/90 p-2 backdrop-blur">
-                <span className="truncate text-xs text-muted">{generatedImage.model}</span>
-                <div className="flex gap-2"><a href={generatedImage.dataUrl} download="asael-visual.jpg" className="action-button"><Download size={14} aria-hidden="true" />Download</a><button type="button" onClick={() => void attachGeneratedImage()} className="primary-button"><ImageIcon size={14} aria-hidden="true" />Use in capture</button></div>
+              <div className="grid gap-3 border-t border-line bg-background px-5 py-4 sm:grid-cols-2 sm:px-6">
+                <label className="text-xs font-semibold text-muted">Title<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} placeholder="Optional — created automatically when blank" className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-3 text-sm text-foreground outline-none focus:border-primary" /></label>
+                <label className="text-xs font-semibold text-muted">Tags<input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="project, meeting, decision" className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-3 text-sm text-foreground outline-none focus:border-primary" /></label>
               </div>
-            </> : <div className="max-w-sm text-center"><ImageIcon size={34} className="mx-auto text-primary/70" aria-hidden="true" /><p className="mt-3 text-sm font-medium">Your generated visual appears here</p><p className="mt-1 text-xs leading-5 text-muted">Nothing is stored until you explicitly move it into capture.</p></div>}
+              <div className="flex flex-col gap-3 border-t border-line px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                <p className="text-xs leading-5 text-muted">Stored privately · redacted before indexing · selectable in Command context</p>
+                <button type="submit" disabled={submitting || Boolean(captureBlocked)} title={captureBlocked} className="primary-button min-w-40">{submitting ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}{submitting ? "Storing…" : "Store and index"}</button>
+              </div>
+            </div>
+          )}
+
+          <input ref={inputRef} data-testid="capture-file-input" type="file" className="sr-only" aria-label="Choose a file to capture" onChange={(event) => chooseFile(event.target.files?.[0])} />
+          <input ref={cameraInputRef} type="file" className="sr-only" aria-label="Scan an image with the camera" accept="image/*" capture="environment" onChange={(event) => chooseFile(event.target.files?.[0])} />
+          {captureNotice ? <p role={captureNotice.tone === "error" ? "alert" : "status"} className={clsx("mt-3 text-sm leading-6", captureNotice.tone === "error" ? "text-danger" : captureNotice.tone === "warning" ? "text-warning" : "text-success")}>{captureNotice.text}</p> : null}
+        </form>
+
+        <aside className="border-t border-line pt-5 xl:border-l xl:border-t-0 xl:pl-6 xl:pt-0" aria-label="Capture processing status">
+          <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold">Processing</p><p className="mt-1 text-xs text-muted">What happens after you save</p></div>{loadingWorkspace ? <Loader2 size={16} className="animate-spin text-muted" aria-label="Refreshing capture data" /> : null}</div>
+          <ol className="mt-4 space-y-4">
+            <FlowStep number="1" title="Preserve original" detail="The source file or segmented audio is stored first." active={!activeJob || activeJob.status === "queued"} />
+            <FlowStep number="2" title="Extract and understand" detail="Text, OCR, metadata and transcription are normalized." active={activeJob?.status === "running"} />
+            <FlowStep number="3" title="Index and link" detail="RAG chunks, provenance, memory and graph links are created." active={activeJob?.status === "completed"} />
+          </ol>
+          {activeJob ? (
+            <div className={clsx("mt-5 border-l-2 px-4 py-3", activeJob.status === "failed" ? "border-danger bg-danger/5" : activeJob.status === "completed" ? "border-success bg-success/5" : "border-primary bg-primary/5")}><p className="flex items-center gap-2 text-sm font-semibold">{activeJob.status === "failed" ? <CircleAlert size={15} /> : activeJob.status === "completed" ? <CheckCircle2 size={15} /> : <Loader2 size={15} className="animate-spin" />}{jobLabel(activeJob.status)}</p><p className="mt-1 text-xs leading-5 text-muted">{activeJob.lastError || jobDetail(activeJob)}</p>{activeJob.status === "running" ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-line"><div className="h-full w-2/3 animate-pulse rounded-full bg-primary" /></div> : null}</div>
+          ) : <p className="mt-5 border-l-2 border-line pl-4 text-sm leading-6 text-muted">No active capture. Your latest job will appear here with honest queued, running, ready, or failed status.</p>}
+          <div className="mt-6 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-line pt-5 text-xs">
+            <StatusFact icon={Database} label={`${knowledgeStats?.embedded || 0} embedded chunks`} />
+            <StatusFact icon={FileStack} label={`${assets.length} originals retained`} />
+            <StatusFact icon={Library} label="Command context ready" />
+            <StatusFact icon={Clock3} label="Background indexing" />
+          </div>
+        </aside>
+      </section>
+
+      <ConnectedSources providers={oauthProviders} grants={oauthGrants} loading={loadingWorkspace} onRefresh={loadWorkspace} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} />
+
+      <VisualStudio configured={geminiConfigured} model={geminiImageModel} disabledReason={visualBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onAssetsChanged={loadWorkspace} />
+
+      <section className="border-t border-line pt-7" aria-labelledby="capture-library-title">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Capture library</p><h2 id="capture-library-title" className="mt-2 text-xl font-semibold tracking-tight">Originals and searchable knowledge.</h2><p className="mt-2 text-sm leading-6 text-muted">Open or download preserved files. Indexed documents are available to the context selector in Command conversations.</p></div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <label className="relative min-w-56"><span className="sr-only">Search captured knowledge</span><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" /><input value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="Search this list" className="min-h-11 w-full rounded-md border border-line bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary" /></label>
+            <label><span className="sr-only">Filter by source</span><select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className="min-h-11 rounded-md border border-line bg-surface px-3 text-sm text-foreground"><option value="all">All sources</option><option value="capture">Capture</option><option value="mail">Email</option><option value="drive">Drive</option><option value="calendar">Calendar</option><option value="photos">Photos</option></select></label>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-6 2xl:grid-cols-[minmax(22rem,.72fr)_minmax(0,1.28fr)]">
+          <div className="overflow-hidden rounded-xl border border-line bg-surface">
+            <div className="flex items-center justify-between gap-3 border-b border-line bg-surface-raised px-4 py-3"><div><p className="text-sm font-semibold">Original files</p><p className="mt-0.5 text-xs text-muted">Private, retrievable, and deletable</p></div><span className="text-xs text-muted">{assets.length}</span></div>
+            <div className="max-h-[32rem] divide-y divide-line overflow-y-auto">
+              {assets.length ? assets.map((asset) => (
+                <div key={asset.id} className="group px-4 py-3"><div className="flex items-start gap-3"><span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-md bg-background text-primary"><FileText size={16} aria-hidden="true" /></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{asset.filename}</p><p className="mt-1 truncate text-xs text-muted">{formatBytes(asset.byteCount)} · {asset.storageKind} · {formatTime(asset.updatedAt)}</p><p className={clsx("mt-1 text-xs font-semibold", asset.status === "failed" || asset.status === "unsupported" ? "text-warning" : asset.status === "indexed" ? "text-success" : "text-muted")}>{assetStatusLabel(asset)}</p>{asset.error ? <p className="mt-1 line-clamp-2 text-xs text-danger">{asset.error}</p> : null}</div><div className="flex shrink-0 gap-1"><a href={`/api/capture/assets/${encodeURIComponent(asset.id)}?content=1&download=1`} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Download ${asset.filename}`}><Download size={14} /></a><button type="button" onClick={() => void deleteAsset(asset.id)} disabled={deletingAsset === asset.id} className="grid size-9 place-items-center rounded-md text-muted hover:bg-danger/10 hover:text-danger" aria-label={`Delete ${asset.filename}`}>{deletingAsset === asset.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}</button></div></div></div>
+              )) : <p className="px-4 py-8 text-center text-sm text-muted">Uploaded and generated originals will appear here.</p>}
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-line bg-surface">
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-line bg-surface-raised px-4 py-3 text-xs font-semibold text-muted sm:grid-cols-[minmax(0,1.2fr)_minmax(10rem,.8fr)_auto]"><span>Knowledge</span><span className="hidden sm:block">Source</span><span>Index</span></div>
+            <div className="max-h-[32rem] divide-y divide-line overflow-y-auto">
+              {filteredDocuments.length ? filteredDocuments.map((document) => (
+                <div key={document.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1.2fr)_minmax(10rem,.8fr)_auto] sm:items-center"><div className="min-w-0"><p className="truncate text-sm font-medium">{document.title}</p><p className="mt-1 text-xs text-muted">Updated {formatTime(document.updatedAt)}</p></div><div className="hidden min-w-0 sm:block"><p className="truncate text-xs text-muted">{sourceLabel(document.source)}</p><p className="mt-1 text-xs text-muted">{documentSource(document.source)}</p></div><p className="whitespace-nowrap text-xs font-semibold text-success">{document.chunkCount} chunks</p></div>
+              )) : <p className="px-4 py-8 text-center text-sm text-muted">{documents.length ? "No documents match this filter." : "Captured knowledge will appear here after indexing."}</p>}
+            </div>
           </div>
         </div>
       </section>
 
-      <section className="border-t border-line py-6">
-        <h2 className="text-sm font-semibold">Connected sources</h2>
-        <p className="mt-1 text-xs text-muted">Read-only Gmail, Calendar, and Drive access is granted to your Google account and can be revoked at any time.</p>
-        <div className="mt-4 divide-y divide-line">
-          {oauthProviders.map((provider) => {
-            const grant = oauthGrants.find((item) => item.provider === provider.id);
-            return <div key={provider.id} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-medium">{provider.label}</p><p className={clsx("text-xs", grant?.syncStatus === "error" ? "text-danger" : "text-muted")}>{grant ? grant.syncStatus === "error" ? grant.syncError || "Sync needs attention" : grant.lastSyncedAt ? `${grant.syncedItems || 0} items synced · last ${formatTime(grant.lastSyncedAt)}` : `Connected · ${grant.scopes.length} read-only scopes` : provider.configured ? "Ready to connect" : "Deployment credentials required"}</p></div>{grant ? <div className="flex gap-2"><button type="button" className="primary-button" disabled={syncingProvider === provider.id} onClick={() => void syncProvider(provider.id)}>{syncingProvider === provider.id ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />} Sync now</button><button type="button" className="action-button" onClick={async () => { await fetch(`/api/oauth/${provider.id}`, { method: "DELETE" }); await loadRecent(); }}>Disconnect</button></div> : <a href={provider.authorizeUrl} aria-disabled={!provider.configured} className={clsx("action-button", !provider.configured && "pointer-events-none opacity-50")}>Connect {provider.label}</a>}</div>;
-          })}
-        </div>
-      </section>
-
-      <section className="border-t border-line pt-6">
-        <div className="flex items-baseline justify-between gap-3"><h2 className="text-sm font-semibold">Recently indexed</h2><span className="text-xs text-muted">{documents.length} shown</span></div>
-        <div className="mt-3 divide-y divide-line">
-          {documents.length ? documents.map((document) => (
-            <div key={document.id} className="grid gap-1 py-3 sm:grid-cols-[1fr_auto] sm:items-center">
-              <div className="min-w-0"><p className="truncate text-sm font-medium">{document.title}</p><p className="truncate text-xs text-muted">{document.source}</p></div>
-              <p className="text-xs text-muted">{document.chunkCount} chunks · {formatTime(document.updatedAt)}</p>
-            </div>
-          )) : <p className="py-6 text-sm text-muted">Captured knowledge will appear here after indexing.</p>}
-        </div>
-      </section>
+      <div className="h-10" aria-hidden="true" />
     </div>
   );
 }
 
-function formatBytes(bytes: number) { return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
-function formatTime(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "recently" : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date); }
+function Metric({ value, label }: { value?: number; label: string }) {
+  return <div className="min-w-24 px-3 py-2.5 text-center"><p className="text-lg font-semibold tabular-nums">{value ?? "—"}</p><p className="text-[11px] font-medium text-muted">{label}</p></div>;
+}
+
+function ModeButton({ active, onClick, icon: Icon, label }: { active: boolean; onClick: () => void; icon: typeof NotebookPen; label: string }) {
+  return <button type="button" role="tab" aria-selected={active} onClick={onClick} className={clsx("inline-flex min-h-10 items-center gap-2 rounded-md px-3 text-sm font-semibold transition", active ? "bg-background text-foreground shadow-sm" : "text-muted hover:text-foreground")}><Icon size={15} aria-hidden="true" />{label}</button>;
+}
+
+function FlowStep({ number, title, detail, active }: { number: string; title: string; detail: string; active?: boolean }) {
+  return <li className="flex gap-3"><span className={clsx("grid size-7 shrink-0 place-items-center rounded-full border text-xs font-semibold", active ? "border-primary bg-primary text-primary-ink" : "border-line bg-surface text-muted")}>{number}</span><div><p className="text-sm font-semibold">{title}</p><p className="mt-0.5 text-xs leading-5 text-muted">{detail}</p></div></li>;
+}
+
+function StatusFact({ icon: Icon, label }: { icon: typeof Database; label: string }) {
+  return <span className="flex items-center gap-2 text-muted"><Icon size={14} className="shrink-0 text-primary" aria-hidden="true" />{label}</span>;
+}
+
+function formatBytes(bytes: number) {
+  return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "recently" : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric" }).format(date);
+}
+
+function jobLabel(status: CaptureJob["status"]) {
+  if (status === "completed") return "Ready for Command";
+  if (status === "failed") return "Indexing needs attention";
+  if (status === "canceled") return "Indexing canceled";
+  if (status === "running") return "Extracting and indexing";
+  return "Waiting for indexer";
+}
+
+function jobDetail(job: CaptureJob) {
+  if (job.status === "completed") return "RAG chunks and linked memories are ready.";
+  if (job.status === "running") return `Background worker is processing this capture${job.attempt ? ` · attempt ${job.attempt}` : ""}.`;
+  if (job.status === "queued") return "The original is safe. Processing will begin in the background.";
+  return "The original remains safely stored.";
+}
+
+function assetStatusLabel(asset: CaptureAsset) {
+  if (asset.status === "indexed") return "Indexed and searchable";
+  if (asset.status === "queued") return "Stored · indexing queued";
+  if (asset.status === "unsupported") return "Stored · not indexed";
+  if (asset.status === "failed") return "Stored · processing failed";
+  return asset.extractionStatus === "pending" ? "Stored · waiting for extraction" : "Stored privately";
+}
+
+function documentSource(source: string) {
+  if (source.startsWith("google:mail:")) return "mail";
+  if (source.startsWith("google:drive:")) return "drive";
+  if (source.startsWith("google:calendar:")) return "calendar";
+  if (source.startsWith("google:photos:")) return "photos";
+  return "capture";
+}
+
+function sourceLabel(source: string) {
+  const category = documentSource(source);
+  if (category === "mail") return "Google Email";
+  if (category === "drive") return "Google Drive";
+  if (category === "calendar") return "Google Calendar";
+  if (category === "photos") return "Google Photos";
+  if (source.startsWith("capture:recording:")) return "Recorded conversation";
+  if (source.startsWith("capture:asset:")) return "Captured file";
+  return source.replace(/^\w+:\/\//, "").slice(0, 100) || "Manual capture";
+}
 
 function captureForm(capture: Pick<OfflineCapture, "title" | "content" | "tags" | "file">) {
-  const form = new FormData(); form.set("title", capture.title); form.set("content", capture.content); form.set("tags", capture.tags); if (capture.file) form.set("file", capture.file); return form;
+  const form = new FormData();
+  form.set("title", capture.title);
+  form.set("content", capture.content);
+  form.set("tags", capture.tags);
+  if (capture.file) form.set("file", capture.file);
+  return form;
 }
 
 async function flushOfflineCaptures() {
@@ -329,6 +489,8 @@ async function flushOfflineCaptures() {
       const response = await fetch("/api/capture", { method: "POST", body: captureForm(capture), headers: { "idempotency-key": capture.id } });
       if (!response.ok) break;
       await removeOfflineCapture(capture.id);
-    } catch { break; }
+    } catch {
+      break;
+    }
   }
 }
