@@ -10,21 +10,44 @@ async function DELETEHandler(request: Request, context: { params: Promise<{ prov
   if (!isOAuthProvider(provider)) return Response.json({ error: "Unsupported OAuth provider." }, { status: 404 });
   let security;
   try { security = await authorizeRequest({ request, action: "write.memory", resourceType: "oauth_grant", metadata: { provider, operation: "revoke" } }); } catch (error) { return forbiddenResponse(error); }
+
+  let providerToken = "";
+  let providerRevocation: "revoked" | "not_needed" | "failed" = "not_needed";
   try {
     const secrets = await getOAuthGrantSecrets(security.tenantId, security.actorId, provider);
     if (secrets) {
-      const providerToken = String(secrets.tokens.refresh_token || secrets.tokens.access_token || "");
-      await revokeOAuthAccess(provider, providerToken);
+      providerToken = String(secrets.tokens.refresh_token || secrets.tokens.access_token || "");
     }
+  } catch {
+    providerRevocation = "failed";
+  }
+
+  try {
+    // Seal the local grant before relying on a remote provider request. A slow or
+    // unavailable provider must never leave the local connection active.
     await revokeOAuthGrant(security.tenantId, security.actorId, provider);
+  } catch {
     return Response.json(
-      { revoked: true, provider, providerRevoked: Boolean(secrets) },
-      { headers: { "cache-control": "private, no-store" } },
-    );
-  } catch (error) {
-    return Response.json(
-      { error: error instanceof Error ? error.message : "OAuth access could not be revoked." },
-      { status: 502 },
+      { error: "The local OAuth connection could not be disconnected." },
+      { status: 500, headers: { "cache-control": "private, no-store" } },
     );
   }
+
+  if (providerToken) {
+    try {
+      providerRevocation = await revokeOAuthAccess(provider, providerToken) ? "revoked" : "not_needed";
+    } catch {
+      providerRevocation = "failed";
+    }
+  }
+
+  return Response.json(
+    {
+      revoked: true,
+      provider,
+      providerRevoked: providerRevocation === "revoked",
+      providerRevocation,
+    },
+    { headers: { "cache-control": "private, no-store" } },
+  );
 }

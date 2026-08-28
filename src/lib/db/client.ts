@@ -122,6 +122,9 @@ export const tenantRootPolicyTables = [
   "omni_mission_artifacts",
   "omni_custom_skills",
   "omni_custom_agents",
+  "omni_capture_recordings",
+  "omni_capture_segments",
+  "omni_capture_assets",
 ] as const;
 
 export const tenantChildPolicyTables = [
@@ -638,6 +641,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[26],
       up: async (sql) => {
         await ensureMissionKernel(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[27],
+      up: async (sql) => {
+        await ensureCaptureRecordings(sql);
         await ensureTenantIsolationPolicies(sql);
       },
     },
@@ -1576,6 +1586,7 @@ async function runTableMigrations(sql: SqlClient) {
   await ensureProactiveDailyBriefs(sql);
   await ensurePersonalNotificationCenter(sql);
   await ensurePersonalProjects(sql);
+  await ensureCaptureRecordings(sql);
   await sql`
     CREATE INDEX IF NOT EXISTS omni_memories_text_idx
     ON omni_memories
@@ -2780,6 +2791,95 @@ async function ensureProjectArtifactReflections(sql: SqlClient) {
   await sql`ALTER TABLE omni_project_artifacts ADD COLUMN IF NOT EXISTS reflection_memory_id TEXT REFERENCES omni_memories(id) ON DELETE SET NULL`;
   await sql`ALTER TABLE omni_project_artifacts ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ`;
   await sql`CREATE INDEX IF NOT EXISTS omni_project_artifacts_reviewed_idx ON omni_project_artifacts (tenant_id, agent_id, reviewed_at DESC) WHERE verdict IS NOT NULL`;
+}
+
+async function ensureCaptureRecordings(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_capture_assets (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'default',
+      actor_id TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      media_type TEXT NOT NULL,
+      extension TEXT NOT NULL DEFAULT '',
+      byte_count INTEGER NOT NULL,
+      content_sha256 TEXT NOT NULL,
+      storage_kind TEXT NOT NULL DEFAULT 'database',
+      content BYTEA NOT NULL,
+      status TEXT NOT NULL DEFAULT 'stored',
+      extraction_status TEXT NOT NULL DEFAULT 'pending',
+      ingest_job_id TEXT,
+      knowledge_document_id TEXT,
+      error TEXT,
+      tags TEXT[] NOT NULL DEFAULT '{}',
+      metadata JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_capture_assets_owner_updated_idx
+    ON omni_capture_assets (tenant_id, actor_id, updated_at DESC)
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_capture_recordings (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'default',
+      actor_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'recording',
+      language TEXT NOT NULL DEFAULT 'en-US',
+      tags TEXT[] NOT NULL DEFAULT '{}',
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ,
+      duration_ms BIGINT NOT NULL DEFAULT 0,
+      byte_count BIGINT NOT NULL DEFAULT 0,
+      segment_count INTEGER NOT NULL DEFAULT 0,
+      transcript TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL,
+      knowledge_document_id TEXT,
+      ingest_job_id TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_capture_recordings_owner_updated_idx
+    ON omni_capture_recordings (tenant_id, actor_id, updated_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_capture_recordings_source_idx
+    ON omni_capture_recordings (tenant_id, source)
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_capture_segments (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'default',
+      actor_id TEXT NOT NULL,
+      recording_id TEXT NOT NULL REFERENCES omni_capture_recordings(id) ON DELETE CASCADE,
+      segment_index INTEGER NOT NULL,
+      mime_type TEXT NOT NULL,
+      byte_count INTEGER NOT NULL,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      audio_sha256 TEXT NOT NULL,
+      audio_data BYTEA NOT NULL,
+      transcript TEXT NOT NULL DEFAULT '',
+      transcription_status TEXT NOT NULL DEFAULT 'pending',
+      transcription_model TEXT,
+      transcription_error TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, recording_id, segment_index)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_capture_segments_recording_idx
+    ON omni_capture_segments (tenant_id, actor_id, recording_id, segment_index ASC)
+  `;
 }
 
 async function ensureOAuthIncrementalSyncHealth(sql: SqlClient) {

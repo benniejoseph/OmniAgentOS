@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { OPERATION_QUEUE_LEASE_SECONDS } from "@/lib/config";
+import { updateCaptureAssetStatus } from "@/lib/capture/assets";
+import { markCaptureRecordingIndexed } from "@/lib/capture/recordings";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { runEvaluationSuite } from "@/lib/evaluations/runner";
 import {
@@ -8,6 +10,7 @@ import {
 } from "@/lib/memory/consolidator";
 import type { AgentMode } from "@/lib/orchestration/types";
 import { ingestTextDocument } from "@/lib/rag/retriever";
+import { deleteKnowledgeDocumentsBySourcePrefix } from "@/lib/rag/store";
 import {
   appendRunEvent,
   getAgentRun,
@@ -18,6 +21,7 @@ import {
   completeOperationJob,
   enqueueOperationJob,
   failOperationJob,
+  getOperationJob,
   heartbeatOperationJob,
   leaseOperationJobs,
   listRunnableBackgroundJobTenantIds,
@@ -39,6 +43,11 @@ export const knowledgeIngestJobRequestSchema = z
     source: z.string().max(2_000).optional(),
     sourceType: z.enum(["text", "url", "file", "api", "manual"]).optional(),
     tags: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
+    metadata: z.record(
+      z.string().max(80),
+      z.union([z.string().max(2_000), z.number(), z.boolean(), z.null()]),
+    ).optional(),
+    evidenceRefs: z.array(z.string().trim().min(1).max(500)).max(100).optional(),
   })
   .strict();
 
@@ -313,6 +322,11 @@ async function processBackgroundOperationJob(
       leaseOwner,
       job.tenantId,
     );
+    if (job.type === "knowledge.ingest" && failed?.status === "failed") {
+      await markCaptureIngestFailureSafely(job, message);
+    } else if (job.type === "knowledge.ingest" && !failed) {
+      await cleanCanceledCaptureIngestSafely(job);
+    }
     return {
       id: job.id,
       type: job.type,
@@ -326,6 +340,45 @@ async function processBackgroundOperationJob(
     };
   } finally {
     guard.stop();
+  }
+}
+
+async function cleanCanceledCaptureIngestSafely(job: OperationJobRecord) {
+  try {
+    const current = await getOperationJob(job.id, { tenantId: job.tenantId });
+    if (current?.status !== "canceled") return;
+    const parsed = knowledgeIngestJobRequestSchema.safeParse(job.payload.request);
+    if (!parsed.success || !parsed.data.source?.startsWith("capture:")) return;
+    const metadata = parsed.data.metadata || {};
+    if (typeof metadata.captureAssetId !== "string" && typeof metadata.captureRecordingId !== "string") return;
+    await deleteKnowledgeDocumentsBySourcePrefix(parsed.data.source, { tenantId: job.tenantId });
+  } catch {
+    // The delete route performs the same purge. This is a best-effort race
+    // guard for a worker that finished after its lease was canceled.
+  }
+}
+
+async function markCaptureIngestFailureSafely(job: OperationJobRecord, message: string) {
+  const parsed = knowledgeIngestJobRequestSchema.safeParse(job.payload.request);
+  if (!parsed.success) return;
+  const metadata = parsed.data.metadata || {};
+  const actorId = typeof metadata.actorId === "string" ? metadata.actorId : undefined;
+  if (!actorId) return;
+  try {
+    if (typeof metadata.captureAssetId === "string") {
+      await updateCaptureAssetStatus(metadata.captureAssetId, { tenantId: job.tenantId, actorId }, {
+        status: "failed",
+        extractionStatus: "completed",
+        ingestJobId: job.id,
+        error: message,
+      });
+    }
+    if (typeof metadata.captureRecordingId === "string") {
+      await markCaptureRecordingIndexed(metadata.captureRecordingId, { tenantId: job.tenantId, actorId }, { error: message });
+    }
+  } catch {
+    // The operation job remains the durable source of failure truth if the
+    // convenience status projection cannot be updated.
   }
 }
 
@@ -394,6 +447,28 @@ async function executeBackgroundOperation(
       idempotencyKey: job.id,
       abortSignal,
     });
+    const metadata = parsed.metadata || {};
+    const actorId = typeof metadata.actorId === "string" ? metadata.actorId : undefined;
+    if (actorId) {
+      try {
+        if (typeof metadata.captureAssetId === "string") {
+          await updateCaptureAssetStatus(metadata.captureAssetId, { tenantId: job.tenantId, actorId }, {
+            status: "indexed",
+            extractionStatus: "completed",
+            ingestJobId: job.id,
+            knowledgeDocumentId: result.document.id,
+          });
+        }
+        if (typeof metadata.captureRecordingId === "string") {
+          await markCaptureRecordingIndexed(metadata.captureRecordingId, { tenantId: job.tenantId, actorId }, {
+            knowledgeDocumentId: result.document.id,
+          });
+        }
+      } catch {
+        // Indexing is the source of truth; a deleted or temporarily unavailable
+        // Capture projection must not turn a completed ingest into a retry.
+      }
+    }
     return {
       resourceId: result.document.id,
       documentId: result.document.id,

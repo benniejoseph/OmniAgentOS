@@ -15,6 +15,8 @@ export async function ingestTextDocument({
   source = "ingest",
   sourceType = "text",
   tags = [],
+  metadata,
+  evidenceRefs = [],
   abortSignal,
 }: {
   idempotencyKey?: string;
@@ -24,6 +26,8 @@ export async function ingestTextDocument({
   source?: string;
   sourceType?: KnowledgeSourceType;
   tags?: string[];
+  metadata?: Record<string, unknown>;
+  evidenceRefs?: string[];
   abortSignal?: AbortSignal;
 }) {
   const safeTitle = String(redactSensitive(title)).slice(0, 240);
@@ -31,7 +35,7 @@ export async function ingestTextDocument({
   const safeSource = String(redactSensitive(source)).slice(0, 2_000);
   const safeTags = tags.map((tag) => String(redactSensitive(tag))).slice(0, 50);
   const chunks = chunkText(safeContent);
-  const embeddings = await embedTexts(
+  const embeddings = await embedKnowledgeTexts(
     chunks.map((chunk) => chunk.content),
     abortSignal,
   );
@@ -44,6 +48,7 @@ export async function ingestTextDocument({
     source: safeSource,
     sourceType,
     tags: safeTags,
+    metadata,
     chunks: chunks.map((chunk) => ({
       ...chunk,
       embedding: embeddings?.[chunk.index],
@@ -67,6 +72,11 @@ export async function ingestTextDocument({
       tags: ["rag", ...safeTags],
       scope: "workspace",
       importance: 0.72,
+      assertedBy: "import",
+      evidenceRefs: [
+        `knowledge:${knowledge.document.id}`,
+        ...evidenceRefs.map((reference) => String(redactSensitive(reference)).trim().slice(0, 500)).filter(Boolean),
+      ],
       embedding: embeddings?.[chunk.index],
     })),
   );
@@ -78,6 +88,17 @@ export async function ingestTextDocument({
     chunks: knowledge.chunks,
     memories: records,
   };
+}
+
+async function embedKnowledgeTexts(input: string[], abortSignal?: AbortSignal) {
+  try {
+    return await embedTexts(input, abortSignal);
+  } catch (error) {
+    if (abortSignal?.aborted) throw abortSignal.reason || error;
+    // Lexical RAG and durable memory remain useful when the optional vector
+    // provider is unavailable; a later re-index can add embeddings.
+    return null;
+  }
 }
 
 export async function retrieveContext(query: string, limit = 8, options: { tenantId?: string } = {}) {
