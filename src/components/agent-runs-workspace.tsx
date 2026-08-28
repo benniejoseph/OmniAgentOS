@@ -304,15 +304,20 @@ export function AgentRunsWorkspace({
   ]);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem("asael-conversations-collapsed");
-    setConversationsCollapsed(stored === "true");
+    const frame = window.requestAnimationFrame(() => {
+      const stored = window.localStorage.getItem("asael-conversations-collapsed");
+      setConversationsCollapsed(stored === "true");
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, []);
 
   useEffect(() => {
     if (sessionStatus !== "ready" || readPermission || !threadId) {
-      setConversationMemories([]);
-      setMemoryState(threadId ? "idle" : "ready");
-      return;
+      const frame = window.requestAnimationFrame(() => {
+        setConversationMemories([]);
+        setMemoryState(threadId ? "idle" : "ready");
+      });
+      return () => window.cancelAnimationFrame(frame);
     }
     void refreshConversationMemories(threadId);
     // The selected conversation owns its memory view.

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildRunTrajectory } from "@/lib/trajectories/builder";
 import { verifyRunTrajectory } from "@/lib/trajectories/verify";
 import type { DomainEvent } from "@/lib/events/store";
@@ -39,6 +39,10 @@ function event(
 }
 
 describe("run trajectory", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("exports bounded receipts and aggregates model cost without plaintext", () => {
     const trajectory = buildRunTrajectory(run, [
       event(2, "run.tool", {
@@ -80,5 +84,13 @@ describe("run trajectory", () => {
     const verification = verifyRunTrajectory(trajectory, run);
     expect(verification.valid).toBe(false);
     expect(verification.checks.terminalReceipt).toBe(false);
+  });
+
+  it("records the explicit release revision used by CLI deployments", () => {
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "");
+    vi.stubEnv("GITHUB_SHA", "");
+    vi.stubEnv("OMNIAGENT_RELEASE_SHA", "release-cli");
+
+    expect(buildRunTrajectory(run, []).runtime.revision).toBe("release-cli");
   });
 });

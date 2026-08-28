@@ -51,6 +51,7 @@ function fixture(): MissionDetail {
       sourceKey: "private-task-key",
       dependencyIds: [],
       input: { private: true },
+      metadata: { private: true },
       createdAt: now,
       updatedAt: now,
     }],

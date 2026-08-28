@@ -195,7 +195,16 @@ if (dryRun) {
   printDryRun("npm", ["run", "verify"]);
   printDryRun(
     "vercel",
-    ["deploy", "--prod", "--skip-domain", "--yes", "--scope", VERCEL_SCOPE],
+    [
+      "deploy",
+      "--prod",
+      "--skip-domain",
+      "--yes",
+      "--scope",
+      VERCEL_SCOPE,
+      "--env",
+      `OMNIAGENT_RELEASE_SHA=${revision}`,
+    ],
     vercelEnvironment,
   );
   const staged = "https://staged-deployment.example";
@@ -287,7 +296,16 @@ try {
   await run("npm", ["run", "verify"]);
   const deploymentOutput = await capture(
     "vercel",
-    ["deploy", "--prod", "--skip-domain", "--yes", "--scope", VERCEL_SCOPE],
+    [
+      "deploy",
+      "--prod",
+      "--skip-domain",
+      "--yes",
+      "--scope",
+      VERCEL_SCOPE,
+      "--env",
+      `OMNIAGENT_RELEASE_SHA=${revision}`,
+    ],
     { environment: vercelEnvironment, echo: true },
   );
   const stagedBaseUrl = deploymentUrlFromOutput(deploymentOutput);

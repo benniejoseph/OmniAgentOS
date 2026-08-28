@@ -199,7 +199,7 @@ function assetFromRow(row: Record<string, unknown>): CaptureAsset {
 
 function getAssetLedgerFile() { return getDataPath("capture-assets.json"); }
 function getAssetDirectory(id: string) { return getDataPath("capture-assets", normalizeId(id)); }
-function withoutContentPath(value: CaptureAssetLedger["assets"][number]): CaptureAsset { const { contentPath: _contentPath, ...asset } = value; return asset; }
+function withoutContentPath(value: CaptureAssetLedger["assets"][number]): CaptureAsset { const { contentPath, ...asset } = value; void contentPath; return asset; }
 function normalizeId(value: string) { const id = value.trim(); if (!/^[a-zA-Z0-9_-]{1,200}$/.test(id)) throw new CaptureAssetError("Invalid captured file id."); return id; }
 function normalizeTenantId(value: string) { return value.trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default"; }
 function normalizeActorId(value: string) { return value.trim().slice(0, 240) || "anonymous"; }

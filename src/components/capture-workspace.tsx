@@ -181,12 +181,15 @@ export function CaptureWorkspace() {
   useEffect(() => {
     if (!activeJob || !["completed", "failed", "canceled"].includes(activeJob.status) || completedJobRef.current === activeJob.id) return;
     completedJobRef.current = activeJob.id;
-    if (activeJob.status === "completed") {
-      setCaptureNotice({ tone: "success", text: "Capture indexed. It is now available as context in Command conversations." });
-    } else {
-      setCaptureNotice({ tone: "error", text: activeJob.lastError || "Indexing did not complete. The original file is still stored in your Capture library." });
-    }
-    void loadWorkspace();
+    const frame = window.requestAnimationFrame(() => {
+      if (activeJob.status === "completed") {
+        setCaptureNotice({ tone: "success", text: "Capture indexed. It is now available as context in Command conversations." });
+      } else {
+        setCaptureNotice({ tone: "error", text: activeJob.lastError || "Indexing did not complete. The original file is still stored in your Capture library." });
+      }
+      void loadWorkspace();
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [activeJob, loadWorkspace]);
 
   const filteredDocuments = useMemo(() => documents.filter((document) => {

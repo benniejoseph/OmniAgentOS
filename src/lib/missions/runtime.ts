@@ -136,7 +136,7 @@ async function applyMissionExecutorStatus(
       data: updated.output || { verified: true },
     });
   }
-  await reconcileMissionFromTasks(updated.missionId, owner);
+  await reconcileMissionState(updated.missionId, owner);
   return updated;
 }
 
@@ -149,7 +149,7 @@ async function reconcileTaskFromAttempt(
   let latest = task;
   for (let pass = 0; pass < 4; pass += 1) {
     if (TERMINAL_TASK_STATUSES.has(latest.status)) return latest;
-    const nextStatus = nextTaskStatus(latest.status, attemptStatus);
+    const nextStatus = nextTaskStatus(latest, attemptStatus);
     if (!nextStatus || nextStatus === latest.status) return latest;
     try {
       latest = await transitionMissionTask(latest.id, nextStatus, owner);
@@ -166,9 +166,10 @@ async function reconcileTaskFromAttempt(
 }
 
 function nextTaskStatus(
-  current: MissionTaskStatus,
+  task: MissionTask,
   attemptStatus: MissionAttemptStatus,
 ): MissionTaskStatus | undefined {
+  const current = task.status;
   if (TERMINAL_TASK_STATUSES.has(current) || attemptStatus === "queued") return undefined;
   if (attemptStatus === "running") return current === "running" ? undefined : "running";
   if (attemptStatus === "waiting") {
@@ -176,10 +177,13 @@ function nextTaskStatus(
     return current === "running" ? "blocked" : undefined;
   }
   if (attemptStatus === "succeeded" && current === "blocked") return "running";
+  if (attemptStatus === "succeeded" && task.metadata.reviewRequired === true) {
+    return current === "review" ? undefined : "review";
+  }
   return attemptStatus;
 }
 
-async function reconcileMissionFromTasks(missionId: string, owner: MissionOwner) {
+export async function reconcileMissionState(missionId: string, owner: MissionOwner) {
   for (let pass = 0; pass < 8; pass += 1) {
     const detail = await getMissionDetail(missionId, owner);
     if (!detail) return undefined;
@@ -207,14 +211,23 @@ function deriveMissionStatus(mission: Mission, tasks: MissionTask[]): MissionSta
     return "succeeded";
   }
   if (tasks.some((task) => task.status === "running")) return "running";
-  if (tasks.some((task) => task.status === "pending")) {
-    const workStarted = tasks.some((task) => task.status !== "pending");
+  const remaining = tasks.filter((task) => !TERMINAL_TASK_STATUSES.has(task.status));
+  if (
+    remaining.length > 0 &&
+    remaining.every((task) => task.status === "blocked" || task.status === "review")
+  ) {
+    return "waiting";
+  }
+  if (tasks.some((task) => task.status === "pending" || task.status === "triage")) {
+    const workStarted = tasks.some(
+      (task) => task.status !== "pending" && task.status !== "triage",
+    );
     if (workStarted || mission.status === "running" || mission.status === "waiting") {
       return "running";
     }
     return mission.status;
   }
-  if (tasks.some((task) => task.status === "blocked")) return "waiting";
+  if (tasks.some((task) => task.status === "blocked" || task.status === "review")) return "waiting";
   return mission.status;
 }
 

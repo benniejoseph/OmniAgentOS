@@ -41,6 +41,9 @@ describe("paired production deployment", () => {
     expect(commands[2]).toContain(
       "vercel deploy --prod --skip-domain --yes",
     );
+    expect(commands[2]).toContain(
+      "--env OMNIAGENT_RELEASE_SHA=test-release",
+    );
     expect(commands[3]).toContain(
       "wait for staged web readiness at https://staged-deployment.example/api/health revision=test-release",
     );

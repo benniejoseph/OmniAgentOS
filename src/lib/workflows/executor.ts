@@ -589,7 +589,7 @@ export function isIndependentReadOnlyTool(tool: ToolDefinition | undefined) {
     tool &&
       tool.riskLevel === 0 &&
       !tool.approvalRequired &&
-      ["memory", "knowledge", "runs", "web"].includes(tool.category) &&
+      ["memory", "knowledge", "runs", "missions", "web"].includes(tool.category) &&
       !["memory.write", "knowledge.ingest"].includes(tool.id),
   );
 }

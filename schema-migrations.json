@@ -138,5 +138,10 @@
     "version": 28,
     "name": "durable_capture_recordings",
     "checksum": "9fd3a1c7e5b204689fd3a1c7e5b204689fd3a1c7e5b204689fd3a1c7e5b20468"
+  },
+  {
+    "version": 29,
+    "name": "mission_kanban_task_metadata",
+    "checksum": "45f7c5962d95a21cb68465e010620d692513e812d214746e7d8cb1d0b3a907cf"
   }
 ]

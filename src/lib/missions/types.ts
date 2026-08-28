@@ -11,12 +11,37 @@ export type MissionStatus =
   | "archived";
 
 export type MissionTaskStatus =
+  | "triage"
   | "pending"
   | "running"
   | "blocked"
+  | "review"
   | "succeeded"
   | "failed"
   | "canceled";
+
+export type MissionTaskBlockerKind =
+  | "dependency"
+  | "needs_input"
+  | "capability"
+  | "transient";
+
+export type MissionTaskBoardMetadata = {
+  assigneeKey?: string;
+  assigneeName?: string;
+  skillIds?: string[];
+  scheduledAt?: string;
+  blocker?: {
+    kind: MissionTaskBlockerKind;
+    reason: string;
+  };
+  reviewRequired?: boolean;
+  reviewerKey?: string;
+  reviewerName?: string;
+  reviewRequestedAt?: string;
+  reviewSummary?: string;
+  changesRequestedReason?: string;
+};
 
 export type MissionAttemptStatus =
   | "queued"
@@ -58,6 +83,7 @@ export type MissionTask = {
   sourceKey: string;
   dependencyIds: string[];
   input: Record<string, unknown>;
+  metadata: Record<string, unknown>;
   startedAt?: string;
   terminalAt?: string;
   createdAt: string;
@@ -116,4 +142,3 @@ export type MissionLedger = {
   attempts: MissionAttempt[];
   artifacts: MissionArtifact[];
 };
-

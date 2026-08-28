@@ -651,6 +651,10 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[28],
+      up: ensureMissionKanbanTaskMetadata,
+    },
   ];
 }
 
@@ -2974,13 +2978,14 @@ async function ensureMissionKernel(sql: SqlClient) {
       instructions TEXT NOT NULL DEFAULT '',
       definition_of_done TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'running', 'blocked', 'succeeded', 'failed', 'canceled')),
+        CHECK (status IN ('triage', 'pending', 'running', 'blocked', 'review', 'succeeded', 'failed', 'canceled')),
       priority TEXT NOT NULL DEFAULT 'normal'
         CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
       position INTEGER NOT NULL DEFAULT 0,
       source_key TEXT NOT NULL,
       dependency_ids TEXT[] NOT NULL DEFAULT '{}',
       input JSONB NOT NULL DEFAULT '{}'::jsonb,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
       started_at TIMESTAMPTZ,
       terminal_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -3040,6 +3045,16 @@ async function ensureMissionKernel(sql: SqlClient) {
   `;
   await sql`CREATE INDEX IF NOT EXISTS omni_mission_artifacts_mission_created_idx ON omni_mission_artifacts (tenant_id, actor_id, mission_id, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS omni_mission_artifacts_attempt_idx ON omni_mission_artifacts (tenant_id, actor_id, attempt_id) WHERE attempt_id IS NOT NULL`;
+}
+
+async function ensureMissionKanbanTaskMetadata(sql: SqlClient) {
+  await sql`ALTER TABLE omni_mission_tasks ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb`;
+  await sql`ALTER TABLE omni_mission_tasks DROP CONSTRAINT IF EXISTS omni_mission_tasks_status_check`;
+  await sql`
+    ALTER TABLE omni_mission_tasks
+    ADD CONSTRAINT omni_mission_tasks_status_check
+    CHECK (status IN ('triage', 'pending', 'running', 'blocked', 'review', 'succeeded', 'failed', 'canceled'))
+  `;
 }
 
 async function ensureConversationThreads(sql: SqlClient) {

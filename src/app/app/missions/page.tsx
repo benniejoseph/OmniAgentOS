@@ -22,10 +22,12 @@ async function loadMissionWorkspace() {
     return { initialMissions: [], initialCapabilities: [] };
   }
   return runWithDatabaseTenantScope(tenantId, async () => {
-    const [missions, capabilityResult] = await Promise.all([
-      listMissions(50, { tenantId, actorId }),
-      searchCapabilities({ tenantId, limit: 50 }),
-    ]);
+    // Vercel intentionally runs each tenant-scoped database client with one
+    // connection. Start each independent read only after the prior one has
+    // released its reservation instead of making their acquisition deadlines
+    // race one another during a cold render.
+    const missions = await listMissions(50, { tenantId, actorId });
+    const capabilityResult = await searchCapabilities({ tenantId, limit: 50 });
     const selected = missions[0];
     let detail: Awaited<ReturnType<typeof getMissionDetail>>;
     let initialEventCursor = 0;
@@ -37,7 +39,11 @@ async function loadMissionWorkspace() {
         order: "desc",
       });
       initialEventCursor = latest[0]?.seq || 0;
-      detail = await getMissionDetail(selected.id, { tenantId, actorId }, { tasks: 30, attempts: 100, artifacts: 50 });
+      detail = await getMissionDetail(selected.id, { tenantId, actorId }, {
+        tasks: 100,
+        attempts: 250,
+        artifacts: 150,
+      });
     }
     return {
       initialMissions: missions.map(toMissionSummaryView),

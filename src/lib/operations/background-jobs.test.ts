@@ -113,7 +113,7 @@ describe("background operation jobs", () => {
     ).resolves.toMatchObject({ status: "completed" });
   });
 
-  it("only queues worthwhile memory consolidation", async () => {
+  it("queues memory consolidation without storing conversation content", async () => {
     const jobs = await import("@/lib/operations/background-jobs");
     await expect(
       jobs.enqueueMemoryConsolidationJob({
@@ -123,7 +123,11 @@ describe("background operation jobs", () => {
         prompt: "hello",
         response: "short",
       }),
-    ).resolves.toBeNull();
+    ).resolves.toMatchObject({
+      type: "memory.consolidate",
+      status: "queued",
+      dedupeKey: "memory.consolidate:short-run",
+    });
 
     const queued = await jobs.enqueueMemoryConsolidationJob({
         tenantId: "tenant-memory",
