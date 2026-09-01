@@ -14,6 +14,7 @@ import type {
 } from "@/lib/models/types";
 import { ModelProviderError } from "@/lib/models/types";
 import type { ModelUsage } from "@/lib/openai/model-router";
+import { getModelRuntimeApiKey } from "@/lib/models/runtime-context";
 
 const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 
@@ -131,7 +132,7 @@ async function callAnthropic(
   target: ModelTarget,
   extra: Record<string, unknown> = {},
 ) {
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  const apiKey = getModelRuntimeApiKey(request, "anthropic") || process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) throw new ModelProviderError("Anthropic is not configured.", "anthropic", "authentication", false);
   const startedAt = Date.now();
   const response = await fetch(MESSAGES_URL, {

@@ -11,6 +11,7 @@ import type {
   ModelTextRequest,
 } from "@/lib/models/types";
 import { ModelProviderError } from "@/lib/models/types";
+import { getModelRuntimeApiKey } from "@/lib/models/runtime-context";
 
 export const openAIModelAdapter: ModelProviderAdapter = {
   id: "openai",
@@ -33,6 +34,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       abortSignal: request.abortSignal,
       maxOutputTokens: request.maxOutputTokens,
       model: target.model,
+      apiKey: getModelRuntimeApiKey(request, "openai"),
     });
     return {
       text: turn.text,
@@ -53,6 +55,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       abortSignal: request.abortSignal,
       reasoningEffort: request.reasoningEffort,
       model: target.model,
+      apiKey: getModelRuntimeApiKey(request, "openai"),
     });
     return {
       text: result.text,
@@ -95,6 +98,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       abortSignal: request.abortSignal,
       maxOutputTokens: request.maxOutputTokens,
       model: target.model,
+      apiKey: getModelRuntimeApiKey(request, "openai"),
     });
     return {
       text: turn.text,
@@ -116,7 +120,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
   },
 };
 
-export function classifyProviderError(provider: "openai" | "google" | "anthropic" | "local", error: unknown) {
+export function classifyProviderError(provider: "openai" | "google" | "anthropic" | "aws_bedrock" | "local", error: unknown) {
   if (error instanceof ModelProviderError) return error;
   if (error instanceof DOMException && error.name === "AbortError") {
     return new ModelProviderError("Model request was aborted.", provider, "abort", false);

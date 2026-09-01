@@ -7,6 +7,7 @@ All routes are under `/api`. JSON is the default request/response format; `/api/
 - Browser sessions use the `omniagent_session` cookie. Login sets `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` in production.
 - `GET /api/auth/session` is safe to call anonymously and reports whether auth is enabled and whether the request is authenticated.
 - Internal automation sends `x-omni-internal-auth` with `OMNIAGENT_INTERNAL_AUTH_SECRET` plus explicit tenant, user, and role headers. Never accept those identity headers without the secret in production.
+- Inbound MCP uses one-time-visible `omni_sk_...` service API keys created in Settings. Only a SHA-256 digest is stored. The verified key scope is intersected with the actor's enabled MCP export policy; neither layer can grant access by itself.
 - Vercel cron uses `Authorization: Bearer <CRON_SECRET>` with `GET /api/workflows/tick`.
 - The dedicated worker uses internal authentication with `POST /api/workflows/tick`.
 
@@ -37,6 +38,8 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 ## Tools and connectors
 
 - `/api/tools` and `/api/tools/execute`.
+- `POST /api/mcp` is the stateless Streamable HTTP MCP endpoint. It accepts service-key Bearer authentication only, requires MCP to be enabled in Settings, rate-limits by tenant and key, and initially exports read-only memory, knowledge, mission, and run tools. Every call still uses the governed tool executor and durable tool audit. `GET` and `DELETE` return `405`.
+- `/api/settings/providers`, `/api/settings/models`, `/api/settings/assignments`, `/api/settings/api-keys`, and `/api/settings/mcp` manage redacted provider connections, lifecycle-aware model selection, service keys, and the actor-owned MCP export boundary. Credential plaintext is accepted only on create/rotation and is never returned after storage.
 - The built-in `http.request` tool never accepts pasted authorization, cookie, token, or API-key headers. Reference a deployer-bound `authEnv`; use the default Bearer authorization mode, Basic authorization mode, or raw `x-api-key`, `x-auth-token`, or `api-key` mode.
 - `/api/connectors`, `/api/connectors/:id`, and `/api/connectors/:id/discover` for MCP.
 - `/api/openapi-connectors`, `/api/openapi-connectors/:id`, and `/api/openapi-connectors/:id/import`.

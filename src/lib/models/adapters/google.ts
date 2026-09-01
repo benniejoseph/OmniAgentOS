@@ -2,6 +2,7 @@ import { GEMINI_FAST_MODEL, hasGeminiKey } from "@/lib/config";
 import { generateGeminiText, generateGeminiToolTurn } from "@/lib/google/ai";
 import { classifyProviderError } from "@/lib/models/adapters/openai";
 import type { ModelProviderAdapter } from "@/lib/models/types";
+import { getModelRuntimeApiKey } from "@/lib/models/runtime-context";
 
 export const googleModelAdapter: ModelProviderAdapter = {
   id: "google",
@@ -23,6 +24,7 @@ export const googleModelAdapter: ModelProviderAdapter = {
       model: target.model,
       maxOutputTokens: request.maxOutputTokens,
       abortSignal: request.abortSignal,
+      apiKey: getModelRuntimeApiKey(request, "google"),
     });
     return {
       text: result.text,
@@ -44,6 +46,7 @@ export const googleModelAdapter: ModelProviderAdapter = {
       continuation: request.continuation,
       toolResults: request.toolResults,
       abortSignal: request.abortSignal,
+      apiKey: getModelRuntimeApiKey(request, "google"),
     });
     return {
       text: result.text,

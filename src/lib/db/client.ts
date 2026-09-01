@@ -125,6 +125,11 @@ export const tenantRootPolicyTables = [
   "omni_capture_recordings",
   "omni_capture_segments",
   "omni_capture_assets",
+  "omni_provider_connections",
+  "omni_model_catalog",
+  "omni_model_assignments",
+  "omni_service_api_keys",
+  "omni_mcp_export_configurations",
 ] as const;
 
 export const tenantChildPolicyTables = [
@@ -654,6 +659,13 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[28],
       up: ensureMissionKanbanTaskMetadata,
+    },
+    {
+      ...databaseSchemaMigrations[29],
+      up: async (sql) => {
+        await ensureSettingsControlPlane(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
     },
   ];
 }
@@ -3055,6 +3067,135 @@ async function ensureMissionKanbanTaskMetadata(sql: SqlClient) {
     ADD CONSTRAINT omni_mission_tasks_status_check
     CHECK (status IN ('triage', 'pending', 'running', 'blocked', 'review', 'succeeded', 'failed', 'canceled'))
   `;
+}
+
+async function ensureSettingsControlPlane(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_provider_connections (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      provider TEXT NOT NULL
+        CHECK (provider IN ('openai', 'google', 'anthropic', 'aws_bedrock')),
+      label TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'needs_validation'
+        CHECK (status IN ('needs_validation', 'validating', 'connected', 'error', 'disabled', 'revoked')),
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      credential_version INTEGER NOT NULL DEFAULT 1 CHECK (credential_version > 0),
+      credential_key_id TEXT NOT NULL,
+      credential_fingerprint TEXT,
+      configured_fields TEXT[] NOT NULL DEFAULT '{}',
+      sealed_credentials JSONB NOT NULL,
+      last_validated_at TIMESTAMPTZ,
+      validation_code TEXT,
+      catalog_refreshed_at TIMESTAMPTZ,
+      rotated_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, provider)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_provider_connections_tenant_actor_idx ON omni_provider_connections (tenant_id, actor_id, updated_at DESC)`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_model_catalog (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      provider TEXT NOT NULL
+        CHECK (provider IN ('openai', 'google', 'anthropic', 'aws_bedrock')),
+      model_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      capabilities TEXT[] NOT NULL DEFAULT '{}',
+      lifecycle TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (lifecycle IN ('available', 'deprecated', 'retiring', 'unknown')),
+      lifecycle_reason TEXT,
+      lifecycle_checked_at TIMESTAMPTZ,
+      discovered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, provider, model_id)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_model_catalog_tenant_actor_provider_idx ON omni_model_catalog (tenant_id, actor_id, provider, lifecycle, updated_at DESC)`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_model_assignments (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      scope TEXT NOT NULL
+        CHECK (scope IN ('main_agent', 'orchestrator', 'workflow', 'council', 'memory', 'embeddings', 'vision', 'audio')),
+      provider TEXT NOT NULL
+        CHECK (provider IN ('openai', 'google', 'anthropic', 'aws_bedrock')),
+      model_id TEXT NOT NULL,
+      fallback_provider TEXT
+        CHECK (fallback_provider IS NULL OR fallback_provider IN ('openai', 'google', 'anthropic', 'aws_bedrock')),
+      fallback_model_id TEXT,
+      allow_cross_provider_fallback BOOLEAN NOT NULL DEFAULT FALSE,
+      runtime_readiness TEXT NOT NULL DEFAULT 'configuration_only'
+        CHECK (runtime_readiness = 'configuration_only'),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, actor_id, scope),
+      CHECK ((fallback_provider IS NULL) = (fallback_model_id IS NULL)),
+      CHECK (
+        fallback_provider IS NULL
+        OR fallback_provider = provider
+        OR allow_cross_provider_fallback
+      )
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_model_assignments_tenant_actor_idx ON omni_model_assignments (tenant_id, actor_id, scope)`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_service_api_keys (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      token_prefix TEXT NOT NULL,
+      token_last_four TEXT NOT NULL CHECK (char_length(token_last_four) = 4),
+      scopes TEXT[] NOT NULL DEFAULT '{}'
+        CHECK (scopes <@ ARRAY[
+          'mcp:discover', 'mcp:tools:list', 'mcp:tools:execute',
+          'missions:read', 'missions:write', 'memory:read', 'memory:write',
+          'runs:read', 'settings:read'
+        ]::TEXT[]),
+      status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'revoked')),
+      expires_at TIMESTAMPTZ,
+      last_used_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_service_api_keys_tenant_actor_idx ON omni_service_api_keys (tenant_id, actor_id, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_service_api_keys_expiry_idx ON omni_service_api_keys (expires_at) WHERE status = 'active'`;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_mcp_export_configurations (
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      server_name TEXT NOT NULL DEFAULT 'OmniAgent',
+      allowed_scopes TEXT[] NOT NULL DEFAULT '{mcp:discover,mcp:tools:list}'
+        CHECK (allowed_scopes <@ ARRAY[
+          'mcp:discover', 'mcp:tools:list', 'mcp:tools:execute',
+          'missions:read', 'missions:write', 'memory:read', 'memory:write',
+          'runs:read', 'settings:read'
+        ]::TEXT[]),
+      default_approval_mode TEXT NOT NULL DEFAULT 'governed'
+        CHECK (default_approval_mode = 'governed'),
+      expose_resources BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (tenant_id, actor_id)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mcp_export_configurations_tenant_actor_idx ON omni_mcp_export_configurations (tenant_id, actor_id)`;
 }
 
 async function ensureConversationThreads(sql: SqlClient) {

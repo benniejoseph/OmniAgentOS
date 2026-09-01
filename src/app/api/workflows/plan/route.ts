@@ -101,6 +101,7 @@ async function POSTHandler(request: Request) {
 
   const plan = await buildDynamicWorkflowPlan({
     tenantId: context.tenantId,
+    actorId: context.actorId,
     goal: parsed.data.goal,
     contextSelection: parsed.data.contextSelection,
     mode: parsed.data.mode,

@@ -1,4 +1,5 @@
 import { modelTargets } from "@/lib/models/registry";
+import { bindModelRuntime, getModelRuntime } from "@/lib/models/runtime-context";
 import type {
   ModelAttemptReceipt,
   ModelGenerationResult,
@@ -66,15 +67,21 @@ export async function generateModelToolTurn(
     );
   }
 
-  const providerBoundRequest: ModelToolTurnRequest = {
+  const crossProviderFirstTurn =
+    !request.continuation && request.allowCrossProviderFallback === true;
+  const gatewayRequest: ModelToolTurnRequest = {
     ...request,
-    allowedProviders: [request.preferredProvider],
-    allowCrossProviderFallback: false,
-    tools: sanitizeToolDefinitions(request.tools, request.preferredProvider),
+    allowedProviders: crossProviderFirstTurn
+      ? request.allowedProviders
+      : [request.preferredProvider],
+    allowCrossProviderFallback: crossProviderFirstTurn,
+    tools: request.tools,
     toolResults: sanitizeToolResults(request.toolResults),
   };
+  const runtime = getModelRuntime(request);
+  if (runtime) bindModelRuntime(gatewayRequest, runtime);
   return executeGateway(
-    providerBoundRequest,
+    gatewayRequest,
     "tools",
     (adapter, target) => {
       if (!adapter.generateToolTurn) {
@@ -85,7 +92,15 @@ export async function generateModelToolTurn(
           false,
         );
       }
-      return adapter.generateToolTurn(providerBoundRequest, target);
+      const candidateRequest: ModelToolTurnRequest = {
+        ...gatewayRequest,
+        preferredProvider: adapter.id,
+        allowedProviders: [adapter.id],
+        allowCrossProviderFallback: false,
+        tools: sanitizeToolDefinitions(gatewayRequest.tools, adapter.id),
+      };
+      if (runtime) bindModelRuntime(candidateRequest, runtime);
+      return adapter.generateToolTurn(candidateRequest, target);
     },
   );
 }
@@ -100,12 +115,14 @@ async function executeGateway<
     target: ReturnType<typeof modelTargets>[number]["target"],
   ) => Promise<TResult>,
 ): Promise<TResult & { attempts: ModelAttemptReceipt[] }> {
+  const runtime = getModelRuntime(request);
   const candidates = modelTargets({
     tier: request.tier || "fast",
     feature,
     preferredProvider: request.preferredProvider,
     allowedProviders: request.allowedProviders,
     allowCrossProviderFallback: request.allowCrossProviderFallback,
+    runtimeTargets: runtime?.targets,
   }).slice(0, MAX_TARGET_ATTEMPTS);
   if (!candidates.length) {
     throw new ModelProviderError(
