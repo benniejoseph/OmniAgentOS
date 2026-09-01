@@ -1,5 +1,3 @@
-import "server-only";
-
 import { createHash, createHmac } from "node:crypto";
 import { classifyProviderError } from "@/lib/models/adapters/openai";
 import {
