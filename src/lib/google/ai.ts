@@ -75,9 +75,11 @@ export async function generateGeminiText(input: {
   model?: string;
   maxOutputTokens?: number;
   abortSignal?: AbortSignal;
+  /** Server-only request credential. Never persist or include in receipts. */
+  apiKey?: string;
 }): Promise<GeminiTextResult> {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey || !hasGeminiKey()) throw new Error("Gemini is not configured.");
+  const apiKey = input.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || (!input.apiKey && !hasGeminiKey())) throw new Error("Gemini is not configured.");
   const model = input.model || GEMINI_FAST_MODEL;
   const startedAt = Date.now();
   const response = await fetch(INTERACTIONS_URL, {
@@ -108,9 +110,11 @@ export async function generateGeminiToolTurn(input: {
   continuation?: ModelToolContinuation;
   toolResults?: readonly ModelToolResult[];
   abortSignal?: AbortSignal;
+  /** Server-only request credential. Never persist or include in receipts. */
+  apiKey?: string;
 }): Promise<GeminiToolTurnResult> {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey || !hasGeminiKey()) throw new Error("Gemini is not configured.");
+  const apiKey = input.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || (!input.apiKey && !hasGeminiKey())) throw new Error("Gemini is not configured.");
   if (input.continuation && input.continuation.provider !== "google") {
     throw new Error("Gemini cannot consume another provider's continuation state.");
   }

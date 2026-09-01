@@ -201,6 +201,10 @@ async function POSTHandler(request: Request) {
     }
     const detail = await createWorkflowRun({
       ...parsed.data,
+      metadata: {
+        ...(parsed.data.metadata || {}),
+        actorId: context.actorId,
+      },
       idempotencyKey: selectedPlan
         ? `reviewed-plan:${selectedPlan.id}`
         : idempotencyKey,
@@ -212,7 +216,13 @@ async function POSTHandler(request: Request) {
     if (
       idempotencyKey &&
       !selectedPlan &&
-      !workflowRequestMatches(detail.run.input, parsed.data)
+      !workflowRequestMatches(detail.run.input, {
+        ...parsed.data,
+        metadata: {
+          ...(parsed.data.metadata || {}),
+          actorId: context.actorId,
+        },
+      })
     ) {
       return Response.json(
         {

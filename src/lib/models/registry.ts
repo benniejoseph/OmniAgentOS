@@ -1,4 +1,5 @@
 import { anthropicModelAdapter } from "@/lib/models/adapters/anthropic";
+import { bedrockModelAdapter } from "@/lib/models/adapters/bedrock";
 import { googleModelAdapter } from "@/lib/models/adapters/google";
 import { openAIModelAdapter } from "@/lib/models/adapters/openai";
 import type {
@@ -13,6 +14,7 @@ const adapters = new Map<ProviderId, ModelProviderAdapter>([
   [openAIModelAdapter.id, openAIModelAdapter],
   [googleModelAdapter.id, googleModelAdapter],
   [anthropicModelAdapter.id, anthropicModelAdapter],
+  [bedrockModelAdapter.id, bedrockModelAdapter],
 ]);
 
 export function getModelProvider(provider: ProviderId) {
@@ -35,11 +37,32 @@ export function modelTargets(input: {
   preferredProvider?: ProviderId;
   allowedProviders?: readonly ProviderId[];
   allowCrossProviderFallback?: boolean;
+  runtimeTargets?: readonly ModelTarget[];
 }) {
   const allowedProviders = input.allowedProviders
     ? new Set(input.allowedProviders)
     : undefined;
   const crossProviderFallback = input.allowCrossProviderFallback === true;
+  if (input.runtimeTargets) {
+    const targets: Array<{ adapter: ModelProviderAdapter; target: ModelTarget }> = [];
+    const seenTargets = new Set<string>();
+    for (const target of input.runtimeTargets) {
+      if (allowedProviders && !allowedProviders.has(target.provider)) continue;
+      if (
+        input.preferredProvider &&
+        !crossProviderFallback &&
+        target.provider !== input.preferredProvider
+      ) continue;
+      if (!target.features.includes(input.feature)) continue;
+      const adapter = adapters.get(target.provider);
+      if (!adapter || adapter.id !== target.provider) continue;
+      const key = `${adapter.id}:${target.model}`;
+      if (seenTargets.has(key)) continue;
+      seenTargets.add(key);
+      targets.push({ adapter, target });
+    }
+    return targets;
+  }
   const order = input.preferredProvider && !crossProviderFallback
     ? [input.preferredProvider]
     : providerOrder(input.preferredProvider);
@@ -68,9 +91,9 @@ function providerOrder(preferred?: ProviderId) {
     .split(",")
     .map((item) => item.trim().toLowerCase())
     .filter(isProviderId);
-  return [...new Set([...(preferred ? [preferred] : []), ...configured, "openai", "google", "anthropic"])] as ProviderId[];
+  return [...new Set([...(preferred ? [preferred] : []), ...configured, "openai", "google", "anthropic", "aws_bedrock"])] as ProviderId[];
 }
 
 function isProviderId(value: string): value is ProviderId {
-  return value === "openai" || value === "google" || value === "anthropic" || value === "local";
+  return value === "openai" || value === "google" || value === "anthropic" || value === "aws_bedrock" || value === "local";
 }

@@ -55,6 +55,7 @@ import {
 import type { AgentRunContinuation } from "@/lib/runs/types";
 import type { SecurityContext, SecurityRole } from "@/lib/security/types";
 import { redactSensitive } from "@/lib/security/context";
+import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { appendThreadTurn } from "@/lib/threads/store";
@@ -86,13 +87,39 @@ export async function* runAgent(
     .reverse()
     .find((message) => message.role === "user");
   const query = lastUserMessage?.content || "";
-  const modelRoute = selectAgentModel({
+  const deploymentModelRoute = selectAgentModel({
     message: query,
     mode,
     specialistCount: request.specialistIds?.length,
     modelPolicy: request.agentProfile?.modelPolicy,
   });
-  const providerConfigured = hasOpenAIKey() || hasGeminiKey() || hasAnthropicKey();
+  const deploymentProviderConfigured = hasOpenAIKey() || hasGeminiKey() || hasAnthropicKey();
+  const runtimeModel = await resolveRuntimeModelAssignment({
+    tenantId: normalizeTenantId(request.tenantId),
+    actorId: request.actorId || "",
+    scope: "main_agent",
+    tier: deploymentModelRoute.tier,
+    requiredFeature: "tools",
+    deploymentFallback: {
+      provider: deploymentModelRoute.provider,
+      model: deploymentModelRoute.model,
+      fallbackModel: deploymentModelRoute.fallbackModel,
+      reason: deploymentModelRoute.reason,
+      configured: deploymentProviderConfigured,
+    },
+  });
+  const modelRoute = runtimeModel.source === "tenant_assignment" && runtimeModel.provider && runtimeModel.model
+    ? {
+        provider: runtimeModel.provider,
+        model: runtimeModel.model,
+        fallbackModel: runtimeModel.fallbackProvider === runtimeModel.provider
+          ? runtimeModel.fallbackModel
+          : undefined,
+        tier: deploymentModelRoute.tier,
+        reason: runtimeModel.reason,
+      }
+    : { ...deploymentModelRoute, reason: runtimeModel.reason };
+  const providerConfigured = runtimeModel.configured;
   const durableMemoryEnabled = request.agentProfile?.memoryScope !== "session";
   const run = request.preclaimedRunId
     ? await requirePreclaimedAgentRun(request.preclaimedRunId, {
@@ -330,7 +357,7 @@ export async function* runAgent(
 
     let response = "";
 
-    if (!hasOpenAIKey() && !hasGeminiKey() && !hasAnthropicKey()) {
+    if (!providerConfigured) {
       yield await emit({ type: "status", label: "dev fallback", detail: "No model provider is configured. This is a simulated response, not model output." });
       const fallback = fallbackResponse(query, retrieval.results.length).join("");
       response = fallback;
@@ -345,7 +372,7 @@ export async function* runAgent(
       });
 
       let providerTextCompleted = false;
-      if (modelRoute.provider !== "openai") {
+      if (modelRoute.provider !== "openai" || runtimeModel.allowCrossProviderFallback) {
         const securityContext: SecurityContext = {
           tenantId: normalizeTenantId(request.tenantId),
           actorId: request.actorId || "agent",
@@ -368,6 +395,7 @@ export async function* runAgent(
           runId: run.id,
           abortSignal,
           forceApproval: agentToolPolicy?.forceApproval,
+          bindModelRequest: (turnRequest) => runtimeModel.bind(turnRequest),
         });
         let result: NonOpenAIProviderLoopResult;
         for (;;) {
@@ -386,6 +414,7 @@ export async function* runAgent(
           }
         }
         const fallbackUsed = result.attempts.some((attempt) => attempt.status === "failed");
+        const crossProviderFallbackUsed = result.provider !== modelRoute.provider;
         yield await emit({
           type: "model",
           provider: result.provider,
@@ -409,13 +438,16 @@ export async function* runAgent(
           resourceId: run.id,
           durationMs: result.latencyMs,
           message: fallbackUsed
-            ? `${result.provider} response completed through a same-provider model fallback.`
+            ? crossProviderFallbackUsed
+              ? `${result.provider} response completed through an explicitly consented cross-provider fallback.`
+              : `${result.provider} response completed through a same-provider model fallback.`
             : `${result.provider} response completed.`,
           metadata: {
             model: result.model,
             requestedProvider: modelRoute.provider,
             tier: modelRoute.tier,
             fallbackUsed,
+            crossProviderFallbackUsed,
             attempts: result.attempts,
             usage: result.usage,
             turns: result.turns,
@@ -445,17 +477,21 @@ export async function* runAgent(
         const turnInput: ResponseTurnInput =
           conversationItems ?? initialConversationItems;
         const channel = createDeltaChannel();
-        const turnPromise: ReturnType<typeof streamResponseTurn> = streamResponseTurn({
-          instructions,
-          input: turnInput,
-          tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
-          abortSignal,
-          reasoningEffort: AGENT_REASONING_EFFORT,
-          maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
-          model: modelRoute.model,
-          fallbackModel: modelRoute.fallbackModel,
-          onDelta: (text) => channel.push(text),
-        }).finally(() => channel.close());
+        const turnPromise: ReturnType<typeof streamResponseTurn> = runtimeModel.withProviderApiKey(
+          "openai",
+          (apiKey) => streamResponseTurn({
+            instructions,
+            input: turnInput,
+            tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
+            abortSignal,
+            reasoningEffort: AGENT_REASONING_EFFORT,
+            maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+            model: modelRoute.model,
+            fallbackModel: modelRoute.fallbackModel,
+            apiKey,
+            onDelta: (text) => channel.push(text),
+          }),
+        ).finally(() => channel.close());
 
         for await (const text of channel.drain()) {
           response += text;
@@ -790,7 +826,7 @@ type NonOpenAIProviderLoopEvent = Extract<
 
 type NonOpenAIProviderLoopResult = {
   text: string;
-  provider: "google" | "anthropic";
+  provider: "openai" | "google" | "anthropic" | "aws_bedrock";
   model: string;
   usage: {
     inputTokens: number;
@@ -811,7 +847,7 @@ type NonOpenAIProviderLoopResult = {
  * testable without starting a complete persisted agent run.
  */
 export async function* runNonOpenAIProviderToolLoop(input: {
-  provider: "google" | "anthropic";
+  provider: "openai" | "google" | "anthropic" | "aws_bedrock";
   tier: "fast" | "reasoning";
   instructions: string;
   prompt: string;
@@ -824,6 +860,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   abortSignal?: AbortSignal;
   forceApproval?: boolean;
   generateTurn?: (request: ModelToolTurnRequest) => Promise<ModelToolTurnResult>;
+  bindModelRequest?: (request: ModelToolTurnRequest) => ModelToolTurnRequest;
   executeTool?: typeof executeGovernedTool;
 }): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
   const generateTurn = input.generateTurn || generateModelToolTurn;
@@ -844,25 +881,32 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     cachedInputTokens: 0,
     totalTokens: 0,
   };
+  let activeProvider: "openai" | "google" | "anthropic" | "aws_bedrock" = input.provider;
 
   for (;;) {
     const toolsEnabled = toolSteps < AGENT_MAX_TOOL_STEPS;
-    const turn = await generateTurn({
+    const turnRequest: ModelToolTurnRequest = {
       input: input.prompt,
       instructions: input.instructions,
       tier: input.tier,
-      preferredProvider: input.provider,
-      allowedProviders: [input.provider],
+      preferredProvider: activeProvider,
+      allowedProviders: [activeProvider],
       allowCrossProviderFallback: false,
       maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
       abortSignal: input.abortSignal,
       tools: toolsEnabled ? input.tools : [],
       continuation,
       toolResults,
-    });
-    if (turn.provider !== input.provider || turn.continuation.provider !== input.provider) {
+    };
+    const turn = await generateTurn(
+      input.bindModelRequest
+        ? input.bindModelRequest(turnRequest)
+        : turnRequest,
+    );
+    if (turn.continuation.provider !== turn.provider || turn.provider === "local") {
       throw new Error("A provider-bound tool turn returned cross-provider state.");
     }
+    activeProvider = turn.provider;
 
     turns += 1;
     model = turn.model;
@@ -886,7 +930,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     if (!turn.toolCalls.length) break;
     if (!toolsEnabled) {
       throw new Error(
-        `${input.provider} returned tool calls after the governed tool-step budget was exhausted.`,
+        `${activeProvider} returned tool calls after the governed tool-step budget was exhausted.`,
       );
     }
 
@@ -932,7 +976,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           approved: false,
           context: input.securityContext,
           abortSignal: input.abortSignal,
-          idempotencyKey: `${input.runId}:${input.provider}:${item.call.callId}`,
+          idempotencyKey: `${input.runId}:${activeProvider}:${item.call.callId}`,
           forceApproval: input.forceApproval,
         })),
       );
@@ -987,7 +1031,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           approved: false,
           context: input.securityContext,
           abortSignal: input.abortSignal,
-          idempotencyKey: `${input.runId}:${input.provider}:${call.callId}`,
+          idempotencyKey: `${input.runId}:${activeProvider}:${call.callId}`,
           forceApproval: input.forceApproval,
         });
         yield toolEventForExecution(definition, execution.record);
@@ -1036,7 +1080,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
 
   return {
     text,
-    provider: input.provider,
+    provider: activeProvider,
     model,
     usage,
     latencyMs,
@@ -1094,8 +1138,30 @@ async function resumeAgentRunAfterToolApprovalInScope({
     return { resumed: false, reason: "No waiting agent run continuation found." };
   }
 
-  if (!hasOpenAIKey()) {
-    const message = "Cannot resume approved agent run because OPENAI_API_KEY is not configured.";
+  const resumeDeploymentRoute = selectAgentModel({
+    message: run.prompt,
+    mode: run.mode,
+  });
+  const resumeTier = resumeDeploymentRoute.tier;
+  const resumeModel = run.model || resumeDeploymentRoute.model;
+  const resumeRuntimeModel = await resolveRuntimeModelAssignment({
+    tenantId: normalizeTenantId(tenantId),
+    actorId: continuation.context.actorId,
+    scope: "main_agent",
+    tier: resumeTier,
+    requiredFeature: "tools",
+    deploymentFallback: {
+      provider: "openai",
+      model: resumeModel,
+      configured: hasOpenAIKey(),
+      reason: "The approved OpenAI continuation uses its original provider boundary.",
+    },
+  });
+  const workspaceOpenAIAvailable =
+    resumeRuntimeModel.source === "tenant_assignment" &&
+    resumeRuntimeModel.provider === "openai";
+  if (!workspaceOpenAIAvailable && !hasOpenAIKey()) {
+    const message = "Cannot resume the approved OpenAI continuation because its provider credential is no longer available.";
     await failAgentRun(run.id, message);
     await appendRunEvent(run.id, { type: "error", message });
     await syncMissionExecutorSafely({
@@ -1294,21 +1360,26 @@ async function resumeAgentRunAfterToolApprovalInScope({
     conversationItems = [...conversationItems, ...carriedOutputs];
 
     for (;;) {
-      const turn = await streamResponseTurn({
-        instructions: continuation.instructions,
-        input: conversationItems,
-        tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
-        abortSignal,
-        reasoningEffort: AGENT_REASONING_EFFORT,
-        maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
-        onDelta: (text) => {
-          response += text;
-          pendingDeltaText += text;
-          if (pendingDeltaText.length >= 2_000 || Date.now() - lastDeltaFlush >= 750) {
-            queueDeltaWrite();
-          }
-        },
-      });
+      const turn = await resumeRuntimeModel.withProviderApiKey(
+        "openai",
+        (apiKey) => streamResponseTurn({
+          instructions: continuation.instructions,
+          input: conversationItems,
+          tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
+          abortSignal,
+          reasoningEffort: AGENT_REASONING_EFFORT,
+          maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+          model: resumeModel,
+          apiKey: workspaceOpenAIAvailable ? apiKey : undefined,
+          onDelta: (text) => {
+            response += text;
+            pendingDeltaText += text;
+            if (pendingDeltaText.length >= 2_000 || Date.now() - lastDeltaFlush >= 750) {
+              queueDeltaWrite();
+            }
+          },
+        }),
+      );
 
       if (!turn.functionCalls.length) {
         break;

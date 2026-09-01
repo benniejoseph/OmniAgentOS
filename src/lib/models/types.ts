@@ -1,6 +1,6 @@
 import type { ModelUsage } from "@/lib/openai/model-router";
 
-export type ProviderId = "openai" | "google" | "anthropic" | "local";
+export type ProviderId = "openai" | "google" | "anthropic" | "aws_bedrock" | "local";
 export type ModelTier = "fast" | "reasoning";
 export type ModelFeature = "text" | "streaming" | "tools" | "json_schema" | "vision" | "audio";
 export type ModelFailureKind = "abort" | "authentication" | "invalid_request" | "rate_limit" | "safety" | "timeout" | "unavailable" | "unknown";

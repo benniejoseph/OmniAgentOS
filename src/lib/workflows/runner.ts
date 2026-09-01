@@ -1,11 +1,14 @@
 import { WORKFLOW_EXECUTOR_TIMEOUT_MS } from "@/lib/config";
 import { saveMemory } from "@/lib/memory/store";
 import { generateModelStructured } from "@/lib/models/gateway";
-import { hasModelProviderFeature } from "@/lib/models/registry";
 import { embedTexts } from "@/lib/openai/client";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import {
+  resolveRuntimeModelAssignment,
+  type RuntimeModelResolution,
+} from "@/lib/settings/runtime-models";
 import { appendThreadTurn } from "@/lib/threads/store";
 import {
   buildWorkflowSpecialistContext,
@@ -581,9 +584,14 @@ async function executeStep(
 ) {
   throwIfAborted(abortSignal);
   if (stepKey === "preflight") {
+    const runtimeModel = await resolveWorkflowRuntimeModel(detail);
     return {
       workflowType: detail.run.workflowType,
-      model: hasModelProviderFeature("json_schema", "reasoning") ? "model-gateway" : "fallback",
+      model: runtimeModel.configured
+        ? `${runtimeModel.provider}/${runtimeModel.model}`
+        : "fallback",
+      modelRoutingSource: runtimeModel.source,
+      modelRoutingWarnings: runtimeModel.warnings,
       storage: "durable ledger ready",
       approvalRequired: detail.run.approvalRequired,
     };
@@ -665,6 +673,7 @@ async function executeStep(
     const mechanicalPassed = Boolean(executeOutput?.response || executeOutput?.deliverable) &&
       (!planExecution || planExecution.failedNodes === 0);
     const modelVerdict = await verifyWithModel({
+      runtimeModel: await resolveWorkflowRuntimeModel(detail),
       goal: detail.run.goal,
       criteria,
       executeOutput,
@@ -703,6 +712,19 @@ function hasReplanned(detail: WorkflowRunDetail) {
   return detail.events.some((event) => event.type === "workflow.replan_triggered");
 }
 
+function resolveWorkflowRuntimeModel(detail: WorkflowRunDetail) {
+  const actorId = typeof detail.run.input.metadata?.actorId === "string"
+    ? detail.run.input.metadata.actorId
+    : "";
+  return resolveRuntimeModelAssignment({
+    tenantId: detail.run.tenantId || "",
+    actorId,
+    scope: "orchestrator",
+    tier: "reasoning",
+    requiredFeature: "json_schema",
+  });
+}
+
 type ModelVerificationVerdict = {
   passed: boolean;
   score: number;
@@ -712,19 +734,21 @@ type ModelVerificationVerdict = {
 };
 
 async function verifyWithModel({
+  runtimeModel,
   goal,
   criteria,
   executeOutput,
   planExecution,
   abortSignal,
 }: {
+  runtimeModel: RuntimeModelResolution;
   goal: string;
   criteria: string[];
   executeOutput?: Record<string, unknown>;
   planExecution?: ReturnType<typeof parsePlanExecutionOutput>;
   abortSignal?: AbortSignal;
 }): Promise<ModelVerificationVerdict | undefined> {
-  if (!hasModelProviderFeature("json_schema", "reasoning")) {
+  if (!runtimeModel.configured) {
     return undefined;
   }
 
@@ -734,7 +758,7 @@ async function verifyWithModel({
     WORKFLOW_EXECUTOR_TIMEOUT_MS,
   );
   try {
-    const generated = await generateModelStructured({
+    const generated = await generateModelStructured(runtimeModel.bind({
       instructions:
         "You are a strict verification reviewer for an agent workflow. Judge ONLY from the evidence provided whether the acceptance criteria are satisfied. Dry-run or approval-pending tool results do not satisfy criteria that require real side effects. Be conservative: if evidence is missing or ambiguous, fail that criterion.",
       input: [
@@ -757,7 +781,7 @@ async function verifyWithModel({
       },
       abortSignal: combineAbortSignals(controller.signal, abortSignal),
       tier: "reasoning",
-    });
+    }));
     const parsed = JSON.parse(generated.text) as ModelVerificationVerdict;
     return {
       passed: Boolean(parsed.passed),
@@ -815,6 +839,9 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
     selectedPlan ||
     await buildDynamicWorkflowPlan({
       tenantId: detail.run.tenantId,
+      actorId: typeof detail.run.input.metadata?.actorId === "string"
+        ? detail.run.input.metadata.actorId
+        : undefined,
       goal: detail.run.goal,
       mode: detail.run.input.mode || "orchestrate",
       workflowRunId: detail.run.id,
@@ -883,7 +910,8 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
     "Return a concise execution result and next best action.",
   ].join("\n\n");
 
-  if (!hasModelProviderFeature("json_schema", "reasoning")) {
+  const runtimeModel = await resolveWorkflowRuntimeModel(detail);
+  if (!runtimeModel.configured) {
     return fallback;
   }
 
@@ -893,7 +921,7 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
       () => controller.abort(new Error("Workflow executor synthesis timed out.")),
       WORKFLOW_EXECUTOR_TIMEOUT_MS,
     );
-    const generated = await generateModelStructured({
+    const generated = await generateModelStructured(runtimeModel.bind({
       instructions,
       input,
       name: "workflow_execution_result",
@@ -909,7 +937,7 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
       },
       abortSignal: combineAbortSignals(controller.signal, abortSignal),
       tier: "reasoning",
-    }).finally(() => clearTimeout(timer));
+    })).finally(() => clearTimeout(timer));
 
     return {
       ...JSON.parse(generated.text) as Record<string, unknown>,

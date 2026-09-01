@@ -371,6 +371,16 @@ export function TodayWorkspace({
                 ? `Everything is clear. You completed ${completed} ${completed === 1 ? "item" : "items"} today.`
                 : "Everything is clear. Add a task or start new work when you are ready."}
           </p>
+          <div className="today-operating-line" aria-label="Current workspace status">
+            <span>
+              <i className={clsx(activeWork.length && "is-active")} aria-hidden="true" />
+              {activeWork.length
+                ? `${activeWork.length} ${activeWork.length === 1 ? "run is" : "runs are"} active`
+                : "No background work"}
+            </span>
+            <span>{approvals.length ? `${approvals.length} waiting for approval` : "No approvals waiting"}</span>
+            <span>{reminders.length ? `${reminders.length} scheduled reminders` : "Schedule is clear"}</span>
+          </div>
         </div>
         <div className="today-actions">
           <button type="button" onClick={() => void load({ force: true, showLoading: true, announce: true })} disabled={loading} className="today-icon-button" aria-label="Refresh Today">
@@ -393,8 +403,8 @@ export function TodayWorkspace({
       <section className="today-overview" aria-labelledby="today-overview-title">
         <div className="today-overview-heading">
           <div>
-            <h2 id="today-overview-title">Workspace overview</h2>
-            <p>What needs attention and what is moving across the app.</p>
+            <h2 id="today-overview-title">At a glance</h2>
+            <p>Open any area to continue where you left off.</p>
           </div>
         </div>
         <div className="today-overview-list">
@@ -584,7 +594,12 @@ export function TodayWorkspace({
               <span className="today-live-dot" /><div><strong>{text(item.goal || item.prompt, "Untitled work")}</strong><small>{text(item.status, "active").replaceAll("_", " ")}</small></div><ArrowRight size={14} aria-hidden="true" />
             </Link>
           )) : <ContextEmpty>Nothing is running in the background.</ContextEmpty>}
-          {sourceErrors.map(({ source, error }) => <p key={source} className="today-source-error">{source}: {error}</p>)}
+          {sourceErrors.map(({ source, error }) => (
+            <details key={source} className="today-source-error">
+              <summary><AlertTriangle size={12} aria-hidden="true" />Could not refresh {source}</summary>
+              <p>{error}</p>
+            </details>
+          ))}
         </TodayContextSection>
 
         <TodayContextSection icon={FolderKanban} title="Projects" description="Progress and the next task in each active project." href="/app/projects">

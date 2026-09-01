@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { DomainConsole } from "@/components/app-shell/domain-console";
+import { IntegrationsWorkspace } from "@/components/integrations/integrations-workspace";
 
 export const metadata: Metadata = {
   title: "Integrations",
 };
 
 export default function ConnectorsPage() {
-  return <DomainConsole domain="integrations" />;
+  return <IntegrationsWorkspace />;
 }

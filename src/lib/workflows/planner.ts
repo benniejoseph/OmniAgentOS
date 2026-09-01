@@ -10,9 +10,9 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import { generateModelStructured } from "@/lib/models/gateway";
-import { hasModelProviderFeature } from "@/lib/models/registry";
 import { buildContextPack } from "@/lib/rag/context-engine";
 import { redactSensitive } from "@/lib/security/context";
+import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type { ToolDefinition } from "@/lib/tools/types";
@@ -29,6 +29,7 @@ import type {
 
 type BuildWorkflowPlanInput = {
   tenantId?: string;
+  actorId?: string;
   goal: string;
   contextSelection?: {
     query: string;
@@ -155,6 +156,8 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     ? availableCandidates.filter((tool) => allowedToolIds.has(tool.id))
     : availableCandidates).filter((tool) => !input.readOnlyTools || tool.riskLevel === 0);
   const generated = await generatePlan({
+    tenantId,
+    actorId: input.actorId || "",
     goal,
     mode,
     requireApproval: Boolean(input.requireApproval),
@@ -421,6 +424,8 @@ export async function getWorkflowPlanStats(options: TenantScopedOptions = {}): P
 }
 
 async function generatePlan({
+  tenantId,
+  actorId,
   goal,
   mode,
   requireApproval,
@@ -430,6 +435,8 @@ async function generatePlan({
   agentInstructions,
   abortSignal,
 }: {
+  tenantId: string;
+  actorId: string;
   goal: string;
   mode: WorkflowDynamicPlan["mode"];
   requireApproval: boolean;
@@ -439,11 +446,21 @@ async function generatePlan({
   agentInstructions?: string;
   abortSignal?: AbortSignal;
 }): Promise<{ planner: WorkflowPlanRecord["planner"]; model: string; plan: WorkflowDynamicPlan }> {
-  if (!hasModelProviderFeature("json_schema", "reasoning")) {
+  const runtimeModel = await resolveRuntimeModelAssignment({
+    tenantId,
+    actorId,
+    scope: "orchestrator",
+    tier: "reasoning",
+    requiredFeature: "json_schema",
+  });
+  if (!runtimeModel.configured) {
+    const plan = deterministicPlan({ goal, mode, requireApproval, toolCandidates, contextTraceId });
     return {
       planner: "deterministic",
       model: "fallback",
-      plan: deterministicPlan({ goal, mode, requireApproval, toolCandidates, contextTraceId }),
+      plan: runtimeModel.warnings.length
+        ? { ...plan, risks: [...plan.risks, ...runtimeModel.warnings] }
+        : plan,
     };
   }
 
@@ -451,7 +468,7 @@ async function generatePlan({
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error("Workflow planner timed out.")), WORKFLOW_PLANNER_TIMEOUT_MS);
     const generated = await generateModelStructured(
-      {
+      runtimeModel.bind({
         name: "dynamic_workflow_plan",
         schema: dynamicPlanJsonSchema,
         instructions: buildPlannerInstructions(agentInstructions),
@@ -468,13 +485,16 @@ async function generatePlan({
           : controller.signal,
         reasoningEffort: "minimal",
         tier: "reasoning",
-      },
+      }),
     ).finally(() => clearTimeout(timer));
     const parsed = dynamicPlanSchema.parse(JSON.parse(generated.text));
     return {
       planner: generated.provider === "local" ? "deterministic" : generated.provider,
       model: generated.model,
-      plan: normalizePlan(parsed as WorkflowDynamicPlan, { goal, mode, requireApproval, toolCandidates }),
+      plan: addRoutingWarnings(
+        normalizePlan(parsed as WorkflowDynamicPlan, { goal, mode, requireApproval, toolCandidates }),
+        runtimeModel.warnings,
+      ),
     };
   } catch (error) {
     const fallback = deterministicPlan({ goal, mode, requireApproval, toolCandidates, contextTraceId });
@@ -490,6 +510,15 @@ async function generatePlan({
       },
     };
   }
+}
+
+function addRoutingWarnings(
+  plan: WorkflowDynamicPlan,
+  warnings: readonly string[],
+): WorkflowDynamicPlan {
+  return warnings.length
+    ? { ...plan, risks: [...plan.risks, ...warnings] }
+    : plan;
 }
 
 async function getPlannerToolCandidates(

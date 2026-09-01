@@ -5,7 +5,7 @@ export type SecurityContext = {
   tenantId: string;
   actorId: string;
   role: SecurityRole;
-  source: "headers" | "default" | "session";
+  source: "headers" | "default" | "session" | "service";
   auth?: {
     userId: string;
     email: string;

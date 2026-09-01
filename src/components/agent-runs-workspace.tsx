@@ -76,7 +76,7 @@ type StreamEvent =
   | { type: "run"; runId?: string; threadId?: string; missionId?: string }
   | { type: "status"; label?: string; detail?: string }
   | { type: "memory"; title?: string; count?: number }
-  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean }
+  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean }
   | { type: "council_member"; agentId: AgentId; agentName: string; role: string; status: "thinking" | "completed" | "failed"; summary?: string; confidence?: number; durationMs?: number }
   | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | { type: "delta"; text?: string }

@@ -115,6 +115,7 @@ The ledgers have different mutation semantics:
 - RBAC: `viewer` → read; `operator` → run agents/tools/workflows/evals; `admin` → connectors, security, identity; `system` → internal.
 - Tool risk levels 0–3: 0–1 auto-execute, 2 requires one human approval, 3 requires a quorum of two distinct admin approvals (requester excluded) and is never exposed to the agent's tool loop.
 - Connectors: SSRF guard (private IP/hostname blocking, DNS resolution checks, no embedded credentials), secret env-name allowlisting, recursive metadata redaction.
+- Inbound MCP: actor-owned export policy plus hash-only service-key scopes, strict tenant re-entry, host/origin validation, and the same governed executor used by first-party tool calls.
 - Every auth failure, policy block, and allow/deny decision is recorded to the security audit and observability ledgers with correlation IDs.
 
 ## Where things live
@@ -126,6 +127,8 @@ The ledgers have different mutation semantics:
 | Workflows (planner, executor, queue, triggers) | `src/lib/workflows/`, `src/lib/operations/` |
 | Memory / RAG / graph | `src/lib/memory/`, `src/lib/rag/` |
 | Connectors (MCP, OpenAPI) | `src/lib/connectors/` |
+| Inbound MCP server | `src/lib/mcp/`, `src/app/api/mcp/` |
+| Provider credentials / model policy | `src/lib/settings/`, `src/app/api/settings/` |
 | Security / auth | `src/lib/security/`, `src/lib/auth/` |
 | Observability / incidents / alerts | `src/lib/observability/`, `src/lib/diagnostics/` |
 | Evaluations + signed reports | `src/lib/evaluations/`, `src/lib/release/` |

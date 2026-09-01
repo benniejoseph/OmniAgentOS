@@ -143,5 +143,10 @@
     "version": 29,
     "name": "mission_kanban_task_metadata",
     "checksum": "45f7c5962d95a21cb68465e010620d692513e812d214746e7d8cb1d0b3a907cf"
+  },
+  {
+    "version": 30,
+    "name": "tenant_settings_and_provider_control_plane",
+    "checksum": "6a31d402e676a50dbd2ce6f33d1b9273e33e41e4c130ac83b123a559aa7497e8"
   }
 ]

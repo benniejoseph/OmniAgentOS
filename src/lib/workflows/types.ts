@@ -92,7 +92,7 @@ export type WorkflowPlanRecord = {
   workflowRunId?: string;
   goal: string;
   status: "planned" | "failed";
-  planner: "openai" | "google" | "anthropic" | "deterministic";
+  planner: "openai" | "google" | "anthropic" | "aws_bedrock" | "deterministic";
   model: string;
   plan: WorkflowDynamicPlan;
   validation: WorkflowPlanValidation;

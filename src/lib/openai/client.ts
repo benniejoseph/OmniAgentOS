@@ -31,30 +31,39 @@ function supportsReasoningEffort(model: string) {
   return /^(gpt-5|o\d)/i.test(model);
 }
 
-export function getOpenAIClient() {
+export function getOpenAIClient(options: { apiKey?: string } = {}) {
+  const requestApiKey = options.apiKey?.trim();
+  if (requestApiKey) {
+    return createOpenAIClient(requestApiKey, false);
+  }
   if (!hasOpenAIKey()) {
     throw new Error("OPENAI_API_KEY is not configured.");
   }
 
   if (!client) {
-    const gateway = getOpenAIGatewayConfig();
-    client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-      ...(gateway
-        ? {
-            baseURL: gateway.baseURL,
-            defaultHeaders: {
-              "x-asael-gateway-token": gateway.token,
-            },
-          }
-        : {}),
-    });
-    const createResponse = client.responses.create.bind(client.responses);
-    client.responses.create = ((body, options) =>
-      createResponse({ ...body, store: false }, options)) as typeof client.responses.create;
+    client = createOpenAIClient(process.env.OPENAI_API_KEY!, true);
   }
 
   return client;
+}
+
+function createOpenAIClient(apiKey: string, useDeploymentGateway: boolean) {
+  const gateway = useDeploymentGateway ? getOpenAIGatewayConfig() : undefined;
+  const scopedClient = new OpenAI({
+    apiKey,
+    ...(gateway
+      ? {
+          baseURL: gateway.baseURL,
+          defaultHeaders: {
+            "x-asael-gateway-token": gateway.token,
+          },
+        }
+      : {}),
+  });
+  const createResponse = scopedClient.responses.create.bind(scopedClient.responses);
+  scopedClient.responses.create = ((body, options) =>
+    createResponse({ ...body, store: false }, options)) as typeof scopedClient.responses.create;
+  return scopedClient;
 }
 
 export async function getOpenAIReadiness(
@@ -219,6 +228,7 @@ export async function streamResponseTurn({
   maxOutputTokens,
   model = AGENT_MODEL,
   fallbackModel,
+  apiKey,
 }: {
   instructions?: string;
   input: ResponseTurnInput;
@@ -229,6 +239,8 @@ export async function streamResponseTurn({
   maxOutputTokens?: number;
   model?: string;
   fallbackModel?: string;
+  /** Server-only request credential. Never persist or include in receipts. */
+  apiKey?: string;
 }): Promise<{
   responseId: string;
   functionCalls: ResponseFunctionCall[];
@@ -255,7 +267,7 @@ export async function streamResponseTurn({
   }
 
   function createTurnStream(selectedModel: string) {
-    return getOpenAIClient().responses.create(
+    return getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
     {
       model: selectedModel,
       ...(instructions ? { instructions } : {}),
@@ -396,6 +408,7 @@ export async function createStructuredResponse({
   abortSignal,
   reasoningEffort,
   model,
+  apiKey,
 }: {
   instructions: string;
   input: string;
@@ -404,6 +417,7 @@ export async function createStructuredResponse({
   abortSignal?: AbortSignal;
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
   model?: string;
+  apiKey?: string;
 }) {
   return (await createStructuredResponseWithMetrics({
     instructions,
@@ -413,6 +427,7 @@ export async function createStructuredResponse({
     abortSignal,
     reasoningEffort,
     model,
+    apiKey,
   })).text;
 }
 
@@ -424,6 +439,7 @@ export async function createStructuredResponseWithMetrics({
   abortSignal,
   reasoningEffort,
   model = AGENT_MODEL,
+  apiKey,
 }: {
   instructions: string;
   input: string;
@@ -432,9 +448,11 @@ export async function createStructuredResponseWithMetrics({
   abortSignal?: AbortSignal;
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
   model?: string;
+  /** Server-only request credential. Never persist or include in receipts. */
+  apiKey?: string;
 }) {
   const startedAt = Date.now();
-  const response = await getOpenAIClient().responses.create(
+  const response = await getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
     {
       model,
       instructions,

@@ -437,8 +437,8 @@ export function MissionWorkspace({
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
       <header className={styles.header}>
         <div className={styles.titleGroup}>
-          <div className={styles.titleLine}><SquareKanban size={18} aria-hidden="true" /><h1>Missions</h1><span>Operational board</span></div>
-          <p>Plan, delegate, review, and recover durable work in one place.</p>
+          <div className={styles.titleLine}><span className={styles.titleIcon}><SquareKanban size={18} aria-hidden="true" /></span><div className={styles.titleCopy}><span className={styles.eyebrow}>Operations workspace</span><h1>Missions</h1></div></div>
+          <p>Plan durable outcomes, assign agents, and follow every handoff from one workbench.</p>
         </div>
         <div className={styles.headerActions}>
           <Link href="/app/connectors" title="Manage connected capabilities"><Zap size={14} aria-hidden="true" /> {capabilities.length} tools</Link>
@@ -452,7 +452,7 @@ export function MissionWorkspace({
       <div className={clsx(styles.workspace, railCollapsed && styles.workspaceRailCollapsed)}>
         <aside className={clsx(styles.rail, railCollapsed && styles.railCollapsed)} aria-label="Mission selector">
           <div className={styles.railHeading}>
-            <span>{railCollapsed ? "" : "Missions"}</span>
+            <span className={styles.railLabel}>{railCollapsed ? "" : <><b>Mission library</b><small>{visibleMissions.length}</small></>}</span>
             <button type="button" onClick={() => setRailCollapsed((current) => !current)} aria-label={railCollapsed ? "Expand mission selector" : "Collapse mission selector"} title={railCollapsed ? "Expand missions" : "Collapse missions"}>
               {railCollapsed ? <PanelLeftOpen size={15} aria-hidden="true" /> : <PanelLeftClose size={15} aria-hidden="true" />}
             </button>

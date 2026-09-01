@@ -178,12 +178,17 @@ export function AgentArsenalWorkspace() {
     <div className="arsenal-shell workspace-enter">
       <header className="arsenal-header">
         <div>
-          <p className="arsenal-kicker">Agent Builder</p>
-          <h1>Your working intelligence.</h1>
+          <p className="arsenal-kicker">Agent workspace</p>
+          <h1>Agents</h1>
           <p>
-            Compose specialists from skills, governed tools, memory, and model
-            policies. Atlas keeps the team coordinated.
+            Choose a specialist, review its boundaries, or build a new agent
+            from governed skills, tools, memory, and model policies.
           </p>
+          <div className="arsenal-header-meta" aria-label="Agent workspace summary">
+            <span><strong>{agents.length}</strong> agents</span>
+            <span><strong>{skills.length}</strong> skills</span>
+            <span><strong>{tools.length}</strong> governed tools</span>
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -214,7 +219,7 @@ export function AgentArsenalWorkspace() {
       ) : null}
       <div className="arsenal-layout">
         <nav className="arsenal-roster" aria-label="Agent roster">
-          <p className="arsenal-section-label">{agents.length} active agents</p>
+          <p className="arsenal-section-label">Agent roster</p>
           {agents.map((agent) => (
             <RosterButton
               key={agent.id}
@@ -225,6 +230,13 @@ export function AgentArsenalWorkspace() {
           ))}
         </nav>
         <section className="arsenal-map" aria-label="Agent delegation map">
+          <div className="arsenal-map-heading">
+            <div>
+              <strong>Delegation map</strong>
+              <span>Select an agent to inspect how it works.</span>
+            </div>
+            <span><Network size={13} aria-hidden="true" />Atlas coordinates</span>
+          </div>
           <div className="arsenal-map-grid" aria-hidden="true" />
           <svg
             className="arsenal-links"
@@ -279,6 +291,7 @@ export function AgentArsenalWorkspace() {
           className={clsx("arsenal-inspector", `agent-${selected.accent}`)}
           aria-live="polite"
         >
+          <p className="arsenal-inspector-label">Selected agent</p>
           <div className="inspector-identity">
             <span className="agent-glyph large">
               <AgentIcon agent={selected} size={24} />
@@ -357,8 +370,8 @@ export function AgentArsenalWorkspace() {
       <section className="skill-studio" aria-labelledby="skill-studio-title">
         <div className="skill-studio-heading">
           <div>
-            <p>Reusable intelligence</p>
-            <h2 id="skill-studio-title">Skill Studio</h2>
+            <p>Reusable behavior</p>
+            <h2 id="skill-studio-title">Skills</h2>
             <span>
               Instructions, tools, and knowledge conventions that can be
               composed across agents.
