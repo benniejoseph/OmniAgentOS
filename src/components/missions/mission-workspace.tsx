@@ -437,8 +437,8 @@ export function MissionWorkspace({
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
       <header className={styles.header}>
         <div className={styles.titleGroup}>
-          <div className={styles.titleLine}><span className={styles.titleIcon}><SquareKanban size={18} aria-hidden="true" /></span><div className={styles.titleCopy}><span className={styles.eyebrow}>Operations workspace</span><h1>Missions</h1></div></div>
-          <p>Plan durable outcomes, assign agents, and follow every handoff from one workbench.</p>
+          <div className={styles.titleLine}><span className={styles.titleIcon}><SquareKanban size={18} aria-hidden="true" /></span><div className={styles.titleCopy}><span className={styles.eyebrow}>Connected work</span><h1>Missions</h1></div></div>
+          <p>Move durable outcomes through linked tasks, agents, decisions, and evidence.</p>
         </div>
         <div className={styles.headerActions}>
           <Link href="/app/connectors" title="Manage connected capabilities"><Zap size={14} aria-hidden="true" /> {capabilities.length} tools</Link>

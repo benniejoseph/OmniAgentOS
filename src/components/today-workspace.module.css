@@ -1,0 +1,1563 @@
+.shell:global(.today-shell) {
+  --background: oklch(0.982 0.018 89);
+  --foreground: oklch(0.255 0.042 205);
+  --surface: oklch(0.997 0.008 90);
+  --surface-raised: oklch(0.957 0.026 88);
+  --surface-overlay: oklch(0.925 0.04 84);
+  --muted: oklch(0.46 0.035 210);
+  --line: oklch(0.84 0.035 88);
+  --line-strong: oklch(0.72 0.045 84);
+  --primary: oklch(0.5 0.12 164);
+  --primary-ink: oklch(0.99 0.008 95);
+  --accent: oklch(0.68 0.14 65);
+  --success: oklch(0.48 0.12 154);
+  --warning: oklch(0.61 0.14 70);
+  --danger: oklch(0.53 0.18 28);
+  --day-apricot: oklch(0.9 0.105 67);
+  --day-peach: oklch(0.94 0.06 47);
+  --day-sky: oklch(0.91 0.055 223);
+  --day-mint: oklch(0.92 0.06 158);
+  --day-cream: oklch(0.985 0.024 91);
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  max-width: none;
+  min-height: calc(100svh - 4rem);
+  margin: 0;
+  overflow: clip;
+  padding: clamp(1.1rem, 2.5vw, 2.8rem);
+  color: var(--foreground);
+  background:
+    radial-gradient(circle at 83% 3%, oklch(0.89 0.13 70 / 0.42), transparent 23rem),
+    radial-gradient(circle at 18% 24%, oklch(0.9 0.06 220 / 0.42), transparent 28rem),
+    linear-gradient(145deg, oklch(0.995 0.012 91) 0%, var(--day-cream) 48%, oklch(0.968 0.025 80) 100%);
+  color-scheme: light;
+}
+
+.shell::before,
+.shell::after {
+  position: absolute;
+  z-index: -1;
+  border-radius: 999px;
+  pointer-events: none;
+  content: "";
+}
+
+.shell::before {
+  top: 31rem;
+  left: -10rem;
+  width: 31rem;
+  height: 31rem;
+  background: oklch(0.93 0.06 222 / 0.4);
+  filter: blur(2px);
+}
+
+.shell::after {
+  right: -13rem;
+  bottom: 10rem;
+  width: 34rem;
+  height: 34rem;
+  background: oklch(0.94 0.07 55 / 0.34);
+}
+
+.shell :global(.today-brief) {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(7.5rem, 0.23fr) minmax(22rem, 1fr) auto;
+  min-height: 20.5rem;
+  align-items: center;
+  gap: clamp(1.25rem, 3vw, 3.8rem);
+  padding: clamp(2.4rem, 4vw, 4.8rem) clamp(0.25rem, 1.5vw, 1.5rem) 4.8rem;
+  border: 0;
+}
+
+.daylightArt {
+  position: absolute;
+  z-index: -1;
+  top: -5rem;
+  right: clamp(-8rem, -4vw, -2rem);
+  width: min(38rem, 48vw);
+  height: 30rem;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.sun,
+.sunRing,
+.cloud {
+  position: absolute;
+  display: block;
+  border-radius: 999px;
+}
+
+.sun {
+  top: 5.2rem;
+  right: 5.8rem;
+  width: clamp(10rem, 17vw, 16.5rem);
+  height: clamp(10rem, 17vw, 16.5rem);
+  background:
+    radial-gradient(circle at 38% 34%, oklch(0.985 0.08 89), transparent 22%),
+    linear-gradient(145deg, oklch(0.91 0.17 78), oklch(0.76 0.17 53));
+  box-shadow:
+    0 0 0 2.2rem oklch(0.88 0.12 69 / 0.12),
+    0 2.5rem 7rem oklch(0.69 0.15 59 / 0.3);
+  animation: sunBreathe 8s ease-in-out infinite;
+}
+
+.sunRing {
+  top: 1.8rem;
+  right: 2.4rem;
+  width: clamp(16.8rem, 25vw, 24rem);
+  height: clamp(16.8rem, 25vw, 24rem);
+  border: 1px solid oklch(0.66 0.1 65 / 0.26);
+  opacity: 0.8;
+}
+
+.sunRing::before,
+.sunRing::after {
+  position: absolute;
+  inset: 1.8rem;
+  border: 1px dashed oklch(0.66 0.1 65 / 0.19);
+  border-radius: inherit;
+  content: "";
+}
+
+.sunRing::after {
+  inset: 3.8rem;
+  border-style: solid;
+  opacity: 0.62;
+}
+
+.cloud {
+  right: 14rem;
+  bottom: 5.4rem;
+  width: 11rem;
+  height: 3.6rem;
+  background: oklch(0.995 0.009 94 / 0.66);
+  box-shadow:
+    2.4rem -1rem 0 -0.2rem oklch(0.995 0.009 94 / 0.56),
+    5.5rem 0.4rem 0 -0.55rem oklch(0.995 0.009 94 / 0.47);
+  filter: blur(0.2px);
+  animation: cloudDrift 12s ease-in-out infinite alternate;
+}
+
+.shell :global(.today-date) {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  align-content: center;
+  align-self: stretch;
+  gap: 0.35rem;
+  border: 0;
+}
+
+.shell :global(.today-date)::after {
+  width: 3rem;
+  height: 0.22rem;
+  margin-top: 0.65rem;
+  border-radius: 999px;
+  background: var(--primary);
+  content: "";
+}
+
+.shell :global(.today-date strong) {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: clamp(5.3rem, 8vw, 8.4rem);
+  font-weight: 500;
+  line-height: 0.74;
+  letter-spacing: -0.075em;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.shell :global(.today-date span) {
+  max-width: none;
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 720;
+  line-height: 1.35;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.shell :global(.today-intro) {
+  position: relative;
+  z-index: 1;
+  max-width: 54rem;
+}
+
+.shell :global(.today-kicker) {
+  color: var(--primary);
+  font-size: 0.76rem;
+  font-weight: 780;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.shell :global(.today-intro h1) {
+  margin: 0.15rem 0 0;
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: clamp(4.4rem, 8vw, 8.6rem);
+  font-weight: 500;
+  line-height: 0.83;
+  letter-spacing: -0.075em;
+  color: var(--foreground);
+}
+
+.shell :global(.today-intro > p:last-child) {
+  max-width: 43rem;
+  margin-top: 1.3rem;
+  color: var(--muted);
+  font-size: clamp(0.9rem, 1.15vw, 1.04rem);
+  line-height: 1.65;
+}
+
+.shell :global(.today-operating-line) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 1.25rem;
+  color: var(--foreground);
+  font-size: 0.7rem;
+}
+
+.shell :global(.today-operating-line span) {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid oklch(0.72 0.04 90 / 0.35);
+  border-radius: 999px;
+  padding: 0.3rem 0.72rem;
+  background: oklch(1 0 0 / 0.56);
+  box-shadow: 0 0.35rem 1.25rem oklch(0.33 0.04 75 / 0.05);
+  backdrop-filter: blur(14px);
+}
+
+.shell :global(.today-operating-line span + span::before) {
+  display: none;
+}
+
+.shell :global(.today-operating-line i) {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.shell :global(.today-operating-line i.is-active) {
+  background: var(--success);
+  box-shadow: 0 0 0 4px oklch(0.48 0.12 154 / 0.12);
+}
+
+.shell :global(.today-actions) {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-self: start;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  padding-top: 0.3rem;
+}
+
+.shell :global(.today-icon-button),
+.shell :global(.today-actions .action-link),
+.shell :global(.today-actions .primary-button) {
+  min-height: 2.75rem;
+  border-radius: 999px;
+  border-color: oklch(0.68 0.04 86 / 0.35);
+  box-shadow: 0 0.65rem 2rem oklch(0.32 0.05 70 / 0.09);
+  backdrop-filter: blur(16px);
+}
+
+.shell :global(.today-icon-button),
+.shell :global(.today-actions .action-link) {
+  color: var(--foreground);
+  background: oklch(1 0 0 / 0.62);
+}
+
+.shell :global(.today-icon-button) {
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+.shell :global(.today-actions .primary-button) {
+  border-color: transparent;
+  padding-inline: 1rem;
+  background: var(--foreground);
+  color: oklch(0.99 0.01 90);
+}
+
+.shell :global(.today-icon-button:hover),
+.shell :global(.today-actions .action-link:hover) {
+  color: var(--primary);
+  background: oklch(1 0 0 / 0.86);
+}
+
+.shell :global(.today-error) {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: -2.2rem 0 1.3rem;
+  border: 1px solid oklch(0.53 0.18 28 / 0.18);
+  border-radius: 1.25rem;
+  padding: 0.85rem 1rem;
+  color: var(--danger);
+  background: oklch(0.98 0.025 35 / 0.75);
+  font-size: 0.75rem;
+}
+
+.shell :global(.today-error span) {
+  color: oklch(0.42 0.07 27);
+}
+
+.shell :global(.today-overview) {
+  position: relative;
+  z-index: 2;
+  margin-top: -2.5rem;
+  padding: 1.5rem 0 2.5rem;
+}
+
+.dayArc {
+  position: absolute;
+  z-index: -1;
+  inset: 1rem -1rem auto;
+  height: 12.5rem;
+  pointer-events: none;
+}
+
+.dayArc svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.dayArc path {
+  fill: none;
+  stroke: oklch(0.56 0.11 164 / 0.42);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 8 12;
+  vector-effect: non-scaling-stroke;
+  animation: arcFlow 18s linear infinite;
+}
+
+.dayArc > span {
+  position: absolute;
+  top: 0.75rem;
+  left: 49.2%;
+  width: 1rem;
+  height: 1rem;
+  border: 3px solid oklch(0.99 0.02 90);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow:
+    0 0 0 0.42rem oklch(0.85 0.14 68 / 0.16),
+    0 0.8rem 1.8rem oklch(0.67 0.15 62 / 0.22);
+}
+
+.shell :global(.today-overview-heading) {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  margin: 0 0 2.15rem;
+  padding-inline: 0.4rem;
+}
+
+.shell :global(.today-overview-heading h2) {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 1.55rem;
+  font-weight: 560;
+  letter-spacing: -0.035em;
+}
+
+.shell :global(.today-overview-heading p) {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.shell :global(.today-overview-list) {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: clamp(0.45rem, 1vw, 0.9rem);
+  border: 0;
+  background: transparent;
+}
+
+.shell :global(.today-overview-item) {
+  --arc-offset: 0rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 5.6rem;
+  align-items: center;
+  gap: 0.65rem;
+  border: 1px solid oklch(0.77 0.04 89 / 0.4);
+  border-radius: 1.5rem 1.5rem 2.4rem 1.5rem;
+  padding: 0.75rem;
+  color: var(--foreground);
+  background: oklch(1 0 0 / 0.72);
+  box-shadow: 0 1rem 2.8rem oklch(0.35 0.045 78 / 0.09);
+  backdrop-filter: blur(18px);
+  transform: translateY(var(--arc-offset));
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    background-color 180ms ease;
+  animation: daybookRise 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.shell :global(.today-overview-item:nth-child(1)),
+.shell :global(.today-overview-item:nth-child(6)) {
+  --arc-offset: 1.1rem;
+}
+
+.shell :global(.today-overview-item:nth-child(2)),
+.shell :global(.today-overview-item:nth-child(5)) {
+  --arc-offset: -0.35rem;
+}
+
+.shell :global(.today-overview-item:nth-child(3)),
+.shell :global(.today-overview-item:nth-child(4)) {
+  --arc-offset: -1.1rem;
+}
+
+.shell :global(.today-overview-item:nth-child(2)) { animation-delay: 40ms; }
+.shell :global(.today-overview-item:nth-child(3)) { animation-delay: 80ms; }
+.shell :global(.today-overview-item:nth-child(4)) { animation-delay: 120ms; }
+.shell :global(.today-overview-item:nth-child(5)) { animation-delay: 160ms; }
+.shell :global(.today-overview-item:nth-child(6)) { animation-delay: 200ms; }
+
+.shell :global(.today-overview-item:hover) {
+  color: var(--foreground);
+  background: oklch(1 0 0 / 0.94);
+  box-shadow: 0 1.2rem 3.2rem oklch(0.35 0.045 78 / 0.14);
+  transform: translateY(calc(var(--arc-offset) - 0.32rem));
+}
+
+.shell :global(.today-overview-item > svg) {
+  display: none;
+}
+
+.shell :global(.today-overview-icon) {
+  display: grid;
+  width: 2.35rem;
+  height: 2.35rem;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--primary);
+  background: var(--day-mint);
+}
+
+.shell :global(.today-overview-item:nth-child(2n) .today-overview-icon) {
+  color: oklch(0.48 0.11 235);
+  background: var(--day-sky);
+}
+
+.shell :global(.today-overview-item:nth-child(3n) .today-overview-icon) {
+  color: oklch(0.58 0.14 55);
+  background: var(--day-peach);
+}
+
+.shell :global(.today-overview-item.needs-attention .today-overview-icon) {
+  color: var(--warning);
+  background: oklch(0.94 0.085 77);
+}
+
+.shell :global(.today-overview-copy strong),
+.shell :global(.today-overview-copy small) {
+  display: block;
+}
+
+.shell :global(.today-overview-copy strong) {
+  overflow: hidden;
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell :global(.today-overview-copy small) {
+  margin-top: 0.18rem;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.63rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell :global(.today-overview-value) {
+  min-width: auto;
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 1.55rem;
+  font-weight: 600;
+  text-align: right;
+}
+
+.shell :global(.today-generated-brief) {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.22fr) minmax(17rem, 0.82fr) minmax(15rem, 0.62fr);
+  margin-top: 1rem;
+  overflow: hidden;
+  border: 1px solid oklch(0.78 0.05 78 / 0.32);
+  border-radius: 2.75rem 6.5rem 2.75rem 2.75rem;
+  background:
+    radial-gradient(circle at 88% 12%, oklch(0.91 0.12 70 / 0.48), transparent 18rem),
+    linear-gradient(125deg, oklch(0.998 0.01 92 / 0.93), oklch(0.96 0.04 77 / 0.88));
+  box-shadow: 0 2rem 6rem oklch(0.4 0.05 68 / 0.1);
+  backdrop-filter: blur(20px);
+}
+
+.shell :global(.today-generated-brief)::after {
+  position: absolute;
+  top: -4.5rem;
+  right: -3.6rem;
+  width: 12rem;
+  height: 12rem;
+  border: 1px solid oklch(0.64 0.12 66 / 0.24);
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 1.8rem oklch(0.75 0.13 68 / 0.07),
+    0 0 0 3.8rem oklch(0.75 0.13 68 / 0.045);
+  pointer-events: none;
+  content: "";
+}
+
+.shell :global(.today-brief-lead),
+.shell :global(.today-brief-focus),
+.shell :global(.today-brief-side) {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  padding: clamp(1.5rem, 2.4vw, 2.5rem);
+}
+
+.shell :global(.today-brief-lead),
+.shell :global(.today-brief-focus) {
+  border-right: 1px solid oklch(0.7 0.045 78 / 0.25);
+}
+
+.shell :global(.today-brief-title-row h2),
+.shell :global(.today-section-heading h2),
+.shell :global(.today-context-heading h2) {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-weight: 560;
+  letter-spacing: -0.025em;
+}
+
+.shell :global(.today-brief-title-row h2) {
+  margin-top: 0.15rem;
+  font-size: 1.45rem;
+}
+
+.shell :global(.today-brief-mark) {
+  width: 3rem;
+  height: 3rem;
+  border: 0;
+  color: oklch(0.52 0.13 58);
+  background: oklch(0.91 0.12 75 / 0.72);
+  box-shadow: inset 0 0 0 1px oklch(0.63 0.12 66 / 0.18);
+}
+
+.shell :global(.today-brief-summary) {
+  max-width: 45rem;
+  margin-top: 1.45rem;
+  color: var(--foreground);
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: clamp(1.22rem, 1.7vw, 1.65rem);
+  line-height: 1.48;
+  letter-spacing: -0.025em;
+}
+
+.shell :global(.today-brief-meta) {
+  margin-top: 1.25rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.shell :global(.today-brief-meta button),
+.shell :global(.today-brief-empty button) {
+  display: inline-flex;
+  min-height: 2.35rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border: 1px solid oklch(0.52 0.12 164 / 0.16);
+  border-radius: 999px;
+  padding-inline: 0.8rem;
+  color: oklch(0.99 0.008 90);
+  background: var(--primary);
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.shell :global(.today-brief-empty) {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1.4rem;
+}
+
+.shell :global(.today-brief-empty p) {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.shell :global(.today-brief-label) {
+  color: oklch(0.45 0.06 164);
+  font-size: 0.68rem;
+  font-weight: 780;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.shell :global(.today-brief-priority) {
+  grid-template-columns: 1.8rem minmax(0, 1fr);
+  gap: 0.75rem;
+  padding: 1rem 0;
+  border-bottom: 1px dashed oklch(0.67 0.045 79 / 0.28);
+}
+
+.shell :global(.today-brief-priority > span) {
+  display: grid;
+  width: 1.7rem;
+  height: 1.7rem;
+  place-items: center;
+  border-radius: 50%;
+  padding: 0;
+  color: var(--primary);
+  background: oklch(1 0 0 / 0.5);
+  font-size: 0.62rem;
+}
+
+.shell :global(.today-brief-priority strong) {
+  font-size: 0.82rem;
+}
+
+.shell :global(.today-brief-priority p) {
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.shell :global(.today-brief-placeholder) {
+  color: var(--muted);
+  font-size: 0.73rem;
+  line-height: 1.55;
+}
+
+.shell :global(.today-brief-side) {
+  gap: 1.1rem;
+  padding-right: 2.6rem;
+}
+
+.shell :global(.today-watchout) {
+  color: var(--foreground);
+  font-size: 0.73rem;
+  line-height: 1.55;
+}
+
+.shell :global(.today-resurfaced) {
+  border-top: 1px dashed oklch(0.67 0.045 79 / 0.28);
+}
+
+.shell :global(.today-resurfaced strong) {
+  font-size: 0.78rem;
+}
+
+.shell :global(.today-resurfaced > p:last-child) {
+  color: var(--muted);
+  font-size: 0.69rem;
+}
+
+.shell :global(.today-brief-schedule) {
+  border-top: 1px dashed oklch(0.67 0.045 79 / 0.28);
+}
+
+.shell :global(.today-brief-schedule summary) {
+  min-height: 2rem;
+  color: var(--muted);
+  font-size: 0.69rem;
+}
+
+.shell :global(.today-brief-schedule form) {
+  gap: 0.6rem;
+}
+
+.shell :global(.today-brief-schedule label) {
+  grid-template-columns: 6rem minmax(0, 1fr);
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.shell :global(.today-brief-schedule input:not([type="checkbox"])),
+.shell :global(.today-brief-schedule select) {
+  height: 2.2rem;
+  border-color: oklch(0.68 0.04 84 / 0.32);
+  border-radius: 0.75rem;
+  color: var(--foreground);
+  background: oklch(1 0 0 / 0.62);
+  font-size: 0.68rem;
+}
+
+.shell :global(.today-brief-schedule button) {
+  min-height: 2.25rem;
+  border-radius: 999px;
+  background: var(--foreground);
+  color: oklch(0.99 0.008 90);
+  font-size: 0.68rem;
+}
+
+.shell :global(.today-grid) {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(20rem, 0.62fr);
+  align-items: stretch;
+  gap: 1rem;
+  margin-top: 1.15rem;
+  border: 0;
+}
+
+.shell :global(.today-focus),
+.shell :global(.today-agenda) {
+  min-width: 0;
+  border: 1px solid oklch(0.76 0.04 90 / 0.32);
+  box-shadow: 0 1.4rem 4rem oklch(0.36 0.04 77 / 0.075);
+}
+
+.shell :global(.today-focus) {
+  border-radius: 2.6rem 2.6rem 2.6rem 5.4rem;
+  padding: clamp(1.4rem, 2.4vw, 2.35rem);
+  background: oklch(1 0 0 / 0.7);
+  backdrop-filter: blur(18px);
+}
+
+.shell :global(.today-agenda) {
+  border-left: 1px solid oklch(0.72 0.04 218 / 0.28);
+  border-radius: 2.6rem 5.2rem 2.6rem 2.6rem;
+  padding: clamp(1.4rem, 2.4vw, 2.25rem);
+  background:
+    linear-gradient(160deg, oklch(0.965 0.025 221 / 0.9), oklch(0.92 0.052 221 / 0.82));
+}
+
+.shell :global(.today-section-heading) {
+  align-items: center;
+}
+
+.shell :global(.today-section-heading h2) {
+  font-size: clamp(1.35rem, 2vw, 1.75rem);
+}
+
+.shell :global(.today-section-copy) {
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.shell :global(.today-progress) {
+  width: 4.1rem;
+  height: 4.1rem;
+}
+
+.shell :global(.today-progress circle) {
+  stroke: oklch(0.72 0.04 90 / 0.35);
+}
+
+.shell :global(.today-progress .progress-value) {
+  stroke: var(--primary);
+  stroke-width: 3;
+}
+
+.shell :global(.today-progress span) {
+  font-size: 0.7rem;
+}
+
+.shell :global(.today-capture-panel) {
+  margin-top: 1.15rem;
+  border: 0;
+  border-radius: 1.8rem 1.8rem 3.2rem 1.8rem;
+  padding: 1rem;
+  background: linear-gradient(135deg, oklch(0.955 0.055 75), oklch(0.975 0.03 92));
+  box-shadow: inset 0 0 0 1px oklch(0.72 0.07 76 / 0.16);
+}
+
+.shell :global(.today-capture-heading) {
+  gap: 0.7rem;
+}
+
+.shell :global(.today-capture-heading > svg) {
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 50%;
+  padding: 0.38rem;
+  color: var(--primary);
+  background: oklch(1 0 0 / 0.58);
+}
+
+.shell :global(.today-capture-heading strong) {
+  font-size: 0.83rem;
+}
+
+.shell :global(.today-capture-heading span) {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.shell :global(.today-capture-row) {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(6rem, 0.32fr) minmax(6.2rem, 0.36fr) minmax(11rem, 0.62fr) auto;
+  align-items: end;
+  gap: 0.65rem;
+  margin-top: 0.9rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.shell :global(.today-capture-field) {
+  display: grid;
+  min-width: 0;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.shell :global(.today-capture-field input),
+.shell :global(.today-capture-field select),
+.shell :global(.today-capture-row input:first-of-type) {
+  width: 100%;
+  min-width: 0;
+  height: 2.75rem;
+  border: 1px solid oklch(0.68 0.045 80 / 0.27);
+  border-radius: 999px;
+  padding-inline: 0.85rem;
+  color: var(--foreground);
+  background: oklch(1 0 0 / 0.72);
+  font-size: 0.74rem;
+  outline: 0;
+}
+
+.shell :global(.today-capture-field input:focus),
+.shell :global(.today-capture-field select:focus) {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px oklch(0.5 0.12 164 / 0.12);
+}
+
+.shell :global(.today-capture-row button) {
+  min-width: 4rem;
+  height: 2.75rem;
+  border-radius: 999px;
+  color: oklch(0.99 0.008 90);
+  background: var(--foreground);
+  font-size: 0.72rem;
+}
+
+.shell :global(.today-focus-list) {
+  margin-top: 1rem;
+}
+
+.shell :global(.today-focus-item) {
+  grid-template-columns: 2.1rem minmax(0, 1fr) auto;
+  min-height: 4.65rem;
+  margin-top: 0.18rem;
+  border: 0;
+  border-radius: 1.25rem;
+  padding: 0.5rem 0.65rem;
+  color: var(--foreground);
+  background: transparent;
+  transition:
+    padding-left 160ms ease,
+    background-color 160ms ease,
+    transform 160ms ease;
+}
+
+.shell :global(.today-focus-item + .today-focus-item) {
+  border-top: 1px dashed oklch(0.7 0.035 90 / 0.26);
+  border-radius: 0 0 1.25rem 1.25rem;
+}
+
+.shell :global(.today-focus-item:hover) {
+  padding-left: 0.95rem;
+  background: oklch(0.94 0.045 157 / 0.45);
+  transform: translateX(0.15rem);
+}
+
+.shell :global(.today-check) {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-color: oklch(0.56 0.075 164 / 0.42);
+  color: var(--primary);
+  background: oklch(0.96 0.035 158 / 0.62);
+}
+
+.shell :global(.today-item-copy strong) {
+  font-size: 0.86rem;
+}
+
+.shell :global(.today-item-copy small) {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.67rem;
+}
+
+.shell :global(.today-priority) {
+  border-radius: 999px;
+  padding: 0.28rem 0.52rem;
+  font-size: 0.58rem;
+}
+
+.shell :global(.today-empty) {
+  min-height: 11rem;
+}
+
+.shell :global(.today-empty svg) {
+  color: var(--accent);
+}
+
+.shell :global(.today-timeline) {
+  margin-top: 1.25rem;
+  padding-left: 0;
+}
+
+.shell :global(.today-timeline::before) {
+  top: 0.5rem;
+  bottom: 0.5rem;
+  left: 3.55rem;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(var(--accent), var(--primary));
+  opacity: 0.35;
+}
+
+.shell :global(.today-timeline-item) {
+  grid-template-columns: 2.6rem minmax(0, 1fr);
+  min-height: 4.45rem;
+  gap: 1.1rem;
+}
+
+.shell :global(.today-timeline-item > span) {
+  color: oklch(0.41 0.06 218);
+  font-size: 0.66rem;
+  font-weight: 720;
+}
+
+.shell :global(.today-timeline-item > div::before) {
+  left: 3.33rem;
+  width: 0.48rem;
+  height: 0.48rem;
+  border: 2px solid oklch(0.95 0.03 221);
+  background: var(--primary);
+  box-shadow: 0 0 0 3px oklch(0.5 0.12 164 / 0.1);
+}
+
+.shell :global(.today-timeline-item strong) {
+  font-size: 0.8rem;
+}
+
+.shell :global(.today-timeline-item small) {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.shell :global(.today-attention) {
+  margin-top: 0.75rem;
+  border: 0;
+  border-radius: 1.45rem;
+  padding: 1rem;
+  background: oklch(0.965 0.06 76 / 0.9);
+}
+
+.shell :global(.today-attention strong) {
+  font-size: 0.77rem;
+}
+
+.shell :global(.today-attention p) {
+  color: oklch(0.43 0.04 210);
+  font-size: 0.66rem;
+}
+
+.shell :global(.today-attention a) {
+  color: var(--foreground);
+  font-size: 0.68rem;
+  text-decoration: underline;
+  text-underline-offset: 0.2rem;
+}
+
+.shell :global(.today-context-grid) {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+  border: 0;
+}
+
+.shell :global(.today-context-section),
+.shell :global(.today-context-section:first-child),
+.shell :global(.today-context-section:last-child),
+.shell :global(.today-context-section:nth-child(3)) {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid oklch(0.75 0.04 90 / 0.28);
+  border-radius: 2rem 2rem 3.8rem 2rem;
+  padding: 1.5rem;
+  background: oklch(1 0 0 / 0.63);
+  box-shadow: 0 1.25rem 3.5rem oklch(0.36 0.04 77 / 0.065);
+  backdrop-filter: blur(18px);
+}
+
+.shell :global(.today-context-section:nth-child(2)) {
+  border-radius: 3.8rem 2rem 2rem 2rem;
+  background: oklch(0.965 0.034 75 / 0.82);
+}
+
+.shell :global(.today-context-section:nth-child(3)) {
+  border-radius: 2rem 3.8rem 2rem 2rem;
+  background: oklch(0.955 0.033 158 / 0.76);
+}
+
+.shell :global(.today-context-section:nth-child(4)) {
+  border-radius: 2rem 2rem 2rem 3.8rem;
+  background: oklch(0.958 0.028 222 / 0.82);
+}
+
+.shell :global(.today-context-heading) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.7rem;
+}
+
+.shell :global(.today-context-heading > svg) {
+  width: 2.15rem;
+  height: 2.15rem;
+  margin: 0;
+  border-radius: 50%;
+  padding: 0.5rem;
+  color: var(--primary);
+  background: oklch(1 0 0 / 0.55);
+}
+
+.shell :global(.today-context-heading h2) {
+  margin: 0;
+  font-size: 1.12rem;
+}
+
+.shell :global(.today-context-heading p) {
+  margin-top: 0.22rem;
+  color: var(--muted);
+  font-size: 0.65rem;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.shell :global(.today-context-heading > a) {
+  color: var(--foreground);
+  font-size: 0.65rem;
+  font-weight: 740;
+  text-decoration: underline;
+  text-underline-offset: 0.2rem;
+  white-space: nowrap;
+}
+
+.shell :global(.today-context-content) {
+  margin-top: 1rem;
+}
+
+.shell :global(.today-context-row),
+.shell :global(.today-memory-row),
+.shell :global(.today-project-row) {
+  border-bottom: 1px dashed oklch(0.68 0.04 90 / 0.26);
+  transition:
+    color 160ms ease,
+    transform 160ms ease,
+    padding-left 160ms ease;
+}
+
+.shell :global(.today-context-row) {
+  min-height: 3.65rem;
+}
+
+.shell :global(.today-context-row:hover),
+.shell :global(.today-memory-row:hover),
+.shell :global(.today-project-row:hover) {
+  color: var(--primary);
+  transform: translateX(0.18rem);
+}
+
+.shell :global(.today-context-row strong),
+.shell :global(.today-memory-row strong),
+.shell :global(.today-project-row strong) {
+  font-size: 0.76rem;
+}
+
+.shell :global(.today-context-row small),
+.shell :global(.today-memory-row p),
+.shell :global(.today-project-row p) {
+  color: var(--muted);
+  font-size: 0.64rem;
+}
+
+.shell :global(.today-live-dot) {
+  background: var(--success);
+  box-shadow: 0 0 0 4px oklch(0.48 0.12 154 / 0.11);
+}
+
+.shell :global(.today-memory-row),
+.shell :global(.today-project-row) {
+  min-height: 4.6rem;
+}
+
+.shell :global(.today-memory-row > span) {
+  border-radius: 999px;
+  padding: 0.2rem 0.38rem;
+  color: var(--primary);
+  background: oklch(1 0 0 / 0.5);
+  font-size: 0.52rem;
+}
+
+.shell :global(.today-project-row > div > span) {
+  height: 0.24rem;
+  border-radius: 999px;
+  background: oklch(0.7 0.04 90 / 0.24);
+}
+
+.shell :global(.today-project-row > div > span i) {
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--primary), oklch(0.68 0.14 65));
+}
+
+.shell :global(.today-context-empty) {
+  padding-block: 1rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.6;
+}
+
+.shell :global(.today-source-error) {
+  border: 1px solid oklch(0.61 0.14 70 / 0.22);
+  border-radius: 0.85rem;
+  padding: 0.55rem 0.65rem;
+  background: oklch(0.96 0.06 76 / 0.56);
+}
+
+@keyframes sunBreathe {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(-0.35rem, 0.3rem, 0) scale(1.025); }
+}
+
+@keyframes cloudDrift {
+  from { transform: translateX(-0.6rem); opacity: 0.58; }
+  to { transform: translateX(0.9rem); opacity: 0.82; }
+}
+
+@keyframes arcFlow {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -80; }
+}
+
+@keyframes daybookRise {
+  from { opacity: 0; transform: translateY(calc(var(--arc-offset) + 0.65rem)); }
+  to { opacity: 1; transform: translateY(var(--arc-offset)); }
+}
+
+@media (max-width: 88rem) {
+  .shell :global(.today-overview) {
+    margin-top: -1.6rem;
+  }
+
+  .dayArc {
+    opacity: 0.42;
+  }
+
+  .shell :global(.today-overview-list) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .shell :global(.today-overview-item),
+  .shell :global(.today-overview-item:nth-child(n)) {
+    --arc-offset: 0rem;
+  }
+
+  .shell :global(.today-context-grid) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 76rem) {
+  .shell :global(.today-brief) {
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    min-height: 21rem;
+    padding-bottom: 4rem;
+  }
+
+  .shell :global(.today-actions) {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    padding: 0;
+  }
+
+  .daylightArt {
+    right: -5rem;
+    width: 28rem;
+    opacity: 0.8;
+  }
+
+  .shell :global(.today-generated-brief) {
+    grid-template-columns: minmax(0, 1.15fr) minmax(17rem, 0.85fr);
+    border-radius: 2.4rem 4.6rem 2.4rem 2.4rem;
+  }
+
+  .shell :global(.today-brief-focus) {
+    border-right: 0;
+  }
+
+  .shell :global(.today-brief-side) {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr 1fr minmax(14rem, 0.65fr);
+    border-top: 1px solid oklch(0.7 0.045 78 / 0.25);
+    padding-right: 2rem;
+  }
+
+  .shell :global(.today-brief-schedule) {
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .shell :global(.today-grid) {
+    grid-template-columns: 1fr;
+  }
+
+  .shell :global(.today-agenda) {
+    border-left: 1px solid oklch(0.72 0.04 218 / 0.28);
+  }
+
+  .shell :global(.today-capture-row) {
+    grid-template-columns: minmax(12rem, 1fr) 1fr 1fr;
+  }
+
+  .shell :global(.today-capture-title),
+  .shell :global(.today-capture-due) {
+    grid-column: span 2;
+  }
+
+  .shell :global(.today-capture-row button) {
+    grid-column: 3;
+  }
+}
+
+@media (max-width: 48rem) {
+  .shell:global(.today-shell) {
+    padding: 0.85rem 0.85rem 1.8rem;
+  }
+
+  .shell :global(.today-brief) {
+    display: block;
+    min-height: 29rem;
+    padding: 2rem 0.35rem 4.5rem;
+  }
+
+  .daylightArt {
+    top: -5.5rem;
+    right: -10rem;
+    width: 27rem;
+    opacity: 0.7;
+  }
+
+  .sun {
+    top: 6rem;
+    right: 7rem;
+    width: 10rem;
+    height: 10rem;
+  }
+
+  .sunRing {
+    top: 3.4rem;
+    right: 4.4rem;
+    width: 15rem;
+    height: 15rem;
+  }
+
+  .cloud {
+    display: none;
+  }
+
+  .shell :global(.today-date) {
+    display: flex;
+    min-height: 5rem;
+    align-items: flex-end;
+    gap: 0.55rem;
+  }
+
+  .shell :global(.today-date)::after {
+    display: none;
+  }
+
+  .shell :global(.today-date strong) {
+    font-size: 4.4rem;
+    line-height: 0.78;
+  }
+
+  .shell :global(.today-date span) {
+    max-width: 3rem;
+    padding-bottom: 0.15rem;
+    font-size: 0.65rem;
+  }
+
+  .shell :global(.today-intro) {
+    margin-top: 1.9rem;
+  }
+
+  .shell :global(.today-intro h1) {
+    font-size: clamp(4rem, 22vw, 6.2rem);
+  }
+
+  .shell :global(.today-intro > p:last-child) {
+    max-width: 29rem;
+    margin-top: 1rem;
+    font-size: 0.88rem;
+  }
+
+  .shell :global(.today-operating-line) {
+    display: flex;
+    flex-wrap: nowrap;
+    margin-right: -0.85rem;
+    overflow-x: auto;
+    padding: 0.2rem 0.85rem 0.55rem 0;
+    scrollbar-width: none;
+  }
+
+  .shell :global(.today-operating-line::-webkit-scrollbar) {
+    display: none;
+  }
+
+  .shell :global(.today-operating-line span) {
+    flex: 0 0 auto;
+  }
+
+  .shell :global(.today-actions) {
+    display: grid;
+    grid-template-columns: auto auto minmax(8rem, 1fr);
+    width: 100%;
+    margin-top: 1.25rem;
+  }
+
+  .shell :global(.today-actions .primary-button) {
+    margin: 0;
+  }
+
+  .shell :global(.today-error) {
+    align-items: flex-start;
+    flex-direction: column;
+    margin-top: -2.5rem;
+  }
+
+  .shell :global(.today-overview) {
+    margin-top: -2.7rem;
+    padding-bottom: 1.8rem;
+  }
+
+  .dayArc {
+    display: none;
+  }
+
+  .shell :global(.today-overview-heading) {
+    margin-bottom: 0.8rem;
+  }
+
+  .shell :global(.today-overview-heading h2) {
+    font-size: 1.35rem;
+  }
+
+  .shell :global(.today-overview-list) {
+    display: flex;
+    gap: 0.7rem;
+    margin-inline: -0.85rem;
+    overflow-x: auto;
+    padding: 0.65rem 0.85rem 1.2rem;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+
+  .shell :global(.today-overview-list::-webkit-scrollbar) {
+    display: none;
+  }
+
+  .shell :global(.today-overview-item),
+  .shell :global(.today-overview-item:nth-child(n)) {
+    width: 15rem;
+    min-width: 15rem;
+    min-height: 5.3rem;
+    scroll-snap-align: start;
+  }
+
+  .shell :global(.today-generated-brief) {
+    display: block;
+    margin-top: 0;
+    border-radius: 2rem 3.4rem 2rem 2rem;
+  }
+
+  .shell :global(.today-brief-lead),
+  .shell :global(.today-brief-focus),
+  .shell :global(.today-brief-side) {
+    display: flex;
+    flex-direction: column;
+    padding: 1.4rem;
+    border-right: 0;
+  }
+
+  .shell :global(.today-brief-focus),
+  .shell :global(.today-brief-side) {
+    border-top: 1px solid oklch(0.7 0.045 78 / 0.25);
+  }
+
+  .shell :global(.today-brief-empty) {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .shell :global(.today-brief-meta button) {
+    margin-left: 0;
+  }
+
+  .shell :global(.today-brief-schedule) {
+    border-top: 1px dashed oklch(0.67 0.045 79 / 0.28);
+    padding-top: 0.8rem;
+  }
+
+  .shell :global(.today-grid) {
+    display: block;
+    margin-top: 0.85rem;
+  }
+
+  .shell :global(.today-focus),
+  .shell :global(.today-agenda) {
+    border-radius: 1.8rem 1.8rem 2.8rem 1.8rem;
+    padding: 1.2rem;
+  }
+
+  .shell :global(.today-agenda) {
+    margin-top: 0.85rem;
+    border-top: 1px solid oklch(0.72 0.04 218 / 0.28);
+  }
+
+  .shell :global(.today-section-heading h2) {
+    font-size: 1.35rem;
+  }
+
+  .shell :global(.today-capture-panel) {
+    border-radius: 1.4rem 1.4rem 2.5rem 1.4rem;
+    padding: 0.85rem;
+  }
+
+  .shell :global(.today-capture-row) {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .shell :global(.today-capture-title),
+  .shell :global(.today-capture-due),
+  .shell :global(.today-capture-row button) {
+    grid-column: 1 / -1;
+  }
+
+  .shell :global(.today-capture-row button) {
+    width: 100%;
+    min-height: 3rem;
+  }
+
+  .shell :global(.today-capture-field input),
+  .shell :global(.today-capture-field select),
+  .shell :global(.today-capture-row input:first-of-type) {
+    min-height: 3rem;
+  }
+
+  .shell :global(.today-focus-item) {
+    grid-template-columns: 2rem minmax(0, 1fr) auto;
+    padding-inline: 0.25rem;
+  }
+
+  .shell :global(.today-context-grid) {
+    display: block;
+  }
+
+  .shell :global(.today-context-section),
+  .shell :global(.today-context-section:first-child),
+  .shell :global(.today-context-section:last-child),
+  .shell :global(.today-context-section:nth-child(3)) {
+    margin-top: 0.85rem;
+    border: 1px solid oklch(0.75 0.04 90 / 0.28);
+    border-radius: 1.7rem 1.7rem 3rem 1.7rem;
+    padding: 1.25rem;
+  }
+}
+
+@media (max-width: 30rem) {
+  .shell :global(.today-actions) {
+    grid-template-columns: auto 1fr;
+  }
+
+  .shell :global(.today-actions .primary-button) {
+    grid-column: 1 / -1;
+  }
+
+  .shell :global(.today-operating-line) {
+    margin-top: 1rem;
+  }
+
+  .shell :global(.today-capture-row) {
+    grid-template-columns: 1fr;
+  }
+
+  .shell :global(.today-capture-title),
+  .shell :global(.today-capture-due),
+  .shell :global(.today-capture-row button) {
+    grid-column: auto;
+  }
+
+  .shell :global(.today-priority) {
+    max-width: 4rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sun,
+  .cloud,
+  .dayArc path,
+  .shell :global(.today-overview-item) {
+    animation: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .shell:global(.today-shell) {
+    --muted: oklch(0.33 0.035 210);
+    --line: oklch(0.57 0.04 88);
+  }
+
+  .shell :global(.today-overview-item),
+  .shell :global(.today-generated-brief),
+  .shell :global(.today-focus),
+  .shell :global(.today-agenda),
+  .shell :global(.today-context-section) {
+    border-color: var(--line);
+  }
+}
