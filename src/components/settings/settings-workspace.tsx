@@ -130,7 +130,12 @@ export function SettingsWorkspace() {
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const initialLoad = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(initialLoad);
+  }, [load]);
 
   const request = useCallback(async <T,>(
     key: string,
