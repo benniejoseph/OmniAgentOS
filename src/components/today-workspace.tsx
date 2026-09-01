@@ -28,6 +28,7 @@ import {
   formatTodayTime,
 } from "@/lib/today/presentation";
 import type { TodaySnapshot } from "@/lib/today/snapshot";
+import styles from "./today-workspace.module.css";
 
 type JsonRecord = Record<string, unknown>;
 type TodayItem = TodaySnapshot["items"][number];
@@ -349,7 +350,7 @@ export function TodayWorkspace({
 
   return (
     <main
-      className="today-shell workspace-enter"
+      className={clsx("today-shell workspace-enter", styles.shell)}
       data-testid="activity-workspace"
       data-hydrated={hydrated}
       aria-busy={loading}
@@ -357,6 +358,11 @@ export function TodayWorkspace({
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
       <header className="today-brief">
+        <div className={styles.daylightArt} aria-hidden="true">
+          <span className={styles.sun} />
+          <span className={styles.sunRing} />
+          <span className={styles.cloud} />
+        </div>
         <div className="today-date" aria-hidden="true">
           <strong>{now ? now.toLocaleDateString(undefined, { day: "2-digit" }) : "--"}</strong>
           <span>{now ? now.toLocaleDateString(undefined, { month: "short", weekday: "short" }) : "Today"}</span>
@@ -401,6 +407,12 @@ export function TodayWorkspace({
       ) : null}
 
       <section className="today-overview" aria-labelledby="today-overview-title">
+        <div className={styles.dayArc} aria-hidden="true">
+          <svg viewBox="0 0 1200 210" preserveAspectRatio="none">
+            <path d="M18 176C250 48 398 27 601 28c202 1 364 28 581 148" />
+          </svg>
+          <span />
+        </div>
         <div className="today-overview-heading">
           <div>
             <h2 id="today-overview-title">At a glance</h2>

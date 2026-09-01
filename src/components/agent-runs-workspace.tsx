@@ -44,6 +44,7 @@ import {
 } from "@/components/app-shell/session-context";
 import { ConversationCanvas } from "@/components/conversation-canvas";
 import { VoiceMode } from "@/components/voice/voice-mode";
+import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 
 type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
@@ -1385,20 +1386,28 @@ export function AgentRunsWorkspace({
 
   return (
     <div
-      className="mx-auto max-w-[96rem] px-4 py-6 sm:px-7 lg:px-10"
+      className={clsx("mx-auto max-w-[96rem] px-4 py-6 sm:px-7 lg:px-10", workspaceStyles.workspace)}
       aria-busy={Boolean(loading)}
       data-testid="work-workspace"
     >
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {runAnnouncement}
       </p>
-      <section className="border-b border-line/80 pb-6">
+      <div className={workspaceStyles.ambientField} aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </div>
+      <section className={clsx("border-b border-line/80 pb-6", workspaceStyles.topbar)}>
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight">Asael</h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">
-              One conversation for questions, follow-ups, plans, and finished work.
-            </p>
+          <div className={clsx("min-w-0", workspaceStyles.pageIdentity)}>
+            <span className={workspaceStyles.pageOrb} aria-hidden="true"><Sparkles size={18} /></span>
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">Asael</h1>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">
+                One conversation for questions, follow-ups, plans, and finished work.
+              </p>
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <StatusPill label={runPosture.label} tone={runPosture.tone} />
@@ -1436,10 +1445,11 @@ export function AgentRunsWorkspace({
 
       <section className={clsx(
         "mt-6 grid gap-5 transition-[grid-template-columns]",
+        workspaceStyles.conversationLayout,
         conversationsCollapsed ? "lg:grid-cols-1" : "lg:grid-cols-[14rem_minmax(0,1fr)]",
       )}>
         {!conversationsCollapsed ? (
-        <aside className="hidden min-w-0 lg:sticky lg:top-24 lg:block lg:self-start lg:border-r lg:pr-4" aria-label="Recent conversations">
+        <aside className={clsx("hidden min-w-0 lg:sticky lg:top-24 lg:block lg:self-start lg:border-r lg:pr-4", workspaceStyles.threadRail)} aria-label="Recent conversations">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold">Conversations</h2>
             <div className="flex items-center gap-1">
@@ -1451,9 +1461,9 @@ export function AgentRunsWorkspace({
               </button>
             </div>
           </div>
-          <div className="mt-3 max-h-[calc(100vh-11rem)] space-y-1 overflow-y-auto pr-1">
+          <div className={clsx("mt-3 max-h-[calc(100vh-11rem)] space-y-1 overflow-y-auto pr-1", workspaceStyles.threadList)}>
             {threads.map((thread) => (
-              <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} className={clsx("block w-full rounded-xl px-3 py-2.5 text-left transition", thread.id === threadId ? "bg-foreground text-background" : "text-muted hover:bg-surface-raised hover:text-foreground")}>
+              <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} className={clsx("block w-full rounded-xl px-3 py-2.5 text-left transition", workspaceStyles.threadItem, thread.id === threadId ? clsx("bg-foreground text-background", workspaceStyles.threadItemActive) : "text-muted hover:bg-surface-raised hover:text-foreground")}>
                 <span className="block truncate text-sm font-semibold">{thread.title}</span>
                 <span className={clsx("mt-1 block text-xs", thread.id === threadId ? "text-background/65" : "text-muted")}>{formatRelativeThreadTime(thread.updatedAt)}</span>
               </button>
@@ -1464,8 +1474,8 @@ export function AgentRunsWorkspace({
         ) : null}
 
         <div className="min-w-0">
-          <section className="min-w-0 overflow-hidden rounded-2xl border border-line/80 bg-surface shadow-[0_24px_70px_-52px_rgba(0,0,0,0.45)]">
-            <header className="flex items-center justify-between gap-3 border-b border-line/80 px-3 py-2.5 sm:px-5">
+          <section className={clsx("min-w-0 overflow-hidden rounded-2xl border border-line/80 bg-surface shadow-[0_24px_70px_-52px_rgba(0,0,0,0.45)]", workspaceStyles.chatShell)}>
+            <header className={clsx("flex items-center justify-between gap-3 border-b border-line/80 px-3 py-2.5 sm:px-5", workspaceStyles.chatHeader)}>
               <div className="flex min-w-0 items-center gap-3">
                 <button
                   ref={conversationsButtonRef}
@@ -1488,7 +1498,7 @@ export function AgentRunsWorkspace({
                     <PanelLeftOpen size={16} aria-hidden="true" />
                   </button>
                 ) : null}
-                <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
+                <span className={clsx("grid size-9 shrink-0 place-items-center rounded-full bg-primary/10 text-primary", workspaceStyles.intelligenceOrb)}>
                   {conversationView === "map" ? <MapIcon size={16} aria-hidden="true" /> : <MessageSquareText size={16} aria-hidden="true" />}
                 </span>
                 <div className="min-w-0">
@@ -1546,18 +1556,18 @@ export function AgentRunsWorkspace({
                 transcriptPinnedRef.current =
                   target.scrollHeight - target.scrollTop - target.clientHeight < 96;
               }}
-              className="min-h-[25rem] max-h-[calc(100vh-17rem)] overflow-y-auto px-4 py-6 sm:px-7 sm:py-8"
+              className={clsx("min-h-[25rem] max-h-[calc(100vh-17rem)] overflow-y-auto px-4 py-6 sm:px-7 sm:py-8", workspaceStyles.transcript)}
             >
-              <div className="mx-auto max-w-3xl space-y-7">
+              <div className={clsx("mx-auto max-w-3xl space-y-7", workspaceStyles.transcriptInner)}>
               {visibleTurns.map((turn) => (
-                <article key={turn.id} className={clsx("flex", turn.role === "user" ? "justify-end" : "justify-start")}>
+                <article key={turn.id} className={clsx("flex", workspaceStyles.turn, turn.role === "user" ? clsx("justify-end", workspaceStyles.userTurn) : clsx("justify-start", workspaceStyles.assistantTurn))}>
                   {turn.role === "user" ? (
-                    <div className="max-w-[88%] rounded-2xl rounded-br-md bg-foreground px-4 py-3 text-background sm:max-w-[78%]">
+                    <div className={clsx("max-w-[88%] rounded-2xl rounded-br-md bg-foreground px-4 py-3 text-background sm:max-w-[78%]", workspaceStyles.userBubble)}>
                       <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-background/60">You</p>
                       <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
                     </div>
                   ) : (
-                    <div className="min-w-0 max-w-full sm:pl-1">
+                    <div className={clsx("min-w-0 max-w-full sm:pl-1", workspaceStyles.assistantMessage)}>
                       <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Asael</p>
                       <ConversationMessageContent content={turn.content} />
                     </div>
@@ -1591,8 +1601,8 @@ export function AgentRunsWorkspace({
               ) : null}
 
               {currentAssistantResponse ? (
-                <article className="flex justify-start">
-                  <div className="min-w-0 max-w-full sm:pl-1">
+                <article className={clsx("flex justify-start", workspaceStyles.turn, workspaceStyles.assistantTurn)}>
+                  <div className={clsx("min-w-0 max-w-full sm:pl-1", workspaceStyles.assistantMessage)}>
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Asael</p>
                       {loading === "agent" ? (
@@ -1653,11 +1663,11 @@ export function AgentRunsWorkspace({
                 </article>
               ) : null}
               {!turns.length && !currentAssistantResponse ? (
-                <div className="grid min-h-64 place-items-center text-center">
+                <div className={clsx("grid min-h-64 place-items-center text-center", workspaceStyles.emptyConversation)}>
                   <div>
-                    <span className="mx-auto grid size-11 place-items-center rounded-full bg-primary/10 text-primary"><Sparkles size={18} aria-hidden="true" /></span>
+                    <span className={clsx("mx-auto grid size-11 place-items-center rounded-full bg-primary/10 text-primary", workspaceStyles.emptyOrb)}><Sparkles size={18} aria-hidden="true" /></span>
                     <h2 className="mt-4 text-xl font-semibold tracking-tight">What should we work through?</h2>
-                    <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Start with a question or outcome. Follow up naturally—Asael keeps this conversation together.</p>
+                    <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Start with a question or outcome. Follow up naturally, and Asael keeps this conversation together.</p>
                   </div>
                 </div>
               ) : null}
@@ -2154,7 +2164,7 @@ export function AgentRunsWorkspace({
             aria-modal="true"
             aria-labelledby="mobile-conversations-title"
             tabIndex={-1}
-            className="absolute inset-y-0 left-0 flex w-[min(88vw,22rem)] flex-col border-r border-line bg-surface shadow-2xl outline-none"
+            className={clsx("absolute inset-y-0 left-0 flex w-[min(88vw,22rem)] flex-col border-r border-line bg-surface shadow-2xl outline-none", workspaceStyles.mobileConversationSheet)}
           >
             <header className="flex min-h-16 items-center justify-between gap-3 border-b border-line px-4">
               <div>
@@ -2203,15 +2213,16 @@ function InlineTaskProgress({
         : `Worked through ${count || 1} ${count === 1 ? "update" : "updates"}`
     : "Asael is working";
   return (
-    <article className="flex justify-start">
+    <article className={clsx("flex justify-start", workspaceStyles.progressTurn)}>
       <button
         type="button"
         onClick={onOpen}
-        className="group ml-0 flex max-w-2xl items-center gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-surface-raised sm:ml-8"
+        className={clsx("group ml-0 flex max-w-2xl items-center gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-surface-raised sm:ml-8", workspaceStyles.progressFlow)}
         aria-haspopup="dialog"
       >
         <span className={clsx(
           "grid size-8 shrink-0 place-items-center rounded-full",
+          workspaceStyles.progressNode,
           terminal
             ? tone === "danger"
               ? "bg-danger/10 text-danger"
@@ -2722,10 +2733,11 @@ function GoalStage({
         ? `Context ${contextSelectedCount}/${contextTotalCount}`
         : "Context";
   return (
-    <section className="border-t border-line/70 bg-background/95 px-3 py-2 backdrop-blur sm:px-5" aria-labelledby="command-composer-title">
-      <div className="mx-auto max-w-3xl">
+    <section className={clsx("border-t border-line/70 bg-background/95 px-3 py-2 backdrop-blur sm:px-5", workspaceStyles.composerDock)} aria-labelledby="command-composer-title">
+      <div className={clsx("mx-auto max-w-3xl", workspaceStyles.composerWidth)}>
         <h2 id="command-composer-title" className="sr-only">Message Asael</h2>
-        <div className="rounded-[1.35rem] border border-line bg-surface shadow-[0_10px_32px_-28px_rgba(0,0,0,0.5)] focus-within:border-primary/60">
+        <div className={clsx("rounded-[1.35rem] border border-line bg-surface shadow-[0_10px_32px_-28px_rgba(0,0,0,0.5)] focus-within:border-primary/60", workspaceStyles.composer)}>
+          <span className={workspaceStyles.composerAura} aria-hidden="true"><Sparkles size={15} /></span>
           {preferredAgentId ? (
             <div className="flex items-center justify-between gap-3 border-b border-line/70 px-3 py-1.5">
               <span className="text-xs text-muted">

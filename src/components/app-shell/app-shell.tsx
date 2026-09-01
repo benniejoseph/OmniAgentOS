@@ -21,6 +21,7 @@ import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { NotificationCenter } from "@/components/app-shell/notification-center";
 import { AsaelMark } from "@/components/brand/asael-mark";
+import styles from "./app-shell.module.css";
 
 export function AppShell({ children, banner }: { children: React.ReactNode; banner?: React.ReactNode }) {
   const pathname = usePathname();
@@ -33,6 +34,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
   const [signOutError, setSignOutError] = useState<string>();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobilePanelRef = useRef<HTMLDivElement>(null);
+  const visualSystemClass = workspaceVisualSystem(pathname, styles);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -124,7 +126,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className={clsx("min-h-screen bg-background text-foreground", styles.shell, visualSystemClass)}>
       <a
         href="#workspace-content"
         className="fixed left-3 top-3 z-[70] -translate-y-24 rounded-md bg-foreground px-4 py-3 text-sm font-semibold text-background focus:translate-y-0"
@@ -369,6 +371,19 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
       ) : null}
     </div>
   );
+}
+
+function workspaceVisualSystem(pathname: string, classNames: Record<string, string>) {
+  if (pathname === "/app") return classNames.daybook;
+  if (pathname.startsWith("/app/command") || pathname.startsWith("/app/missions")) return classNames.fluid;
+  if (
+    pathname.startsWith("/app/agents") ||
+    pathname.startsWith("/app/memory") ||
+    pathname.startsWith("/app/tools") ||
+    pathname.startsWith("/app/connectors") ||
+    pathname.startsWith("/app/settings")
+  ) return classNames.luminous;
+  return undefined;
 }
 
 function CompactNavigation({ pathname }: { pathname: string }) {

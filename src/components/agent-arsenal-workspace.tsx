@@ -26,6 +26,7 @@ import { upsertById } from "@/lib/agents/client-state";
 import { arsenalAgents, type ArsenalAgent } from "@/lib/agents/arsenal";
 import type { AgentPerformance } from "@/lib/agents/performance";
 import type { AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
+import styles from "@/components/agent-arsenal-workspace.module.css";
 
 type ToolOption = {
   id: string;
@@ -175,7 +176,7 @@ export function AgentArsenalWorkspace() {
   }
 
   return (
-    <div className="arsenal-shell workspace-enter">
+    <div className={clsx("arsenal-shell workspace-enter", styles.shell)}>
       <header className="arsenal-header">
         <div>
           <p className="arsenal-kicker">Agent workspace</p>

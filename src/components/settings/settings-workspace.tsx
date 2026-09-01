@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { PersonalDataControls } from "@/components/settings/personal-data-controls";
+import styles from "@/components/settings/settings-workspace.module.css";
 import {
   MODEL_ASSIGNMENT_SCOPES,
   MODEL_PROVIDERS,
@@ -174,17 +175,17 @@ export function SettingsWorkspace() {
   const deprecatedModels = snapshot?.models.filter((item) => item.lifecycle === "deprecated" || item.lifecycle === "retiring").length || 0;
 
   return (
-    <div className="workspace-enter mx-auto w-full max-w-[112rem] px-4 pb-16 pt-5 sm:px-6 lg:px-8">
-      <header className="border-b border-line pb-6">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-          <div>
+    <div className={clsx("workspace-enter mx-auto w-full max-w-[112rem] px-4 pb-16 pt-5 sm:px-6 lg:px-8", styles.shell)}>
+      <header className={clsx("border-b border-line pb-6", styles.hero)}>
+        <div className={clsx("flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between", styles.heroLayout)}>
+          <div className={styles.heroIntro}>
             <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-primary">Control plane</p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-[-0.045em] sm:text-4xl">Settings</h1>
+            <h1 className={clsx("mt-2 text-3xl font-semibold tracking-[-0.045em] sm:text-4xl", styles.heroTitle)}>Settings</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">
               Manage providers, model policy, programmatic access, and data ownership from one workspace.
             </p>
           </div>
-          <div className="grid grid-cols-3 divide-x divide-line overflow-hidden rounded-lg border border-line bg-surface">
+          <div className={clsx("grid grid-cols-3 divide-x divide-line overflow-hidden rounded-lg border border-line bg-surface", styles.heroMetrics)}>
             <HeaderMetric label="Providers" value={loading ? "—" : String(activeProviders)} detail="connected" />
             <HeaderMetric label="Routes" value={loading ? "—" : String(snapshot?.assignments.length || 0)} detail="configured" />
             <HeaderMetric label="Lifecycle" value={loading ? "—" : deprecatedModels ? String(deprecatedModels) : "Clear"} detail={deprecatedModels ? "need review" : "no alerts"} warning={deprecatedModels > 0} />
@@ -193,14 +194,14 @@ export function SettingsWorkspace() {
       </header>
 
       {error ? (
-        <div role="alert" className="mt-4 flex items-start justify-between gap-4 border-l-2 border-danger bg-danger/5 px-4 py-3 text-sm text-danger">
+        <div role="alert" className={clsx("mt-4 flex items-start justify-between gap-4 border-l-2 border-danger bg-danger/5 px-4 py-3 text-sm text-danger", styles.error)}>
           <span className="flex items-start gap-2"><AlertCircle className="mt-0.5 size-4 shrink-0" />{error}</span>
           <button type="button" onClick={() => setError(undefined)} aria-label="Dismiss error"><X size={16} /></button>
         </div>
       ) : null}
 
-      <div className="mt-6 grid gap-8 xl:grid-cols-[16rem_minmax(0,1fr)]">
-        <nav aria-label="Settings categories" className="-mx-4 flex gap-1 overflow-x-auto border-y border-line px-4 py-2 xl:sticky xl:top-5 xl:mx-0 xl:block xl:self-start xl:overflow-visible xl:border-0 xl:p-0">
+      <div className={clsx("mt-6 grid gap-8 xl:grid-cols-[16rem_minmax(0,1fr)]", styles.layout)}>
+        <nav aria-label="Settings categories" className={clsx("-mx-4 flex gap-1 overflow-x-auto border-y border-line px-4 py-2 xl:sticky xl:top-5 xl:mx-0 xl:block xl:self-start xl:overflow-visible xl:border-0 xl:p-0", styles.sidebar)}>
           {sections.map((item) => {
             const Icon = item.icon;
             return (
@@ -211,6 +212,8 @@ export function SettingsWorkspace() {
                 className={clsx(
                   "group flex min-w-[10rem] items-center gap-3 rounded-md px-3 py-3 text-left transition xl:mb-1 xl:w-full",
                   section === item.id ? "bg-primary/10 text-foreground" : "text-muted hover:bg-surface-raised hover:text-foreground",
+                  styles.navItem,
+                  section === item.id && styles.navItemSelected,
                 )}
                 aria-current={section === item.id ? "page" : undefined}
               >
@@ -225,7 +228,7 @@ export function SettingsWorkspace() {
           })}
         </nav>
 
-        <main className="min-w-0">
+        <main className={clsx("min-w-0", styles.content)}>
           {loading ? <SettingsLoading /> : null}
           {!loading && snapshot && section === "overview" ? (
             <OverviewSection snapshot={snapshot} onNavigate={setSection} />
@@ -289,14 +292,14 @@ export function SettingsWorkspace() {
 }
 
 function HeaderMetric({ label, value, detail, warning }: { label: string; value: string; detail: string; warning?: boolean }) {
-  return <div className="min-w-[7rem] px-4 py-3 sm:min-w-[9rem]">
+  return <div className={clsx("min-w-[7rem] px-4 py-3 sm:min-w-[9rem]", styles.headerMetric)}>
     <p className="text-[10px] font-bold uppercase tracking-[0.13em] text-muted">{label}</p>
     <div className="mt-1 flex items-baseline gap-2"><strong className={clsx("text-lg font-semibold", warning && "text-warning")}>{value}</strong><span className="hidden text-[10px] text-muted sm:inline">{detail}</span></div>
   </div>;
 }
 
 function SectionHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) {
-  return <div className="flex flex-col gap-4 border-b border-line pb-5 sm:flex-row sm:items-end sm:justify-between">
+  return <div className={clsx("flex flex-col gap-4 border-b border-line pb-5 sm:flex-row sm:items-end sm:justify-between", styles.sectionHeader)}>
     <div><p className="text-[10px] font-bold uppercase tracking-[0.18em] text-primary">{eyebrow}</p><h2 className="mt-1.5 text-2xl font-semibold tracking-[-0.035em]">{title}</h2><p className="mt-1.5 max-w-3xl text-sm leading-6 text-muted">{description}</p></div>
     {action}
   </div>;
@@ -305,9 +308,9 @@ function SectionHeader({ eyebrow, title, description, action }: { eyebrow: strin
 function OverviewSection({ snapshot, onNavigate }: { snapshot: SettingsSnapshot; onNavigate: (section: SettingsSection) => void }) {
   const deploymentProviders = snapshot.providers.filter((item) => item.source === "deployment_environment");
   const tenantProviders = snapshot.providers.filter((item) => item.source === "tenant_vault" && item.status !== "revoked");
-  return <section>
+  return <section className={styles.sectionCanvas}>
     <SectionHeader eyebrow="Workspace" title="Configuration at a glance" description="See what is active now, what is safely stored, and what still needs runtime activation." />
-    <div className="mt-6 divide-y divide-line border-y border-line">
+    <div className={clsx("mt-6 divide-y divide-line border-y border-line", styles.observatoryList)}>
       <OverviewRow icon={ShieldCheck} title="Authentication" value={snapshot.platform.authEnforced ? "Enforced" : "Development mode"} description={snapshot.platform.bootstrapConfigured ? "Bootstrap credentials are still configured; remove them after the workspace administrator is established." : "Native workspace authentication is active without bootstrap credentials."} tone={snapshot.platform.authEnforced && !snapshot.platform.bootstrapConfigured ? "success" : "warning"} action={() => onNavigate("data")} />
       <OverviewRow icon={Database} title="Storage" value={`${snapshot.platform.storageBackend} · ${snapshot.platform.databaseConfigured ? "database configured" : "no database"}`} description={snapshot.platform.storageBackend === "ephemeral" ? "Hosted ephemeral storage is not durable. Configure the production database before relying on saved settings." : "Tenant records use the active application persistence backend."} tone={snapshot.platform.storageBackend === "ephemeral" ? "warning" : "success"} action={() => onNavigate("data")} />
       <OverviewRow icon={snapshot.vault.configured ? LockKeyhole : AlertCircle} title="Credential vault" value={snapshot.vault.configured ? `Ready · ${snapshot.vault.activeKeyId}` : "Setup required"} description={snapshot.vault.message} tone={snapshot.vault.configured ? "success" : "warning"} action={() => onNavigate("providers")} />
@@ -316,15 +319,15 @@ function OverviewSection({ snapshot, onNavigate }: { snapshot: SettingsSnapshot;
       <OverviewRow icon={Network} title="MCP server" value={snapshot.mcp.enabled ? "Enabled" : "Disabled"} description={snapshot.mcp.enabled ? `${snapshot.mcp.serverName} · ${snapshot.mcp.allowedScopes.length} allowed scopes` : "Enable governed access when you are ready to connect an MCP client."} tone={snapshot.mcp.enabled ? "success" : "neutral"} action={() => onNavigate("api")} />
       <OverviewRow icon={RefreshCw} title="Release" value={snapshot.platform.releaseRevision ? snapshot.platform.releaseRevision.slice(0, 12) : "Revision unavailable"} description="The deployment revision reported by this running application instance." tone="neutral" action={() => onNavigate("overview")} />
     </div>
-    <div className="mt-8 grid gap-5 lg:grid-cols-2">
-      <div className="rounded-lg bg-surface p-5 ring-1 ring-line"><p className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted">Tenant credentials</p><p className="mt-3 text-3xl font-semibold tracking-[-0.04em]">{tenantProviders.length}</p><p className="mt-1 text-sm text-muted">Sealed provider connections in this workspace</p></div>
-      <div className="rounded-lg bg-surface p-5 ring-1 ring-line"><p className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted">Service identities</p><p className="mt-3 text-3xl font-semibold tracking-[-0.04em]">{snapshot.apiKeys.filter((item) => item.status === "active").length}</p><p className="mt-1 text-sm text-muted">Active hash-only API keys</p></div>
+    <div className={clsx("mt-8 grid gap-5 lg:grid-cols-2", styles.summaryPair)}>
+      <div className={clsx("rounded-lg bg-surface p-5 ring-1 ring-line", styles.summaryCard)}><p className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted">Tenant credentials</p><p className="mt-3 text-3xl font-semibold tracking-[-0.04em]">{tenantProviders.length}</p><p className="mt-1 text-sm text-muted">Sealed provider connections in this workspace</p></div>
+      <div className={clsx("rounded-lg bg-surface p-5 ring-1 ring-line", styles.summaryCard)}><p className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted">Service identities</p><p className="mt-3 text-3xl font-semibold tracking-[-0.04em]">{snapshot.apiKeys.filter((item) => item.status === "active").length}</p><p className="mt-1 text-sm text-muted">Active hash-only API keys</p></div>
     </div>
   </section>;
 }
 
 function OverviewRow({ icon: Icon, title, value, description, tone = "neutral", action }: { icon: typeof Cloud; title: string; value: string; description: string; tone?: "neutral" | "success" | "warning"; action: () => void }) {
-  return <button type="button" onClick={action} className="group grid w-full gap-3 py-5 text-left transition hover:bg-surface/60 sm:grid-cols-[2.5rem_minmax(10rem,.55fr)_minmax(14rem,1fr)_auto] sm:items-center sm:px-3">
+  return <button type="button" onClick={action} className={clsx("group grid w-full gap-3 py-5 text-left transition hover:bg-surface/60 sm:grid-cols-[2.5rem_minmax(10rem,.55fr)_minmax(14rem,1fr)_auto] sm:items-center sm:px-3", styles.overviewRow)}>
     <span className={clsx("grid size-9 place-items-center rounded-md", tone === "success" ? "bg-success/10 text-success" : tone === "warning" ? "bg-warning/10 text-warning" : "bg-surface-raised text-muted")}><Icon size={17} /></span>
     <span><span className="block text-sm font-semibold">{title}</span><span className={clsx("mt-1 block text-xs", tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : "text-muted")}>{value}</span></span>
     <span className="text-xs leading-5 text-muted">{description}</span><ArrowRight size={16} className="text-muted transition group-hover:translate-x-1 group-hover:text-primary" />
@@ -342,15 +345,15 @@ function ProvidersSection({ snapshot, savedProviders, busy, onAdd, onRotate, onV
   onRevoke: (id: string) => void;
 }) {
   const providerByType = new Map(savedProviders.map((item) => [item.provider, item]));
-  return <section>
+  return <section className={styles.sectionCanvas}>
     <SectionHeader eyebrow="AI providers" title="Credentials and model catalogs" description="Connect workspace-owned providers without exposing credential values. Validation refreshes the selectable model catalog and records lifecycle metadata." />
     {!snapshot.vault.configured ? <div className="mt-5 border-l-2 border-warning bg-warning/5 px-4 py-3"><p className="text-sm font-semibold text-warning">Independent keyring required</p><p className="mt-1 text-xs leading-5 text-muted">{snapshot.vault.message}</p></div> : null}
-    <div className="mt-6 divide-y divide-line border-y border-line">
+    <div className={clsx("mt-6 divide-y divide-line border-y border-line", styles.providerList)}>
       {MODEL_PROVIDERS.map((provider) => {
         const connection = providerByType.get(provider);
         const env = snapshot.providers.find((item) => item.provider === provider && item.source === "deployment_environment");
         const detail = providerDetails[provider];
-        return <div key={provider} className="grid gap-4 py-5 lg:grid-cols-[minmax(12rem,.65fr)_minmax(14rem,1fr)_auto] lg:items-center">
+        return <div key={provider} className={clsx("grid gap-4 py-5 lg:grid-cols-[minmax(12rem,.65fr)_minmax(14rem,1fr)_auto] lg:items-center", styles.providerRow)}>
           <div className="flex items-center gap-3"><ProviderMark provider={provider} /><div><h3 className="text-sm font-semibold">{detail.name}</h3><p className="mt-0.5 text-xs text-muted">{detail.note}</p></div></div>
           <div className="flex flex-wrap items-center gap-2">
             {connection ? <StatusPill status={connection.status} /> : <span className="rounded-full bg-surface-raised px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-muted">Not connected</span>}
@@ -369,7 +372,7 @@ function ProvidersSection({ snapshot, savedProviders, busy, onAdd, onRotate, onV
         </div>;
       })}
     </div>
-    <div className="mt-7 flex items-start gap-3 rounded-lg bg-surface p-4 ring-1 ring-line"><ShieldCheck size={18} className="mt-0.5 shrink-0 text-primary" /><div><p className="text-sm font-semibold">Credential boundary</p><p className="mt-1 text-xs leading-5 text-muted">Workspace secrets are encrypted with a separate AES-256-GCM keyring and bound to tenant, actor, provider, record, and version. The API only returns status, configured field names, and a non-secret fingerprint.</p></div></div>
+    <div className={clsx("mt-7 flex items-start gap-3 rounded-lg bg-surface p-4 ring-1 ring-line", styles.infoBeacon)}><ShieldCheck size={18} className="mt-0.5 shrink-0 text-primary" /><div><p className="text-sm font-semibold">Credential boundary</p><p className="mt-1 text-xs leading-5 text-muted">Workspace secrets are encrypted with a separate AES-256-GCM keyring and bound to tenant, actor, provider, record, and version. The API only returns status, configured field names, and a non-secret fingerprint.</p></div></div>
   </section>;
 }
 
@@ -380,10 +383,10 @@ function ModelsSection({ snapshot, busy, onSave, onRefresh }: {
   onRefresh: (id: string) => Promise<unknown>;
 }) {
   const connected = snapshot.providers.filter((item) => item.source === "tenant_vault" && item.status === "connected");
-  return <section>
+  return <section className={styles.sectionCanvas}>
     <SectionHeader eyebrow="Model routing" title="Assign the right model to each role" description="Choose a primary model and an optional fallback. Crossing provider boundaries is off until you explicitly consent for that assignment." action={connected.length ? <button type="button" className="action-button shrink-0" disabled={Boolean(busy)} onClick={() => void (async () => { for (const item of connected) await onRefresh(item.id); })().catch(() => undefined)}><RefreshCw size={15} />Refresh catalogs</button> : undefined} />
     <div className="mt-5 border-l-2 border-info bg-info/5 px-4 py-3"><p className="text-sm font-semibold text-info">Configuration scope</p><p className="mt-1 text-xs leading-5 text-muted">{snapshot.runtime.message}</p></div>
-    <div className="mt-6 divide-y divide-line border-y border-line">
+    <div className={clsx("mt-6 divide-y divide-line border-y border-line", styles.routeList)}>
       {MODEL_ASSIGNMENT_SCOPES.map((scope) => <AssignmentEditor key={scope} scope={scope} models={snapshot.models} providers={snapshot.providers} current={snapshot.assignments.find((item) => item.scope === scope)} busy={busy === `assignment:${scope}`} onSave={(value) => onSave(scope, value)} />)}
     </div>
     <ModelCatalog models={snapshot.models} />
@@ -411,7 +414,7 @@ function AssignmentEditor({ scope, models, providers, current, busy, onSave }: {
   const crossesBoundary = Boolean(fallbackProvider && fallbackProvider !== provider);
   const selectedLifecycle = models.find((item) => item.provider === provider && item.modelId === modelId);
   const details = assignmentLabels[scope];
-  return <div className="py-5">
+  return <div className={clsx("py-5", styles.routeRow)}>
     <div className="grid gap-4 xl:grid-cols-[minmax(11rem,.55fr)_minmax(0,1fr)_auto] xl:items-start">
       <div><h3 className="text-sm font-semibold">{details.title}</h3><p className="mt-1 text-xs leading-5 text-muted">{details.description}</p>{current ? <span className={`mt-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${current.runtimeReadiness === "active" ? "text-success" : "text-warning"}`}><CircleDashed size={11} />{current.runtimeReadiness === "active" ? "Runtime active" : "Configuration only"}</span> : null}</div>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -430,14 +433,14 @@ function AssignmentEditor({ scope, models, providers, current, busy, onSave }: {
 function ModelCatalog({ models }: { models: ModelCatalogEntry[] }) {
   const [expanded, setExpanded] = useState(false);
   const shown = expanded ? models : models.slice(0, 8);
-  return <div className="mt-8">
+  return <div className={clsx("mt-8", styles.modelCatalog)}>
     <div className="flex items-end justify-between gap-4"><div><h3 className="text-base font-semibold">Discovered models</h3><p className="mt-1 text-xs text-muted">Lifecycle stays unknown unless the provider publishes a reliable state.</p></div>{models.length > 8 ? <button type="button" className="text-xs font-semibold text-primary" onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : `View all ${models.length}`}</button> : null}</div>
     {shown.length ? <div className="mt-4 overflow-x-auto rounded-lg border border-line"><table className="w-full min-w-[42rem] text-left text-xs"><thead className="bg-surface text-[10px] uppercase tracking-[0.1em] text-muted"><tr><th className="px-4 py-3 font-bold">Model</th><th className="px-4 py-3 font-bold">Provider</th><th className="px-4 py-3 font-bold">Capabilities</th><th className="px-4 py-3 font-bold">Lifecycle</th><th className="px-4 py-3 font-bold">Checked</th></tr></thead><tbody className="divide-y divide-line">{shown.map((model) => <tr key={model.id}><td className="px-4 py-3"><strong className="block font-semibold">{model.displayName}</strong><span className="font-mono text-[10px] text-muted">{model.modelId}</span></td><td className="px-4 py-3 text-muted">{providerDetails[model.provider].name}</td><td className="px-4 py-3 text-muted">{model.capabilities.join(" · ")}</td><td className="px-4 py-3"><LifecyclePill lifecycle={model.lifecycle} /></td><td className="px-4 py-3 text-muted">{model.lifecycleCheckedAt ? formatDate(model.lifecycleCheckedAt) : "Not reported"}</td></tr>)}</tbody></table></div> : <EmptyLine title="No model catalog yet" body="Connect and validate a provider to discover selectable models." />}
   </div>;
 }
 
 function ApiSection({ snapshot, busy, onRequest, onRevealToken }: { snapshot: SettingsSnapshot; busy?: string; onRequest: <T>(key: string, path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown) => Promise<T | undefined>; onRevealToken: (token: string) => void }) {
-  return <section>
+  return <section className={styles.sectionCanvas}>
     <SectionHeader eyebrow="API & MCP" title="Programmatic access" description="Create scoped service identities and expose OmniAgent through a governed MCP endpoint. Tokens are stored as hashes and cannot be recovered." />
     <ServiceApiKeys snapshot={snapshot} busy={busy} onRequest={onRequest} onRevealToken={onRevealToken} />
     <McpConfiguration config={snapshot.mcp} busy={busy === "mcp:save"} onSave={(config) => onRequest("mcp:save", "/api/settings/mcp", "PUT", config)} />
@@ -449,10 +452,10 @@ function ServiceApiKeys({ snapshot, busy, onRequest, onRevealToken }: { snapshot
   const [name, setName] = useState("");
   const [scopes, setScopes] = useState<ServiceApiScope[]>(["mcp:discover", "mcp:tools:list"]);
   const [expiresAt, setExpiresAt] = useState("");
-  return <div className="mt-6">
+  return <div className={clsx("mt-6", styles.apiKeys)}>
     <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><h3 className="text-base font-semibold">Service API keys</h3><p className="mt-1 text-xs leading-5 text-muted">Use a separate key per integration so access can be revoked without interrupting anything else.</p></div><button type="button" className="primary-button shrink-0" onClick={() => setCreating(!creating)}><Plus size={15} />Create key</button></div>
-    {creating ? <form className="mt-4 rounded-lg bg-surface p-4 ring-1 ring-line" onSubmit={(event) => { event.preventDefault(); void onRequest<{ token: string }>("api-key:create", "/api/settings/api-keys", "POST", { name, scopes, expiresAt: expiresAt ? new Date(expiresAt).toISOString() : undefined }).then((result) => { if (result?.token) { onRevealToken(result.token); setCreating(false); setName(""); setExpiresAt(""); } }).catch(() => undefined); }}><div className="grid gap-4 lg:grid-cols-[minmax(12rem,.6fr)_minmax(12rem,.55fr)_minmax(0,1fr)_auto] lg:items-end"><SettingsField label="Key name"><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Claude Desktop" maxLength={120} /></SettingsField><SettingsField label="Expiry (optional)"><input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></SettingsField><fieldset><legend className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-muted">Scopes</legend><div className="flex flex-wrap gap-2">{SERVICE_API_SCOPES.map((scope) => <label key={scope} className={clsx("cursor-pointer rounded-full border px-2.5 py-1 text-[10px] font-semibold transition", scopes.includes(scope) ? "border-primary/40 bg-primary/10 text-primary" : "border-line text-muted hover:text-foreground")}><input type="checkbox" className="sr-only" checked={scopes.includes(scope)} onChange={(event) => setScopes(event.target.checked ? [...scopes, scope] : scopes.filter((item) => item !== scope))} />{scope}</label>)}</div></fieldset><button type="submit" className="primary-button" disabled={!name.trim() || !scopes.length || busy === "api-key:create"}>{busy === "api-key:create" ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}Generate once</button></div></form> : null}
-    <div className="mt-4 divide-y divide-line border-y border-line">{snapshot.apiKeys.length ? snapshot.apiKeys.map((key) => <div key={key.id} className="grid gap-3 py-4 sm:grid-cols-[minmax(10rem,.55fr)_minmax(0,1fr)_auto] sm:items-center"><div><p className="text-sm font-semibold">{key.name}</p><p className="mt-1 font-mono text-[10px] text-muted">{key.tokenPrefix}••••{key.tokenLastFour}</p></div><div><StatusPill status={key.status === "active" ? "connected" : key.status === "expired" ? "error" : "revoked"} /><p className="mt-1.5 text-[10px] text-muted">{key.scopes.join(" · ")}</p></div><button type="button" className="action-button min-h-9 text-xs text-danger" disabled={key.status !== "active" || Boolean(busy)} onClick={() => { if (window.confirm(`Revoke the ${key.name} API key?`)) void onRequest(`api-key:revoke:${key.id}`, `/api/settings/api-keys/${key.id}`, "DELETE").catch(() => undefined); }}><Trash2 size={13} />Revoke</button></div>) : <EmptyLine title="No service API keys" body="Create a narrow, revocable identity for each client or automation." />}</div>
+    {creating ? <form className={clsx("mt-4 rounded-lg bg-surface p-4 ring-1 ring-line", styles.createKeyForm)} onSubmit={(event) => { event.preventDefault(); void onRequest<{ token: string }>("api-key:create", "/api/settings/api-keys", "POST", { name, scopes, expiresAt: expiresAt ? new Date(expiresAt).toISOString() : undefined }).then((result) => { if (result?.token) { onRevealToken(result.token); setCreating(false); setName(""); setExpiresAt(""); } }).catch(() => undefined); }}><div className="grid gap-4 lg:grid-cols-[minmax(12rem,.6fr)_minmax(12rem,.55fr)_minmax(0,1fr)_auto] lg:items-end"><SettingsField label="Key name"><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Claude Desktop" maxLength={120} /></SettingsField><SettingsField label="Expiry (optional)"><input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></SettingsField><fieldset><legend className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-muted">Scopes</legend><div className="flex flex-wrap gap-2">{SERVICE_API_SCOPES.map((scope) => <label key={scope} className={clsx("cursor-pointer rounded-full border px-2.5 py-1 text-[10px] font-semibold transition", scopes.includes(scope) ? "border-primary/40 bg-primary/10 text-primary" : "border-line text-muted hover:text-foreground")}><input type="checkbox" className="sr-only" checked={scopes.includes(scope)} onChange={(event) => setScopes(event.target.checked ? [...scopes, scope] : scopes.filter((item) => item !== scope))} />{scope}</label>)}</div></fieldset><button type="submit" className="primary-button" disabled={!name.trim() || !scopes.length || busy === "api-key:create"}>{busy === "api-key:create" ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}Generate once</button></div></form> : null}
+    <div className={clsx("mt-4 divide-y divide-line border-y border-line", styles.apiKeyList)}>{snapshot.apiKeys.length ? snapshot.apiKeys.map((key) => <div key={key.id} className="grid gap-3 py-4 sm:grid-cols-[minmax(10rem,.55fr)_minmax(0,1fr)_auto] sm:items-center"><div><p className="text-sm font-semibold">{key.name}</p><p className="mt-1 font-mono text-[10px] text-muted">{key.tokenPrefix}••••{key.tokenLastFour}</p></div><div><StatusPill status={key.status === "active" ? "connected" : key.status === "expired" ? "error" : "revoked"} /><p className="mt-1.5 text-[10px] text-muted">{key.scopes.join(" · ")}</p></div><button type="button" className="action-button min-h-9 text-xs text-danger" disabled={key.status !== "active" || Boolean(busy)} onClick={() => { if (window.confirm(`Revoke the ${key.name} API key?`)) void onRequest(`api-key:revoke:${key.id}`, `/api/settings/api-keys/${key.id}`, "DELETE").catch(() => undefined); }}><Trash2 size={13} />Revoke</button></div>) : <EmptyLine title="No service API keys" body="Create a narrow, revocable identity for each client or automation." />}</div>
   </div>;
 }
 
@@ -461,9 +464,9 @@ function McpConfiguration({ config, busy, onSave }: { config: McpExportConfigura
   const [serverName, setServerName] = useState(config.serverName);
   const [allowedScopes, setAllowedScopes] = useState(config.allowedScopes);
   const [exposeResources, setExposeResources] = useState(config.exposeResources);
-  return <div className="mt-9 border-t border-line pt-7">
+  return <div className={clsx("mt-9 border-t border-line pt-7", styles.mcpSection)}>
     <div className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-md bg-primary/10 text-primary"><Network size={18} /></span><div><h3 className="text-base font-semibold">OmniAgent MCP server</h3><p className="mt-1 max-w-2xl text-xs leading-5 text-muted">Expose reviewed tools and optional resources at <code className="rounded bg-surface-raised px-1.5 py-0.5 font-mono">{config.endpointPath}</code>. Every tool execution remains governed.</p></div></div>
-    <div className="mt-5 grid gap-5 rounded-lg bg-surface p-5 ring-1 ring-line lg:grid-cols-[minmax(12rem,.5fr)_minmax(0,1fr)]">
+    <div className={clsx("mt-5 grid gap-5 rounded-lg bg-surface p-5 ring-1 ring-line lg:grid-cols-[minmax(12rem,.5fr)_minmax(0,1fr)]", styles.mcpPanel)}>
       <div className="space-y-4"><SettingsField label="Server name"><input value={serverName} onChange={(event) => setServerName(event.target.value)} maxLength={120} /></SettingsField><ToggleRow title="Enable MCP endpoint" description="Service-key authentication is still required." checked={enabled} onChange={setEnabled} /><ToggleRow title="Expose resources" description="Allow configured read-only resources in addition to tools." checked={exposeResources} onChange={setExposeResources} /></div>
       <div><p className="text-[10px] font-bold uppercase tracking-[0.1em] text-muted">Maximum scopes clients may receive</p><div className="mt-2 grid gap-2 sm:grid-cols-2">{SERVICE_API_SCOPES.map((scope) => <label key={scope} className="flex items-center gap-2 rounded-md border border-line bg-background px-3 py-2 text-xs"><input type="checkbox" className="accent-primary" checked={allowedScopes.includes(scope)} onChange={(event) => setAllowedScopes(event.target.checked ? [...allowedScopes, scope] : allowedScopes.filter((item) => item !== scope))} /><span>{scope}</span></label>)}</div></div>
       <div className="flex flex-col gap-3 border-t border-line pt-4 lg:col-span-2 sm:flex-row sm:items-center sm:justify-between"><p className="flex items-center gap-2 text-xs text-muted"><ShieldCheck size={15} className="text-success" />Approval mode is permanently governed; MCP cannot bypass tool policy.</p><button type="button" className="primary-button" disabled={busy || !serverName.trim()} onClick={() => void onSave({ enabled, serverName, allowedScopes, exposeResources }).catch(() => undefined)}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}Save MCP policy</button></div>
@@ -472,7 +475,7 @@ function McpConfiguration({ config, busy, onSave }: { config: McpExportConfigura
 }
 
 function DataSection({ snapshot }: { snapshot: SettingsSnapshot }) {
-  return <section>
+  return <section className={styles.sectionCanvas}>
     <SectionHeader eyebrow="Data & privacy" title="Ownership, portability, and secret boundaries" description="Understand where configuration lives and keep a portable archive of your agent workspace." />
     <div className="mt-6 grid gap-4 md:grid-cols-3"><SecurityFact icon={Database} title="Tenant isolated" body="Settings records carry tenant and actor ownership and database row-level security is forced." /><SecurityFact icon={LockKeyhole} title="Secrets sealed" body={snapshot.vault.configured ? `Independent keyring ${snapshot.vault.activeKeyId} is active.` : "Credential saves remain locked until the independent keyring is configured."} /><SecurityFact icon={KeyRound} title="Tokens hash-only" body="Service API tokens are shown once. Only their SHA-256 digest and redacted identity remain." /></div>
     <PersonalDataControls />
@@ -483,21 +486,21 @@ function ProviderDialog({ draft, rotating, vaultReady, busy, error, onChange, on
   const [visible, setVisible] = useState<Record<string, boolean>>({});
   const detail = providerDetails[draft.provider];
   const complete = detail.fields.filter((field) => !field.label.includes("optional")).every((field) => draft.credentials[field.name]?.trim());
-  return <div className="fixed inset-0 z-50 flex items-stretch justify-end" role="dialog" aria-modal="true" aria-labelledby="provider-dialog-title"><button type="button" className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={onClose} aria-label="Close provider setup" /><div className="relative flex w-full max-w-xl flex-col border-l border-line bg-background shadow-2xl"><header className="flex items-start justify-between gap-4 border-b border-line px-5 py-5 sm:px-7"><div><p className="text-[10px] font-bold uppercase tracking-[0.16em] text-primary">{rotating ? "Credential rotation" : "Provider setup"}</p><h2 id="provider-dialog-title" className="mt-1 text-xl font-semibold">{rotating ? `Rotate ${detail.name}` : `Connect ${detail.name}`}</h2><p className="mt-1 text-xs leading-5 text-muted">{rotating ? "The previous encrypted value is replaced and the credential version advances." : detail.note}</p></div><button type="button" className="grid size-9 shrink-0 place-items-center rounded-md border border-line text-muted hover:bg-surface-raised" onClick={onClose}><X size={16} /></button></header><form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => { event.preventDefault(); void onSubmit().catch(() => undefined); }}><div className="flex-1 space-y-5 overflow-y-auto px-5 py-6 sm:px-7">{error ? <div role="alert" className="border-l-2 border-danger bg-danger/5 px-3 py-2 text-xs leading-5 text-danger">{error}</div> : null}{!rotating ? <SettingsField label="Connection name"><input value={draft.label} onChange={(event) => onChange({ ...draft, label: event.target.value })} maxLength={120} /></SettingsField> : null}{detail.fields.map((field) => <SettingsField key={field.name} label={field.label}><div className="relative"><input type={field.secret && !visible[field.name] ? "password" : "text"} value={draft.credentials[field.name] || ""} onChange={(event) => onChange({ ...draft, credentials: { ...draft.credentials, [field.name]: event.target.value } })} placeholder={field.placeholder} autoComplete="off" className={field.secret ? "pr-11" : undefined} />{field.secret ? <button type="button" className="absolute inset-y-0 right-0 grid w-10 place-items-center text-muted" onClick={() => setVisible({ ...visible, [field.name]: !visible[field.name] })} aria-label={visible[field.name] ? `Hide ${field.label}` : `Show ${field.label}`}>{visible[field.name] ? <EyeOff size={15} /> : <Eye size={15} />}</button> : null}</div></SettingsField>)}<div className="rounded-lg bg-surface p-4 ring-1 ring-line"><p className="flex items-center gap-2 text-xs font-semibold"><LockKeyhole size={14} className="text-primary" />Write-only credential handling</p><p className="mt-1.5 text-[11px] leading-5 text-muted">The browser sends these values once over the authenticated settings route. They are sealed server-side and never returned by list, validate, or rotate responses.</p></div></div><footer className="flex items-center justify-between gap-3 border-t border-line px-5 py-4 sm:px-7"><p className={clsx("text-[11px]", vaultReady ? "text-success" : "text-warning")}>{vaultReady ? "Independent vault ready" : "Keyring setup required"}</p><div className="flex gap-2"><button type="button" className="action-button" onClick={onClose}>Cancel</button><button type="submit" className="primary-button" disabled={!vaultReady || !complete || busy}>{busy ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />}{rotating ? "Rotate and validate" : "Save and validate"}</button></div></footer></form></div></div>;
+  return <div className={clsx("fixed inset-0 z-50 flex items-stretch justify-end", styles.dialogBackdrop)} role="dialog" aria-modal="true" aria-labelledby="provider-dialog-title"><button type="button" className="absolute inset-0 bg-black/45 backdrop-blur-[2px]" onClick={onClose} aria-label="Close provider setup" /><div className={clsx("relative flex w-full max-w-xl flex-col border-l border-line bg-background shadow-2xl", styles.providerDialog)}><header className="flex items-start justify-between gap-4 border-b border-line px-5 py-5 sm:px-7"><div><p className="text-[10px] font-bold uppercase tracking-[0.16em] text-primary">{rotating ? "Credential rotation" : "Provider setup"}</p><h2 id="provider-dialog-title" className="mt-1 text-xl font-semibold">{rotating ? `Rotate ${detail.name}` : `Connect ${detail.name}`}</h2><p className="mt-1 text-xs leading-5 text-muted">{rotating ? "The previous encrypted value is replaced and the credential version advances." : detail.note}</p></div><button type="button" className="grid size-9 shrink-0 place-items-center rounded-md border border-line text-muted hover:bg-surface-raised" onClick={onClose}><X size={16} /></button></header><form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => { event.preventDefault(); void onSubmit().catch(() => undefined); }}><div className="flex-1 space-y-5 overflow-y-auto px-5 py-6 sm:px-7">{error ? <div role="alert" className="border-l-2 border-danger bg-danger/5 px-3 py-2 text-xs leading-5 text-danger">{error}</div> : null}{!rotating ? <SettingsField label="Connection name"><input value={draft.label} onChange={(event) => onChange({ ...draft, label: event.target.value })} maxLength={120} /></SettingsField> : null}{detail.fields.map((field) => <SettingsField key={field.name} label={field.label}><div className="relative"><input type={field.secret && !visible[field.name] ? "password" : "text"} value={draft.credentials[field.name] || ""} onChange={(event) => onChange({ ...draft, credentials: { ...draft.credentials, [field.name]: event.target.value } })} placeholder={field.placeholder} autoComplete="off" className={field.secret ? "pr-11" : undefined} />{field.secret ? <button type="button" className="absolute inset-y-0 right-0 grid w-10 place-items-center text-muted" onClick={() => setVisible({ ...visible, [field.name]: !visible[field.name] })} aria-label={visible[field.name] ? `Hide ${field.label}` : `Show ${field.label}`}>{visible[field.name] ? <EyeOff size={15} /> : <Eye size={15} />}</button> : null}</div></SettingsField>)}<div className="rounded-lg bg-surface p-4 ring-1 ring-line"><p className="flex items-center gap-2 text-xs font-semibold"><LockKeyhole size={14} className="text-primary" />Write-only credential handling</p><p className="mt-1.5 text-[11px] leading-5 text-muted">The browser sends these values once over the authenticated settings route. They are sealed server-side and never returned by list, validate, or rotate responses.</p></div></div><footer className="flex items-center justify-between gap-3 border-t border-line px-5 py-4 sm:px-7"><p className={clsx("text-[11px]", vaultReady ? "text-success" : "text-warning")}>{vaultReady ? "Independent vault ready" : "Keyring setup required"}</p><div className="flex gap-2"><button type="button" className="action-button" onClick={onClose}>Cancel</button><button type="submit" className="primary-button" disabled={!vaultReady || !complete || busy}>{busy ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />}{rotating ? "Rotate and validate" : "Save and validate"}</button></div></footer></form></div></div>;
 }
 
 function OneTimeTokenDialog({ token, onClose }: { token: string; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
-  return <div className="fixed inset-0 z-[60] grid place-items-center bg-black/50 p-4 backdrop-blur-[2px]" role="dialog" aria-modal="true" aria-labelledby="token-title"><div className="w-full max-w-2xl rounded-xl border border-line bg-background p-6 shadow-2xl sm:p-8"><span className="grid size-11 place-items-center rounded-full bg-success/10 text-success"><KeyRound size={20} /></span><h2 id="token-title" className="mt-5 text-2xl font-semibold tracking-[-0.035em]">Copy this key now</h2><p className="mt-2 text-sm leading-6 text-muted">For security, this is the only time OmniAgent will display the complete token. Store it in your client’s secret manager.</p><div className="mt-5 flex items-center gap-2 rounded-lg border border-line bg-surface p-3"><code className="min-w-0 flex-1 break-all font-mono text-xs leading-5">{token}</code><button type="button" className="action-button shrink-0" onClick={() => void navigator.clipboard.writeText(token).then(() => setCopied(true)).catch(() => setCopied(false))}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "Copied" : "Copy"}</button></div><div className="mt-6 flex justify-end"><button type="button" className="primary-button" onClick={onClose}>I saved the key</button></div></div></div>;
+  return <div className={clsx("fixed inset-0 z-[60] grid place-items-center bg-black/50 p-4 backdrop-blur-[2px]", styles.dialogBackdrop)} role="dialog" aria-modal="true" aria-labelledby="token-title"><div className={clsx("w-full max-w-2xl rounded-xl border border-line bg-background p-6 shadow-2xl sm:p-8", styles.tokenDialog)}><span className="grid size-11 place-items-center rounded-full bg-success/10 text-success"><KeyRound size={20} /></span><h2 id="token-title" className="mt-5 text-2xl font-semibold tracking-[-0.035em]">Copy this key now</h2><p className="mt-2 text-sm leading-6 text-muted">For security, this is the only time OmniAgent will display the complete token. Store it in your client’s secret manager.</p><div className="mt-5 flex items-center gap-2 rounded-lg border border-line bg-surface p-3"><code className="min-w-0 flex-1 break-all font-mono text-xs leading-5">{token}</code><button type="button" className="action-button shrink-0" onClick={() => void navigator.clipboard.writeText(token).then(() => setCopied(true)).catch(() => setCopied(false))}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "Copied" : "Copy"}</button></div><div className="mt-6 flex justify-end"><button type="button" className="primary-button" onClick={onClose}>I saved the key</button></div></div></div>;
 }
 
 function SettingsField({ label, children }: { label: string; children: ReactNode }) {
-  return <label className="block"><span className="mb-1.5 block text-[10px] font-bold uppercase tracking-[0.1em] text-muted">{label}</span><div className="[&_input]:h-10 [&_input]:w-full [&_input]:rounded-md [&_input]:border [&_input]:border-line [&_input]:bg-background [&_input]:px-3 [&_input]:text-sm [&_input]:outline-none [&_input]:transition [&_input]:focus:border-primary [&_select]:h-10 [&_select]:w-full [&_select]:rounded-md [&_select]:border [&_select]:border-line [&_select]:bg-background [&_select]:px-3 [&_select]:text-sm [&_select]:outline-none [&_select]:transition [&_select]:focus:border-primary">{children}</div></label>;
+  return <label className={clsx("block", styles.field)}><span className="mb-1.5 block text-[10px] font-bold uppercase tracking-[0.1em] text-muted">{label}</span><div className="[&_input]:h-10 [&_input]:w-full [&_input]:rounded-md [&_input]:border [&_input]:border-line [&_input]:bg-background [&_input]:px-3 [&_input]:text-sm [&_input]:outline-none [&_input]:transition [&_input]:focus:border-primary [&_select]:h-10 [&_select]:w-full [&_select]:rounded-md [&_select]:border [&_select]:border-line [&_select]:bg-background [&_select]:px-3 [&_select]:text-sm [&_select]:outline-none [&_select]:transition [&_select]:focus:border-primary">{children}</div></label>;
 }
 
 function ProviderMark({ provider }: { provider: SettingsModelProvider }) {
   const initials = provider === "aws_bedrock" ? "AWS" : provider === "anthropic" ? "AI" : provider === "google" ? "G" : "O";
-  return <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-surface-raised text-xs font-bold text-foreground ring-1 ring-line">{initials}</span>;
+  return <span className={clsx("grid size-10 shrink-0 place-items-center rounded-lg bg-surface-raised text-xs font-bold text-foreground ring-1 ring-line", styles.providerMark)}>{initials}</span>;
 }
 
 function StatusPill({ status }: { status: RedactedProviderConnection["status"] }) {
@@ -515,7 +518,7 @@ function ToggleRow({ title, description, checked, onChange }: { title: string; d
 }
 
 function SecurityFact({ icon: Icon, title, body }: { icon: typeof Database; title: string; body: string }) {
-  return <div className="rounded-lg bg-surface p-5 ring-1 ring-line"><Icon size={18} className="text-primary" /><h3 className="mt-4 text-sm font-semibold">{title}</h3><p className="mt-1.5 text-xs leading-5 text-muted">{body}</p></div>;
+  return <div className={clsx("rounded-lg bg-surface p-5 ring-1 ring-line", styles.securityFact)}><Icon size={18} className="text-primary" /><h3 className="mt-4 text-sm font-semibold">{title}</h3><p className="mt-1.5 text-xs leading-5 text-muted">{body}</p></div>;
 }
 
 function EmptyLine({ title, body }: { title: string; body: string }) {
