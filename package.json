@@ -11,7 +11,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
     "smoke:security": "node scripts/smoke-security.mjs",
     "smoke:tenant": "node scripts/smoke-tenant-isolation.mjs",
