@@ -5,6 +5,9 @@ const TRANSIENT_AUDIT_FAILURE =
   /ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENETUNREACH|ECONNREFUSED|audit endpoint returned an error|audit request .* failed/i;
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const cleanEnvironment = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !/^npm_/i.test(key)),
+);
 const nodeOptions = [
   process.env.NODE_OPTIONS,
   "--dns-result-order=ipv4first",
@@ -45,7 +48,7 @@ function runAudit() {
       {
         cwd: process.cwd(),
         env: {
-          ...process.env,
+          ...cleanEnvironment,
           NODE_OPTIONS: nodeOptions,
           npm_config_fetch_retries:
             process.env.npm_config_fetch_retries || "3",
