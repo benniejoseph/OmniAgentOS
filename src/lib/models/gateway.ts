@@ -68,7 +68,11 @@ export async function generateModelToolTurn(
   }
 
   const crossProviderFirstTurn =
-    !request.continuation && request.allowCrossProviderFallback === true;
+    !request.continuation &&
+    request.allowCrossProviderFallback === true &&
+    request.allowedProviders?.some(
+      (provider) => provider !== request.preferredProvider,
+    ) === true;
   const gatewayRequest: ModelToolTurnRequest = {
     ...request,
     allowedProviders: crossProviderFirstTurn
