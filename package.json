@@ -31,7 +31,7 @@
     "test:e2e:list": "playwright test --list",
     "benchmark:preview": "node scripts/benchmark-preview.mjs",
     "benchmark:dashboard": "node scripts/benchmark-dashboard.mjs",
-    "audit:production": "npm audit --omit=dev --audit-level=high",
+    "audit:production": "node scripts/npm-audit-production.mjs",
     "check:worker": "node --check scripts/worker.mjs && node --check scripts/openai-egress-gateway.mjs",
     "check:operations": "node --check scripts/db-backup.mjs && node --check scripts/db-restore-drill.mjs && node --check scripts/benchmark-preview.mjs && node --check scripts/benchmark-dashboard.mjs && node --check scripts/smoke-preflight.mjs && node --check scripts/smoke-security.mjs && node --check scripts/smoke-eval-case.mjs && node --check scripts/smoke-paid-agent.mjs",
     "db:migrate": "tsx scripts/db-migrate.ts",
