@@ -187,12 +187,12 @@ if (configurationProbe) {
 }
 
 if (dryRun) {
+  printDryRun("npm", ["run", "verify"]);
   printDryRun(
     "npm",
     ["run", "smoke:release"],
     { BASE_URL: PRODUCTION_BASE_URL },
   );
-  printDryRun("npm", ["run", "verify"]);
   printDryRun(
     "vercel",
     [
@@ -256,6 +256,9 @@ if (worktreeChanges) {
     "Production deployment requires a clean working tree so Vercel and Fly receive the same reviewed release.",
   );
 }
+await run("npm", ["run", "verify"]).catch((error) =>
+  fail(`Production verification failed: ${errorMessage(error)}`),
+);
 const previousWorkerImage = await getCurrentWorkerImage();
 const previousVercelDeployment = await getCurrentVercelDeployment(
   productionBaseUrl,
@@ -293,7 +296,6 @@ try {
       SMOKE_REQUEST_TIMEOUT_MS: "60000",
     },
   });
-  await run("npm", ["run", "verify"]);
   const deploymentOutput = await capture(
     "vercel",
     [

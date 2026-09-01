@@ -36,8 +36,8 @@ describe("paired production deployment", () => {
     const commands = result.stdout
       .split("\n")
       .filter((line) => line.startsWith("DRY RUN "));
-    expect(commands[0]).toContain("npm run smoke:release");
-    expect(commands[1]).toBe("DRY RUN npm run verify");
+    expect(commands[0]).toBe("DRY RUN npm run verify");
+    expect(commands[1]).toContain("npm run smoke:release");
     expect(commands[2]).toContain(
       "vercel deploy --prod --skip-domain --yes",
     );
