@@ -222,6 +222,7 @@ export function DashboardOverview() {
       className="mx-auto max-w-[90rem] px-4 py-7 sm:px-7 lg:px-10"
       aria-busy={isLoading}
       data-testid="activity-workspace"
+      data-hydrated={!isLoading}
     >
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {announcement}
