@@ -25,7 +25,12 @@ export function isOfficialBrowserUseMcpEndpoint(endpoint?: string) {
       url.port === "" &&
       url.username === "" &&
       url.password === "" &&
-      (url.pathname === "/mcp" || url.pathname === "/mcp/")
+      (
+        url.pathname === "/v3/mcp" ||
+        url.pathname === "/v3/mcp/" ||
+        url.pathname === "/mcp" ||
+        url.pathname === "/mcp/"
+      )
     );
   } catch {
     return false;

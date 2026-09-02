@@ -68,7 +68,7 @@ type Notice = {
 };
 
 const GITHUB_MCP_ENDPOINT = "https://api.githubcopilot.com/mcp/x/all";
-const BROWSER_USE_MCP_ENDPOINT = "https://api.browser-use.com/mcp";
+const BROWSER_USE_MCP_ENDPOINT = "https://api.browser-use.com/v3/mcp";
 
 export function McpConnections({
   payload,
@@ -178,7 +178,7 @@ export function McpConnections({
     const submittedEndpoint = endpoint.trim();
     const officialGitHubEndpoint = submittedEndpoint === GITHUB_MCP_ENDPOINT;
     const officialBrowserUseEndpoint =
-      submittedEndpoint === BROWSER_USE_MCP_ENDPOINT;
+      isOfficialBrowserUseMcpEndpoint(submittedEndpoint);
     setBearerToken("");
     setPendingAction("create");
     setNotice(undefined);
@@ -354,6 +354,53 @@ export function McpConnections({
           requestError instanceof Error
             ? requestError.message
             : "The GitHub connection could not be upgraded.",
+      });
+      await onRefresh();
+    } finally {
+      setPendingAction(undefined);
+    }
+  }
+
+  async function upgradeBrowserUseConnection(connector: McpConnector) {
+    if (disabledReason) {
+      setNotice({ tone: "error", text: disabledReason });
+      return;
+    }
+    const actionId = `upgrade-browser-use-${connector.id}`;
+    setPendingAction(actionId);
+    setNotice(undefined);
+    try {
+      await requestJson(
+        `/api/connectors/${encodeURIComponent(connector.id)}`,
+        {
+          method: "PATCH",
+          headers: requestHeaders(true),
+          body: JSON.stringify({
+            endpoint: BROWSER_USE_MCP_ENDPOINT,
+            defaultRiskLevel: 2,
+            approvalRequired: false,
+          }),
+        },
+        "The Browser Use connection could not be upgraded.",
+      );
+      await requestJson(
+        `/api/connectors/${encodeURIComponent(connector.id)}/discover`,
+        { method: "POST", headers: requestHeaders(false) },
+        "The Browser Use connection was upgraded, but its tools could not be rediscovered.",
+      );
+      setNotice({
+        tone: "success",
+        text:
+          "Browser Use v3 tools are available. Review the changed contracts below to activate them.",
+      });
+      await onRefresh();
+    } catch (requestError) {
+      setNotice({
+        tone: "error",
+        text:
+          requestError instanceof Error
+            ? requestError.message
+            : "The Browser Use connection could not be upgraded.",
       });
       await onRefresh();
     } finally {
@@ -628,7 +675,16 @@ export function McpConnections({
                       Use Browser Use Cloud&apos;s official MCP endpoint with an
                       app-encrypted API key. Agents can handle multi-step browser
                       tasks in natural language. Browser actions require approval;
-                      remote page content is always treated as untrusted data.
+                      remote page content is always treated as untrusted data.{" "}
+                      <a
+                        href="https://cloud.browser-use.com/settings"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-semibold text-primary hover:underline"
+                      >
+                        Get an API key
+                      </a>
+                      .
                     </p>
                   </div>
                 </div>
@@ -947,6 +1003,9 @@ export function McpConnections({
                   onUpgradeGitHub={() =>
                     void upgradeGitHubConnection(connector)
                   }
+                  onUpgradeBrowserUse={() =>
+                    void upgradeBrowserUseConnection(connector)
+                  }
                   onToggleEnabled={() =>
                     void setConnectorEnabled(
                       connector,
@@ -994,6 +1053,7 @@ function ConnectionRow({
   onRemoveCredential,
   onRediscover,
   onUpgradeGitHub,
+  onUpgradeBrowserUse,
   onToggleEnabled,
   onToggleDelete,
   onDelete,
@@ -1014,6 +1074,7 @@ function ConnectionRow({
   onRemoveCredential: () => void;
   onRediscover: () => void;
   onUpgradeGitHub: () => void;
+  onUpgradeBrowserUse: () => void;
   onToggleEnabled: () => void;
   onToggleDelete: () => void;
   onDelete: () => void;
@@ -1023,6 +1084,9 @@ function ConnectionRow({
   const appManaged = connector.authType === "bearer_vault";
   const credentialConfigured = Boolean(connector.credentialConfigured);
   const legacyGitHubEndpoint = isLegacyGitHubMcpEndpoint(connector.endpoint);
+  const legacyBrowserUseEndpoint = isLegacyBrowserUseMcpEndpoint(
+    connector.endpoint,
+  );
   const credentialUnavailableReason =
     appManaged && credentialStorageUnavailable
       ? "Encrypted credential storage is unavailable."
@@ -1063,9 +1127,9 @@ function ConnectionRow({
           ) : null}
           {isOfficialBrowserUseMcpEndpoint(connector.endpoint) ? (
             <p className="mt-2 text-xs leading-5 text-muted">
-              Browser tasks and saved skills pause for approval. Task status and
-              profiles can be read directly; cookie access is treated as high
-              risk. Remote page content remains untrusted.
+              Starting, continuing, or stopping browser sessions pauses for
+              approval. Session status, activity, costs, and profiles can be
+              read directly. Remote page content remains untrusted.
             </p>
           ) : null}
         </div>
@@ -1081,6 +1145,18 @@ function ConnectionRow({
               }
               title={disabledReason || credentialUnavailableReason}
               onClick={onUpgradeGitHub}
+            />
+          ) : null}
+          {legacyBrowserUseEndpoint ? (
+            <ActionButton
+              label="Update to Browser Use v3"
+              icon={Globe2}
+              busy={pendingAction === `upgrade-browser-use-${connector.id}`}
+              disabled={
+                busy || Boolean(disabledReason) || Boolean(credentialUnavailableReason)
+              }
+              title={disabledReason || credentialUnavailableReason}
+              onClick={onUpgradeBrowserUse}
             />
           ) : null}
           <ActionButton
@@ -1572,11 +1648,22 @@ function isOfficialBrowserUseMcpEndpoint(endpoint?: string) {
       url.port === "" &&
       url.username === "" &&
       url.password === "" &&
-      (url.pathname === "/mcp" || url.pathname === "/mcp/")
+      (
+        url.pathname === "/v3/mcp" ||
+        url.pathname === "/v3/mcp/" ||
+        url.pathname === "/mcp" ||
+        url.pathname === "/mcp/"
+      )
     );
   } catch {
     return false;
   }
+}
+
+function isLegacyBrowserUseMcpEndpoint(endpoint?: string) {
+  if (!isOfficialBrowserUseMcpEndpoint(endpoint) || !endpoint) return false;
+  const pathname = new URL(endpoint).pathname.replace(/\/+$/, "");
+  return pathname === "/mcp";
 }
 
 function isLegacyGitHubMcpEndpoint(endpoint?: string) {

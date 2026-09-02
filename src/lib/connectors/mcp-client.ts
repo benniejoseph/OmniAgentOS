@@ -331,13 +331,19 @@ function inferOfficialBrowserUseToolRisk(
   if (
     normalizedToolName === "list_skills" ||
     normalizedToolName === "list_browser_profiles" ||
-    normalizedToolName === "monitor_task"
+    normalizedToolName === "monitor_task" ||
+    normalizedToolName === "get_session" ||
+    normalizedToolName === "get_session_messages" ||
+    normalizedToolName === "list_sessions"
   ) {
     return 0;
   }
   if (
     normalizedToolName === "browser_task" ||
-    normalizedToolName === "execute_skill"
+    normalizedToolName === "execute_skill" ||
+    normalizedToolName === "run_session" ||
+    normalizedToolName === "send_task" ||
+    normalizedToolName === "stop_session"
   ) {
     return Math.max(defaultRisk, 2) as ToolRiskLevel;
   }
