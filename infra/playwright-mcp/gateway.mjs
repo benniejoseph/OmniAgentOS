@@ -82,6 +82,12 @@ const scopeTtlMs = boundedInteger(
   60_000,
   30 * 60_000,
 );
+const scopeReclaimIdleMs = boundedInteger(
+  process.env.OMNIAGENT_PLAYWRIGHT_MCP_SCOPE_RECLAIM_IDLE_MS,
+  2 * 60_000,
+  10_000,
+  scopeTtlMs,
+);
 const upstreamStartTimeoutMs = boundedInteger(
   process.env.OMNIAGENT_PLAYWRIGHT_MCP_UPSTREAM_START_TIMEOUT_MS,
   30_000,
@@ -188,6 +194,7 @@ console.log(JSON.stringify({
   maxConcurrency,
   maxScopes,
   scopeTtlMs,
+  scopeReclaimIdleMs,
 }));
 
 async function handleGatewayRequest(request, response) {
@@ -253,6 +260,18 @@ async function handleGatewayRequest(request, response) {
     request.resume();
     return;
   }
+  const browserSessionMode = singleHeader(
+    request,
+    "x-omniagent-browser-session",
+  );
+  if (
+    request.headers["x-omniagent-browser-session"] !== undefined &&
+    browserSessionMode !== "run"
+  ) {
+    writeJson(response, 400, { error: "Invalid browser session mode." });
+    request.resume();
+    return;
+  }
 
   const requestLength = declaredRequestLength(request);
   if (requestLength.error) {
@@ -286,21 +305,25 @@ async function handleGatewayRequest(request, response) {
       if (
         request.method === "DELETE" &&
         upstreamResult.status >= 200 &&
-        upstreamResult.status < 300 &&
-        !scope.hasToolCall
+        upstreamResult.status < 300
       ) {
-        scope.retireWhenIdle = true;
+        if (browserSessionMode === "run") {
+          scope.retireWhenIdle = true;
+          scope.retireReason = "run_session_complete";
+        } else if (!scope.hasToolCall) {
+          scope.retireWhenIdle = true;
+          scope.retireReason = "discovery_complete";
+        }
       }
     } finally {
       scope.activeRequests = Math.max(0, scope.activeRequests - 1);
       scope.lastUsedAt = Date.now();
       if (
         scope.retireWhenIdle &&
-        !scope.hasToolCall &&
         scope.activeRequests === 0 &&
         !scope.stopping
       ) {
-        await stopScope(scope, "discovery_complete");
+        await stopScope(scope, scope.retireReason || "session_complete");
       }
     }
   } finally {
@@ -333,8 +356,16 @@ async function makeScopeCapacity() {
   await reapExpiredScopes();
   if (scopes.size < maxScopes) return;
 
+  // A browser run is idle between individual model tool calls. Reclaiming it
+  // immediately can erase the active tab while the model is deciding its next
+  // action, so only recycle scopes that have been quiet for a meaningful gap.
+  const reclaimDeadline = Date.now() - scopeReclaimIdleMs;
   const leastRecentlyUsedIdleScope = [...scopes.values()]
-    .filter((scope) => !scope.stopping && scope.activeRequests === 0)
+    .filter((scope) =>
+      !scope.stopping &&
+      scope.activeRequests === 0 &&
+      scope.lastUsedAt <= reclaimDeadline
+    )
     .sort((left, right) => left.lastUsedAt - right.lastUsedAt)[0];
   if (leastRecentlyUsedIdleScope) {
     await stopScope(leastRecentlyUsedIdleScope, "capacity_lru");
@@ -414,6 +445,7 @@ async function startScope(scopeKey) {
     hasToolCall: false,
     lastUsedAt: Date.now(),
     retireWhenIdle: false,
+    retireReason: undefined,
     stopping: false,
   };
   void childExit.then(({ code, signal }) => {

@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -32,6 +32,33 @@ const MCP_MAX_TOOL_RESULT_BYTES = 1_000_000;
 const MCP_MAX_EVIDENCE_RESPONSE_BYTES = 3_000_000;
 const MCP_MAX_EVIDENCE_RESULT_BYTES = 2_250_000;
 const MCP_MAX_INSTRUCTIONS_BYTES = 64_000;
+const PLAYWRIGHT_SESSION_IDLE_MS = 2 * 60_000;
+const PLAYWRIGHT_SESSION_POOL_MAX = 16;
+
+type McpRequestPolicy = {
+  deadlineAt: number;
+  idempotencyKey?: string;
+  abortSignal?: AbortSignal;
+  responseMaxBytes: number;
+};
+
+type McpConnectedSession = {
+  client: Client;
+  transport: StreamableHTTPClientTransport;
+  secretValues: string[];
+};
+
+type PlaywrightSessionEntry = {
+  key: string;
+  promise?: Promise<PlaywrightSessionEntry>;
+  session: McpConnectedSession;
+  requestPolicy: McpRequestPolicy;
+  tail: Promise<void>;
+  idleTimer?: ReturnType<typeof setTimeout>;
+  closed: boolean;
+};
+
+const playwrightSessions = new Map<string, Promise<PlaywrightSessionEntry>>();
 
 export type McpSessionScope = {
   tenantId: string;
@@ -119,7 +146,7 @@ export async function callMcpTool({
   }
   assertSerializedBytes(args, MCP_MAX_TOOL_ARGUMENT_BYTES, "MCP tool arguments");
   const deadlineAt = Date.now() + MCP_TOOL_DEADLINE_MS;
-  const session = await connectMcp(connector, {
+  const lease = await acquireToolSession(connector, {
     deadlineAt,
     idempotencyKey,
     abortSignal,
@@ -129,8 +156,9 @@ export async function callMcpTool({
       ? MCP_MAX_EVIDENCE_RESPONSE_BYTES
       : undefined,
   });
+  let receivedToolResult = false;
   try {
-    const result = await session.client.callTool(
+    const result = await lease.session.client.callTool(
       {
         name: toolName,
         arguments: args,
@@ -142,6 +170,7 @@ export async function callMcpTool({
         signal: abortSignal,
       },
     );
+    receivedToolResult = true;
     const safeResult = redactExactSecrets(
       toBoundedJsonValue(
         includeImages || !isOmniAgentPlaywrightMcpEndpoint(connector.endpoint)
@@ -150,7 +179,7 @@ export async function callMcpTool({
         includeImages ? MCP_MAX_EVIDENCE_RESULT_BYTES : MCP_MAX_TOOL_RESULT_BYTES,
         "MCP tool result",
       ),
-      session.secretValues,
+      lease.session.secretValues,
     );
     const failure = mcpToolFailureMessage(safeResult);
     if (failure) {
@@ -158,10 +187,193 @@ export async function callMcpTool({
     }
     return safeResult;
   } catch (error) {
-    throw sanitizedConnectorError(error, session.secretValues);
+    if (!receivedToolResult) {
+      lease.invalidate();
+    }
+    throw sanitizedConnectorError(error, lease.session.secretValues);
   } finally {
-    await closeMcp(session);
+    await lease.release();
   }
+}
+
+async function acquireToolSession(
+  connector: McpConnectorRecord,
+  options: {
+    deadlineAt: number;
+    idempotencyKey?: string;
+    abortSignal?: AbortSignal;
+    actorRole?: SecurityRole;
+    sessionScope?: McpSessionScope;
+    responseMaxBytes?: number;
+  },
+): Promise<{
+  session: McpConnectedSession;
+  invalidate: () => void;
+  release: () => Promise<void>;
+}> {
+  if (
+    !isOmniAgentPlaywrightMcpEndpoint(connector.endpoint) ||
+    !options.sessionScope
+  ) {
+    const session = await connectMcp(connector, options);
+    return {
+      session,
+      invalidate: () => undefined,
+      release: () => closeMcp(session),
+    };
+  }
+
+  const key = playwrightSessionKey(connector, options.sessionScope);
+  let pending = playwrightSessions.get(key);
+  if (!pending && playwrightSessions.size >= PLAYWRIGHT_SESSION_POOL_MAX) {
+    const session = await connectMcp(connector, options);
+    return {
+      session,
+      invalidate: () => undefined,
+      release: () => closeMcp(session),
+    };
+  }
+  if (!pending) {
+    const requestPolicy = mcpRequestPolicy(options);
+    const sessionPromise: Promise<PlaywrightSessionEntry> = connectMcp(connector, {
+      ...options,
+      requestPolicy,
+      persistentPlaywrightSession: true,
+    }).then((session) => ({
+      key,
+      session,
+      requestPolicy,
+      tail: Promise.resolve(),
+      closed: false,
+    }));
+    pending = sessionPromise;
+    playwrightSessions.set(key, sessionPromise);
+    void sessionPromise.then((entry) => {
+      entry.promise = sessionPromise;
+    }).catch(() => {
+      if (playwrightSessions.get(key) === sessionPromise) {
+        playwrightSessions.delete(key);
+      }
+    });
+  }
+
+  const entry = await pending;
+  if (entry.closed) {
+    if (playwrightSessions.get(key) === pending) {
+      playwrightSessions.delete(key);
+    }
+    return acquireToolSession(connector, options);
+  }
+  if (entry.idleTimer) {
+    clearTimeout(entry.idleTimer);
+    entry.idleTimer = undefined;
+  }
+
+  const previous = entry.tail;
+  let unlock: () => void = () => undefined;
+  entry.tail = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  await previous;
+  if (entry.closed) {
+    unlock();
+    return acquireToolSession(connector, options);
+  }
+  updateMcpRequestPolicy(entry.requestPolicy, options);
+
+  let invalidated = false;
+  let released = false;
+  return {
+    session: entry.session,
+    invalidate: () => {
+      invalidated = true;
+    },
+    release: async () => {
+      if (released) return;
+      released = true;
+      unlock();
+      if (invalidated) {
+        await closePlaywrightSession(entry);
+        return;
+      }
+      schedulePlaywrightSessionClose(entry);
+    },
+  };
+}
+
+function mcpRequestPolicy(options: {
+  deadlineAt: number;
+  idempotencyKey?: string;
+  abortSignal?: AbortSignal;
+  responseMaxBytes?: number;
+}): McpRequestPolicy {
+  return {
+    deadlineAt: options.deadlineAt,
+    idempotencyKey: options.idempotencyKey,
+    abortSignal: options.abortSignal,
+    responseMaxBytes: options.responseMaxBytes || MCP_MAX_RESPONSE_BYTES,
+  };
+}
+
+function updateMcpRequestPolicy(
+  policy: McpRequestPolicy,
+  options: {
+    deadlineAt: number;
+    idempotencyKey?: string;
+    abortSignal?: AbortSignal;
+    responseMaxBytes?: number;
+  },
+) {
+  policy.deadlineAt = options.deadlineAt;
+  policy.idempotencyKey = options.idempotencyKey;
+  policy.abortSignal = options.abortSignal;
+  policy.responseMaxBytes = options.responseMaxBytes || MCP_MAX_RESPONSE_BYTES;
+}
+
+function playwrightSessionKey(
+  connector: McpConnectorRecord,
+  scope: McpSessionScope,
+) {
+  return createHash("sha256")
+    .update("omniagent-playwright-client-session-v1\u0000", "utf8")
+    .update(connector.id, "utf8")
+    .update("\u0000", "utf8")
+    .update(connector.endpoint, "utf8")
+    .update("\u0000", "utf8")
+    .update(String(connector.credentialVersion || 0), "utf8")
+    .update("\u0000", "utf8")
+    .update(normalizeTenantId(scope.tenantId), "utf8")
+    .update("\u0000", "utf8")
+    .update(scope.actorId.trim(), "utf8")
+    .update("\u0000", "utf8")
+    .update(scope.executionId.trim(), "utf8")
+    .digest("base64url");
+}
+
+function schedulePlaywrightSessionClose(entry: PlaywrightSessionEntry) {
+  if (entry.closed) return;
+  if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  entry.idleTimer = setTimeout(() => {
+    void closePlaywrightSession(entry);
+  }, PLAYWRIGHT_SESSION_IDLE_MS);
+  entry.idleTimer.unref?.();
+}
+
+async function closePlaywrightSession(entry: PlaywrightSessionEntry) {
+  if (entry.closed) return;
+  entry.closed = true;
+  if (entry.idleTimer) {
+    clearTimeout(entry.idleTimer);
+    entry.idleTimer = undefined;
+  }
+  if (entry.promise && playwrightSessions.get(entry.key) === entry.promise) {
+    playwrightSessions.delete(entry.key);
+  }
+  entry.requestPolicy.deadlineAt = Date.now() + 15_000;
+  entry.requestPolicy.idempotencyKey = undefined;
+  entry.requestPolicy.abortSignal = undefined;
+  entry.requestPolicy.responseMaxBytes = MCP_MAX_RESPONSE_BYTES;
+  await closeMcp(entry.session);
 }
 
 function omitMcpImageContent(value: unknown) {
@@ -209,8 +421,10 @@ async function connectMcp(
     actorRole?: SecurityRole;
     sessionScope?: McpSessionScope;
     responseMaxBytes?: number;
+    requestPolicy?: McpRequestPolicy;
+    persistentPlaywrightSession?: boolean;
   },
-) {
+): Promise<McpConnectedSession> {
   if (connector.transport !== "streamable_http") {
     throw new Error(`Unsupported MCP transport: ${connector.transport}`);
   }
@@ -228,15 +442,13 @@ async function connectMcp(
     connector,
     options.actorRole,
     options.sessionScope,
+    options.persistentPlaywrightSession,
   );
   const transport = new StreamableHTTPClientTransport(endpoint, {
     requestInit: auth.requestInit,
     fetch: createValidatedMcpFetch(
       endpoint,
-      options.deadlineAt,
-      options.abortSignal,
-      options.idempotencyKey,
-      options.responseMaxBytes,
+      options.requestPolicy || mcpRequestPolicy(options),
     ),
   });
 
@@ -305,6 +517,7 @@ async function createRequestInit(
   connector: McpConnectorRecord,
   actorRole?: SecurityRole,
   sessionScope?: McpSessionScope,
+  persistentPlaywrightSession = false,
 ): Promise<{ requestInit: RequestInit; secretValues: string[] }> {
   const headers = new Headers();
   const secretValues: string[] = [];
@@ -348,6 +561,9 @@ async function createRequestInit(
       "x-omniagent-browser-scope",
       createPlaywrightScope(connector, bearerToken, sessionScope),
     );
+    if (persistentPlaywrightSession) {
+      headers.set("x-omniagent-browser-session", "run");
+    }
   }
   return {
     requestInit: {
@@ -693,10 +909,7 @@ function connectorErrorMessage(error: unknown) {
 
 function createValidatedMcpFetch(
   endpoint: URL,
-  deadlineAt: number,
-  abortSignal?: AbortSignal,
-  idempotencyKey?: string,
-  responseMaxBytes = MCP_MAX_RESPONSE_BYTES,
+  policy: McpRequestPolicy,
 ): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const requestUrl = new URL(input instanceof Request ? input.url : String(input), endpoint);
@@ -707,14 +920,14 @@ function createValidatedMcpFetch(
     }
     const signals = [
       init?.signal,
-      abortSignal,
-      AbortSignal.timeout(remainingMs(deadlineAt)),
+      policy.abortSignal,
+      AbortSignal.timeout(remainingMs(policy.deadlineAt)),
     ].filter((signal): signal is AbortSignal => Boolean(signal));
     const headers = new Headers(
       init?.headers || (input instanceof Request ? input.headers : undefined),
     );
-    if (idempotencyKey && await isMcpToolCallRequest(input, init)) {
-      headers.set("idempotency-key", normalizeIdempotencyKey(idempotencyKey));
+    if (policy.idempotencyKey && await isMcpToolCallRequest(input, init)) {
+      headers.set("idempotency-key", normalizeIdempotencyKey(policy.idempotencyKey));
     }
     const response = await fetchPublicHttpUrl(input instanceof Request ? input : requestUrl, {
       ...init,
@@ -725,7 +938,7 @@ function createValidatedMcpFetch(
       await response.body?.cancel("MCP redirects are disabled.").catch(() => undefined);
       throw new Error(`MCP server returned a redirect (${response.status}); redirects are disabled.`);
     }
-    return limitMcpResponseBody(response, responseMaxBytes);
+    return limitMcpResponseBody(response, policy.responseMaxBytes);
   }) as typeof fetch;
 }
 
