@@ -1,17 +1,41 @@
 .workspace {
-  --background: oklch(0.145 0.018 220);
-  --surface: oklch(0.19 0.022 215);
-  --surface-raised: oklch(0.235 0.027 210);
-  --surface-overlay: oklch(0.27 0.032 205);
-  --foreground: oklch(0.955 0.012 175);
-  --muted: oklch(0.75 0.026 195);
-  --line: oklch(0.37 0.035 205 / 0.55);
-  --line-strong: oklch(0.5 0.06 190 / 0.62);
-  --primary: oklch(0.79 0.145 166);
-  --primary-ink: oklch(0.16 0.035 175);
-  --success: oklch(0.78 0.15 150);
-  --warning: oklch(0.83 0.15 80);
-  --danger: oklch(0.72 0.19 24);
+  --daybook-canvas: oklch(0.982 0.018 89);
+  --daybook-paper: oklch(0.997 0.008 90);
+  --daybook-paper-soft: oklch(0.988 0.018 88 / 0.82);
+  --daybook-paper-raised: oklch(0.957 0.026 88);
+  --daybook-ink: oklch(0.255 0.042 205);
+  --daybook-muted: oklch(0.46 0.035 210);
+  --daybook-line: oklch(0.77 0.04 88 / 0.46);
+  --daybook-line-strong: oklch(0.65 0.055 86 / 0.58);
+  --daybook-primary: oklch(0.5 0.12 164);
+  --daybook-primary-ink: oklch(0.99 0.008 95);
+  --daybook-success: oklch(0.48 0.12 154);
+  --daybook-warning: oklch(0.61 0.14 70);
+  --daybook-danger: oklch(0.53 0.18 28);
+  --daybook-apricot: oklch(0.9 0.105 67);
+  --daybook-peach: oklch(0.94 0.06 47);
+  --daybook-sky: oklch(0.91 0.055 223);
+  --daybook-mint: oklch(0.92 0.06 158);
+  --daybook-wash-left: oklch(0.9 0.06 220 / 0.42);
+  --daybook-wash-right: oklch(0.89 0.13 70 / 0.4);
+  --daybook-arc: oklch(0.56 0.11 164 / 0.38);
+  --daybook-shadow: oklch(0.35 0.045 78 / 0.1);
+  --daybook-user: oklch(0.29 0.052 211);
+  --daybook-user-ink: oklch(0.99 0.008 95);
+  --daybook-orb-ink: oklch(0.26 0.05 166);
+  --background: var(--daybook-canvas);
+  --surface: var(--daybook-paper);
+  --surface-raised: var(--daybook-paper-raised);
+  --surface-overlay: var(--daybook-paper-raised);
+  --foreground: var(--daybook-ink);
+  --muted: var(--daybook-muted);
+  --line: var(--daybook-line);
+  --line-strong: var(--daybook-line-strong);
+  --primary: var(--daybook-primary);
+  --primary-ink: var(--daybook-primary-ink);
+  --success: var(--daybook-success);
+  --warning: var(--daybook-warning);
+  --danger: var(--daybook-danger);
   position: relative;
   isolation: isolate;
   width: 100%;
@@ -20,9 +44,36 @@
   overflow: clip;
   color: var(--foreground);
   background:
-    radial-gradient(circle at 12% 18%, oklch(0.62 0.16 173 / 0.11), transparent 26rem),
-    radial-gradient(circle at 88% 31%, oklch(0.56 0.12 255 / 0.12), transparent 30rem),
-    linear-gradient(148deg, oklch(0.165 0.026 216), var(--background) 48%, oklch(0.125 0.023 245));
+    radial-gradient(circle at 14% 18%, var(--daybook-wash-left), transparent 29rem),
+    radial-gradient(circle at 88% 5%, var(--daybook-wash-right), transparent 25rem),
+    linear-gradient(145deg, var(--daybook-paper) 0%, var(--daybook-canvas) 52%, var(--daybook-paper-raised) 100%);
+}
+
+:global(:root[data-theme="dark"]) .workspace {
+  --daybook-canvas: oklch(0.17 0.025 215);
+  --daybook-paper: oklch(0.215 0.027 213);
+  --daybook-paper-soft: oklch(0.205 0.025 215 / 0.88);
+  --daybook-paper-raised: oklch(0.265 0.03 207);
+  --daybook-ink: oklch(0.94 0.018 170);
+  --daybook-muted: oklch(0.72 0.028 190);
+  --daybook-line: oklch(0.46 0.045 190 / 0.45);
+  --daybook-line-strong: oklch(0.58 0.065 178 / 0.58);
+  --daybook-primary: oklch(0.76 0.13 164);
+  --daybook-primary-ink: oklch(0.16 0.035 175);
+  --daybook-success: oklch(0.75 0.14 151);
+  --daybook-warning: oklch(0.82 0.14 78);
+  --daybook-danger: oklch(0.72 0.17 28);
+  --daybook-apricot: oklch(0.38 0.09 66);
+  --daybook-peach: oklch(0.32 0.06 45);
+  --daybook-sky: oklch(0.3 0.055 225);
+  --daybook-mint: oklch(0.3 0.065 160);
+  --daybook-wash-left: oklch(0.48 0.1 221 / 0.18);
+  --daybook-wash-right: oklch(0.62 0.13 66 / 0.16);
+  --daybook-arc: oklch(0.76 0.13 164 / 0.3);
+  --daybook-shadow: oklch(0.055 0.018 220 / 0.4);
+  --daybook-user: oklch(0.34 0.065 205);
+  --daybook-user-ink: oklch(0.97 0.012 170);
+  --daybook-orb-ink: oklch(0.17 0.038 173);
 }
 
 .ambientField {
@@ -36,39 +87,56 @@
 .ambientField::before,
 .ambientField::after {
   position: absolute;
-  width: 42rem;
-  height: 21rem;
-  border: 1px solid oklch(0.8 0.12 172 / 0.12);
+  width: 39rem;
+  height: 18rem;
+  border: 1px solid var(--daybook-arc);
   border-radius: 50%;
   content: "";
-  transform: rotate(-16deg);
 }
 
-.ambientField::before { top: 2rem; right: -16rem; }
-.ambientField::after { bottom: 3rem; left: -21rem; transform: rotate(18deg); }
+.ambientField::before { top: 4rem; right: -15rem; transform: rotate(-14deg); }
+.ambientField::after { bottom: 1rem; left: -20rem; transform: rotate(17deg); }
 
 .ambientField span {
   position: absolute;
   display: block;
-  width: .32rem;
-  height: .32rem;
+  width: .42rem;
+  height: .42rem;
+  border: 2px solid var(--daybook-paper);
   border-radius: 50%;
-  background: var(--primary);
-  box-shadow: 0 0 0 .34rem oklch(0.79 0.145 166 / 0.08), 0 0 1.4rem oklch(0.79 0.145 166 / 0.42);
-  animation: fieldDrift 8s ease-in-out infinite alternate;
+  background: var(--daybook-apricot);
+  box-shadow: 0 0 0 .32rem color-mix(in oklab, var(--daybook-apricot) 18%, transparent);
+  animation: daybookDrift 8s ease-in-out infinite alternate;
 }
 
-.ambientField span:nth-child(1) { top: 14%; left: 31%; }
-.ambientField span:nth-child(2) { top: 46%; right: 7%; animation-delay: -2.5s; }
-.ambientField span:nth-child(3) { bottom: 9%; left: 18%; animation-delay: -5s; }
+.ambientField span:nth-child(1) { top: 17%; left: 31%; }
+.ambientField span:nth-child(2) { top: 48%; right: 7%; animation-delay: -2.5s; }
+.ambientField span:nth-child(3) { bottom: 8%; left: 19%; animation-delay: -5s; }
 
 .topbar {
   position: relative;
-  border-bottom-color: oklch(0.79 0.145 166 / 0.16);
-  padding-bottom: 1.1rem;
+  border-bottom: 0;
+  padding: 1.1rem .35rem 1.5rem;
 }
 
-.pageIdentity { display: flex; align-items: center; gap: .9rem; }
+.topbar::after {
+  display: block;
+  width: min(16rem, 42vw);
+  height: 1px;
+  margin: 1.25rem 0 0 3.9rem;
+  background: linear-gradient(90deg, var(--daybook-primary), transparent);
+  content: "";
+}
+
+.pageIdentity { display: flex; align-items: center; gap: 1rem; }
+.pageIdentity h1 {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 2rem;
+  font-weight: 560;
+  letter-spacing: -.035em;
+}
+
+.pageIdentity p { color: var(--daybook-muted); }
 
 .pageOrb,
 .intelligenceOrb,
@@ -78,139 +146,158 @@
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;
-  color: var(--primary);
-  background: radial-gradient(circle at 35% 28%, oklch(0.97 0.03 165), var(--primary) 18%, oklch(0.48 0.15 187) 58%, oklch(0.22 0.055 220));
-  box-shadow: 0 0 .5rem oklch(0.79 0.145 166 / 0.32);
+  color: var(--daybook-orb-ink);
+  background:
+    radial-gradient(circle at 35% 28%, var(--daybook-paper) 0 12%, transparent 28%),
+    linear-gradient(145deg, var(--daybook-apricot), var(--daybook-primary));
+  box-shadow: 0 .55rem 1.4rem color-mix(in oklab, var(--daybook-apricot) 26%, transparent);
 }
 
-.pageOrb { width: 2.8rem; height: 2.8rem; color: oklch(0.16 0.035 175); }
+.pageOrb { width: 3rem; height: 3rem; }
 
 .pageOrb::after,
 .intelligenceOrb::after,
 .emptyOrb::after {
   position: absolute;
-  inset: -.42rem;
-  border: 1px solid oklch(0.79 0.145 166 / 0.22);
+  inset: -.45rem;
+  border: 1px solid var(--daybook-arc);
   border-radius: 50%;
   content: "";
-  animation: orbOrbit 5s linear infinite;
+  animation: daybookOrbit 6s ease-in-out infinite;
 }
 
-.conversationLayout { position: relative; align-items: start; }
+.conversationLayout { position: relative; align-items: start; margin-top: 1rem; }
 
 .threadRail {
   border-right: 0;
-  padding: .9rem .8rem .9rem 0;
+  padding: .85rem .85rem .85rem 0;
 }
 
 .threadRail::after {
   position: absolute;
-  top: 3.5rem;
+  top: 3.6rem;
   bottom: 1rem;
-  left: .42rem;
+  left: .45rem;
   width: 1px;
-  background: linear-gradient(180deg, transparent, oklch(0.79 0.145 166 / 0.42) 12%, oklch(0.56 0.12 255 / 0.28) 82%, transparent);
+  background: linear-gradient(180deg, transparent, var(--daybook-arc) 12%, var(--daybook-primary) 54%, transparent);
   content: "";
 }
 
-.threadList { position: relative; padding-left: .9rem; scrollbar-width: thin; }
+.threadRail h2 {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 1.05rem;
+  font-weight: 560;
+}
+
+.threadList { position: relative; padding-left: .95rem; scrollbar-width: thin; }
 
 .threadItem {
   position: relative;
-  min-height: 3.4rem;
+  min-height: 3.5rem;
   border: 0;
-  border-radius: .75rem;
+  border-radius: .9rem;
   background: transparent;
 }
 
 .threadItem::before {
   position: absolute;
-  top: 1.2rem;
-  left: -.72rem;
-  width: .36rem;
-  height: .36rem;
-  border: 1px solid oklch(0.79 0.145 166 / 0.36);
+  top: 1.18rem;
+  left: -.76rem;
+  width: .42rem;
+  height: .42rem;
+  border: 1px solid var(--daybook-line-strong);
   border-radius: 50%;
-  background: var(--background);
+  background: var(--daybook-canvas);
   content: "";
 }
 
-.threadItem:hover { background: oklch(0.95 0.015 175 / 0.055); }
+.threadItem:hover { background: color-mix(in oklab, var(--daybook-mint) 48%, transparent); }
 
 .threadItemActive {
-  color: var(--foreground);
-  background: linear-gradient(110deg, oklch(0.79 0.145 166 / 0.16), oklch(0.56 0.12 255 / 0.08));
-  box-shadow: inset 0 0 0 1px oklch(0.79 0.145 166 / 0.16);
+  color: var(--daybook-ink);
+  background: linear-gradient(110deg, var(--daybook-mint), color-mix(in oklab, var(--daybook-sky) 62%, transparent));
+  box-shadow: inset 0 0 0 1px var(--daybook-line);
 }
 
 .threadItemActive::before {
-  border: 0;
-  background: var(--primary);
-  box-shadow: 0 0 .65rem oklch(0.79 0.145 166 / 0.7);
+  border: 2px solid var(--daybook-paper);
+  background: var(--daybook-primary);
+  box-shadow: 0 0 0 .25rem color-mix(in oklab, var(--daybook-primary) 14%, transparent);
 }
+
+:global(:root[data-theme="dark"]) .threadItemActive { color: var(--daybook-ink); }
 
 .chatShell {
   position: relative;
   border: 0;
-  border-radius: 1rem;
-  background: oklch(0.17 0.022 220 / 0.82);
-  box-shadow: 0 .4rem .5rem oklch(0.06 0.02 220 / 0.25);
+  border-radius: 1.8rem 4.2rem 1.8rem 1.8rem;
+  background: var(--daybook-paper-soft);
+  box-shadow: 0 1.35rem 3.8rem var(--daybook-shadow);
+  backdrop-filter: blur(18px);
 }
 
 .chatShell::before {
   position: absolute;
   z-index: -1;
-  inset: -.06rem;
-  border-radius: inherit;
-  background: linear-gradient(140deg, oklch(0.79 0.145 166 / 0.26), transparent 22%, transparent 72%, oklch(0.56 0.12 255 / 0.2));
+  top: -3rem;
+  right: -2rem;
+  width: 11rem;
+  height: 11rem;
+  border: 1px solid var(--daybook-arc);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.8rem color-mix(in oklab, var(--daybook-apricot) 9%, transparent);
   content: "";
 }
 
 .chatHeader {
-  min-height: 4.2rem;
-  border-bottom-color: oklch(0.79 0.145 166 / 0.14);
-  background: oklch(0.18 0.025 220 / 0.92);
+  min-height: 4.6rem;
+  border-bottom: 1px dashed var(--daybook-line);
+  background: transparent;
 }
 
-.intelligenceOrb { box-shadow: 0 0 .65rem oklch(0.79 0.145 166 / 0.32); }
+.chatHeader h2 {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 1.05rem;
+  font-weight: 560;
+}
+
+.intelligenceOrb { box-shadow: 0 .35rem 1rem color-mix(in oklab, var(--daybook-primary) 22%, transparent); }
 
 .transcript {
   position: relative;
   min-height: 31rem;
   background:
-    radial-gradient(circle at 76% 18%, oklch(0.56 0.12 255 / 0.09), transparent 19rem),
-    radial-gradient(circle at 12% 78%, oklch(0.79 0.145 166 / 0.07), transparent 22rem);
-  scrollbar-color: oklch(0.79 0.145 166 / 0.26) transparent;
+    radial-gradient(circle at 78% 17%, color-mix(in oklab, var(--daybook-sky) 48%, transparent), transparent 19rem),
+    radial-gradient(circle at 10% 79%, color-mix(in oklab, var(--daybook-mint) 42%, transparent), transparent 22rem);
+  scrollbar-color: var(--daybook-line-strong) transparent;
 }
 
 .transcript::before {
   position: absolute;
   inset: 0;
-  opacity: .34;
-  background-image: radial-gradient(circle, oklch(0.79 0.145 166 / 0.2) .6px, transparent .7px);
-  background-size: 28px 28px;
+  opacity: .38;
+  background-image: radial-gradient(circle, var(--daybook-arc) .65px, transparent .72px);
+  background-size: 30px 30px;
   content: "";
-  mask-image: linear-gradient(to bottom, transparent, black 20%, black 80%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, black 22%, black 80%, transparent);
   pointer-events: none;
 }
 
 .transcriptInner { position: relative; }
-
 .turn { position: relative; }
-
 .userTurn { padding-right: .2rem; }
-
-.assistantTurn { padding-left: 1.25rem; }
+.assistantTurn { padding-left: 1.3rem; }
 
 .assistantTurn::before {
   position: absolute;
   top: .28rem;
   left: 0;
-  width: .44rem;
-  height: .44rem;
+  width: .48rem;
+  height: .48rem;
+  border: 2px solid var(--daybook-paper);
   border-radius: 50%;
-  background: var(--primary);
-  box-shadow: 0 0 .8rem oklch(0.79 0.145 166 / 0.6);
+  background: var(--daybook-primary);
+  box-shadow: 0 0 0 .25rem color-mix(in oklab, var(--daybook-primary) 13%, transparent);
   content: "";
 }
 
@@ -218,37 +305,41 @@
 .assistantMessage p { text-wrap: pretty; }
 
 .userBubble {
-  border-radius: 1rem .45rem 1rem 1rem;
-  color: oklch(0.955 0.012 175);
-  background: linear-gradient(135deg, oklch(0.29 0.06 207), oklch(0.225 0.04 231));
-  box-shadow: 0 .2rem .45rem oklch(0.06 0.02 220 / 0.3);
+  border-radius: 1.25rem .5rem 1.25rem 1.25rem;
+  color: var(--daybook-user-ink);
+  background: var(--daybook-user);
+  box-shadow: 0 .45rem 1.2rem var(--daybook-shadow);
 }
 
-.progressTurn { padding-left: .85rem; }
+.progressTurn { padding-left: .9rem; }
 
 .progressFlow {
   position: relative;
-  width: min(100%, 42rem);
-  min-height: 4rem;
-  border-radius: .85rem;
-  background: linear-gradient(100deg, oklch(0.79 0.145 166 / 0.1), oklch(0.56 0.12 255 / 0.07), transparent);
+  width: min(100%, 43rem);
+  min-height: 4.25rem;
+  border-radius: 1.25rem 1.25rem 2.3rem 1.25rem;
+  background: linear-gradient(100deg, color-mix(in oklab, var(--daybook-mint) 72%, transparent), color-mix(in oklab, var(--daybook-sky) 52%, transparent), transparent);
 }
 
 .progressFlow::before {
   position: absolute;
   top: 50%;
   right: calc(100% - 1.15rem);
-  width: 2.15rem;
+  width: 2.2rem;
   height: 1px;
-  background: linear-gradient(90deg, transparent, var(--primary));
+  background: linear-gradient(90deg, transparent, var(--daybook-primary));
   content: "";
 }
 
-.progressNode { box-shadow: 0 0 .75rem oklch(0.79 0.145 166 / 0.28); }
+.progressNode { box-shadow: 0 0 0 .28rem color-mix(in oklab, var(--daybook-primary) 10%, transparent); }
 
 .emptyConversation { position: relative; min-height: 27rem; }
-
 .emptyConversation > div { position: relative; max-width: 31rem; }
+.emptyConversation h2 {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 1.65rem;
+  font-weight: 560;
+}
 
 .emptyConversation > div::before,
 .emptyConversation > div::after {
@@ -257,21 +348,21 @@
   left: 50%;
   width: 16rem;
   height: 16rem;
-  border: 1px solid oklch(0.79 0.145 166 / 0.12);
+  border: 1px solid var(--daybook-arc);
   border-radius: 50%;
   content: "";
   transform: translateX(-50%);
 }
 
-.emptyConversation > div::after { width: 10rem; height: 10rem; top: -2.5rem; }
-.emptyOrb { width: 3.25rem; height: 3.25rem; color: oklch(0.16 0.035 175); }
+.emptyConversation > div::after { top: -2.5rem; width: 10rem; height: 10rem; }
+.emptyOrb { width: 3.35rem; height: 3.35rem; }
 
 .composerDock {
   position: relative;
   border-top: 0;
-  background: linear-gradient(180deg, transparent, oklch(0.13 0.02 222 / 0.92) 38%);
+  padding-block: .7rem .9rem;
+  background: linear-gradient(180deg, transparent, var(--daybook-paper-soft) 42%);
   backdrop-filter: none;
-  padding-block: .65rem .8rem;
 }
 
 .composerWidth { position: relative; }
@@ -280,18 +371,17 @@
   position: relative;
   overflow: hidden;
   border: 0;
-  border-radius: 1rem;
-  background: oklch(0.225 0.028 214 / 0.96);
-  box-shadow: 0 .35rem .5rem oklch(0.05 0.015 220 / 0.34), inset 0 0 0 1px oklch(0.79 0.145 166 / 0.18);
+  border-radius: 1.6rem 1.6rem 2.8rem 1.6rem;
+  background: var(--daybook-paper);
+  box-shadow: 0 .8rem 2.4rem var(--daybook-shadow), inset 0 0 0 1px var(--daybook-line);
   transition: box-shadow 180ms cubic-bezier(.2,.8,.2,1), background-color 180ms ease;
 }
 
 .composer:focus-within {
-  background: oklch(0.245 0.032 210);
-  box-shadow: 0 .35rem .5rem oklch(0.05 0.015 220 / 0.34), inset 0 0 0 1px oklch(0.79 0.145 166 / 0.58), 0 0 0 .2rem oklch(0.79 0.145 166 / 0.08);
+  box-shadow: 0 .9rem 2.6rem var(--daybook-shadow), inset 0 0 0 1px var(--daybook-primary), 0 0 0 .22rem color-mix(in oklab, var(--daybook-primary) 10%, transparent);
 }
 
-.composer textarea { padding-right: 3.65rem; }
+.composer textarea { padding-right: 3.7rem; color: var(--daybook-ink); }
 
 .composerAura {
   position: absolute;
@@ -299,56 +389,60 @@
   top: .72rem;
   right: 1rem;
   display: grid;
-  width: 2.15rem;
-  height: 2.15rem;
+  width: 2.2rem;
+  height: 2.2rem;
   place-items: center;
   border-radius: 50%;
-  color: oklch(0.16 0.035 175);
-  background: radial-gradient(circle at 34% 30%, oklch(0.98 0.02 160), var(--primary) 28%, oklch(0.46 0.14 185));
-  box-shadow: 0 0 .7rem oklch(0.79 0.145 166 / 0.28);
+  color: var(--daybook-orb-ink);
+  background: linear-gradient(145deg, var(--daybook-apricot), var(--daybook-primary));
+  box-shadow: 0 .35rem 1rem color-mix(in oklab, var(--daybook-apricot) 24%, transparent);
   pointer-events: none;
 }
 
 .mobileConversationSheet {
-  color: var(--foreground);
-  background: oklch(0.17 0.022 220 / 0.98);
+  color: var(--daybook-ink);
+  background: var(--daybook-paper);
 }
 
 .workspace button:focus-visible,
 .workspace a:focus-visible,
 .workspace textarea:focus-visible,
 .workspace select:focus-visible {
-  outline: 2px solid var(--primary);
+  outline: 2px solid var(--daybook-primary);
   outline-offset: 2px;
 }
 
-@keyframes fieldDrift {
-  from { transform: translate3d(-.35rem, -.45rem, 0); opacity: .48; }
+@keyframes daybookDrift {
+  from { transform: translate3d(-.35rem, -.45rem, 0); opacity: .5; }
   to { transform: translate3d(.4rem, .5rem, 0); opacity: 1; }
 }
 
-@keyframes orbOrbit {
+@keyframes daybookOrbit {
   50% { transform: scale(1.08); opacity: .62; }
 }
 
 @media (max-width: 64rem) {
   .workspace { padding-inline: 1rem; }
-  .conversationLayout { margin-top: 1rem; }
-  .chatShell { border-radius: .8rem; }
+  .conversationLayout { margin-top: .6rem; }
+  .chatShell { border-radius: 1.45rem 3rem 1.45rem 1.45rem; }
 }
 
 @media (max-width: 40rem) {
   .workspace { padding: .85rem .55rem 0; }
   .topbar { padding-inline: .45rem; }
-  .pageOrb { width: 2.35rem; height: 2.35rem; }
-  .pageIdentity p { margin-top: .25rem; font-size: .75rem; line-height: 1.35rem; }
-  .chatHeader { min-height: 3.7rem; padding-inline: .55rem; }
+  .topbar::after { margin-left: 3rem; }
+  .pageOrb { width: 2.4rem; height: 2.4rem; }
+  .pageIdentity h1 { font-size: 1.55rem; }
+  .pageIdentity p { margin-top: .2rem; font-size: .75rem; line-height: 1.35rem; }
+  .chatShell { border-radius: 1.2rem 2.25rem 1.2rem 1.2rem; }
+  .chatHeader { min-height: 3.8rem; padding-inline: .55rem; }
   .transcript { min-height: calc(100svh - 18rem); padding-inline: .85rem; }
-  .assistantTurn { padding-left: .9rem; }
+  .assistantTurn { padding-left: .95rem; }
   .progressTurn { padding-left: 0; }
-  .progressFlow { margin-left: 0; }
+  .progressFlow { margin-left: 0; border-radius: 1rem 1rem 1.8rem 1rem; }
   .progressFlow::before { display: none; }
   .composerDock { padding-inline: .45rem; }
+  .composer { border-radius: 1.15rem 1.15rem 2rem 1.15rem; }
   .composerAura { display: none; }
   .composer textarea { padding-right: 1rem; }
 }

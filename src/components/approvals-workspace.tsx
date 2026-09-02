@@ -10,6 +10,7 @@ import {
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
 import { useLiveRefresh } from "@/components/use-live-refresh";
+import styles from "./daybook-workspaces.module.css";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -346,8 +347,8 @@ export function ApprovalsWorkspace() {
   ].filter(Boolean);
 
   return (
-    <div className="mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8" aria-busy={state === "loading"} data-testid="inbox-workspace">
-      <section className="rounded-lg border border-line bg-surface p-5">
+    <div className={clsx("mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8", styles.daybook, styles.approvals)} aria-busy={state === "loading"} data-testid="inbox-workspace">
+      <section className="rounded-lg border border-line bg-surface p-5" data-daybook="hero">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
             <span className="grid size-10 place-items-center rounded-md bg-primary text-primary-ink">
@@ -446,7 +447,7 @@ export function ApprovalsWorkspace() {
       ) : null}
 
       {!accessPermission ? (
-        <section className="mt-6 space-y-4" aria-labelledby="access-request-heading">
+        <section className="mt-6 space-y-4" aria-labelledby="access-request-heading" data-daybook="section">
           <div className="flex items-center gap-3">
             <span className="grid size-9 place-items-center rounded-md border border-line bg-surface">
               <UserPlus size={16} aria-hidden="true" />
@@ -485,7 +486,7 @@ export function ApprovalsWorkspace() {
       ) : null}
 
       {!decisionPermission ? (
-        <section className="mt-6 space-y-4" aria-labelledby="action-approval-heading">
+        <section className="mt-6 space-y-4" aria-labelledby="action-approval-heading" data-daybook="section">
           <div>
             <h2 id="action-approval-heading" className="text-base font-semibold">Agent and workflow actions</h2>
             <p className="text-sm text-muted">Nothing executes until an authorized operator approves it.</p>
@@ -549,7 +550,7 @@ function AccessRequestCard({
   const needsProvisioning =
     item.status === "approved" || item.status === "provisioning_pending";
   return (
-    <article className="rounded-lg border border-line bg-surface p-5">
+    <article className="rounded-lg border border-line bg-surface p-5" data-daybook="approval-item">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-base font-semibold">{item.name}</h3>
@@ -688,7 +689,7 @@ function ApprovalCard({
         ? "Emergency approval requires a ticket reference."
         : undefined;
   return (
-    <article className="rounded-lg border border-line bg-surface p-5">
+    <article className="rounded-lg border border-line bg-surface p-5" data-daybook="approval-item">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -901,7 +902,7 @@ function TrackRecord({
   const pct = Math.min(Math.round((trust.autonomy?.progress ?? trust.cleanStreak / target) * 100), 100);
   const stage = trust.autonomy?.stage || (graduated ? "autonomous" : "shadow");
   return (
-    <div className="mt-4 rounded-md border border-line bg-background p-3">
+    <div className="mt-4 rounded-md border border-line bg-background p-3" data-daybook="track">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">{stage} learning</p>
         <p className="text-xs text-muted">
@@ -935,7 +936,7 @@ function TrackRecord({
 
 function ConsentFact({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-line bg-background p-3">
+    <div className="rounded-md border border-line bg-background p-3" data-daybook="fact">
       <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">{label}</p>
       <p className="mt-1 text-sm leading-5">{value}</p>
     </div>
