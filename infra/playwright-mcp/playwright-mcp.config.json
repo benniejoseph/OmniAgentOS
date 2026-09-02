@@ -25,7 +25,7 @@
     "mode": "full",
     "boxes": false
   },
-  "imageResponses": "omit",
+  "imageResponses": "allow",
   "outputMaxSize": 8388608,
   "timeouts": {
     "action": 10000,

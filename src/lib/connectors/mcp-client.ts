@@ -29,6 +29,8 @@ const MCP_MAX_DISCOVERY_SCHEMA_BYTES = 1_000_000;
 const MCP_MAX_RESPONSE_BYTES = 2_000_000;
 const MCP_MAX_TOOL_ARGUMENT_BYTES = 256_000;
 const MCP_MAX_TOOL_RESULT_BYTES = 1_000_000;
+const MCP_MAX_EVIDENCE_RESPONSE_BYTES = 3_000_000;
+const MCP_MAX_EVIDENCE_RESULT_BYTES = 2_250_000;
 const MCP_MAX_INSTRUCTIONS_BYTES = 64_000;
 
 export type McpSessionScope = {
@@ -97,6 +99,7 @@ export async function callMcpTool({
   abortSignal,
   actorRole,
   sessionScope,
+  includeImages = false,
 }: {
   connector: McpConnectorRecord;
   toolName: string;
@@ -105,7 +108,15 @@ export async function callMcpTool({
   abortSignal?: AbortSignal;
   actorRole?: SecurityRole;
   sessionScope?: McpSessionScope;
+  /** Reserved for trusted server-side evidence capture. Model tool results omit image bytes. */
+  includeImages?: boolean;
 }) {
+  const trustedBrowserScreenshot =
+    isOmniAgentPlaywrightMcpEndpoint(connector.endpoint) &&
+    toolName.trim().toLowerCase() === "browser_take_screenshot";
+  if (includeImages && !trustedBrowserScreenshot) {
+    throw new Error("Embedded MCP images are restricted to governed browser evidence capture.");
+  }
   assertSerializedBytes(args, MCP_MAX_TOOL_ARGUMENT_BYTES, "MCP tool arguments");
   const deadlineAt = Date.now() + MCP_TOOL_DEADLINE_MS;
   const session = await connectMcp(connector, {
@@ -114,6 +125,9 @@ export async function callMcpTool({
     abortSignal,
     actorRole,
     sessionScope,
+    responseMaxBytes: trustedBrowserScreenshot
+      ? MCP_MAX_EVIDENCE_RESPONSE_BYTES
+      : undefined,
   });
   try {
     const result = await session.client.callTool(
@@ -129,7 +143,13 @@ export async function callMcpTool({
       },
     );
     const safeResult = redactExactSecrets(
-      toBoundedJsonValue(result, MCP_MAX_TOOL_RESULT_BYTES, "MCP tool result"),
+      toBoundedJsonValue(
+        includeImages || !isOmniAgentPlaywrightMcpEndpoint(connector.endpoint)
+          ? result
+          : omitMcpImageContent(result),
+        includeImages ? MCP_MAX_EVIDENCE_RESULT_BYTES : MCP_MAX_TOOL_RESULT_BYTES,
+        "MCP tool result",
+      ),
       session.secretValues,
     );
     const failure = mcpToolFailureMessage(safeResult);
@@ -144,6 +164,42 @@ export async function callMcpTool({
   }
 }
 
+function omitMcpImageContent(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const result = value as Record<string, unknown>;
+  if (!Array.isArray(result.content)) {
+    return result;
+  }
+  let omitted = 0;
+  const content = result.content.flatMap((item) => {
+    if (
+      item &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      (item as { type?: unknown }).type === "image"
+    ) {
+      omitted += 1;
+      return [];
+    }
+    return [item];
+  });
+  if (!omitted) {
+    return result;
+  }
+  return {
+    ...result,
+    content: [
+      ...content,
+      {
+        type: "text",
+        text: `[${omitted} browser ${omitted === 1 ? "frame was" : "frames were"} retained as governed run evidence.]`,
+      },
+    ],
+  };
+}
+
 async function connectMcp(
   connector: McpConnectorRecord,
   options: {
@@ -152,6 +208,7 @@ async function connectMcp(
     abortSignal?: AbortSignal;
     actorRole?: SecurityRole;
     sessionScope?: McpSessionScope;
+    responseMaxBytes?: number;
   },
 ) {
   if (connector.transport !== "streamable_http") {
@@ -179,6 +236,7 @@ async function connectMcp(
       options.deadlineAt,
       options.abortSignal,
       options.idempotencyKey,
+      options.responseMaxBytes,
     ),
   });
 
@@ -638,6 +696,7 @@ function createValidatedMcpFetch(
   deadlineAt: number,
   abortSignal?: AbortSignal,
   idempotencyKey?: string,
+  responseMaxBytes = MCP_MAX_RESPONSE_BYTES,
 ): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const requestUrl = new URL(input instanceof Request ? input.url : String(input), endpoint);
@@ -666,7 +725,7 @@ function createValidatedMcpFetch(
       await response.body?.cancel("MCP redirects are disabled.").catch(() => undefined);
       throw new Error(`MCP server returned a redirect (${response.status}); redirects are disabled.`);
     }
-    return limitMcpResponseBody(response, MCP_MAX_RESPONSE_BYTES);
+    return limitMcpResponseBody(response, responseMaxBytes);
   }) as typeof fetch;
 }
 

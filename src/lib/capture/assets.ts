@@ -14,6 +14,13 @@ type CaptureAssetLedger = {
 type Owner = { tenantId: string; actorId: string };
 export const MAX_CAPTURE_ASSET_BYTES = 20 * 1024 * 1024;
 
+export type InternalCaptureAssetQuery = {
+  kind: string;
+  scopeField: string;
+  scopeValue: string;
+  limit?: number;
+};
+
 export class CaptureAssetError extends Error {
   constructor(message: string, public readonly status: 400 | 404 | 413 = 400) {
     super(message);
@@ -91,12 +98,57 @@ export async function listCaptureAssets(owner: Owner, limit = 100) {
         knowledge_document_id, error, tags, metadata, created_at, updated_at
       FROM omni_capture_assets
       WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
+        AND COALESCE(metadata->>'internalKind', '') = ''
       ORDER BY updated_at DESC LIMIT ${boundedLimit}
     `;
     return rows.map(assetFromRow);
   }
   const ledger = await readJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] });
-  return ledger.assets.filter((item) => item.tenantId === tenantId && item.actorId === actorId).slice(0, boundedLimit).map(withoutContentPath);
+  return ledger.assets
+    .filter((item) =>
+      item.tenantId === tenantId &&
+      item.actorId === actorId &&
+      !optionalString(item.metadata.internalKind)
+    )
+    .slice(0, boundedLimit)
+    .map(withoutContentPath);
+}
+
+export async function listInternalCaptureAssets(
+  owner: Owner,
+  query: InternalCaptureAssetQuery,
+) {
+  const tenantId = normalizeTenantId(owner.tenantId);
+  const actorId = normalizeActorId(owner.actorId);
+  const kind = safeMetadataLookup(query.kind, "internal kind");
+  const scopeField = safeMetadataLookup(query.scopeField, "scope field");
+  const scopeValue = safeText(query.scopeValue, 240);
+  const boundedLimit = Math.min(Math.max(Math.round(query.limit || 100), 1), 250);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT id, tenant_id, actor_id, filename, media_type, extension, byte_count,
+        content_sha256, storage_kind, status, extraction_status, ingest_job_id,
+        knowledge_document_id, error, tags, metadata, created_at, updated_at
+      FROM omni_capture_assets
+      WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
+        AND metadata->>'internalKind' = ${kind}
+        AND metadata->>${scopeField} = ${scopeValue}
+      ORDER BY created_at DESC LIMIT ${boundedLimit}
+    `;
+    return rows.map(assetFromRow);
+  }
+  const ledger = await readJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] });
+  return ledger.assets
+    .filter((item) =>
+      item.tenantId === tenantId &&
+      item.actorId === actorId &&
+      optionalString(item.metadata.internalKind) === kind &&
+      optionalString(item.metadata[scopeField]) === scopeValue
+    )
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, boundedLimit)
+    .map(withoutContentPath);
 }
 
 export async function getCaptureAsset(id: string, owner: Owner) {
@@ -209,5 +261,6 @@ function fileExtension(value: string) { return safeFilename(value).split(".").po
 function normalizeTags(values: string[]) { return [...new Set(values.map((value) => safeText(value, 80).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")).filter(Boolean))].slice(0, 50); }
 function sanitizeMetadata(value?: Record<string, unknown>) { return record(redactSensitive(value || {})); }
 function safeText(value: unknown, limit: number) { return String(redactSensitive(String(value || ""))).trim().slice(0, limit); }
+function safeMetadataLookup(value: string, label: string) { const normalized = value.trim(); if (!/^[a-zA-Z][a-zA-Z0-9]{0,63}$/.test(normalized)) throw new CaptureAssetError(`Invalid ${label}.`); return normalized; }
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function optionalString(value: unknown) { const text = String(value || "").trim(); return text || undefined; }

@@ -35,12 +35,15 @@ async function GETHandler(
     }
   }
 
-  return Response.json({
-    runId: run.id,
-    status: run.status,
-    browserActivity: await listRunBrowserActivity(run.id, {
-      tenantId: auth.tenantId,
-      actorId: auth.actorId,
-    }),
-  });
+  return Response.json(
+    {
+      runId: run.id,
+      status: run.status,
+      browserActivity: await listRunBrowserActivity(run.id, {
+        tenantId: auth.tenantId,
+        actorId: auth.actorId,
+      }),
+    },
+    { headers: { "cache-control": "private, no-store" } },
+  );
 }

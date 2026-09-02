@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { captureBrowserFrameAfterToolSafely } from "@/lib/browser/frames";
 import { embedTexts } from "@/lib/openai/client";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import { validateConnectorInput } from "@/lib/connectors/input-validation";
@@ -567,6 +568,17 @@ export async function executeGovernedTool({
       completedAt: new Date().toISOString(),
     });
     const saved = await persistRecord(record);
+    if (tool.category === "mcp") {
+      await captureBrowserFrameAfterToolSafely({
+        toolId: tool.id,
+        toolInput: preparedInput,
+        toolResult: safeResult,
+        executionId: saved.id,
+        context,
+        sessionScope: mcpSessionScope,
+        abortSignal,
+      });
+    }
     if (autonomyApproved) {
       await recordRuntimeEventSafely({
         level: "warn",
