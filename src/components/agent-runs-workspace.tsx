@@ -13,6 +13,7 @@ import {
   Database,
   FileText,
   GitBranch,
+  Globe2,
   History,
   Loader2,
   Map as MapIcon,
@@ -77,6 +78,18 @@ type ConversationMemory = {
   updatedAt: string;
   claimStatus?: string;
 };
+type BrowserActivityItem = {
+  id: string;
+  sequence: number;
+  at: string;
+  action: string;
+  operation: string;
+  status: "dry_run" | "executed" | "executing" | "approval_required" | "blocked" | "failed" | "rejected";
+  targetOrigin?: string;
+  durationMs?: number;
+  summary: string;
+  error?: string;
+};
 type TabKey = "memory" | "context" | "plan" | "execute" | "evidence";
 
 type StreamEvent =
@@ -126,6 +139,7 @@ type StreamEvent =
       riskLevel?: number;
       dryRun?: boolean;
       summary?: string;
+      executionId?: string;
     }
   | { type: "waiting_approval"; executionId?: string; toolId?: string; message?: string }
   | { type: "done"; response?: string; grounding?: GroundingReport }
@@ -196,12 +210,18 @@ export function AgentRunsWorkspace({
   const [forgettingMemoryId, setForgettingMemoryId] = useState("");
   const [confirmForgetMemoryId, setConfirmForgetMemoryId] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [selectedActivityRunId, setSelectedActivityRunId] = useState("");
+  const [browserActivity, setBrowserActivity] = useState<BrowserActivityItem[]>([]);
+  const [browserActivityState, setBrowserActivityState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [browserActivityError, setBrowserActivityError] = useState<string>();
   const abortControllerRef = useRef<AbortController | null>(null);
   const contextControllerRef = useRef<AbortController | null>(null);
   const contextVersionRef = useRef(0);
   const contextSelectionReviewedRef = useRef(false);
   const evidenceControllerRef = useRef<AbortController | null>(null);
   const evidenceVersionRef = useRef(0);
+  const browserActivityControllerRef = useRef<AbortController | null>(null);
+  const browserActivityVersionRef = useRef(0);
   const pendingDeltasRef = useRef<string[]>([]);
   const deltaFlushTimerRef = useRef<number | null>(null);
   const initialThreadLoadedRef = useRef(false);
@@ -411,6 +431,7 @@ export function AgentRunsWorkspace({
       abortControllerRef.current?.abort();
       contextControllerRef.current?.abort();
       evidenceControllerRef.current?.abort();
+      browserActivityControllerRef.current?.abort();
       if (deltaFlushTimerRef.current !== null) {
         window.clearTimeout(deltaFlushTimerRef.current);
       }
@@ -734,14 +755,83 @@ export function AgentRunsWorkspace({
     }
   }
 
-  function openTaskDetails(tab: TabKey) {
-    detailsReturnFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  function clearBrowserActivity() {
+    browserActivityControllerRef.current?.abort();
+    browserActivityVersionRef.current += 1;
+    setSelectedActivityRunId("");
+    setBrowserActivity([]);
+    setBrowserActivityState("idle");
+    setBrowserActivityError(undefined);
+  }
+
+  async function refreshBrowserActivity(runId: string) {
+    if (!runId) {
+      setBrowserActivity([]);
+      setBrowserActivityState("ready");
+      setBrowserActivityError(undefined);
+      return;
+    }
+    const version = ++browserActivityVersionRef.current;
+    browserActivityControllerRef.current?.abort();
+    const controller = new AbortController();
+    browserActivityControllerRef.current = controller;
+    setBrowserActivityState("loading");
+    setBrowserActivityError(undefined);
+    try {
+      const payload = asRecord(await readJson(
+        `/api/runs/${encodeURIComponent(runId)}/activity`,
+        { signal: controller.signal },
+      ));
+      if (
+        controller.signal.aborted ||
+        version !== browserActivityVersionRef.current
+      ) {
+        return;
+      }
+      setBrowserActivity(
+        (Array.isArray(payload.browserActivity)
+          ? payload.browserActivity
+          : []) as BrowserActivityItem[],
+      );
+      setBrowserActivityState("ready");
+    } catch (activityError) {
+      if (
+        controller.signal.aborted ||
+        version !== browserActivityVersionRef.current
+      ) {
+        return;
+      }
+      setBrowserActivity([]);
+      setBrowserActivityError(
+        activityError instanceof Error
+          ? activityError.message
+          : "Browser activity could not be loaded.",
+      );
+      setBrowserActivityState("error");
+    } finally {
+      if (browserActivityControllerRef.current === controller) {
+        browserActivityControllerRef.current = null;
+      }
+    }
+  }
+
+  function selectTaskDetailsTab(tab: TabKey, activityRunId?: string) {
     setActiveTab(tab);
-    setDetailsOpen(true);
     if (tab === "memory" && threadId) {
       void refreshConversationMemories(threadId);
     }
+    if (tab === "execute") {
+      const runId = activityRunId || activeAgentRunId || currentRunIdRef.current || selectedActivityRunId;
+      setSelectedActivityRunId(runId);
+      void refreshBrowserActivity(runId);
+    }
+  }
+
+  function openTaskDetails(tab: TabKey, activityRunId?: string) {
+    detailsReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    selectTaskDetailsTab(tab, activityRunId);
+    setDetailsOpen(true);
   }
 
   function closeTaskDetails() {
@@ -1055,6 +1145,7 @@ export function AgentRunsWorkspace({
     setGrounding(undefined);
     setActiveAgentRunId("");
     currentRunIdRef.current = "";
+    clearBrowserActivity();
     setRunFeedback(undefined);
     setStreamEvents([{ type: "status", label: "Starting", detail: "Opening the durable conversation." }]);
     directRunStatusRef.current = "";
@@ -1100,6 +1191,7 @@ export function AgentRunsWorkspace({
         if (event.type === "run" && event.runId) {
           currentRunIdRef.current = event.runId;
           setActiveAgentRunId(event.runId);
+          setSelectedActivityRunId(event.runId);
           if (event.threadId) {
             setThreadId(event.threadId);
           }
@@ -1110,6 +1202,14 @@ export function AgentRunsWorkspace({
           return;
         }
         setStreamEvents((current) => [...current.slice(-199), event]);
+        if (
+          event.type === "tool" &&
+          event.executionId &&
+          event.status !== "running" &&
+          currentRunIdRef.current
+        ) {
+          void refreshBrowserActivity(currentRunIdRef.current);
+        }
         if (event.type === "delegated") {
           terminalEvent = "delegated";
           agentRequestIdRef.current = "";
@@ -1164,6 +1264,9 @@ export function AgentRunsWorkspace({
       }
       flushPendingDeltas();
       void refreshEvidence();
+      if (currentRunIdRef.current) {
+        void refreshBrowserActivity(currentRunIdRef.current);
+      }
     } catch (agentError) {
       if (controller.signal.aborted) {
         setStreamEvents((current) => [
@@ -1287,6 +1390,7 @@ export function AgentRunsWorkspace({
       setWorkflowSyncError(undefined);
       setActiveAgentRunId("");
       currentRunIdRef.current = "";
+      clearBrowserActivity();
       directRunStatusRef.current = "";
       setStreamEvents([]);
       setWaitingApproval(undefined);
@@ -1320,6 +1424,7 @@ export function AgentRunsWorkspace({
     setWorkflowSyncError(undefined);
     setActiveAgentRunId("");
     currentRunIdRef.current = "";
+    clearBrowserActivity();
     directRunStatusRef.current = "";
     setWaitingApproval(undefined);
     setGrounding(undefined);
@@ -1422,7 +1527,7 @@ export function AgentRunsWorkspace({
     }
     event.preventDefault();
     const nextTab = tabs[nextIndex];
-    setActiveTab(nextTab.key);
+    selectTaskDetailsTab(nextTab.key);
     window.requestAnimationFrame(() => {
       document.getElementById(`run-tab-${nextTab.key}`)?.focus();
     });
@@ -1614,6 +1719,17 @@ export function AgentRunsWorkspace({
                     <div className={clsx("min-w-0 max-w-full sm:pl-1", workspaceStyles.assistantMessage)}>
                       <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Asael</p>
                       <ConversationMessageContent content={turn.content} />
+                      {turn.runId ? (
+                        <button
+                          type="button"
+                          onClick={() => openTaskDetails("execute", turn.runId)}
+                          className="mt-3 inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
+                          aria-haspopup="dialog"
+                        >
+                          <Globe2 size={13} aria-hidden="true" />
+                          View activity
+                        </button>
+                      ) : null}
                     </div>
                   )}
                 </article>
@@ -1674,6 +1790,16 @@ export function AgentRunsWorkspace({
                         <span className="inline-flex min-h-9 items-center rounded-full bg-surface-raised px-3 text-xs font-medium text-muted">
                           {groundingLabel(grounding.status)}
                         </span>
+                      ) : null}
+                      {activeAgentRunId ? (
+                        <button
+                          type="button"
+                          onClick={() => openTaskDetails("execute", activeAgentRunId)}
+                          className="inline-flex min-h-9 items-center gap-1.5 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
+                          aria-haspopup="dialog"
+                        >
+                          <Globe2 size={13} aria-hidden="true" /> Activity
+                        </button>
                       ) : null}
                       <button
                         type="button"
@@ -1828,7 +1954,7 @@ export function AgentRunsWorkspace({
                   key={tab.key}
                   id={`run-tab-${tab.key}`}
                   type="button"
-                  onClick={() => setActiveTab(tab.key)}
+                  onClick={() => selectTaskDetailsTab(tab.key)}
                   onKeyDown={(event) => handleTabKeyDown(event, index)}
                   role="tab"
                   aria-selected={activeTab === tab.key}
@@ -2153,12 +2279,24 @@ export function AgentRunsWorkspace({
                     </Link>
                   </div>
                 ) : null}
-                <TaskProgressTimeline
-                  events={streamEvents}
-                  workflowRun={workflowRun}
-                  running={loading === "agent"}
+                <BrowserActivityTimeline
+                  runId={selectedActivityRunId}
+                  items={browserActivity}
+                  state={browserActivityState}
+                  error={browserActivityError}
+                  onRefresh={() => void refreshBrowserActivity(selectedActivityRunId)}
                 />
-                <CouncilExecutionMap events={streamEvents} />
+                {!selectedActivityRunId || selectedActivityRunId === activeAgentRunId ? (
+                  <>
+                    <TaskProgressTimeline
+                      events={streamEvents}
+                      workflowRun={workflowRun}
+                      running={loading === "agent"}
+                    />
+                    <CouncilExecutionMap events={streamEvents} />
+                  </>
+                ) : null}
+                {!selectedActivityRunId || selectedActivityRunId === activeAgentRunId ? (
                 <details className="rounded-md border border-line bg-background">
                   <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 px-3 text-sm font-semibold">
                     <span>Technical activity</span>
@@ -2177,6 +2315,7 @@ export function AgentRunsWorkspace({
                     )}
                   </div>
                 </details>
+                ) : null}
               </StagePanel>
             ) : null}
 
@@ -2598,6 +2737,100 @@ function ContextSelectionList({
         );
       })}
     </fieldset>
+  );
+}
+
+function BrowserActivityTimeline({
+  runId,
+  items,
+  state,
+  error,
+  onRefresh,
+}: {
+  runId: string;
+  items: BrowserActivityItem[];
+  state: "idle" | "loading" | "ready" | "error";
+  error?: string;
+  onRefresh: () => void;
+}) {
+  if (!runId) return null;
+  return (
+    <section className="mb-4 overflow-hidden rounded-xl border border-primary/20 bg-gradient-to-br from-primary/10 via-background to-background" aria-label="Browser activity">
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-line/80 px-4 py-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary/15 text-primary">
+            <Globe2 size={16} aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">Browser activity</p>
+            <p className="mt-1 text-xs leading-5 text-muted">
+              Durable receipts from the isolated Playwright session.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={state === "loading"}
+          className="inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface hover:text-foreground disabled:opacity-50"
+        >
+          <RefreshCw size={13} className={state === "loading" ? "animate-spin" : ""} aria-hidden="true" />
+          Refresh
+        </button>
+      </header>
+      {state === "loading" && !items.length ? (
+        <div className="flex min-h-28 items-center justify-center gap-2 px-4 text-sm text-muted">
+          <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+          Loading browser activity…
+        </div>
+      ) : error ? (
+        <div className="m-3 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm leading-6 text-muted" role="status">
+          {error}
+        </div>
+      ) : items.length ? (
+        <ol className="divide-y divide-line/80">
+          {items.map((item, index) => (
+            <li key={item.id} className="grid grid-cols-[auto_1fr] gap-3 px-4 py-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
+              <span className={clsx(
+                "grid size-7 place-items-center rounded-full text-xs font-semibold",
+                item.status === "executed"
+                  ? "bg-success/15 text-success"
+                  : item.status === "approval_required"
+                    ? "bg-warning/15 text-warning"
+                    : item.status === "failed" || item.status === "blocked" || item.status === "rejected"
+                      ? "bg-danger/15 text-danger"
+                      : "bg-primary/15 text-primary",
+              )}>
+                {item.status === "executed" ? <Check size={13} aria-hidden="true" /> : index + 1}
+              </span>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <p className="text-sm font-semibold">{item.action}</p>
+                  <span className="rounded-full bg-surface px-2 py-0.5 font-mono text-[10px] text-muted">
+                    {item.status.replaceAll("_", " ")}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-muted">{item.error || item.summary}</p>
+                {item.targetOrigin ? (
+                  <p className="mt-1 truncate font-mono text-[11px] text-primary">{item.targetOrigin}</p>
+                ) : null}
+              </div>
+              <div className="col-start-2 flex flex-wrap gap-2 text-[11px] text-muted sm:col-auto sm:justify-end">
+                {item.durationMs !== undefined ? <span>{formatBrowserDuration(item.durationMs)}</span> : null}
+                <time dateTime={item.at}>{formatRelativeThreadTime(item.at)}</time>
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="px-4 py-5 text-sm leading-6 text-muted">
+          No connected Playwright actions were recorded for this run.
+        </p>
+      )}
+      <p className="border-t border-line/80 px-4 py-2.5 text-[11px] leading-5 text-muted">
+        Privacy view: destinations are limited to site origins. Page content, entered values, selectors, credentials, and private reasoning are never shown here.
+      </p>
+    </section>
   );
 }
 
@@ -3448,6 +3681,12 @@ function stringValue(value: unknown, fallback = "") {
 function numberValue(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function formatBrowserDuration(durationMs: number) {
+  if (durationMs < 1_000) return `${Math.max(0, Math.round(durationMs))}ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(1)}s`;
+  return `${Math.floor(durationMs / 60_000)}m ${Math.round((durationMs % 60_000) / 1_000)}s`;
 }
 
 function formatRelativeThreadTime(value: string) {

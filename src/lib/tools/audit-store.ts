@@ -508,6 +508,54 @@ export async function getToolExecution(id: string, options: { tenantId?: string 
   );
 }
 
+/**
+ * Internal, tenant-scoped lookup for run projections. Unlike the public list
+ * helpers, this deliberately retains execution input long enough for a
+ * projection to derive an allowlisted receipt; callers must never return the
+ * raw records to a client.
+ */
+export async function getToolExecutionsByIds(
+  ids: readonly string[],
+  options: { tenantId: string },
+) {
+  const boundedIds = [...new Set(
+    ids.map((id) => id.trim()).filter(Boolean),
+  )].slice(0, 200);
+  if (!boundedIds.length) return [];
+  const tenantId = normalizeTenantId(options.tenantId);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_tool_executions
+      WHERE id = ANY(${boundedIds}::text[])
+        AND COALESCE(tenant_id, 'default') = ${tenantId}
+    `;
+    const recordsById = new Map(
+      rows.map((row) => {
+        const record = recordFromRow(row);
+        return [record.id, record] as const;
+      }),
+    );
+    return boundedIds.flatMap((id) => {
+      const record = recordsById.get(id);
+      return record ? [record] : [];
+    });
+  }
+
+  const ledger = await readToolLedger();
+  const recordsById = new Map(
+    ledger.records
+      .filter((record) => normalizeTenantId(record.tenantId) === tenantId)
+      .map((record) => [record.id, record] as const),
+  );
+  return boundedIds.flatMap((id) => {
+    const record = recordsById.get(id);
+    return record ? [record] : [];
+  });
+}
+
 export async function listPendingToolApprovals(limit = 25, options: { tenantId?: string } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
 

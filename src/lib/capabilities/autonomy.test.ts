@@ -3,6 +3,7 @@ import {
   AUTONOMY_RETRIEVAL_QUERY_MAX_LENGTH,
   buildAutomaticRetrievalQuery,
   buildCapabilitySearchQuery,
+  analyzeBrowserCapabilityIntent,
   formatWorkspaceAccessContext,
   loadWorkspaceAccessSnapshot,
   type WorkspaceAccessDependencies,
@@ -48,6 +49,42 @@ describe("capability-aware autonomy", () => {
 
     expect(query).toMatch(/browser/);
     expect(query).toMatch(/navigate|click|form|automation/);
+  });
+
+  it("keeps denied browser interactions out of direct navigation intent", () => {
+    const intent = analyzeBrowserCapabilityIntent(
+      "Open https://example.com and report the title. Do not click, type, sign in, or submit anything.",
+    );
+
+    expect(intent).toEqual({
+      requiredOperationNames: [
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_find",
+      ],
+      excludedOperationNames: expect.arrayContaining([
+        "browser_click",
+        "browser_type",
+        "browser_fill_form",
+        "browser_press_key",
+      ]),
+      excludeWebSearch: true,
+    });
+  });
+
+  it("adds only the interaction contract explicitly requested for browser work", () => {
+    const intent = analyzeBrowserCapabilityIntent(
+      "Open YouTube and play a video, but do not type or submit anything.",
+    );
+
+    expect(intent.requiredOperationNames).toEqual([
+      "browser_navigate",
+      "browser_snapshot",
+      "browser_find",
+      "browser_click",
+    ]);
+    expect(intent.excludedOperationNames).toContain("browser_type");
+    expect(intent.excludedOperationNames).toContain("browser_press_key");
   });
 
   it("keeps the newest useful history when discovery reaches its query limit", () => {

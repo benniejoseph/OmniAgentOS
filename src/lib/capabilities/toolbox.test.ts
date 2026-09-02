@@ -136,6 +136,114 @@ describe("progressive agent toolbox", () => {
     }));
   });
 
+  it("pins direct browser work to the least-privilege core from one connector", async () => {
+    const descriptors = [
+      descriptor("mcp:playwright:browser_click", "mcp", 2),
+      descriptor("mcp:playwright:browser_close", "mcp", 2),
+      descriptor("mcp:playwright:browser_drag", "mcp", 2),
+      descriptor("mcp:playwright:browser_fill_form", "mcp", 2),
+      descriptor("mcp:playwright:browser_find", "mcp", 0),
+      descriptor("mcp:playwright:browser_navigate", "mcp", 1),
+      descriptor("mcp:playwright:browser_snapshot", "mcp", 0),
+    ];
+    const resolveMcp = vi.fn(async (id: string) => tool({
+      id,
+      category: "mcp",
+      riskLevel: id.endsWith("browser_navigate") ? 1 : 0,
+    }));
+
+    const result = await loadProgressiveAgentTools(
+      {
+        tenantId: "tenant-private",
+        query: "Open https://example.com. Do not click, type, or submit anything.",
+        requiredExternalOperationNames: [
+          "browser_navigate",
+          "browser_snapshot",
+          "browser_find",
+        ],
+        excludedExternalOperationNames: [
+          "browser_click",
+          "browser_close",
+          "browser_drag",
+          "browser_fill_form",
+        ],
+      },
+      {
+        listNative: () => [],
+        search: vi.fn(async () => ({
+          capabilities: descriptors,
+          query: "browser",
+          total: descriptors.length,
+          limit: 50,
+          hasMore: false,
+        })),
+        resolveMcp,
+        resolveOpenApi: vi.fn(async () => null),
+      },
+    );
+
+    expect(result.definitions.map((item) => item.id)).toEqual([
+      "mcp:playwright:browser_navigate",
+      "mcp:playwright:browser_snapshot",
+      "mcp:playwright:browser_find",
+    ]);
+  });
+
+  it("keeps an explicitly requested browser click governed by its approval contract", async () => {
+    const descriptors = [
+      descriptor("mcp:other:browser_navigate", "mcp", 1),
+      descriptor("mcp:playwright:browser_navigate", "mcp", 1),
+      descriptor("mcp:playwright:browser_snapshot", "mcp", 0),
+      descriptor("mcp:playwright:browser_find", "mcp", 0),
+      descriptor("mcp:playwright:browser_click", "mcp", 2),
+    ];
+
+    const result = await loadProgressiveAgentTools(
+      {
+        tenantId: "tenant-private",
+        query: "Open YouTube and play a video",
+        requiredExternalOperationNames: [
+          "browser_navigate",
+          "browser_snapshot",
+          "browser_find",
+          "browser_click",
+        ],
+      },
+      {
+        listNative: () => [],
+        search: vi.fn(async () => ({
+          capabilities: descriptors,
+          query: "browser",
+          total: descriptors.length,
+          limit: 50,
+          hasMore: false,
+        })),
+        resolveMcp: vi.fn(async (id) => tool({
+          id,
+          category: "mcp",
+          riskLevel: id.endsWith("browser_click") ? 2 : id.endsWith("browser_navigate") ? 1 : 0,
+          approvalRequired: id.endsWith("browser_click"),
+          approvalFingerprint: id.endsWith("browser_click")
+            ? "reviewed-browser-click-contract"
+            : undefined,
+        })),
+        resolveOpenApi: vi.fn(async () => null),
+      },
+    );
+
+    expect(result.definitions.slice(0, 4).map((item) => item.id)).toEqual([
+      "mcp:playwright:browser_navigate",
+      "mcp:playwright:browser_snapshot",
+      "mcp:playwright:browser_find",
+      "mcp:playwright:browser_click",
+    ]);
+    expect(result.definitions[3]).toMatchObject({
+      riskLevel: 2,
+      approvalRequired: true,
+      approvalFingerprint: "reviewed-browser-click-contract",
+    });
+  });
+
   it("hydrates no more than twelve exact allowlisted tools and skips other sources", async () => {
     const ids = Array.from({ length: 20 }, (_, index) => `openapi:mail:send-${index}`);
     const search = vi.fn(async (input: { query?: string }) => ({

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, hasAnthropicKey, hasGeminiKey, hasOpenAIKey } from "@/lib/config";
 import { getAgentLearningGuidance } from "@/lib/agents/learning";
 import {
+  analyzeBrowserCapabilityIntent,
   buildAutomaticRetrievalQuery,
   buildCapabilitySearchQuery,
   formatWorkspaceAccessContext,
@@ -110,6 +111,7 @@ export async function* runAgent(
     recentConversation: safeMessages,
   };
   const baseCapabilitySearchQuery = buildCapabilitySearchQuery(autonomyQuery);
+  const browserCapabilityIntent = analyzeBrowserCapabilityIntent(query);
   const automaticRetrievalQuery = buildAutomaticRetrievalQuery(autonomyQuery);
   const deploymentModelRoute = selectAgentModel({
     message: query,
@@ -236,7 +238,9 @@ export async function* runAgent(
     if (durableMemoryEnabled) {
       yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
     }
-    const useLiveWeb = shouldUseLiveWebSearch(query) && hasOpenAIKey();
+    const useLiveWeb = !browserCapabilityIntent.excludeWebSearch &&
+      shouldUseLiveWebSearch(query) &&
+      hasOpenAIKey();
     const retrievalQuery = request.contextSelection?.query || automaticRetrievalQuery;
     const retrievalPromise = durableMemoryEnabled
       ? buildContextPack(retrievalQuery, {
@@ -259,6 +263,10 @@ export async function* runAgent(
         : buildAgentToolbox(request.tenantId, {
             query: baseCapabilitySearchQuery || query,
             preferredToolIds: configuredToolIds,
+            requiredExternalOperationNames:
+              browserCapabilityIntent.requiredOperationNames,
+            excludedExternalOperationNames:
+              browserCapabilityIntent.excludedOperationNames,
           });
     const workspaceAccessPromise = providerConfigured
       ? settleOptionalWithin(
@@ -296,6 +304,10 @@ export async function* runAgent(
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
       query: capabilitySearchQuery || query,
       preferredToolIds: configuredToolIds,
+      requiredExternalOperationNames:
+        browserCapabilityIntent.requiredOperationNames,
+      excludedExternalOperationNames:
+        browserCapabilityIntent.excludedOperationNames,
     });
     if (durableMemoryEnabled) {
       await updateRunContextCount(run.id, retrieval.results.length);
@@ -344,7 +356,9 @@ export async function* runAgent(
     // filters the OpenAI tool list, the instructions, and the dispatch map together.
     let toolbox = filterAgentToolbox(
       await resolvedToolboxPromise,
-      liveWebContext ? ["web.search"] : [],
+      liveWebContext || browserCapabilityIntent.excludeWebSearch
+        ? ["web.search"]
+        : [],
     );
     let agentToolPolicy: AgentRunContinuation["toolPolicy"];
     if (request.agentProfile) {
@@ -2411,8 +2425,10 @@ async function buildAgentToolbox(
   tenantId?: string,
   options?: {
     excludeToolIds?: readonly string[];
+    excludedExternalOperationNames?: readonly string[];
     query?: string;
     preferredToolIds?: readonly string[];
+    requiredExternalOperationNames?: readonly string[];
   },
 ): Promise<{
   tools: ToolboxEntry[];
@@ -2422,8 +2438,10 @@ async function buildAgentToolbox(
   const { definitions } = await loadProgressiveAgentTools({
     tenantId,
     excludeToolIds: options?.excludeToolIds,
+    excludedExternalOperationNames: options?.excludedExternalOperationNames,
     query: options?.query,
     preferredToolIds: options?.preferredToolIds,
+    requiredExternalOperationNames: options?.requiredExternalOperationNames,
   });
   const tools: ToolboxEntry[] = definitions.map((definition) => {
     return {

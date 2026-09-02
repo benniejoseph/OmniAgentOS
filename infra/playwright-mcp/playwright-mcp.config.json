@@ -4,6 +4,7 @@
     "isolated": false,
     "launchOptions": {
       "headless": true,
+      "channel": "chromium",
       "chromiumSandbox": false,
       "args": [
         "--disable-quic",
