@@ -7,6 +7,7 @@ export type ConnectionCatalogItem = {
   baseUrl?: string;
   endpoint?: string;
   authEnvVars: string[];
+  credentialMode?: "app_vault" | "deployment_environment" | "oauth";
   authHeaderName?: string;
   capabilities: string[];
   riskLevel: 0 | 1 | 2 | 3;
@@ -18,14 +19,14 @@ export const connectionCatalog: ConnectionCatalogItem[] = [
     id: "github",
     name: "GitHub",
     category: "code",
-    adapter: "openapi",
+    adapter: "mcp",
     status: "requires_credentials",
-    baseUrl: "https://api.github.com",
-    authEnvVars: ["GITHUB_TOKEN"],
-    authHeaderName: "authorization",
-    capabilities: ["repositories", "issues", "pull requests", "workflow dispatch"],
+    endpoint: "https://api.githubcopilot.com/mcp/x/all",
+    authEnvVars: [],
+    credentialMode: "app_vault",
+    capabilities: ["repositories", "issues", "pull requests", "actions", "code security"],
     riskLevel: 2,
-    approvalRequired: true,
+    approvalRequired: false,
   },
   {
     id: "gmail",
@@ -135,7 +136,8 @@ export const connectionCatalog: ConnectionCatalogItem[] = [
     adapter: "mcp",
     status: "requires_credentials",
     endpoint: "https://your-browser-mcp.example.com/mcp",
-    authEnvVars: ["BROWSER_MCP_TOKEN"],
+    authEnvVars: [],
+    credentialMode: "app_vault",
     capabilities: ["navigate", "click", "type", "screenshot", "extract"],
     riskLevel: 2,
     approvalRequired: true,
@@ -147,7 +149,8 @@ export const connectionCatalog: ConnectionCatalogItem[] = [
     adapter: "mcp",
     status: "ready",
     endpoint: "https://example.com/mcp",
-    authEnvVars: ["CUSTOM_MCP_BEARER_TOKEN"],
+    authEnvVars: [],
+    credentialMode: "app_vault",
     capabilities: ["discover tools", "schema execution", "governed audit"],
     riskLevel: 2,
     approvalRequired: true,

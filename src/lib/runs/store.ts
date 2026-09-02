@@ -978,11 +978,162 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
       actorId: String((candidate.context as { actorId?: unknown })?.actorId || "agent"),
       role: normalizeRole((candidate.context as { role?: unknown })?.role),
     },
+    toolPolicy: parseToolPolicy(candidate.toolPolicy),
+    providerToolState: parseProviderToolState(candidate.providerToolState),
     createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : new Date().toISOString(),
     resumeClaimedAt:
       typeof candidate.resumeClaimedAt === "string"
         ? candidate.resumeClaimedAt
         : undefined,
+  };
+}
+
+function parseToolPolicy(
+  value: unknown,
+): AgentRunContinuation["toolPolicy"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    !Array.isArray(candidate.allowedToolIds) ||
+    typeof candidate.readOnly !== "boolean" ||
+    typeof candidate.forceApproval !== "boolean"
+  ) {
+    return undefined;
+  }
+  return {
+    allowedToolIds: candidate.allowedToolIds
+      .filter((id): id is string => typeof id === "string")
+      .map((id) => id.slice(0, 512))
+      .slice(0, 50),
+    readOnly: candidate.readOnly,
+    forceApproval: candidate.forceApproval,
+  };
+}
+
+function parseProviderToolState(
+  value: unknown,
+): AgentRunContinuation["providerToolState"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Record<string, unknown>;
+  const provider = parseToolProvider(candidate.provider);
+  const tier = candidate.tier === "fast" || candidate.tier === "reasoning"
+    ? candidate.tier
+    : undefined;
+  const continuation = parseModelToolContinuation(candidate.continuation);
+  const pendingCall = parseModelToolCall(candidate.pendingCall);
+  if (
+    !provider ||
+    !tier ||
+    typeof candidate.model !== "string" ||
+    typeof candidate.prompt !== "string" ||
+    !continuation ||
+    continuation.provider !== provider ||
+    !pendingCall ||
+    !Array.isArray(candidate.queuedCalls) ||
+    !Array.isArray(candidate.toolResultsBeforeApproval)
+  ) {
+    return undefined;
+  }
+
+  const queuedCalls = candidate.queuedCalls
+    .map((call) => {
+      const parsed = parseModelToolCall(call);
+      if (!parsed) return undefined;
+      const skipReason =
+        call &&
+        typeof call === "object" &&
+        !Array.isArray(call) &&
+        typeof (call as { skipReason?: unknown }).skipReason === "string"
+          ? (call as { skipReason: string }).skipReason
+          : undefined;
+      return { ...parsed, skipReason };
+    })
+    .filter((call): call is NonNullable<typeof call> => Boolean(call));
+  const toolResultsBeforeApproval = candidate.toolResultsBeforeApproval
+    .map(parseModelToolResult)
+    .filter((result): result is NonNullable<typeof result> => Boolean(result));
+
+  return {
+    provider,
+    tier,
+    model: candidate.model,
+    prompt: candidate.prompt,
+    continuation,
+    pendingCall,
+    queuedCalls,
+    toolResultsBeforeApproval,
+  };
+}
+
+function parseToolProvider(value: unknown) {
+  return value === "openai" ||
+    value === "google" ||
+    value === "anthropic" ||
+    value === "aws_bedrock"
+    ? value
+    : undefined;
+}
+
+function parseModelToolContinuation(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Record<string, unknown>;
+  const provider = parseToolProvider(candidate.provider);
+  if (!provider || !Array.isArray(candidate.state)) {
+    return undefined;
+  }
+  const state = candidate.state.filter(
+    (item): item is Record<string, unknown> =>
+      Boolean(item && typeof item === "object" && !Array.isArray(item)),
+  );
+  if (state.length !== candidate.state.length) {
+    return undefined;
+  }
+  return { provider, state };
+}
+
+function parseModelToolCall(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.callId !== "string" ||
+    typeof candidate.name !== "string" ||
+    typeof candidate.argumentsJson !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    callId: candidate.callId,
+    name: candidate.name,
+    argumentsJson: candidate.argumentsJson,
+  };
+}
+
+function parseModelToolResult(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.callId !== "string" ||
+    typeof candidate.name !== "string" ||
+    typeof candidate.output !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    callId: candidate.callId,
+    name: candidate.name,
+    output: candidate.output,
+    isError:
+      typeof candidate.isError === "boolean" ? candidate.isError : undefined,
   };
 }
 

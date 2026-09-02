@@ -41,11 +41,12 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 - `POST /api/mcp` is the stateless Streamable HTTP MCP endpoint. It accepts service-key Bearer authentication only, requires MCP to be enabled in Settings, rate-limits by tenant and key, and initially exports read-only memory, knowledge, mission, and run tools. Every call still uses the governed tool executor and durable tool audit. `GET` and `DELETE` return `405`.
 - `/api/settings/providers`, `/api/settings/models`, `/api/settings/assignments`, `/api/settings/api-keys`, and `/api/settings/mcp` manage redacted provider connections, lifecycle-aware model selection, service keys, and the actor-owned MCP export boundary. Credential plaintext is accepted only on create/rotation and is never returned after storage.
 - The built-in `http.request` tool never accepts pasted authorization, cookie, token, or API-key headers. Reference a deployer-bound `authEnv`; use the default Bearer authorization mode, Basic authorization mode, or raw `x-api-key`, `x-auth-token`, or `api-key` mode.
-- `/api/connectors`, `/api/connectors/:id`, and `/api/connectors/:id/discover` for MCP.
+- `/api/connectors`, `/api/connectors/:id`, and `/api/connectors/:id/discover` for outbound MCP. `bearer_vault` accepts a write-only `bearerToken`, seals it with the tenant credential keyring, and returns only configured/version/fingerprint/rotation/origin-match metadata. `bearer_env` remains available for advanced deployer-managed integrations.
+- `POST|DELETE /api/connectors/:id/credential` rotates or removes an app-managed MCP bearer token as a risk-2 admin operation. Rotation disables the connector and invalidates its discovered contracts until rediscovery and review. Removal scrubs the ciphertext and disables the connector, but does not revoke the external provider token.
 - `/api/openapi-connectors`, `/api/openapi-connectors/:id`, and `/api/openapi-connectors/:id/import`.
 - `/api/connection-catalog` and `/api/capabilities`.
 
-Connector records reference environment-variable names, not secret values. Registration does not make an endpoint safe by itself; discovery/import and execution remain subject to network, role, risk, and approval policy.
+Connector API records never contain credential plaintext or sealed payloads. App-managed bearer credentials are decrypted only immediately before the exact-origin MCP request; deployer-managed connector records reference environment-variable names instead of values. Registration does not make an endpoint safe by itself; discovery/import and execution remain subject to network, role, risk, and approval policy.
 
 ## Evaluation, security, and operations evidence
 

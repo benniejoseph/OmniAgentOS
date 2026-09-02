@@ -1,5 +1,6 @@
 import { discoverMcpTools } from "@/lib/connectors/mcp-client";
 import { mcpContractReviewSummary } from "@/lib/connectors/contract-review";
+import { isOfficialGitHubMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   getMcpConnector,
@@ -33,6 +34,38 @@ async function POSTHandler(
   if (!connector) {
     return Response.json({ error: "MCP connector not found." }, { status: 404 });
   }
+  if (
+    connector.authType === "bearer_vault" &&
+    (!connector.credentialConfigured || !connector.credentialOriginMatch)
+  ) {
+    return Response.json(
+      {
+        error: "MCP connector credential required.",
+        message: "Save an app-managed bearer credential for this exact endpoint origin before discovery.",
+      },
+      { status: 409 },
+    );
+  }
+  const resetOfficialGitHubPolicy =
+    new URL(request.url).searchParams.get("resetPolicy") === "official-github";
+  if (
+    resetOfficialGitHubPolicy &&
+    (
+      !isOfficialGitHubMcpEndpoint(connector.endpoint) ||
+      new URL(connector.endpoint).pathname.replace(/\/+$/, "") !==
+        "/mcp/x/all" ||
+      connector.approvalRequired
+    )
+  ) {
+    return Response.json(
+      {
+        error: "Invalid GitHub policy reset.",
+        message:
+          "Policy reset is only available for the official all-toolsets GitHub MCP connection.",
+      },
+      { status: 400 },
+    );
+  }
 
   try {
     const discovery = await discoverMcpTools(connector, { actorRole: securityContext.role });
@@ -42,6 +75,7 @@ async function POSTHandler(
       capabilities: discovery.capabilities,
       instructions: discovery.instructions,
       serverVersion: discovery.serverVersion,
+      resetReviewedPolicy: resetOfficialGitHubPolicy,
     });
     return Response.json({
       ...saved,

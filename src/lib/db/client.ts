@@ -667,6 +667,10 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[30],
+      up: ensureMcpConnectorCredentialVault,
+    },
   ];
 }
 
@@ -3196,6 +3200,34 @@ async function ensureSettingsControlPlane(sql: SqlClient) {
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS omni_mcp_export_configurations_tenant_actor_idx ON omni_mcp_export_configurations (tenant_id, actor_id)`;
+}
+
+async function ensureMcpConnectorCredentialVault(sql: SqlClient) {
+  await sql`ALTER TABLE omni_mcp_connectors ADD COLUMN IF NOT EXISTS credential_version INTEGER`;
+  await sql`ALTER TABLE omni_mcp_connectors ADD COLUMN IF NOT EXISTS credential_key_id TEXT`;
+  await sql`ALTER TABLE omni_mcp_connectors ADD COLUMN IF NOT EXISTS credential_fingerprint TEXT`;
+  await sql`ALTER TABLE omni_mcp_connectors ADD COLUMN IF NOT EXISTS credential_origin TEXT`;
+  await sql`ALTER TABLE omni_mcp_connectors ADD COLUMN IF NOT EXISTS sealed_credential JSONB`;
+  await sql`ALTER TABLE omni_mcp_connectors ADD COLUMN IF NOT EXISTS credential_created_by TEXT`;
+  await sql`ALTER TABLE omni_mcp_connectors ADD COLUMN IF NOT EXISTS credential_rotated_by TEXT`;
+  await sql`ALTER TABLE omni_mcp_connectors ADD COLUMN IF NOT EXISTS credential_created_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE omni_mcp_connectors ADD COLUMN IF NOT EXISTS credential_rotated_at TIMESTAMPTZ`;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_mcp_connectors_credential_version_check'
+          AND conrelid = 'omni_mcp_connectors'::regclass
+      ) THEN
+        ALTER TABLE omni_mcp_connectors
+        ADD CONSTRAINT omni_mcp_connectors_credential_version_check
+        CHECK (credential_version IS NULL OR credential_version > 0);
+      END IF;
+    END
+    $migration$
+  `;
 }
 
 async function ensureConversationThreads(sql: SqlClient) {

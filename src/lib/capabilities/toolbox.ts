@@ -74,7 +74,7 @@ export async function loadProgressiveAgentTools(
   if (!hasExplicitAllowlist || externalAllowlist?.length) {
     const searchInput = {
       tenantId: input.tenantId || "default",
-      query: hasExplicitAllowlist ? undefined : input.query,
+      query: input.query,
       // The catalog still returns only compact metadata. Asking for its public
       // maximum lets semantic scoring see the full bounded candidate window
       // before just six contracts are hydrated.
@@ -82,7 +82,17 @@ export async function loadProgressiveAgentTools(
       allowlist: externalAllowlist,
       sources: ["mcp", "openapi"],
     } satisfies CapabilitySearchInput;
-    const capabilities = await searchExternalMetadata(searchInput, dependencies.search);
+    let capabilities = await searchExternalMetadata(searchInput, dependencies.search);
+    if (
+      hasExplicitAllowlist &&
+      input.query?.trim() &&
+      capabilities.length === 0
+    ) {
+      capabilities = await searchExternalMetadata(
+        { ...searchInput, query: undefined },
+        dependencies.search,
+      );
+    }
     descriptors = capabilities
       .filter(
         (capability) =>

@@ -15,7 +15,7 @@ import type {
   ModelToolTurnRequest,
   ModelToolTurnResult,
 } from "@/lib/models/types";
-import { hasModelProviderFeature } from "@/lib/models/registry";
+import { getModelProvider, hasModelProviderFeature } from "@/lib/models/registry";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
 import {
   streamResponseTurn,
@@ -52,7 +52,11 @@ import {
   markAgentRunWaitingForApproval,
   updateRunContextCount,
 } from "@/lib/runs/store";
-import type { AgentRunContinuation } from "@/lib/runs/types";
+import type {
+  AgentProviderToolContinuation,
+  AgentRunContinuation,
+  AgentRunRecord,
+} from "@/lib/runs/types";
 import type { SecurityContext, SecurityRole } from "@/lib/security/types";
 import { redactSensitive } from "@/lib/security/context";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
@@ -455,6 +459,46 @@ export async function* runAgent(
             costKnown: result.costKnown,
           },
         });
+        if (result.waitingApproval) {
+          const waiting = result.waitingApproval;
+          const continuation: AgentRunContinuation = {
+            conversationItems: [],
+            instructions,
+            response,
+            toolSteps: result.toolSteps,
+            outputsBeforeApproval: [],
+            pendingToolCall: {
+              callId: waiting.providerState.pendingCall.callId,
+              toolId: waiting.toolId,
+              toolName: waiting.toolName,
+              riskLevel: waiting.riskLevel,
+              executionId: waiting.executionId,
+            },
+            context: {
+              tenantId: securityContext.tenantId,
+              actorId: securityContext.actorId,
+              role: securityContext.role,
+            },
+            toolPolicy: agentToolPolicy,
+            providerToolState: waiting.providerState,
+            createdAt: new Date().toISOString(),
+          };
+          await flushDeltas();
+          await markAgentRunWaitingForApproval(run.id, { response, continuation });
+          yield await emit({
+            type: "waiting_approval",
+            executionId: waiting.executionId,
+            toolId: waiting.toolId,
+            message:
+              "Run paused. Approval will resume this same provider-bound agent turn after the tool executes.",
+          });
+          await syncMissionExecutorSafely({
+            executorType: "agent_run",
+            executorId: run.id,
+            status: "waiting",
+          }, { tenantId: request.tenantId, actorId: securityContext.actorId });
+          return;
+        }
         providerTextCompleted = true;
       }
 
@@ -839,10 +883,18 @@ type NonOpenAIProviderLoopResult = {
   costKnown: boolean;
   attempts: ModelAttemptReceipt[];
   turns: number;
+  toolSteps: number;
+  waitingApproval?: {
+    executionId: string;
+    toolId: string;
+    toolName: string;
+    riskLevel?: number;
+    providerState: AgentProviderToolContinuation;
+  };
 };
 
 /**
- * Provider-neutral governed tool loop used by Gemini and Anthropic runs.
+ * Provider-neutral governed tool loop used by Gemini, Anthropic, and Bedrock runs.
  * Dependency injection keeps the policy/continuation behavior directly
  * testable without starting a complete persisted agent run.
  */
@@ -859,15 +911,25 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   runId: string;
   abortSignal?: AbortSignal;
   forceApproval?: boolean;
+  continuation?: ModelToolTurnResult["continuation"];
+  toolResults?: readonly ModelToolResult[];
+  toolSteps?: number;
   generateTurn?: (request: ModelToolTurnRequest) => Promise<ModelToolTurnResult>;
   bindModelRequest?: (request: ModelToolTurnRequest) => ModelToolTurnRequest;
   executeTool?: typeof executeGovernedTool;
 }): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
   const generateTurn = input.generateTurn || generateModelToolTurn;
   const executeTool = input.executeTool || executeGovernedTool;
-  let continuation: ModelToolTurnResult["continuation"] | undefined;
-  let toolResults: ModelToolResult[] | undefined;
-  let toolSteps = 0;
+  if (
+    input.continuation &&
+    (input.continuation.provider === "local" ||
+      input.continuation.provider !== input.provider)
+  ) {
+    throw new Error("A provider-bound continuation cannot cross provider boundaries.");
+  }
+  let continuation = input.continuation;
+  let toolResults = input.toolResults ? [...input.toolResults] : undefined;
+  let toolSteps = Math.max(0, input.toolSteps || 0);
   let turns = 0;
   let text = "";
   let model = "";
@@ -882,6 +944,24 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     totalTokens: 0,
   };
   let activeProvider: "openai" | "google" | "anthropic" | "aws_bedrock" = input.provider;
+
+  const finish = (
+    waitingApproval?: NonOpenAIProviderLoopResult["waitingApproval"],
+  ): NonOpenAIProviderLoopResult => ({
+    text,
+    provider: activeProvider,
+    model,
+    usage,
+    latencyMs,
+    ...(costKnown ? {
+      estimatedCostUsd: Math.round(estimatedCostUsd * 1_000_000) / 1_000_000,
+    } : {}),
+    costKnown,
+    attempts,
+    turns,
+    toolSteps,
+    ...(waitingApproval ? { waitingApproval } : {}),
+  });
 
   for (;;) {
     const toolsEnabled = toolSteps < AGENT_MAX_TOOL_STEPS;
@@ -953,7 +1033,9 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       }
     });
     const canRunInParallel =
-      parallelCalls.length > 1 && parallelCalls.every(Boolean);
+      !input.forceApproval &&
+      parallelCalls.length > 1 &&
+      parallelCalls.every(Boolean);
 
     if (canRunInParallel) {
       const prepared = parallelCalls.filter(
@@ -988,7 +1070,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           execution.record.status !== "executed" && execution.record.status !== "dry_run"));
       }
     } else {
-      for (const call of callsThisTurn) {
+      for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
+        const call = callsThisTurn[callIndex];
         const entry = input.toolbox.byFunctionName.get(call.name);
         if (!entry) {
           outputs.push(providerToolResult(call, {
@@ -1040,8 +1123,32 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             type: "status",
             label: "tool approval required",
             detail:
-              `${definition.name} was added to Approvals. This provider turn will continue without executing it.`,
+              `${definition.name} was added to Approvals. The provider-bound turn is paused until a decision is recorded.`,
           };
+          return finish({
+            executionId: execution.record.id,
+            toolId: definition.id,
+            toolName: definition.name,
+            riskLevel: definition.riskLevel,
+            providerState: {
+              provider: activeProvider,
+              tier: input.tier,
+              model,
+              prompt: input.prompt,
+              continuation: turn.continuation,
+              pendingCall: call,
+              queuedCalls: [
+                ...callsThisTurn.slice(callIndex + 1),
+                ...turn.toolCalls.slice(MAX_TOOL_CALLS_PER_TURN).map(
+                  (queuedCall) => ({
+                    ...queuedCall,
+                    skipReason: "Per-turn tool call limit reached; call skipped.",
+                  }),
+                ),
+              ],
+              toolResultsBeforeApproval: outputs,
+            },
+          });
         }
         const isError =
           execution.record.status !== "executed" &&
@@ -1078,19 +1185,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     toolResults = outputs;
   }
 
-  return {
-    text,
-    provider: activeProvider,
-    model,
-    usage,
-    latencyMs,
-    ...(costKnown ? {
-      estimatedCostUsd: Math.round(estimatedCostUsd * 1_000_000) / 1_000_000,
-    } : {}),
-    costKnown,
-    attempts,
-    turns,
-  };
+  return finish();
 }
 
 function modelPromptForConversation(items: ConversationItem[]) {
@@ -1136,6 +1231,17 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const continuation = run?.continuation;
   if (!run || !continuation || run.status !== "waiting_approval") {
     return { resumed: false, reason: "No waiting agent run continuation found." };
+  }
+
+  if (continuation.providerToolState) {
+    return resumeProviderBoundAgentRunAfterApproval({
+      run,
+      continuation,
+      executionId,
+      toolExecution,
+      tenantId,
+      abortSignal,
+    });
   }
 
   const resumeDeploymentRoute = selectAgentModel({
@@ -1542,6 +1648,453 @@ async function resumeAgentRunAfterToolApprovalInScope({
     return { resumed: true, status: "completed" };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Approved agent run resume failed.";
+    await flushDeltas().catch(() => undefined);
+    await failAgentRun(run.id, message);
+    await appendRunEvent(run.id, { type: "error", message });
+    await syncMissionExecutorSafely({
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "failed",
+      error: message,
+    }, { tenantId, actorId: continuation.context.actorId });
+    return { resumed: true, status: "failed", error: message };
+  }
+}
+
+async function resumeProviderBoundAgentRunAfterApproval({
+  run,
+  continuation,
+  executionId,
+  toolExecution,
+  tenantId,
+  abortSignal,
+}: {
+  run: AgentRunRecord;
+  continuation: AgentRunContinuation;
+  executionId: string;
+  toolExecution: { record: ToolExecutionRecord; result?: unknown };
+  tenantId?: string;
+  abortSignal?: AbortSignal;
+}) {
+  const providerState = continuation.providerToolState;
+  if (
+    !providerState ||
+    providerState.continuation.provider !== providerState.provider ||
+    continuation.pendingToolCall.callId !== providerState.pendingCall.callId ||
+    continuation.pendingToolCall.executionId !== executionId ||
+    toolExecution.record.id !== executionId ||
+    (
+      toolExecution.record.tenantId &&
+      normalizeTenantId(toolExecution.record.tenantId) !==
+        normalizeTenantId(continuation.context.tenantId)
+    )
+  ) {
+    const message = "Cannot resume the approved run because its provider-bound continuation is invalid.";
+    await failAgentRun(run.id, message);
+    await appendRunEvent(run.id, { type: "error", message });
+    await syncMissionExecutorSafely({
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "failed",
+      error: message,
+    }, { tenantId, actorId: continuation.context.actorId });
+    return { resumed: false, reason: message };
+  }
+
+  const deploymentAdapter = getModelProvider(providerState.provider);
+  const resumeModel =
+    providerState.model ||
+    run.model ||
+    deploymentAdapter?.targets(providerState.tier)[0]?.model ||
+    "provider-continuation";
+  const resumeRuntimeModel = await resolveRuntimeModelAssignment({
+    tenantId: normalizeTenantId(tenantId),
+    actorId: continuation.context.actorId,
+    scope: "main_agent",
+    tier: providerState.tier,
+    requiredFeature: "tools",
+    deploymentFallback: {
+      provider: providerState.provider,
+      model: resumeModel,
+      configured: deploymentAdapter?.configured() || false,
+      reason:
+        `The approved continuation remains bound to ${providerState.provider}/${resumeModel}.`,
+    },
+  });
+  const runtimeCarriesProvider =
+    resumeRuntimeModel.provider === providerState.provider ||
+    (
+      resumeRuntimeModel.source === "tenant_assignment" &&
+      resumeRuntimeModel.allowCrossProviderFallback &&
+      resumeRuntimeModel.fallbackProvider === providerState.provider
+    );
+  const deploymentProviderAvailable = deploymentAdapter?.configured() || false;
+  if (
+    (!runtimeCarriesProvider || !resumeRuntimeModel.configured) &&
+    !deploymentProviderAvailable
+  ) {
+    const message =
+      `Cannot resume the approved ${providerState.provider} continuation because its provider credential is no longer available.`;
+    await failAgentRun(run.id, message);
+    await appendRunEvent(run.id, { type: "error", message });
+    await syncMissionExecutorSafely({
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "failed",
+      error: message,
+    }, { tenantId, actorId: continuation.context.actorId });
+    return { resumed: false, reason: message };
+  }
+
+  const claimed = await markAgentRunResuming(run.id);
+  if (!claimed) {
+    return {
+      resumed: false,
+      reason: "Run is already being resumed by another approval decision.",
+    };
+  }
+  await appendRunEvent(run.id, {
+    type: "status",
+    label: "resuming after approval",
+    detail:
+      `Tool approval ${executionId} resolved; continuing the same ${providerState.provider} agent turn.`,
+  });
+  await syncMissionExecutorSafely({
+    executorType: "agent_run",
+    executorId: run.id,
+    status: "running",
+  }, { tenantId, actorId: continuation.context.actorId });
+
+  let toolbox = await buildAgentToolbox(continuation.context.tenantId, {
+    query: run.prompt,
+    preferredToolIds: continuation.toolPolicy?.allowedToolIds,
+  });
+  if (continuation.toolPolicy) {
+    toolbox = filterAgentToolboxAllowed(
+      toolbox,
+      continuation.toolPolicy.allowedToolIds,
+      continuation.toolPolicy.readOnly,
+    );
+  }
+
+  let response = continuation.response || run.response || "";
+  let toolSteps = continuation.toolSteps;
+  const carriedResults: ModelToolResult[] = [
+    ...providerState.toolResultsBeforeApproval,
+    providerToolResult(
+      providerState.pendingCall,
+      {
+        status: toolExecution.record.status,
+        dryRun: toolExecution.record.dryRun,
+        approvalRequired: toolExecution.record.approvalRequired,
+        note: toolExecution.record.status === "executed"
+          ? "Approved and executed for real."
+          : toolExecution.record.reason,
+        result: toolExecution.result,
+      },
+      toolExecution.record.status !== "executed" &&
+        toolExecution.record.status !== "dry_run",
+    ),
+  ];
+
+  const runId = run.id;
+  let pendingDeltaText = "";
+  let lastDeltaFlush = Date.now();
+  let deltaWriteChain: Promise<void> = Promise.resolve();
+
+  function queueDeltaWrite() {
+    if (!pendingDeltaText) return;
+    const chunk = pendingDeltaText;
+    pendingDeltaText = "";
+    lastDeltaFlush = Date.now();
+    deltaWriteChain = deltaWriteChain
+      .then(async () => {
+        await appendRunEvent(runId, { type: "delta", text: chunk });
+      })
+      .catch((error: unknown) => {
+        console.error(
+          "Agent delta persistence failed.",
+          String(
+            redactSensitive(
+              error instanceof Error ? error.message : "Unknown persistence error.",
+            ),
+          ).slice(0, 1_000),
+        );
+      });
+  }
+
+  async function flushDeltas() {
+    queueDeltaWrite();
+    await deltaWriteChain;
+  }
+
+  async function parkForApproval(
+    waiting: NonNullable<NonOpenAIProviderLoopResult["waitingApproval"]>,
+  ) {
+    const nextContinuation: AgentRunContinuation = {
+      conversationItems: [],
+      instructions: continuation.instructions,
+      response,
+      toolSteps,
+      outputsBeforeApproval: [],
+      pendingToolCall: {
+        callId: waiting.providerState.pendingCall.callId,
+        toolId: waiting.toolId,
+        toolName: waiting.toolName,
+        riskLevel: waiting.riskLevel,
+        executionId: waiting.executionId,
+      },
+      context: continuation.context,
+      toolPolicy: continuation.toolPolicy,
+      providerToolState: waiting.providerState,
+      createdAt: new Date().toISOString(),
+    };
+    await flushDeltas();
+    await markAgentRunWaitingForApproval(run.id, {
+      response,
+      continuation: nextContinuation,
+    });
+    await appendRunEvent(run.id, {
+      type: "waiting_approval",
+      executionId: waiting.executionId,
+      toolId: waiting.toolId,
+      message:
+        "Run paused again for a governed tool approval in the same provider-bound turn.",
+    });
+    await syncMissionExecutorSafely({
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "waiting",
+    }, { tenantId, actorId: continuation.context.actorId });
+    return { resumed: true, status: "waiting_approval" };
+  }
+
+  try {
+    for (
+      let queueIndex = 0;
+      queueIndex < providerState.queuedCalls.length;
+      queueIndex += 1
+    ) {
+      const call = providerState.queuedCalls[queueIndex];
+      if (call.skipReason) {
+        carriedResults.push(providerToolResult(call, {
+          error: call.skipReason,
+        }, true));
+        continue;
+      }
+      const entry = toolbox.byFunctionName.get(call.name);
+      if (!entry) {
+        carriedResults.push(providerToolResult(call, {
+          error: `Unknown tool ${call.name}.`,
+        }, true));
+        continue;
+      }
+
+      const definition = entry.definition;
+      await appendRunEvent(run.id, {
+        type: "tool",
+        toolId: definition.id,
+        toolName: definition.name,
+        status: "running",
+        riskLevel: definition.riskLevel,
+      });
+      let parsedArguments: Record<string, unknown>;
+      try {
+        parsedArguments = parseFunctionArguments(call.argumentsJson);
+      } catch (error) {
+        const message = error instanceof Error
+          ? error.message
+          : "Tool arguments were rejected.";
+        await appendRunEvent(run.id, {
+          type: "tool",
+          toolId: definition.id,
+          toolName: definition.name,
+          status: "failed",
+          riskLevel: definition.riskLevel,
+          summary: message,
+        });
+        carriedResults.push(providerToolResult(call, { error: message }, true));
+        continue;
+      }
+
+      const execution = await executeGovernedTool({
+        toolId: definition.id,
+        input: parsedArguments,
+        dryRun: false,
+        approved: false,
+        context: {
+          tenantId: continuation.context.tenantId,
+          actorId: continuation.context.actorId,
+          role: continuation.context.role,
+          source: "default",
+        },
+        abortSignal,
+        idempotencyKey:
+          `${run.id}:${providerState.provider}:${call.callId}`,
+        forceApproval: continuation.toolPolicy?.forceApproval,
+      });
+      await appendRunEvent(
+        run.id,
+        toolEventForExecution(definition, execution.record),
+      );
+
+      if (execution.record.status === "approval_required") {
+        return await parkForApproval({
+          executionId: execution.record.id,
+          toolId: definition.id,
+          toolName: definition.name,
+          riskLevel: definition.riskLevel,
+          providerState: {
+            ...providerState,
+            pendingCall: call,
+            queuedCalls: providerState.queuedCalls.slice(queueIndex + 1),
+            toolResultsBeforeApproval: carriedResults,
+          },
+        });
+      }
+      carriedResults.push(providerToolResult(
+        call,
+        executionPayload(execution),
+        execution.record.status !== "executed" &&
+          execution.record.status !== "dry_run",
+      ));
+    }
+
+    const providerLoop = runNonOpenAIProviderToolLoop({
+      provider: providerState.provider,
+      tier: providerState.tier,
+      instructions: continuation.instructions,
+      prompt: providerState.prompt,
+      tools: toolbox.openAITools.map((tool) => ({
+        type: tool.type,
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      })),
+      toolbox,
+      securityContext: {
+        tenantId: continuation.context.tenantId,
+        actorId: continuation.context.actorId,
+        role: continuation.context.role,
+        source: "default",
+      },
+      runId: run.id,
+      abortSignal,
+      forceApproval: continuation.toolPolicy?.forceApproval,
+      continuation: providerState.continuation,
+      toolResults: carriedResults,
+      toolSteps,
+      bindModelRequest: runtimeCarriesProvider && resumeRuntimeModel.configured
+        ? (turnRequest) => resumeRuntimeModel.bind(turnRequest)
+        : undefined,
+    });
+    let result: NonOpenAIProviderLoopResult;
+    for (;;) {
+      const next = await providerLoop.next();
+      if (next.done) {
+        result = next.value;
+        break;
+      }
+      const event = next.value;
+      if (event.type === "delta") {
+        response += event.text;
+        pendingDeltaText += event.text;
+        if (
+          pendingDeltaText.length >= 2_000 ||
+          Date.now() - lastDeltaFlush >= 750
+        ) {
+          queueDeltaWrite();
+        }
+      } else {
+        await flushDeltas();
+        await appendRunEvent(run.id, event);
+      }
+    }
+    toolSteps = result.toolSteps;
+    const fallbackUsed = result.attempts.some(
+      (attempt) => attempt.status === "failed",
+    );
+    await flushDeltas();
+    await appendRunEvent(run.id, {
+      type: "model",
+      provider: result.provider,
+      model: result.model,
+      tier: providerState.tier,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      cachedInputTokens: result.usage.cachedInputTokens,
+      totalTokens: result.usage.totalTokens,
+      latencyMs: result.latencyMs,
+      fallbackUsed,
+      estimatedCostUsd: result.estimatedCostUsd,
+      costKnown: result.costKnown,
+    });
+    await recordRuntimeEventSafely({
+      category: "api",
+      action: `${result.provider}.response`,
+      tenantId: continuation.context.tenantId,
+      actorId: continuation.context.actorId,
+      resourceType: "agent_run",
+      resourceId: run.id,
+      correlationId: run.id,
+      durationMs: result.latencyMs,
+      message: fallbackUsed
+        ? `${result.provider} approved continuation completed through a same-provider model fallback.`
+        : `${result.provider} approved continuation completed.`,
+      metadata: {
+        model: result.model,
+        requestedProvider: providerState.provider,
+        tier: providerState.tier,
+        fallbackUsed,
+        attempts: result.attempts,
+        usage: result.usage,
+        turns: result.turns,
+        estimatedCostUsd: result.estimatedCostUsd,
+        costKnown: result.costKnown,
+      },
+    });
+
+    if (result.waitingApproval) {
+      return await parkForApproval(result.waitingApproval);
+    }
+
+    const completed = await completeAgentRun(run.id, response);
+    if (!completed) {
+      return {
+        resumed: false,
+        reason:
+          "The run was canceled or finalized before the resumed response could be committed.",
+      };
+    }
+    await appendAssistantTurnSafely({
+      threadId: run.threadId,
+      tenantId: continuation.context.tenantId,
+      runId: run.id,
+      response,
+    });
+    const consolidation = enqueueMemoryConsolidationSafely({
+      runId: run.id,
+      tenantId: continuation.context.tenantId,
+      mode: run.mode,
+      prompt: run.prompt,
+      response,
+    });
+    await appendRunEvent(run.id, { type: "done", response });
+    await syncMissionExecutorSafely({
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "succeeded",
+      output: {
+        responseLength: response.length,
+        responseSha256: createHash("sha256").update(response).digest("hex"),
+      },
+    }, { tenantId, actorId: continuation.context.actorId });
+    await consolidation;
+    return { resumed: true, status: "completed" };
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : "Approved provider-bound agent run resume failed.";
     await flushDeltas().catch(() => undefined);
     await failAgentRun(run.id, message);
     await appendRunEvent(run.id, { type: "error", message });
