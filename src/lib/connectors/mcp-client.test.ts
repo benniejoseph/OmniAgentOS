@@ -144,7 +144,7 @@ describe("discoverMcpTools", () => {
     });
 
     await discoverMcpTools(connector({
-      endpoint: "https://api.browser-use.com/mcp",
+      endpoint: "https://api.browser-use.com/v3/mcp",
       authType: "bearer_vault",
       approvalRequired: false,
     }));

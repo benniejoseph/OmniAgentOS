@@ -27,7 +27,7 @@ describe("connection catalog", () => {
     expect(browserUse).toMatchObject({
       name: "Browser Use",
       adapter: "mcp",
-      endpoint: "https://api.browser-use.com/mcp",
+      endpoint: "https://api.browser-use.com/v3/mcp",
       credentialMode: "app_vault",
       authHeaderName: "x-browser-use-api-key",
       riskLevel: 2,

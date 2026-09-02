@@ -115,7 +115,7 @@ describe("connector security", () => {
   });
 
   it("applies local Browser Use risk policy instead of trusting remote labels", () => {
-    const endpoint = "https://api.browser-use.com/mcp";
+    const endpoint = "https://api.browser-use.com/v3/mcp";
     const risk = (toolName: string, defaultRisk: 0 | 1 | 2 | 3 = 2) =>
       inferMcpToolRisk(defaultRisk, { readOnlyHint: true }, {
         endpoint,
@@ -129,6 +129,12 @@ describe("connector security", () => {
     expect(risk("list_skills")).toBe(0);
     expect(risk("list_browser_profiles")).toBe(0);
     expect(risk("monitor_task")).toBe(0);
+    expect(risk("get_session")).toBe(0);
+    expect(risk("get_session_messages")).toBe(0);
+    expect(risk("list_sessions")).toBe(0);
+    expect(risk("run_session")).toBe(2);
+    expect(risk("send_task")).toBe(2);
+    expect(risk("stop_session")).toBe(2);
     expect(risk("new_remote_tool", 0)).toBe(2);
   });
 
