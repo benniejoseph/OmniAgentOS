@@ -62,6 +62,10 @@ export function jsonbSafeTruncate(value: string, maxLength: number) {
  * Normalize every nested string immediately before a jsonb parameter is sent
  * to PostgreSQL. This is a persistence-boundary safeguard for values derived
  * from already-sanitized text later in a pipeline.
+ *
+ * The result is serialized text. When interpolating it with postgres.js, cast
+ * it through text before jsonb (`::text::jsonb`) so the driver does not apply
+ * its JSON serializer a second time and turn an array/object into a JSON string.
  */
 export function jsonbSafeStringify(value: unknown) {
   const serialized = JSON.stringify(value, (_key, item: unknown) => {
