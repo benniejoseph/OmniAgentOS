@@ -5,8 +5,12 @@ const networkMocks = vi.hoisted(() => ({
   assertPublicHttpUrl: vi.fn(),
   fetchPublicHttpUrl: vi.fn(),
 }));
+const credentialMocks = vi.hoisted(() => ({
+  resolveMcpBearerCredential: vi.fn(),
+}));
 
 vi.mock("@/lib/security/network", () => networkMocks);
+vi.mock("@/lib/connectors/credential-store", () => credentialMocks);
 
 import { discoverMcpTools } from "@/lib/connectors/mcp-client";
 
@@ -14,6 +18,9 @@ describe("discoverMcpTools", () => {
   beforeEach(() => {
     networkMocks.assertPublicHttpUrl.mockReset().mockResolvedValue(undefined);
     networkMocks.fetchPublicHttpUrl.mockReset();
+    credentialMocks.resolveMcpBearerCredential
+      .mockReset()
+      .mockResolvedValue("browser-use-test-key");
   });
 
   it("discovers paginated tools from Streamable HTTP SSE responses", async () => {
@@ -96,6 +103,57 @@ describe("discoverMcpTools", () => {
       "MCP endpoint connection timed out.",
     );
   });
+
+  it("sends a vaulted Browser Use key in the provider-specific header", async () => {
+    let initializeHeaders: Headers | undefined;
+    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const method = init?.method || "GET";
+      if (method === "GET") return new Response(null, { status: 405 });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+
+      const message = JSON.parse(String(init?.body || "{}")) as {
+        id?: string | number;
+        method?: string;
+      };
+      if (message.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (message.method === "initialize") {
+        initializeHeaders = new Headers(init?.headers);
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: { tools: { listChanged: false } },
+            serverInfo: { name: "Browser Use", version: "1.0.0" },
+          },
+        });
+      }
+      if (message.method === "tools/list") {
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: { tools: [] },
+        });
+      }
+      throw new Error(`Unexpected MCP method ${message.method || method}`);
+    });
+
+    await discoverMcpTools(connector({
+      endpoint: "https://api.browser-use.com/mcp",
+      authType: "bearer_vault",
+      approvalRequired: false,
+    }));
+
+    expect(initializeHeaders?.get("x-browser-use-api-key")).toBe(
+      "browser-use-test-key",
+    );
+    expect(initializeHeaders?.has("authorization")).toBe(false);
+  });
 });
 
 function sseResponse(message: unknown) {
@@ -105,7 +163,9 @@ function sseResponse(message: unknown) {
   });
 }
 
-function connector(): McpConnectorRecord {
+function connector(
+  overrides: Partial<McpConnectorRecord> = {},
+): McpConnectorRecord {
   const now = new Date().toISOString();
   return {
     id: "mock-connector",
@@ -120,5 +180,6 @@ function connector(): McpConnectorRecord {
     toolCount: 0,
     createdAt: now,
     updatedAt: now,
+    ...overrides,
   };
 }

@@ -18,4 +18,20 @@ describe("connection catalog", () => {
     expect(googleSources.every((connector) => connector.status === "ready")).toBe(true);
     expect(googleSources.every((connector) => !connector.approvalRequired)).toBe(true);
   });
+
+  it("offers Browser Use Cloud through its official governed MCP endpoint", () => {
+    const browserUse = connectionCatalog.find(
+      (connector) => connector.id === "browser-automation",
+    );
+
+    expect(browserUse).toMatchObject({
+      name: "Browser Use",
+      adapter: "mcp",
+      endpoint: "https://api.browser-use.com/mcp",
+      credentialMode: "app_vault",
+      authHeaderName: "x-browser-use-api-key",
+      riskLevel: 2,
+      approvalRequired: false,
+    });
+  });
 });

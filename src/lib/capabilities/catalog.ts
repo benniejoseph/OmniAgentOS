@@ -28,6 +28,14 @@ type CapabilityListOptions = {
 
 type CapabilityCatalogItem = ToolDefinition | CapabilityDescriptor;
 
+type ScoredCapabilityCandidate = {
+  capability: CapabilityDescriptor;
+  score: number;
+  upstreamQueryRank?: number;
+};
+
+const EXTERNAL_QUERY_MATCH_SCORE_FLOOR = 1;
+
 export type CapabilityCatalogDependencies = {
   listNative: (options: CapabilityListOptions) => readonly CapabilityCatalogItem[] | Promise<readonly CapabilityCatalogItem[]>;
   listMcp: (options: CapabilityListOptions) => Promise<readonly CapabilityCatalogItem[]>;
@@ -83,16 +91,29 @@ export function createCapabilityCatalog(
           : Promise.resolve([]),
       ]);
 
+      const normalizedNative = normalizeActiveTools(native, "native");
+      const normalizedMcp = normalizeActiveTools(mcp, "mcp");
+      const normalizedOpenApi = normalizeActiveTools(openapi, "openapi");
+      const upstreamQueryRanks = hasConnectorMetadataSearchTerms(query)
+        ? externalQueryRanks(normalizedMcp, normalizedOpenApi)
+        : undefined;
       const capabilities = deduplicateCapabilities([
-        ...normalizeActiveTools(native, "native"),
-        ...normalizeActiveTools(mcp, "mcp"),
-        ...normalizeActiveTools(openapi, "openapi"),
+        ...normalizedNative,
+        ...normalizedMcp,
+        ...normalizedOpenApi,
       ])
         .filter((capability) => !allowlist || allowlist.has(capability.id))
-        .map((capability) => ({
-          capability,
-          score: scoreCapability(capability, query),
-        }))
+        .map((capability): ScoredCapabilityCandidate => {
+          const safeTextScore = scoreCapability(capability, query);
+          const upstreamQueryRank = upstreamQueryRanks?.get(capabilityKey(capability));
+          return {
+            capability,
+            score: safeTextScore || (upstreamQueryRank === undefined
+              ? 0
+              : EXTERNAL_QUERY_MATCH_SCORE_FLOOR),
+            upstreamQueryRank,
+          };
+        })
         .filter((candidate) => !query || candidate.score > 0)
         .sort(compareCandidates);
 
@@ -257,6 +278,23 @@ function sourceForCapabilityId(id: string): CapabilitySource {
   return "native";
 }
 
+function externalQueryRanks(
+  mcp: readonly CapabilityDescriptor[],
+  openapi: readonly CapabilityDescriptor[],
+) {
+  const ranks = new Map<string, number>();
+  for (const capabilities of [mcp, openapi]) {
+    capabilities.forEach((capability, index) => {
+      ranks.set(capabilityKey(capability), index);
+    });
+  }
+  return ranks;
+}
+
+function capabilityKey(capability: CapabilityDescriptor) {
+  return `${capability.source}:${capability.id}`;
+}
+
 function sourcesForSearch(
   allowlist: ReadonlySet<string> | undefined,
   requested?: readonly CapabilitySource[],
@@ -326,9 +364,26 @@ function searchText(value: string) {
     .trim();
 }
 
+/** Keep this normalization aligned with the connector metadata stores. */
+function hasConnectorMetadataSearchTerms(query: string) {
+  return searchText(query).split(" ").some(
+    (term) =>
+      term &&
+      !CONNECTOR_METADATA_SEARCH_STOP_WORDS.has(term) &&
+      (term.length >= 3 || CONNECTOR_METADATA_SEARCH_SHORT_TERMS.has(term)),
+  );
+}
+
+const CONNECTOR_METADATA_SEARCH_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "can", "could", "for", "from", "get", "i", "in",
+  "is", "it", "me", "my", "of", "on", "or", "please", "the", "this", "to",
+  "use", "want", "with", "you",
+]);
+const CONNECTOR_METADATA_SEARCH_SHORT_TERMS = new Set(["ai", "db", "hr", "qa"]);
+
 function compareCandidates(
-  first: { capability: CapabilityDescriptor; score: number },
-  second: { capability: CapabilityDescriptor; score: number },
+  first: ScoredCapabilityCandidate,
+  second: ScoredCapabilityCandidate,
 ) {
   if (first.score !== second.score) {
     return second.score - first.score;
@@ -340,6 +395,14 @@ function compareCandidates(
   };
   if (first.capability.source !== second.capability.source) {
     return sourceOrder[first.capability.source] - sourceOrder[second.capability.source];
+  }
+  if (
+    first.score === EXTERNAL_QUERY_MATCH_SCORE_FLOOR &&
+    first.upstreamQueryRank !== undefined &&
+    second.upstreamQueryRank !== undefined &&
+    first.upstreamQueryRank !== second.upstreamQueryRank
+  ) {
+    return first.upstreamQueryRank - second.upstreamQueryRank;
   }
   return first.capability.name.localeCompare(second.capability.name) ||
     first.capability.id.localeCompare(second.capability.id);

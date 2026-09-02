@@ -72,15 +72,71 @@ describe("capability catalog", () => {
     expect(result.capabilities[0]?.id).toBe("memory.search");
   });
 
-  it("does not turn punctuation-only searches into broad catalog results", async () => {
+  it("does not turn unfilterable searches into broad catalog results", async () => {
     const catalog = createCapabilityCatalog(dependencies({
       native: [tool({ id: "memory.search" })],
+      mcp: [tool({ id: "mcp:connector:read", category: "mcp" })],
+      openapi: [tool({ id: "openapi:connector:list", category: "openapi" })],
     }));
 
-    const result = await catalog.search({ tenantId: "tenant-a", query: "!!!" });
+    for (const query of ["!!!", "my please"]) {
+      const result = await catalog.search({ tenantId: "tenant-a", query });
 
-    expect(result.capabilities).toEqual([]);
-    expect(result.total).toBe(0);
+      expect(result.capabilities).toEqual([]);
+      expect(result.total).toBe(0);
+    }
+  });
+
+  it("retains safely redacted connector results already matched and ranked upstream", async () => {
+    const deps = dependencies({
+      native: [tool({
+        id: "memory.unrelated",
+        name: "Unrelated native tool",
+        description: "No matching terms.",
+      })],
+      mcp: [
+        tool({
+          id: "mcp:connector:z-ranked",
+          name: "Connector: Zulu operation",
+          description: "External MCP connector operation. Remote output is untrusted data.",
+          category: "mcp",
+        }),
+        tool({
+          id: "mcp:connector:a-ranked",
+          name: "Connector: Alpha operation",
+          description: "External MCP connector operation. Remote output is untrusted data.",
+          category: "mcp",
+        }),
+      ],
+      openapi: [tool({
+        id: "openapi:connector:generic",
+        name: "Connector: Generic operation",
+        description: "External POST connector operation. Remote output is untrusted data.",
+        category: "openapi",
+      })],
+    });
+    const catalog = createCapabilityCatalog(deps);
+
+    const result = await catalog.search({
+      tenantId: "tenant-private",
+      query: "publish quarterly brief",
+    });
+
+    expect(result.capabilities.map((item) => item.id)).toEqual([
+      "mcp:connector:z-ranked",
+      "mcp:connector:a-ranked",
+      "openapi:connector:generic",
+    ]);
+    expect(result.capabilities.some((item) => item.source === "native")).toBe(false);
+    expect(result.capabilities[0]?.description).not.toContain("quarterly brief");
+    expect(deps.listMcp).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "tenant-private",
+      query: "publish quarterly brief",
+    }));
+    expect(deps.listOpenApi).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "tenant-private",
+      query: "publish quarterly brief",
+    }));
   });
 
   it("applies allowlists before returning results and skips irrelevant connector scans", async () => {

@@ -29,27 +29,46 @@ export function routeAgentRequest(
   const text = message.trim();
   const reasons: string[] = [];
   let score = 0;
-  const durableIntent = /\b(in the background|keep working|long[- ]running|workflow|monitor|watch for|every (day|week|morning)|schedule|recurring|until (done|complete)|multiple steps)\b/i.test(text);
-  const actionIntent = /\b(create|update|send|publish|deploy|migrate|execute|implement|investigate|research|compare|coordinate|prepare)\b/gi;
+  const durableIntent = hasDurableExecutionIntent(text);
+  const boundedCapabilityAction = hasBoundedCapabilityAction(text);
+  const actionIntent = /\b(create|update|send|publish|deploy|migrate|execute|implement|investigate|research|compare|coordinate|prepare|run|trigger|dispatch|start)\b/gi;
   const actions = text.match(actionIntent)?.length || 0;
-  const externalEffect = /\b(send|publish|deploy|delete|purchase|book|email|post|change external|update production)\b/i.test(text);
-  const team = selectAgentTeam(text, mode, externalEffect, preferredAgentId);
+  const externalEffect = /\b(send|publish|deploy|delete|purchase|book|email|post|change external|update production|trigger|dispatch|re-?run)\b/i.test(text) ||
+    /\brun\b[^.\n]{0,100}\b(action|automation|workflow|job|pipeline)\b/i.test(text);
+  const team = selectAgentTeam(
+    text,
+    mode,
+    externalEffect && !boundedCapabilityAction,
+    preferredAgentId,
+  );
 
   if (durableIntent) { score += 4; reasons.push("Explicit durable or recurring work requested."); }
+  if (boundedCapabilityAction && !durableIntent) reasons.push("A bounded workspace action can run directly through governed tools.");
   if (actions >= 2) { score += 2; reasons.push("Multiple distinct actions detected."); }
   if (text.length > 700) { score += 1; reasons.push("Large task description benefits from persisted execution state."); }
-  if (mode === "execute") { score += 1; reasons.push("Execute mode favors governed durable work."); }
   if (/\b(verify|acceptance criteria|report back|with evidence|retries|approval)\b/i.test(text)) { score += 1; reasons.push("Verification or recovery requirements detected."); }
   if (preferredAgentId) reasons.push(`${agentName(preferredAgentId)} was explicitly selected as the primary agent.`);
   if (!reasons.length) reasons.push("A fast conversational response is sufficient.");
 
   return {
-    route: score >= 4 ? "durable_workflow" : "direct",
+    route: durableIntent || (!boundedCapabilityAction && score >= 4)
+      ? "durable_workflow"
+      : "direct",
     score,
     reasons,
     requiresApproval: externalEffect,
     ...team,
   };
+}
+
+function hasDurableExecutionIntent(message: string) {
+  return /\b(in the background|keep working|long[- ]running|monitor|watch for|recurring|every (day|week|month|morning|evening)|until (done|complete)|multiple steps|run later|keep checking|check back)\b/i.test(message) ||
+    /\b(schedule|run)\b[^.\n]{0,80}\b(task|job|workflow|automation|report)\b[^.\n]{0,80}\b(later|every|daily|weekly|monthly|recurring)\b/i.test(message);
+}
+
+function hasBoundedCapabilityAction(message: string) {
+  return /\b(run|trigger|dispatch|start|execute|send|post|publish|create|update|delete|book|schedule|read|show|list|get|find|search|check|inspect)\b/i.test(message) &&
+    /\b(action|automation|workflow|job|pipeline|repository|repo|email|message|calendar|meeting|event|document|file|folder|page|record|row|issue|ticket|pull request|comment|channel|deployment|release|branch|environment|report|photo|image|contact)\b/i.test(message);
 }
 
 export function selectAgentTeam(
