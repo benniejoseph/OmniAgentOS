@@ -59,6 +59,8 @@ export type AgentRunContinuation = {
     readOnly: boolean;
     forceApproval: boolean;
   };
+  /** Preserves the owner's memory boundary across approval resumes. */
+  memoryScope?: "session" | "project" | "all";
   /** Present for provider-neutral Gemini, Anthropic, Bedrock, and gateway tool turns. */
   providerToolState?: AgentProviderToolContinuation;
   createdAt: string;

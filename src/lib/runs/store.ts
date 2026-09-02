@@ -979,6 +979,12 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
       role: normalizeRole((candidate.context as { role?: unknown })?.role),
     },
     toolPolicy: parseToolPolicy(candidate.toolPolicy),
+    memoryScope:
+      candidate.memoryScope === "session" ||
+      candidate.memoryScope === "project" ||
+      candidate.memoryScope === "all"
+        ? candidate.memoryScope
+        : "all",
     providerToolState: parseProviderToolState(candidate.providerToolState),
     createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : new Date().toISOString(),
     resumeClaimedAt:

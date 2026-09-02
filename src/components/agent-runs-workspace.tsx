@@ -76,8 +76,39 @@ type TabKey = "memory" | "context" | "plan" | "execute" | "evidence";
 type StreamEvent =
   | { type: "run"; runId?: string; threadId?: string; missionId?: string }
   | { type: "status"; label?: string; detail?: string }
+  | {
+      type: "harness";
+      version: 1 | 2;
+      mode: AgentMode;
+      provider: "openai" | "google" | "anthropic" | "aws_bedrock" | "fallback";
+      model: string;
+      tier: "fast" | "reasoning";
+      memoryScope: "session" | "project" | "all";
+      contextDecision: "disabled_session" | "excluded_by_user" | "selected_by_user" | "retrieved" | "skipped";
+      contextMode: string;
+      contextCount: number;
+      contextTraceId?: string;
+      contextEvidenceIds: string[];
+      contextRationale: string[];
+      liveWeb: boolean;
+      toolCount: number;
+      toolIds: string[];
+      approvalToolCount: number;
+      skillIds: string[];
+      toolboxSha256: string;
+      instructionsSha256: string;
+      maxToolSteps: number;
+      maxToolCallsPerTurn: number;
+      maxToolResultChars: number;
+      maxOutputTokens: number;
+      approvalPolicy: "always" | "risk_based" | "read_only";
+      autonomy: "assist" | "governed" | "execute";
+      learningState?: "cold_start" | "observing" | "reinforced" | "supported";
+      learningSampleSize?: number;
+      learningGuidanceCount?: number;
+    }
   | { type: "memory"; title?: string; count?: number }
-  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean }
+  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean; iteration?: number; iterationCount?: number }
   | { type: "council_member"; agentId: AgentId; agentName: string; role: string; status: "thinking" | "completed" | "failed"; summary?: string; confidence?: number; durationMs?: number }
   | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | { type: "delta"; text?: string }
@@ -162,6 +193,7 @@ export function AgentRunsWorkspace({
   const abortControllerRef = useRef<AbortController | null>(null);
   const contextControllerRef = useRef<AbortController | null>(null);
   const contextVersionRef = useRef(0);
+  const contextSelectionReviewedRef = useRef(false);
   const evidenceControllerRef = useRef<AbortController | null>(null);
   const evidenceVersionRef = useRef(0);
   const pendingDeltasRef = useRef<string[]>([]);
@@ -589,6 +621,7 @@ export function AgentRunsWorkspace({
       !normalizedGoal ||
       normalizedGoal.length < 8 ||
       workflowInProgress ||
+      loading === "agent" ||
       contextLoading ||
       contextQuery === normalizedGoal
     ) {
@@ -603,6 +636,7 @@ export function AgentRunsWorkspace({
   }, [
     contextLoading,
     contextQuery,
+    loading,
     normalizedGoal,
     readPermission,
     sessionStatus,
@@ -719,6 +753,7 @@ export function AgentRunsWorkspace({
     setContextPack(undefined);
     setContextQuery("");
     setSelectedContextIds([]);
+    contextSelectionReviewedRef.current = false;
     setContextLoading(false);
     setContextError(undefined);
     setWorkflowPlan(undefined);
@@ -755,6 +790,7 @@ export function AgentRunsWorkspace({
       return undefined;
     }
     const taskQuery = query.trim();
+    if (reveal) contextSelectionReviewedRef.current = true;
     if (!taskQuery) {
       setContextError("Write the task first so Asael can find relevant context.");
       if (reveal) openTaskDetails("context");
@@ -816,6 +852,7 @@ export function AgentRunsWorkspace({
 
   function updateContextSelection(nextIds: string[]) {
     if (workflowInProgress || loading === "agent") return;
+    contextSelectionReviewedRef.current = true;
     const allowed = new Set(contextResultIds);
     setSelectedContextIds(
       nextIds.filter((id, index, values) => allowed.has(id) && values.indexOf(id) === index),
@@ -989,18 +1026,17 @@ export function AgentRunsWorkspace({
       setRunAnnouncement("Wait for task context to finish loading, then run the task.");
       return;
     }
-    let contextSelection = contextSelectionForTask(submittedGoal);
-    if (!contextSelection) {
+    const contextSelection = contextSelectionReviewedRef.current
+      ? contextSelectionForTask(submittedGoal)
+      : undefined;
+    if (!contextSelection && !options?.prepareContextAutomatically) {
       const prepared = await buildContext({
         query: submittedGoal,
-        reveal: !options?.prepareContextAutomatically,
+        reveal: true,
       });
-      if (prepared && options?.prepareContextAutomatically) {
-        contextSelection = prepared;
-      } else if (prepared) {
-        setRunAnnouncement("Context preparation finished. Review the selection, then run the task again.");
-      }
-      if (!contextSelection) return;
+      if (!prepared) return;
+      setRunAnnouncement("Context preparation finished. Review the selection, then run the task again.");
+      return;
     }
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -1237,6 +1273,7 @@ export function AgentRunsWorkspace({
       setContextPack(undefined);
       setContextQuery("");
       setSelectedContextIds([]);
+      contextSelectionReviewedRef.current = false;
       setContextLoading(false);
       setContextError(undefined);
       setWorkflowPlan(undefined);
@@ -1267,6 +1304,7 @@ export function AgentRunsWorkspace({
     setContextPack(undefined);
     setContextQuery("");
     setSelectedContextIds([]);
+    contextSelectionReviewedRef.current = false;
     setContextLoading(false);
     setContextError(undefined);
     setAgentResponse("");
@@ -1699,9 +1737,12 @@ export function AgentRunsWorkspace({
               onApprovalChange={changeApprovalRequired}
               onClearPreferredAgent={() => { setPreferredAgentId(undefined); setPreferredAgentName(undefined); }}
               onContext={() => void buildContext()}
-              onReviewContext={() => openTaskDetails("context")}
+              onReviewContext={() => {
+                contextSelectionReviewedRef.current = true;
+                openTaskDetails("context");
+              }}
               onPlan={() => void buildPlan()}
-              onAgent={() => void runAgent()}
+              onAgent={() => void runAgent({ prepareContextAutomatically: true })}
               onVoiceTranscript={(transcript) => {
                 const existingDraft = goal.trim();
                 const voiceGoal = existingDraft ? `${existingDraft}\n\n${transcript}` : transcript;
@@ -1996,7 +2037,7 @@ export function AgentRunsWorkspace({
                 <div className="mb-4 flex flex-wrap gap-2">
                   <button
                     type="button"
-                    onClick={() => void runAgent()}
+                    onClick={() => void runAgent({ prepareContextAutomatically: true })}
                     disabled={
                       Boolean(loading) ||
                       Boolean(runPermission) ||
@@ -3107,9 +3148,36 @@ function streamEventLabel(event: StreamEvent) {
   if (event.type === "memory") {
     return event.count ? `${event.title || "Memory"} (${event.count})` : event.title || "Memory event.";
   }
+  if (event.type === "harness") {
+    const context = {
+      disabled_session: "durable context off for this session",
+      excluded_by_user: "saved context excluded by you",
+      selected_by_user: `${event.contextCount} selected context item${event.contextCount === 1 ? "" : "s"} resolved`,
+      retrieved: `${event.contextCount} relevant context item${event.contextCount === 1 ? "" : "s"} retrieved`,
+      skipped: "memory retrieval skipped as unnecessary",
+    }[event.contextDecision];
+    const tools = `${event.toolCount} governed tool${event.toolCount === 1 ? "" : "s"} available`;
+    const learning = event.learningSampleSize
+      ? `informed by ${event.learningSampleSize} prior outcome${event.learningSampleSize === 1 ? "" : "s"}`
+      : "learning baseline started";
+    const reason = event.contextRationale[0];
+    const provider = event.provider === "google"
+      ? "Gemini"
+      : event.provider === "openai"
+        ? "OpenAI"
+        : event.provider === "anthropic"
+          ? "Anthropic"
+          : "Local fallback";
+    return `${provider} · ${event.tier} route · ${context} · ${tools} · ${learning}.${reason ? ` ${reason}` : ""}`;
+  }
   if (event.type === "model") {
     const cost = event.estimatedCostUsd === undefined ? "cost rate not configured" : `$${event.estimatedCostUsd.toFixed(6)}`;
-    return `${event.provider === "google" ? "Google · " : "OpenAI · "}${event.model} used ${event.totalTokens.toLocaleString()} tokens in ${(event.latencyMs / 1_000).toFixed(1)}s (${cost})${event.fallbackUsed ? "; fallback used" : ""}.`;
+    const loop = event.iterationCount
+      ? ` across ${event.iterationCount} loop pass${event.iterationCount === 1 ? "" : "es"}`
+      : event.iteration
+        ? ` on loop pass ${event.iteration}`
+        : "";
+    return `${event.provider === "google" ? "Google · " : event.provider === "anthropic" ? "Anthropic · " : "OpenAI · "}${event.model} used ${event.totalTokens.toLocaleString()} tokens${loop} in ${(event.latencyMs / 1_000).toFixed(1)}s (${cost})${event.fallbackUsed ? "; fallback used" : ""}.`;
   }
   if (event.type === "council_member") {
     if (event.status === "thinking") return `${event.agentName} is working independently as ${event.role}.`;
@@ -3187,6 +3255,7 @@ function taskProgressSummary({
 
 function activityTitle(event: StreamEvent) {
   if (event.type === "status") return event.label || "Task update";
+  if (event.type === "harness") return "Harness configured";
   if (event.type === "memory") return "Context prepared";
   if (event.type === "model") return "Answer generated";
   if (event.type === "council_member") return `${event.agentName} · ${event.status}`;

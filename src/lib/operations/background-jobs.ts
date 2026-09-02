@@ -8,6 +8,7 @@ import { runEvaluationSuite } from "@/lib/evaluations/runner";
 import {
   consolidateAgentRunMemory,
 } from "@/lib/memory/consolidator";
+import { applyRunMemoryFeedback } from "@/lib/memory/store";
 import type { AgentMode } from "@/lib/orchestration/types";
 import { ingestTextDocument } from "@/lib/rag/retriever";
 import { deleteKnowledgeDocumentsBySourcePrefix } from "@/lib/rag/store";
@@ -404,7 +405,7 @@ async function executeBackgroundOperation(
       },
       { tenantId: job.tenantId },
     );
-    const { consolidation } = await consolidateAgentRunMemory({
+    const { episode, consolidation } = await consolidateAgentRunMemory({
       runId: run.id,
       threadId: run.threadId,
       tenantId: job.tenantId,
@@ -413,8 +414,14 @@ async function executeBackgroundOperation(
       response: run.response || "",
       abortSignal,
     });
+    const learnedCount = 1 + consolidation.saved.length;
+    const feedbackAdjustedMemoryIds = run.feedback
+      ? await applyRunMemoryFeedback(run.id, run.feedback.verdict, {
+          tenantId: job.tenantId,
+        })
+      : [];
     await recordRunConsolidation(parsed.runId, {
-      count: consolidation.saved.length,
+      count: learnedCount,
       error: consolidation.error,
     }, { tenantId: job.tenantId });
     await appendRunEvent(
@@ -423,8 +430,8 @@ async function executeBackgroundOperation(
         type: "memory",
         title: consolidation.error
           ? "memory consolidation failed"
-          : "memory consolidated",
-        count: consolidation.saved.length,
+          : "conversation learned",
+        count: learnedCount,
       },
       { tenantId: job.tenantId },
     );
@@ -433,7 +440,9 @@ async function executeBackgroundOperation(
     }
     return {
       resourceId: parsed.runId,
-      saved: consolidation.saved.length,
+      saved: learnedCount,
+      episodeId: episode.id,
+      feedbackAdjusted: feedbackAdjustedMemoryIds.length,
       skipped: consolidation.skipped,
       error: consolidation.error,
     };

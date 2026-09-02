@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, hasAnthropicKey, hasGeminiKey, hasOpenAIKey } from "@/lib/config";
 import { getAgentLearningGuidance } from "@/lib/agents/learning";
 import {
+  buildAutomaticRetrievalQuery,
+  buildCapabilitySearchQuery,
+  formatWorkspaceAccessContext,
+  isShortOrReferentialRequest,
+  loadWorkspaceAccessSnapshot,
+} from "@/lib/capabilities/autonomy";
+import {
   capabilityFunctionName,
   loadProgressiveAgentTools,
 } from "@/lib/capabilities/toolbox";
@@ -38,7 +45,7 @@ import {
 } from "@/lib/orchestration/council";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
-import { verifyResponseCitations } from "@/lib/rag/citations";
+import { citationIdForEvidence, verifyResponseCitations } from "@/lib/rag/citations";
 import type { ContextPack } from "@/lib/rag/types";
 import {
   appendRunEvent,
@@ -68,6 +75,7 @@ import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } 
 const MAX_TOOL_RESULT_CHARS = 8_000;
 const MAX_TOOL_CALLS_PER_TURN = 5;
 const MAX_TOOL_ARGUMENT_BYTES = 64_000;
+const WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS = 3_000;
 
 type QueuedFunctionCall = ResponseFunctionCall & {
   skipReason?: string;
@@ -91,6 +99,12 @@ export async function* runAgent(
     .reverse()
     .find((message) => message.role === "user");
   const query = lastUserMessage?.content || "";
+  const autonomyQuery = {
+    request: query,
+    recentConversation: safeMessages,
+  };
+  const baseCapabilitySearchQuery = buildCapabilitySearchQuery(autonomyQuery);
+  const automaticRetrievalQuery = buildAutomaticRetrievalQuery(autonomyQuery);
   const deploymentModelRoute = selectAgentModel({
     message: query,
     mode,
@@ -217,7 +231,7 @@ export async function* runAgent(
       yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
     }
     const useLiveWeb = shouldUseLiveWebSearch(query) && hasOpenAIKey();
-    const retrievalQuery = request.contextSelection?.query || query;
+    const retrievalQuery = request.contextSelection?.query || automaticRetrievalQuery;
     const retrievalPromise = durableMemoryEnabled
       ? buildContextPack(retrievalQuery, {
           limit: 8,
@@ -229,13 +243,29 @@ export async function* runAgent(
       ...request.agentProfile.toolIds,
       ...request.agentProfile.skills.flatMap((skill) => skill.toolIds),
     ])] : undefined;
-    const toolboxPromise = providerConfigured
-      ? buildAgentToolbox(request.tenantId, {
-          query,
-          preferredToolIds: configuredToolIds,
-        })
-      : Promise.resolve(emptyAgentToolbox());
-    const feedbackGuidancePromise = durableMemoryEnabled && hasModelProviderFeature("text", modelRoute.tier)
+    const groundToolDiscoveryInMemory = durableMemoryEnabled &&
+      request.contextSelection?.evidenceIds.length !== 0 &&
+      isShortOrReferentialRequest(query);
+    const toolboxPromise = !providerConfigured
+      ? Promise.resolve(emptyAgentToolbox())
+      : groundToolDiscoveryInMemory
+        ? undefined
+        : buildAgentToolbox(request.tenantId, {
+            query: baseCapabilitySearchQuery || query,
+            preferredToolIds: configuredToolIds,
+          });
+    const workspaceAccessPromise = providerConfigured
+      ? settleOptionalWithin(
+          loadWorkspaceAccessSnapshot({
+            tenantId: normalizeTenantId(request.tenantId),
+            actorId: request.actorId || "agent",
+          }).catch(() => undefined),
+          WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS,
+        )
+      : Promise.resolve(undefined);
+    const feedbackGuidancePromise = durableMemoryEnabled &&
+      request.contextSelection?.evidenceIds.length !== 0 &&
+      hasModelProviderFeature("text", modelRoute.tier)
       ? getAgentLearningGuidance(request.agentId || "atlas", {
           tenantId: request.tenantId,
         })
@@ -251,6 +281,16 @@ export async function* runAgent(
           .catch((error: unknown) => ({ error }))
       : undefined;
     const retrieval = await retrievalPromise;
+    const capabilitySearchQuery = groundToolDiscoveryInMemory
+      ? buildCapabilitySearchQuery({
+          ...autonomyQuery,
+          relevantMemoryHints: retrieval.results.map((item) => item.title),
+        })
+      : baseCapabilitySearchQuery;
+    const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
+      query: capabilitySearchQuery || query,
+      preferredToolIds: configuredToolIds,
+    });
     if (durableMemoryEnabled) {
       await updateRunContextCount(run.id, retrieval.results.length);
       yield await emit({
@@ -292,7 +332,7 @@ export async function* runAgent(
     // tool-call loops that blow the 60s Vercel budget. Excluding it from the toolbox
     // filters the OpenAI tool list, the instructions, and the dispatch map together.
     let toolbox = filterAgentToolbox(
-      await toolboxPromise,
+      await resolvedToolboxPromise,
       liveWebContext ? ["web.search"] : [],
     );
     let agentToolPolicy: AgentRunContinuation["toolPolicy"];
@@ -308,13 +348,101 @@ export async function* runAgent(
         forceApproval: request.agentProfile.approvalPolicy === "always",
       };
     }
+    agentToolPolicy ||= {
+      allowedToolIds: toolbox.tools.map(({ definition }) => definition.id),
+      readOnly: false,
+      forceApproval: false,
+    };
+    const workspaceAccess = await workspaceAccessPromise;
+    const workspaceCapabilityContext = workspaceAccess
+      ? formatWorkspaceAccessContext(workspaceAccess, {
+          selectedGovernedTools: toolbox.tools.map(({ definition }) => ({
+            id: definition.id,
+            name: definition.name,
+            source: definition.category === "mcp" || definition.category === "openapi"
+              ? definition.category
+              : "native",
+            riskLevel: definition.riskLevel,
+            approvalRequired: definition.approvalRequired,
+          })),
+        })
+      : "";
+    if (workspaceAccess) {
+      const selectedExternalToolCount = toolbox.tools.filter(
+        ({ definition }) => definition.category === "mcp" || definition.category === "openapi",
+      ).length;
+      yield await emit({
+        type: "status",
+        label: "workspace capabilities ready",
+        detail: `${workspaceAccess.connected.length} connected service${workspaceAccess.connected.length === 1 ? "" : "s"}; ${selectedExternalToolCount} governed external tool${selectedExternalToolCount === 1 ? "" : "s"} selected for this task.`,
+      });
+    }
     const feedbackGuidance = await feedbackGuidancePromise;
+    if (durableMemoryEnabled && (feedbackGuidance.length || request.learning?.sampleSize)) {
+      yield await emit({
+        type: "status",
+        label: "outcome learning ready",
+        detail: feedbackGuidance.length
+          ? `${feedbackGuidance.length} relevant correction${feedbackGuidance.length === 1 ? "" : "s"} applied alongside ${request.learning?.sampleSize || 0} prior outcome${request.learning?.sampleSize === 1 ? "" : "s"}.`
+          : `Outcome history reviewed across ${request.learning?.sampleSize || 0} prior run${request.learning?.sampleSize === 1 ? "" : "s"}.`,
+      });
+    }
     const instructions = buildAgentInstructions({
       mode,
       agentId: request.agentId,
       specialistIds: request.specialistIds,
       feedbackGuidance,
       profile: request.agentProfile,
+    });
+    const toolIds = toolbox.tools
+      .map((entry) => entry.definition.id)
+      .sort((left, right) => left.localeCompare(right));
+    const approvalToolCount = toolbox.tools.filter(
+      (entry) => entry.definition.approvalRequired || entry.definition.riskLevel >= 2,
+    ).length;
+    yield await emit({
+      type: "harness",
+      version: 2,
+      mode,
+      provider: providerConfigured ? modelRoute.provider : "fallback",
+      model: providerConfigured ? modelRoute.model : "fallback",
+      tier: modelRoute.tier,
+      memoryScope: request.agentProfile?.memoryScope || "all",
+      contextDecision: contextDecisionForRun({
+        durableMemoryEnabled,
+        evidenceIds: request.contextSelection?.evidenceIds,
+        shouldRetrieve: retrieval.profile.shouldRetrieve,
+      }),
+      contextMode: durableMemoryEnabled ? retrieval.profile.mode : "session",
+      contextCount: retrieval.results.length,
+      contextTraceId: retrieval.trace?.id,
+      contextEvidenceIds: retrieval.results.map(citationIdForEvidence),
+      contextRationale: contextRationaleForRun({
+        durableMemoryEnabled,
+        evidenceIds: request.contextSelection?.evidenceIds,
+        rationale: retrieval.profile.rationale,
+      }),
+      liveWeb: useLiveWeb,
+      toolCount: toolIds.length,
+      toolIds,
+      approvalToolCount,
+      skillIds: (request.agentProfile?.skills || [])
+        .map((skill) => skill.id)
+        .sort((left, right) => left.localeCompare(right)),
+      toolboxSha256: stableToolboxFingerprint(toolbox.tools),
+      instructionsSha256: createHash("sha256").update(instructions).digest("hex"),
+      maxToolSteps: AGENT_MAX_TOOL_STEPS,
+      maxToolCallsPerTurn: MAX_TOOL_CALLS_PER_TURN,
+      maxToolResultChars: MAX_TOOL_RESULT_CHARS,
+      maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      approvalPolicy: request.agentProfile?.approvalPolicy || "risk_based",
+      autonomy: request.agentProfile?.autonomy || "governed",
+      learningState: request.learning?.state || "cold_start",
+      learningSampleSize: request.learning?.sampleSize || 0,
+      learningGuidanceCount: feedbackGuidance.length,
+      learningGuidanceSha256: createHash("sha256")
+        .update(feedbackGuidance.join("\n"))
+        .digest("hex"),
     });
     const primaryAgentId = asCouncilAgentId(request.agentId || "atlas");
     const councilAgentIds = [...new Set([primaryAgentId, ...(request.specialistIds || []).map(asCouncilAgentId)])];
@@ -357,6 +485,7 @@ export async function* runAgent(
       memoryContext: request.agentProfile?.memoryScope === "session" ? "" : retrieval.contextBlock,
       liveWebContext,
       councilContext: formatCouncilContributions(councilContributions),
+      workspaceCapabilityContext,
     });
 
     let response = "";
@@ -432,6 +561,7 @@ export async function* runAgent(
           fallbackUsed,
           estimatedCostUsd: result.estimatedCostUsd,
           costKnown: result.costKnown,
+          iterationCount: result.turns,
         });
         await recordRuntimeEventSafely({
           category: "api",
@@ -440,6 +570,7 @@ export async function* runAgent(
           actorId: request.actorId,
           resourceType: "agent_run",
           resourceId: run.id,
+          correlationId: run.id,
           durationMs: result.latencyMs,
           message: fallbackUsed
             ? crossProviderFallbackUsed
@@ -480,6 +611,7 @@ export async function* runAgent(
               role: securityContext.role,
             },
             toolPolicy: agentToolPolicy,
+            memoryScope: request.agentProfile?.memoryScope || "all",
             providerToolState: waiting.providerState,
             createdAt: new Date().toISOString(),
           };
@@ -557,6 +689,7 @@ export async function* runAgent(
           fallbackUsed: turn.fallbackUsed,
           estimatedCostUsd: turn.estimatedCostUsd,
           costKnown: turn.estimatedCostUsd !== undefined,
+          iteration: toolSteps + 1,
         });
         await recordRuntimeEventSafely({
           category: "api",
@@ -565,6 +698,7 @@ export async function* runAgent(
           actorId: request.actorId,
           resourceType: "agent_run",
           resourceId: run.id,
+          correlationId: run.id,
           durationMs: turn.latencyMs,
           message: turn.fallbackUsed ? "OpenAI response completed through fallback." : "OpenAI response completed.",
           metadata: {
@@ -718,6 +852,7 @@ export async function* runAgent(
                 role: securityContext.role,
               },
               toolPolicy: agentToolPolicy,
+              memoryScope: request.agentProfile?.memoryScope || "all",
               createdAt: new Date().toISOString(),
             };
             await flushDeltas();
@@ -1438,6 +1573,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             },
             context: continuation.context,
             toolPolicy: continuation.toolPolicy,
+            memoryScope: continuation.memoryScope,
             createdAt: new Date().toISOString(),
           },
         });
@@ -1571,6 +1707,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               },
               context: continuation.context,
               toolPolicy: continuation.toolPolicy,
+              memoryScope: continuation.memoryScope,
               createdAt: new Date().toISOString(),
             },
           });
@@ -1627,13 +1764,15 @@ async function resumeAgentRunAfterToolApprovalInScope({
       runId: run.id,
       response,
     });
-    const consolidation = enqueueMemoryConsolidationSafely({
-      runId: run.id,
-      tenantId: continuation.context.tenantId,
-      mode: run.mode,
-      prompt: run.prompt,
-      response,
-    });
+    const consolidation = continuation.memoryScope === "session"
+      ? Promise.resolve()
+      : enqueueMemoryConsolidationSafely({
+          runId: run.id,
+          tenantId: continuation.context.tenantId,
+          mode: run.mode,
+          prompt: run.prompt,
+          response,
+        });
     await appendRunEvent(run.id, { type: "done", response });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
@@ -1846,6 +1985,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       },
       context: continuation.context,
       toolPolicy: continuation.toolPolicy,
+      memoryScope: continuation.memoryScope,
       providerToolState: waiting.providerState,
       createdAt: new Date().toISOString(),
     };
@@ -2072,13 +2212,15 @@ async function resumeProviderBoundAgentRunAfterApproval({
       runId: run.id,
       response,
     });
-    const consolidation = enqueueMemoryConsolidationSafely({
-      runId: run.id,
-      tenantId: continuation.context.tenantId,
-      mode: run.mode,
-      prompt: run.prompt,
-      response,
-    });
+    const consolidation = continuation.memoryScope === "session"
+      ? Promise.resolve()
+      : enqueueMemoryConsolidationSafely({
+          runId: run.id,
+          tenantId: continuation.context.tenantId,
+          mode: run.mode,
+          prompt: run.prompt,
+          response,
+        });
     await appendRunEvent(run.id, { type: "done", response });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
@@ -2521,6 +2663,65 @@ function toolExecutionStatus(status: ToolExecutionRecord["status"]): "executed" 
 
 function normalizeTenantId(value?: string) {
   return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim() || "default";
+}
+
+async function settleOptionalWithin<T>(
+  operation: Promise<T | undefined>,
+  timeoutMs: number,
+): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function contextDecisionForRun(input: {
+  durableMemoryEnabled: boolean;
+  evidenceIds?: string[];
+  shouldRetrieve: boolean;
+}): Extract<AgentEvent, { type: "harness" }>["contextDecision"] {
+  if (!input.durableMemoryEnabled) return "disabled_session";
+  if (input.evidenceIds?.length === 0) return "excluded_by_user";
+  if (input.evidenceIds !== undefined) return "selected_by_user";
+  return input.shouldRetrieve ? "retrieved" : "skipped";
+}
+
+function contextRationaleForRun(input: {
+  durableMemoryEnabled: boolean;
+  evidenceIds?: string[];
+  rationale: string[];
+}) {
+  if (!input.durableMemoryEnabled) {
+    return ["This agent uses session-only memory, so durable context was not loaded."];
+  }
+  if (input.evidenceIds?.length === 0) {
+    return ["The user explicitly excluded all saved context for this task."];
+  }
+  if (input.evidenceIds !== undefined) {
+    return ["Only the saved context explicitly selected by the user was eligible."];
+  }
+  return input.rationale.slice(0, 4);
+}
+
+function stableToolboxFingerprint(tools: readonly ToolboxEntry[]) {
+  const contracts = tools
+    .map(({ definition }) => ({
+      id: definition.id,
+      category: definition.category,
+      riskLevel: definition.riskLevel,
+      approvalRequired: definition.approvalRequired,
+      reversible: definition.reversible === true,
+      inputSchema: definition.inputSchema,
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return createHash("sha256").update(JSON.stringify(contracts)).digest("hex");
 }
 
 function fallbackResponse(query: string, memoryCount: number) {

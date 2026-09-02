@@ -113,7 +113,17 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
       "provider", "model", "tier", "inputTokens", "outputTokens",
       "cachedInputTokens", "totalTokens", "latencyMs", "fallbackUsed",
       "estimatedCostUsd",
-      "costKnown",
+      "costKnown", "iteration", "iterationCount",
+    ]);
+  } else if (event.type === "run.harness") {
+    copy(receipt, payload, [
+      "version", "mode", "provider", "model", "tier", "memoryScope",
+      "contextDecision", "contextMode", "contextCount", "contextTraceId",
+      "liveWeb", "toolCount", "approvalToolCount", "toolboxSha256",
+      "instructionsSha256", "maxToolSteps", "maxToolCallsPerTurn",
+      "maxToolResultChars", "maxOutputTokens", "approvalPolicy", "autonomy",
+      "learningState", "learningSampleSize", "learningGuidanceCount",
+      "learningGuidanceSha256",
     ]);
   } else if (event.type === "run.tool") {
     copy(receipt, payload, [

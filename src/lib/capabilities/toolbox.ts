@@ -4,10 +4,12 @@ import {
   getOpenApiGovernedTool,
 } from "@/lib/connectors/governed-tools";
 import { searchCapabilities } from "@/lib/capabilities/catalog";
-import type {
-  CapabilityDescriptor,
-  CapabilitySearchInput,
-  CapabilitySearchResult,
+import {
+  CAPABILITY_MAX_QUERY_LENGTH,
+  type CapabilityDescriptor,
+  type CapabilitySearchInput,
+  type CapabilitySearchResult,
+  type CapabilitySource,
 } from "@/lib/capabilities/types";
 import { getGovernedTools } from "@/lib/tools/registry";
 import type { ToolDefinition } from "@/lib/tools/types";
@@ -16,6 +18,12 @@ export const AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT = 6;
 export const AGENT_EXTERNAL_TOOL_ALLOWLIST_LIMIT = 12;
 export const AGENT_TOOL_SCHEMA_MAX_BYTES = 16 * 1024;
 export const AGENT_TOOL_SCHEMA_RUN_MAX_BYTES = 64 * 1024;
+
+const AGENT_EXTERNAL_RESOLVER_RESERVE = 2;
+const resolverOperationPattern =
+  /(?:^|[^a-z0-9])(?:search|list|get|find|lookup|read)(?:[^a-z0-9]|$)/i;
+const actionOperationPattern =
+  /(?:^|[^a-z0-9])(?:run|trigger|dispatch|execute|start|rerun|create|add|update|edit|delete|remove|send|post|publish|deploy|release|cancel|merge|close|upload|write|set)(?:[^a-z0-9]|$)/i;
 
 type ProgressiveToolboxDependencies = {
   listNative: () => readonly ToolDefinition[];
@@ -47,6 +55,8 @@ export type ToolSchemaBudgetResult = {
 /**
  * Keeps discovery cheap: connector search returns metadata only, then at most
  * six relevant (or twelve explicitly allowlisted) contracts are hydrated.
+ * Action matches may reserve two of those slots for safe same-connector
+ * resolver operations, so the model can identify a natural-language target.
  */
 export async function loadProgressiveAgentTools(
   input: ProgressiveAgentToolboxInput,
@@ -93,14 +103,60 @@ export async function loadProgressiveAgentTools(
         dependencies.search,
       );
     }
-    descriptors = capabilities
+    const eligibleCapabilities = capabilities
       .filter(
         (capability) =>
           isExternalCapabilityId(capability.id) &&
           capability.riskLevel < 3 &&
           !excluded.has(capability.id),
-      )
-      .slice(0, externalLimit);
+      );
+
+    if (hasExplicitAllowlist) {
+      descriptors = eligibleCapabilities.slice(0, externalLimit);
+    } else {
+      const actionConnectorKeys = relevantActionConnectorKeys(eligibleCapabilities);
+      let resolverCandidates = resolverCapabilitiesForConnectors(
+        eligibleCapabilities,
+        actionConnectorKeys,
+      );
+
+      if (
+        actionConnectorKeys.length > 0 &&
+        resolverCandidates.length < resolverReserve(externalLimit)
+      ) {
+        const resolverQuery = buildResolverDiscoveryQuery(actionConnectorKeys);
+        if (resolverQuery) {
+          const supplemental = await searchExternalMetadata(
+            {
+              tenantId: input.tenantId || "default",
+              query: resolverQuery,
+              limit: 50,
+              sources: connectorSources(actionConnectorKeys),
+            },
+            dependencies.search,
+          );
+          resolverCandidates = deduplicateDescriptors([
+            ...resolverCandidates,
+            ...resolverCapabilitiesForConnectors(
+              supplemental.filter(
+                (capability) =>
+                  isExternalCapabilityId(capability.id) &&
+                  capability.riskLevel < 3 &&
+                  !excluded.has(capability.id),
+              ),
+              actionConnectorKeys,
+            ),
+          ]);
+        }
+      }
+
+      descriptors = selectResolverAwareDescriptors(
+        eligibleCapabilities,
+        resolverCandidates,
+        actionConnectorKeys,
+        externalLimit,
+      );
+    }
   }
 
   const hydrated = await Promise.all(
@@ -177,6 +233,187 @@ function isExternalCapabilityId(id: string) {
   return id.startsWith("mcp:") || id.startsWith("openapi:");
 }
 
+function relevantActionConnectorKeys(
+  capabilities: readonly CapabilityDescriptor[],
+) {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  for (const capability of capabilities) {
+    if (!isLikelyActionCapability(capability)) continue;
+    const key = connectorKey(capability.id);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      keys.push(key);
+      if (keys.length >= AGENT_EXTERNAL_RESOLVER_RESERVE) break;
+    }
+  }
+  return keys;
+}
+
+function isLikelyActionCapability(capability: CapabilityDescriptor) {
+  return !isResolverCapability(capability) && (
+    capability.riskLevel >= 2 ||
+    actionOperationPattern.test(searchableOperationText(capability))
+  );
+}
+
+function isResolverCapability(capability: CapabilityDescriptor) {
+  return capability.riskLevel === 0 &&
+    resolverOperationPattern.test(searchableOperationText(capability));
+}
+
+function searchableOperationText(capability: CapabilityDescriptor) {
+  return `${decodeCapabilityText(capability.id)} ${capability.name}`
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+}
+
+function decodeCapabilityText(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function connectorKey(id: string) {
+  const [source, connectorId, operationId] = id.split(":");
+  if (
+    !connectorId ||
+    !operationId ||
+    (source !== "mcp" && source !== "openapi")
+  ) {
+    return null;
+  }
+  return `${source}:${connectorId}`;
+}
+
+function resolverCapabilitiesForConnectors(
+  capabilities: readonly CapabilityDescriptor[],
+  actionConnectorKeys: readonly string[],
+) {
+  const connectorKeys = new Set(actionConnectorKeys);
+  return capabilities.filter(
+    (capability) =>
+      isResolverCapability(capability) &&
+      connectorKeys.has(connectorKey(capability.id) || ""),
+  );
+}
+
+function selectResolverAwareDescriptors(
+  primary: readonly CapabilityDescriptor[],
+  resolverCandidates: readonly CapabilityDescriptor[],
+  actionConnectorKeys: readonly string[],
+  limit: number,
+) {
+  const reserve = resolverReserve(limit);
+  if (reserve === 0 || actionConnectorKeys.length === 0) {
+    return primary.slice(0, limit);
+  }
+
+  const resolvers = selectResolverRoundRobin(
+    resolverCandidates,
+    actionConnectorKeys,
+    reserve,
+  );
+  if (resolvers.length === 0) {
+    return primary.slice(0, limit);
+  }
+
+  const selected: CapabilityDescriptor[] = [];
+  const selectedIds = new Set<string>();
+  const actionBudget = limit - resolvers.length;
+  const nonResolvers = primary.filter((capability) => !isResolverCapability(capability));
+  const prioritizedActions = [
+    ...nonResolvers.filter(isLikelyActionCapability),
+    ...nonResolvers.filter((capability) => !isLikelyActionCapability(capability)),
+  ];
+  for (const capability of prioritizedActions) {
+    selected.push(capability);
+    selectedIds.add(capability.id);
+    if (selected.length >= actionBudget) break;
+  }
+  for (const resolver of resolvers) {
+    if (!selectedIds.has(resolver.id)) {
+      selected.push(resolver);
+      selectedIds.add(resolver.id);
+    }
+  }
+
+  for (const capability of [...primary, ...resolverCandidates]) {
+    if (selected.length >= limit) break;
+    if (!selectedIds.has(capability.id)) {
+      selected.push(capability);
+      selectedIds.add(capability.id);
+    }
+  }
+  return selected.slice(0, limit);
+}
+
+function selectResolverRoundRobin(
+  candidates: readonly CapabilityDescriptor[],
+  connectorKeys: readonly string[],
+  limit: number,
+) {
+  const grouped = new Map<string, CapabilityDescriptor[]>();
+  for (const connector of connectorKeys) grouped.set(connector, []);
+  for (const candidate of candidates) {
+    const group = grouped.get(connectorKey(candidate.id) || "");
+    if (group && !group.some((item) => item.id === candidate.id)) {
+      group.push(candidate);
+    }
+  }
+
+  const selected: CapabilityDescriptor[] = [];
+  let index = 0;
+  while (selected.length < limit) {
+    let found = false;
+    for (const connector of connectorKeys) {
+      const candidate = grouped.get(connector)?.[index];
+      if (!candidate) continue;
+      selected.push(candidate);
+      found = true;
+      if (selected.length >= limit) break;
+    }
+    if (!found) break;
+    index += 1;
+  }
+  return selected;
+}
+
+function resolverReserve(limit: number) {
+  return Math.min(
+    AGENT_EXTERNAL_RESOLVER_RESERVE,
+    Math.max(0, limit - 1),
+  );
+}
+
+function buildResolverDiscoveryQuery(connectorKeys: readonly string[]) {
+  const connectorIds = connectorKeys
+    .map((key) => key.slice(key.indexOf(":") + 1))
+    .filter(Boolean)
+    .map((id) => id.slice(0, 48))
+    .join(" ");
+  return `${connectorIds} search list get find lookup read`
+    .trim()
+    .slice(0, CAPABILITY_MAX_QUERY_LENGTH);
+}
+
+function connectorSources(
+  connectorKeys: readonly string[],
+): CapabilitySource[] {
+  return [...new Set(
+    connectorKeys.map((key) => key.startsWith("mcp:") ? "mcp" as const : "openapi" as const),
+  )];
+}
+
+function deduplicateDescriptors(
+  descriptors: readonly CapabilityDescriptor[],
+) {
+  return [...new Map(
+    descriptors.map((descriptor) => [descriptor.id, descriptor]),
+  ).values()];
+}
+
 function deduplicateDefinitions(definitions: readonly ToolDefinition[]) {
   return [...new Map(definitions.map((definition) => [definition.id, definition])).values()];
 }
@@ -203,8 +440,9 @@ async function searchExternalMetadata(
   try {
     return (await search(input)).capabilities;
   } catch {
+    const fallbackSources = input.sources || (["mcp", "openapi"] as const);
     const settled = await Promise.all(
-      (["mcp", "openapi"] as const).map((source) =>
+      fallbackSources.map((source) =>
         search({ ...input, sources: [source] })
           .then((result) => result.capabilities)
           .catch(() => [] as CapabilityDescriptor[]),

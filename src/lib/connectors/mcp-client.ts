@@ -3,7 +3,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { resolveMcpBearerCredential } from "@/lib/connectors/credential-store";
-import { isOfficialGitHubMcpEndpoint } from "@/lib/connectors/mcp-trust";
+import {
+  isOfficialBrowserUseMcpEndpoint,
+  isOfficialGitHubMcpEndpoint,
+} from "@/lib/connectors/mcp-trust";
 import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
 import { createMcpToolId } from "@/lib/connectors/store";
 import { assertPublicHttpUrl, fetchPublicHttpUrl } from "@/lib/security/network";
@@ -235,7 +238,11 @@ async function createRequestInit(
     secretValues.push(token);
   } else if (connector.authType === "bearer_vault") {
     const token = await resolveMcpBearerCredential(connector);
-    headers.set("authorization", `Bearer ${token}`);
+    if (isOfficialBrowserUseMcpEndpoint(connector.endpoint)) {
+      headers.set("x-browser-use-api-key", token);
+    } else {
+      headers.set("authorization", `Bearer ${token}`);
+    }
     secretValues.push(token);
   }
   return {
@@ -284,6 +291,9 @@ export function inferMcpToolRisk(
 ): ToolRiskLevel {
   const destructive = annotations?.destructiveHint === true;
   const readOnly = annotations?.readOnlyHint === true;
+  if (isOfficialBrowserUseMcpEndpoint(options.endpoint)) {
+    return inferOfficialBrowserUseToolRisk(defaultRisk, options.toolName);
+  }
   if (
     isOfficialGitHubMcpEndpoint(options.endpoint) &&
     isKnownGitHubMutation(options.toolName)
@@ -308,6 +318,33 @@ export function inferMcpToolRisk(
     remoteFloor = 2;
   }
   return Math.max(defaultRisk, remoteFloor) as ToolRiskLevel;
+}
+
+function inferOfficialBrowserUseToolRisk(
+  defaultRisk: ToolRiskLevel,
+  toolName?: string,
+): ToolRiskLevel {
+  const normalizedToolName = toolName?.trim().toLowerCase();
+  if (normalizedToolName === "get_cookies") {
+    return 3;
+  }
+  if (
+    normalizedToolName === "list_skills" ||
+    normalizedToolName === "list_browser_profiles" ||
+    normalizedToolName === "monitor_task"
+  ) {
+    return 0;
+  }
+  if (
+    normalizedToolName === "browser_task" ||
+    normalizedToolName === "execute_skill"
+  ) {
+    return Math.max(defaultRisk, 2) as ToolRiskLevel;
+  }
+
+  // Browser Use can add tools over time. Until a new contract is reviewed and
+  // classified locally, an unknown browser operation must remain approval-gated.
+  return Math.max(defaultRisk, 2) as ToolRiskLevel;
 }
 
 function isKnownGitHubMutation(toolName?: string) {

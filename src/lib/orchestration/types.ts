@@ -31,6 +31,44 @@ export type AgentCouncilEvent = {
   durationMs?: number;
 };
 
+export type AgentHarnessEvent = {
+  type: "harness";
+  version: 1 | 2;
+  mode: AgentMode;
+  provider: "openai" | "google" | "anthropic" | "aws_bedrock" | "fallback";
+  model: string;
+  tier: "fast" | "reasoning";
+  memoryScope: "session" | "project" | "all";
+  contextDecision:
+    | "disabled_session"
+    | "excluded_by_user"
+    | "selected_by_user"
+    | "retrieved"
+    | "skipped";
+  contextMode: string;
+  contextCount: number;
+  contextTraceId?: string;
+  contextEvidenceIds: string[];
+  contextRationale: string[];
+  liveWeb: boolean;
+  toolCount: number;
+  toolIds: string[];
+  approvalToolCount: number;
+  skillIds: string[];
+  toolboxSha256: string;
+  instructionsSha256: string;
+  maxToolSteps: number;
+  maxToolCallsPerTurn: number;
+  maxToolResultChars: number;
+  maxOutputTokens: number;
+  approvalPolicy: "always" | "risk_based" | "read_only";
+  autonomy: "assist" | "governed" | "execute";
+  learningState?: "cold_start" | "observing" | "reinforced" | "supported";
+  learningSampleSize?: number;
+  learningGuidanceCount?: number;
+  learningGuidanceSha256?: string;
+};
+
 export type AgentEvent =
   | { type: "run"; runId: string; threadId?: string; missionId?: string }
   | {
@@ -42,9 +80,10 @@ export type AgentEvent =
       reason: string;
     }
   | { type: "status"; label: string; detail?: string }
+  | AgentHarnessEvent
   | { type: "delta"; text: string }
   | { type: "memory"; title: string; count?: number }
-  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean }
+  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean; iteration?: number; iterationCount?: number }
   | AgentCouncilEvent
   | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | AgentToolEvent
@@ -69,6 +108,13 @@ export type AgentRunRequest = {
   role?: string;
   agentId?: string;
   specialistIds?: string[];
+  learning?: {
+    state: "cold_start" | "observing" | "reinforced" | "supported";
+    sampleSize: number;
+    completionRate: number | null;
+    verifiedRate: number | null;
+    adjustments: string[];
+  };
   agentProfile?: {
     name: string;
     role: string;

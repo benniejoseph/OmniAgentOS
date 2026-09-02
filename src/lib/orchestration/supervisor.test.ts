@@ -17,6 +17,23 @@ describe("supervisor routing", () => {
     expect(routeAgentRequest("Create a workflow to deploy and verify production.", "execute").requiresApproval).toBe(true);
   });
 
+  it("keeps bounded natural-language automations on the governed direct path", () => {
+    const portfolioRun = routeAgentRequest("Run my portfolio blog automation.", "orchestrate");
+    expect(portfolioRun).toMatchObject({
+      route: "direct",
+      requiresApproval: true,
+    });
+    expect(portfolioRun.specialistIds).not.toContain("sentinel");
+    expect(routeAgentRequest("Run the GitHub workflow that generates my blog post.", "orchestrate").route).toBe("direct");
+    expect(routeAgentRequest("Schedule a calendar event tomorrow.", "orchestrate").route).toBe("direct");
+    expect(routeAgentRequest("Run, verify, and report back on the GitHub action for my portfolio repository.", "execute").route).toBe("direct");
+    expect(routeAgentRequest("Show my recent email.", "orchestrate").specialistIds).not.toContain("sentinel");
+  });
+
+  it("still routes explicitly recurring automation durably", () => {
+    expect(routeAgentRequest("Run the GitHub workflow every week.", "orchestrate").route).toBe("durable_workflow");
+  });
+
   it("selects research, builder, and critic specialists from task intent", () => {
     const decision = routeAgentRequest("Research current options, implement the best one, then verify it is safe for production.", "orchestrate");
     expect(decision.primaryAgentId).toBe("forge");

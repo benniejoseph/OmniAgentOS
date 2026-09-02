@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { AGENT_MAX_MESSAGE_CHARS, AGENT_MAX_MESSAGES, AGENT_RUNS_PER_MINUTE, hasOpenAIKey } from "@/lib/config";
+import { AGENT_MAX_MESSAGE_CHARS, AGENT_MAX_MESSAGES, AGENT_RUNS_PER_MINUTE } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
@@ -217,7 +217,13 @@ async function POSTHandler(request: Request) {
         })));
         const decision = adaptSupervisorDecision(
           preliminaryDecision,
-          hasOpenAIKey() ? await getAgentPerformance(context.tenantId) : [],
+          await getAgentPerformance(context.tenantId).catch((error: unknown) => {
+            console.warn(
+              "Agent performance learning was temporarily unavailable.",
+              String(redactSensitive(error instanceof Error ? error.message : "Unknown learning error.")),
+            );
+            return [];
+          }),
         );
         const missionOwner = {
           tenantId: context.tenantId,
@@ -384,6 +390,7 @@ async function POSTHandler(request: Request) {
             role: context.role,
             agentId: customAgent?.id || decision.primaryAgentId,
             specialistIds: decision.specialistIds,
+            learning: decision.learning,
             agentProfile,
           },
           request.signal,

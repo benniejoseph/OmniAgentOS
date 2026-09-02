@@ -7,6 +7,7 @@ import {
   ChevronDown,
   CircleAlert,
   GitBranch,
+  Globe2,
   KeyRound,
   Loader2,
   LockKeyhole,
@@ -67,6 +68,7 @@ type Notice = {
 };
 
 const GITHUB_MCP_ENDPOINT = "https://api.githubcopilot.com/mcp/x/all";
+const BROWSER_USE_MCP_ENDPOINT = "https://api.browser-use.com/mcp";
 
 export function McpConnections({
   payload,
@@ -103,6 +105,10 @@ export function McpConnections({
     name.trim() === "GitHub" &&
     endpoint.trim() === GITHUB_MCP_ENDPOINT &&
     authType === "bearer_vault";
+  const browserUsePresetApplied =
+    name.trim() === "Browser Use" &&
+    endpoint.trim() === BROWSER_USE_MCP_ENDPOINT &&
+    authType === "bearer_vault";
 
   function resetAddForm() {
     setName("");
@@ -117,6 +123,16 @@ export function McpConnections({
   function applyGitHubPreset() {
     setName("GitHub");
     setEndpoint(GITHUB_MCP_ENDPOINT);
+    setAuthType("bearer_vault");
+    setAuthTokenEnv("");
+    setDiscoverOnAdd(true);
+    setAdvancedAuthOpen(false);
+    setNotice(undefined);
+  }
+
+  function applyBrowserUsePreset() {
+    setName("Browser Use");
+    setEndpoint(BROWSER_USE_MCP_ENDPOINT);
     setAuthType("bearer_vault");
     setAuthTokenEnv("");
     setDiscoverOnAdd(true);
@@ -161,6 +177,8 @@ export function McpConnections({
     const submittedToken = bearerToken;
     const submittedEndpoint = endpoint.trim();
     const officialGitHubEndpoint = submittedEndpoint === GITHUB_MCP_ENDPOINT;
+    const officialBrowserUseEndpoint =
+      submittedEndpoint === BROWSER_USE_MCP_ENDPOINT;
     setBearerToken("");
     setPendingAction("create");
     setNotice(undefined);
@@ -181,7 +199,8 @@ export function McpConnections({
               ? { authTokenEnv: authTokenEnv.trim() }
               : {}),
             defaultRiskLevel: 2,
-            approvalRequired: !officialGitHubEndpoint,
+            approvalRequired:
+              !officialGitHubEndpoint && !officialBrowserUseEndpoint,
             discover: discoverOnAdd,
           }),
         },
@@ -543,6 +562,8 @@ export function McpConnections({
                 <p className="mt-1 text-xs leading-5 text-muted">
                   {endpoint.trim() === GITHUB_MCP_ENDPOINT
                     ? "GitHub read tools run directly; write and Actions operations pause for approval."
+                    : endpoint.trim() === BROWSER_USE_MCP_ENDPOINT
+                      ? "Browser profiles and task status can be read directly; browser actions pause for approval, and cookie access is high risk."
                     : "New tools use risk level 2 and require approval by default."}
                 </p>
               </div>
@@ -550,47 +571,90 @@ export function McpConnections({
                 <ShieldCheck size={13} aria-hidden="true" />
                 {endpoint.trim() === GITHUB_MCP_ENDPOINT
                   ? "Risk governed"
+                  : endpoint.trim() === BROWSER_USE_MCP_ENDPOINT
+                    ? "Risk governed"
                   : "Approval protected"}
               </span>
             </div>
 
-            <div className="mt-4 flex flex-col gap-3 rounded-md border border-primary/30 bg-primary/8 p-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex min-w-0 items-start gap-3">
-                <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">
-                  <GitBranch size={17} aria-hidden="true" />
-                </span>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold">Connect GitHub</p>
-                  <p className="mt-1 max-w-3xl text-xs leading-5 text-muted">
-                    Use GitHub&apos;s official MCP endpoint with an app-encrypted
-                    personal access token. Private repository access comes from
-                    the repositories and scopes granted to that token. Read-only
-                    checks run normally; writes and actions require approval.
-                  </p>
+            <div className="mt-4 grid gap-3 xl:grid-cols-2">
+              <div className="flex flex-col gap-3 rounded-md border border-primary/30 bg-primary/8 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">
+                    <GitBranch size={17} aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold">Connect GitHub</p>
+                    <p className="mt-1 max-w-3xl text-xs leading-5 text-muted">
+                      Use GitHub&apos;s official MCP endpoint with an app-encrypted
+                      personal access token. Private repository access comes from
+                      the repositories and scopes granted to that token. Read-only
+                      checks run normally; writes and actions require approval.
+                    </p>
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={applyGitHubPreset}
+                  disabled={
+                    busy ||
+                    Boolean(disabledReason) ||
+                    vaultUnavailable ||
+                    githubPresetApplied
+                  }
+                  title={
+                    disabledReason ||
+                    (vaultUnavailable
+                      ? "Encrypted credential storage is required for the GitHub preset."
+                      : undefined)
+                  }
+                  className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-primary/35 bg-background px-3 text-xs font-semibold text-foreground transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  <GitBranch size={14} aria-hidden="true" />
+                  {githubPresetApplied
+                    ? "GitHub preset applied"
+                    : "Use GitHub preset"}
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={applyGitHubPreset}
-                disabled={
-                  busy ||
-                  Boolean(disabledReason) ||
-                  vaultUnavailable ||
-                  githubPresetApplied
-                }
-                title={
-                  disabledReason ||
-                  (vaultUnavailable
-                    ? "Encrypted credential storage is required for the GitHub preset."
-                    : undefined)
-                }
-                className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-primary/35 bg-background px-3 text-xs font-semibold text-foreground transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-55"
-              >
-                <GitBranch size={14} aria-hidden="true" />
-                {githubPresetApplied
-                  ? "GitHub preset applied"
-                  : "Use GitHub preset"}
-              </button>
+
+              <div className="flex flex-col gap-3 rounded-md border border-primary/30 bg-primary/8 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">
+                    <Globe2 size={17} aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold">Connect Browser Use</p>
+                    <p className="mt-1 max-w-3xl text-xs leading-5 text-muted">
+                      Use Browser Use Cloud&apos;s official MCP endpoint with an
+                      app-encrypted API key. Agents can handle multi-step browser
+                      tasks in natural language. Browser actions require approval;
+                      remote page content is always treated as untrusted data.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={applyBrowserUsePreset}
+                  disabled={
+                    busy ||
+                    Boolean(disabledReason) ||
+                    vaultUnavailable ||
+                    browserUsePresetApplied
+                  }
+                  title={
+                    disabledReason ||
+                    (vaultUnavailable
+                      ? "Encrypted credential storage is required for the Browser Use preset."
+                      : undefined)
+                  }
+                  className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-primary/35 bg-background px-3 text-xs font-semibold text-foreground transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  <Globe2 size={14} aria-hidden="true" />
+                  {browserUsePresetApplied
+                    ? "Browser Use preset applied"
+                    : "Use Browser Use preset"}
+                </button>
+              </div>
             </div>
 
             <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -599,7 +663,7 @@ export function McpConnections({
                   id="mcp-connection-name"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
-                  placeholder="GitHub MCP"
+                  placeholder="Connection name"
                   maxLength={120}
                   disabled={busy || Boolean(disabledReason)}
                   className="min-h-11 w-full border border-line bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
@@ -658,7 +722,14 @@ export function McpConnections({
 
             {authType === "bearer_vault" ? (
               <div className="mt-4">
-                <Field label="Provider token" htmlFor="mcp-bearer-token">
+                <Field
+                  label={
+                    endpoint.trim() === BROWSER_USE_MCP_ENDPOINT
+                      ? "Browser Use API key"
+                      : "Provider token"
+                  }
+                  htmlFor="mcp-bearer-token"
+                >
                   <input
                     id="mcp-bearer-token"
                     name="new-mcp-bearer-token"
@@ -988,6 +1059,13 @@ function ConnectionRow({
                 Agents
               </a>
               .
+            </p>
+          ) : null}
+          {isOfficialBrowserUseMcpEndpoint(connector.endpoint) ? (
+            <p className="mt-2 text-xs leading-5 text-muted">
+              Browser tasks and saved skills pause for approval. Task status and
+              profiles can be read directly; cookie access is treated as high
+              risk. Remote page content remains untrusted.
             </p>
           ) : null}
         </div>
@@ -1478,6 +1556,23 @@ function isOfficialGitHubMcpEndpoint(endpoint?: string) {
       url.username === "" &&
       url.password === "" &&
       (url.pathname === "/mcp" || url.pathname.startsWith("/mcp/"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isOfficialBrowserUseMcpEndpoint(endpoint?: string) {
+  if (!endpoint) return false;
+  try {
+    const url = new URL(endpoint);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "api.browser-use.com" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      (url.pathname === "/mcp" || url.pathname === "/mcp/")
     );
   } catch {
     return false;

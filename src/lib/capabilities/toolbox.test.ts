@@ -43,12 +43,107 @@ describe("progressive agent toolbox", () => {
     }));
   });
 
+  it("reserves room for risk-zero resolvers from the action connector", async () => {
+    const descriptors = [
+      descriptor("mcp:github:actions_run_trigger", "mcp", 2),
+      descriptor("mcp:github:create_issue", "mcp", 2),
+      descriptor("mcp:github:update_file", "mcp", 2),
+      descriptor("mcp:github:dispatch_deployment", "mcp", 2),
+      descriptor("mcp:github:publish_release", "mcp", 2),
+      descriptor("mcp:github:send_notification", "mcp", 2),
+      descriptor("mcp:github:actions_list", "mcp", 0),
+      descriptor("mcp:github:actions_get", "mcp", 0),
+    ];
+    const resolveMcp = vi.fn(async (id: string) => tool({
+      id,
+      category: "mcp",
+      riskLevel: id.endsWith("_list") || id.endsWith("_get") ? 0 : 2,
+      approvalRequired: id === "mcp:github:actions_run_trigger",
+      approvalFingerprint: id === "mcp:github:actions_run_trigger"
+        ? "reviewed-action-contract"
+        : undefined,
+    }));
+
+    const result = await loadProgressiveAgentTools(
+      { tenantId: "tenant-a", query: "run the github blog workflow" },
+      {
+        listNative: () => [],
+        search: vi.fn(async () => ({
+          capabilities: descriptors,
+          query: "run the github blog workflow",
+          total: descriptors.length,
+          limit: 50,
+          hasMore: false,
+        })),
+        resolveMcp,
+        resolveOpenApi: vi.fn(async () => null),
+      },
+    );
+
+    expect(result.definitions.map((item) => item.id)).toEqual([
+      "mcp:github:actions_run_trigger",
+      "mcp:github:create_issue",
+      "mcp:github:update_file",
+      "mcp:github:dispatch_deployment",
+      "mcp:github:actions_list",
+      "mcp:github:actions_get",
+    ]);
+    expect(result.definitions[0]).toMatchObject({
+      approvalRequired: true,
+      approvalFingerprint: "reviewed-action-contract",
+    });
+    expect(resolveMcp).toHaveBeenCalledTimes(AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT);
+  });
+
+  it("discovers missing resolvers with tenant-scoped same-connector metadata", async () => {
+    const search = vi.fn(async (input: { query?: string }) => ({
+      capabilities: input.query === "run portfolio blog automation"
+        ? [descriptor("mcp:github:actions_run_trigger", "mcp", 2)]
+        : [
+            descriptor("mcp:github:actions_list", "mcp", 0),
+            descriptor("mcp:github:actions_get", "mcp", 0),
+            descriptor("mcp:slack:search_messages", "mcp", 0),
+          ],
+      query: input.query || "",
+      total: 3,
+      limit: 50,
+      hasMore: false,
+    }));
+
+    const result = await loadProgressiveAgentTools(
+      { tenantId: "tenant-private", query: "run portfolio blog automation" },
+      {
+        listNative: () => [],
+        search,
+        resolveMcp: vi.fn(async (id) => tool({
+          id,
+          category: "mcp",
+          riskLevel: id.includes("run_trigger") ? 2 : 0,
+        })),
+        resolveOpenApi: vi.fn(async () => null),
+      },
+    );
+
+    expect(result.definitions.map((item) => item.id)).toEqual([
+      "mcp:github:actions_run_trigger",
+      "mcp:github:actions_list",
+      "mcp:github:actions_get",
+    ]);
+    expect(search).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      tenantId: "tenant-private",
+      query: expect.stringMatching(/github.*search.*list.*get.*find.*lookup.*read/),
+      sources: ["mcp"],
+    }));
+  });
+
   it("hydrates no more than twelve exact allowlisted tools and skips other sources", async () => {
     const ids = Array.from({ length: 20 }, (_, index) => `openapi:mail:send-${index}`);
-    const search = vi.fn(async () => ({
-      capabilities: ids.map((id) => descriptor(id, "openapi")),
-      query: "",
-      total: ids.length,
+    const search = vi.fn(async (input: { query?: string }) => ({
+      capabilities: input.query
+        ? []
+        : ids.map((id) => descriptor(id, "openapi")),
+      query: input.query || "",
+      total: input.query ? 0 : ids.length,
       limit: 48,
       hasMore: false,
     }));
@@ -70,6 +165,7 @@ describe("progressive agent toolbox", () => {
       query: undefined,
       allowlist: ids,
     }));
+    expect(search).toHaveBeenCalledTimes(2);
   });
 
   it("does not hydrate high-risk metadata and fails closed on resolver errors", async () => {
