@@ -69,6 +69,7 @@ type Notice = {
 
 const GITHUB_MCP_ENDPOINT = "https://api.githubcopilot.com/mcp/x/all";
 const BROWSER_USE_MCP_ENDPOINT = "https://api.browser-use.com/v3/mcp";
+const PLAYWRIGHT_MCP_ENDPOINT = "https://omniagent-os-browser.fly.dev/mcp";
 
 export function McpConnections({
   payload,
@@ -105,9 +106,9 @@ export function McpConnections({
     name.trim() === "GitHub" &&
     endpoint.trim() === GITHUB_MCP_ENDPOINT &&
     authType === "bearer_vault";
-  const browserUsePresetApplied =
-    name.trim() === "Browser Use" &&
-    endpoint.trim() === BROWSER_USE_MCP_ENDPOINT &&
+  const playwrightPresetApplied =
+    name.trim() === "Playwright Browser" &&
+    endpoint.trim() === PLAYWRIGHT_MCP_ENDPOINT &&
     authType === "bearer_vault";
 
   function resetAddForm() {
@@ -130,9 +131,9 @@ export function McpConnections({
     setNotice(undefined);
   }
 
-  function applyBrowserUsePreset() {
-    setName("Browser Use");
-    setEndpoint(BROWSER_USE_MCP_ENDPOINT);
+  function applyPlaywrightPreset() {
+    setName("Playwright Browser");
+    setEndpoint(PLAYWRIGHT_MCP_ENDPOINT);
     setAuthType("bearer_vault");
     setAuthTokenEnv("");
     setDiscoverOnAdd(true);
@@ -157,6 +158,17 @@ export function McpConnections({
       setNotice({ tone: "error", text: "Enter the provider token to store." });
       return;
     }
+    if (
+      authType === "bearer_vault" &&
+      isOmniAgentPlaywrightMcpEndpoint(endpoint.trim()) &&
+      !/^[A-Za-z0-9._~-]{32,256}$/.test(bearerToken)
+    ) {
+      setNotice({
+        tone: "error",
+        text: "Enter the 32–256 character URL-safe token configured on the Playwright service.",
+      });
+      return;
+    }
     if (authType === "bearer_vault" && vaultUnavailable) {
       setNotice({
         tone: "error",
@@ -179,6 +191,8 @@ export function McpConnections({
     const officialGitHubEndpoint = submittedEndpoint === GITHUB_MCP_ENDPOINT;
     const officialBrowserUseEndpoint =
       isOfficialBrowserUseMcpEndpoint(submittedEndpoint);
+    const omniAgentPlaywrightEndpoint =
+      isOmniAgentPlaywrightMcpEndpoint(submittedEndpoint);
     setBearerToken("");
     setPendingAction("create");
     setNotice(undefined);
@@ -198,9 +212,11 @@ export function McpConnections({
             ...(authType === "bearer_env"
               ? { authTokenEnv: authTokenEnv.trim() }
               : {}),
-            defaultRiskLevel: 2,
+            defaultRiskLevel: omniAgentPlaywrightEndpoint ? 1 : 2,
             approvalRequired:
-              !officialGitHubEndpoint && !officialBrowserUseEndpoint,
+              !officialGitHubEndpoint &&
+              !officialBrowserUseEndpoint &&
+              !omniAgentPlaywrightEndpoint,
             discover: discoverOnAdd,
           }),
         },
@@ -245,6 +261,16 @@ export function McpConnections({
     }
     if (!credentialValue) {
       setNotice({ tone: "error", text: "Enter the replacement token." });
+      return;
+    }
+    if (
+      isOmniAgentPlaywrightMcpEndpoint(connector.endpoint) &&
+      !/^[A-Za-z0-9._~-]{32,256}$/.test(credentialValue)
+    ) {
+      setNotice({
+        tone: "error",
+        text: "Enter the 32–256 character Playwright service token configured on the browser worker.",
+      });
       return;
     }
     const submittedToken = credentialValue;
@@ -609,6 +635,8 @@ export function McpConnections({
                 <p className="mt-1 text-xs leading-5 text-muted">
                   {endpoint.trim() === GITHUB_MCP_ENDPOINT
                     ? "GitHub read tools run directly; write and Actions operations pause for approval."
+                    : endpoint.trim() === PLAYWRIGHT_MCP_ENDPOINT
+                      ? "Playwright can navigate and inspect directly; clicks, typing, and form actions pause for approval. Arbitrary code and file transfer stay high risk."
                     : endpoint.trim() === BROWSER_USE_MCP_ENDPOINT
                       ? "Browser profiles and task status can be read directly; browser actions pause for approval, and cookie access is high risk."
                     : "New tools use risk level 2 and require approval by default."}
@@ -618,6 +646,8 @@ export function McpConnections({
                 <ShieldCheck size={13} aria-hidden="true" />
                 {endpoint.trim() === GITHUB_MCP_ENDPOINT
                   ? "Risk governed"
+                  : endpoint.trim() === PLAYWRIGHT_MCP_ENDPOINT
+                    ? "Isolated and governed"
                   : endpoint.trim() === BROWSER_USE_MCP_ENDPOINT
                     ? "Risk governed"
                   : "Approval protected"}
@@ -670,19 +700,19 @@ export function McpConnections({
                     <Globe2 size={17} aria-hidden="true" />
                   </span>
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold">Connect Browser Use</p>
+                    <p className="text-sm font-semibold">Connect Playwright</p>
                     <p className="mt-1 max-w-3xl text-xs leading-5 text-muted">
-                      Use Browser Use Cloud&apos;s official MCP endpoint with an
-                      app-encrypted API key. Agents can handle multi-step browser
-                      tasks in natural language. Browser actions require approval;
-                      remote page content is always treated as untrusted data.{" "}
+                      Use OmniAgent&apos;s self-hosted, open-source Playwright MCP
+                      service. Each task gets an isolated browser, while the
+                      service token stays encrypted in this app. Remote page
+                      content is always treated as untrusted data.{" "}
                       <a
-                        href="https://cloud.browser-use.com/settings"
+                        href="https://github.com/microsoft/playwright-mcp"
                         target="_blank"
                         rel="noreferrer"
                         className="font-semibold text-primary hover:underline"
                       >
-                        Get an API key
+                        View Playwright MCP
                       </a>
                       .
                     </p>
@@ -690,25 +720,25 @@ export function McpConnections({
                 </div>
                 <button
                   type="button"
-                  onClick={applyBrowserUsePreset}
+                  onClick={applyPlaywrightPreset}
                   disabled={
                     busy ||
                     Boolean(disabledReason) ||
                     vaultUnavailable ||
-                    browserUsePresetApplied
+                    playwrightPresetApplied
                   }
                   title={
                     disabledReason ||
                     (vaultUnavailable
-                      ? "Encrypted credential storage is required for the Browser Use preset."
+                      ? "Encrypted credential storage is required for the Playwright service token."
                       : undefined)
                   }
                   className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-primary/35 bg-background px-3 text-xs font-semibold text-foreground transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-55"
                 >
                   <Globe2 size={14} aria-hidden="true" />
-                  {browserUsePresetApplied
-                    ? "Browser Use preset applied"
-                    : "Use Browser Use preset"}
+                  {playwrightPresetApplied
+                    ? "Playwright preset applied"
+                    : "Use Playwright preset"}
                 </button>
               </div>
             </div>
@@ -780,8 +810,10 @@ export function McpConnections({
               <div className="mt-4">
                 <Field
                   label={
-                    endpoint.trim() === BROWSER_USE_MCP_ENDPOINT
-                      ? "Browser Use API key"
+                    endpoint.trim() === PLAYWRIGHT_MCP_ENDPOINT
+                      ? "Playwright service token"
+                      : endpoint.trim() === BROWSER_USE_MCP_ENDPOINT
+                        ? "Browser Use API key"
                       : "Provider token"
                   }
                   htmlFor="mcp-bearer-token"
@@ -1130,6 +1162,13 @@ function ConnectionRow({
               Starting, continuing, or stopping browser sessions pauses for
               approval. Session status, activity, costs, and profiles can be
               read directly. Remote page content remains untrusted.
+            </p>
+          ) : null}
+          {isOmniAgentPlaywrightMcpEndpoint(connector.endpoint) ? (
+            <p className="mt-2 text-xs leading-5 text-muted">
+              Browser state is isolated to the current tenant, actor, and task.
+              Navigation and inspection run directly; interactive actions pause
+              for approval. Remote page content remains untrusted.
             </p>
           ) : null}
         </div>
@@ -1654,6 +1693,25 @@ function isOfficialBrowserUseMcpEndpoint(endpoint?: string) {
         url.pathname === "/mcp" ||
         url.pathname === "/mcp/"
       )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isOmniAgentPlaywrightMcpEndpoint(endpoint?: string) {
+  if (!endpoint) return false;
+  try {
+    const url = new URL(endpoint);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "omniagent-os-browser.fly.dev" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      (url.pathname === "/mcp" || url.pathname === "/mcp/") &&
+      url.search === "" &&
+      url.hash === ""
     );
   } catch {
     return false;

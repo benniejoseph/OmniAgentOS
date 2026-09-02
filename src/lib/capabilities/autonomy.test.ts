@@ -41,7 +41,7 @@ describe("capability-aware autonomy", () => {
     expect(query).toMatch(/workflow|action/);
   });
 
-  it("expands natural browser work into Browser Use discovery terms", () => {
+  it("expands natural browser work into Playwright discovery terms", () => {
     const query = buildCapabilitySearchQuery({
       request: "Sign in to the portal and submit the form",
     });

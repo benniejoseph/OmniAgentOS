@@ -8,7 +8,6 @@ import { listOpenApiConnectors } from "@/lib/connectors/openapi-store";
 import { listMcpConnectors } from "@/lib/connectors/store";
 import type { OpenApiConnectorRecord } from "@/lib/connectors/openapi-types";
 import type { McpConnectorRecord } from "@/lib/connectors/types";
-import { isOfficialBrowserUseMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { redactSensitive } from "@/lib/security/context";
 import type { ToolRiskLevel } from "@/lib/tools/types";
 
@@ -541,12 +540,6 @@ function sourceInventoryAvailable(
 
 function samePublicLocation(first?: string, second?: string) {
   if (!first || !second) return false;
-  if (
-    isOfficialBrowserUseMcpEndpoint(first) &&
-    isOfficialBrowserUseMcpEndpoint(second)
-  ) {
-    return true;
-  }
   try {
     const left = new URL(first);
     const right = new URL(second);

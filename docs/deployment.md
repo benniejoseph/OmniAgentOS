@@ -1,6 +1,6 @@
 # Deployment (Vercel + Supabase + Fly)
 
-Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the worker image. Vercel Functions run in Singapore (`sin1`) beside the existing Supabase Singapore Postgres project; the existing Fly application remains in US Ashburn (`iad`) and provides both the durable worker and bounded OpenAI US egress gateway. This topology adds no service: static assets remain globally cached, database traffic stays regional, and only OpenAI traffic crosses to the existing US Fly machine. The daily Vercel cron remains only a backstop.
+Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the worker image. Vercel Functions run in Singapore (`sin1`) beside the existing Supabase Singapore Postgres project; the existing Fly application remains in US Ashburn (`iad`) and provides both the durable worker and bounded OpenAI US egress gateway. The optional Playwright MCP browser service runs as a separate, isolated Fly application in Singapore so Chromium never shares the 256 MB worker machine. Its pinned Microsoft image is the sole vendor-runtime exception to the Node 24 policy. Static assets remain globally cached, and the daily Vercel cron remains only a backstop.
 
 ## Required production configuration
 
@@ -13,6 +13,8 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_OPENAI_GATEWAY_URL`: required for the `sin1` topology and pinned to `https://omniagent-os-worker.fly.dev/v1`. An explicit `:443` and one trailing slash canonicalize to that value; alternate hosts, ports, paths, credentials, query strings, and fragments fail closed.
 - `OMNIAGENT_OPENAI_GATEWAY_TOKEN`: an independent URL-safe 32-256 character secret stored with the same value in Vercel and Fly. Proxy routes require it; it is never returned in release evidence.
 - `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN`: optional Fly-only overlap secret during a token rotation. When present it must independently be URL-safe, 32-256 characters, and different from the primary token. Never set it on Vercel.
+- `OMNIAGENT_PLAYWRIGHT_MCP_TOKEN`: independent URL-safe 32-256 character secret stored on the dedicated browser Fly app and, for each authorized workspace, in OmniAgent's encrypted Playwright connector credential. It is not a Vercel environment variable.
+- `OMNIAGENT_PLAYWRIGHT_MCP_PREVIOUS_TOKEN`: optional Fly-only overlap secret during browser-service token rotation.
 - `CRON_SECRET`: authenticates the scheduled `/api/workflows/tick` backstop.
 - `OMNIAGENT_INTERNAL_AUTH_SECRET`: shared by the worker and production smoke runner. Generate an independent high-entropy value.
 - `OMNIAGENT_CREDENTIAL_KEYRING`: independent versioned AES-256-GCM keyring for tenant-managed model and outbound MCP credentials, formatted as `{"activeKeyId":"v1","keys":{"v1":"<32-byte-base64url>"}}`. Without it, app-managed credential writes fail closed while deployment-environment provider keys remain available.
@@ -36,7 +38,7 @@ Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it,
 - Identity: `OMNIAGENT_DEFAULT_TENANT`, `OMNIAGENT_DEFAULT_ACTOR`, `OMNIAGENT_DEFAULT_ROLE`, `OMNIAGENT_SESSION_DAYS`, bootstrap name/tenant, and auth mode.
 - Trust: `OMNIAGENT_GRADUATED_AUTONOMY` and `OMNIAGENT_AUTONOMY_GRADUATION_THRESHOLD`.
 - Alerts: queue/dispatch limits, signed webhook URL/secret, Slack webhook, Resend key, and email addresses.
-- Connectors: app-managed MCP bearer credentials use `OMNIAGENT_CREDENTIAL_KEYRING` and require no per-connector environment binding. The legacy advanced `bearer_env` path uses `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST`, JSON `OMNIAGENT_CONNECTOR_SECRET_BINDINGS`, and referenced `OMNIAGENT_CONNECTOR_*` values; every such credential requires an exact tenant-and-origin deployer binding. Keep `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS=false`.
+- Connectors: app-managed MCP bearer credentials use `OMNIAGENT_CREDENTIAL_KEYRING` and require no per-connector environment binding. The Playwright service token uses this vault path and is scoped again with an opaque tenant+actor+run HMAC on every request. The legacy advanced `bearer_env` path uses `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST`, JSON `OMNIAGENT_CONNECTOR_SECRET_BINDINGS`, and referenced `OMNIAGENT_CONNECTOR_*` values; every such credential requires an exact tenant-and-origin deployer binding. Keep `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS=false`.
 - Model credentials and inbound MCP: `OMNIAGENT_CREDENTIAL_KEYRING`, `OMNIAGENT_MCP_ALLOWED_HOSTS`, and `OMNIAGENT_MCP_ALLOWED_ORIGINS`. MCP remains disabled per actor until enabled in Settings and requires a scoped, hash-only service key.
 - Workflow triggers: use dedicated `OMNIAGENT_TRIGGER_*` HMAC keys. Put legacy server-only names in `OMNIAGENT_TRIGGER_SECRET_ALLOWLIST`; platform credentials are always rejected, and unauthenticated triggers remain disabled at dispatch time in production.
 - Diagnostics/storage: `OMNIAGENT_LOG_PGVECTOR_FAILURES`, `OMNIAGENT_DATA_DIR`, and the demo-storage switch.
@@ -130,6 +132,25 @@ rollout. It must never be configured as a persistent Vercel or Fly variable.
 Do not place either gateway token in `.env`, a command argument, shell history, CI output, or `BASE_URL`. The release runner sends Fly secret values only over suppressed stdin; values are never put in a subprocess argument or diagnostic. `OPENAI_API_KEY` remains a non-exportable Vercel secret and is deliberately absent from normal release configuration.
 
 Do not set `OPENAI_API_KEY` on Fly. `/healthz` is the intentionally minimal, non-sensitive Fly liveness route and returns only status, service, Fly region, release revision, and gateway protocol. `/v1/*` proxy requests require `x-asael-gateway-token` plus the OpenAI `Authorization` header supplied by Vercel. Gateway readiness also calls the allowlisted model-readiness path without an OpenAI Authorization header: HTTP 400 proves that the supplied gateway token reached the authorization boundary without making an upstream or paid request.
+
+## Self-hosted Playwright browser service
+
+The Playwright option uses the Apache-2.0 [Microsoft Playwright MCP server](https://github.com/microsoft/playwright-mcp), not a paid browser API. `Dockerfile.playwright-mcp` pins the official browser image by version and digest, while `fly.playwright-mcp.toml` keeps Chromium in a separate 1 GB Singapore machine. The gateway accepts only its bearer token, converts OmniAgent's opaque tenant+actor+run scope into one private browser process, and removes the bearer secret before starting Playwright. A DNS-validating outbound proxy permits public web ports only and blocks loopback, private, link-local, metadata, and internal Fly destinations.
+
+Each scoped process has its own temporary profile and a private keeper connection so OmniAgent's short MCP calls retain the same tabs and page state. Connector discovery retires immediately; execution scopes expire after 30 minutes without activity. The service deliberately allows at most two simultaneous browser scopes on the default machine. Page output remains untrusted tool data, and Playwright's arbitrary-code and file-transfer tools remain risk level 3.
+
+Create the app and token once, save the token in the owner's password manager, and deploy the dedicated image. The token value never belongs in Vercel:
+
+```bash
+playwright_token="$(openssl rand -hex 32)"
+printf 'OMNIAGENT_PLAYWRIGHT_MCP_TOKEN=%s\n' "$playwright_token" |
+  fly secrets import --app omniagent-os-browser --stage
+fly deploy --config fly.playwright-mcp.toml --remote-only
+# Save playwright_token in the owner's password manager before this line.
+unset playwright_token
+```
+
+In OmniAgent, open Settings → Tools & integrations → MCP connections, apply the Playwright preset, and store that same token in the encrypted app vault. The managed endpoint is `https://omniagent-os-browser.fly.dev/mcp`. If Fly requires another globally unique app name, update the Fly app/public host, connector catalog endpoint, UI preset endpoint, and exact endpoint trust rule together. The software has no provider subscription, but the separate Fly compute resource can still incur hosting charges.
 
 ### Two-phase gateway token rotation
 

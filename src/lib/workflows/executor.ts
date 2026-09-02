@@ -500,6 +500,11 @@ async function executePlanNode({
         : undefined,
       abortSignal: executionSignal,
       idempotencyKey: `workflow:${detail.run.id}:plan:${planId}:node:${node.id}:tool:${toolId}`,
+      mcpSessionScope: {
+        tenantId: normalizeTenantId(detail.run.tenantId),
+        actorId: "workflow",
+        executionId: `workflow:${detail.run.id}`,
+      },
     });
     return {
       id: execution.record.id,

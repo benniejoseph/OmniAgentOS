@@ -19,18 +19,18 @@ describe("connection catalog", () => {
     expect(googleSources.every((connector) => !connector.approvalRequired)).toBe(true);
   });
 
-  it("offers Browser Use Cloud through its official governed MCP endpoint", () => {
-    const browserUse = connectionCatalog.find(
+  it("offers the self-hosted Playwright service through its governed MCP endpoint", () => {
+    const playwright = connectionCatalog.find(
       (connector) => connector.id === "browser-automation",
     );
 
-    expect(browserUse).toMatchObject({
-      name: "Browser Use",
+    expect(playwright).toMatchObject({
+      name: "Playwright Browser",
       adapter: "mcp",
-      endpoint: "https://api.browser-use.com/v3/mcp",
+      endpoint: "https://omniagent-os-browser.fly.dev/mcp",
       credentialMode: "app_vault",
-      authHeaderName: "x-browser-use-api-key",
-      riskLevel: 2,
+      authHeaderName: "authorization",
+      riskLevel: 1,
       approvalRequired: false,
     });
   });

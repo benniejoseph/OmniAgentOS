@@ -1,0 +1,34 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "isolated": false,
+    "launchOptions": {
+      "headless": true,
+      "chromiumSandbox": false,
+      "args": [
+        "--disable-quic",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
+      ]
+    },
+    "contextOptions": {
+      "acceptDownloads": false,
+      "serviceWorkers": "block"
+    }
+  },
+  "capabilities": ["core"],
+  "allowUnrestrictedFileAccess": false,
+  "codegen": "none",
+  "saveSession": false,
+  "sharedBrowserContext": true,
+  "snapshot": {
+    "mode": "full",
+    "boxes": false
+  },
+  "imageResponses": "omit",
+  "outputMaxSize": 8388608,
+  "timeouts": {
+    "action": 10000,
+    "navigation": 45000,
+    "settle": 500
+  }
+}
