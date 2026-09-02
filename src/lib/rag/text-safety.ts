@@ -33,3 +33,41 @@ export function jsonbSafeText(value: string) {
     ? value
     : normalized + value.slice(unchangedStart);
 }
+
+/**
+ * Bound externally sourced text without splitting a valid Unicode surrogate
+ * pair, then apply PostgreSQL jsonb text safety to the result.
+ */
+export function jsonbSafeTruncate(value: string, maxLength: number) {
+  const normalized = jsonbSafeText(value);
+  const limit = Math.max(0, Math.floor(maxLength));
+  if (normalized.length <= limit) return normalized;
+
+  let end = limit;
+  const previous = normalized.charCodeAt(end - 1);
+  const next = normalized.charCodeAt(end);
+  if (
+    previous >= 0xd800 &&
+    previous <= 0xdbff &&
+    next >= 0xdc00 &&
+    next <= 0xdfff
+  ) {
+    end -= 1;
+  }
+
+  return normalized.slice(0, end);
+}
+
+/**
+ * Normalize every nested string immediately before a jsonb parameter is sent
+ * to PostgreSQL. This is a persistence-boundary safeguard for values derived
+ * from already-sanitized text later in a pipeline.
+ */
+export function jsonbSafeStringify(value: unknown) {
+  const serialized = JSON.stringify(value, (_key, item: unknown) => {
+    if (typeof item === "string") return jsonbSafeText(item);
+    if (typeof item === "bigint") return item.toString();
+    return item;
+  });
+  return serialized ?? "null";
+}

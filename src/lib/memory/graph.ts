@@ -24,6 +24,10 @@ import {
   writeJsonFile,
 } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import {
+  jsonbSafeStringify,
+  jsonbSafeTruncate,
+} from "@/lib/rag/text-safety";
 
 type RebuildMemoryGraphOptions = {
   tenantId?: string;
@@ -543,7 +547,7 @@ function aggregateGraph(
       title: memory.title,
       content: memory.content,
       tags: memory.tags,
-      summary: memory.content.slice(0, 360),
+      summary: jsonbSafeTruncate(memory.content, 360),
       baseWeight: memory.importance,
     }).slice(0, 14);
 
@@ -878,7 +882,7 @@ async function upsertGraphNodes(
     SELECT
       id, tenant_id, kind, label, slug, aliases, summary, weight, source_count,
       memory_ids, trace_ids, tags, metadata, created_at, updated_at
-    FROM jsonb_to_recordset(${payload}::jsonb) AS input(
+    FROM jsonb_to_recordset(${jsonbSafeStringify(payload)}::jsonb) AS input(
       id text,
       tenant_id text,
       kind text,
@@ -948,7 +952,7 @@ async function upsertGraphEdges(
     SELECT
       id, tenant_id, source_node_id, target_node_id, relation, weight,
       evidence_count, memory_ids, trace_ids, metadata, created_at, updated_at
-    FROM jsonb_to_recordset(${payload}::jsonb) AS input(
+    FROM jsonb_to_recordset(${jsonbSafeStringify(payload)}::jsonb) AS input(
       id text,
       tenant_id text,
       source_node_id text,
@@ -989,7 +993,7 @@ async function insertGraphNode(node: MemoryGraphNode, sql: GraphSqlClient = getS
       ${node.id}, ${node.tenantId}, ${node.kind}, ${node.label},
       ${storageGraphSlug(node.tenantId, node.slug)}, ${node.aliases},
       ${node.summary}, ${node.weight}, ${node.sourceCount}, ${node.memoryIds},
-      ${node.traceIds}, ${node.tags}, ${node.metadata}::jsonb,
+      ${node.traceIds}, ${node.tags}, ${jsonbSafeStringify(node.metadata)}::jsonb,
       ${node.createdAt}, ${node.updatedAt}
     )
   `;
@@ -1004,7 +1008,7 @@ async function insertGraphEdge(edge: MemoryGraphEdge, sql: GraphSqlClient = getS
     VALUES (
       ${edge.id}, ${edge.tenantId}, ${edge.sourceNodeId}, ${edge.targetNodeId}, ${edge.relation},
       ${edge.weight}, ${edge.evidenceCount}, ${edge.memoryIds}, ${edge.traceIds},
-      ${edge.metadata}::jsonb, ${edge.createdAt}, ${edge.updatedAt}
+      ${jsonbSafeStringify(edge.metadata)}::jsonb, ${edge.createdAt}, ${edge.updatedAt}
     )
   `;
 }
@@ -1374,7 +1378,7 @@ function unique(values: string[]) {
 }
 
 function longer(left: string, right: string) {
-  return right.length > left.length ? right.slice(0, 1200) : left.slice(0, 1200);
+  return jsonbSafeTruncate(right.length > left.length ? right : left, 1200);
 }
 
 function objectValue(value: unknown) {
