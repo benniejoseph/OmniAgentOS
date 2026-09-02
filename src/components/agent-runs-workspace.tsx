@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -8,6 +9,7 @@ import {
   Brain,
   Check,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   Clock3,
   Database,
@@ -19,6 +21,7 @@ import {
   Map as MapIcon,
   MessageSquareText,
   MessagesSquare,
+  MonitorPlay,
   PanelLeftClose,
   PanelLeftOpen,
   Play,
@@ -89,6 +92,18 @@ type BrowserActivityItem = {
   durationMs?: number;
   summary: string;
   error?: string;
+  frame?: {
+    id: string;
+    at: string;
+    mimeType: string;
+    byteCount: number;
+    executionId: string;
+    operation: string;
+    pageOrigin?: string;
+    pageTitle?: string;
+    contentUrl: string;
+  };
+  frameStatus?: "captured" | "suppressed" | "unavailable";
 };
 type TabKey = "memory" | "context" | "plan" | "execute" | "evidence";
 
@@ -581,6 +596,7 @@ export function AgentRunsWorkspace({
         if (disposed) return;
         const run = asRecord(payload.run);
         const status = stringValue(run.status);
+        void refreshBrowserActivity(activeAgentRunId);
         const statusChanged = Boolean(status && status !== directRunStatusRef.current);
         if (status) directRunStatusRef.current = status;
         if (status === "waiting_approval") {
@@ -1745,6 +1761,14 @@ export function AgentRunsWorkspace({
                 />
               ) : null}
 
+              {activeAgentRunId && selectedActivityRunId === activeAgentRunId && browserActivity.some((item) => item.frame) ? (
+                <InlineBrowserView
+                  items={browserActivity}
+                  live={loading === "agent" || (!agentRunTerminal && Boolean(activeAgentRunId))}
+                  onOpen={() => openTaskDetails("execute", activeAgentRunId)}
+                />
+              ) : null}
+
               {waitingApproval || activeWorkflowStatus === "waiting_approval" ? (
                 <div className="ml-0 flex max-w-2xl items-start justify-between gap-4 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 sm:ml-8">
                   <div className="flex min-w-0 items-start gap-3">
@@ -1929,7 +1953,10 @@ export function AgentRunsWorkspace({
             aria-modal="true"
             aria-labelledby="task-details-title"
             tabIndex={-1}
-            className="command-details max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-t-2xl border border-line/80 bg-surface shadow-2xl outline-none sm:rounded-2xl"
+            className={clsx(
+              "command-details max-h-[92vh] w-full overflow-y-auto rounded-t-2xl border border-line/80 bg-surface shadow-2xl outline-none sm:rounded-2xl",
+              activeTab === "execute" ? "max-w-6xl" : "max-w-4xl",
+            )}
           >
             <div className="border-b border-line/80 px-4 pt-4 sm:px-5">
               <div className="flex items-start justify-between gap-4">
@@ -2284,6 +2311,7 @@ export function AgentRunsWorkspace({
                   items={browserActivity}
                   state={browserActivityState}
                   error={browserActivityError}
+                  live={loading === "agent" && selectedActivityRunId === activeAgentRunId}
                   onRefresh={() => void refreshBrowserActivity(selectedActivityRunId)}
                 />
                 {!selectedActivityRunId || selectedActivityRunId === activeAgentRunId ? (
@@ -2740,95 +2768,306 @@ function ContextSelectionList({
   );
 }
 
+function InlineBrowserView({
+  items,
+  live,
+  onOpen,
+}: {
+  items: BrowserActivityItem[];
+  live: boolean;
+  onOpen: () => void;
+}) {
+  const latestItem = [...items].reverse().find((item) => item.frame);
+  const frame = latestItem?.frame;
+  if (!frame) return null;
+  return (
+    <article className={clsx("flex justify-start", workspaceStyles.browserInlineTurn)}>
+      <button
+        type="button"
+        onClick={onOpen}
+        className={workspaceStyles.browserInline}
+        aria-haspopup="dialog"
+        aria-label="Open browser replay"
+      >
+        <span className={workspaceStyles.browserInlineHeader}>
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <MonitorPlay size={15} aria-hidden="true" />
+            <span className="truncate text-xs font-semibold">Browser view</span>
+          </span>
+          <span className={workspaceStyles.browserLiveLabel} data-live={live || undefined}>
+            <span aria-hidden="true" />
+            {live ? "Live" : "Replay"}
+          </span>
+        </span>
+        <span className={workspaceStyles.browserInlineFrame}>
+          <Image
+            key={frame.id}
+            src={frame.contentUrl}
+            alt=""
+            fill
+            sizes="(max-width: 640px) 92vw, 560px"
+            unoptimized
+            className={workspaceStyles.browserFrameImage}
+          />
+        </span>
+        <span className={workspaceStyles.browserInlineFooter}>
+          <span className="min-w-0">
+            <span className="block truncate text-xs font-semibold">
+              {frame.pageTitle || latestItem.action}
+            </span>
+            <span className="mt-0.5 block truncate font-mono text-[10px] text-white/55">
+              {frame.pageOrigin || latestItem.targetOrigin || "Isolated browser"}
+            </span>
+          </span>
+          <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-semibold text-white/75">
+            {items.filter((item) => item.frame).length} frames
+            <ChevronRight size={13} aria-hidden="true" />
+          </span>
+        </span>
+      </button>
+    </article>
+  );
+}
+
 function BrowserActivityTimeline({
   runId,
   items,
   state,
   error,
+  live,
   onRefresh,
 }: {
   runId: string;
   items: BrowserActivityItem[];
   state: "idle" | "loading" | "ready" | "error";
   error?: string;
+  live: boolean;
   onRefresh: () => void;
 }) {
+  const framedItems = useMemo(() => items.filter((item) => item.frame), [items]);
+  const latestFrameId = framedItems.at(-1)?.frame?.id || "";
+  const [selectedFrameId, setSelectedFrameId] = useState("");
+  useEffect(() => {
+    setSelectedFrameId((current) =>
+      !live && current && framedItems.some((item) => item.frame?.id === current)
+        ? current
+        : latestFrameId
+    );
+  }, [framedItems, latestFrameId, live]);
   if (!runId) return null;
+  const selectedIndex = Math.max(
+    0,
+    framedItems.findIndex((item) => item.frame?.id === selectedFrameId),
+  );
+  const selectedItem = framedItems[selectedIndex];
+  const selectedFrame = selectedItem?.frame;
+  const selectRelativeFrame = (offset: number) => {
+    const next = framedItems[selectedIndex + offset]?.frame;
+    if (next) setSelectedFrameId(next.id);
+  };
+
   return (
-    <section className="mb-4 overflow-hidden rounded-xl border border-primary/20 bg-gradient-to-br from-primary/10 via-background to-background" aria-label="Browser activity">
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-line/80 px-4 py-3">
+    <section className={workspaceStyles.browserViewer} aria-label="Browser activity">
+      <header className={workspaceStyles.browserViewerHeader}>
         <div className="flex min-w-0 items-start gap-3">
-          <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary/15 text-primary">
-            <Globe2 size={16} aria-hidden="true" />
+          <span className={workspaceStyles.browserViewerIcon}>
+            <MonitorPlay size={17} aria-hidden="true" />
           </span>
           <div className="min-w-0">
-            <p className="text-sm font-semibold">Browser activity</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-semibold">Browser view</p>
+              {framedItems.length ? (
+                <span className={workspaceStyles.browserLiveLabel} data-live={live || undefined}>
+                  <span aria-hidden="true" />
+                  {live ? "Live" : "Replay"}
+                </span>
+              ) : null}
+            </div>
             <p className="mt-1 text-xs leading-5 text-muted">
-              Durable receipts from the isolated Playwright session.
+              Watch the isolated Playwright session and replay each retained step.
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={state === "loading"}
-          className="inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface hover:text-foreground disabled:opacity-50"
-        >
-          <RefreshCw size={13} className={state === "loading" ? "animate-spin" : ""} aria-hidden="true" />
-          Refresh
-        </button>
+        <div className="flex items-center gap-1">
+          {framedItems.length ? (
+            <span className="hidden pr-2 text-[11px] text-muted sm:inline">
+              {selectedIndex + 1} of {framedItems.length}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={state === "loading"}
+            className="inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={state === "loading" ? "animate-spin" : ""} aria-hidden="true" />
+            Refresh
+          </button>
+        </div>
       </header>
       {state === "loading" && !items.length ? (
-        <div className="flex min-h-28 items-center justify-center gap-2 px-4 text-sm text-muted">
+        <div className="flex min-h-72 items-center justify-center gap-2 px-4 text-sm text-muted">
           <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-          Loading browser activity…
+          Opening browser view…
         </div>
       ) : error ? (
         <div className="m-3 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm leading-6 text-muted" role="status">
           {error}
         </div>
       ) : items.length ? (
-        <ol className="divide-y divide-line/80">
-          {items.map((item, index) => (
-            <li key={item.id} className="grid grid-cols-[auto_1fr] gap-3 px-4 py-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
-              <span className={clsx(
-                "grid size-7 place-items-center rounded-full text-xs font-semibold",
-                item.status === "executed"
-                  ? "bg-success/15 text-success"
-                  : item.status === "approval_required"
-                    ? "bg-warning/15 text-warning"
-                    : item.status === "failed" || item.status === "blocked" || item.status === "rejected"
-                      ? "bg-danger/15 text-danger"
-                      : "bg-primary/15 text-primary",
-              )}>
-                {item.status === "executed" ? <Check size={13} aria-hidden="true" /> : index + 1}
-              </span>
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <p className="text-sm font-semibold">{item.action}</p>
-                  <span className="rounded-full bg-surface px-2 py-0.5 font-mono text-[10px] text-muted">
-                    {item.status.replaceAll("_", " ")}
+        <div className={workspaceStyles.browserViewerLayout}>
+          <div className={workspaceStyles.browserStageColumn}>
+            {selectedFrame && selectedItem ? (
+              <div className={workspaceStyles.browserStage}>
+                <div className={workspaceStyles.browserChrome}>
+                  <span className={workspaceStyles.browserTrafficLights} aria-hidden="true"><i /><i /><i /></span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-white/60">
+                    {selectedFrame.pageOrigin || selectedItem.targetOrigin || "Isolated browser session"}
                   </span>
+                  <ShieldCheck size={13} className="shrink-0 text-emerald-300/75" aria-label="Governed browser" />
                 </div>
-                <p className="mt-1 text-xs leading-5 text-muted">{item.error || item.summary}</p>
-                {item.targetOrigin ? (
-                  <p className="mt-1 truncate font-mono text-[11px] text-primary">{item.targetOrigin}</p>
-                ) : null}
+                <div className={workspaceStyles.browserFrameCanvas}>
+                  <Image
+                    key={selectedFrame.id}
+                    src={selectedFrame.contentUrl}
+                    alt={`Browser frame after ${selectedItem.action.toLowerCase()}${selectedFrame.pageTitle ? ` on ${selectedFrame.pageTitle}` : ""}.`}
+                    fill
+                    sizes="(max-width: 1024px) 94vw, 760px"
+                    unoptimized
+                    className={workspaceStyles.browserFrameImage}
+                  />
+                </div>
+                <div className={workspaceStyles.browserStageCaption}>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-white">
+                      {selectedFrame.pageTitle || selectedItem.action}
+                    </p>
+                    <p className="mt-1 truncate text-xs text-white/55">
+                      {selectedItem.action} · {formatRelativeThreadTime(selectedFrame.at)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => selectRelativeFrame(-1)}
+                      disabled={selectedIndex === 0}
+                      className={workspaceStyles.browserFrameControl}
+                      aria-label="Previous browser frame"
+                    >
+                      <ChevronLeft size={15} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => selectRelativeFrame(1)}
+                      disabled={selectedIndex >= framedItems.length - 1}
+                      className={workspaceStyles.browserFrameControl}
+                      aria-label="Next browser frame"
+                    >
+                      <ChevronRight size={15} aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
               </div>
-              <div className="col-start-2 flex flex-wrap gap-2 text-[11px] text-muted sm:col-auto sm:justify-end">
-                {item.durationMs !== undefined ? <span>{formatBrowserDuration(item.durationMs)}</span> : null}
-                <time dateTime={item.at}>{formatRelativeThreadTime(item.at)}</time>
+            ) : (
+              <div className={workspaceStyles.browserStageEmpty}>
+                <MonitorPlay size={26} aria-hidden="true" />
+                <p className="mt-3 text-sm font-semibold">Visual replay is not available yet</p>
+                <p className="mt-1 max-w-md text-center text-xs leading-5 text-muted">
+                  These receipts predate frame capture, or the page could not be safely retained.
+                </p>
               </div>
-            </li>
-          ))}
-        </ol>
+            )}
+
+            {framedItems.length > 1 ? (
+              <div className={workspaceStyles.browserFilmstrip} aria-label="Browser replay frames">
+                {framedItems.map((item, index) => {
+                  const frame = item.frame!;
+                  const selected = frame.id === selectedFrame?.id;
+                  return (
+                    <button
+                      type="button"
+                      key={frame.id}
+                      onClick={() => setSelectedFrameId(frame.id)}
+                      className={workspaceStyles.browserFilmstripItem}
+                      aria-label={`Show browser frame ${index + 1}: ${item.action}`}
+                      aria-current={selected ? "true" : undefined}
+                    >
+                      <span className={workspaceStyles.browserFilmstripImage}>
+                        <Image
+                          src={frame.contentUrl}
+                          alt=""
+                          fill
+                          sizes="112px"
+                          unoptimized
+                          className="object-cover"
+                        />
+                      </span>
+                      <span>{index + 1}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+
+          <div className={workspaceStyles.browserActionRail}>
+            <div className="flex items-center justify-between gap-3 px-3 pb-2">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">Action trail</p>
+              <span className="text-[11px] text-muted">{items.length} steps</span>
+            </div>
+            <ol>
+              {items.map((item, index) => {
+                const selected = item.frame?.id === selectedFrame?.id;
+                return (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      onClick={() => item.frame && setSelectedFrameId(item.frame.id)}
+                      disabled={!item.frame}
+                      className={clsx(workspaceStyles.browserAction, selected && workspaceStyles.browserActionSelected)}
+                      aria-current={selected ? "step" : undefined}
+                    >
+                      <span className={clsx(
+                        workspaceStyles.browserActionNode,
+                        item.status === "executed"
+                          ? workspaceStyles.browserActionSuccess
+                          : item.status === "approval_required"
+                            ? workspaceStyles.browserActionWarning
+                            : item.status === "failed" || item.status === "blocked" || item.status === "rejected"
+                              ? workspaceStyles.browserActionDanger
+                              : workspaceStyles.browserActionNeutral,
+                      )}>
+                        {item.status === "executed" ? <Check size={12} aria-hidden="true" /> : index + 1}
+                      </span>
+                      <span className="min-w-0 flex-1 text-left">
+                        <span className="block truncate text-xs font-semibold">{item.action}</span>
+                        <span className="mt-0.5 block truncate text-[11px] text-muted">
+                          {item.frameStatus === "suppressed"
+                            ? "Frame hidden for text entry"
+                            : item.frameStatus === "unavailable"
+                              ? "Frame unavailable"
+                              : item.error || item.targetOrigin || item.status.replaceAll("_", " ")}
+                        </span>
+                      </span>
+                      <time className="shrink-0 text-[10px] text-muted" dateTime={item.at}>
+                        {item.durationMs !== undefined ? formatBrowserDuration(item.durationMs) : formatRelativeThreadTime(item.at)}
+                      </time>
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        </div>
       ) : (
-        <p className="px-4 py-5 text-sm leading-6 text-muted">
-          No connected Playwright actions were recorded for this run.
-        </p>
+        <div className={workspaceStyles.browserStageEmpty}>
+          <Globe2 size={24} aria-hidden="true" />
+          <p className="mt-3 text-sm font-semibold">No browser activity</p>
+          <p className="mt-1 text-xs leading-5 text-muted">This run did not use the connected Playwright browser.</p>
+        </div>
       )}
-      <p className="border-t border-line/80 px-4 py-2.5 text-[11px] leading-5 text-muted">
-        Privacy view: destinations are limited to site origins. Page content, entered values, selectors, credentials, and private reasoning are never shown here.
+      <p className={workspaceStyles.browserPrivacyNote}>
+        Retained frames are owner-scoped run evidence. Text-entry and file-upload steps omit capture; screenshots may still reflect what the visited page renders. Tool inputs, selectors, credentials, and private reasoning are not included in the action trail.
       </p>
     </section>
   );

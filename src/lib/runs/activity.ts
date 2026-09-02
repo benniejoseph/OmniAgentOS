@@ -1,6 +1,7 @@
 import { isOmniAgentPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { listMcpConnectors, parseMcpToolId } from "@/lib/connectors/store";
 import { listStreamEvents } from "@/lib/events/store";
+import { listRunBrowserFrames, type BrowserFrameSummary } from "@/lib/browser/frames";
 import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
 import type { ToolExecutionRecord, ToolExecutionStatus } from "@/lib/tools/types";
 
@@ -37,6 +38,8 @@ export type BrowserActivityItem = {
   durationMs?: number;
   summary: string;
   error?: string;
+  frame?: BrowserFrameSummary & { contentUrl: string };
+  frameStatus?: "captured" | "suppressed" | "unavailable";
 };
 
 export async function listRunBrowserActivity(
@@ -48,19 +51,30 @@ export async function listRunBrowserActivity(
     limit: 2_000,
   });
   const eventByExecutionId = new Map<string, (typeof events)[number]>();
+  const frameStatusByExecutionId = new Map<string, "suppressed" | "unavailable">();
   for (const event of events) {
-    if (event.type !== "run.tool") continue;
     const executionId = stringField(event.payload, "executionId");
-    if (executionId) eventByExecutionId.set(executionId, event);
+    if (!executionId) continue;
+    if (event.type === "run.tool") {
+      eventByExecutionId.set(executionId, event);
+    } else if (event.type === "browser.frame.suppressed") {
+      frameStatusByExecutionId.set(executionId, "suppressed");
+    } else if (event.type === "browser.frame.failed") {
+      frameStatusByExecutionId.set(executionId, "unavailable");
+    }
   }
   if (!eventByExecutionId.size) return [];
 
-  const [executions, connectors] = await Promise.all([
+  const [executions, connectors, frames] = await Promise.all([
     getToolExecutionsByIds([...eventByExecutionId.keys()], {
       tenantId: options.tenantId,
     }),
     listMcpConnectors(100, { tenantId: options.tenantId }),
+    listRunBrowserFrames(runId, options),
   ]);
+  const frameByExecutionId = new Map(
+    frames.map((frame) => [frame.executionId, frame] as const),
+  );
   const playwrightConnectorIds = new Set(
     connectors
       .filter((connector) => isOmniAgentPlaywrightMcpEndpoint(connector.endpoint))
@@ -82,6 +96,10 @@ export async function listRunBrowserActivity(
     if (!event) return [];
     const durationMs = executionDurationMs(execution);
     const failure = browserFailure(execution);
+    const frame = frameByExecutionId.get(execution.id);
+    const frameStatus: BrowserActivityItem["frameStatus"] = frame
+      ? "captured"
+      : frameStatusByExecutionId.get(execution.id);
     return [{
       id: execution.id,
       sequence: event.seq,
@@ -89,10 +107,17 @@ export async function listRunBrowserActivity(
       action: browserActionLabels[operation],
       operation,
       status: execution.status,
-      targetOrigin: browserTargetOrigin(operation, execution.input),
+      targetOrigin: frame?.pageOrigin || browserTargetOrigin(operation, execution.input),
       durationMs,
       summary: browserActivitySummary(execution.status),
       error: failure,
+      frame: frame
+        ? {
+            ...frame,
+            contentUrl: `/api/runs/${encodeURIComponent(runId)}/activity/frames/${encodeURIComponent(frame.id)}`,
+          }
+        : undefined,
+      frameStatus,
     }];
   }).sort((left, right) => left.sequence - right.sequence);
 }
