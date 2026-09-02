@@ -153,6 +153,11 @@ const gateway = createServer((request, response) => {
       } else if (error instanceof GatewayRequestError) {
         writeJson(response, error.status, { error: error.message });
       } else {
+        console.error(JSON.stringify({
+          level: "error",
+          message: "Browser gateway request failed.",
+          error: safeErrorMessage(error),
+        }));
         writeJson(response, 502, { error: "Browser gateway request failed." });
       }
     } else if (!response.destroyed) {
@@ -459,6 +464,7 @@ function internalMcpRequest(port, body, sessionId) {
       accept: "application/json, text/event-stream",
       "content-length": Buffer.byteLength(body),
       "content-type": "application/json",
+      host: LOOPBACK_HOST,
       "mcp-protocol-version": MCP_KEEPER_PROTOCOL_VERSION,
     };
     if (sessionId) headers["mcp-session-id"] = sessionId;
@@ -550,7 +556,9 @@ function proxyMcpRequest(request, response, upstreamPort, requestBody) {
       method: request.method,
       path: MCP_PATH,
       headers: filteredHeaders(request.headers, MCP_REQUEST_HEADERS, {
-        host: `${LOOPBACK_HOST}:${upstreamPort}`,
+        // Playwright's DNS-rebinding guard compares the Host header against
+        // --allowed-hosts without normalizing the ephemeral upstream port.
+        host: LOOPBACK_HOST,
       }),
     });
     upstream.setTimeout(MCP_UPSTREAM_INACTIVITY_MS, () => {
@@ -1098,6 +1106,11 @@ function boundedInteger(value, fallback, minimum, maximum) {
 
 function safeRuntimeValue(value) {
   return String(value || "unknown").replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 128) || "unknown";
+}
+
+function safeErrorMessage(error) {
+  const value = error instanceof Error ? error.message : "Unknown internal error.";
+  return value.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 256) || "Unknown internal error.";
 }
 
 function delay(milliseconds) {
