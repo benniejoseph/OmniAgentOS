@@ -1,0 +1,505 @@
+.council {
+  --council-ink: var(--foreground);
+  --council-muted: var(--muted);
+  --council-line: var(--line);
+  --council-panel: var(--surface);
+  position: relative;
+  margin-bottom: 1rem;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--council-line) 84%, transparent);
+  border-radius: 1.55rem;
+  color: var(--council-ink);
+  background:
+    radial-gradient(circle at 50% 42%, color-mix(in oklab, var(--primary) 10%, transparent), transparent 34%),
+    linear-gradient(145deg, color-mix(in oklab, var(--council-panel) 95%, var(--primary) 5%), var(--background));
+  box-shadow: 0 28px 70px -58px color-mix(in oklab, var(--foreground) 44%, transparent);
+}
+
+.header {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.15rem;
+  border-bottom: 1px solid color-mix(in oklab, var(--council-line) 70%, transparent);
+  background: color-mix(in oklab, var(--council-panel) 76%, transparent);
+  backdrop-filter: blur(18px);
+}
+
+.titleGroup {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: .75rem;
+}
+
+.titleIcon {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex: none;
+  place-items: center;
+  border: 1px solid color-mix(in oklab, var(--primary) 26%, var(--council-line));
+  border-radius: .8rem;
+  color: var(--primary);
+  background: color-mix(in oklab, var(--primary) 8%, var(--council-panel));
+}
+
+.titleGroup h3 {
+  margin: .08rem 0 0;
+  font-size: .98rem;
+  line-height: 1.2;
+  letter-spacing: -.015em;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--council-muted);
+  font-size: .61rem;
+  font-weight: 760;
+  letter-spacing: .15em;
+  text-transform: uppercase;
+}
+
+.councilStatus {
+  display: inline-flex;
+  min-height: 2rem;
+  flex: none;
+  align-items: center;
+  gap: .45rem;
+  border: 1px solid color-mix(in oklab, var(--primary) 24%, var(--council-line));
+  border-radius: 999px;
+  padding: 0 .72rem;
+  color: color-mix(in oklab, var(--primary) 82%, var(--council-ink));
+  background: color-mix(in oklab, var(--primary) 7%, var(--council-panel));
+  font-size: .68rem;
+  font-weight: 720;
+}
+
+.councilStatus.isComplete {
+  border-color: color-mix(in oklab, var(--success) 28%, var(--council-line));
+  color: color-mix(in oklab, var(--success) 80%, var(--council-ink));
+  background: color-mix(in oklab, var(--success) 7%, var(--council-panel));
+}
+
+.liveDot {
+  width: .42rem;
+  height: .42rem;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 .22rem color-mix(in oklab, currentColor 13%, transparent);
+  animation: livePulse 2s ease-in-out infinite;
+}
+
+.chamber {
+  position: relative;
+  min-height: 32rem;
+  isolation: isolate;
+}
+
+.constellation,
+.connections,
+.seats {
+  position: absolute;
+  inset: 0;
+}
+
+.constellation {
+  z-index: -2;
+  overflow: hidden;
+  opacity: .8;
+  background-image: radial-gradient(circle, color-mix(in oklab, var(--primary) 26%, transparent) .7px, transparent .9px);
+  background-size: 22px 22px;
+  -webkit-mask-image: radial-gradient(circle at 50% 48%, black, transparent 78%);
+  mask-image: radial-gradient(circle at 50% 48%, black, transparent 78%);
+}
+
+.constellation > span {
+  position: absolute;
+  width: .35rem;
+  height: .35rem;
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow: 0 0 1.2rem .2rem color-mix(in oklab, var(--primary) 38%, transparent);
+}
+
+.fieldOne { top: 15%; left: 32%; }
+.fieldTwo { top: 68%; right: 30%; animation-delay: -1.2s !important; }
+.fieldThree { top: 38%; right: 13%; animation-delay: -2.4s !important; }
+
+.connections {
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.connections line {
+  vector-effect: non-scaling-stroke;
+  stroke: color-mix(in oklab, var(--primary) 28%, var(--council-line));
+  stroke-width: 1.15;
+  stroke-dasharray: 2.5 7;
+  animation: signalFlow 4.5s linear infinite;
+}
+
+.connections circle {
+  vector-effect: non-scaling-stroke;
+  fill: var(--council-panel);
+  stroke: var(--primary);
+  stroke-width: 1.5;
+}
+
+.connections .completed line { stroke: color-mix(in oklab, var(--success) 48%, var(--council-line)); }
+.connections .failed line { stroke: color-mix(in oklab, var(--danger) 56%, var(--council-line)); }
+
+.synthesisCore {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  display: grid;
+  width: 10.4rem;
+  height: 10.4rem;
+  translate: -50% -50%;
+  place-content: center;
+  justify-items: center;
+  border: 1px solid color-mix(in oklab, var(--primary) 36%, var(--council-line));
+  border-radius: 50%;
+  text-align: center;
+  background:
+    radial-gradient(circle at 50% 38%, color-mix(in oklab, var(--primary) 18%, var(--council-panel)), var(--council-panel) 68%);
+  box-shadow:
+    0 0 0 .65rem color-mix(in oklab, var(--primary) 5%, transparent),
+    0 1.3rem 3rem -2.1rem color-mix(in oklab, var(--primary) 74%, transparent);
+}
+
+.coreOrbit {
+  position: absolute;
+  inset: -.55rem;
+  border: 1px dashed color-mix(in oklab, var(--primary) 34%, transparent);
+  border-radius: inherit;
+  animation: coreOrbit 18s linear infinite;
+}
+
+.coreGlyph {
+  display: grid;
+  width: 3rem;
+  height: 3rem;
+  place-items: center;
+  margin-bottom: .55rem;
+  border-radius: 1rem;
+  color: var(--primary);
+  background: color-mix(in oklab, var(--primary) 10%, var(--council-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 22%, transparent);
+}
+
+.synthesisCore strong {
+  font-size: .86rem;
+  letter-spacing: -.01em;
+}
+
+.synthesisCore small {
+  max-width: 7.8rem;
+  margin-top: .25rem;
+  color: var(--council-muted);
+  font-size: .61rem;
+  line-height: 1.45;
+}
+
+.seat {
+  --agent-color: var(--primary);
+  position: absolute;
+  top: var(--seat-y);
+  left: var(--seat-x);
+  z-index: 2;
+  display: grid;
+  width: min(14.5rem, 30%);
+  min-height: 7rem;
+  grid-template-columns: 3.25rem minmax(0, 1fr);
+  gap: .7rem;
+  translate: -50% -50%;
+  border: 1px solid color-mix(in oklab, var(--agent-color) 28%, var(--council-line));
+  border-radius: 1.15rem;
+  padding: .72rem;
+  color: var(--council-ink);
+  background: color-mix(in oklab, var(--agent-color) 5%, var(--council-panel));
+  box-shadow: 0 1rem 2.4rem -2rem color-mix(in oklab, var(--agent-color) 52%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.seat[data-agent="atlas"] { --agent-color: oklch(.63 .15 164); }
+.seat[data-agent="scout"] { --agent-color: oklch(.62 .15 245); }
+.seat[data-agent="forge"] { --agent-color: oklch(.72 .16 75); }
+.seat[data-agent="sentinel"] { --agent-color: oklch(.62 .18 25); }
+.seat[data-agent="mnemosyne"] { --agent-color: oklch(.64 .16 300); }
+
+.seat.failed {
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--council-line));
+}
+
+.memberCopy { min-width: 0; }
+
+.memberHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .45rem;
+  color: var(--agent-color);
+}
+
+.memberHeading strong {
+  overflow: hidden;
+  color: var(--council-ink);
+  font-size: .79rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memberCopy > span {
+  display: block;
+  overflow: hidden;
+  margin-top: .18rem;
+  color: var(--agent-color);
+  font-size: .56rem;
+  font-weight: 720;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memberCopy p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: .5rem 0 0;
+  color: var(--council-muted);
+  font-size: .61rem;
+  line-height: 1.42;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.memberMeta {
+  display: flex;
+  justify-content: space-between;
+  gap: .5rem;
+  margin-top: .55rem;
+  color: var(--council-muted);
+  font-size: .55rem;
+}
+
+.confidenceTrack {
+  display: block;
+  overflow: hidden;
+  height: 2px;
+  margin-top: .34rem;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--agent-color) 14%, var(--council-line));
+}
+
+.confidenceTrack > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--agent-color);
+}
+
+.statusSpinner { animation: spin 1s linear infinite; }
+
+.overflowNote {
+  margin: -.3rem 1rem .85rem;
+  color: var(--council-muted);
+  font-size: .66rem;
+  text-align: center;
+}
+
+.verdict {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .8rem;
+  margin: 0 .85rem .85rem;
+  border: 1px solid color-mix(in oklab, var(--success) 25%, var(--council-line));
+  border-radius: 1rem;
+  padding: .8rem;
+  background: color-mix(in oklab, var(--success) 6%, var(--council-panel));
+}
+
+.verdict-revised {
+  border-color: color-mix(in oklab, var(--warning) 30%, var(--council-line));
+  background: color-mix(in oklab, var(--warning) 6%, var(--council-panel));
+}
+
+.verdict-failed {
+  border-color: color-mix(in oklab, var(--danger) 32%, var(--council-line));
+  background: color-mix(in oklab, var(--danger) 6%, var(--council-panel));
+}
+
+.verdictIcon {
+  display: grid;
+  width: 2.2rem;
+  height: 2.2rem;
+  place-items: center;
+  border-radius: .72rem;
+  color: var(--success);
+  background: color-mix(in oklab, var(--success) 12%, var(--council-panel));
+}
+
+.verdict-failed .verdictIcon {
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 12%, var(--council-panel));
+}
+
+.verdictLabel {
+  margin: 0;
+  color: var(--council-ink) !important;
+  font-size: .72rem !important;
+  font-weight: 760;
+}
+
+.verdictCopy > p:not(.verdictLabel) {
+  margin: .18rem 0 0;
+  color: var(--council-muted);
+  font-size: .64rem;
+  line-height: 1.45;
+}
+
+.verdictCopy small {
+  display: block;
+  margin-top: .28rem;
+  color: var(--council-muted);
+  font-size: .58rem;
+}
+
+.score {
+  display: grid;
+  min-width: 3.25rem;
+  justify-items: center;
+  border-left: 1px solid var(--council-line);
+  padding-left: .8rem;
+}
+
+.score strong { font-size: 1.15rem; line-height: 1; }
+.score span { margin-top: .2rem; color: var(--council-muted); font-size: .54rem; letter-spacing: .1em; text-transform: uppercase; }
+
+@keyframes signalFlow { to { stroke-dashoffset: -19; } }
+@keyframes coreOrbit { to { rotate: 360deg; } }
+@keyframes livePulse { 50% { opacity: .45; scale: .78; } }
+@keyframes spin { to { rotate: 360deg; } }
+
+@media (max-width: 860px) {
+  .chamber {
+    display: grid;
+    min-height: 0;
+    gap: .75rem;
+    padding: 1rem;
+  }
+
+  .connections,
+  .constellation { display: none; }
+
+  .synthesisCore {
+    position: relative;
+    top: auto;
+    left: auto;
+    width: 100%;
+    height: auto;
+    min-height: 7rem;
+    translate: none;
+    border-radius: 1.1rem;
+  }
+
+  .coreOrbit { display: none; }
+
+  .seats {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .75rem;
+  }
+
+  .seat {
+    position: relative;
+    top: auto;
+    left: auto;
+    width: auto;
+    min-height: 7.4rem;
+    translate: none;
+  }
+}
+
+@container (max-width: 44rem) {
+  .chamber {
+    display: grid;
+    min-height: 0;
+    gap: .75rem;
+    padding: 1rem;
+  }
+
+  .connections,
+  .constellation { display: none; }
+
+  .synthesisCore {
+    position: relative;
+    top: auto;
+    left: auto;
+    width: 100%;
+    height: auto;
+    min-height: 7rem;
+    translate: none;
+    border-radius: 1.1rem;
+  }
+
+  .coreOrbit { display: none; }
+
+  .seats {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .75rem;
+  }
+
+  .seat {
+    position: relative;
+    top: auto;
+    left: auto;
+    width: auto;
+    min-height: 7.4rem;
+    translate: none;
+  }
+}
+
+@container (max-width: 32rem) {
+  .councilStatus { padding: 0 .58rem; font-size: 0; }
+  .seats { grid-template-columns: 1fr; }
+  .seat { grid-template-columns: 2.8rem minmax(0, 1fr); }
+  .seat > [data-agent] { width: 2.8rem; height: 2.8rem; }
+  .verdict { grid-template-columns: auto minmax(0, 1fr); }
+  .score { display: none; }
+}
+
+@media (max-width: 580px) {
+  .header { align-items: flex-start; }
+  .councilStatus { padding: 0 .58rem; font-size: 0; }
+  .councilStatus svg,
+  .councilStatus .liveDot { margin: 0; }
+  .seats { grid-template-columns: 1fr; }
+  .seat { grid-template-columns: 2.8rem minmax(0, 1fr); }
+  .seat > [data-agent] { width: 2.8rem; height: 2.8rem; }
+  .verdict { grid-template-columns: auto minmax(0, 1fr); }
+  .score { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .liveDot,
+  .connections line,
+  .coreOrbit,
+  .statusSpinner,
+  .constellation > span {
+    animation: none !important;
+  }
+}

@@ -61,6 +61,8 @@ export type AgentRunContinuation = {
   };
   /** Preserves the owner's memory boundary across approval resumes. */
   memoryScope?: "session" | "project" | "all";
+  /** Captured, validated source metadata needed to ground the resumed answer. */
+  citationSources?: GroundingReport["sources"];
   /** Present for provider-neutral Gemini, Anthropic, Bedrock, and gateway tool turns. */
   providerToolState?: AgentProviderToolContinuation;
   createdAt: string;

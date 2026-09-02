@@ -18,14 +18,11 @@ import {
   Map as MapIcon,
   MessageSquareText,
   MessagesSquare,
-  Network,
   PanelLeftClose,
   PanelLeftOpen,
   Play,
   Plus,
   RefreshCw,
-  Search,
-  Hammer,
   ShieldCheck,
   Sparkles,
   Square,
@@ -43,6 +40,7 @@ import {
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
 import { ConversationCanvas } from "@/components/conversation-canvas";
+import { CouncilExecutionMap } from "@/components/agents/council-execution-map";
 import { VoiceMode } from "@/components/voice/voice-mode";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 
@@ -55,7 +53,15 @@ type GroundingReport = {
   status: "verified" | "not_required" | "missing" | "invalid";
   citedIds: string[];
   invalidIds: string[];
-  sources: Array<{ citationId: string; kind: string; title: string; confidence: number }>;
+  sources: Array<{
+    citationId: string;
+    kind: string;
+    title: string;
+    confidence?: number;
+    url?: string;
+    snippet?: string;
+    accessedAt?: string;
+  }>;
 };
 type RunFeedback = {
   verdict: "useful" | "needs_work";
@@ -1651,7 +1657,7 @@ export function AgentRunsWorkspace({
                       ) : null}
                     </div>
                     <div className="mt-2">
-                      <ConversationMessageContent content={currentAssistantResponse} />
+                      <ConversationMessageContent content={currentAssistantResponse} grounding={grounding} />
                     </div>
                     <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line/70 pt-3">
                       <button
@@ -1678,21 +1684,49 @@ export function AgentRunsWorkspace({
                         Evidence <ChevronRight size={13} aria-hidden="true" />
                       </button>
                     </div>
-                    {grounding?.sources.some((source) => grounding.citedIds.includes(source.citationId)) ? (
+                    {grounding && citedGroundingSources(grounding).length ? (
                       <details className="mt-3 rounded-xl border border-line/80 bg-background px-3">
                         <summary className="flex min-h-10 cursor-pointer items-center justify-between text-xs font-semibold">
                           Sources used
-                          <span className="text-muted">{grounding.citedIds.length}</span>
+                          <span className="text-muted">{citedGroundingSources(grounding).length}</span>
                         </summary>
                         <div className="space-y-2 border-t border-line/70 py-3">
-                          {grounding.sources.filter((source) => grounding.citedIds.includes(source.citationId)).map((source) => (
-                            <div key={source.citationId} className="rounded-lg bg-surface px-3 py-2 text-xs">
-                              <p className="font-medium text-foreground">{source.title}</p>
-                              <p className="mt-1 font-mono text-muted">[{source.citationId}] · {source.kind} · {Math.round(source.confidence * 100)}%</p>
-                            </div>
-                          ))}
+                          {citedGroundingSources(grounding).map((source, sourceIndex) => {
+                            const sourceUrl = safeExternalUrl(source.url);
+                            return (
+                              <div key={source.citationId} className="rounded-lg bg-surface px-3 py-2 text-xs">
+                                {sourceUrl ? (
+                                  <a
+                                    href={sourceUrl}
+                                    target="_blank"
+                                    rel="noreferrer noopener"
+                                    className="font-medium text-foreground underline decoration-line underline-offset-4 transition hover:text-primary"
+                                  >
+                                    {source.title}
+                                  </a>
+                                ) : (
+                                  <p className="font-medium text-foreground">{source.title}</p>
+                                )}
+                                {source.snippet ? <p className="mt-1 line-clamp-2 leading-5 text-muted">{source.snippet}</p> : null}
+                                <p className="mt-1 font-mono text-muted">
+                                  Source {sourceIndex + 1} · [{source.citationId}] · {source.kind}
+                                  {source.confidence === undefined ? "" : ` · ${Math.round(source.confidence * 100)}%`}
+                                </p>
+                              </div>
+                            );
+                          })}
                         </div>
                       </details>
+                    ) : null}
+                    {grounding?.status === "missing" ? (
+                      <p className="mt-3 rounded-lg border border-warning/25 bg-warning/5 px-3 py-2 text-xs leading-5 text-muted" role="status">
+                        Evidence was available, but this response did not cite it. Open Evidence to review the captured sources.
+                      </p>
+                    ) : null}
+                    {grounding?.invalidIds.length ? (
+                      <p className="mt-3 rounded-lg border border-danger/25 bg-danger/5 px-3 py-2 text-xs leading-5 text-muted" role="status">
+                        Unverified source marker{grounding.invalidIds.length === 1 ? "" : "s"}: {grounding.invalidIds.map((id) => `[${id}]`).join(", ")}
+                      </p>
                     ) : null}
                     {agentResponse && activeAgentRunId && agentRunCompleted ? (
                       <RunFeedbackPanel feedback={runFeedback} saving={feedbackSaving} onSave={saveRunFeedback} />
@@ -2290,9 +2324,23 @@ function InlineTaskProgress({
   );
 }
 
-function ConversationMessageContent({ content }: { content: string }) {
+function ConversationMessageContent({
+  content,
+  grounding,
+}: {
+  content: string;
+  grounding?: GroundingReport;
+}) {
   const lines = content.replaceAll("\r\n", "\n").split("\n");
   const blocks: React.ReactNode[] = [];
+  const citations = new Map(
+    grounding
+      ? citedGroundingSources(grounding).map((source, sourceIndex) => [
+          source.citationId,
+          { source, index: sourceIndex + 1 },
+        ] as const)
+      : [],
+  );
   let index = 0;
 
   while (index < lines.length) {
@@ -2329,10 +2377,10 @@ function ConversationMessageContent({ content }: { content: string }) {
           ? "mt-6 text-lg font-semibold tracking-tight first:mt-0"
           : "mt-5 text-sm font-semibold uppercase tracking-[0.1em] text-muted first:mt-0";
       blocks.push(level === 1
-        ? <h2 key={`heading-${index}`} className={className}><MessageInline text={heading[2]} /></h2>
+        ? <h2 key={`heading-${index}`} className={className}><MessageInline text={heading[2]} citations={citations} /></h2>
         : level === 2
-          ? <h3 key={`heading-${index}`} className={className}><MessageInline text={heading[2]} /></h3>
-          : <h4 key={`heading-${index}`} className={className}><MessageInline text={heading[2]} /></h4>);
+          ? <h3 key={`heading-${index}`} className={className}><MessageInline text={heading[2]} citations={citations} /></h3>
+          : <h4 key={`heading-${index}`} className={className}><MessageInline text={heading[2]} citations={citations} /></h4>);
       index += 1;
       continue;
     }
@@ -2345,7 +2393,7 @@ function ConversationMessageContent({ content }: { content: string }) {
       }
       blocks.push(
         <ul key={`bullets-${index}`} className="my-4 space-y-2 pl-5 text-sm leading-7 text-foreground/90">
-          {items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`} className="list-disc pl-1"><MessageInline text={item} /></li>)}
+          {items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`} className="list-disc pl-1"><MessageInline text={item} citations={citations} /></li>)}
         </ul>,
       );
       continue;
@@ -2359,7 +2407,7 @@ function ConversationMessageContent({ content }: { content: string }) {
       }
       blocks.push(
         <ol key={`numbers-${index}`} className="my-4 space-y-2 pl-5 text-sm leading-7 text-foreground/90">
-          {items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`} className="list-decimal pl-1"><MessageInline text={item} /></li>)}
+          {items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`} className="list-decimal pl-1"><MessageInline text={item} citations={citations} /></li>)}
         </ol>,
       );
       continue;
@@ -2373,7 +2421,7 @@ function ConversationMessageContent({ content }: { content: string }) {
       }
       blocks.push(
         <blockquote key={`quote-${index}`} className="my-4 border-l-2 border-primary pl-4 text-sm italic leading-7 text-muted">
-          <MessageInline text={quote.join(" ")} />
+          <MessageInline text={quote.join(" ")} citations={citations} />
         </blockquote>,
       );
       continue;
@@ -2393,7 +2441,7 @@ function ConversationMessageContent({ content }: { content: string }) {
     }
     blocks.push(
       <p key={`paragraph-${index}`} className="my-3 text-sm leading-7 text-foreground/90 first:mt-0 last:mb-0">
-        <MessageInline text={paragraph.join(" ")} />
+        <MessageInline text={paragraph.join(" ")} citations={citations} />
       </p>,
     );
   }
@@ -2401,20 +2449,55 @@ function ConversationMessageContent({ content }: { content: string }) {
   return <div className="min-w-0 max-w-[72ch]">{blocks}</div>;
 }
 
-function MessageInline({ text }: { text: string }) {
-  const tokens = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)\s]+\))/g);
+function MessageInline({
+  text,
+  citations,
+}: {
+  text: string;
+  citations?: Map<string, { source: GroundingReport["sources"][number]; index: number }>;
+}) {
+  const tokens = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)\s]+\)|\[(?:memory|knowledge|graph|web):[^\]\s]+\])/g);
   return (
     <>
       {tokens.map((token, index) => {
         if (token.startsWith("**") && token.endsWith("**")) {
-          return <strong key={`${token}-${index}`} className="font-semibold text-foreground">{token.slice(2, -2)}</strong>;
+          return <strong key={`${token}-${index}`} className="font-semibold text-foreground"><MessageInline text={token.slice(2, -2)} citations={citations} /></strong>;
         }
         if (token.startsWith("`") && token.endsWith("`")) {
           return <code key={`${token}-${index}`} className="rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[0.88em] text-foreground">{token.slice(1, -1)}</code>;
         }
         const link = /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/.exec(token);
         if (link) {
-          return <a key={`${token}-${index}`} href={link[2]} target="_blank" rel="noreferrer" className="font-medium text-primary underline decoration-primary/35 underline-offset-4 hover:decoration-primary">{link[1]}</a>;
+          return <a key={`${token}-${index}`} href={link[2]} target="_blank" rel="noreferrer noopener" className="font-medium text-primary underline decoration-primary/35 underline-offset-4 hover:decoration-primary">{link[1]}</a>;
+        }
+        const citationId = /^\[((?:memory|knowledge|graph|web):[^\]\s]+)\]$/.exec(token)?.[1];
+        const citation = citationId ? citations?.get(citationId) : undefined;
+        if (citation) {
+          const sourceUrl = safeExternalUrl(citation.source.url);
+          const marker = (
+            <span
+              className="inline-flex min-w-5 items-center justify-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 align-super font-mono text-[0.7em] font-semibold leading-none text-primary"
+              title={`${citation.source.title} · ${citation.source.kind}`}
+            >
+              {citation.index}
+            </span>
+          );
+          return sourceUrl ? (
+            <a
+              key={`${token}-${index}`}
+              href={sourceUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              aria-label={`Source ${citation.index}: ${citation.source.title}`}
+              className="mx-0.5 inline-flex no-underline transition hover:-translate-y-px"
+            >
+              {marker}
+            </a>
+          ) : (
+            <span key={`${token}-${index}`} aria-label={`Source ${citation.index}: ${citation.source.title}`} className="mx-0.5 inline-flex">
+              {marker}
+            </span>
+          );
         }
         return token;
       })}
@@ -2667,36 +2750,6 @@ function TaskProgressTimeline({
       ) : (
         <p className="p-4 text-sm text-muted">Progress updates will appear here as soon as the task starts.</p>
       )}
-    </section>
-  );
-}
-
-function CouncilExecutionMap({ events }: { events: StreamEvent[] }) {
-  const memberEvents = events.filter((event): event is Extract<StreamEvent, { type: "council_member" }> => event.type === "council_member");
-  const latestByAgent = new Map<AgentId, Extract<StreamEvent, { type: "council_member" }>>();
-  for (const event of memberEvents) latestByAgent.set(event.agentId, event);
-  const members = [...latestByAgent.values()];
-  const verdict = [...events].reverse().find((event): event is Extract<StreamEvent, { type: "council_verdict" }> => event.type === "council_verdict");
-  if (!members.length && !verdict) return null;
-  return (
-    <section className="council-execution" aria-label="Live agent council">
-      <header>
-        <div><Network size={15} aria-hidden="true" /><span>Agent council</span></div>
-        <small>{verdict ? "Review complete" : "Independent passes running"}</small>
-      </header>
-      <div className="council-stage">
-        <svg viewBox="0 0 720 220" preserveAspectRatio="none" aria-hidden="true">
-          <path d="M360 108 C285 108 265 42 165 42 M360 108 C285 108 265 178 165 178 M360 108 C435 108 455 42 555 42 M360 108 C435 108 455 178 555 178" />
-        </svg>
-        <div className="council-hub"><span><Sparkles size={17} aria-hidden="true" /></span><strong>Atlas</strong><small>Synthesis</small></div>
-        <div className="council-members">
-          {members.map((member) => {
-            const Icon = member.agentId === "scout" ? Search : member.agentId === "forge" ? Hammer : member.agentId === "sentinel" ? ShieldCheck : member.agentId === "mnemosyne" ? Brain : Sparkles;
-            return <article key={member.agentId} className={clsx(`is-${member.status}`, `agent-${member.agentId}`)}><span><Icon size={15} aria-hidden="true" /></span><div><strong>{member.agentName}</strong><small>{member.status === "thinking" ? "Thinking" : member.status === "failed" ? "Needs retry" : member.confidence === undefined ? "Complete" : `${Math.round(member.confidence * 100)}% confidence`}</small></div>{member.summary ? <p>{member.summary}</p> : null}</article>;
-          })}
-        </div>
-      </div>
-      {verdict ? <footer className={clsx(`is-${verdict.status}`)}><ShieldCheck size={14} aria-hidden="true" /><div><strong>{verdict.status === "passed" ? "Sentinel accepted the answer" : verdict.status === "revised" ? "Atlas revised after critique" : "Critic pass needs retry"}</strong><p>{verdict.assessment}</p></div><span>{Math.round(verdict.score * 100)}%</span></footer> : null}
     </section>
   );
 }
@@ -3315,10 +3368,30 @@ function workflowEventLabel(type: string) {
 }
 
 function groundingLabel(status: GroundingReport["status"]) {
-  if (status === "verified") return "Citations verified";
-  if (status === "not_required") return "No retrieved sources";
-  if (status === "invalid") return "Invalid citation";
+  if (status === "verified") return "Sources cited";
+  if (status === "not_required") return "No citations required";
+  if (status === "invalid") return "Invalid source";
   return "Citation needed";
+}
+
+function citedGroundingSources(grounding: GroundingReport) {
+  const citedIds = new Set(grounding.citedIds);
+  return grounding.sources.filter((source, index, sources) =>
+    citedIds.has(source.citationId) &&
+    sources.findIndex((candidate) => candidate.citationId === source.citationId) === index);
+}
+
+function safeExternalUrl(value?: string) {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.username || url.password) return undefined;
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? url.toString()
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function agentDisplayName(agentId: AgentId) {

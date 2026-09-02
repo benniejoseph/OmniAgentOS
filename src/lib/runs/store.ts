@@ -925,10 +925,50 @@ function parseGroundingReport(value: unknown): GroundingReport | undefined {
   }
   return {
     status: candidate.status,
-    citedIds: Array.isArray(candidate.citedIds) ? candidate.citedIds.map(String) : [],
-    invalidIds: Array.isArray(candidate.invalidIds) ? candidate.invalidIds.map(String) : [],
-    sources: Array.isArray(candidate.sources) ? candidate.sources : [],
+    citedIds: parseCitationIds(candidate.citedIds),
+    invalidIds: parseCitationIds(candidate.invalidIds),
+    sources: parseCitationSources(candidate.sources),
   };
+}
+
+function parseCitationIds(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isCitationId)
+    .slice(0, 100);
+}
+
+function isCitationId(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^(?:memory|knowledge|graph|web):[^\]\s]{1,240}$/.test(value);
+}
+
+function parseCitationSources(value: unknown): GroundingReport["sources"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const source = item as Record<string, unknown>;
+    const kind = source.kind;
+    if (
+      !isCitationId(source.citationId) ||
+      typeof source.evidenceId !== "string" ||
+      typeof source.title !== "string" ||
+      (kind !== "memory" && kind !== "knowledge" && kind !== "graph" && kind !== "web") ||
+      !source.citationId.startsWith(`${kind}:`)
+    ) return [];
+    return [{
+      citationId: source.citationId.slice(0, 256),
+      evidenceId: source.evidenceId.slice(0, 2_000),
+      kind,
+      title: source.title.slice(0, 1_000),
+      confidence: typeof source.confidence === "number" && Number.isFinite(source.confidence)
+        ? Math.min(Math.max(source.confidence, 0), 1)
+        : undefined,
+      url: typeof source.url === "string" ? source.url.slice(0, 2_000) : undefined,
+      snippet: typeof source.snippet === "string" ? source.snippet.slice(0, 2_000) : undefined,
+      accessedAt: typeof source.accessedAt === "string" ? source.accessedAt.slice(0, 100) : undefined,
+    }];
+  }).slice(0, 100);
 }
 
 function parseAgentRunFeedback(value: unknown): AgentRunFeedback | undefined {
@@ -985,6 +1025,7 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
       candidate.memoryScope === "all"
         ? candidate.memoryScope
         : "all",
+    citationSources: parseCitationSources(candidate.citationSources),
     providerToolState: parseProviderToolState(candidate.providerToolState),
     createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : new Date().toISOString(),
     resumeClaimedAt:

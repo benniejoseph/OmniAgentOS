@@ -1,154 +1,487 @@
 .shell {
-  --day-bg: oklch(0.982 0.018 89);
-  --day-paper: oklch(0.997 0.008 90 / .82);
-  --day-paper-solid: oklch(0.992 0.012 90);
-  --day-paper-soft: oklch(0.955 0.026 86 / .72);
-  --day-ink: oklch(0.255 0.042 205);
-  --day-muted: oklch(0.46 0.035 210);
-  --day-line: oklch(0.77 0.04 88 / .48);
-  --day-line-strong: oklch(0.65 0.055 82 / .52);
-  --day-primary: oklch(0.5 0.12 164);
-  --day-primary-ink: oklch(0.99 0.008 95);
-  --day-apricot: oklch(0.91 0.1 68 / .74);
-  --day-peach: oklch(0.95 0.055 48 / .76);
-  --day-sky: oklch(0.91 0.052 223 / .78);
-  --day-mint: oklch(0.92 0.058 158 / .78);
-  --day-shadow: oklch(0.35 0.045 78 / .1);
-  --background: var(--day-bg);
-  --foreground: var(--day-ink);
-  --surface: var(--day-paper-solid);
-  --surface-raised: var(--day-paper-soft);
-  --surface-overlay: color-mix(in oklab, var(--day-paper-solid) 72%, var(--day-line));
-  --muted: var(--day-muted);
-  --line: var(--day-line);
-  --line-strong: var(--day-line-strong);
-  --primary: var(--day-primary);
-  --primary-ink: var(--day-primary-ink);
+  --arsenal-bg: oklch(.975 .02 267);
+  --arsenal-surface: oklch(.995 .008 270 / .82);
+  --arsenal-surface-solid: oklch(.99 .012 270);
+  --arsenal-surface-soft: oklch(.94 .03 270 / .76);
+  --arsenal-ink: oklch(.22 .045 274);
+  --arsenal-muted: oklch(.48 .045 270);
+  --arsenal-line: oklch(.72 .055 270 / .44);
+  --arsenal-line-strong: oklch(.56 .1 274 / .58);
+  --arsenal-primary: oklch(.56 .2 279);
+  --arsenal-primary-ink: oklch(.99 .005 275);
+  --arsenal-cyan: oklch(.79 .13 210);
+  --arsenal-violet: oklch(.72 .17 303);
+  --arsenal-glow: oklch(.71 .17 285 / .22);
+  --arsenal-shadow: oklch(.23 .08 278 / .14);
+  --background: var(--arsenal-bg);
+  --foreground: var(--arsenal-ink);
+  --surface: var(--arsenal-surface-solid);
+  --surface-raised: var(--arsenal-surface-soft);
+  --surface-overlay: color-mix(in oklab, var(--arsenal-surface-solid) 76%, var(--arsenal-primary));
+  --muted: var(--arsenal-muted);
+  --line: var(--arsenal-line);
+  --line-strong: var(--arsenal-line-strong);
+  --primary: var(--arsenal-primary);
+  --primary-ink: var(--arsenal-primary-ink);
   position: relative;
   isolation: isolate;
   min-height: calc(100svh - 4rem);
-  padding: clamp(1rem, 2.4vw, 2.7rem);
   overflow: clip;
-  color: var(--day-ink);
+  padding: clamp(1rem, 2.5vw, 2.8rem);
+  color: var(--arsenal-ink);
   color-scheme: light;
   background:
-    radial-gradient(circle at 83% 5%, var(--day-apricot), transparent 22rem),
-    radial-gradient(circle at 10% 40%, var(--day-sky), transparent 29rem),
-    linear-gradient(145deg, oklch(0.995 0.012 91), var(--day-bg) 52%, oklch(0.968 0.025 80));
+    radial-gradient(circle at 8% 8%, color-mix(in oklab, var(--arsenal-cyan) 28%, transparent), transparent 23rem),
+    radial-gradient(circle at 92% 3%, color-mix(in oklab, var(--arsenal-violet) 24%, transparent), transparent 27rem),
+    linear-gradient(152deg, oklch(.992 .012 255), var(--arsenal-bg) 48%, oklch(.96 .025 290));
 }
 
 :global(:root[data-theme="dark"]) .shell {
-  --day-bg: oklch(0.145 0.014 220);
-  --day-paper: oklch(0.19 0.017 220 / .84);
-  --day-paper-solid: oklch(0.185 0.017 220);
-  --day-paper-soft: oklch(0.23 0.019 220 / .76);
-  --day-ink: oklch(0.95 0.009 220);
-  --day-muted: oklch(0.73 0.026 235);
-  --day-line: oklch(0.38 0.026 225 / .7);
-  --day-line-strong: oklch(0.49 0.04 210 / .7);
-  --day-primary: oklch(0.74 0.13 164);
-  --day-primary-ink: oklch(0.14 0.03 164);
-  --day-apricot: oklch(0.33 0.08 64 / .5);
-  --day-peach: oklch(0.29 0.045 42 / .52);
-  --day-sky: oklch(0.27 0.052 229 / .56);
-  --day-mint: oklch(0.28 0.06 158 / .56);
-  --day-shadow: oklch(0 0 0 / .28);
+  --arsenal-bg: oklch(.115 .028 274);
+  --arsenal-surface: oklch(.16 .035 274 / .84);
+  --arsenal-surface-solid: oklch(.155 .032 274);
+  --arsenal-surface-soft: oklch(.205 .045 274 / .78);
+  --arsenal-ink: oklch(.95 .018 270);
+  --arsenal-muted: oklch(.72 .04 270);
+  --arsenal-line: oklch(.42 .07 276 / .62);
+  --arsenal-line-strong: oklch(.62 .12 278 / .66);
+  --arsenal-primary: oklch(.76 .16 284);
+  --arsenal-primary-ink: oklch(.13 .035 278);
+  --arsenal-cyan: oklch(.72 .14 211);
+  --arsenal-violet: oklch(.7 .18 307);
+  --arsenal-glow: oklch(.64 .19 289 / .28);
+  --arsenal-shadow: oklch(0 0 0 / .38);
   color-scheme: dark;
   background:
-    radial-gradient(circle at 83% 5%, var(--day-apricot), transparent 24rem),
-    radial-gradient(circle at 10% 40%, var(--day-sky), transparent 30rem),
-    linear-gradient(145deg, oklch(0.13 0.015 220), var(--day-bg) 52%, oklch(0.12 0.013 215));
+    radial-gradient(circle at 8% 8%, color-mix(in oklab, var(--arsenal-cyan) 18%, transparent), transparent 25rem),
+    radial-gradient(circle at 92% 3%, color-mix(in oklab, var(--arsenal-violet) 18%, transparent), transparent 28rem),
+    linear-gradient(152deg, oklch(.09 .025 269), var(--arsenal-bg) 48%, oklch(.1 .033 288));
 }
 
-.shell::before,
-.shell::after { position: absolute; z-index: -1; border: 1px solid color-mix(in oklab, var(--day-primary) 28%, transparent); border-radius: 50%; content: ""; pointer-events: none; }
-.shell::before { top: -18rem; right: -9rem; width: 39rem; height: 39rem; }
-.shell::after { bottom: -25rem; left: -17rem; width: 47rem; height: 47rem; border-style: dashed; opacity: .48; }
+.shell::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background-image:
+    linear-gradient(color-mix(in oklab, var(--arsenal-primary) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklab, var(--arsenal-primary) 5%, transparent) 1px, transparent 1px);
+  background-size: 5.5rem 5.5rem;
+  mask-image: linear-gradient(to bottom, black, transparent 55%);
+  content: "";
+  pointer-events: none;
+}
 
-.shell :global(.arsenal-header) { position: relative; align-items: center; max-width: 108rem; margin-bottom: clamp(1.7rem, 3vw, 3rem); padding: clamp(1rem, 2vw, 2rem) clamp(.15rem, 1vw, 1rem) 1.5rem; }
-.shell :global(.arsenal-header)::after { position: absolute; right: 0; bottom: 0; left: 0; height: 1px; background: linear-gradient(90deg, transparent, var(--day-line-strong) 12%, var(--day-line-strong) 70%, transparent); content: ""; }
-.shell :global(.arsenal-kicker) { color: var(--day-primary); font-size: .7rem; letter-spacing: .14em; }
-.shell :global(.arsenal-header h1) { margin-top: .2rem; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: clamp(4rem, 7.5vw, 8rem); font-weight: 500; line-height: .8; letter-spacing: -.075em; color: var(--day-ink); }
-.shell :global(.arsenal-header p:not(.arsenal-kicker)) { max-width: 46rem; margin-top: 1.2rem; color: var(--day-muted); font-size: .9rem; line-height: 1.7; }
-.shell :global(.arsenal-header-meta) { gap: .45rem; margin-top: 1.2rem; }
-.shell :global(.arsenal-header-meta span) { min-height: 2rem; border: 1px solid var(--day-line); border-radius: 999px; padding: 0 .7rem; background: var(--day-paper); backdrop-filter: blur(14px); }
-.shell :global(.arsenal-header-meta strong) { color: var(--day-primary); }
-.shell :global(.action-button), .shell :global(.primary-button) { min-height: 2.75rem; border-radius: 999px; padding-inline: 1rem; }
-.shell :global(.action-button) { border-color: var(--day-line); color: var(--day-ink); background: var(--day-paper); box-shadow: 0 .65rem 2rem var(--day-shadow); }
-.shell :global(.primary-button) { border-color: transparent; color: var(--day-primary-ink); background: var(--day-primary); box-shadow: 0 .8rem 2.4rem color-mix(in oklab, var(--day-primary) 18%, transparent); }
+.shell :global(.arsenal-header) {
+  position: relative;
+  align-items: end;
+  max-width: 112rem;
+  margin-bottom: clamp(1.8rem, 3.3vw, 3.6rem);
+  padding: clamp(.5rem, 1vw, 1rem) 0 1.5rem;
+}
+.shell :global(.arsenal-header)::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--arsenal-primary), color-mix(in oklab, var(--arsenal-cyan) 60%, transparent) 38%, transparent 82%);
+  content: "";
+}
+.headerCopy { max-width: 56rem; }
+.shell :global(.arsenal-kicker) { color: var(--arsenal-primary); font-size: .67rem; letter-spacing: .2em; }
+.headerCopy h1 {
+  margin-top: .45rem;
+  color: var(--arsenal-ink);
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: clamp(4.2rem, 7.6vw, 8.4rem);
+  font-weight: 500;
+  line-height: .78;
+  letter-spacing: -.078em;
+}
+.headerCopy h1 span {
+  color: transparent;
+  -webkit-text-stroke: 1px color-mix(in oklab, var(--arsenal-primary) 68%, var(--arsenal-ink));
+}
+.shell :global(.arsenal-header p:not(.arsenal-kicker)) {
+  max-width: 43rem;
+  margin-top: 1.5rem;
+  color: var(--arsenal-muted);
+  font-size: .92rem;
+  line-height: 1.7;
+}
+.shell :global(.arsenal-header-meta) { gap: .55rem; margin-top: 1.2rem; }
+.shell :global(.arsenal-header-meta span) {
+  min-height: 2.1rem;
+  align-items: center;
+  border: 1px solid var(--arsenal-line);
+  border-radius: 999px;
+  padding: 0 .75rem;
+  background: var(--arsenal-surface);
+  backdrop-filter: blur(14px);
+}
+.shell :global(.arsenal-header-meta strong) { color: var(--arsenal-primary); }
+.shell :global(.action-button),
+.shell :global(.primary-button) { min-height: 2.8rem; border-radius: 999px; padding-inline: 1.05rem; }
+.shell :global(.action-button) {
+  border-color: var(--arsenal-line);
+  color: var(--arsenal-ink);
+  background: var(--arsenal-surface);
+  box-shadow: 0 .7rem 2rem var(--arsenal-shadow);
+}
+.shell :global(.primary-button) {
+  border-color: transparent;
+  color: var(--arsenal-primary-ink);
+  background: var(--arsenal-primary);
+  box-shadow: 0 .8rem 2.4rem color-mix(in oklab, var(--arsenal-primary) 22%, transparent);
+}
 
-.shell :global(.arsenal-layout) { grid-template-columns: 14.5rem minmax(31rem, 1fr) 22rem; min-height: 43rem; max-width: 108rem; gap: clamp(.65rem, 1.2vw, 1rem); overflow: visible; border: 0; border-radius: 0; background: transparent; }
-.shell :global(.arsenal-roster) { overflow: hidden; border: 1px solid var(--day-line); border-radius: 1.8rem 1.8rem 4.5rem 1.8rem; padding: 1.15rem .72rem 2rem; background: var(--day-paper); box-shadow: 0 1.4rem 3.8rem var(--day-shadow); backdrop-filter: blur(18px); }
-.shell :global(.arsenal-section-label) { padding-inline: .65rem; color: var(--day-muted); }
-.shell :global(.arsenal-roster-item) { min-height: 4rem; margin-bottom: .18rem; border: 1px solid transparent; border-radius: 1.25rem; padding: .62rem; color: var(--day-ink); }
-.shell :global(.arsenal-roster-item:hover) { background: var(--day-paper-soft); transform: translateX(2px); }
-.shell :global(.arsenal-roster-item.is-selected) { border-color: color-mix(in oklab, var(--agent-color) 35%, var(--day-line)); background: color-mix(in oklab, var(--agent-color) 10%, var(--day-paper)); box-shadow: inset 3px 0 var(--agent-color); }
-.shell :global(.arsenal-roster-item small) { color: var(--day-muted); }
-.shell :global(.agent-glyph) { border-radius: 50%; color: var(--agent-color); background: color-mix(in oklab, var(--agent-color) 14%, var(--day-paper-solid)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--agent-color) 22%, transparent); }
+.shell :global(.arsenal-layout) {
+  grid-template-columns: 17rem minmax(34rem, 1fr) 24rem;
+  min-height: 48rem;
+  max-width: 112rem;
+  gap: clamp(.7rem, 1.2vw, 1.1rem);
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.shell :global(.arsenal-roster) {
+  overflow: hidden;
+  border: 1px solid var(--arsenal-line);
+  border-radius: 1.4rem;
+  padding: 1.15rem .72rem;
+  background: var(--arsenal-surface);
+  box-shadow: 0 1.4rem 4rem var(--arsenal-shadow);
+  backdrop-filter: blur(18px);
+}
+.rosterHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .5rem;
+  padding: 0 .65rem .8rem;
+}
+.rosterHeading :global(.arsenal-section-label) { padding: 0; color: var(--arsenal-muted); font-size: .61rem; }
+.rosterHeading > span { color: var(--arsenal-primary); font-size: .58rem; font-weight: 750; }
+.shell :global(.arsenal-roster-item) {
+  grid-template-columns: 3rem minmax(0, 1fr) auto;
+  min-height: 5.2rem;
+  margin-bottom: .24rem;
+  border: 1px solid transparent;
+  border-radius: 1rem;
+  padding: .62rem;
+  color: var(--arsenal-ink);
+  transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
+}
+.shell :global(.arsenal-roster-item:hover) { background: var(--arsenal-surface-soft); transform: translateX(3px); }
+.shell :global(.arsenal-roster-item.is-selected) {
+  border-color: color-mix(in oklab, var(--agent-color) 44%, var(--arsenal-line));
+  background: color-mix(in oklab, var(--agent-color) 10%, var(--arsenal-surface));
+  box-shadow: inset 3px 0 var(--agent-color);
+}
+.shell :global(.arsenal-roster-item:focus-visible),
+.shell :global(.arsenal-node:focus-visible),
+.shell :global(.agent-custom-orbit button:focus-visible) { outline: 2px solid var(--arsenal-primary); outline-offset: 3px; }
+.shell :global(.arsenal-roster-item strong) { font-size: .86rem; }
+.shell :global(.arsenal-roster-item small) { color: var(--arsenal-muted); font-size: .65rem; }
+.shell :global(.arsenal-roster-item em) {
+  display: block;
+  margin-top: .28rem;
+  overflow: hidden;
+  color: color-mix(in oklab, var(--agent-color) 78%, var(--arsenal-ink));
+  font-size: .56rem;
+  font-style: normal;
+  font-weight: 720;
+  letter-spacing: .02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rosterMascot { display: grid; place-items: center; }
 
-.shell :global(.arsenal-map) { min-height: 43rem; overflow: hidden; border: 1px solid var(--day-line); border-radius: 5rem 2.2rem 5rem 2.2rem; background: radial-gradient(circle at 50% 50%, color-mix(in oklab, var(--day-mint) 75%, transparent), transparent 15rem), linear-gradient(145deg, color-mix(in oklab, var(--day-sky) 45%, var(--day-paper)), var(--day-paper) 62%); box-shadow: 0 1.8rem 5rem var(--day-shadow); backdrop-filter: blur(18px); }
-.shell :global(.arsenal-map)::after { position: absolute; inset: 10% 8%; border: 1px dashed color-mix(in oklab, var(--day-primary) 24%, transparent); border-radius: 50%; content: ""; pointer-events: none; }
-.shell :global(.arsenal-map-heading) { top: 1.4rem; right: 1.6rem; left: 1.6rem; }
-.shell :global(.arsenal-map-heading strong) { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.05rem; font-weight: 600; color: var(--day-ink); }
-.shell :global(.arsenal-map-heading div > span) { color: var(--day-muted); }
-.shell :global(.arsenal-map-heading > span), .shell :global(.arsenal-map-legend) { border: 1px solid var(--day-line); border-radius: 999px; padding: .45rem .7rem; color: var(--day-primary); background: var(--day-paper); backdrop-filter: blur(14px); }
-.shell :global(.arsenal-map-grid) { opacity: .52; background-image: radial-gradient(circle, color-mix(in oklab, var(--day-primary) 30%, transparent) .75px, transparent .9px); background-size: 27px 27px; }
-.shell :global(.arsenal-links path), .shell :global(.arsenal-links circle) { stroke: color-mix(in oklab, var(--day-primary) 42%, transparent); }
-.shell :global(.arsenal-links circle:last-child) { stroke: var(--day-line); }
-.shell :global(.arsenal-node) { min-width: 6.7rem; border-color: var(--day-line); border-radius: 50% 50% 1.2rem 1.2rem; padding: .75rem; color: var(--day-ink); background: var(--day-paper); box-shadow: 0 1rem 2.7rem var(--day-shadow); backdrop-filter: blur(14px); }
-.shell :global(.arsenal-node:hover), .shell :global(.arsenal-node.is-selected) { border-color: color-mix(in oklab, var(--agent-color) 64%, var(--day-line)); background: color-mix(in oklab, var(--agent-color) 9%, var(--day-paper-solid)); box-shadow: 0 0 0 5px color-mix(in oklab, var(--agent-color) 8%, transparent), 0 1.2rem 3rem var(--day-shadow); transform: translateY(-4px); }
-.shell :global(.arsenal-node small), .shell :global(.arsenal-map-legend) { color: var(--day-muted); }
-.shell :global(.agent-custom-orbit button) { border-color: var(--day-line); color: var(--day-muted); background: var(--day-paper); box-shadow: 0 .7rem 2rem var(--day-shadow); }
+.shell :global(.arsenal-map) {
+  min-height: 48rem;
+  overflow: hidden;
+  border: 1px solid var(--arsenal-line);
+  border-radius: 2rem;
+  background:
+    radial-gradient(circle at 50% 50%, color-mix(in oklab, var(--arsenal-primary) 13%, transparent), transparent 17rem),
+    linear-gradient(145deg, color-mix(in oklab, var(--arsenal-cyan) 7%, var(--arsenal-surface)), var(--arsenal-surface) 54%, color-mix(in oklab, var(--arsenal-violet) 7%, var(--arsenal-surface)));
+  box-shadow: 0 1.8rem 5.5rem var(--arsenal-shadow);
+  backdrop-filter: blur(18px);
+}
+.mapGlow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(72%, 34rem);
+  aspect-ratio: 1;
+  border: 1px solid color-mix(in oklab, var(--arsenal-primary) 20%, transparent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 5rem color-mix(in oklab, var(--arsenal-primary) 3.5%, transparent), 0 0 7rem var(--arsenal-glow);
+  transform: translate(-50%, -50%);
+  animation: fieldPulse 7s ease-in-out infinite;
+}
+.mapGlow::before,
+.mapGlow::after {
+  position: absolute;
+  border: 1px dashed color-mix(in oklab, var(--arsenal-cyan) 30%, transparent);
+  border-radius: 50%;
+  content: "";
+}
+.mapGlow::before { inset: 14%; }
+.mapGlow::after { inset: 34%; border-color: color-mix(in oklab, var(--arsenal-violet) 28%, transparent); }
+.mapStars {
+  position: absolute;
+  inset: 0;
+  opacity: .62;
+  background-image:
+    radial-gradient(circle at 17% 26%, var(--arsenal-primary) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 78% 19%, var(--arsenal-cyan) 0 1.2px, transparent 1.7px),
+    radial-gradient(circle at 83% 73%, var(--arsenal-violet) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 24% 82%, var(--arsenal-primary) 0 1.2px, transparent 1.8px);
+  background-size: 6.2rem 5.4rem, 8.1rem 7.3rem, 7rem 6.1rem, 9rem 8rem;
+  mask-image: radial-gradient(circle at center, black 20%, transparent 82%);
+}
+.shell :global(.arsenal-map-heading) { top: 1.4rem; right: 1.5rem; left: 1.5rem; }
+.shell :global(.arsenal-map-heading strong) {
+  color: var(--arsenal-ink);
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.shell :global(.arsenal-map-heading div > span) { color: var(--arsenal-muted); }
+.shell :global(.arsenal-map-heading > span),
+.shell :global(.arsenal-map-legend) {
+  border: 1px solid var(--arsenal-line);
+  border-radius: 999px;
+  padding: .46rem .72rem;
+  color: var(--arsenal-primary);
+  background: var(--arsenal-surface);
+  backdrop-filter: blur(14px);
+}
+.shell :global(.arsenal-map-grid) {
+  opacity: .36;
+  background-image: radial-gradient(circle, color-mix(in oklab, var(--arsenal-primary) 34%, transparent) .7px, transparent .9px);
+  background-size: 25px 25px;
+}
+.shell :global(.arsenal-links) { inset: 5% 6%; width: 88%; height: 88%; }
+.shell :global(.arsenal-links path),
+.shell :global(.arsenal-links circle) { stroke: color-mix(in oklab, var(--arsenal-primary) 44%, transparent); }
+.shell :global(.arsenal-links path) { stroke-dasharray: 3 10; }
+.shell :global(.arsenal-links circle:last-child) { stroke: var(--arsenal-line); }
+.shell :global(.arsenal-node) {
+  min-width: 9rem;
+  border: 0;
+  border-radius: 1.2rem;
+  padding: .55rem;
+  color: var(--arsenal-ink);
+  background: transparent;
+  box-shadow: none;
+  transition: transform 220ms cubic-bezier(.2,.8,.2,1), background-color 180ms ease;
+}
+.shell :global(.arsenal-node:hover),
+.shell :global(.arsenal-node.is-selected) {
+  border-color: transparent;
+  background: color-mix(in oklab, var(--agent-color) 5%, transparent);
+  box-shadow: none;
+  transform: translateY(-4px);
+}
+.shell :global(.arsenal-node [data-agent]) { transition: filter 220ms ease, transform 220ms cubic-bezier(.2,.8,.2,1); }
+.shell :global(.arsenal-node:hover [data-agent]),
+.shell :global(.arsenal-node.is-selected [data-agent]) { filter: saturate(1.15); transform: scale(1.075); }
+.shell :global(.arsenal-node strong) { margin-top: .1rem; font-size: .8rem; }
+.shell :global(.arsenal-node small) { max-width: 9rem; color: var(--arsenal-muted); font-size: .58rem; }
+.nodeTheme {
+  border: 1px solid color-mix(in oklab, var(--agent-color) 25%, transparent);
+  border-radius: 999px;
+  padding: .18rem .42rem;
+  color: var(--agent-color);
+  background: color-mix(in oklab, var(--agent-color) 8%, var(--arsenal-surface));
+  font-size: .48rem;
+  font-weight: 800;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+.shell :global(.arsenal-node .node-signal) { top: .6rem; right: .8rem; background: var(--agent-color); }
+.shell :global(.node-atlas) { min-width: 11rem; }
+.shell :global(.node-atlas:hover),
+.shell :global(.node-atlas.is-selected) { transform: translate(-50%, calc(-50% - 4px)); }
+.shell :global(.node-scout) { left: 5%; top: 13%; }
+.shell :global(.node-forge) { right: 5%; top: 13%; }
+.shell :global(.node-sentinel) { left: 5%; bottom: 10%; }
+.shell :global(.node-memory) { right: 5%; bottom: 10%; }
+.shell :global(.agent-custom-orbit) { inset: 27% 24%; gap: .4rem; }
+.shell :global(.agent-custom-orbit button) {
+  min-height: 2.6rem;
+  border-color: var(--arsenal-line);
+  color: var(--arsenal-muted);
+  background: var(--arsenal-surface);
+  box-shadow: 0 .7rem 2rem var(--arsenal-shadow);
+}
+.shell :global(.agent-custom-orbit button [data-agent]) { width: 1.7rem; height: 1.7rem; }
 
-.shell :global(.arsenal-inspector) { overflow: hidden auto; border: 1px solid var(--day-line); border-radius: 2rem 4.8rem 2rem 2rem; padding: 1.35rem; color: var(--day-ink); background: linear-gradient(160deg, var(--day-paper), color-mix(in oklab, var(--day-peach) 24%, var(--day-paper))); box-shadow: 0 1.4rem 3.8rem var(--day-shadow); backdrop-filter: blur(18px); }
-.shell :global(.arsenal-inspector-label), .shell :global(.inspector-identity p), .shell :global(.inspector-description), .shell :global(.inspector-list li) { color: var(--day-muted); }
-.shell :global(.inspector-identity h2) { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.65rem; font-weight: 600; letter-spacing: -.04em; color: var(--day-ink); }
-.shell :global(.agent-status-chip) { border: 1px solid currentColor; background: var(--day-paper); }
-.shell :global(.agent-performance) { border-color: color-mix(in oklab, var(--agent-color) 28%, var(--day-line)); border-radius: 1.5rem 1.5rem 2.4rem 1.5rem; background: color-mix(in oklab, var(--agent-color) 7%, var(--day-paper)); }
-.shell :global(.agent-performance-grid > div) { border-left: 1px solid color-mix(in oklab, var(--agent-color) 24%, var(--day-line)); padding-left: .5rem; }
-.shell :global(.inspector-list) { border-top-color: var(--day-line); }
-.shell :global(.autonomy-note) { border-top: 1px solid var(--day-line); padding-top: 1rem; }
-.shell :global(.autonomy-note strong) { color: var(--day-primary); font-size: .7rem; }
-.shell :global(.autonomy-note p) { margin-top: .35rem; color: var(--day-muted); font-size: .7rem; line-height: 1.55; }
+.shell :global(.arsenal-inspector) {
+  display: block;
+  overflow: hidden auto;
+  border: 1px solid var(--arsenal-line);
+  border-radius: 1.4rem;
+  padding: 1.25rem;
+  color: var(--arsenal-ink);
+  background: var(--arsenal-surface);
+  box-shadow: 0 1.4rem 4rem var(--arsenal-shadow);
+  backdrop-filter: blur(18px);
+}
+.shell :global(.arsenal-inspector-label) { color: var(--arsenal-muted); }
+.inspectorPortrait {
+  position: relative;
+  display: grid;
+  min-height: 13rem;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--agent-color) 28%, var(--arsenal-line));
+  border-radius: 1.25rem;
+  padding: .8rem;
+  text-align: center;
+  background: radial-gradient(circle at 50% 28%, color-mix(in oklab, var(--agent-color) 18%, transparent), transparent 45%), color-mix(in oklab, var(--agent-color) 4%, var(--arsenal-surface));
+}
+.inspectorPortrait::after {
+  position: absolute;
+  inset: 1rem;
+  border: 1px dashed color-mix(in oklab, var(--agent-color) 19%, transparent);
+  border-radius: 50%;
+  content: "";
+  pointer-events: none;
+}
+.inspectorPortrait > [data-agent] { z-index: 1; }
+.inspectorPortrait > div { position: relative; z-index: 1; display: grid; justify-items: center; margin-top: -.65rem; }
+.inspectorPortrait span { color: var(--agent-color); font-size: .5rem; font-weight: 820; letter-spacing: .16em; text-transform: uppercase; }
+.inspectorPortrait strong { margin-top: .18rem; color: var(--arsenal-ink); font-size: .75rem; }
+.inspectorPortrait q { max-width: 15rem; margin-top: .32rem; color: var(--arsenal-muted); font-size: .62rem; font-style: italic; line-height: 1.4; }
+.inspectorPortrait q::before, .inspectorPortrait q::after { color: var(--agent-color); }
+.shell :global(.inspector-identity) { grid-template-columns: minmax(0, 1fr) auto; margin-top: 1rem; }
+.shell :global(.inspector-identity p),
+.shell :global(.inspector-description),
+.shell :global(.inspector-list li) { color: var(--arsenal-muted); }
+.shell :global(.inspector-identity h2) {
+  color: var(--arsenal-ink);
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -.045em;
+}
+.shell :global(.agent-status-chip) { border: 1px solid currentColor; background: var(--arsenal-surface); }
+.shell :global(.agent-performance) {
+  border-color: color-mix(in oklab, var(--agent-color) 28%, var(--arsenal-line));
+  border-radius: 1rem;
+  background: color-mix(in oklab, var(--agent-color) 6%, var(--arsenal-surface));
+}
+.shell :global(.agent-performance-grid > div) { border-left: 1px solid color-mix(in oklab, var(--agent-color) 22%, var(--arsenal-line)); padding-left: .45rem; }
+.shell :global(.inspector-list) { border-top-color: var(--arsenal-line); }
+.shell :global(.autonomy-note) { border: 1px solid var(--arsenal-line); border-radius: 1rem; background: transparent; }
+.shell :global(.autonomy-note strong) { color: var(--agent-color); }
 
-.shell :global(.skill-studio) { max-width: 108rem; margin-top: 1.25rem; overflow: hidden; border: 1px solid var(--day-line); border-radius: 2.4rem 5.5rem 2.4rem 2.4rem; background: var(--day-paper); box-shadow: 0 1.6rem 4.5rem var(--day-shadow); backdrop-filter: blur(18px); }
-.shell :global(.skill-studio-heading) { border-bottom-color: var(--day-line); padding: 1.45rem 1.6rem; background: linear-gradient(100deg, var(--day-mint), transparent 58%); }
-.shell :global(.skill-studio-heading h2) { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.65rem; font-weight: 600; color: var(--day-ink); }
-.shell :global(.skill-studio-heading span), .shell :global(.skill-studio-list p), .shell :global(.skill-studio-list small) { color: var(--day-muted); }
+.shell :global(.skill-studio) {
+  max-width: 112rem;
+  margin-top: 1.15rem;
+  overflow: hidden;
+  border: 1px solid var(--arsenal-line);
+  border-radius: 1.4rem;
+  background: var(--arsenal-surface);
+  box-shadow: 0 1.5rem 4.5rem var(--arsenal-shadow);
+  backdrop-filter: blur(18px);
+}
+.shell :global(.skill-studio-heading) {
+  border-bottom-color: var(--arsenal-line);
+  padding: 1.45rem 1.6rem;
+  background: linear-gradient(100deg, color-mix(in oklab, var(--arsenal-primary) 10%, transparent), transparent 58%);
+}
+.shell :global(.skill-studio-heading h2) {
+  color: var(--arsenal-ink);
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 1.7rem;
+  font-weight: 600;
+}
+.shell :global(.skill-studio-heading span),
+.shell :global(.skill-studio-list p),
+.shell :global(.skill-studio-list small) { color: var(--arsenal-muted); }
 .shell :global(.skill-studio-list) { gap: 0; background: transparent; }
-.shell :global(.skill-studio-list article) { min-height: 8rem; border-color: var(--day-line); padding: 1.15rem 1.35rem; background: transparent; }
-.shell :global(.skill-studio-list article:hover) { background: color-mix(in oklab, var(--day-mint) 32%, transparent); }
-.shell :global(.skill-studio-mark) { border-radius: 50%; color: var(--day-primary); background: var(--day-mint); }
-.shell :global(.skill-studio-list h3 + span), .shell :global(.skill-studio-list h3 ~ span) { color: var(--day-muted); background: var(--day-paper-soft); }
+.shell :global(.skill-studio-list article) { border-color: var(--arsenal-line); padding: 1.15rem 1.35rem; background: transparent; }
+.shell :global(.skill-studio-list article:hover) { background: color-mix(in oklab, var(--arsenal-primary) 5%, transparent); }
+.shell :global(.skill-studio-mark) { border-radius: 50%; color: var(--arsenal-primary); background: color-mix(in oklab, var(--arsenal-primary) 11%, transparent); }
+.shell :global(.skill-studio-list h3 + span),
+.shell :global(.skill-studio-list h3 ~ span) { color: var(--arsenal-muted); background: var(--arsenal-surface-soft); }
 
-.shell :global(.builder-dialog-backdrop) { background: color-mix(in oklab, var(--day-ink) 46%, transparent); backdrop-filter: blur(13px); }
-.shell :global(.builder-dialog) { border-color: var(--day-line-strong); border-radius: 2rem 4.5rem 2rem 2rem; color: var(--day-ink); background: var(--day-paper-solid); box-shadow: 0 2.4rem 7rem var(--day-shadow); }
-.shell :global(.builder-dialog > header) { border-bottom-color: var(--day-line); background: color-mix(in oklab, var(--day-paper-solid) 90%, transparent); }
-.shell :global(.builder-choice), .shell :global(.builder-dialog input:not([type="checkbox"])), .shell :global(.builder-dialog textarea), .shell :global(.builder-dialog select) { border-color: var(--day-line); border-radius: 1rem; color: var(--day-ink); background: var(--day-bg); }
-.shell :global(.builder-choice.is-selected) { border-color: color-mix(in oklab, var(--day-primary) 52%, var(--day-line)); background: color-mix(in oklab, var(--day-mint) 50%, var(--day-paper)); }
+.shell :global(.builder-dialog-backdrop) { background: color-mix(in oklab, var(--arsenal-ink) 55%, transparent); backdrop-filter: blur(13px); }
+.shell :global(.builder-dialog) {
+  border-color: var(--arsenal-line-strong);
+  border-radius: 1.4rem;
+  color: var(--arsenal-ink);
+  background: var(--arsenal-surface-solid);
+  box-shadow: 0 2.4rem 7rem var(--arsenal-shadow);
+}
+.shell :global(.builder-dialog > header) { border-bottom-color: var(--arsenal-line); background: color-mix(in oklab, var(--arsenal-surface-solid) 92%, transparent); }
+.shell :global(.builder-choice),
+.shell :global(.builder-dialog input:not([type="checkbox"])),
+.shell :global(.builder-dialog textarea),
+.shell :global(.builder-dialog select) {
+  border-color: var(--arsenal-line);
+  border-radius: .85rem;
+  color: var(--arsenal-ink);
+  background: var(--arsenal-bg);
+}
+.shell :global(.builder-choice.is-selected) {
+  border-color: color-mix(in oklab, var(--arsenal-primary) 56%, var(--arsenal-line));
+  background: color-mix(in oklab, var(--arsenal-primary) 8%, var(--arsenal-surface));
+}
 
-@media (min-width: 108rem) {
-  .shell :global(.arsenal-layout) { grid-template-columns: 16.5rem minmax(38rem, 1fr) 24.5rem; min-height: 47rem; }
-  .shell :global(.arsenal-map) { min-height: 47rem; }
+@keyframes fieldPulse {
+  0%, 100% { opacity: .68; transform: translate(-50%, -50%) scale(.985); }
+  50% { opacity: 1; transform: translate(-50%, -50%) scale(1.015); }
 }
-@media (max-width: 78rem) {
-  .shell :global(.arsenal-layout) { grid-template-columns: 13rem minmax(25rem, 1fr); }
-  .shell :global(.arsenal-inspector) { border-radius: 2rem; background: var(--day-paper); }
+@media (min-width: 112rem) {
+  .shell :global(.arsenal-layout) { grid-template-columns: 18rem minmax(43rem, 1fr) 25rem; min-height: 52rem; }
+  .shell :global(.arsenal-map) { min-height: 52rem; }
 }
-@media (max-width: 52rem) {
+@media (max-width: 88rem) {
+  .shell :global(.arsenal-layout) { grid-template-columns: 16rem minmax(29rem, 1fr); }
+  .shell :global(.arsenal-inspector) { grid-column: 1 / -1; }
+}
+@media (max-width: 62rem) {
   .shell { padding: .85rem; }
-  .shell :global(.arsenal-header h1) { font-size: clamp(4rem, 18vw, 6.4rem); }
+  .shell :global(.arsenal-header) { align-items: start; }
+  .headerCopy h1 { font-size: clamp(4rem, 16vw, 7rem); }
   .shell :global(.arsenal-layout) { display: block; }
-  .shell :global(.arsenal-roster) { border-radius: 1.5rem; }
-  .shell :global(.arsenal-map) { min-height: 33rem; margin-top: .75rem; border-radius: 2.8rem 1.5rem; }
-  .shell :global(.arsenal-inspector) { margin-top: .75rem; }
-  .shell :global(.skill-studio) { border-radius: 1.8rem 3.2rem 1.8rem 1.8rem; }
-  .shell :global(.builder-dialog) { border-radius: 1.5rem; }
+  .shell :global(.arsenal-roster) { display: flex; gap: .4rem; overflow-x: auto; border-radius: 1.1rem; }
+  .rosterHeading { display: none; }
+  .shell :global(.arsenal-roster-item) { min-width: 12.5rem; }
+  .shell :global(.arsenal-map) { min-height: 36rem; margin-top: .75rem; border-radius: 1.3rem; }
+  .shell :global(.arsenal-inspector) { margin-top: .75rem; border-radius: 1.1rem; }
+  .shell :global(.skill-studio) { border-radius: 1.1rem; }
 }
-@media (max-width: 30rem) {
-  .shell :global(.arsenal-map) { min-height: 28rem; }
-  .shell :global(.arsenal-map-legend) { border-radius: 1rem; }
+@media (max-width: 38rem) {
+  .shell :global(.arsenal-header) { gap: 1.3rem; }
+  .shell :global(.arsenal-header > div:last-child) { width: 100%; }
+  .shell :global(.arsenal-header > div:last-child button) { flex: 1; justify-content: center; }
+  .shell :global(.arsenal-map) { min-height: 32rem; }
+  .shell :global(.arsenal-map-heading > span) { display: none; }
+  .shell :global(.arsenal-node) { min-width: 6.8rem; padding: .35rem; }
+  .shell :global(.arsenal-node [data-agent]) { width: 4rem; height: 4rem; }
+  .shell :global(.node-atlas) { min-width: 8rem; }
+  .shell :global(.node-atlas [data-agent]) { width: 6rem; height: 6rem; }
+  .shell :global(.node-scout), .shell :global(.node-sentinel) { left: 1%; }
+  .shell :global(.node-forge), .shell :global(.node-memory) { right: 1%; }
+  .shell :global(.arsenal-node small) { display: none; }
+  .nodeTheme { font-size: .43rem; }
+  .shell :global(.agent-custom-orbit) { inset: 31% 18%; }
+  .shell :global(.arsenal-map-legend) { bottom: .75rem; width: calc(100% - 1.2rem); justify-content: center; text-align: center; }
+  .shell :global(.skill-studio-heading) { padding: 1.2rem; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .shell :global(.arsenal-roster-item), .shell :global(.arsenal-node), .shell :global(.agent-custom-orbit button) { transition: none; }
+  .mapGlow,
+  .shell :global(.arsenal-links path),
+  .shell :global(.arsenal-node .node-signal) { animation: none; }
+  .shell :global(.arsenal-roster-item),
+  .shell :global(.arsenal-node),
+  .shell :global(.arsenal-node [data-agent]),
+  .shell :global(.agent-custom-orbit button) { transition: none; }
 }

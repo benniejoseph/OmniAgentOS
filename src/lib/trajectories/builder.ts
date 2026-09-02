@@ -136,9 +136,13 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
     const grounding = payload.grounding;
     if (grounding && typeof grounding === "object") {
       const record = grounding as Record<string, unknown>;
-      const citations = Array.isArray(record.citations) ? record.citations.length : 0;
-      receipt.grounded = record.grounded === true;
-      receipt.citationCount = citations;
+      const citedIds = Array.isArray(record.citedIds)
+        ? record.citedIds.filter((value): value is string => typeof value === "string")
+        : [];
+      const status = optionalString(record.status) || "not_required";
+      receipt.groundingStatus = status;
+      receipt.grounded = status === "verified" || status === "not_required";
+      receipt.citationCount = citedIds.length;
     }
   } else if (event.type === "run.memory") {
     copy(receipt, payload, ["count"]);

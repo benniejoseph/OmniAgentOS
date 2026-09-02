@@ -45,7 +45,13 @@ import {
 } from "@/lib/orchestration/council";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
-import { citationIdForEvidence, verifyResponseCitations } from "@/lib/rag/citations";
+import {
+  buildCitationSources,
+  buildWebCitationSources,
+  mergeCitationSources,
+  verifyCitationSources,
+  type CitationSource,
+} from "@/lib/rag/citations";
 import type { ContextPack } from "@/lib/rag/types";
 import {
   appendRunEvent,
@@ -301,6 +307,7 @@ export async function* runAgent(
     }
 
     let liveWebContext = "";
+    let citationSources = buildCitationSources(retrieval.results);
     if (useLiveWeb && liveWebPromise) {
       yield await emit({
         type: "status",
@@ -310,6 +317,10 @@ export async function* runAgent(
       const liveWebOutcome = await liveWebPromise;
       if ("result" in liveWebOutcome && liveWebOutcome.result) {
         const liveWeb = liveWebOutcome.result;
+        citationSources = mergeCitationSources(
+          citationSources,
+          buildWebCitationSources(liveWeb.sources, liveWeb.searchedAt),
+        );
         liveWebContext = String(
           redactSensitive(formatLiveWebSearchContext(liveWeb)),
         );
@@ -416,7 +427,7 @@ export async function* runAgent(
       contextMode: durableMemoryEnabled ? retrieval.profile.mode : "session",
       contextCount: retrieval.results.length,
       contextTraceId: retrieval.trace?.id,
-      contextEvidenceIds: retrieval.results.map(citationIdForEvidence),
+      contextEvidenceIds: buildCitationSources(retrieval.results).map((source) => source.citationId),
       contextRationale: contextRationaleForRun({
         durableMemoryEnabled,
         evidenceIds: request.contextSelection?.evidenceIds,
@@ -546,6 +557,10 @@ export async function* runAgent(
             yield await emit(event);
           }
         }
+        citationSources = mergeCitationSources(
+          citationSources,
+          result.citationSources,
+        );
         const fallbackUsed = result.attempts.some((attempt) => attempt.status === "failed");
         const crossProviderFallbackUsed = result.provider !== modelRoute.provider;
         yield await emit({
@@ -612,6 +627,7 @@ export async function* runAgent(
             },
             toolPolicy: agentToolPolicy,
             memoryScope: request.agentProfile?.memoryScope || "all",
+            citationSources,
             providerToolState: waiting.providerState,
             createdAt: new Date().toISOString(),
           };
@@ -760,6 +776,10 @@ export async function* runAgent(
           for (let index = 0; index < prepared.length; index += 1) {
             const item = prepared[index];
             const execution = executions[index];
+            citationSources = mergeCitationSources(
+              citationSources,
+              citationSourcesFromToolResult(item.entry.definition.id, execution.result),
+            );
             yield await emit({
               type: "tool",
               toolId: item.entry.definition.id,
@@ -817,6 +837,10 @@ export async function* runAgent(
             idempotencyKey: `${run.id}:${call.callId}`,
             forceApproval: agentToolPolicy?.forceApproval,
           });
+          citationSources = mergeCitationSources(
+            citationSources,
+            citationSourcesFromToolResult(definition.id, execution.result),
+          );
 
           yield await emit({
             type: "tool",
@@ -853,6 +877,7 @@ export async function* runAgent(
               },
               toolPolicy: agentToolPolicy,
               memoryScope: request.agentProfile?.memoryScope || "all",
+              citationSources,
               createdAt: new Date().toISOString(),
             };
             await flushDeltas();
@@ -954,7 +979,7 @@ export async function* runAgent(
       }
     }
 
-    const grounding = verifyResponseCitations(response, retrieval.results);
+    const grounding = verifyCitationSources(response, citationSources);
     const completed = await completeAgentRun(run.id, response, grounding);
     if (!completed) {
       yield await emit({
@@ -1019,6 +1044,7 @@ type NonOpenAIProviderLoopResult = {
   attempts: ModelAttemptReceipt[];
   turns: number;
   toolSteps: number;
+  citationSources: CitationSource[];
   waitingApproval?: {
     executionId: string;
     toolId: string;
@@ -1078,6 +1104,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     cachedInputTokens: 0,
     totalTokens: 0,
   };
+  let citationSources: CitationSource[] = [];
   let activeProvider: "openai" | "google" | "anthropic" | "aws_bedrock" = input.provider;
 
   const finish = (
@@ -1095,6 +1122,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     attempts,
     turns,
     toolSteps,
+    citationSources,
     ...(waitingApproval ? { waitingApproval } : {}),
   });
 
@@ -1200,6 +1228,10 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       for (let index = 0; index < prepared.length; index += 1) {
         const item = prepared[index];
         const execution = executions[index];
+        citationSources = mergeCitationSources(
+          citationSources,
+          citationSourcesFromToolResult(item.entry.definition.id, execution.result),
+        );
         yield toolEventForExecution(item.entry.definition, execution.record);
         outputs.push(providerToolResult(item.call, executionPayload(execution),
           execution.record.status !== "executed" && execution.record.status !== "dry_run"));
@@ -1252,6 +1284,10 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           idempotencyKey: `${input.runId}:${activeProvider}:${call.callId}`,
           forceApproval: input.forceApproval,
         });
+        citationSources = mergeCitationSources(
+          citationSources,
+          citationSourcesFromToolResult(definition.id, execution.result),
+        );
         yield toolEventForExecution(definition, execution.record);
         if (execution.record.status === "approval_required") {
           yield {
@@ -1442,6 +1478,13 @@ async function resumeAgentRunAfterToolApprovalInScope({
   }
   let response = continuation.response || run.response || "";
   let toolSteps = continuation.toolSteps;
+  let citationSources = mergeCitationSources(
+    continuation.citationSources || [],
+    citationSourcesFromToolResult(
+      continuation.pendingToolCall.toolId,
+      toolExecution.result,
+    ),
+  );
   const persistedConversationItems = continuation.conversationItems as ConversationItem[];
   const queuedCalls = continuationQueueFrom(persistedConversationItems);
   // Rebuild full conversation: items saved before approval + approved tool output.
@@ -1541,6 +1584,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
         idempotencyKey: `${run.id}:${call.callId}`,
         forceApproval: continuation.toolPolicy?.forceApproval,
       });
+      citationSources = mergeCitationSources(
+        citationSources,
+        citationSourcesFromToolResult(definition.id, execution.result),
+      );
       await appendRunEvent(run.id, {
         type: "tool",
         toolId: definition.id,
@@ -1574,6 +1621,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             context: continuation.context,
             toolPolicy: continuation.toolPolicy,
             memoryScope: continuation.memoryScope,
+            citationSources,
             createdAt: new Date().toISOString(),
           },
         });
@@ -1674,6 +1722,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
           idempotencyKey: `${run.id}:${call.callId}`,
           forceApproval: continuation.toolPolicy?.forceApproval,
         });
+        citationSources = mergeCitationSources(
+          citationSources,
+          citationSourcesFromToolResult(definition.id, execution.result),
+        );
 
         await appendRunEvent(run.id, {
           type: "tool",
@@ -1708,6 +1760,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               context: continuation.context,
               toolPolicy: continuation.toolPolicy,
               memoryScope: continuation.memoryScope,
+              citationSources,
               createdAt: new Date().toISOString(),
             },
           });
@@ -1750,7 +1803,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
     }
 
     await flushDeltas();
-    const completed = await completeAgentRun(run.id, response);
+    const grounding = verifyCitationSources(response, citationSources);
+    const completed = await completeAgentRun(run.id, response, grounding);
     if (!completed) {
       return {
         resumed: false,
@@ -1773,7 +1827,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           prompt: run.prompt,
           response,
         });
-    await appendRunEvent(run.id, { type: "done", response });
+    await appendRunEvent(run.id, { type: "done", response, grounding });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -1918,6 +1972,13 @@ async function resumeProviderBoundAgentRunAfterApproval({
 
   let response = continuation.response || run.response || "";
   let toolSteps = continuation.toolSteps;
+  let citationSources = mergeCitationSources(
+    continuation.citationSources || [],
+    citationSourcesFromToolResult(
+      continuation.pendingToolCall.toolId,
+      toolExecution.result,
+    ),
+  );
   const carriedResults: ModelToolResult[] = [
     ...providerState.toolResultsBeforeApproval,
     providerToolResult(
@@ -1986,6 +2047,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       context: continuation.context,
       toolPolicy: continuation.toolPolicy,
       memoryScope: continuation.memoryScope,
+      citationSources,
       providerToolState: waiting.providerState,
       createdAt: new Date().toISOString(),
     };
@@ -2073,6 +2135,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
           `${run.id}:${providerState.provider}:${call.callId}`,
         forceApproval: continuation.toolPolicy?.forceApproval,
       });
+      citationSources = mergeCitationSources(
+        citationSources,
+        citationSourcesFromToolResult(definition.id, execution.result),
+      );
       await appendRunEvent(
         run.id,
         toolEventForExecution(definition, execution.record),
@@ -2151,6 +2217,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
       }
     }
     toolSteps = result.toolSteps;
+    citationSources = mergeCitationSources(
+      citationSources,
+      result.citationSources,
+    );
     const fallbackUsed = result.attempts.some(
       (attempt) => attempt.status === "failed",
     );
@@ -2198,7 +2268,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
       return await parkForApproval(result.waitingApproval);
     }
 
-    const completed = await completeAgentRun(run.id, response);
+    const grounding = verifyCitationSources(response, citationSources);
+    const completed = await completeAgentRun(run.id, response, grounding);
     if (!completed) {
       return {
         resumed: false,
@@ -2221,7 +2292,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
           prompt: run.prompt,
           response,
         });
-    await appendRunEvent(run.id, { type: "done", response });
+    await appendRunEvent(run.id, { type: "done", response, grounding });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -2469,6 +2540,29 @@ function executionPayload(
       : execution.record.reason,
     result: execution.result,
   };
+}
+
+function citationSourcesFromToolResult(toolId: string, result: unknown) {
+  if (toolId !== "web.search" || !result || typeof result !== "object" || Array.isArray(result)) {
+    return [];
+  }
+  const record = result as Record<string, unknown>;
+  const items = Array.isArray(record.sources)
+    ? record.sources.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const source = item as Record<string, unknown>;
+        if (typeof source.url !== "string") return [];
+        return [{
+          url: source.url,
+          title: typeof source.title === "string" ? source.title : undefined,
+          snippet: typeof source.snippet === "string" ? source.snippet : undefined,
+        }];
+      })
+    : [];
+  return buildWebCitationSources(
+    items,
+    typeof record.searchedAt === "string" ? record.searchedAt : undefined,
+  );
 }
 
 function toolEventForExecution(
