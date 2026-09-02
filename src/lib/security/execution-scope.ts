@@ -51,6 +51,19 @@ export type SecurityContextExecutionScopeInput = {
   purpose: string;
 };
 
+export type DerivedExecutionScopeInput = {
+  executingPrincipalType?: ExecutionPrincipalType;
+  executingPrincipalId?: string | null;
+  workspaceId?: string | null;
+  projectId?: string | null;
+  missionId?: string | null;
+  delegationId?: string | null;
+  causationId?: string | null;
+  contextGrantIds?: readonly string[];
+  capabilityGrantIds?: readonly string[];
+  purpose: string;
+};
+
 /**
  * Creates the immutable scope carried by one execution boundary.
  *
@@ -108,6 +121,48 @@ export function executionScopeFromSecurityContext(
     causationId: input.causationId,
     contextGrantIds: input.contextGrantIds,
     capabilityGrantIds: input.capabilityGrantIds,
+    purpose: input.purpose,
+  });
+}
+
+/** Derives child attribution while preserving root tenant, actor, and intent. */
+export function deriveExecutionScope(
+  parent: ExecutionScope,
+  input: DerivedExecutionScopeInput,
+): ExecutionScope {
+  const contextGrantIds = narrowedGrantIds(
+    parent.contextGrantIds,
+    input.contextGrantIds,
+    "context",
+  );
+  const capabilityGrantIds = narrowedGrantIds(
+    parent.capabilityGrantIds,
+    input.capabilityGrantIds,
+    "capability",
+  );
+  return createExecutionScope({
+    tenantId: parent.tenantId,
+    initiatingActorId: parent.initiatingActorId,
+    executingPrincipalType:
+      input.executingPrincipalType || parent.executingPrincipalType,
+    executingPrincipalId:
+      input.executingPrincipalId === undefined
+        ? parent.executingPrincipalId
+        : input.executingPrincipalId,
+    workspaceId: input.workspaceId === undefined
+      ? parent.workspaceId
+      : input.workspaceId,
+    projectId: input.projectId === undefined ? parent.projectId : input.projectId,
+    missionId: input.missionId === undefined ? parent.missionId : input.missionId,
+    delegationId: input.delegationId === undefined
+      ? parent.delegationId
+      : input.delegationId,
+    correlationId: parent.correlationId,
+    causationId: input.causationId === undefined
+      ? parent.causationId
+      : input.causationId,
+    contextGrantIds,
+    capabilityGrantIds,
     purpose: input.purpose,
   });
 }
@@ -171,11 +226,51 @@ export function assertExecutionScopeTenant(
   }
 }
 
+export function executionScopesEqual(
+  left: ExecutionScope,
+  right: ExecutionScope,
+): boolean {
+  return left.version === right.version &&
+    left.tenantId === right.tenantId &&
+    left.initiatingActorId === right.initiatingActorId &&
+    left.executingPrincipalType === right.executingPrincipalType &&
+    left.executingPrincipalId === right.executingPrincipalId &&
+    left.workspaceId === right.workspaceId &&
+    left.projectId === right.projectId &&
+    left.missionId === right.missionId &&
+    left.delegationId === right.delegationId &&
+    left.correlationId === right.correlationId &&
+    left.causationId === right.causationId &&
+    equalIds(left.contextGrantIds, right.contextGrantIds) &&
+    equalIds(left.capabilityGrantIds, right.capabilityGrantIds) &&
+    left.purpose === right.purpose;
+}
+
 function normalizedIds(values: readonly string[] | undefined): readonly string[] {
   return Object.freeze(
     [...new Set((values || []).map((value) => optionalValue(value)).filter(isString))]
       .slice(0, 256),
   );
+}
+
+function narrowedGrantIds(
+  parentIds: readonly string[],
+  requestedIds: readonly string[] | undefined,
+  kind: "context" | "capability",
+): readonly string[] {
+  if (requestedIds === undefined) {
+    return parentIds;
+  }
+  const parentSet = new Set(parentIds);
+  if (requestedIds.some((id) => !parentSet.has(id))) {
+    throw new Error(`Derived execution scope cannot broaden ${kind} grants.`);
+  }
+  return requestedIds;
+}
+
+function equalIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length &&
+    left.every((value, index) => value === right[index]);
 }
 
 function requiredValue(value: string, field: string, maxLength = 256): string {

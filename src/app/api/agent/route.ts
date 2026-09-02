@@ -265,8 +265,20 @@ async function POSTHandler(request: Request) {
               ? missionInstruction(mission, safeMessage)
               : safeMessage;
             if (decision.route === "durable_workflow") {
+              const parentExecutionScope = executionScopeFromSecurityContext(
+                context,
+                {
+                  executingPrincipalType: "agent",
+                  executingPrincipalId:
+                    customAgent?.id || decision.primaryAgentId,
+                  missionId: mission.id,
+                  correlationId: requestId,
+                  purpose: "agent.run",
+                },
+              );
               durableSpecialists = await prepareDurableSpecialistDelegation({
                 owner: missionOwner,
+                parentExecutionScope,
                 missionId: mission.id,
                 requestId,
                 objective: executionMessage,
