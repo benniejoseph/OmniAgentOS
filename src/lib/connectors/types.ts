@@ -1,9 +1,17 @@
 import type { ToolRiskLevel } from "@/lib/tools/types";
 
 export type McpConnectorTransport = "streamable_http";
-export type McpConnectorAuthType = "none" | "bearer_env";
+export type McpConnectorAuthType = "none" | "bearer_env" | "bearer_vault";
 export type McpConnectorStatus = "active" | "error" | "disabled";
 export type McpToolStatus = "active" | "pending_review" | "disabled";
+
+export type McpConnectorCredentialMetadata = {
+  configured: boolean;
+  version?: number;
+  fingerprint?: string;
+  rotatedAt?: string;
+  originMatch: boolean;
+};
 
 export type McpConnectorRecord = {
   id: string;
@@ -13,6 +21,11 @@ export type McpConnectorRecord = {
   transport: McpConnectorTransport;
   authType: McpConnectorAuthType;
   authTokenEnv?: string;
+  credentialConfigured?: boolean;
+  credentialVersion?: number;
+  credentialFingerprint?: string;
+  credentialRotatedAt?: string;
+  credentialOriginMatch?: boolean;
   status: McpConnectorStatus;
   defaultRiskLevel: ToolRiskLevel;
   approvalRequired: boolean;

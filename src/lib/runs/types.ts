@@ -1,5 +1,12 @@
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { GroundingReport } from "@/lib/rag/citations";
+import type {
+  ModelToolCall,
+  ModelToolContinuation,
+  ModelToolResult,
+  ModelTier,
+  ProviderId,
+} from "@/lib/models/types";
 
 export type RunStatus =
   | "queued"
@@ -14,6 +21,18 @@ export type AgentRunFeedback = {
   verdict: "useful" | "needs_work";
   correction?: string;
   updatedAt: string;
+};
+
+export type AgentProviderToolContinuation = {
+  /** The opaque model state remains bound to the provider that produced it. */
+  provider: Exclude<ProviderId, "local">;
+  tier: ModelTier;
+  model: string;
+  prompt: string;
+  continuation: ModelToolContinuation;
+  pendingCall: ModelToolCall;
+  queuedCalls: Array<ModelToolCall & { skipReason?: string }>;
+  toolResultsBeforeApproval: ModelToolResult[];
 };
 
 export type AgentRunContinuation = {
@@ -40,6 +59,8 @@ export type AgentRunContinuation = {
     readOnly: boolean;
     forceApproval: boolean;
   };
+  /** Present for provider-neutral Gemini, Anthropic, Bedrock, and gateway tool turns. */
+  providerToolState?: AgentProviderToolContinuation;
   createdAt: string;
   resumeClaimedAt?: string;
 };

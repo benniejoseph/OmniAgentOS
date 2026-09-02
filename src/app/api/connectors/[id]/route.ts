@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
-import { deleteMcpConnector, getMcpConnector, updateMcpConnector } from "@/lib/connectors/store";
+import {
+  deleteMcpConnector,
+  getMcpConnector,
+  listMcpTools,
+  updateMcpConnector,
+} from "@/lib/connectors/store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
@@ -15,7 +20,7 @@ const updateMcpConnectorSchema = z
   .object({
     name: z.string().min(1).max(120).optional(),
     endpoint: z.string().url().max(2048).optional(),
-    authType: z.enum(["none", "bearer_env"]).optional(),
+    authType: z.enum(["none", "bearer_env", "bearer_vault"]).optional(),
     authTokenEnv: z.string().regex(/^[A-Z0-9_]+$/).max(120).nullable().optional(),
     status: z.enum(["active", "error", "disabled"]).optional(),
     defaultRiskLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
@@ -84,17 +89,34 @@ async function PATCHHandler(
     if (!existing) {
       return Response.json({ error: "MCP connector not found." }, { status: 404 });
     }
-    if (parsed.data.status === "active" && !existing.lastDiscoveredAt) {
+    const nextEndpoint = parsed.data.endpoint || existing.endpoint;
+    const nextAuthType = parsed.data.authType || existing.authType;
+    const vaultOriginMatch = existing.credentialConfigured && existing.credentialOriginMatch &&
+      new URL(nextEndpoint).origin === new URL(existing.endpoint).origin;
+    const hasPendingReview = parsed.data.status === "active" && (
+      await listMcpTools(id, { tenantId: securityContext.tenantId })
+    ).some((tool) => tool.status === "pending_review");
+    if (
+      parsed.data.status === "active" &&
+      (
+        !existing.lastDiscoveredAt ||
+        hasPendingReview ||
+        (nextAuthType === "bearer_vault" && !vaultOriginMatch)
+      )
+    ) {
       return Response.json(
         {
           error: "MCP connector review required.",
           message:
-            "Discover this connector's tools before activating its reviewed contract.",
+            nextAuthType === "bearer_vault" && !vaultOriginMatch
+              ? "Save an app-managed credential for this exact endpoint origin, then rediscover and review its tools."
+              : hasPendingReview
+                ? "Review the current MCP tool contracts before activating this connector."
+                : "Discover this connector's tools before activating its reviewed contract.",
         },
         { status: 409 },
       );
     }
-    const nextAuthType = parsed.data.authType || existing.authType;
     const nextEnvName = parsed.data.authTokenEnv === null
       ? undefined
       : parsed.data.authTokenEnv || existing.authTokenEnv;
@@ -104,10 +126,37 @@ async function PATCHHandler(
         { status: 400 },
       );
     }
+    if (
+      existing.authType === "bearer_vault" &&
+      nextAuthType !== "bearer_vault" &&
+      existing.credentialConfigured
+    ) {
+      return Response.json(
+        {
+          error: "MCP credential removal required.",
+          message:
+            "Remove the app-managed credential before changing this connector's authentication mode.",
+        },
+        { status: 409 },
+      );
+    }
+    if (
+      nextAuthType === "bearer_vault" &&
+      existing.authType !== "bearer_vault" &&
+      !vaultOriginMatch
+    ) {
+      return Response.json(
+        {
+          error: "Invalid MCP connector update",
+          message: "App-managed bearer auth requires a credential bound to this exact endpoint origin.",
+        },
+        { status: 409 },
+      );
+    }
     const secretBinding = evaluateConnectorSecretBinding({
       envName: nextAuthType === "bearer_env" ? nextEnvName : undefined,
       tenantId: securityContext.tenantId,
-      targetUrl: parsed.data.endpoint || existing.endpoint,
+      targetUrl: nextEndpoint,
       role: securityContext.role,
     });
     if (!secretBinding.allowed) {
@@ -121,7 +170,11 @@ async function PATCHHandler(
       id,
       {
         ...parsed.data,
-        authTokenEnv: parsed.data.authTokenEnv === null ? "" : parsed.data.authTokenEnv,
+        authTokenEnv: nextAuthType === "bearer_env"
+          ? (parsed.data.authTokenEnv === null ? "" : parsed.data.authTokenEnv)
+          : parsed.data.authType
+            ? ""
+            : parsed.data.authTokenEnv,
       },
       { tenantId: securityContext.tenantId },
     );

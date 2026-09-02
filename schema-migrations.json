@@ -148,5 +148,10 @@
     "version": 30,
     "name": "tenant_settings_and_provider_control_plane",
     "checksum": "6a31d402e676a50dbd2ce6f33d1b9273e33e41e4c130ac83b123a559aa7497e8"
+  },
+  {
+    "version": 31,
+    "name": "app_managed_mcp_connector_credentials",
+    "checksum": "4e2984db8326387d5f2f986adf9b57e68e4585974ea1396d07533dddf7c4df1b"
   }
 ]

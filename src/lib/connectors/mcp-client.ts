@@ -2,6 +2,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
+import { resolveMcpBearerCredential } from "@/lib/connectors/credential-store";
+import { isOfficialGitHubMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
 import { createMcpToolId } from "@/lib/connectors/store";
 import { assertPublicHttpUrl, fetchPublicHttpUrl } from "@/lib/security/network";
@@ -136,7 +138,7 @@ async function connectMcp(
   const client = new Client(CLIENT_INFO, {
     capabilities: {},
   });
-  const auth = createRequestInit(connector, options.actorRole);
+  const auth = await createRequestInit(connector, options.actorRole);
   const transport = new StreamableHTTPClientTransport(endpoint, {
     requestInit: auth.requestInit,
     fetch: createValidatedMcpFetch(
@@ -208,10 +210,10 @@ async function closeMcp(session: {
   await session.client.close().catch(() => undefined);
 }
 
-function createRequestInit(
+async function createRequestInit(
   connector: McpConnectorRecord,
   actorRole?: SecurityRole,
-): { requestInit: RequestInit; secretValues: string[] } {
+): Promise<{ requestInit: RequestInit; secretValues: string[] }> {
   const headers = new Headers();
   const secretValues: string[] = [];
   if (connector.authType === "bearer_env") {
@@ -231,6 +233,10 @@ function createRequestInit(
     }
     headers.set("authorization", `Bearer ${token}`);
     secretValues.push(token);
+  } else if (connector.authType === "bearer_vault") {
+    const token = await resolveMcpBearerCredential(connector);
+    headers.set("authorization", `Bearer ${token}`);
+    secretValues.push(token);
   }
   return {
     requestInit: {
@@ -243,7 +249,11 @@ function createRequestInit(
 
 function toToolRecord(connector: McpConnectorRecord, tool: Tool, now: string): McpToolRecord {
   const annotations = toPlainObject(tool.annotations);
-  const riskLevel = inferMcpToolRisk(connector.defaultRiskLevel, annotations);
+  const riskLevel = inferMcpToolRisk(connector.defaultRiskLevel, annotations, {
+    endpoint: connector.endpoint,
+    toolName: tool.name,
+    trustReadOnlyAnnotations: !connector.approvalRequired,
+  });
 
   return {
     id: createMcpToolId(connector.id, tool.name),
@@ -266,12 +276,42 @@ function toToolRecord(connector: McpConnectorRecord, tool: Tool, now: string): M
 export function inferMcpToolRisk(
   defaultRisk: ToolRiskLevel,
   annotations?: Record<string, unknown>,
+  options: {
+    endpoint?: string;
+    toolName?: string;
+    trustReadOnlyAnnotations?: boolean;
+  } = {},
 ): ToolRiskLevel {
+  const destructive = annotations?.destructiveHint === true;
+  const readOnly = annotations?.readOnlyHint === true;
+  if (
+    isOfficialGitHubMcpEndpoint(options.endpoint) &&
+    isKnownGitHubMutation(options.toolName)
+  ) {
+    return Math.max(defaultRisk, 2) as ToolRiskLevel;
+  }
+  if (
+    readOnly &&
+    !destructive &&
+    options.trustReadOnlyAnnotations &&
+    isOfficialGitHubMcpEndpoint(options.endpoint)
+  ) {
+    return 0;
+  }
+
   let remoteFloor: ToolRiskLevel = 0;
-  if (annotations?.destructiveHint || annotations?.openWorldHint) {
+  if (
+    destructive ||
+    annotations?.readOnlyHint === false ||
+    annotations?.openWorldHint === true
+  ) {
     remoteFloor = 2;
   }
   return Math.max(defaultRisk, remoteFloor) as ToolRiskLevel;
+}
+
+function isKnownGitHubMutation(toolName?: string) {
+  return toolName === "actions_run_trigger";
 }
 
 function toPlainObject(value: unknown): Record<string, unknown> | undefined {

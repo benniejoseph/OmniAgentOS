@@ -74,22 +74,10 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(collected.result.attempts).toHaveLength(2);
   });
 
-  it("reports approval-required calls back to the provider instead of ignoring them", async () => {
-    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
-      if (!request.toolResults) {
-        return turn({
-          toolCalls: [{ callId: "call-approval", name: "http_request", argumentsJson: "{\"url\":\"https://example.com\"}" }],
-        });
-      }
-      expect(request.toolResults).toEqual([
-        expect.objectContaining({
-          callId: "call-approval",
-          name: "http_request",
-          isError: true,
-        }),
-      ]);
-      return turn({ text: "The request is awaiting approval." });
-    });
+  it("parks approval-required calls without advancing the provider turn", async () => {
+    const generateTurn = vi.fn(async () => turn({
+      toolCalls: [{ callId: "call-approval", name: "http_request", argumentsJson: "{\"url\":\"https://example.com\"}" }],
+    }));
     const definition = toolDefinition("http.request", {
       name: "HTTP Request",
       riskLevel: 2,
@@ -127,11 +115,18 @@ describe("non-OpenAI governed provider tool loop", () => {
       type: "tool",
       status: "approval_required",
     }));
-    expect(collected.events).toContainEqual(expect.objectContaining({
-      type: "status",
-      label: "tool approval required",
-    }));
-    expect(collected.result.text).toBe("The request is awaiting approval.");
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(collected.result.text).toBe("");
+    expect(collected.result.waitingApproval).toMatchObject({
+      executionId: "execution-http.request",
+      toolId: "http.request",
+      toolName: "HTTP Request",
+      providerState: {
+        provider: "google",
+        pendingCall: { callId: "call-approval", name: "http_request" },
+        toolResultsBeforeApproval: [],
+      },
+    });
   });
 });
 

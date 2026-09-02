@@ -9,6 +9,7 @@ import type {
 import { fingerprintApprovalContract } from "@/lib/tools/fingerprint";
 
 const contractFingerprintVersion = 1;
+const mcpContractFingerprintVersion = 2;
 
 export class ConnectorContractReviewConflictError extends Error {
   constructor(message = "Connector contracts changed before review was applied.") {
@@ -32,13 +33,14 @@ export function mcpToolContractFingerprint(
   connector: McpConnectorRecord,
 ) {
   return fingerprintApprovalContract({
-    version: contractFingerprintVersion,
+    version: mcpContractFingerprintVersion,
     connector: {
       id: connector.id,
       endpoint: connector.endpoint,
       transport: connector.transport,
       authType: connector.authType,
       authTokenEnv: connector.authTokenEnv,
+      credentialVersion: connector.credentialVersion,
     },
     tool: {
       id: tool.id,
@@ -88,6 +90,7 @@ export function mcpContractReviewSummary(
         fingerprint: mcpToolContractFingerprint(tool, connector),
       })),
     connector.id,
+    mcpContractFingerprintVersion,
   );
 }
 
@@ -104,12 +107,14 @@ export function openApiContractReviewSummary(
         fingerprint: openApiOperationContractFingerprint(operation, connector),
       })),
     connector.id,
+    contractFingerprintVersion,
   );
 }
 
 function contractReviewSummary(
   contracts: ConnectorContractReviewSummary["contracts"],
   connectorId: string,
+  version: number,
 ): ConnectorContractReviewSummary {
   const sorted = [...contracts].sort((left, right) =>
     left.id.localeCompare(right.id),
@@ -118,7 +123,7 @@ function contractReviewSummary(
     pendingCount: sorted.length,
     fingerprint: sorted.length
       ? fingerprintApprovalContract({
-          version: contractFingerprintVersion,
+          version,
           connectorId,
           contracts: sorted.map(({ id, fingerprint }) => ({ id, fingerprint })),
         })

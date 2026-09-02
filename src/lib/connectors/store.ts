@@ -10,6 +10,11 @@ import {
   mcpContractReviewSummary,
   mcpToolContractFingerprint,
 } from "@/lib/connectors/contract-review";
+import {
+  connectorCredentialFields,
+  credentialMetadata,
+} from "@/lib/connectors/credential-store";
+import { isOfficialGitHubMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
@@ -61,7 +66,9 @@ export type McpToolMetadataRecord = Pick<
   | "description"
   | "riskLevel"
   | "approvalRequired"
->;
+> & {
+  trustedGitHubEndpoint: boolean;
+};
 
 export type McpToolMetadataSearchOptions = TenantScopedOptions & {
   query?: string;
@@ -79,6 +86,8 @@ export function createMcpConnectorRecord(input: RegisterMcpConnectorInput): McpC
     transport: input.transport || "streamable_http",
     authType: input.authType || "none",
     authTokenEnv: input.authTokenEnv?.trim() || undefined,
+    credentialConfigured: false,
+    credentialOriginMatch: false,
     status: "active",
     defaultRiskLevel: input.defaultRiskLevel ?? 2,
     approvalRequired: input.approvalRequired ?? true,
@@ -175,6 +184,7 @@ export async function listMcpConnectors(limit = 20, options: TenantScopedOptions
   const ledger = await readConnectorLedger();
   return ledger.connectors
     .filter((connector) => normalizeTenantId(connector.tenantId) === tenantId)
+    .map((connector) => connectorWithFileCredentialMetadata(connector, ledger))
     .slice(0, limit);
 }
 
@@ -233,9 +243,10 @@ export async function getMcpConnector(connectorId: string, options: TenantScoped
   }
 
   const ledger = await readConnectorLedger();
-  return ledger.connectors.find(
+  const connector = ledger.connectors.find(
     (connector) => connector.id === connectorId && normalizeTenantId(connector.tenantId) === tenantId,
-  ) || null;
+  );
+  return connector ? connectorWithFileCredentialMetadata(connector, ledger) : null;
 }
 
 export async function updateMcpConnector(
@@ -277,7 +288,7 @@ export async function updateMcpConnector(
   await syncMcpToolsForConnector(saved, {
     invalidateReviewedContracts: contractConfigurationChanged,
   });
-  return saved;
+  return getMcpConnector(connectorId, options);
 }
 
 export async function deleteMcpConnector(connectorId: string, options: TenantScopedOptions = {}) {
@@ -309,6 +320,13 @@ export async function deleteMcpConnector(connectorId: string, options: TenantSco
     ledger.tools = ledger.tools.filter(
       (tool) => tool.connectorId !== connectorId || normalizeTenantId(tool.tenantId) !== tenantId,
     );
+    const fileLedger = ledger as McpConnectorFileLedger;
+    fileLedger.credentials = (fileLedger.credentials || []).filter(
+      (credential) => !(
+        credential.connectorId === connectorId &&
+        normalizeTenantId(credential.tenantId) === tenantId
+      ),
+    );
     return ledger;
   });
   return connector;
@@ -320,12 +338,14 @@ export async function saveMcpDiscovery({
   capabilities,
   instructions,
   serverVersion,
+  resetReviewedPolicy = false,
 }: {
   connector: McpConnectorRecord;
   tools: McpToolRecord[];
   capabilities?: Record<string, unknown>;
   instructions?: string;
   serverVersion?: Record<string, unknown>;
+  resetReviewedPolicy?: boolean;
 }) {
   const discoveredAt = new Date().toISOString();
   const existingTools = await listMcpTools(connector.id, {
@@ -343,12 +363,18 @@ export async function saveMcpDiscovery({
     lastError: undefined,
     updatedAt: discoveredAt,
   };
-  const nextTools = preserveReviewedMcpToolPolicy({
-    discovered: tools,
-    existing: existingTools,
-    connector: nextConnector,
-    reviewedConnector: connector,
-  });
+  const nextTools = resetReviewedPolicy
+    ? resetMcpToolPolicyForReview({
+        discovered: tools,
+        existing: existingTools,
+        connector: nextConnector,
+      })
+    : preserveReviewedMcpToolPolicy({
+        discovered: tools,
+        existing: existingTools,
+        connector: nextConnector,
+        reviewedConnector: connector,
+      });
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -375,6 +401,25 @@ export async function saveMcpDiscovery({
     return ledger;
   });
   return { connector: nextConnector, tools: nextTools };
+}
+
+function resetMcpToolPolicyForReview({
+  discovered,
+  existing,
+  connector,
+}: {
+  discovered: McpToolRecord[];
+  existing: McpToolRecord[];
+  connector: McpConnectorRecord;
+}) {
+  const existingByName = new Map(existing.map((tool) => [tool.name, tool]));
+  return discovered.map((tool) => ({
+    ...tool,
+    tenantId: normalizeTenantId(connector.tenantId),
+    connectorName: connector.name,
+    status: "pending_review" as const,
+    createdAt: existingByName.get(tool.name)?.createdAt || tool.createdAt,
+  }));
 }
 
 export function preserveReviewedMcpToolPolicy({
@@ -434,6 +479,7 @@ export async function promoteMcpContracts(
         return null;
       }
       const connector = connectorFromRow(connectorRows[0]);
+      assertMcpCredentialAuthority(connector);
       const toolRows = await sql`
         SELECT *
         FROM omni_mcp_tools
@@ -461,7 +507,7 @@ export async function promoteMcpContracts(
       const activatedRows = await sql`
         UPDATE omni_mcp_connectors
         SET status = 'active',
-            error = NULL,
+            last_error = NULL,
             updated_at = NOW()
         WHERE id = ${connectorId}
           AND tenant_id = ${tenantId}
@@ -498,7 +544,13 @@ export async function promoteMcpContracts(
         tool.connectorId === connectorId &&
         normalizeTenantId(tool.tenantId) === tenantId,
     );
-    const review = mcpContractReviewSummary(tools, connector);
+    const effectiveConnector = connectorWithFileCredentialMetadata(connector, ledger);
+    assertMcpCredentialAuthority(effectiveConnector);
+    const review = mcpContractReviewSummary(tools, effectiveConnector);
+    if (!review.pendingCount) {
+      result = { connector: effectiveConnector, tools, promoted: 0 };
+      return ledger;
+    }
     if (review.pendingCount && review.fingerprint !== expectedFingerprint) {
       throw new ConnectorContractReviewConflictError();
     }
@@ -510,9 +562,9 @@ export async function promoteMcpContracts(
         : tool,
     );
     const activatedConnector = {
-      ...connector,
+      ...effectiveConnector,
       status: "active" as const,
-      error: undefined,
+      lastError: undefined,
       updatedAt: new Date().toISOString(),
     };
     ledger.connectors = ledger.connectors.map((item) =>
@@ -672,7 +724,11 @@ export async function searchActiveMcpToolMetadata(
         tools.title,
         tools.description,
         tools.risk_level,
-        tools.approval_required
+        tools.approval_required,
+        (
+          connectors.endpoint = 'https://api.githubcopilot.com/mcp'
+          OR connectors.endpoint LIKE 'https://api.githubcopilot.com/mcp/%'
+        ) AS trusted_github_endpoint
       FROM omni_mcp_tools tools
       INNER JOIN omni_mcp_connectors connectors
         ON connectors.id = tools.connector_id
@@ -702,14 +758,14 @@ export async function searchActiveMcpToolMetadata(
   }
 
   const ledger = await readConnectorLedger();
-  const activeConnectorIds = new Set(
+  const activeConnectorById = new Map(
     ledger.connectors
       .filter(
         (connector) =>
           normalizeTenantId(connector.tenantId) === tenantId &&
           connector.status === "active",
       )
-      .map((connector) => connector.id),
+      .map((connector) => [connector.id, connector]),
   );
   const allowed = allowlist === undefined ? undefined : new Set(allowlist);
   return ledger.tools
@@ -717,7 +773,7 @@ export async function searchActiveMcpToolMetadata(
       (tool) =>
         normalizeTenantId(tool.tenantId) === tenantId &&
         tool.status === "active" &&
-        activeConnectorIds.has(tool.connectorId) &&
+        activeConnectorById.has(tool.connectorId) &&
         (!allowed || allowed.has(tool.id)) &&
         metadataMatchesTerms(
           `${tool.id} ${tool.connectorName} ${tool.name} ${tool.title || ""} ${tool.description || ""}`,
@@ -735,7 +791,12 @@ export async function searchActiveMcpToolMetadata(
         ) || right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id),
     )
     .slice(0, limit)
-    .map(toMcpToolMetadata);
+    .map((tool) =>
+      toMcpToolMetadata(
+        tool,
+        activeConnectorById.get(tool.connectorId)?.endpoint,
+      ),
+    );
 }
 
 export async function getMcpToolById(toolId: string, options: TenantScopedOptions = {}) {
@@ -815,18 +876,25 @@ export async function getMcpConnectorStats(options: TenantScopedOptions = {}): P
 }
 
 async function readConnectorLedger() {
-  return readJsonFile<McpConnectorLedger>(getConnectorLedgerFile(), { connectors: [], tools: [] });
+  return readJsonFile<McpConnectorFileLedger>(getConnectorLedgerFile(), {
+    connectors: [],
+    tools: [],
+    credentials: [],
+  });
 }
 
 async function mutateConnectorLedger(mutator: (ledger: McpConnectorLedger) => McpConnectorLedger) {
-  await updateJsonFile<McpConnectorLedger>(
+  await updateJsonFile<McpConnectorFileLedger>(
     getConnectorLedgerFile(),
-    { connectors: [], tools: [] },
+    { connectors: [], tools: [], credentials: [] },
     (ledger) => {
       const next = mutator(ledger);
       return {
+        ...ledger,
+        ...next,
         connectors: next.connectors.slice(0, 100),
         tools: next.tools.slice(0, 500),
+        credentials: (next as McpConnectorFileLedger).credentials || ledger.credentials || [],
       };
     },
   );
@@ -837,14 +905,23 @@ function getConnectorLedgerFile() {
 }
 
 function connectorFromRow(row: Record<string, unknown>): McpConnectorRecord {
+  const endpoint = String(row.endpoint);
   return {
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
     name: String(row.name),
-    endpoint: String(row.endpoint),
+    endpoint,
     transport: String(row.transport) as McpConnectorTransport,
     authType: String(row.auth_type) as McpConnectorAuthType,
     authTokenEnv: row.auth_token_env ? String(row.auth_token_env) : undefined,
+    ...connectorCredentialFields(credentialMetadata({
+      version: row.credential_version,
+      keyId: row.credential_key_id,
+      fingerprint: row.credential_fingerprint,
+      origin: row.credential_origin,
+      sealedCredential: row.sealed_credential,
+      rotatedAt: row.credential_rotated_at,
+    }, endpoint)),
     status: String(row.status) as McpConnectorRecord["status"],
     defaultRiskLevel: Number(row.default_risk_level) as ToolRiskLevel,
     approvalRequired: Boolean(row.approval_required),
@@ -889,10 +966,14 @@ function mcpToolMetadataFromRow(row: Record<string, unknown>): McpToolMetadataRe
     description: row.description ? String(row.description) : undefined,
     riskLevel: Number(row.risk_level) as ToolRiskLevel,
     approvalRequired: Boolean(row.approval_required),
+    trustedGitHubEndpoint: Boolean(row.trusted_github_endpoint),
   };
 }
 
-function toMcpToolMetadata(tool: McpToolRecord): McpToolMetadataRecord {
+function toMcpToolMetadata(
+  tool: McpToolRecord,
+  connectorEndpoint?: string,
+): McpToolMetadataRecord {
   return {
     id: tool.id,
     connectorId: tool.connectorId,
@@ -902,6 +983,7 @@ function toMcpToolMetadata(tool: McpToolRecord): McpToolMetadataRecord {
     description: tool.description,
     riskLevel: tool.riskLevel,
     approvalRequired: tool.approvalRequired,
+    trustedGitHubEndpoint: isOfficialGitHubMcpEndpoint(connectorEndpoint),
   };
 }
 
@@ -971,4 +1053,53 @@ function normalizeTenantId(value?: string) {
     .trim()
     .replace(/[^a-zA-Z0-9_.:-]/g, "_")
     .slice(0, 120) || "default";
+}
+
+type McpConnectorFileCredentialReference = {
+  connectorId?: string;
+  tenantId?: string;
+  version?: unknown;
+  keyId?: unknown;
+  fingerprint?: unknown;
+  origin?: unknown;
+  sealedCredential?: unknown;
+  rotatedAt?: unknown;
+};
+
+type McpConnectorFileLedger = McpConnectorLedger & {
+  credentials?: McpConnectorFileCredentialReference[];
+};
+
+function connectorWithFileCredentialMetadata(
+  connector: McpConnectorRecord,
+  ledger: McpConnectorFileLedger,
+) {
+  const credential = (ledger.credentials || []).find(
+    (item) =>
+      item.connectorId === connector.id &&
+      normalizeTenantId(item.tenantId) === normalizeTenantId(connector.tenantId),
+  );
+  if (!credential) {
+    return {
+      ...connector,
+      credentialConfigured: false,
+      credentialFingerprint: undefined,
+      credentialOriginMatch: false,
+    };
+  }
+  return {
+    ...connector,
+    ...connectorCredentialFields(credentialMetadata(credential || {}, connector.endpoint)),
+  };
+}
+
+function assertMcpCredentialAuthority(connector: McpConnectorRecord) {
+  if (
+    connector.authType === "bearer_vault" &&
+    (!connector.credentialConfigured || !connector.credentialOriginMatch)
+  ) {
+    throw new ConnectorContractReviewConflictError(
+      "Configure an app-managed credential for this exact MCP endpoint origin before reviewing its contracts.",
+    );
+  }
 }

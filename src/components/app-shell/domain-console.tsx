@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { clsx } from "clsx";
 import { PersonalConnections } from "@/components/connectors/personal-connections";
+import { McpConnections } from "@/components/connectors/mcp-connections";
 import { PersonalDataControls } from "@/components/settings/personal-data-controls";
 import {
   permissionMessage,
@@ -567,13 +568,6 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
     ],
     sections: [
       {
-        title: "MCP connectors",
-        description: "Registered Model Context Protocol servers and discovered tools.",
-        emptyLabel: "No MCP connectors registered.",
-        rows: (data) =>
-          arrayPath(data, "connectors.connectors").map(mcpConnectorRow),
-      },
-      {
         title: "OpenAPI connectors",
         description: "REST APIs imported as governed operations.",
         emptyLabel: "No OpenAPI connectors imported.",
@@ -617,30 +611,6 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
       },
     ],
     actions: [
-      {
-        id: "register-mcp",
-        title: "Register MCP connector",
-        description: "Add a governed MCP endpoint and optionally discover its tools.",
-        method: "POST",
-        path: "/api/connectors",
-        fields: [
-          { name: "name", label: "Name", type: "text", placeholder: "Internal knowledge MCP" },
-          { name: "endpoint", label: "Endpoint", type: "text", placeholder: "https://example.com/mcp" },
-          { name: "authType", label: "Auth", type: "select", defaultValue: "none", options: authOptions },
-          { name: "authTokenEnv", label: "Token env", type: "text", placeholder: "OMNIAGENT_CONNECTOR_TOKEN" },
-          { name: "defaultRiskLevel", label: "Default risk", type: "select", defaultValue: "2", options: riskOptions },
-          { name: "discover", label: "Discover tools now", type: "checkbox", defaultValue: true },
-        ],
-        buildPayload: (values) => ({
-          name: textValue(values.name),
-          endpoint: textValue(values.endpoint),
-          authType: textValue(values.authType, "none"),
-          authTokenEnv: optionalText(values.authTokenEnv),
-          defaultRiskLevel: numberValue(values.defaultRiskLevel, 2),
-          approvalRequired: numberValue(values.defaultRiskLevel, 2) >= 2,
-          discover: Boolean(values.discover),
-        }),
-      },
       {
         id: "register-openapi",
         title: "Import OpenAPI",
@@ -1437,9 +1407,6 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
         status: "error",
         message: error instanceof Error ? error.message : "Action failed.",
       });
-      if (action.id === "register-mcp") {
-        await load();
-      }
       setAnnouncement(`${action.title} failed.`);
     } finally {
       setRunningAction(undefined);
@@ -1642,6 +1609,22 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
           error={resources.oauth?.status === "error" ? resources.oauth.error : undefined}
           onRefresh={load}
         />
+      ) : null}
+
+      {domain === "integrations" ? (
+        <div className="mt-4" data-daybook="mcp-manager">
+          <McpConnections
+            payload={data.connectors}
+            loading={resources.connectors?.status === "loading"}
+            error={
+              resources.connectors?.status === "error"
+                ? resources.connectors.error
+                : undefined
+            }
+            disabledReason={connectorReviewDisabledReason}
+            onRefresh={load}
+          />
+        </div>
       ) : null}
 
       {domain === "settings" ? <PersonalDataControls /> : null}
@@ -2075,7 +2058,7 @@ function ConnectorContractReviewPanel({
 export function mcpConnectorRow(item: JsonRecord): Row {
   const pending = numberValue(readPath(item, "review.pendingCount"), 0);
   const connectorStatus = stringValue(item.status, "unknown");
-  const needsReview = pending > 0 && connectorStatus === "active";
+  const needsReview = isConnectorReviewable(item);
   const contracts = arrayPath(item, "review.contracts")
     .map((contract) => stringValue(contract.name))
     .filter(Boolean)
@@ -2093,8 +2076,9 @@ export function mcpConnectorRow(item: JsonRecord): Row {
 }
 
 export function isConnectorReviewable(connector: JsonRecord) {
+  const status = textValue(connector.status);
   return (
-    textValue(connector.status) === "active" &&
+    (status === "active" || status === "disabled") &&
     numberValue(readPath(connector, "review.pendingCount"), 0) > 0
   );
 }

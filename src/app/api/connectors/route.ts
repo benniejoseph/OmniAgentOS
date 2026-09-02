@@ -1,9 +1,15 @@
 import { z } from "zod";
 import { discoverMcpTools } from "@/lib/connectors/mcp-client";
 import { mcpContractReviewSummary } from "@/lib/connectors/contract-review";
+import {
+  McpCredentialStoreError,
+  storeMcpBearerCredential,
+} from "@/lib/connectors/credential-store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   createMcpConnectorRecord,
+  deleteMcpConnector,
+  getMcpConnector,
   listMcpConnectors,
   listMcpTools,
   recordMcpConnectorError,
@@ -14,6 +20,10 @@ import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding"
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { assertPublicHttpUrl } from "@/lib/security/network";
+import {
+  CredentialVaultUnavailableError,
+  credentialVaultStatus,
+} from "@/lib/settings/credential-vault";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -22,12 +32,47 @@ export const POST = withDatabaseRequestScope(POSTHandler);
 const registerConnectorSchema = z.object({
   name: z.string().min(1).max(120),
   endpoint: z.string().url().max(2048),
-  authType: z.enum(["none", "bearer_env"]).optional(),
+  authType: z.enum(["none", "bearer_env", "bearer_vault"]).optional(),
   authTokenEnv: z.string().regex(/^[A-Z0-9_]+$/).max(120).optional(),
+  bearerToken: z.string().min(8).max(8_192).refine((value) => !/[\r\n]/.test(value), {
+    message: "Bearer token must be a single-line value.",
+  }).refine((value) => value.trim() === value, {
+    message: "Bearer token cannot have leading or trailing whitespace.",
+  }).optional(),
   defaultRiskLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
   approvalRequired: z.boolean().optional(),
   discover: z.boolean().optional(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  const authType = value.authType || "none";
+  if (authType === "bearer_env" && !value.authTokenEnv) {
+    context.addIssue({
+      code: "custom",
+      path: ["authTokenEnv"],
+      message: "Environment bearer auth requires authTokenEnv.",
+    });
+  }
+  if (authType === "bearer_vault" && !value.bearerToken) {
+    context.addIssue({
+      code: "custom",
+      path: ["bearerToken"],
+      message: "App-managed bearer auth requires bearerToken.",
+    });
+  }
+  if (authType !== "bearer_env" && value.authTokenEnv) {
+    context.addIssue({
+      code: "custom",
+      path: ["authTokenEnv"],
+      message: "authTokenEnv is only valid with bearer_env.",
+    });
+  }
+  if (authType !== "bearer_vault" && value.bearerToken) {
+    context.addIssue({
+      code: "custom",
+      path: ["bearerToken"],
+      message: "bearerToken is only accepted with bearer_vault.",
+    });
+  }
+});
 
 async function GETHandler(request: Request) {
   let context;
@@ -69,6 +114,7 @@ async function GETHandler(request: Request) {
     latest: allConnectors.slice(0, 5),
   };
 
+  const vaultStatus = credentialVaultStatus();
   return Response.json({
     connectors: connectors.map((connector) => ({
       ...redactMcpConnector(connector),
@@ -81,6 +127,10 @@ async function GETHandler(request: Request) {
     stats: {
       ...stats,
       latest: stats.latest.map(redactMcpConnector),
+    },
+    credentialVault: {
+      configured: vaultStatus.configured,
+      message: vaultStatus.message,
     },
   });
 }
@@ -100,13 +150,6 @@ async function POSTHandler(request: Request) {
       { status: 400 },
     );
   }
-  if ((parsed.data.authType || "none") === "bearer_env" && !parsed.data.authTokenEnv) {
-    return Response.json(
-      { error: "Invalid MCP connector request", message: "Bearer auth requires authTokenEnv." },
-      { status: 400 },
-    );
-  }
-
   let context;
   try {
     context = await authorizeRequest({
@@ -117,6 +160,7 @@ async function POSTHandler(request: Request) {
         name: parsed.data.name,
         authType: parsed.data.authType || "none",
         hasSecretBinding: Boolean(parsed.data.authTokenEnv),
+        hasAppManagedCredential: Boolean(parsed.data.bearerToken),
         defaultRiskLevel: parsed.data.defaultRiskLevel ?? 2,
         approvalRequired: parsed.data.approvalRequired ?? true,
         discover: Boolean(parsed.data.discover),
@@ -136,7 +180,7 @@ async function POSTHandler(request: Request) {
   }
 
   const secretBinding = evaluateConnectorSecretBinding({
-    envName: parsed.data.authTokenEnv,
+    envName: parsed.data.authType === "bearer_env" ? parsed.data.authTokenEnv : undefined,
     tenantId: context.tenantId,
     targetUrl: parsed.data.endpoint,
     role: context.role,
@@ -148,7 +192,11 @@ async function POSTHandler(request: Request) {
     );
   }
 
-  const connector = await saveMcpConnector(
+  if (parsed.data.authType === "bearer_vault" && !credentialVaultStatus().configured) {
+    return connectorCredentialErrorResponse(new CredentialVaultUnavailableError());
+  }
+
+  let connector = await saveMcpConnector(
     createMcpConnectorRecord({
       name: parsed.data.name,
       tenantId: context.tenantId,
@@ -159,6 +207,22 @@ async function POSTHandler(request: Request) {
       approvalRequired: parsed.data.approvalRequired ?? true,
     }),
   );
+
+  if (parsed.data.authType === "bearer_vault") {
+    try {
+      await storeMcpBearerCredential({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        connectorId: connector.id,
+        endpoint: connector.endpoint,
+        bearerToken: parsed.data.bearerToken!,
+      });
+      connector = (await getMcpConnector(connector.id, { tenantId: context.tenantId }))!;
+    } catch (error) {
+      await deleteMcpConnector(connector.id, { tenantId: context.tenantId }).catch(() => undefined);
+      return connectorCredentialErrorResponse(error);
+    }
+  }
 
   if (!parsed.data.discover) {
     return Response.json({ connector: redactMcpConnector(connector), tools: [] }, { status: 201 });
@@ -191,6 +255,10 @@ async function POSTHandler(request: Request) {
         tools: [],
         error: message,
         discoveryFailed: true,
+        connectionCreated: true,
+        credentialSaved:
+          connector.authType === "bearer_vault" &&
+          Boolean(connector.credentialConfigured),
       },
       { status: 502 },
     );
@@ -203,4 +271,27 @@ function redactMcpConnector<T extends { authTokenEnv?: string; lastError?: strin
     authTokenEnv: connector.authTokenEnv ? "[configured]" : undefined,
     lastError: connector.lastError ? "[redacted]" : undefined,
   };
+}
+
+function connectorCredentialErrorResponse(error: unknown) {
+  if (
+    error instanceof CredentialVaultUnavailableError ||
+    error instanceof McpCredentialStoreError
+  ) {
+    return Response.json(
+      { error: error.name, message: error.message },
+      { status: error.status },
+    );
+  }
+  console.error(
+    "MCP connector credential operation failed.",
+    error instanceof Error ? error.name : "UnknownError",
+  );
+  return Response.json(
+    {
+      error: "MCP connector credential operation failed",
+      message: "The app-managed MCP credential could not be saved safely.",
+    },
+    { status: 500 },
+  );
 }
