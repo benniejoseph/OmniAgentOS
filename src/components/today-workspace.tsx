@@ -2,15 +2,20 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   ArrowRight,
   AlertTriangle,
   Bell,
   BrainCircuit,
   Check,
   Circle,
+  Coins,
+  Cpu,
+  Database,
   Loader2,
   MessageSquareText,
   FolderKanban,
+  Layers3,
   Plus,
   RefreshCw,
   Settings2,
@@ -28,6 +33,12 @@ import {
   formatTodayTime,
 } from "@/lib/today/presentation";
 import type { TodaySnapshot } from "@/lib/today/snapshot";
+import type {
+  UsagePeriodKey,
+  UsagePeriodSummary,
+  UsageSummary,
+  UsageTotals,
+} from "@/lib/usage/summary";
 import styles from "./today-workspace.module.css";
 
 type JsonRecord = Record<string, unknown>;
@@ -53,9 +64,11 @@ const emptyPreferences: TodayPreferences = {
 export function TodayWorkspace({
   initialToday,
   initialSummary,
+  initialUsage,
 }: {
   initialToday?: TodaySnapshot;
   initialSummary?: unknown;
+  initialUsage?: UsageSummary;
 }) {
   const { session, status: sessionStatus } = useWorkspaceSession();
   const hasInitialWorkspace = initialToday !== undefined && initialSummary !== undefined;
@@ -71,6 +84,10 @@ export function TodayWorkspace({
     projects: [],
   });
   const [summary, setSummary] = useState<JsonRecord>(() => record(initialSummary));
+  const [usage, setUsage] = useState<UsageSummary | undefined>(initialUsage);
+  const [usagePeriod, setUsagePeriod] = useState<UsagePeriodKey>("day");
+  const [usageLoading, setUsageLoading] = useState(!initialUsage);
+  const [usageError, setUsageError] = useState<string>();
   const [todayError, setTodayError] = useState<string>();
   const [summaryError, setSummaryError] = useState<string>();
   const [loading, setLoading] = useState(!hasInitialWorkspace);
@@ -86,6 +103,7 @@ export function TodayWorkspace({
   const [hydrated, setHydrated] = useState(false);
   const todayRequestRef = useRef<AbortController | null>(null);
   const summaryRequestRef = useRef<AbortController | null>(null);
+  const usageRequestRef = useRef<AbortController | null>(null);
   const summaryRefreshRef = useRef<() => Promise<void>>(async () => undefined);
   const lastFullRefreshAtRef = useRef(
     initialToday?.generatedAt ? Date.parse(initialToday.generatedAt) : 0,
@@ -166,6 +184,30 @@ export function TodayWorkspace({
     }
   }
 
+  async function refreshUsage() {
+    if (sessionStatus !== "ready" || !workspaceAvailable) return;
+    usageRequestRef.current?.abort();
+    const controller = new AbortController();
+    usageRequestRef.current = controller;
+    setUsageLoading(true);
+    try {
+      const payload = await readJson("/api/usage/summary", {
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      const nextUsage = payload.summary;
+      if (!isUsageSummary(nextUsage)) {
+        throw new Error("Usage summary returned an invalid response.");
+      }
+      setUsage(nextUsage);
+      setUsageError(undefined);
+    } catch (error) {
+      if (!controller.signal.aborted) setUsageError(errorMessage(error));
+    } finally {
+      if (!controller.signal.aborted) setUsageLoading(false);
+    }
+  }
+
   async function load({
     force = false,
     showLoading = false,
@@ -186,6 +228,7 @@ export function TodayWorkspace({
     }
     lastFullRefreshAtRef.current = timestamp;
     if (showLoading) setLoading(true);
+    void refreshUsage();
     try {
       await Promise.all([refreshToday(), refreshSummary()]);
       if (announce) setAnnouncement("Today refreshed.");
@@ -205,6 +248,7 @@ export function TodayWorkspace({
       window.clearTimeout(clockTimer);
       todayRequestRef.current?.abort();
       summaryRequestRef.current?.abort();
+      usageRequestRef.current?.abort();
     };
   }, []);
 
@@ -221,6 +265,14 @@ export function TodayWorkspace({
     // Session identity is the automatic load boundary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasInitialWorkspace, sessionStatus, session]);
+
+  useEffect(() => {
+    if (initialUsage || !hasInitialWorkspace || sessionStatus !== "ready" || !workspaceAvailable) return;
+    const usageTimer = window.setTimeout(() => void refreshUsage(), 0);
+    return () => window.clearTimeout(usageTimer);
+    // Session identity is the automatic usage-load boundary.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialUsage, hasInitialWorkspace, sessionStatus, session]);
 
   useEffect(() => {
     summaryRefreshRef.current = refreshSummary;
@@ -466,6 +518,15 @@ export function TodayWorkspace({
         </div>
       </section>
 
+      <UsageCockpit
+        summary={usage}
+        periodKey={usagePeriod}
+        loading={usageLoading}
+        error={usageError}
+        onPeriodChange={setUsagePeriod}
+        onRetry={() => void refreshUsage()}
+      />
+
       <section className="today-generated-brief" aria-labelledby="daily-brief-title">
         <div className="today-brief-lead">
           <div className="today-brief-title-row">
@@ -636,6 +697,333 @@ export function TodayWorkspace({
   );
 }
 
+function UsageCockpit({
+  summary,
+  periodKey,
+  loading,
+  error,
+  onPeriodChange,
+  onRetry,
+}: {
+  summary?: UsageSummary;
+  periodKey: UsagePeriodKey;
+  loading: boolean;
+  error?: string;
+  onPeriodChange: (period: UsagePeriodKey) => void;
+  onRetry: () => void;
+}) {
+  const period = summary?.periods[periodKey];
+  const periods: Array<{ key: UsagePeriodKey; label: string }> = [
+    { key: "day", label: "Daily" },
+    { key: "week", label: "Weekly" },
+    { key: "month", label: "Monthly" },
+  ];
+
+  return (
+    <section className={styles.usageCockpit} aria-labelledby="usage-cockpit-title" aria-busy={loading}>
+      <div className={styles.usageHalo} aria-hidden="true"><span /><span /><span /></div>
+      <header className={styles.usageHeader}>
+        <div>
+          <p className={styles.usageKicker}><Activity size={14} aria-hidden="true" /> Consumption</p>
+          <h2 id="usage-cockpit-title">Tracked agent consumption</h2>
+          <p>Token volume and known estimated cost from recorded agent model calls.</p>
+        </div>
+        <div className={styles.usagePeriodSwitch} role="group" aria-label="Consumption period">
+          {periods.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              aria-pressed={periodKey === item.key}
+              onClick={() => onPeriodChange(item.key)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </header>
+
+      {period ? (
+        <div className={styles.usageBody} key={period.key}>
+          <div className={styles.usageReadout}>
+            <div className={styles.usagePrimaryMetric}>
+              <span>Total consumption · {period.label}</span>
+              <strong>{formatTokens(period.current.totalTokens)}</strong>
+              <UsageDelta current={period.current.totalTokens} previous={period.previous.totalTokens} />
+              <small>tokens across {period.current.runs.toLocaleString()} {period.current.runs === 1 ? "run" : "runs"}</small>
+            </div>
+
+            <div className={styles.usageMetricLedger}>
+              <UsageMetric
+                icon={Database}
+                label="Context consumed"
+                value={formatTokens(period.current.inputTokens)}
+                detail={`${compactComparison(period.current.inputTokens, period.previous.inputTokens)} · input tokens, not window %`}
+              />
+              <UsageMetric
+                icon={Activity}
+                label="Output"
+                value={formatTokens(period.current.outputTokens)}
+                detail={`${compactComparison(period.current.outputTokens, period.previous.outputTokens)} · generated tokens`}
+              />
+              <UsageMetric
+                icon={Layers3}
+                label="Cache reused"
+                value={formatTokens(period.current.cachedInputTokens)}
+                detail={`${tokenShare(period.current.cachedInputTokens, period.current.inputTokens)}% of input · ${compactComparison(period.current.cachedInputTokens, period.previous.cachedInputTokens)}`}
+              />
+              <UsageMetric
+                icon={Cpu}
+                label="Model calls"
+                value={period.current.modelCalls.toLocaleString()}
+                detail={`${compactComparison(period.current.modelCalls, period.previous.modelCalls)} · ${period.current.runs.toLocaleString()} distinct ${period.current.runs === 1 ? "run" : "runs"}`}
+              />
+              <UsageMetric
+                icon={Coins}
+                label="Known est. cost"
+                value={formatKnownCost(period.current)}
+                detail={`${period.current.costCoveragePercent}% priced · previous ${formatKnownCost(period.previous)} · ${period.current.unknownCostCalls.toLocaleString()} unknown`}
+              />
+            </div>
+          </div>
+
+          <div className={styles.usageMain}>
+            <div className={styles.usageTrendPanel}>
+              <div className={styles.usageTrendHeading}>
+                <div>
+                  <h3>Consumption rhythm</h3>
+                  <p>{period.currentLabel} compared with the equal previous period.</p>
+                </div>
+                <div className={styles.usageLegend} aria-label="Chart legend">
+                  <span><i className={styles.currentLegend} />Current</span>
+                  <span><i className={styles.previousLegend} />Previous</span>
+                </div>
+              </div>
+              <UsageTrendChart period={period} />
+              <TokenComposition totals={period.current} />
+            </div>
+
+            <div className={styles.usageMixPanel}>
+              <UsageBreakdown
+                title="Provider mix"
+                description="Where tracked tokens were processed"
+                items={period.providers}
+                totalTokens={period.current.totalTokens}
+              />
+              <UsageBreakdown
+                title="Model mix"
+                description="Highest-consumption models"
+                items={period.models}
+                totalTokens={period.current.totalTokens}
+                showProvider
+              />
+            </div>
+          </div>
+
+          <footer className={styles.usageDisclosure}>
+            <span>{summary.scopeLabel}</span>
+            <p>{summary.disclosure}</p>
+            {summary.sourceEventLimitReached ? (
+              <strong>Source limit reached; totals may be partial.</strong>
+            ) : null}
+            {error ? <strong>Refresh failed; showing the last available totals.</strong> : null}
+            <time dateTime={summary.generatedAt}>Updated {formatUpdatedAt(summary.generatedAt)}</time>
+          </footer>
+        </div>
+      ) : (
+        <div className={styles.usageUnavailable} role={error ? "alert" : "status"}>
+          {loading ? <Loader2 size={20} className="animate-spin" aria-hidden="true" /> : <AlertTriangle size={20} aria-hidden="true" />}
+          <div>
+            <strong>{loading ? "Loading consumption…" : "Consumption is temporarily unavailable"}</strong>
+            <p>{error || "Today remains available while tracked usage loads independently."}</p>
+          </div>
+          {!loading ? <button type="button" onClick={onRetry}>Try again</button> : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function UsageMetric({
+  icon: Icon,
+  label,
+  value,
+  detail,
+}: {
+  icon: typeof Activity;
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className={styles.usageMetric}>
+      <Icon size={15} aria-hidden="true" />
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </div>
+  );
+}
+
+function UsageDelta({ current, previous }: { current: number; previous: number }) {
+  const delta = comparison(current, previous);
+  return (
+    <span className={clsx(styles.usageDelta, styles[delta.tone])}>
+      {delta.symbol} {delta.label} vs previous
+    </span>
+  );
+}
+
+function UsageTrendChart({ period }: { period: UsagePeriodSummary }) {
+  const width = 760;
+  const height = 238;
+  const inset = { top: 18, right: 14, bottom: 34, left: 46 };
+  const plotWidth = width - inset.left - inset.right;
+  const plotHeight = height - inset.top - inset.bottom;
+  const peak = Math.max(
+    1,
+    ...period.series.flatMap((point) => [point.currentTotalTokens, point.previousTotalTokens]),
+  );
+  const x = (index: number) => inset.left + (period.series.length <= 1 ? 0 : index / (period.series.length - 1) * plotWidth);
+  const y = (value: number) => inset.top + plotHeight - value / peak * plotHeight;
+  const currentPath = linePath(period.series.map((point) => point.currentTotalTokens), x, y);
+  const previousPath = linePath(period.series.map((point) => point.previousTotalTokens), x, y);
+  const areaPath = period.series.length
+    ? `${currentPath} L ${x(period.series.length - 1)} ${inset.top + plotHeight} L ${x(0)} ${inset.top + plotHeight} Z`
+    : "";
+  const labelIndexes = chartLabelIndexes(period.series.length);
+  const titleId = `usage-trend-title-${period.key}`;
+  const descriptionId = `usage-trend-description-${period.key}`;
+
+  return (
+    <figure className={styles.usageChartFigure}>
+      <svg
+        className={styles.usageChart}
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-labelledby={`${titleId} ${descriptionId}`}
+      >
+        <title id={titleId}>Token consumption trend for {period.currentLabel}</title>
+        <desc id={descriptionId}>
+          {period.current.totalTokens.toLocaleString()} tokens in the current period, compared with {period.previous.totalTokens.toLocaleString()} in the previous equal period.
+        </desc>
+        <defs>
+          <linearGradient id={`usage-area-${period.key}`} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0" stopColor="currentColor" stopOpacity="0.2" />
+            <stop offset="1" stopColor="currentColor" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+          const gridY = inset.top + ratio * plotHeight;
+          const gridValue = Math.round(peak * (1 - ratio));
+          return (
+            <g key={ratio} className={styles.usageGridline}>
+              <line x1={inset.left} x2={width - inset.right} y1={gridY} y2={gridY} />
+              <text x={inset.left - 8} y={gridY + 3} textAnchor="end">{compactAxisValue(gridValue)}</text>
+            </g>
+          );
+        })}
+        {areaPath ? <path className={styles.usageArea} d={areaPath} fill={`url(#usage-area-${period.key})`} /> : null}
+        <path className={styles.usagePreviousLine} d={previousPath} />
+        <path className={styles.usageCurrentLine} d={currentPath} />
+        {period.series.map((point, index) => (
+          <circle
+            key={point.currentAt}
+            className={styles.usageCurrentPoint}
+            cx={x(index)}
+            cy={y(point.currentTotalTokens)}
+            r={point.currentTotalTokens ? 2.4 : 0}
+          />
+        ))}
+        {labelIndexes.map((index) => (
+          <text
+            key={period.series[index]?.currentAt || index}
+            className={styles.usageAxisLabel}
+            x={x(index)}
+            y={height - 8}
+            textAnchor={index === 0 ? "start" : index === period.series.length - 1 ? "end" : "middle"}
+          >
+            {formatBucketLabel(period.series[index]?.currentAt, period.bucketUnit)}
+          </text>
+        ))}
+      </svg>
+      <figcaption>
+        Current total {period.current.totalTokens.toLocaleString()} tokens; previous total {period.previous.totalTokens.toLocaleString()} tokens.
+      </figcaption>
+      <details className={styles.usageDataTable}>
+        <summary>View chart data</summary>
+        <div>
+          <table>
+            <caption>Token consumption by {period.bucketUnit}</caption>
+            <thead><tr><th scope="col">Current</th><th scope="col">Tokens</th><th scope="col">Previous</th><th scope="col">Tokens</th></tr></thead>
+            <tbody>
+              {period.series.map((point) => (
+                <tr key={`${point.currentAt}-${point.previousAt}`}>
+                  <th scope="row">{formatBucketLabel(point.currentAt, period.bucketUnit)}</th>
+                  <td>{point.currentTotalTokens.toLocaleString()}</td>
+                  <th scope="row">{formatBucketLabel(point.previousAt, period.bucketUnit)}</th>
+                  <td>{point.previousTotalTokens.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </figure>
+  );
+}
+
+function TokenComposition({ totals }: { totals: UsageTotals }) {
+  const inputShare = tokenShare(totals.inputTokens, totals.totalTokens);
+  const outputShare = Math.max(0, 100 - inputShare);
+  return (
+    <div className={styles.usageComposition} aria-label={`Token composition: ${inputShare}% input and ${outputShare}% output`}>
+      <div><span style={{ width: `${inputShare}%` }} /><i style={{ width: `${outputShare}%` }} /></div>
+      <p><span><i />Input {inputShare}%</span><span><i />Output {outputShare}%</span><small>Cached input is included in input tokens.</small></p>
+    </div>
+  );
+}
+
+function UsageBreakdown({
+  title,
+  description,
+  items,
+  totalTokens,
+  showProvider = false,
+}: {
+  title: string;
+  description: string;
+  items: UsagePeriodSummary["providers"];
+  totalTokens: number;
+  showProvider?: boolean;
+}) {
+  const visible = items.slice(0, 6);
+  return (
+    <section className={styles.usageBreakdown}>
+      <header><div><h3>{title}</h3><p>{description}</p></div><strong>{items.length}</strong></header>
+      {visible.length ? (
+        <ol>
+          {visible.map((item, index) => {
+            const share = tokenShare(item.totals.totalTokens, totalTokens);
+            return (
+              <li key={item.id} data-color={index % 5}>
+                <span className={styles.usageIdentity}>{item.label.slice(0, 2).toUpperCase()}</span>
+                <div>
+                  <p><strong>{item.label}</strong>{showProvider && item.provider ? <small>{item.provider}</small> : null}<span>{formatTokens(item.totals.totalTokens)} · {share}%</span></p>
+                  <span className={styles.usageBar}><i style={{ width: `${share}%` }} /></span>
+                  <small className={styles.usageItemCost}>
+                    {formatTokens(item.totals.inputTokens)} context · {item.totals.modelCalls.toLocaleString()} {item.totals.modelCalls === 1 ? "call" : "calls"} · {formatBreakdownCost(item.totals)} · {item.totals.costCoveragePercent}% priced
+                  </small>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      ) : <p className={styles.usageMixEmpty}>No tracked model calls in this period.</p>}
+      {items.length > visible.length ? <small className={styles.usageMore}>+{items.length - visible.length} more</small> : null}
+    </section>
+  );
+}
+
 function ProgressRing({ value, completed, total }: { value: number; completed: number; total: number }) {
   const circumference = 2 * Math.PI * 18;
   return <div className="today-progress" aria-label={`${completed} of ${total} focus items completed`}><svg viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="18" /><circle className="progress-value" cx="22" cy="22" r="18" style={{ strokeDasharray: circumference, strokeDashoffset: circumference * (1 - value) }} /></svg><span>{total ? `${Math.round(value * 100)}%` : "—"}</span></div>;
@@ -710,6 +1098,102 @@ function sourceData(summary: JsonRecord, source: string) {
 function sourceError(summary: JsonRecord, source: string) {
   const value = record(record(record(summary).sources)[source]);
   return value.status === "error" ? text(value.error, "Source unavailable.") : "";
+}
+
+function isUsageSummary(value: unknown): value is UsageSummary {
+  const candidate = record(value);
+  const periods = record(candidate.periods);
+  return typeof candidate.generatedAt === "string" &&
+    ["day", "week", "month"].every((key) => {
+      const period = record(periods[key]);
+      return Array.isArray(period.series) &&
+        Array.isArray(period.providers) &&
+        Array.isArray(period.models) &&
+        Boolean(period.current) &&
+        Boolean(period.previous);
+    });
+}
+
+function comparison(current: number, previous: number): {
+  label: string;
+  symbol: string;
+  tone: "up" | "down" | "flat";
+} {
+  if (current === previous) return { label: "No change", symbol: "—", tone: "flat" };
+  if (previous === 0) return { label: "New activity", symbol: "↑", tone: "up" };
+  const percent = Math.abs((current - previous) / previous * 100);
+  return current > previous
+    ? { label: `${formatPercentage(percent)} higher`, symbol: "↑", tone: "up" }
+    : { label: `${formatPercentage(percent)} lower`, symbol: "↓", tone: "down" };
+}
+
+function compactComparison(current: number, previous: number) {
+  const delta = comparison(current, previous);
+  return `${delta.symbol} ${delta.label}`;
+}
+
+function formatTokens(value: number) {
+  if (value < 1_000) return Math.round(value).toLocaleString();
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact",
+    maximumFractionDigits: value >= 1_000_000 ? 2 : 1,
+  }).format(value);
+}
+
+function formatKnownCost(totals: UsageTotals) {
+  if (!totals.knownCostCalls && totals.modelCalls) return "Unknown";
+  const value = totals.knownEstimatedCostUsd;
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: value > 0 && value < 0.01 ? 4 : 2,
+    maximumFractionDigits: value > 0 && value < 0.01 ? 6 : 2,
+  }).format(value);
+}
+
+function formatBreakdownCost(totals: UsageTotals) {
+  return totals.knownCostCalls ? `${formatKnownCost(totals)} known cost` : "cost unknown";
+}
+
+function formatPercentage(value: number) {
+  return `${value >= 100 ? Math.round(value) : value.toFixed(value >= 10 ? 0 : 1)}%`;
+}
+
+function tokenShare(value: number, total: number) {
+  return total > 0 ? Math.min(100, Math.max(0, Math.round(value / total * 100))) : 0;
+}
+
+function linePath(
+  values: number[],
+  x: (index: number) => number,
+  y: (value: number) => number,
+) {
+  return values.map((value, index) => `${index ? "L" : "M"} ${x(index)} ${y(value)}`).join(" ");
+}
+
+function chartLabelIndexes(length: number) {
+  if (!length) return [];
+  return [...new Set([0, Math.round((length - 1) / 3), Math.round((length - 1) * 2 / 3), length - 1])];
+}
+
+function compactAxisValue(value: number) {
+  return value >= 1_000 ? new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value) : String(value);
+}
+
+function formatBucketLabel(value: string | undefined, unit: UsagePeriodSummary["bucketUnit"]) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "—";
+  return unit === "hour"
+    ? date.toLocaleTimeString(undefined, { hour: "numeric" })
+    : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function formatUpdatedAt(value: string) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    : "recently";
 }
 
 function record(value: unknown): JsonRecord { return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {}; }

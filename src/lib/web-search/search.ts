@@ -1,9 +1,11 @@
 import { WEB_SEARCH_MODEL, WEB_SEARCH_TIMEOUT_MS, hasOpenAIKey } from "@/lib/config";
 import { getOpenAIClient } from "@/lib/openai/client";
+import { citationIdForWebUrl } from "@/lib/rag/citations";
 
 export type LiveWebSearchContextSize = "low" | "medium" | "high";
 
 export type LiveWebSearchSource = {
+  citationId: string;
   title: string;
   url: string;
   snippet?: string;
@@ -123,9 +125,9 @@ const MAX_SNIPPET_CHARS = 200;
 export function formatLiveWebSearchContext(result: LiveWebSearchResult) {
   const sources = result.sources.length
     ? result.sources
-      .map((source, index) => {
+      .map((source) => {
         const snippet = source.snippet ? source.snippet.slice(0, MAX_SNIPPET_CHARS) : "";
-        return `[${index + 1}] ${source.title || source.url} - ${source.url}${snippet ? `\n    ${snippet}` : ""}`;
+        return `[${source.citationId}] ${source.title || source.url} - ${source.url}${snippet ? `\n    ${snippet}` : ""}`;
       })
       .join("\n")
     : "No structured source URLs were returned. Use the live web brief cautiously and say that source extraction was incomplete.";
@@ -185,12 +187,15 @@ function collectWebSources(value: unknown, sources: LiveWebSearchSource[], seen:
   }
 }
 
-function addSource(source: LiveWebSearchSource, sources: LiveWebSearchSource[], seen: Set<string>) {
-  if (!source.url || seen.has(source.url)) {
-    return;
-  }
-  seen.add(source.url);
-  sources.push(source);
+function addSource(
+  source: Omit<LiveWebSearchSource, "citationId">,
+  sources: LiveWebSearchSource[],
+  seen: Set<string>,
+) {
+  const citationId = citationIdForWebUrl(source.url);
+  if (!citationId || seen.has(citationId)) return;
+  seen.add(citationId);
+  sources.push({ ...source, citationId });
 }
 
 function looksLikeWebSearchRecord(record: Record<string, unknown>) {

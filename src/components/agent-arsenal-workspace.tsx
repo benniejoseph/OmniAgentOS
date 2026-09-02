@@ -4,24 +4,24 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ArrowRight,
-  Bot,
   BrainCircuit,
   Check,
   Eye,
-  Hammer,
   Layers3,
   Loader2,
   Network,
   Pencil,
   Plus,
-  Search,
-  ShieldCheck,
   Sparkles,
   Trash2,
   Wrench,
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
+import {
+  AgentMascot,
+  getAgentMascotIdentity,
+} from "@/components/agents/agent-mascot";
 import { upsertById } from "@/lib/agents/client-state";
 import { arsenalAgents, type ArsenalAgent } from "@/lib/agents/arsenal";
 import type { AgentPerformance } from "@/lib/agents/performance";
@@ -43,14 +43,6 @@ type BuilderSaveResult =
       message: string;
     }
   | { kind: "skill"; skill: AgentSkill; message: string };
-
-const builtInIcons = {
-  atlas: Sparkles,
-  scout: Search,
-  forge: Hammer,
-  sentinel: ShieldCheck,
-  mnemosyne: BrainCircuit,
-};
 
 export function AgentArsenalWorkspace() {
   const [selectedId, setSelectedId] = useState("atlas");
@@ -93,6 +85,7 @@ export function AgentArsenalWorkspace() {
   const selectedPerformance = performance.find(
     (item) => item.agentId === selected.id,
   );
+  const selectedIdentity = getAgentMascotIdentity(selected.id);
 
   async function load(saved?: BuilderSaveResult) {
     const version = ++loadVersion.current;
@@ -178,12 +171,14 @@ export function AgentArsenalWorkspace() {
   return (
     <div className={clsx("arsenal-shell workspace-enter", styles.shell)}>
       <header className="arsenal-header">
-        <div>
-          <p className="arsenal-kicker">Agent workspace</p>
-          <h1>Agents</h1>
+        <div className={styles.headerCopy}>
+          <p className="arsenal-kicker">Living intelligence</p>
+          <h1>
+            Your <span>Arsenal</span>
+          </h1>
           <p>
-            Choose a specialist, review its boundaries, or build a new agent
-            from governed skills, tools, memory, and model policies.
+            Meet the specialists behind every mission. Each one has a distinct
+            instinct, clear boundaries, and a role in the constellation.
           </p>
           <div className="arsenal-header-meta" aria-label="Agent workspace summary">
             <span><strong>{agents.length}</strong> agents</span>
@@ -220,7 +215,10 @@ export function AgentArsenalWorkspace() {
       ) : null}
       <div className="arsenal-layout">
         <nav className="arsenal-roster" aria-label="Agent roster">
-          <p className="arsenal-section-label">Agent roster</p>
+          <div className={styles.rosterHeading}>
+            <p className="arsenal-section-label">The companions</p>
+            <span>{agents.filter((agent) => agent.status === "ready").length} ready now</span>
+          </div>
           {agents.map((agent) => (
             <RosterButton
               key={agent.id}
@@ -230,13 +228,15 @@ export function AgentArsenalWorkspace() {
             />
           ))}
         </nav>
-        <section className="arsenal-map" aria-label="Agent delegation map">
+        <section className="arsenal-map" aria-label="Living agent constellation">
+          <div className={styles.mapGlow} aria-hidden="true" />
+          <div className={styles.mapStars} aria-hidden="true" />
           <div className="arsenal-map-heading">
             <div>
-              <strong>Delegation map</strong>
-              <span>Select an agent to inspect how it works.</span>
+              <strong>Living constellation</strong>
+              <span>Select a companion to reveal its craft and boundaries.</span>
             </div>
-            <span><Network size={13} aria-hidden="true" />Atlas coordinates</span>
+            <span><Network size={13} aria-hidden="true" />Atlas holds the center</span>
           </div>
           <div className="arsenal-map-grid" aria-hidden="true" />
           <svg
@@ -273,9 +273,19 @@ export function AgentArsenalWorkspace() {
                   key={agent.id}
                   type="button"
                   onClick={() => setSelectedId(agent.id)}
-                  className={clsx(selected.id === agent.id && "is-selected")}
+                  className={clsx(
+                    `agent-${agent.accent}`,
+                    selected.id === agent.id && "is-selected",
+                  )}
+                  aria-pressed={selected.id === agent.id}
+                  aria-label={`${agent.name}, custom agent`}
                 >
-                  <Bot size={14} aria-hidden="true" />
+                  <AgentMascot
+                    agentId={agent.id}
+                    agentName={agent.name}
+                    size="small"
+                    decorative
+                  />
                   <span>{agent.name}</span>
                 </button>
               ))}
@@ -284,7 +294,7 @@ export function AgentArsenalWorkspace() {
           <div className="arsenal-map-legend">
             <Network size={14} aria-hidden="true" />
             <span>
-              Atlas delegates. Skills shape behavior. Tools remain governed.
+              Intent travels through Atlas. Every tool remains governed.
             </span>
           </div>
         </section>
@@ -293,10 +303,19 @@ export function AgentArsenalWorkspace() {
           aria-live="polite"
         >
           <p className="arsenal-inspector-label">Selected agent</p>
+          <div className={styles.inspectorPortrait}>
+            <AgentMascot
+              agentId={selected.id}
+              agentName={selected.name}
+              size="hero"
+            />
+            <div>
+              <span>{selectedIdentity.theme}</span>
+              <strong>{selectedIdentity.companion}</strong>
+              <q>{selectedIdentity.motto}</q>
+            </div>
+          </div>
           <div className="inspector-identity">
-            <span className="agent-glyph large">
-              <AgentIcon agent={selected} size={24} />
-            </span>
             <div>
               <p>{selected.role}</p>
               <h2>{selected.name}</h2>
@@ -881,16 +900,6 @@ function toggle(values: string[], value: string) {
     ? values.filter((item) => item !== value)
     : [...values, value];
 }
-function AgentIcon({
-  agent,
-  size = 18,
-}: {
-  agent: AgentView | ArsenalAgent;
-  size?: number;
-}) {
-  const Icon = builtInIcons[agent.id as keyof typeof builtInIcons] || Bot;
-  return <Icon size={size} aria-hidden="true" />;
-}
 function RosterButton({
   agent,
   selected,
@@ -900,6 +909,7 @@ function RosterButton({
   selected: boolean;
   onSelect: (id: string) => void;
 }) {
+  const identity = getAgentMascotIdentity(agent.id);
   return (
     <button
       type="button"
@@ -910,13 +920,20 @@ function RosterButton({
         selected && "is-selected",
       )}
       aria-pressed={selected}
+      aria-label={`${agent.name}, ${agent.role}, ${identity.companion}, ${agent.status}`}
     >
-      <span className="agent-glyph">
-        <AgentIcon agent={agent} />
+      <span className={styles.rosterMascot}>
+        <AgentMascot
+          agentId={agent.id}
+          agentName={agent.name}
+          size="small"
+          decorative
+        />
       </span>
       <span>
         <strong>{agent.name}</strong>
         <small>{agent.role}</small>
+        <em>{identity.companion}</em>
       </span>
       <span
         className={clsx("agent-status-dot", `status-${agent.status}`)}
@@ -936,6 +953,7 @@ function AgentNode({
   onSelect: (id: string) => void;
   className: string;
 }) {
+  const identity = getAgentMascotIdentity(agent.id);
   return (
     <button
       type="button"
@@ -946,14 +964,19 @@ function AgentNode({
         className,
         selected && "is-selected",
       )}
-      aria-label={`${agent.name}, ${agent.role}, ${agent.status}`}
+      aria-pressed={selected}
+      aria-label={`${agent.name}, ${agent.role}, ${identity.companion}, ${agent.status}`}
     >
       <span className="node-signal" aria-hidden="true" />
-      <span className="agent-glyph">
-        <AgentIcon agent={agent} size={agent.id === "atlas" ? 25 : 18} />
-      </span>
+      <AgentMascot
+        agentId={agent.id}
+        agentName={agent.name}
+        size={agent.id === "atlas" ? "hero" : "large"}
+        decorative
+      />
+      <span className={styles.nodeTheme}>{identity.theme}</span>
       <strong>{agent.name}</strong>
-      <small>{agent.role}</small>
+      <small>{identity.companion}</small>
     </button>
   );
 }
