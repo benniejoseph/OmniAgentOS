@@ -9,23 +9,33 @@ import {
   completeOperationJob,
   deferOperationJob,
   failOperationJob,
+  getAgentExecuteJobDedupeKey,
   heartbeatOperationJob,
   leaseOperationJobs,
   listRunnableAgentExecuteTenantIds,
   type OperationJobRecord,
 } from "@/lib/operations/job-queue";
 import {
+  AgentRunExecutionScopeBindingError,
   appendRunEvent,
   claimQueuedAgentRun,
   failAgentRun,
+  getAgentRunExecutionScope,
   getAgentRun,
 } from "@/lib/runs/store";
+import {
+  assertExecutionScopeTenant,
+  executionScopesEqual,
+  parsePersistedExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { inspectWorkflowSpecialistDependencies } from "@/lib/subagents/context";
 import {
   durableSpecialistLabel,
   durableSpecialistProfile,
 } from "@/lib/subagents/profiles";
 import type { DurableSpecialistJobPayload } from "@/lib/subagents/types";
+import { DURABLE_SPECIALIST_SCOPE_PURPOSE } from "@/lib/subagents/types";
 import { enqueueWorkflowRunTick } from "@/lib/workflows/queue";
 import { getWorkflowRunDetail } from "@/lib/workflows/store";
 
@@ -35,6 +45,9 @@ const specialistJobSchema = z.object({
   taskId: z.string().min(1).max(200),
   runId: z.string().min(1).max(200),
   agentId: z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"]),
+  requestId: z.string().min(1).max(200).optional(),
+  delegationId: z.string().min(1).max(200).optional(),
+  executionScope: z.unknown().optional(),
   workflowRunId: z.string().min(1).max(200).optional(),
   ready: z.boolean(),
   preparedAt: z.string().datetime(),
@@ -125,6 +138,12 @@ async function processSpecialistJob(
     return failInfrastructureJob(job, "Durable specialist job payload is invalid.");
   }
   const payload = parsed.data as DurableSpecialistJobPayload;
+  let executionScope = await specialistExecutionScope(
+    payload,
+    job.tenantId,
+    payload.ready,
+    job.dedupeKey,
+  );
   if (!payload.ready) {
     const ageMs = Date.now() - Date.parse(payload.preparedAt);
     if (Number.isFinite(ageMs) && ageMs < 15 * 60_000) {
@@ -144,6 +163,12 @@ async function processSpecialistJob(
         message: "Specialist intent is not bound yet.",
       };
     }
+    executionScope = await specialistExecutionScope(
+      payload,
+      job.tenantId,
+      true,
+      job.dedupeKey,
+    );
     const abandoned = await getAgentRun(payload.runId, { tenantId: job.tenantId });
     if (abandoned && !["completed", "failed", "canceled"].includes(abandoned.status)) {
       const message = "Durable specialist initialization expired before a parent workflow was bound.";
@@ -151,7 +176,7 @@ async function processSpecialistJob(
       await appendRunEvent(
         abandoned.id,
         { type: "error", message },
-        { tenantId: job.tenantId },
+        { tenantId: job.tenantId, executionScope },
       );
       const terminal = await getAgentRun(abandoned.id, { tenantId: job.tenantId });
       if (terminal) return finalizeTerminalRun(job, payload, terminal);
@@ -179,7 +204,7 @@ async function processSpecialistJob(
     await appendRunEvent(
       run.id,
       { type: "error", message },
-      { tenantId: job.tenantId },
+      { tenantId: job.tenantId, executionScope },
     );
     run = (await getAgentRun(run.id, { tenantId: job.tenantId })) || run;
     return finalizeTerminalRun(job, payload, run);
@@ -193,7 +218,7 @@ async function processSpecialistJob(
     }
     return ["completed", "failed", "canceled"].includes(raced.status)
       ? finalizeTerminalRun(job, payload, raced)
-      : interruptClaimedRun(job, payload, raced);
+      : interruptClaimedRun(job, payload, raced, executionScope);
   }
   run = claimed;
 
@@ -246,6 +271,7 @@ async function processSpecialistJob(
     const profile = durableSpecialistProfile(payload.agentId, run.mode);
     for await (const event of runAgent({
       preclaimedRunId: run.id,
+      executionScope,
       mode: run.mode,
       messages: run.messages,
       tenantId: job.tenantId,
@@ -263,7 +289,11 @@ async function processSpecialistJob(
       const message = error instanceof Error ? error.message : "Durable specialist execution failed.";
       const changed = await failAgentRun(run.id, message);
       if (changed) {
-        await appendRunEvent(run.id, { type: "error", message }, { tenantId: job.tenantId });
+        await appendRunEvent(
+          run.id,
+          { type: "error", message },
+          { tenantId: job.tenantId, executionScope },
+        );
       }
     }
   } finally {
@@ -279,7 +309,7 @@ async function processSpecialistJob(
     return failInfrastructureJob(job, "Durable specialist run disappeared after execution.", run.id);
   }
   if (!["completed", "failed", "canceled"].includes(terminal.status)) {
-    return interruptClaimedRun(job, payload, terminal);
+    return interruptClaimedRun(job, payload, terminal, executionScope);
   }
   return finalizeTerminalRun(job, payload, terminal);
 }
@@ -296,20 +326,62 @@ async function processSpecialistJobSafely(
       : "Durable specialist queue delivery failed.";
     const parsed = specialistJobSchema.safeParse(job.payload);
     if (parsed.success) {
-      const run = await getAgentRun(parsed.data.runId, {
+      const parsedPayload = parsed.data as DurableSpecialistJobPayload;
+      const boundScope = await getAgentRunExecutionScope(parsedPayload.runId, {
         tenantId: job.tenantId,
       }).catch(() => undefined);
-      if (run && !["queued", "completed", "failed", "canceled"].includes(run.status)) {
+      const run = await getAgentRun(parsedPayload.runId, {
+        tenantId: job.tenantId,
+      }).catch(() => undefined);
+      const invalidScope = error instanceof DurableSpecialistScopeError;
+      const canonicalSpecialistRun = Boolean(
+        run &&
+        boundScope &&
+        isCanonicalSpecialistRunBinding(
+          boundScope,
+          parsedPayload,
+          job.dedupeKey,
+        ) &&
+        boundScope.executingPrincipalId === run.agentId &&
+        run.id === parsedPayload.runId,
+      );
+      let failedRun = false;
+      if (
+        run &&
+        !["completed", "failed", "canceled"].includes(run.status) &&
+        (
+          (invalidScope && canonicalSpecialistRun) ||
+          (!invalidScope && run.status !== "queued")
+        )
+      ) {
         const interrupted =
           `Durable specialist delivery was interrupted and will not be replayed: ${message}`;
         const changed = await failAgentRun(run.id, interrupted).catch(() => false);
-        if (changed) {
+        failedRun = changed;
+        if (changed && boundScope) {
           await appendRunEvent(
             run.id,
             { type: "error", message: interrupted },
-            { tenantId: job.tenantId },
+            { tenantId: job.tenantId, executionScope: boundScope },
           ).catch(() => undefined);
         }
+      }
+      if (
+        run &&
+        invalidScope &&
+        canonicalSpecialistRun &&
+        boundScope?.initiatingActorId &&
+        (failedRun || run.status === "failed")
+      ) {
+        await syncMissionExecutor({
+          executorType: "agent_run",
+          executorId: run.id,
+          status: "failed",
+          error: `Durable specialist scope validation failed: ${message}`,
+        }, {
+          tenantId: job.tenantId,
+          actorId: boundScope.initiatingActorId,
+        }).catch(() => undefined);
       }
     }
     return failInfrastructureJob(
@@ -324,15 +396,151 @@ async function interruptClaimedRun(
   job: OperationJobRecord,
   payload: DurableSpecialistJobPayload,
   run: NonNullable<Awaited<ReturnType<typeof getAgentRun>>>,
+  executionScope?: ExecutionScope,
 ) {
   const message =
     "Durable specialist execution ended without a terminal receipt; it was not replayed.";
   const changed = await failAgentRun(run.id, message);
   if (changed) {
-    await appendRunEvent(run.id, { type: "error", message }, { tenantId: job.tenantId });
+    await appendRunEvent(
+      run.id,
+      { type: "error", message },
+      { tenantId: job.tenantId, executionScope },
+    );
   }
   const terminal = (await getAgentRun(run.id, { tenantId: job.tenantId })) || run;
   return finalizeTerminalRun(job, payload, terminal);
+}
+
+class DurableSpecialistScopeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DurableSpecialistScopeError";
+  }
+}
+
+async function specialistExecutionScope(
+  payload: DurableSpecialistJobPayload,
+  tenantId: string,
+  requireRunBinding = true,
+  jobDedupeKey?: string,
+): Promise<ExecutionScope | undefined> {
+  const hasScopedEnvelope = hasSpecialistScopeEnvelope(payload);
+  if (!hasScopedEnvelope) {
+    let boundScope: ExecutionScope | undefined;
+    try {
+      boundScope = await getAgentRunExecutionScope(payload.runId, { tenantId });
+    } catch (error) {
+      if (error instanceof AgentRunExecutionScopeBindingError) {
+        throw new DurableSpecialistScopeError(error.message);
+      }
+      throw error;
+    }
+    if (boundScope) {
+      if (!isCanonicalSpecialistRunBinding(
+        boundScope,
+        payload,
+        jobDedupeKey,
+      )) {
+        throw new DurableSpecialistScopeError(
+          "Durable specialist legacy envelope does not match its run binding.",
+        );
+      }
+      return boundScope;
+    }
+    return undefined;
+  }
+  if (
+    payload.executionScope === undefined ||
+    payload.executionScope === null ||
+    !payload.requestId ||
+    !payload.delegationId
+  ) {
+    throw new DurableSpecialistScopeError(
+      "Durable specialist execution scope is incomplete.",
+    );
+  }
+  let scope: ExecutionScope | undefined;
+  try {
+    scope = parsePersistedExecutionScope(payload.executionScope);
+  } catch {
+    throw new DurableSpecialistScopeError(
+      "Durable specialist execution scope is invalid.",
+    );
+  }
+  if (!scope) {
+    throw new DurableSpecialistScopeError(
+      "Durable specialist execution scope is invalid.",
+    );
+  }
+  try {
+    assertExecutionScopeTenant(scope, tenantId);
+  } catch {
+    throw new DurableSpecialistScopeError(
+      "Durable specialist execution scope has the wrong tenant.",
+    );
+  }
+  if (
+    scope.initiatingActorId !== payload.actorId ||
+    scope.executingPrincipalType !== "agent" ||
+    scope.executingPrincipalId !== payload.agentId ||
+    scope.missionId !== payload.missionId ||
+    scope.causationId !== payload.taskId ||
+    scope.delegationId !== payload.delegationId ||
+    scope.correlationId !== payload.requestId ||
+    scope.purpose !== DURABLE_SPECIALIST_SCOPE_PURPOSE
+  ) {
+    throw new DurableSpecialistScopeError(
+      "Durable specialist execution scope does not match its job.",
+    );
+  }
+  if (!requireRunBinding) {
+    return scope;
+  }
+  let boundScope: ExecutionScope | undefined;
+  try {
+    boundScope = await getAgentRunExecutionScope(payload.runId, { tenantId });
+  } catch (error) {
+    if (error instanceof AgentRunExecutionScopeBindingError) {
+      throw new DurableSpecialistScopeError(error.message);
+    }
+    throw error;
+  }
+  if (!boundScope || !executionScopesEqual(boundScope, scope)) {
+    throw new DurableSpecialistScopeError(
+      "Durable specialist execution scope does not match its run binding.",
+    );
+  }
+  return boundScope;
+}
+
+function hasSpecialistScopeEnvelope(
+  payload: Pick<
+    DurableSpecialistJobPayload,
+    "executionScope" | "requestId" | "delegationId"
+  >,
+) {
+  return payload.executionScope !== undefined ||
+    payload.requestId !== undefined ||
+    payload.delegationId !== undefined;
+}
+
+function isCanonicalSpecialistRunBinding(
+  scope: ExecutionScope,
+  payload: Pick<
+    DurableSpecialistJobPayload,
+    "actorId" | "agentId" | "missionId" | "runId" | "taskId"
+  >,
+  jobDedupeKey?: string,
+) {
+  return jobDedupeKey === getAgentExecuteJobDedupeKey(payload.runId) &&
+    scope.initiatingActorId === payload.actorId &&
+    scope.executingPrincipalType === "agent" &&
+    scope.executingPrincipalId === payload.agentId &&
+    scope.missionId === payload.missionId &&
+    scope.causationId === payload.taskId &&
+    Boolean(scope.delegationId) &&
+    scope.purpose === DURABLE_SPECIALIST_SCOPE_PURPOSE;
 }
 
 async function finalizeTerminalRun(

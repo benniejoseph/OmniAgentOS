@@ -3,6 +3,7 @@ import { getDatabaseTenantContext, hasDatabaseUrl, ensureDatabaseSchema, getSql 
 import {
   appendDomainEvent,
   appendDomainEventSafely,
+  listStreamEvents,
 } from "@/lib/events/store";
 import {
   enqueueOperationJob,
@@ -11,6 +12,7 @@ import {
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
+  executionScopesEqual,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
@@ -142,6 +144,110 @@ export async function createQueuedAgentRun(input: {
     return ledger;
   });
   return saved;
+}
+
+const RUN_SCOPE_BOUND_EVENT_TYPE = "run.scope_bound";
+
+export class AgentRunExecutionScopeBindingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentRunExecutionScopeBindingError";
+  }
+}
+
+/**
+ * Binds immutable execution attribution to a durable run before dispatch.
+ * Duplicate identical bindings are harmless; conflicting bindings stop work.
+ */
+export async function bindAgentRunExecutionScope(
+  runId: string,
+  executionScope: ExecutionScope,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  assertExecutionScopeTenant(executionScope, tenantId);
+  const run = await getAgentRun(runId, { tenantId });
+  if (!run) {
+    throw new AgentRunExecutionScopeBindingError(
+      "Execution scope cannot be bound to a missing agent run.",
+    );
+  }
+  const existing = await getAgentRunExecutionScope(runId, { tenantId });
+  if (existing) {
+    if (!executionScopesEqual(existing, executionScope)) {
+      throw new AgentRunExecutionScopeBindingError(
+        "Agent run is already bound to another execution scope.",
+      );
+    }
+    return existing;
+  }
+
+  await appendDomainEvent({
+    streamId: `run:${runId}`,
+    type: RUN_SCOPE_BOUND_EVENT_TYPE,
+    tenantId,
+    payload: {
+      scopeVersion: executionScope.version,
+      scopeSha256: createHash("sha256")
+        .update(JSON.stringify(executionScope))
+        .digest("hex"),
+    },
+    correlationId: executionScope.correlationId,
+    executionScope,
+  });
+
+  const bound = await getAgentRunExecutionScope(runId, { tenantId });
+  if (!bound || !executionScopesEqual(bound, executionScope)) {
+    throw new AgentRunExecutionScopeBindingError(
+      "Agent run execution scope binding could not be verified.",
+    );
+  }
+  return bound;
+}
+
+/** Returns the one canonical scope shared by all scope-binding events. */
+export async function getAgentRunExecutionScope(
+  runId: string,
+  options: { tenantId?: string } = {},
+): Promise<ExecutionScope | undefined> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const events = await listStreamEvents(`run:${runId}`, {
+    tenantId,
+    limit: 2_000,
+    order: "asc",
+  });
+  let bound: ExecutionScope | undefined;
+  for (const event of events) {
+    if (event.type !== RUN_SCOPE_BOUND_EVENT_TYPE) continue;
+    if (!event.executionScope) {
+      throw new AgentRunExecutionScopeBindingError(
+        "Agent run has an invalid execution scope binding.",
+      );
+    }
+    try {
+      assertExecutionScopeTenant(event.executionScope, tenantId);
+    } catch {
+      throw new AgentRunExecutionScopeBindingError(
+        "Agent run execution scope binding has the wrong tenant.",
+      );
+    }
+    if (
+      (event.executionScope.initiatingActorId &&
+        event.actorId !== event.executionScope.initiatingActorId) ||
+      event.correlationId !== event.executionScope.correlationId
+    ) {
+      throw new AgentRunExecutionScopeBindingError(
+        "Agent run execution scope binding metadata is inconsistent.",
+      );
+    }
+    if (bound && !executionScopesEqual(bound, event.executionScope)) {
+      throw new AgentRunExecutionScopeBindingError(
+        "Agent run has conflicting execution scope bindings.",
+      );
+    }
+    bound = event.executionScope;
+  }
+  return bound;
 }
 
 /** Exactly one queue delivery may move a pre-created run into execution. */

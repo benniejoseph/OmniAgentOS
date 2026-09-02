@@ -7,11 +7,22 @@ import {
   enqueueOperationJob,
   getAgentExecuteJobDedupeKey,
 } from "@/lib/operations/job-queue";
-import { createQueuedAgentRun } from "@/lib/runs/store";
+import {
+  bindAgentRunExecutionScope,
+  createQueuedAgentRun,
+} from "@/lib/runs/store";
+import {
+  assertExecutionScopeTenant,
+  deriveExecutionScope,
+  executionScopesEqual,
+  parsePersistedExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import {
   durableSpecialistLabel,
   durableSpecialistPrompt,
 } from "@/lib/subagents/profiles";
+import { DURABLE_SPECIALIST_SCOPE_PURPOSE } from "@/lib/subagents/types";
 import type {
   DurableSpecialistAgentId,
   DurableSpecialistJobPayload,
@@ -22,6 +33,7 @@ type MissionOwner = { tenantId: string; actorId: string };
 
 export async function prepareDurableSpecialistDelegation(input: {
   owner: MissionOwner;
+  parentExecutionScope: ExecutionScope;
   missionId: string;
   requestId: string;
   objective: string;
@@ -29,6 +41,16 @@ export async function prepareDurableSpecialistDelegation(input: {
   primaryAgentId: DurableSpecialistAgentId;
   specialistIds: DurableSpecialistAgentId[];
 }) {
+  const parentExecutionScope = input.parentExecutionScope;
+  assertExecutionScopeTenant(parentExecutionScope, input.owner.tenantId);
+  if (
+    parentExecutionScope.initiatingActorId !== input.owner.actorId ||
+    parentExecutionScope.executingPrincipalType !== "agent" ||
+    parentExecutionScope.missionId !== input.missionId ||
+    parentExecutionScope.correlationId !== input.requestId
+  ) {
+    throw new Error("Durable delegation scope does not match its request.");
+  }
   const delegationId = deterministicDelegationId(input);
   const selected = selectDurableSpecialists(
     input.primaryAgentId,
@@ -53,21 +75,38 @@ export async function prepareDurableSpecialistDelegation(input: {
         capabilityPolicy: "read_only",
       },
     }, input.owner);
+    const executionScope = deriveExecutionScope(parentExecutionScope, {
+      executingPrincipalType: "agent",
+      executingPrincipalId: agentId,
+      missionId: input.missionId,
+      delegationId,
+      causationId: task.id,
+      capabilityGrantIds: [],
+      purpose: DURABLE_SPECIALIST_SCOPE_PURPOSE,
+    });
     const runId = deterministicSpecialistRunId(
       input.owner.tenantId,
       task.id,
       agentId,
     );
     const prompt = durableSpecialistPrompt(agentId, input.objective);
-    await enqueueDurableSpecialistIntent({
+    const intentPayload = {
       actorId: input.owner.actorId,
       missionId: input.missionId,
       taskId: task.id,
       runId,
       agentId,
+      requestId: input.requestId,
+      delegationId,
+      executionScope,
       ready: false,
       preparedAt: task.createdAt,
-    }, input.owner);
+    } satisfies DurableSpecialistJobPayload;
+    const intent = await enqueueDurableSpecialistIntent(
+      intentPayload,
+      input.owner,
+    );
+    assertSpecialistJobScope(intent.payload, intentPayload, true);
     const run = await createQueuedAgentRun({
       id: runId,
       tenantId: input.owner.tenantId,
@@ -75,6 +114,9 @@ export async function prepareDurableSpecialistDelegation(input: {
       prompt,
       messages: [{ role: "user", content: prompt }],
       agentId,
+    });
+    await bindAgentRunExecutionScope(run.id, executionScope, {
+      tenantId: input.owner.tenantId,
     });
     const attempt = await attachMissionExecutor({
       taskId: task.id,
@@ -85,10 +127,13 @@ export async function prepareDurableSpecialistDelegation(input: {
     }, input.owner);
     const item = {
       agentId,
+      requestId: input.requestId,
+      delegationId,
       runId: run.id,
       missionId: input.missionId,
       taskId: task.id,
       attemptId: attempt.id,
+      executionScope,
     } satisfies PreparedDurableSpecialist;
     prepared.push(item);
   }
@@ -165,11 +210,20 @@ async function enqueueDurableSpecialist(
     taskId: specialist.taskId,
     runId: specialist.runId,
     agentId: specialist.agentId,
+    requestId: specialist.requestId,
+    delegationId: specialist.delegationId,
+    executionScope: specialist.executionScope,
     ready: true,
     preparedAt: new Date().toISOString(),
     workflowRunId,
   } satisfies DurableSpecialistJobPayload;
-  return enqueueDurableSpecialistIntent(payload, owner, true);
+  const job = await enqueueDurableSpecialistIntent(payload, owner, true);
+  assertSpecialistJobScope(
+    job.payload,
+    payload,
+    job.status === "completed" || job.status === "canceled",
+  );
+  return job;
 }
 
 async function enqueueDurableSpecialistIntent(
@@ -212,4 +266,42 @@ function deterministicSpecialistRunId(
     .update(`${tenantId}\0${taskId}\0${agentId}`)
     .digest("hex")
     .slice(0, 40)}`;
+}
+
+function assertSpecialistJobScope(
+  payload: Record<string, unknown>,
+  expectedPayload: DurableSpecialistJobPayload,
+  allowLegacy = false,
+) {
+  const expected = expectedPayload.executionScope;
+  if (!expected) {
+    throw new Error("Durable specialist queue scope is required.");
+  }
+  const identityMatches =
+    payload.actorId === expectedPayload.actorId &&
+    payload.agentId === expectedPayload.agentId &&
+    payload.missionId === expectedPayload.missionId &&
+    payload.taskId === expectedPayload.taskId &&
+    payload.runId === expectedPayload.runId;
+  const isLegacy =
+    payload.executionScope === undefined &&
+    payload.requestId === undefined &&
+    payload.delegationId === undefined;
+  if (allowLegacy && isLegacy && identityMatches) {
+    return;
+  }
+  const stored = parsePersistedExecutionScope(payload.executionScope);
+  if (
+    !stored ||
+    !identityMatches ||
+    !executionScopesEqual(stored, expected) ||
+    payload.actorId !== expected.initiatingActorId ||
+    payload.agentId !== expected.executingPrincipalId ||
+    payload.missionId !== expected.missionId ||
+    payload.taskId !== expected.causationId ||
+    payload.requestId !== expected.correlationId ||
+    payload.delegationId !== expected.delegationId
+  ) {
+    throw new Error("Durable specialist queue scope does not match its request.");
+  }
 }

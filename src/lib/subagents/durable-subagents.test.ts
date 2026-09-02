@@ -2,6 +2,26 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createExecutionScope } from "@/lib/security/execution-scope";
+
+function parentExecutionScope(
+  owner: { tenantId: string; actorId: string },
+  missionId: string,
+  requestId: string,
+  agentId: string,
+) {
+  return createExecutionScope({
+    tenantId: owner.tenantId,
+    initiatingActorId: owner.actorId,
+    executingPrincipalType: "agent",
+    executingPrincipalId: agentId,
+    missionId,
+    correlationId: requestId,
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+    purpose: "agent.run",
+  });
+}
 
 describe("durable specialist delegation", () => {
   beforeEach(async () => {
@@ -27,6 +47,12 @@ describe("durable specialist delegation", () => {
     });
     const input = {
       owner,
+      parentExecutionScope: parentExecutionScope(
+        owner,
+        mission.id,
+        "request-1",
+        "atlas",
+      ),
       missionId: mission.id,
       requestId: "request-1",
       objective: mission.objective,
@@ -51,6 +77,11 @@ describe("durable specialist delegation", () => {
     });
     expect(preparedJobs).toHaveLength(2);
     expect(preparedJobs.every((job) => job.payload.ready === false)).toBe(true);
+    await expect(Promise.all(first.map((item) =>
+      runs.getAgentRunExecutionScope(item.runId, {
+        tenantId: owner.tenantId,
+      })
+    ))).resolves.toEqual(first.map((item) => item.executionScope));
     await expect(Promise.all(first.map((item) =>
       runs.getAgentRun(item.runId, { tenantId: owner.tenantId })
     ))).resolves.toEqual(expect.arrayContaining([
@@ -101,6 +132,12 @@ describe("durable specialist delegation", () => {
     });
     await scheduler.prepareDurableSpecialistDelegation({
       owner,
+      parentExecutionScope: parentExecutionScope(
+        owner,
+        mission.id,
+        "deadline-request",
+        "atlas",
+      ),
       missionId: mission.id,
       requestId: "deadline-request",
       objective: mission.objective,
@@ -134,6 +171,12 @@ describe("durable specialist delegation", () => {
     });
     const [specialist] = await scheduler.prepareDurableSpecialistDelegation({
       owner,
+      parentExecutionScope: parentExecutionScope(
+        owner,
+        mission.id,
+        "outbox-request",
+        "atlas",
+      ),
       missionId: mission.id,
       requestId: "outbox-request",
       objective: mission.objective,
@@ -186,6 +229,12 @@ describe("durable specialist delegation", () => {
     });
     const specialists = await scheduler.prepareDurableSpecialistDelegation({
       owner,
+      parentExecutionScope: parentExecutionScope(
+        owner,
+        mission.id,
+        "request-worker",
+        "scout",
+      ),
       missionId: mission.id,
       requestId: "request-worker",
       objective: mission.objective,
