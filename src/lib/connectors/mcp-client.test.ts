@@ -212,6 +212,85 @@ describe("discoverMcpTools", () => {
     expect(scope).not.toContain("test-tenant");
   });
 
+  it("reuses one Playwright client session within a governed run", async () => {
+    credentialMocks.resolveMcpBearerCredential.mockResolvedValue(
+      "playwright-service-token-for-tests",
+    );
+    let initializeCount = 0;
+    let sessionMode: string | null = null;
+    const toolCalls: string[] = [];
+    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const method = init?.method || "GET";
+      if (method === "GET") return new Response(null, { status: 405 });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+
+      const message = JSON.parse(String(init?.body || "{}")) as {
+        id?: string | number;
+        method?: string;
+        params?: { name?: string };
+      };
+      if (message.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (message.method === "initialize") {
+        initializeCount += 1;
+        sessionMode = new Headers(init?.headers).get("x-omniagent-browser-session");
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: { tools: { listChanged: false } },
+            serverInfo: { name: "Playwright", version: "1.0.0" },
+          },
+        }, { "mcp-session-id": "browser-session-1" });
+      }
+      if (message.method === "tools/call") {
+        toolCalls.push(message.params?.name || "unknown");
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            content: [{ type: "text", text: "ok" }],
+          },
+        });
+      }
+      throw new Error(`Unexpected MCP method ${message.method || method}`);
+    });
+
+    const browserConnector = connector({
+      id: "playwright-session-reuse",
+      endpoint: "https://omniagent-os-browser.fly.dev/mcp",
+      authType: "bearer_vault",
+      approvalRequired: false,
+    });
+    const sessionScope = {
+      tenantId: "test-tenant",
+      actorId: "actor-a",
+      executionId: "agent:run-session-reuse",
+    };
+
+    await callMcpTool({
+      connector: browserConnector,
+      toolName: "browser_navigate",
+      args: { url: "https://example.com" },
+      sessionScope,
+    });
+    await callMcpTool({
+      connector: browserConnector,
+      toolName: "browser_snapshot",
+      args: {},
+      sessionScope,
+    });
+
+    expect(initializeCount).toBe(1);
+    expect(sessionMode).toBe("run");
+    expect(toolCalls).toEqual(["browser_navigate", "browser_snapshot"]);
+  });
+
   it("rejects MCP tool results that carry the protocol error flag", async () => {
     networkMocks.fetchPublicHttpUrl.mockImplementation(async (
       _input: RequestInfo | URL,
@@ -265,10 +344,10 @@ describe("discoverMcpTools", () => {
   });
 });
 
-function sseResponse(message: unknown) {
+function sseResponse(message: unknown, headers: Record<string, string> = {}) {
   return new Response(`event: message\ndata: ${JSON.stringify(message)}\n\n`, {
     status: 200,
-    headers: { "content-type": "text/event-stream" },
+    headers: { "content-type": "text/event-stream", ...headers },
   });
 }
 

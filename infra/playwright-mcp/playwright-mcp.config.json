@@ -7,13 +7,15 @@
       "channel": "chromium",
       "chromiumSandbox": false,
       "args": [
+        "--autoplay-policy=no-user-gesture-required",
+        "--disable-dev-shm-usage",
         "--disable-quic",
         "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
       ]
     },
     "contextOptions": {
       "acceptDownloads": false,
-      "serviceWorkers": "block"
+      "serviceWorkers": "allow"
     }
   },
   "capabilities": ["core"],
@@ -30,6 +32,6 @@
   "timeouts": {
     "action": 10000,
     "navigation": 45000,
-    "settle": 500
+    "settle": 1500
   }
 }
