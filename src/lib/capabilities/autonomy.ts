@@ -74,6 +74,34 @@ export type SelectedGovernedTool = {
   approvalRequired: boolean;
 };
 
+export type BrowserCapabilityIntent = {
+  requiredOperationNames: string[];
+  excludedOperationNames: string[];
+  excludeWebSearch: boolean;
+};
+
+const browserCoreOperationNames = [
+  "browser_navigate",
+  "browser_snapshot",
+  "browser_find",
+] as const;
+
+const browserInteractionOperationNames = [
+  "browser_click",
+  "browser_close",
+  "browser_type",
+  "browser_fill_form",
+  "browser_hover",
+  "browser_navigate_back",
+  "browser_resize",
+  "browser_select_option",
+  "browser_press_key",
+  "browser_tabs",
+  "browser_drag",
+  "browser_handle_dialog",
+  "browser_file_upload",
+] as const;
+
 export type WorkspaceAccessDependencies = {
   listMcp: (scope: WorkspaceAccessScope) => Promise<readonly McpConnectorRecord[]>;
   listOpenApi: (scope: WorkspaceAccessScope) => Promise<readonly OpenApiConnectorRecord[]>;
@@ -146,6 +174,56 @@ export function buildCapabilitySearchQuery(input: AutonomyQueryInput): string {
 }
 
 /**
+ * Derives a least-privilege browser contract from the current request only.
+ * Negative clauses never become positive interaction intent, which prevents a
+ * phrase such as "do not click or type" from crowding navigation out of the
+ * progressive toolbox.
+ */
+export function analyzeBrowserCapabilityIntent(
+  request: string,
+): BrowserCapabilityIntent {
+  const normalized = compactUntrustedText(request, 2_000);
+  const directNavigation = isDirectBrowserNavigation(normalized);
+  if (!directNavigation) {
+    return {
+      requiredOperationNames: [],
+      excludedOperationNames: [],
+      excludeWebSearch: false,
+    };
+  }
+
+  const affirmative = withoutNegativeClauses(normalized);
+  const requiredOperationNames: string[] = [...browserCoreOperationNames];
+  if (/\b(?:click|choose|select|play|pause)\b/i.test(affirmative)) {
+    requiredOperationNames.push("browser_click");
+  }
+  if (/\b(?:type|enter|fill|search\s+for|sign\s*in|log\s*in)\b/i.test(affirmative)) {
+    requiredOperationNames.push("browser_type");
+  }
+  if (/\b(?:submit|press)\b/i.test(affirmative)) {
+    requiredOperationNames.push("browser_press_key");
+  }
+  if (/\b(?:go\s+back|navigate\s+back)\b/i.test(affirmative)) {
+    requiredOperationNames.push("browser_navigate_back");
+  }
+  if (/\b(?:new\s+tab|switch\s+tabs?|close\s+tabs?)\b/i.test(affirmative)) {
+    requiredOperationNames.push("browser_tabs");
+  }
+  if (/\bhover\b/i.test(affirmative)) {
+    requiredOperationNames.push("browser_hover");
+  }
+
+  const required = new Set(requiredOperationNames);
+  return {
+    requiredOperationNames: [...required],
+    excludedOperationNames: browserInteractionOperationNames.filter(
+      (operationName) => !required.has(operationName),
+    ),
+    excludeWebSearch: true,
+  };
+}
+
+/**
  * Expands automatic memory/RAG retrieval only for short or referential turns.
  * An explicit current request remains the first and largest query segment.
  */
@@ -173,6 +251,34 @@ export function isShortOrReferentialRequest(request: string): boolean {
   if (!normalized) return false;
   const words = normalized.match(/[\p{L}\p{N}]+/gu) || [];
   return words.length <= 12 || referentialRequestPattern.test(normalized);
+}
+
+function isDirectBrowserNavigation(request: string) {
+  if (!request) return false;
+  if (/\bhttps?:\/\/[^\s]+/i.test(request)) return true;
+
+  const navigationVerb = /\b(?:open|visit|navigate|go\s+to|load)\b/i;
+  const browserTarget =
+    /\b(?:browser|playwright|website|web\s?page|site|portal|url|link|tab)\b/i;
+  const namedWebsite =
+    /\b(?:youtube|linkedin|github|google|gmail|facebook|instagram|x\.com|twitter)\b/i;
+  return (
+    (navigationVerb.test(request) && browserTarget.test(request)) ||
+    /\b(?:visit|navigate\s+to|go\s+to)\b/i.test(request) ||
+    (/\bopen\b/i.test(request) && namedWebsite.test(request))
+  );
+}
+
+function withoutNegativeClauses(request: string) {
+  return request
+    .split(/(?<=[.!?;])\s+|\n+/)
+    .map((clause) => {
+      const negativeAt = clause.search(
+        /\b(?:do\s+not|don't|dont|never|without|avoid|must\s+not|should\s+not|no\s+need\s+to)\b/i,
+      );
+      return negativeAt >= 0 ? clause.slice(0, negativeAt) : clause;
+    })
+    .join(" ");
 }
 
 /**
