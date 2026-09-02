@@ -128,10 +128,15 @@ export async function callMcpTool({
         signal: abortSignal,
       },
     );
-    return redactExactSecrets(
+    const safeResult = redactExactSecrets(
       toBoundedJsonValue(result, MCP_MAX_TOOL_RESULT_BYTES, "MCP tool result"),
       session.secretValues,
     );
+    const failure = mcpToolFailureMessage(safeResult);
+    if (failure) {
+      throw new Error(failure);
+    }
+    return safeResult;
   } catch (error) {
     throw sanitizedConnectorError(error, session.secretValues);
   } finally {
@@ -542,6 +547,25 @@ function serializedBytes(value: unknown) {
     throw new Error("MCP data must be JSON serializable.");
   }
   return serialized ? new TextEncoder().encode(serialized).byteLength : 0;
+}
+
+function mcpToolFailureMessage(value: unknown) {
+  const result = toPlainObject(value);
+  if (result?.isError !== true) return undefined;
+
+  const details = Array.isArray(result.content)
+    ? result.content.flatMap((item) => {
+        const content = toPlainObject(item);
+        const text = content?.type === "text" && typeof content.text === "string"
+          ? content.text.trim()
+          : "";
+        return text ? [text] : [];
+      })
+    : [];
+  const detail = details.join("\n").slice(0, 1_800);
+  return detail
+    ? `MCP tool reported an error: ${detail}`
+    : "MCP tool reported an error.";
 }
 
 function sanitizedConnectorError(

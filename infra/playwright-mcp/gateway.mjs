@@ -337,16 +337,17 @@ async function startScope(scopeKey) {
   const scopeDirectory = `${scopeDirectories}/${scopeKey}`;
   const outputDirectory = `${scopeDirectory}/output`;
   const profileDirectory = `${scopeDirectory}/profile`;
-  const temporaryDirectory = `${scopeDirectory}/tmp`;
   await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
   await mkdir(profileDirectory, { recursive: true, mode: 0o700 });
-  await mkdir(temporaryDirectory, { recursive: true, mode: 0o700 });
   const port = await reserveLoopbackPort();
   const childEnvironment = { ...process.env };
   delete childEnvironment.OMNIAGENT_PLAYWRIGHT_MCP_TOKEN;
   delete childEnvironment.OMNIAGENT_PLAYWRIGHT_MCP_PREVIOUS_TOKEN;
   childEnvironment.HOME = scopeDirectory;
-  childEnvironment.TMPDIR = temporaryDirectory;
+  // Chromium appends its random ProcessSingleton socket directory to TMPDIR.
+  // The full per-scope path exceeds Linux's AF_UNIX limit, while /tmp remains
+  // safe because Chromium creates a private mode-0700 directory beneath it.
+  childEnvironment.TMPDIR = "/tmp";
   // The gateway owns lifecycle through its per-scope TTL. A keeper MCP session
   // holds the shared persistent context open while short-lived app clients
   // initialize and DELETE their own sessions after each tool call.
