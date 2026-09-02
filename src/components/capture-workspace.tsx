@@ -27,6 +27,7 @@ import { LongRecordingStudio } from "@/components/capture/long-recording-studio"
 import { VisualStudio } from "@/components/capture/visual-studio";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { listOfflineCaptures, queueOfflineCapture, removeOfflineCapture, type OfflineCapture } from "@/lib/capture/offline";
+import styles from "./daybook-workspaces.module.css";
 
 type DocumentItem = {
   id: string;
@@ -283,14 +284,14 @@ export function CaptureWorkspace() {
     : 0;
 
   return (
-    <div className="mx-auto w-full max-w-[96rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8 2xl:px-10">
-      <header className="flex flex-col gap-5 border-b border-line pb-6 xl:flex-row xl:items-end xl:justify-between">
+    <div className={clsx("mx-auto w-full max-w-[96rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8 2xl:px-10", styles.daybook, styles.capture)}>
+      <header className="flex flex-col gap-5 border-b border-line pb-6 xl:flex-row xl:items-end xl:justify-between" data-daybook="hero">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Capture</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Turn anything worth keeping into usable context.</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">Record conversations, preserve original files, connect Google, and index everything with provenance. Saved knowledge becomes selectable context in Command.</p>
         </div>
-        <div className="grid grid-cols-3 divide-x divide-line rounded-lg border border-line bg-surface">
+        <div className="grid grid-cols-3 divide-x divide-line rounded-lg border border-line bg-surface" data-daybook="metrics">
           <Metric value={knowledgeStats?.documents} label="Documents" />
           <Metric value={knowledgeStats?.chunks} label="RAG chunks" />
           <Metric value={activeSourceCount} label="Sources active" />
@@ -300,7 +301,7 @@ export function CaptureWorkspace() {
       {loadError ? <p role="alert" className="mt-4 border-l-2 border-danger bg-danger/5 px-3 py-2 text-sm text-danger">{loadError}</p> : null}
       {offlinePending ? <p className="mt-4 inline-flex items-center gap-2 rounded-full bg-warning/10 px-3 py-1.5 text-xs font-semibold text-warning"><HardDrive size={13} aria-hidden="true" />{offlinePending} offline capture{offlinePending === 1 ? "" : "s"} waiting to sync</p> : null}
 
-      <section className="grid gap-6 py-7 xl:grid-cols-[minmax(0,1.45fr)_minmax(20rem,.55fr)]" aria-labelledby="capture-composer-title">
+      <section className="grid gap-6 py-7 xl:grid-cols-[minmax(0,1.45fr)_minmax(20rem,.55fr)]" aria-labelledby="capture-composer-title" data-daybook="spread">
         <form onSubmit={mode === "record" ? (event) => event.preventDefault() : submitCapture} className="min-w-0">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div><h2 id="capture-composer-title" className="text-xl font-semibold tracking-tight">Capture something</h2><p className="mt-1 text-sm text-muted">Choose the shape of what you are saving. One clear workspace expands for each mode.</p></div>
@@ -314,7 +315,7 @@ export function CaptureWorkspace() {
           {mode === "record" ? (
             <LongRecordingStudio disabledReason={captureBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onIndexed={loadWorkspace} />
           ) : (
-            <div className="mt-5 overflow-hidden rounded-xl border border-line bg-surface">
+            <div className="mt-5 overflow-hidden rounded-xl border border-line bg-surface" data-daybook="editor">
               {mode === "note" ? (
                 <div className="p-5 sm:p-6">
                   <label htmlFor="capture-content" className="text-xs font-semibold text-muted">Note</label>
@@ -350,7 +351,7 @@ export function CaptureWorkspace() {
           {captureNotice ? <p role={captureNotice.tone === "error" ? "alert" : "status"} className={clsx("mt-3 text-sm leading-6", captureNotice.tone === "error" ? "text-danger" : captureNotice.tone === "warning" ? "text-warning" : "text-success")}>{captureNotice.text}</p> : null}
         </form>
 
-        <aside className="border-t border-line pt-5 xl:border-l xl:border-t-0 xl:pl-6 xl:pt-0" aria-label="Capture processing status">
+        <aside className="border-t border-line pt-5 xl:border-l xl:border-t-0 xl:pl-6 xl:pt-0" aria-label="Capture processing status" data-daybook="rail">
           <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold">Processing</p><p className="mt-1 text-xs text-muted">What happens after you save</p></div>{loadingWorkspace ? <Loader2 size={16} className="animate-spin text-muted" aria-label="Refreshing capture data" /> : null}</div>
           <ol className="mt-4 space-y-4">
             <FlowStep number="1" title="Preserve original" detail="The source file or segmented audio is stored first." active={!activeJob || activeJob.status === "queued"} />
@@ -373,7 +374,7 @@ export function CaptureWorkspace() {
 
       <VisualStudio configured={geminiConfigured} model={geminiImageModel} disabledReason={visualBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onAssetsChanged={loadWorkspace} />
 
-      <section className="border-t border-line pt-7" aria-labelledby="capture-library-title">
+      <section className="border-t border-line pt-7" aria-labelledby="capture-library-title" data-daybook="section">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Capture library</p><h2 id="capture-library-title" className="mt-2 text-xl font-semibold tracking-tight">Originals and searchable knowledge.</h2><p className="mt-2 text-sm leading-6 text-muted">Open or download preserved files. Indexed documents are available to the context selector in Command conversations.</p></div>
           <div className="flex flex-col gap-2 sm:flex-row">
@@ -383,7 +384,7 @@ export function CaptureWorkspace() {
         </div>
 
         <div className="mt-5 grid gap-6 2xl:grid-cols-[minmax(22rem,.72fr)_minmax(0,1.28fr)]">
-          <div className="overflow-hidden rounded-xl border border-line bg-surface">
+          <div className="overflow-hidden rounded-xl border border-line bg-surface" data-daybook="panel">
             <div className="flex items-center justify-between gap-3 border-b border-line bg-surface-raised px-4 py-3"><div><p className="text-sm font-semibold">Original files</p><p className="mt-0.5 text-xs text-muted">Private, retrievable, and deletable</p></div><span className="text-xs text-muted">{assets.length}</span></div>
             <div className="max-h-[32rem] divide-y divide-line overflow-y-auto">
               {assets.length ? assets.map((asset) => (
@@ -392,7 +393,7 @@ export function CaptureWorkspace() {
             </div>
           </div>
 
-          <div className="overflow-hidden rounded-xl border border-line bg-surface">
+          <div className="overflow-hidden rounded-xl border border-line bg-surface" data-daybook="panel">
             <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-line bg-surface-raised px-4 py-3 text-xs font-semibold text-muted sm:grid-cols-[minmax(0,1.2fr)_minmax(10rem,.8fr)_auto]"><span>Knowledge</span><span className="hidden sm:block">Source</span><span>Index</span></div>
             <div className="max-h-[32rem] divide-y divide-line overflow-y-auto">
               {filteredDocuments.length ? filteredDocuments.map((document) => (

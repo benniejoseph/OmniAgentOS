@@ -32,6 +32,7 @@ import {
 import { clsx } from "clsx";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
+import styles from "./daybook-workspaces.module.css";
 
 type AgentId = "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne";
 type ProjectStatus = "draft" | "active" | "completed" | "archived";
@@ -312,9 +313,9 @@ export function ProjectsWorkspace() {
   const selectedReflectionState = reflectionState && reflectionState.artifactId === selectedArtifact?.id ? reflectionState.status : "idle";
 
   return (
-    <main className="projects-shell workspace-enter" aria-busy={loading}>
+    <main className={clsx("projects-shell workspace-enter", styles.daybook, styles.projects)} aria-busy={loading}>
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
-      <header className="projects-header">
+      <header className="projects-header" data-daybook="hero">
         <div>
           <p className="projects-kicker">Personal operating system</p>
           <h1>Projects</h1>
@@ -323,7 +324,7 @@ export function ProjectsWorkspace() {
         <button type="button" className="projects-create-button" onClick={() => setShowCreate((value) => !value)}><Plus size={15} aria-hidden="true" /> New project</button>
       </header>
 
-      <div className="projects-stats" aria-label="Project overview">
+      <div className="projects-stats" aria-label="Project overview" data-daybook="metrics">
         <div><strong>{activeProjects.length}</strong><span>active projects</span></div>
         <div><strong>{allTasks.length}</strong><span>planned tasks</span></div>
         <div><strong>{allTasks.length ? `${Math.round(completedTasks / allTasks.length * 100)}%` : "—"}</strong><span>overall progress</span></div>
@@ -338,7 +339,7 @@ export function ProjectsWorkspace() {
 
       {error ? <div className="projects-error" role="alert"><span>{error}</span><button type="button" onClick={() => { setError(undefined); void load(); }}>Retry</button></div> : null}
 
-      <div className="projects-workspace">
+      <div className="projects-workspace" data-daybook="spread">
         <aside className="projects-rail" aria-label="Project list">
           <div className="projects-rail-heading"><span>Portfolio</span><strong>{projects.length}</strong></div>
           {projects.length ? projects.map((project) => {
@@ -352,7 +353,7 @@ export function ProjectsWorkspace() {
           }) : <div className="projects-rail-empty"><FolderKanban size={20} aria-hidden="true" /><p>Your project portfolio is empty.</p></div>}
         </aside>
 
-        <section className="project-canvas" aria-live="polite">
+        <section className="project-canvas" aria-live="polite" data-daybook="canvas">
           {selected ? <>
             <div className="project-canvas-head">
               <div className="project-title-block">

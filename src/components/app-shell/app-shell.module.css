@@ -1,75 +1,213 @@
 .shell {
+  --daybook-serif: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  position: relative;
   isolation: isolate;
+  min-height: 100svh;
+  overflow-x: clip;
   transition: background-color 220ms ease, color 220ms ease;
 }
 
 .daybook {
-  --background: oklch(0.975 0.018 86);
-  --foreground: oklch(0.235 0.03 242);
-  --surface: oklch(0.992 0.011 89);
-  --surface-raised: oklch(0.945 0.032 78);
-  --surface-overlay: oklch(0.905 0.044 74);
-  --muted: oklch(0.45 0.035 238);
-  --line: oklch(0.84 0.034 82);
-  --primary: oklch(0.48 0.135 158);
-  --primary-ink: oklch(0.99 0.008 93);
-  --accent: oklch(0.64 0.14 55);
-}
-
-.fluid {
-  --background: oklch(0.135 0.035 250);
-  --foreground: oklch(0.955 0.018 222);
-  --surface: oklch(0.18 0.042 252);
-  --surface-raised: oklch(0.225 0.05 250);
-  --surface-overlay: oklch(0.275 0.058 250);
-  --muted: oklch(0.73 0.045 235);
-  --line: oklch(0.34 0.055 245);
-  --primary: oklch(0.77 0.14 181);
-  --primary-ink: oklch(0.14 0.04 245);
-  --accent: oklch(0.72 0.17 300);
-  --success: oklch(0.76 0.14 155);
-  --warning: oklch(0.83 0.15 82);
-  --info: oklch(0.76 0.13 230);
-}
-
-.luminous {
-  --background: oklch(0.145 0.018 196);
-  --foreground: oklch(0.96 0.012 174);
-  --surface: oklch(0.185 0.022 190);
-  --surface-raised: oklch(0.235 0.028 190);
-  --surface-overlay: oklch(0.29 0.035 190);
-  --muted: oklch(0.74 0.035 185);
-  --line: oklch(0.34 0.034 190);
-  --primary: oklch(0.78 0.14 160);
-  --primary-ink: oklch(0.14 0.032 180);
-  --accent: oklch(0.8 0.11 88);
-  --success: oklch(0.76 0.14 153);
-  --warning: oklch(0.83 0.14 82);
-  --info: oklch(0.75 0.11 225);
-}
-
-.fluid > aside,
-.luminous > aside {
+  --background: oklch(0.982 0.018 89);
+  --foreground: oklch(0.255 0.042 205);
+  --surface: oklch(0.997 0.008 90);
+  --surface-raised: oklch(0.957 0.026 88);
+  --surface-overlay: oklch(0.925 0.04 84);
+  --muted: oklch(0.46 0.035 210);
+  --line: oklch(0.84 0.035 88);
+  --line-strong: oklch(0.72 0.045 84);
+  --primary: oklch(0.5 0.12 164);
+  --primary-ink: oklch(0.99 0.008 95);
+  --accent: oklch(0.68 0.14 65);
+  --success: oklch(0.48 0.12 154);
+  --warning: oklch(0.61 0.14 70);
+  --danger: oklch(0.53 0.18 28);
+  --info: oklch(0.49 0.1 225);
+  --daybook-nav-top: oklch(0.994 0.014 92 / 0.97);
+  --daybook-nav-bottom: oklch(0.952 0.03 84 / 0.97);
+  --daybook-header: oklch(0.982 0.018 89 / 0.86);
+  --daybook-paper-glass: oklch(1 0 0 / 0.64);
+  --daybook-canvas-glow: oklch(0.9 0.09 69 / 0.22);
+  --daybook-sky-glow: oklch(0.9 0.055 223 / 0.28);
+  --daybook-shadow: oklch(0.33 0.04 75 / 0.08);
+  --daybook-divider: oklch(0.7 0.05 84 / 0.28);
   background:
-    radial-gradient(circle at 50% 0%, oklch(from var(--primary) l c h / .08), transparent 16rem),
-    var(--surface);
+    radial-gradient(circle at 91% 4%, var(--daybook-canvas-glow), transparent 24rem),
+    radial-gradient(circle at 13% 30%, var(--daybook-sky-glow), transparent 32rem),
+    var(--background);
 }
 
-.fluid > div > header,
-.luminous > div > header {
-  background: oklch(from var(--background) l c h / .82);
-  box-shadow: 0 1px 0 oklch(from var(--primary) l c h / .08);
+:global(:root[data-theme="dark"]) .daybook {
+  --background: oklch(0.145 0.018 213);
+  --foreground: oklch(0.93 0.015 88);
+  --surface: oklch(0.18 0.02 211);
+  --surface-raised: oklch(0.225 0.023 207);
+  --surface-overlay: oklch(0.28 0.028 205);
+  --muted: oklch(0.72 0.025 205);
+  --line: oklch(0.32 0.025 205);
+  --line-strong: oklch(0.46 0.035 192);
+  --primary: oklch(0.72 0.105 159);
+  --primary-ink: oklch(0.14 0.026 175);
+  --accent: oklch(0.75 0.115 70);
+  --success: oklch(0.71 0.105 153);
+  --warning: oklch(0.77 0.12 73);
+  --danger: oklch(0.7 0.15 28);
+  --info: oklch(0.72 0.08 225);
+  --daybook-nav-top: oklch(0.19 0.022 210 / 0.97);
+  --daybook-nav-bottom: oklch(0.16 0.019 214 / 0.98);
+  --daybook-header: oklch(0.145 0.018 213 / 0.86);
+  --daybook-paper-glass: oklch(0.22 0.022 208 / 0.72);
+  --daybook-canvas-glow: oklch(0.55 0.1 65 / 0.1);
+  --daybook-sky-glow: oklch(0.48 0.07 218 / 0.12);
+  --daybook-shadow: oklch(0.03 0.01 220 / 0.28);
+  --daybook-divider: oklch(0.55 0.045 87 / 0.2);
 }
 
-.daybook > aside {
+.shell::before,
+.shell::after {
+  position: fixed;
+  z-index: -1;
+  border-radius: 999px;
+  pointer-events: none;
+  content: "";
+}
+
+.shell::before {
+  top: 18rem;
+  right: -15rem;
+  width: 34rem;
+  height: 34rem;
+  background: var(--daybook-canvas-glow);
+  filter: blur(12px);
+}
+
+.shell::after {
+  bottom: -18rem;
+  left: 10%;
+  width: 46rem;
+  height: 34rem;
+  background: var(--daybook-sky-glow);
+  filter: blur(18px);
+}
+
+.sidebar {
+  border-color: var(--daybook-divider);
   background:
-    linear-gradient(180deg, oklch(0.99 0.018 90 / .98), oklch(0.95 0.028 84 / .98));
+    radial-gradient(circle at 52% 2%, var(--daybook-canvas-glow), transparent 14rem),
+    linear-gradient(180deg, var(--daybook-nav-top), var(--daybook-nav-bottom));
+  box-shadow: 1rem 0 3.5rem var(--daybook-shadow);
+  backdrop-filter: blur(22px);
 }
 
-.daybook > div > header {
-  background: oklch(0.975 0.018 86 / .82);
+.sidebar::after {
+  position: absolute;
+  right: -1px;
+  top: 5.4rem;
+  width: 1px;
+  height: calc(100% - 9rem);
+  background: linear-gradient(transparent, var(--primary), transparent);
+  opacity: 0.22;
+  content: "";
+}
+
+.sidebar :global(nav a),
+.sidebar :global(nav button) {
+  border-radius: 999px;
+}
+
+.sidebar :global(nav a[aria-current="page"]) {
+  box-shadow:
+    0 0 0 1px oklch(from var(--primary) l c h / 0.18),
+    0 0.65rem 1.8rem oklch(from var(--primary) l c h / 0.12);
+}
+
+.sidebar :global(nav > div + div) {
+  border-color: var(--daybook-divider);
+}
+
+.header {
+  border-color: var(--daybook-divider);
+  background: var(--daybook-header);
+  box-shadow: 0 0.7rem 2rem var(--daybook-shadow);
+  backdrop-filter: blur(24px) saturate(118%);
+}
+
+.header::after {
+  position: absolute;
+  right: clamp(1rem, 6vw, 7rem);
+  bottom: -1px;
+  width: clamp(4rem, 13vw, 12rem);
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0.48;
+  content: "";
+}
+
+.header :global(button) {
+  border-radius: 999px;
+}
+
+.main {
+  position: relative;
+  min-height: calc(100svh - 4rem);
+}
+
+.main::before {
+  position: absolute;
+  z-index: -1;
+  top: 2.2rem;
+  right: 2%;
+  width: min(36rem, 48vw);
+  height: 13rem;
+  border-top: 1px solid var(--daybook-divider);
+  border-radius: 50% 50% 0 0;
+  opacity: 0.44;
+  pointer-events: none;
+  transform: rotate(-4deg);
+  content: "";
+}
+
+.mobileDock {
+  border-color: var(--daybook-divider);
+  border-radius: 1.6rem 1.6rem 0 0;
+  background: var(--daybook-header);
+  box-shadow: 0 -1rem 3rem var(--daybook-shadow);
+}
+
+.mobileDock :global(a) {
+  border-radius: 1.15rem;
+}
+
+.mobilePanel {
+  border-color: var(--daybook-divider);
+  background:
+    radial-gradient(circle at 45% 0%, var(--daybook-canvas-glow), transparent 17rem),
+    linear-gradient(180deg, var(--daybook-nav-top), var(--daybook-nav-bottom));
+  box-shadow: 2rem 0 5rem var(--daybook-shadow);
+}
+
+@media (max-width: 47.99rem) {
+  .header > div {
+    padding-inline: 0.7rem;
+  }
+
+  .main::before {
+    right: -25%;
+    width: 85vw;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .shell { transition: none; }
+  .shell {
+    transition: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .sidebar,
+  .header,
+  .mobileDock,
+  .mobilePanel {
+    border-color: var(--line-strong);
+  }
 }

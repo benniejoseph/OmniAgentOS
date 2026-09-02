@@ -26,6 +26,7 @@ import {
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
 import { useLiveRefresh } from "@/components/use-live-refresh";
+import styles from "./daybook-workspaces.module.css";
 
 type JsonRecord = Record<string, unknown>;
 type LoadState = "loading" | "ready" | "error";
@@ -284,8 +285,8 @@ export function ResultsCenter() {
   }
 
   return (
-    <div className="mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8" aria-busy={state === "loading"} data-testid="results-workspace">
-      <section className="rounded-lg border border-line bg-surface p-5">
+    <div className={clsx("mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8", styles.daybook, styles.results)} aria-busy={state === "loading"} data-testid="results-workspace">
+      <section className="rounded-lg border border-line bg-surface p-5" data-daybook="hero">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-3">
@@ -313,7 +314,7 @@ export function ResultsCenter() {
           </div>
         </div>
 
-        <div className="mt-5 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-5">
+        <div className="mt-5 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-5" data-daybook="metrics">
           <Metric
             label="Agent answers"
             value={resourceMetric(state, signedIn, data.runs, agentRuns.filter((run) => stringValue(run.status) === "completed").length.toString())}
@@ -390,14 +391,14 @@ export function ResultsCenter() {
 
       {signedIn && state !== "error" && (state !== "loading" || hasLoadedData) ? (
         <>
-      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]" data-daybook="spread">
         <PrimaryResultCard
           result={primaryResult}
           canceling={Boolean(cancelingRunId)}
           onCancel={() => void cancelAgentResult(primaryResult)}
         />
 
-        <section className="min-w-0 rounded-lg border border-line bg-surface p-4">
+        <section className="min-w-0 rounded-lg border border-line bg-surface p-4" data-daybook="panel">
           <div className="mb-4 flex items-start justify-between gap-3">
             <div>
               <h2 className="text-sm font-semibold">What to do next</h2>
@@ -446,7 +447,7 @@ export function ResultsCenter() {
         </section>
       </section>
 
-      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]" data-daybook="section-grid">
         <ResultPanel title="Latest workflow outcomes" description="Durable runs, current step, and final report when available.">
           <ResultRows
             rows={workflowRuns.map((run) => ({
@@ -478,7 +479,7 @@ export function ResultsCenter() {
         </ResultPanel>
       </section>
 
-      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]" data-daybook="section-grid">
         <ResultPanel title="Blocked before result" description="These items must be approved, rejected, or resolved before the outcome is final.">
           <ResultRows
             rows={approvalItems.map((item) => ({
@@ -550,7 +551,7 @@ function PrimaryResultCard({
       result.status.toLowerCase(),
     );
   return (
-    <section className="min-w-0 rounded-lg border border-line bg-surface p-4">
+    <section className="min-w-0 rounded-lg border border-line bg-surface p-4" data-daybook="panel">
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Current result</p>
@@ -595,7 +596,7 @@ function PrimaryResultCard({
 
 function NextStepRow({ icon: Icon, title, body, active }: { icon: typeof FileText; title: string; body: string; active: boolean }) {
   return (
-    <div className={clsx("rounded-md border p-3", active ? "border-primary/45 bg-primary/10" : "border-line bg-background")}>
+    <div className={clsx("rounded-md border p-3", active ? "border-primary/45 bg-primary/10" : "border-line bg-background")} data-daybook="result-step">
       <div className="flex items-start gap-3">
         <span className={clsx("grid size-8 place-items-center rounded-md", active ? "bg-primary text-primary-ink" : "bg-surface text-muted")}>
           <Icon size={15} aria-hidden="true" />
@@ -612,7 +613,7 @@ function NextStepRow({ icon: Icon, title, body, active }: { icon: typeof FileTex
 
 function ResultPanel({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
   return (
-    <section className="min-w-0 rounded-lg border border-line bg-surface p-4">
+    <section className="min-w-0 rounded-lg border border-line bg-surface p-4" data-daybook="panel">
       <div className="mb-4">
         <h2 className="text-sm font-semibold">{title}</h2>
         <p className="mt-1 text-xs leading-5 text-muted">{description}</p>
@@ -645,7 +646,7 @@ function ResultRows({
   }
 
   return (
-    <div className="divide-y divide-line overflow-hidden rounded-md border border-line bg-background">
+    <div className="divide-y divide-line overflow-hidden rounded-md border border-line bg-background" data-daybook="list">
       {rows.slice(0, 8).map((row, index) => {
         const content = (
           <div className="flex items-start gap-3 p-3">
@@ -687,7 +688,7 @@ function ResultRows({
 
 function EvidenceBox({ label, value, tone, href }: { label: string; value: string; tone: Tone; href: string }) {
   return (
-    <Link href={href} className="rounded-md border border-line bg-background p-3 transition hover:bg-surface-raised">
+    <Link href={href} className="rounded-md border border-line bg-background p-3 transition hover:bg-surface-raised" data-daybook="evidence">
       <p className="text-xs text-muted">{label}</p>
       <p className={clsx("mt-3 font-mono text-sm", textTone(tone))}>{value}</p>
     </Link>

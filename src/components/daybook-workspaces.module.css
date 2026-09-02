@@ -1,0 +1,873 @@
+.daybook {
+  --db-page: oklch(0.978 0.018 88);
+  --db-paper: oklch(0.995 0.008 90);
+  --db-paper-raised: oklch(0.958 0.027 86);
+  --db-paper-soft: oklch(0.94 0.038 83);
+  --db-ink: oklch(0.245 0.038 215);
+  --db-muted: oklch(0.46 0.034 214);
+  --db-rule: oklch(0.79 0.036 86);
+  --db-rule-strong: oklch(0.68 0.047 82);
+  --db-green: oklch(0.49 0.115 161);
+  --db-green-ink: oklch(0.99 0.008 90);
+  --db-apricot: oklch(0.88 0.1 68);
+  --db-sky: oklch(0.91 0.048 221);
+  --db-shadow: 0 1.7rem 5rem oklch(0.37 0.045 72 / 0.09);
+  --db-shadow-soft: 0 0.9rem 2.8rem oklch(0.37 0.045 72 / 0.06);
+  --background: var(--db-page);
+  --foreground: var(--db-ink);
+  --surface: var(--db-paper);
+  --surface-raised: var(--db-paper-raised);
+  --surface-overlay: var(--db-paper-soft);
+  --muted: var(--db-muted);
+  --line: var(--db-rule);
+  --line-strong: var(--db-rule-strong);
+  --primary: var(--db-green);
+  --primary-ink: var(--db-green-ink);
+  --accent: oklch(0.61 0.13 66);
+  --success: oklch(0.46 0.115 151);
+  --warning: oklch(0.58 0.13 70);
+  --danger: oklch(0.52 0.17 28);
+  --info: oklch(0.48 0.1 234);
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  min-height: calc(100svh - 4rem);
+  overflow: clip;
+  color: var(--foreground);
+  background:
+    radial-gradient(circle at 92% 4%, oklch(0.91 0.085 70 / 0.42), transparent 25rem),
+    radial-gradient(circle at 8% 48%, oklch(0.91 0.045 220 / 0.3), transparent 30rem),
+    var(--background);
+  color-scheme: light;
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+:global(:root[data-theme="dark"]) .daybook {
+  --db-page: oklch(0.145 0.018 225);
+  --db-paper: oklch(0.19 0.022 222);
+  --db-paper-raised: oklch(0.23 0.025 220);
+  --db-paper-soft: oklch(0.275 0.027 218);
+  --db-ink: oklch(0.91 0.018 86);
+  --db-muted: oklch(0.7 0.025 220);
+  --db-rule: oklch(0.32 0.028 217);
+  --db-rule-strong: oklch(0.43 0.035 211);
+  --db-green: oklch(0.69 0.105 158);
+  --db-green-ink: oklch(0.15 0.025 168);
+  --db-apricot: oklch(0.55 0.09 65);
+  --db-sky: oklch(0.27 0.045 225);
+  --db-shadow: 0 0 0 1px oklch(0.91 0.018 86 / 0.018);
+  --db-shadow-soft: none;
+  --accent: oklch(0.73 0.105 69);
+  --success: oklch(0.69 0.1 151);
+  --warning: oklch(0.76 0.115 73);
+  --danger: oklch(0.7 0.14 29);
+  --info: oklch(0.71 0.085 234);
+  background:
+    radial-gradient(circle at 92% 4%, oklch(0.42 0.075 67 / 0.22), transparent 24rem),
+    radial-gradient(circle at 8% 48%, oklch(0.31 0.055 226 / 0.18), transparent 30rem),
+    var(--background);
+  color-scheme: dark;
+}
+
+.daybook::before {
+  position: absolute;
+  z-index: -1;
+  top: 2.5rem;
+  right: clamp(1rem, 5vw, 6rem);
+  width: clamp(7rem, 13vw, 12rem);
+  aspect-ratio: 1;
+  border: 1px solid oklch(from var(--accent) l c h / 0.18);
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 clamp(1rem, 2vw, 2rem) oklch(from var(--accent) l c h / 0.055),
+    0 0 0 clamp(2.2rem, 4vw, 4.6rem) oklch(from var(--accent) l c h / 0.028);
+  pointer-events: none;
+  content: "";
+  animation: daybookBreathe 9s ease-in-out infinite;
+}
+
+.capture.capture,
+.approvals.approvals,
+.results.results,
+.domain.domain,
+.projects.projects {
+  max-width: none;
+  margin: 0;
+  padding: clamp(1rem, 2.5vw, 2.8rem);
+}
+
+.daybook :global(h1),
+.daybook :global(h2) {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-weight: 560;
+  letter-spacing: -0.035em;
+}
+
+.daybook :global(h3),
+.daybook :global(p),
+.daybook :global(span),
+.daybook :global(label) {
+  text-wrap: pretty;
+}
+
+.daybook :global(.action-button),
+.daybook :global(.action-link),
+.daybook :global(.primary-button) {
+  min-height: 2.75rem;
+  border-radius: 999px;
+  padding-inline: 0.95rem;
+}
+
+.daybook :global(.action-button),
+.daybook :global(.action-link) {
+  border-color: var(--line);
+  background: oklch(from var(--surface) l c h / 0.72);
+}
+
+.daybook :global(.primary-button) {
+  border-color: transparent;
+  box-shadow: 0 0.5rem 1.6rem oklch(from var(--primary) l c h / 0.14);
+}
+
+:global(:root[data-theme="dark"]) .daybook :global(.primary-button) {
+  box-shadow: none;
+}
+
+.daybook :global(input:not([type="checkbox"])),
+.daybook :global(textarea),
+.daybook :global(select) {
+  border-color: var(--line);
+  border-radius: 0.9rem;
+  color: var(--foreground);
+  background: var(--surface);
+}
+
+.daybook :global(input:not([type="checkbox"]):focus),
+.daybook :global(textarea:focus),
+.daybook :global(select:focus) {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px oklch(from var(--primary) l c h / 0.12);
+}
+
+.daybook [data-daybook="hero"] {
+  position: relative;
+  min-height: 11rem;
+  overflow: visible;
+  border: 0;
+  border-bottom: 1px dashed var(--line);
+  border-radius: 0;
+  padding: clamp(1.2rem, 2.8vw, 2.7rem) clamp(0.15rem, 1vw, 0.8rem) clamp(1.8rem, 3vw, 2.8rem);
+  background: transparent;
+  box-shadow: none;
+}
+
+.daybook [data-daybook="hero"] :global(h1) {
+  max-width: 54rem;
+  margin-top: 0.35rem;
+  font-size: clamp(2.7rem, 5.2vw, 5.3rem);
+  line-height: 0.96;
+  letter-spacing: -0.055em;
+}
+
+.daybook [data-daybook="hero"] > :global(div) {
+  position: relative;
+  z-index: 1;
+}
+
+.daybook [data-daybook="hero"] :global(.size-10) {
+  width: 3rem;
+  height: 3rem;
+  border-radius: 50%;
+  background: var(--primary);
+}
+
+.daybook [data-daybook="hero"] :global(.text-primary) {
+  font-weight: 780;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.daybook [data-daybook="metrics"] {
+  overflow: visible;
+  border: 0;
+  border-block: 1px dashed var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.daybook [data-daybook="metrics"] > * {
+  min-height: 4.8rem;
+  background: transparent;
+}
+
+.daybook [data-daybook="metrics"] :global(.font-mono) {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-variant-numeric: tabular-nums;
+}
+
+.daybook [data-daybook="spread"],
+.daybook [data-daybook="section-grid"] {
+  gap: clamp(0.85rem, 1.5vw, 1.35rem);
+}
+
+.daybook [data-daybook="panel"] {
+  border-color: oklch(from var(--line) l c h / 0.72);
+  border-radius: 1.7rem 1.7rem 3.25rem 1.7rem;
+  padding: clamp(1rem, 1.7vw, 1.45rem);
+  background: oklch(from var(--surface) l c h / 0.84);
+  box-shadow: var(--db-shadow-soft);
+  backdrop-filter: blur(16px);
+}
+
+.daybook [data-daybook="panel"]:nth-child(even) {
+  border-radius: 3.25rem 1.7rem 1.7rem 1.7rem;
+}
+
+.daybook [data-daybook="panel"] > :first-child :global(h2) {
+  font-size: 1.2rem;
+}
+
+.daybook [data-daybook="list"] {
+  overflow: hidden;
+  border: 0;
+  border-block: 1px dashed var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.daybook [data-daybook="list"] > * {
+  border-color: oklch(from var(--line) l c h / 0.68);
+}
+
+.daybook [data-daybook="status"] {
+  min-height: 2rem;
+  border-radius: 999px;
+  background: oklch(from var(--surface) l c h / 0.64);
+}
+
+.daybook [data-daybook="flow-step"] {
+  border: 0;
+  border-bottom: 1px dashed var(--line);
+  border-radius: 0;
+  padding: 0.85rem 0.25rem;
+  background: transparent;
+}
+
+.daybook [data-daybook="flow-step"]:last-child {
+  border-bottom: 0;
+}
+
+/* Capture is a writing studio: one generous sheet with processing in the margin. */
+.capture [data-daybook="hero"] {
+  min-height: 14rem;
+  align-items: end;
+}
+
+.capture [data-daybook="hero"] :global(h1) {
+  max-width: 58rem;
+}
+
+.capture [data-daybook="hero"] [data-daybook="metrics"] {
+  min-width: min(100%, 25rem);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: oklch(from var(--surface) l c h / 0.7);
+  box-shadow: var(--db-shadow-soft);
+  backdrop-filter: blur(14px);
+}
+
+.capture [data-daybook="hero"] [data-daybook="metrics"] > * {
+  min-height: auto;
+}
+
+.capture [data-daybook="spread"] {
+  align-items: start;
+  padding-block: clamp(1.6rem, 3vw, 3rem);
+  border-bottom: 1px dashed var(--line);
+}
+
+.capture [data-daybook="editor"] {
+  border-color: oklch(from var(--line) l c h / 0.72);
+  border-radius: 1.8rem 1.8rem 4.5rem 1.8rem;
+  background: oklch(from var(--surface) l c h / 0.88);
+  box-shadow: var(--db-shadow);
+  backdrop-filter: blur(18px);
+}
+
+.capture [data-daybook="editor"] :global(textarea#capture-content) {
+  min-height: 17rem;
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: clamp(1.15rem, 1.6vw, 1.4rem);
+  line-height: 1.65;
+}
+
+.capture [role="tablist"] {
+  border-radius: 999px;
+  padding: 0.3rem;
+  background: var(--surface-raised);
+}
+
+.capture [role="tablist"] :global(button) {
+  border-radius: 999px;
+}
+
+.capture [data-daybook="rail"] {
+  border-color: var(--line);
+  border-style: dashed;
+}
+
+.capture [data-daybook="rail"] :global(ol) {
+  position: relative;
+}
+
+.capture [data-daybook="rail"] :global(ol)::before {
+  position: absolute;
+  top: 0.8rem;
+  bottom: 0.8rem;
+  left: 0.84rem;
+  width: 1px;
+  background: var(--line);
+  content: "";
+}
+
+.capture [data-daybook="rail"] :global(li) {
+  position: relative;
+}
+
+.capture > :global(section:not(:first-of-type)) {
+  padding-block: clamp(2rem, 3.5vw, 3.6rem);
+  border-top: 1px dashed var(--line);
+}
+
+.capture > :global(section:not(:first-of-type)) :global(h2),
+.capture [data-daybook="section"] :global(h2) {
+  font-size: clamp(1.55rem, 2.6vw, 2.25rem);
+}
+
+.capture > :global(section:not(:first-of-type)) :global(.rounded-xl.border.border-line.bg-surface),
+.capture [data-daybook="panel"] {
+  border-color: oklch(from var(--line) l c h / 0.74);
+  border-radius: 1.7rem 1.7rem 3.4rem 1.7rem;
+  background: oklch(from var(--surface) l c h / 0.82);
+  box-shadow: var(--db-shadow-soft);
+}
+
+.capture [data-daybook="panel"]:nth-child(2) {
+  border-radius: 3.4rem 1.7rem 1.7rem 1.7rem;
+}
+
+/* Approvals reads as a consequential decision ledger, not a dashboard. */
+.approvals [data-daybook="hero"] {
+  min-height: 12rem;
+  display: flex;
+  align-items: center;
+}
+
+.approvals [data-daybook="hero"] > :global(div) {
+  width: 100%;
+}
+
+.approvals [data-daybook="hero"] :global(h1) {
+  font-size: clamp(2.6rem, 4.8vw, 4.7rem);
+}
+
+.approvals [data-daybook="section"] {
+  margin-top: clamp(2rem, 4vw, 4rem);
+}
+
+.approvals [data-daybook="section"] > :first-child {
+  padding-bottom: 1rem;
+  border-bottom: 1px dashed var(--line);
+}
+
+.approvals [data-daybook="section"] > :first-child :global(h2) {
+  font-size: clamp(1.45rem, 2.4vw, 2rem);
+}
+
+.approvals [data-daybook="approval-item"] {
+  position: relative;
+  overflow: hidden;
+  border-color: oklch(from var(--line) l c h / 0.72);
+  border-radius: 1.8rem 1.8rem 4rem 1.8rem;
+  padding: clamp(1.15rem, 2.2vw, 2rem);
+  background: oklch(from var(--surface) l c h / 0.84);
+  box-shadow: var(--db-shadow-soft);
+  backdrop-filter: blur(16px);
+}
+
+.approvals [data-daybook="approval-item"]::after {
+  position: absolute;
+  top: -3.2rem;
+  right: -3.2rem;
+  width: 7.5rem;
+  height: 7.5rem;
+  border: 1px solid oklch(from var(--warning) l c h / 0.18);
+  border-radius: 50%;
+  pointer-events: none;
+  content: "";
+}
+
+.approvals [data-daybook="approval-item"] :global(h2),
+.approvals [data-daybook="approval-item"] :global(h3) {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: clamp(1.2rem, 2vw, 1.55rem);
+  letter-spacing: -0.025em;
+}
+
+.approvals [data-daybook="track"] {
+  border: 0;
+  border-radius: 1.25rem;
+  background: var(--surface-raised);
+}
+
+.approvals [data-daybook="fact"] {
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  padding: 0.25rem 0.4rem 0.25rem 1rem;
+  background: transparent;
+}
+
+.approvals [data-daybook="approval-item"] :global(details) {
+  border-style: dashed;
+  border-radius: 1.1rem;
+  background: oklch(from var(--background) l c h / 0.68);
+}
+
+/* Projects is a bound portfolio with a durable rail and an open working page. */
+.projects :global(.projects-header) {
+  min-height: 13rem;
+  padding-inline: 0.5rem;
+}
+
+.projects :global(.projects-header h1) {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: clamp(3.4rem, 7vw, 7rem);
+  font-weight: 520;
+  letter-spacing: -0.06em;
+}
+
+.projects :global(.projects-header > div > p:last-child) {
+  max-width: 46rem;
+  font-size: 0.85rem;
+  line-height: 1.65;
+}
+
+.projects :global(.projects-create-button) {
+  min-height: 2.85rem;
+  border-radius: 999px;
+  padding-inline: 1rem;
+  box-shadow: 0 0.6rem 1.8rem oklch(from var(--primary) l c h / 0.14);
+}
+
+.projects :global(.projects-stats) {
+  gap: clamp(1rem, 3vw, 3rem);
+  padding-inline: 0.5rem;
+}
+
+.projects :global(.projects-stats strong) {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 1.35rem;
+}
+
+.projects :global(.projects-create-form) {
+  margin-block: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 1.6rem 1.6rem 3rem 1.6rem;
+  padding: 1rem;
+  background: var(--surface);
+  box-shadow: var(--db-shadow-soft);
+}
+
+.projects :global(.projects-create-form input),
+.projects :global(.projects-create-form textarea),
+.projects :global(.projects-create-form button) {
+  border-radius: 0.85rem;
+}
+
+.projects :global(.projects-workspace) {
+  grid-template-columns: minmax(15rem, 20rem) minmax(0, 1fr);
+  margin-top: 1.2rem;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 2.4rem 2.4rem 5rem 2.4rem;
+  background: oklch(from var(--surface) l c h / 0.78);
+  box-shadow: var(--db-shadow);
+  backdrop-filter: blur(18px);
+}
+
+.projects :global(.projects-rail) {
+  padding: 1.5rem 1rem;
+  border-right: 1px dashed var(--line);
+  background: oklch(from var(--surface-raised) l c h / 0.55);
+}
+
+.projects :global(.projects-rail-item) {
+  margin-top: 0.2rem;
+  border: 0;
+  border-radius: 1.15rem;
+  padding: 0.8rem 0.65rem;
+}
+
+.projects :global(.projects-rail-item:hover),
+.projects :global(.projects-rail-item.is-selected) {
+  padding-left: 0.8rem;
+  background: oklch(from var(--primary) l c h / 0.1);
+}
+
+.projects :global(.project-canvas) {
+  padding: clamp(1.4rem, 2.5vw, 2.5rem);
+}
+
+.projects :global(.project-canvas-head) {
+  min-height: 11.5rem;
+  border-bottom-style: dashed;
+}
+
+.projects :global(.project-title-block h2) {
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: clamp(2.2rem, 4vw, 4.1rem);
+  font-weight: 540;
+  letter-spacing: -0.05em;
+}
+
+.projects :global(.project-progress-orbit::before) {
+  background: var(--surface);
+}
+
+.projects :global(.project-toolbar) {
+  border-bottom-style: dashed;
+}
+
+.projects :global(.project-toolbar button),
+.projects :global(.project-execution-actions button),
+.projects :global(.project-add-task),
+.projects :global(.project-reflection-verdict button),
+.projects :global(.project-reflection-save) {
+  border-radius: 999px;
+}
+
+.projects :global(.project-execution-deck) {
+  border-color: oklch(from var(--primary) l c h / 0.23);
+  border-radius: 1.6rem 1.6rem 3.4rem 1.6rem;
+  background: oklch(from var(--surface-raised) l c h / 0.5);
+  box-shadow: none;
+}
+
+.projects :global(.project-execution-icon) {
+  border-radius: 50%;
+}
+
+.projects :global(.project-execution-metrics) {
+  border-block-style: dashed;
+  background: transparent;
+}
+
+.projects :global(.project-execution-controls select),
+.projects :global(.project-execution-controls input[type="number"]) {
+  border-radius: 0.8rem;
+  background: var(--surface);
+}
+
+.projects :global(.project-task-heading),
+.projects :global(.project-artifact-ledger) {
+  border-color: var(--line);
+}
+
+.projects :global(.project-task) {
+  border-bottom-style: dashed;
+}
+
+.projects :global(.project-task:hover) {
+  background: oklch(from var(--primary) l c h / 0.05);
+}
+
+.projects :global(.project-add-task) {
+  border-color: var(--line);
+  padding-inline: 0.75rem 0.5rem;
+  background: var(--surface-raised);
+}
+
+.projects :global(.project-artifact-layout),
+.projects :global(.project-artifact-timeline),
+.projects :global(.project-artifact-timeline button),
+.projects :global(.project-artifact-detail footer),
+.projects :global(.project-artifact-reflection) {
+  border-color: var(--line);
+  border-style: dashed;
+}
+
+/* Results and domain consoles are evidence tables on calm editorial sheets. */
+.results [data-daybook="hero"],
+.domain [data-daybook="hero"] {
+  min-height: 13rem;
+}
+
+.results [data-daybook="hero"] :global(h1),
+.domain [data-daybook="hero"] :global(h1) {
+  font-size: clamp(2.8rem, 5vw, 5.2rem);
+}
+
+.results [data-daybook="metrics"],
+.domain [data-daybook="metrics"] {
+  margin-top: 1.4rem;
+}
+
+.results [data-daybook="spread"],
+.domain [data-daybook="spread"] {
+  margin-top: clamp(1.2rem, 2vw, 2rem);
+}
+
+.results [data-daybook="panel"],
+.domain [data-daybook="panel"] {
+  min-width: 0;
+}
+
+.results [data-daybook="panel"] :global(.min-h-56) {
+  border: 0;
+  border-block: 1px dashed var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.results [data-daybook="result-step"] {
+  border: 0;
+  border-bottom: 1px dashed var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.results [data-daybook="result-step"]:last-child {
+  border-bottom: 0;
+}
+
+.results [data-daybook="result-step"] :global(.size-8) {
+  border-radius: 50%;
+}
+
+.results [data-daybook="evidence"] {
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.domain [data-daybook="spread"] > :first-child [data-daybook="panel"] {
+  background: oklch(from var(--surface-raised) l c h / 0.58);
+}
+
+.domain [data-daybook="spread"] > :last-child [data-daybook="panel"] {
+  background: oklch(from var(--db-sky) l c h / 0.55);
+}
+
+.domain [data-daybook="panel"] :global(.rounded-md.border.border-line.bg-background),
+.domain [data-daybook="panel"] :global(.divide-y.divide-line) {
+  border-color: var(--line);
+}
+
+.domain [data-daybook="panel"] :global(button.rounded-md),
+.domain [data-daybook="panel"] :global(a.rounded-md) {
+  border-radius: 999px;
+}
+
+@keyframes daybookBreathe {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(-0.35rem, 0.25rem, 0) scale(1.025); }
+}
+
+@media (max-width: 78rem) {
+  .daybook [data-daybook="hero"] {
+    min-height: 10rem;
+  }
+
+  .daybook [data-daybook="hero"] :global(h1) {
+    font-size: clamp(2.7rem, 7vw, 4.6rem);
+  }
+
+  .projects :global(.projects-workspace) {
+    grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
+  }
+
+  .projects :global(.project-canvas) {
+    padding: 1.4rem;
+  }
+}
+
+@media (max-width: 64rem) {
+  .daybook::before {
+    opacity: 0.58;
+  }
+
+  .capture [data-daybook="hero"],
+  .approvals [data-daybook="hero"] {
+    align-items: flex-start;
+  }
+
+  .capture [data-daybook="rail"] {
+    border-top: 1px dashed var(--line);
+    border-left: 0;
+    padding-top: 1.5rem;
+    padding-left: 0;
+  }
+
+  .projects :global(.projects-workspace) {
+    display: block;
+  }
+
+  .projects :global(.projects-rail) {
+    display: flex;
+    gap: 0.45rem;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px dashed var(--line);
+    scrollbar-width: none;
+  }
+
+  .projects :global(.projects-rail::-webkit-scrollbar) {
+    display: none;
+  }
+
+  .projects :global(.projects-rail-heading) {
+    display: none;
+  }
+
+  .projects :global(.projects-rail-item) {
+    min-width: 14rem;
+  }
+
+  .projects :global(.project-canvas-head) {
+    min-height: 9.5rem;
+  }
+}
+
+@media (max-width: 48rem) {
+  .capture.capture,
+  .approvals.approvals,
+  .results.results,
+  .domain.domain,
+  .projects.projects {
+    padding: 0.85rem 0.85rem 2rem;
+  }
+
+  .daybook::before {
+    top: 3rem;
+    right: -2rem;
+    width: 8rem;
+  }
+
+  .daybook [data-daybook="hero"] {
+    min-height: 12rem;
+    padding-block: 1.7rem 2rem;
+  }
+
+  .daybook [data-daybook="hero"] :global(h1) {
+    max-width: 24rem;
+    font-size: clamp(2.7rem, 13vw, 4rem);
+  }
+
+  .daybook [data-daybook="metrics"] {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .daybook [data-daybook="metrics"]::-webkit-scrollbar {
+    display: none;
+  }
+
+  .daybook [data-daybook="metrics"] > * {
+    min-width: 7.5rem;
+  }
+
+  .daybook [data-daybook="panel"] {
+    border-radius: 1.35rem 1.35rem 2.5rem 1.35rem;
+    padding: 1rem;
+  }
+
+  .capture [data-daybook="hero"] [data-daybook="metrics"] {
+    width: 100%;
+    min-width: 0;
+    border-radius: 1.3rem;
+  }
+
+  .capture [data-daybook="editor"] {
+    border-radius: 1.4rem 1.4rem 2.8rem 1.4rem;
+  }
+
+  .capture > :global(section:not(:first-of-type)) {
+    padding-block: 2.2rem;
+  }
+
+  .capture > :global(section:not(:first-of-type)) :global(.rounded-xl.border.border-line.bg-surface),
+  .capture [data-daybook="panel"] {
+    border-radius: 1.35rem 1.35rem 2.6rem 1.35rem;
+  }
+
+  .approvals [data-daybook="approval-item"] {
+    border-radius: 1.4rem 1.4rem 2.8rem 1.4rem;
+    padding: 1rem;
+  }
+
+  .approvals [data-daybook="fact"] {
+    border-left: 0;
+    border-top: 1px dashed var(--line);
+    padding: 0.75rem 0.2rem 0;
+  }
+
+  .projects :global(.projects-header) {
+    min-height: 13rem;
+    align-items: flex-start;
+  }
+
+  .projects :global(.projects-header h1) {
+    font-size: clamp(3.4rem, 17vw, 5.4rem);
+  }
+
+  .projects :global(.projects-stats) {
+    overflow-x: auto;
+    gap: 1.3rem;
+    scrollbar-width: none;
+  }
+
+  .projects :global(.projects-stats > div) {
+    flex: 0 0 auto;
+  }
+
+  .projects :global(.projects-workspace) {
+    border-radius: 1.6rem 1.6rem 3rem 1.6rem;
+  }
+
+  .projects :global(.project-canvas) {
+    padding: 1rem;
+  }
+
+  .projects :global(.project-title-block h2) {
+    font-size: 2.45rem;
+  }
+
+  .projects :global(.project-execution-deck) {
+    border-radius: 1.2rem 1.2rem 2.4rem 1.2rem;
+  }
+
+  .results [data-daybook="evidence"] {
+    border-top: 1px dashed var(--line);
+    border-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .daybook::before {
+    animation: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .daybook {
+    --db-muted: oklch(0.34 0.035 214);
+    --db-rule: oklch(0.57 0.045 84);
+  }
+
+  :global(:root[data-theme="dark"]) .daybook {
+    --db-muted: oklch(0.82 0.02 218);
+    --db-rule: oklch(0.57 0.035 214);
+  }
+}

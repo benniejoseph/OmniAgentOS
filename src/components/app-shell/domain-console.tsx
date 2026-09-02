@@ -34,6 +34,7 @@ import {
 } from "@/components/app-shell/session-context";
 import type { NavIcon } from "@/lib/navigation";
 import { workflowControlRunsFrom } from "@/lib/workflows/client-controls";
+import styles from "../daybook-workspaces.module.css";
 
 export type DomainConsoleKey =
   | "knowledge"
@@ -1124,6 +1125,12 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
   } = useWorkspaceSession();
   const config = domainConfigs[domain];
   const Icon = config.icon;
+  const usesDaybook = [
+    "workflows",
+    "evaluations",
+    "monitoring",
+    "security",
+  ].includes(domain);
   const [resources, setResources] = useState<Record<string, ResourceState>>({});
   const [lastRefresh, setLastRefresh] = useState<string>();
   const [actionResult, setActionResult] = useState<ActionResult>();
@@ -1555,14 +1562,18 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
 
   return (
     <div
-      className="px-4 py-6 sm:px-6 lg:px-8"
+      className={clsx(
+        "px-4 py-6 sm:px-6 lg:px-8",
+        usesDaybook && styles.daybook,
+        usesDaybook && styles.domain,
+      )}
       aria-busy={anyLoading || Boolean(runningAction)}
       data-testid={`${domain}-workspace`}
     >
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {announcement}
       </p>
-      <section className="rounded-lg border border-line bg-surface p-5">
+      <section className="rounded-lg border border-line bg-surface p-5" data-daybook="hero">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-3">
@@ -1635,9 +1646,9 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
 
       {domain === "settings" ? <PersonalDataControls /> : null}
 
-      {domain === "security" ? <section className="mt-4 flex flex-col gap-3 rounded-lg border border-line bg-surface p-5 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Tamper-evident evidence</p><h2 className="mt-1 text-base font-semibold">Signed audit chain</h2><p className="mt-1 text-sm text-muted">Download a chronologically chained, HMAC-signed audit export for offline verification.</p></div><a href="/api/security/audits/export" download className="primary-button shrink-0"><Download size={15} aria-hidden="true" />Download signed audit</a></section> : null}
+      {domain === "security" ? <section className="mt-4 flex flex-col gap-3 rounded-lg border border-line bg-surface p-5 sm:flex-row sm:items-center sm:justify-between" data-daybook="panel"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Tamper-evident evidence</p><h2 className="mt-1 text-base font-semibold">Signed audit chain</h2><p className="mt-1 text-sm text-muted">Download a chronologically chained, HMAC-signed audit export for offline verification.</p></div><a href="/api/security/audits/export" download className="primary-button shrink-0"><Download size={15} aria-hidden="true" />Download signed audit</a></section> : null}
 
-      <section className="mt-4 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-4">
+      <section className="mt-4 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-4" data-daybook="metrics">
         {config.metrics.map((metric) => {
           const resource = resources[metricResourceKey(domain, metric.label)];
           const value = metricDisplayValue(metric, data, resource);
@@ -1653,14 +1664,14 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
         })}
       </section>
 
-      <section className="mt-4 grid gap-4 xl:grid-cols-[0.72fr_1.18fr_0.74fr]">
+      <section className="mt-4 grid gap-4 xl:grid-cols-[0.72fr_1.18fr_0.74fr]" data-daybook="spread">
         <div className="space-y-4">
           <Panel title="Workflow" description="How this page should be used.">
             <div className="space-y-3">
               {config.flow.map((step, index) => {
                 const StepIcon = step.icon;
                 return (
-                  <div key={step.title} className="rounded-md border border-line bg-background p-3">
+                  <div key={step.title} className="rounded-md border border-line bg-background p-3" data-daybook="flow-step">
                     <div className="flex items-center gap-3">
                       <span className="grid size-8 place-items-center rounded-md bg-primary/12 text-primary">
                         <StepIcon size={15} aria-hidden="true" />
@@ -1815,7 +1826,7 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
 
 function Panel({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-lg border border-line bg-surface p-4">
+    <section className="rounded-lg border border-line bg-surface p-4" data-daybook="panel">
       <div className="mb-4">
         <h2 className="text-sm font-semibold">{title}</h2>
         <p className="mt-1 text-xs leading-5 text-muted">{description}</p>
@@ -1843,7 +1854,7 @@ function EndpointStatus({ label, status }: { label: string; status: ResourceStat
           ? "Loading"
           : "Unknown";
   return (
-    <span className="inline-flex min-h-8 items-center gap-2 rounded-md border border-line bg-background px-2.5 py-1.5">
+    <span className="inline-flex min-h-8 items-center gap-2 rounded-md border border-line bg-background px-2.5 py-1.5" data-daybook="status">
       <Icon
         size={13}
         className={clsx(
@@ -1900,7 +1911,7 @@ function DataPanel({
           ))}
         </div>
       ) : rows.length ? (
-        <div className="divide-y divide-line overflow-hidden rounded-md border border-line bg-background">
+        <div className="divide-y divide-line overflow-hidden rounded-md border border-line bg-background" data-daybook="list">
           {rows.slice(0, 8).map((row, index) => (
             <div key={`${row.title}-${index}`} className="grid gap-3 p-3 sm:grid-cols-[1fr_auto] sm:items-center">
               <div className="min-w-0">

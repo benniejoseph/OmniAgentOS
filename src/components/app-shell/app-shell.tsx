@@ -34,7 +34,6 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
   const [signOutError, setSignOutError] = useState<string>();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobilePanelRef = useRef<HTMLDivElement>(null);
-  const visualSystemClass = workspaceVisualSystem(pathname, styles);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -126,7 +125,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
   }
 
   return (
-    <div className={clsx("min-h-screen bg-background text-foreground", styles.shell, visualSystemClass)}>
+    <div className={clsx("min-h-screen bg-background text-foreground", styles.shell, styles.daybook)}>
       <a
         href="#workspace-content"
         className="fixed left-3 top-3 z-[70] -translate-y-24 rounded-md bg-foreground px-4 py-3 text-sm font-semibold text-background focus:translate-y-0"
@@ -138,6 +137,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
         id="desktop-workspace-navigation"
         className={clsx(
           "fixed inset-y-0 left-0 z-30 hidden border-r border-line/80 bg-surface transition-[width] duration-200 motion-reduce:transition-none lg:flex lg:flex-col",
+          styles.sidebar,
           desktopNavCollapsed ? "w-20" : "w-60",
         )}
       >
@@ -208,7 +208,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
         )}
       >
         {banner}
-        <header className="sticky top-0 z-20 border-b border-line/70 bg-background/85 backdrop-blur-xl">
+        <header className={clsx("sticky top-0 z-20 border-b border-line/70 bg-background/85 backdrop-blur-xl", styles.header)}>
           <div className="flex min-h-16 items-center justify-between gap-3 px-3 py-2 sm:px-6 lg:px-8">
             <div className="flex min-w-0 items-center gap-3">
               <button
@@ -248,17 +248,18 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
             <div className="flex items-center gap-2">
               <CommandPalette />
               <NotificationCenter />
-              <ThemeToggle compact />
+              <span className="hidden md:inline-flex"><ThemeToggle /></span>
+              <span className="inline-flex md:hidden"><ThemeToggle compact /></span>
             </div>
           </div>
         </header>
 
-        <main id="workspace-content" tabIndex={-1} className="workspace-enter pb-20 lg:pb-0">
+        <main id="workspace-content" tabIndex={-1} className={clsx("workspace-enter pb-20 lg:pb-0", styles.main)}>
           {children}
         </main>
       </div>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line/80 bg-background/95 px-1 pb-[max(.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur-xl lg:hidden" aria-label="Everyday workspace navigation">
+      <nav className={clsx("fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line/80 bg-background/95 px-1 pb-[max(.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur-xl lg:hidden", styles.mobileDock)} aria-label="Everyday workspace navigation">
         {primaryNavItems.map((item) => {
           const Icon = item.icon;
           const active = isActivePath(pathname, item.href);
@@ -297,7 +298,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
             role="dialog"
             aria-modal="true"
             aria-labelledby="mobile-workspace-menu-title"
-            className="absolute inset-y-0 left-0 flex w-[min(90vw,22rem)] flex-col border-r border-line bg-surface"
+            className={clsx("absolute inset-y-0 left-0 flex w-[min(90vw,22rem)] flex-col border-r border-line bg-surface", styles.mobilePanel)}
             data-testid="workspace-mobile-menu"
           >
             <div className="flex min-h-16 items-center justify-between gap-3 border-b border-line px-4">
@@ -371,19 +372,6 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
       ) : null}
     </div>
   );
-}
-
-function workspaceVisualSystem(pathname: string, classNames: Record<string, string>) {
-  if (pathname === "/app") return classNames.daybook;
-  if (pathname.startsWith("/app/command") || pathname.startsWith("/app/missions")) return classNames.fluid;
-  if (
-    pathname.startsWith("/app/agents") ||
-    pathname.startsWith("/app/memory") ||
-    pathname.startsWith("/app/tools") ||
-    pathname.startsWith("/app/connectors") ||
-    pathname.startsWith("/app/settings")
-  ) return classNames.luminous;
-  return undefined;
 }
 
 function CompactNavigation({ pathname }: { pathname: string }) {
