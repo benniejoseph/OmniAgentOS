@@ -331,6 +331,14 @@ function getOrCreateScope(scopeValue) {
 async function makeScopeCapacity() {
   if (scopes.size < maxScopes) return;
   await reapExpiredScopes();
+  if (scopes.size < maxScopes) return;
+
+  const leastRecentlyUsedIdleScope = [...scopes.values()]
+    .filter((scope) => !scope.stopping && scope.activeRequests === 0)
+    .sort((left, right) => left.lastUsedAt - right.lastUsedAt)[0];
+  if (leastRecentlyUsedIdleScope) {
+    await stopScope(leastRecentlyUsedIdleScope, "capacity_lru");
+  }
 }
 
 async function startScope(scopeKey) {
