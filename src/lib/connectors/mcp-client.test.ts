@@ -247,7 +247,7 @@ describe("discoverMcpTools", () => {
             isError: true,
             content: [{
               type: "text",
-              text: "Chromium could not start: Socket path too long.",
+              text: "net::ERR_TUNNEL_CONNECTION_FAILED at https://example.com/private?token=hidden",
             }],
           },
         });
@@ -260,7 +260,7 @@ describe("discoverMcpTools", () => {
       toolName: "browser_navigate",
       args: { url: "https://example.com" },
     })).rejects.toThrow(
-      "MCP tool reported an error: Chromium could not start: Socket path too long.",
+      "The browser network gateway could not establish a secure connection to the destination.",
     );
   });
 });

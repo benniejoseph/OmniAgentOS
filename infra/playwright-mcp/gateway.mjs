@@ -794,9 +794,11 @@ function createBlockedAddressList() {
   ]) {
     list.addSubnet(network, prefix, "ipv4");
   }
+  // node:net BlockList applies the IPv4 subnet rules above to IPv4-mapped
+  // IPv6 addresses too. Blocking ::ffff:0:0/96 here would therefore also
+  // classify every ordinary public IPv4 destination as private.
   for (const [network, prefix] of [
     ["::", 96],
-    ["::ffff:0:0", 96],
     ["::1", 128],
     ["64:ff9b::", 96],
     ["64:ff9b:1::", 48],

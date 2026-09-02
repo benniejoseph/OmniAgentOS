@@ -618,6 +618,14 @@ function connectorErrorMessage(error: unknown) {
     return "MCP request timed out or was cancelled.";
   }
 
+  const errorMessages = errors.map((item) => item.message);
+  if (errorMessages.some((message) => message.includes("ERR_TUNNEL_CONNECTION_FAILED"))) {
+    return "The browser network gateway could not establish a secure connection to the destination.";
+  }
+  if (errorMessages.some((message) => /socket path too long/i.test(message))) {
+    return "The isolated browser runtime could not start.";
+  }
+
   const primary = errors[0]?.message.trim();
   if (primary?.toLowerCase() === "fetch failed") {
     return "MCP endpoint request failed before receiving a response.";

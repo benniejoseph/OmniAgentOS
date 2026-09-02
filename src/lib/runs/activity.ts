@@ -165,6 +165,9 @@ function browserFailure(execution: ToolExecutionRecord) {
   if (/timed?\s*out|timeout/.test(reason)) {
     return "The browser action timed out.";
   }
+  if (/network gateway|tunnel connection/.test(reason)) {
+    return "The browser network gateway could not reach the destination.";
+  }
   if (/policy|blocked|private|loopback|metadata/.test(reason)) {
     return "The destination or action was blocked by browser safety policy.";
   }
