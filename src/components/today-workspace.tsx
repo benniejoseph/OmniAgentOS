@@ -518,15 +518,6 @@ export function TodayWorkspace({
         </div>
       </section>
 
-      <UsageCockpit
-        summary={usage}
-        periodKey={usagePeriod}
-        loading={usageLoading}
-        error={usageError}
-        onPeriodChange={setUsagePeriod}
-        onRetry={() => void refreshUsage()}
-      />
-
       <section className="today-generated-brief" aria-labelledby="daily-brief-title">
         <div className="today-brief-lead">
           <div className="today-brief-title-row">
@@ -693,6 +684,15 @@ export function TodayWorkspace({
           )) : <ContextEmpty>Your recent conversations will appear here.</ContextEmpty>}
         </TodayContextSection>
       </section>
+
+      <UsageCockpit
+        summary={usage}
+        periodKey={usagePeriod}
+        loading={usageLoading}
+        error={usageError}
+        onPeriodChange={setUsagePeriod}
+        onRetry={() => void refreshUsage()}
+      />
     </main>
   );
 }

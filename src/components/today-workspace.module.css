@@ -22,17 +22,21 @@
   --day-canvas-end: oklch(0.968 0.025 80);
   --day-warm-haze: oklch(0.89 0.13 70 / 0.42);
   --day-cool-haze: oklch(0.9 0.06 220 / 0.42);
-  --day-paper: oklch(1 0 0 / 0.72);
-  --day-paper-soft: oklch(1 0 0 / 0.58);
-  --day-paper-strong: oklch(1 0 0 / 0.94);
+  --day-sun-core: oklch(0.82 0.16 70);
+  --day-sun-glow: oklch(0.9 0.12 73 / 0.23);
+  --day-horizon: oklch(0.72 0.1 68 / 0.26);
+  --day-paper: oklch(0.992 0.012 91);
+  --day-paper-soft: oklch(0.973 0.022 88);
+  --day-paper-strong: oklch(0.999 0.004 91);
   --day-border: oklch(0.77 0.04 89 / 0.4);
   --day-divider: oklch(0.7 0.045 78 / 0.25);
   --day-shadow: oklch(0.35 0.045 78 / 0.09);
   --day-shadow-strong: oklch(0.35 0.045 78 / 0.14);
-  --day-warm-panel: oklch(0.965 0.034 75 / 0.82);
-  --day-green-panel: oklch(0.955 0.033 158 / 0.76);
-  --day-blue-panel: oklch(0.958 0.028 222 / 0.82);
-  --day-input: oklch(1 0 0 / 0.72);
+  --day-warm-panel: oklch(0.965 0.034 75);
+  --day-green-panel: oklch(0.955 0.033 158);
+  --day-blue-panel: oklch(0.958 0.028 222);
+  --day-dusk-panel: oklch(0.95 0.034 252);
+  --day-input: oklch(0.998 0.006 91);
   --day-danger-panel: oklch(0.98 0.025 35 / 0.75);
   --day-attention-panel: oklch(0.965 0.06 76 / 0.9);
   position: relative;
@@ -42,12 +46,12 @@
   min-height: calc(100svh - 4rem);
   margin: 0;
   overflow: clip;
-  padding: clamp(1.1rem, 2.5vw, 2.8rem);
+  padding: clamp(0.85rem, 1.8vw, 1.8rem);
   color: var(--foreground);
   background:
-    radial-gradient(circle at 83% 3%, var(--day-warm-haze), transparent 23rem),
-    radial-gradient(circle at 18% 24%, var(--day-cool-haze), transparent 28rem),
-    linear-gradient(145deg, var(--day-canvas-start) 0%, var(--day-cream) 48%, var(--day-canvas-end) 100%);
+    radial-gradient(circle at 86% -2%, var(--day-sun-glow), transparent 24rem),
+    radial-gradient(circle at 14% 35%, var(--day-cool-haze), transparent 27rem),
+    linear-gradient(155deg, var(--day-canvas-start) 0%, var(--day-cream) 45%, var(--day-canvas-end) 100%);
 }
 
 :global(:root[data-theme="dark"]) .shell:global(.today-shell) {
@@ -74,17 +78,21 @@
   --day-canvas-end: oklch(0.125 0.016 218);
   --day-warm-haze: oklch(0.55 0.1 65 / 0.12);
   --day-cool-haze: oklch(0.48 0.07 218 / 0.14);
-  --day-paper: oklch(0.205 0.022 208 / 0.82);
-  --day-paper-soft: oklch(0.225 0.023 207 / 0.66);
-  --day-paper-strong: oklch(0.255 0.025 204 / 0.94);
+  --day-sun-core: oklch(0.73 0.13 70);
+  --day-sun-glow: oklch(0.58 0.1 68 / 0.15);
+  --day-horizon: oklch(0.68 0.09 70 / 0.2);
+  --day-paper: oklch(0.195 0.022 208);
+  --day-paper-soft: oklch(0.225 0.023 207);
+  --day-paper-strong: oklch(0.255 0.025 204);
   --day-border: oklch(0.42 0.035 198 / 0.48);
   --day-divider: oklch(0.48 0.035 190 / 0.28);
   --day-shadow: oklch(0.03 0.01 220 / 0.28);
   --day-shadow-strong: oklch(0.02 0.01 220 / 0.42);
-  --day-warm-panel: oklch(0.245 0.035 67 / 0.74);
-  --day-green-panel: oklch(0.225 0.03 158 / 0.72);
-  --day-blue-panel: oklch(0.22 0.029 220 / 0.76);
-  --day-input: oklch(0.18 0.02 211 / 0.9);
+  --day-warm-panel: oklch(0.235 0.035 67);
+  --day-green-panel: oklch(0.215 0.03 158);
+  --day-blue-panel: oklch(0.21 0.029 220);
+  --day-dusk-panel: oklch(0.205 0.035 252);
+  --day-input: oklch(0.18 0.02 211);
   --day-danger-panel: oklch(0.24 0.045 28 / 0.72);
   --day-attention-panel: oklch(0.26 0.045 70 / 0.72);
 }
@@ -99,40 +107,41 @@
 }
 
 .shell::before {
-  top: 31rem;
-  left: -10rem;
-  width: 31rem;
-  height: 31rem;
-  background: var(--day-cool-haze);
-  filter: blur(2px);
+  top: 22rem;
+  left: -16rem;
+  width: 34rem;
+  height: 34rem;
+  background: radial-gradient(circle, var(--day-cool-haze), transparent 68%);
 }
 
 .shell::after {
-  right: -13rem;
-  bottom: 10rem;
-  width: 34rem;
-  height: 34rem;
-  background: var(--day-warm-haze);
+  right: -18rem;
+  bottom: 2rem;
+  width: 38rem;
+  height: 38rem;
+  border: 1px solid var(--day-horizon);
+  background: radial-gradient(circle, var(--day-warm-haze), transparent 64%);
+  box-shadow: 0 0 0 6rem oklch(from var(--accent) l c h / 0.025);
 }
 
 .shell :global(.today-brief) {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(7.5rem, 0.23fr) minmax(22rem, 1fr) auto;
-  min-height: 20.5rem;
+  grid-template-columns: minmax(5rem, 0.18fr) minmax(22rem, 1fr) auto;
+  min-height: 14.75rem;
   align-items: center;
-  gap: clamp(1.25rem, 3vw, 3.8rem);
-  padding: clamp(2.4rem, 4vw, 4.8rem) clamp(0.25rem, 1.5vw, 1.5rem) 4.8rem;
+  gap: clamp(1rem, 2.2vw, 2.2rem);
+  padding: clamp(1.5rem, 2.5vw, 2.8rem) clamp(0.25rem, 1.2vw, 1.2rem) 2.75rem;
   border: 0;
 }
 
 .daylightArt {
   position: absolute;
   z-index: -1;
-  top: -5rem;
-  right: clamp(-8rem, -4vw, -2rem);
-  width: min(38rem, 48vw);
-  height: 30rem;
+  top: -4.2rem;
+  right: clamp(-5rem, -3vw, -1.5rem);
+  width: min(29rem, 39vw);
+  height: 22rem;
   overflow: hidden;
   pointer-events: none;
 }
@@ -146,48 +155,48 @@
 }
 
 .sun {
-  top: 5.2rem;
-  right: 5.8rem;
-  width: clamp(10rem, 17vw, 16.5rem);
-  height: clamp(10rem, 17vw, 16.5rem);
+  top: 4.8rem;
+  right: 4.9rem;
+  width: clamp(8rem, 13vw, 12rem);
+  height: clamp(8rem, 13vw, 12rem);
   background:
     radial-gradient(circle at 38% 34%, oklch(0.985 0.08 89), transparent 22%),
-    linear-gradient(145deg, oklch(0.91 0.17 78), oklch(0.76 0.17 53));
+    linear-gradient(145deg, oklch(0.91 0.17 78), var(--day-sun-core));
   box-shadow:
-    0 0 0 2.2rem oklch(0.88 0.12 69 / 0.12),
-    0 2.5rem 7rem oklch(0.69 0.15 59 / 0.3);
+    0 0 0 1.65rem oklch(0.88 0.12 69 / 0.11),
+    0 1.8rem 5rem oklch(0.69 0.15 59 / 0.24);
   animation: sunBreathe 8s ease-in-out infinite;
 }
 
 .sunRing {
-  top: 1.8rem;
-  right: 2.4rem;
-  width: clamp(16.8rem, 25vw, 24rem);
-  height: clamp(16.8rem, 25vw, 24rem);
-  border: 1px solid oklch(0.66 0.1 65 / 0.26);
+  top: 1.9rem;
+  right: 2rem;
+  width: clamp(13.5rem, 19vw, 18rem);
+  height: clamp(13.5rem, 19vw, 18rem);
+  border: 1px solid var(--day-horizon);
   opacity: 0.8;
 }
 
 .sunRing::before,
 .sunRing::after {
   position: absolute;
-  inset: 1.8rem;
+  inset: 1.45rem;
   border: 1px dashed oklch(0.66 0.1 65 / 0.19);
   border-radius: inherit;
   content: "";
 }
 
 .sunRing::after {
-  inset: 3.8rem;
+  inset: 3rem;
   border-style: solid;
   opacity: 0.62;
 }
 
 .cloud {
-  right: 14rem;
-  bottom: 5.4rem;
-  width: 11rem;
-  height: 3.6rem;
+  right: 10.5rem;
+  bottom: 3rem;
+  width: 8.5rem;
+  height: 2.8rem;
   background: oklch(0.995 0.009 94 / 0.66);
   box-shadow:
     2.4rem -1rem 0 -0.2rem oklch(0.995 0.009 94 / 0.56),
@@ -217,10 +226,10 @@
 
 .shell :global(.today-date strong) {
   font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
-  font-size: clamp(5.3rem, 8vw, 8.4rem);
+  font-size: clamp(4.2rem, 6vw, 5.6rem);
   font-weight: 500;
   line-height: 0.74;
-  letter-spacing: -0.075em;
+  letter-spacing: -0.04em;
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
 }
@@ -253,19 +262,19 @@
 .shell :global(.today-intro h1) {
   margin: 0.15rem 0 0;
   font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
-  font-size: clamp(4.4rem, 8vw, 8.6rem);
+  font-size: clamp(3.7rem, 6vw, 5.8rem);
   font-weight: 500;
   line-height: 0.83;
-  letter-spacing: -0.075em;
+  letter-spacing: -0.04em;
   color: var(--foreground);
 }
 
 .shell :global(.today-intro > p:last-child) {
   max-width: 43rem;
-  margin-top: 1.3rem;
+  margin-top: 0.8rem;
   color: var(--muted);
   font-size: clamp(0.9rem, 1.15vw, 1.04rem);
-  line-height: 1.65;
+  line-height: 1.55;
 }
 
 .shell :global(.today-operating-line) {
@@ -273,22 +282,21 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 0.55rem;
-  margin-top: 1.25rem;
+  margin-top: 0.8rem;
   color: var(--foreground);
   font-size: 0.7rem;
 }
 
 .shell :global(.today-operating-line span) {
   display: inline-flex;
-  min-height: 2rem;
+  min-height: 1.85rem;
   align-items: center;
   gap: 0.45rem;
   border: 1px solid var(--day-border);
   border-radius: 999px;
   padding: 0.3rem 0.72rem;
   background: var(--day-paper-soft);
-  box-shadow: 0 0.35rem 1.25rem var(--day-shadow);
-  backdrop-filter: blur(14px);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.22);
 }
 
 .shell :global(.today-operating-line span + span::before) {
@@ -320,11 +328,10 @@
 .shell :global(.today-icon-button),
 .shell :global(.today-actions .action-link),
 .shell :global(.today-actions .primary-button) {
-  min-height: 2.75rem;
+  min-height: 2.5rem;
   border-radius: 999px;
   border-color: oklch(0.68 0.04 86 / 0.35);
-  box-shadow: 0 0.65rem 2rem oklch(0.32 0.05 70 / 0.09);
-  backdrop-filter: blur(16px);
+  box-shadow: 0 0.35rem 1rem oklch(0.32 0.05 70 / 0.07);
 }
 
 .shell :global(.today-icon-button),
@@ -334,8 +341,8 @@
 }
 
 .shell :global(.today-icon-button) {
-  width: 2.75rem;
-  height: 2.75rem;
+  width: 2.5rem;
+  height: 2.5rem;
 }
 
 .shell :global(.today-actions .primary-button) {
@@ -373,15 +380,15 @@
 .shell :global(.today-overview) {
   position: relative;
   z-index: 2;
-  margin-top: -2.5rem;
-  padding: 1.5rem 0 2.5rem;
+  margin-top: -1.1rem;
+  padding: 0.7rem 0 1.25rem;
 }
 
 .dayArc {
   position: absolute;
   z-index: -1;
-  inset: 1rem -1rem auto;
-  height: 12.5rem;
+  inset: 0.4rem -1rem auto;
+  height: 8rem;
   pointer-events: none;
 }
 
@@ -403,7 +410,7 @@
 
 .dayArc > span {
   position: absolute;
-  top: 0.75rem;
+  top: 0.3rem;
   left: 49.2%;
   width: 1rem;
   height: 1rem;
@@ -421,7 +428,7 @@
   display: flex;
   align-items: end;
   justify-content: space-between;
-  margin: 0 0 2.15rem;
+  margin: 0 0 1rem;
   padding-inline: 0.4rem;
 }
 
@@ -453,16 +460,15 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;
-  min-height: 5.6rem;
+  min-height: 4.65rem;
   align-items: center;
   gap: 0.65rem;
   border: 1px solid var(--day-border);
-  border-radius: 1.5rem 1.5rem 2.4rem 1.5rem;
-  padding: 0.75rem;
+  border-radius: 1rem;
+  padding: 0.65rem;
   color: var(--foreground);
   background: var(--day-paper);
-  box-shadow: 0 1rem 2.8rem var(--day-shadow);
-  backdrop-filter: blur(18px);
+  box-shadow: 0 0.45rem 1.4rem var(--day-shadow);
   transform: translateY(var(--arc-offset));
   transition:
     transform 180ms ease,
@@ -473,17 +479,17 @@
 
 .shell :global(.today-overview-item:nth-child(1)),
 .shell :global(.today-overview-item:nth-child(6)) {
-  --arc-offset: 1.1rem;
+  --arc-offset: 0.35rem;
 }
 
 .shell :global(.today-overview-item:nth-child(2)),
 .shell :global(.today-overview-item:nth-child(5)) {
-  --arc-offset: -0.35rem;
+  --arc-offset: -0.1rem;
 }
 
 .shell :global(.today-overview-item:nth-child(3)),
 .shell :global(.today-overview-item:nth-child(4)) {
-  --arc-offset: -1.1rem;
+  --arc-offset: -0.35rem;
 }
 
 .shell :global(.today-overview-item:nth-child(2)) { animation-delay: 40ms; }
@@ -495,8 +501,8 @@
 .shell :global(.today-overview-item:hover) {
   color: var(--foreground);
   background: var(--day-paper-strong);
-  box-shadow: 0 1.2rem 3.2rem var(--day-shadow-strong);
-  transform: translateY(calc(var(--arc-offset) - 0.32rem));
+  box-shadow: 0 0.7rem 1.7rem var(--day-shadow-strong);
+  transform: translateY(calc(var(--arc-offset) - 0.2rem));
 }
 
 .shell :global(.today-overview-item > svg) {
@@ -505,8 +511,8 @@
 
 .shell :global(.today-overview-icon) {
   display: grid;
-  width: 2.35rem;
-  height: 2.35rem;
+  width: 2rem;
+  height: 2rem;
   place-items: center;
   border-radius: 50%;
   color: var(--primary);
@@ -552,7 +558,7 @@
 .shell :global(.today-overview-value) {
   min-width: auto;
   font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
-  font-size: 1.55rem;
+  font-size: 1.35rem;
   font-weight: 600;
   text-align: right;
 }
@@ -562,28 +568,27 @@
   z-index: 1;
   display: grid;
   grid-template-columns: minmax(0, 1.22fr) minmax(17rem, 0.82fr) minmax(15rem, 0.62fr);
-  margin-top: 1rem;
+  margin-top: 0.75rem;
   overflow: hidden;
   border: 1px solid var(--day-border);
-  border-radius: 2.75rem 6.5rem 2.75rem 2.75rem;
+  border-radius: 1rem;
   background:
-    radial-gradient(circle at 88% 12%, var(--day-warm-haze), transparent 18rem),
+    radial-gradient(circle at 92% 0%, var(--day-sun-glow), transparent 15rem),
     linear-gradient(125deg, var(--day-paper-strong), var(--day-warm-panel));
-  box-shadow: 0 2rem 6rem var(--day-shadow);
-  backdrop-filter: blur(20px);
+  box-shadow: 0 0.55rem 1.8rem var(--day-shadow);
 }
 
 .shell :global(.today-generated-brief)::after {
   position: absolute;
-  top: -4.5rem;
-  right: -3.6rem;
-  width: 12rem;
-  height: 12rem;
-  border: 1px solid oklch(0.64 0.12 66 / 0.24);
+  top: -5rem;
+  right: -4.5rem;
+  width: 10rem;
+  height: 10rem;
+  border: 1px solid var(--day-horizon);
   border-radius: 50%;
   box-shadow:
-    0 0 0 1.8rem oklch(0.75 0.13 68 / 0.07),
-    0 0 0 3.8rem oklch(0.75 0.13 68 / 0.045);
+    0 0 0 1.5rem oklch(0.75 0.13 68 / 0.055),
+    0 0 0 3rem oklch(0.75 0.13 68 / 0.035);
   pointer-events: none;
   content: "";
 }
@@ -594,7 +599,7 @@
   position: relative;
   z-index: 1;
   min-width: 0;
-  padding: clamp(1.5rem, 2.4vw, 2.5rem);
+  padding: clamp(1.1rem, 1.8vw, 1.6rem);
 }
 
 .shell :global(.today-brief-lead),
@@ -612,12 +617,12 @@
 
 .shell :global(.today-brief-title-row h2) {
   margin-top: 0.15rem;
-  font-size: 1.45rem;
+  font-size: 1.35rem;
 }
 
 .shell :global(.today-brief-mark) {
-  width: 3rem;
-  height: 3rem;
+  width: 2.4rem;
+  height: 2.4rem;
   border: 0;
   color: oklch(0.52 0.13 58);
   background: oklch(0.91 0.12 75 / 0.72);
@@ -626,16 +631,16 @@
 
 .shell :global(.today-brief-summary) {
   max-width: 45rem;
-  margin-top: 1.45rem;
+  margin-top: 0.85rem;
   color: var(--foreground);
   font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
-  font-size: clamp(1.22rem, 1.7vw, 1.65rem);
-  line-height: 1.48;
+  font-size: clamp(1.08rem, 1.45vw, 1.4rem);
+  line-height: 1.42;
   letter-spacing: -0.025em;
 }
 
 .shell :global(.today-brief-meta) {
-  margin-top: 1.25rem;
+  margin-top: 0.8rem;
   color: var(--muted);
   font-size: 0.68rem;
 }
@@ -660,7 +665,7 @@
   display: flex;
   align-items: center;
   gap: 1rem;
-  margin-top: 1.4rem;
+  margin-top: 0.9rem;
 }
 
 .shell :global(.today-brief-empty p) {
@@ -680,7 +685,7 @@
 .shell :global(.today-brief-priority) {
   grid-template-columns: 1.8rem minmax(0, 1fr);
   gap: 0.75rem;
-  padding: 1rem 0;
+  padding: 0.7rem 0;
   border-bottom: 1px dashed oklch(0.67 0.045 79 / 0.28);
 }
 
@@ -714,8 +719,8 @@
 }
 
 .shell :global(.today-brief-side) {
-  gap: 1.1rem;
-  padding-right: 2.6rem;
+  gap: 0.8rem;
+  padding-right: 1.6rem;
 }
 
 .shell :global(.today-watchout) {
@@ -779,8 +784,8 @@
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(20rem, 0.62fr);
   align-items: stretch;
-  gap: 1rem;
-  margin-top: 1.15rem;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
   border: 0;
 }
 
@@ -788,22 +793,22 @@
 .shell :global(.today-agenda) {
   min-width: 0;
   border: 1px solid var(--day-border);
-  box-shadow: 0 1.4rem 4rem var(--day-shadow);
+  box-shadow: 0 0.55rem 1.8rem var(--day-shadow);
 }
 
 .shell :global(.today-focus) {
-  border-radius: 2.6rem 2.6rem 2.6rem 5.4rem;
-  padding: clamp(1.4rem, 2.4vw, 2.35rem);
+  border-radius: 1rem;
+  padding: clamp(1rem, 1.8vw, 1.5rem);
   background: var(--day-paper);
-  backdrop-filter: blur(18px);
 }
 
 .shell :global(.today-agenda) {
   border-left: 1px solid var(--day-divider);
-  border-radius: 2.6rem 5.2rem 2.6rem 2.6rem;
-  padding: clamp(1.4rem, 2.4vw, 2.25rem);
+  border-radius: 1rem;
+  padding: clamp(1rem, 1.8vw, 1.5rem);
   background:
-    linear-gradient(160deg, var(--day-blue-panel), var(--day-cool-haze));
+    radial-gradient(circle at 90% 5%, var(--day-sun-glow), transparent 12rem),
+    linear-gradient(160deg, var(--day-blue-panel), var(--day-paper-soft));
 }
 
 .shell :global(.today-section-heading) {
@@ -811,7 +816,7 @@
 }
 
 .shell :global(.today-section-heading h2) {
-  font-size: clamp(1.35rem, 2vw, 1.75rem);
+  font-size: clamp(1.25rem, 1.7vw, 1.55rem);
 }
 
 .shell :global(.today-section-copy) {
@@ -821,8 +826,8 @@
 }
 
 .shell :global(.today-progress) {
-  width: 4.1rem;
-  height: 4.1rem;
+  width: 3.6rem;
+  height: 3.6rem;
 }
 
 .shell :global(.today-progress circle) {
@@ -839,10 +844,10 @@
 }
 
 .shell :global(.today-capture-panel) {
-  margin-top: 1.15rem;
+  margin-top: 0.8rem;
   border: 0;
-  border-radius: 1.8rem 1.8rem 3.2rem 1.8rem;
-  padding: 1rem;
+  border-radius: 0.875rem;
+  padding: 0.85rem;
   background: linear-gradient(135deg, var(--day-warm-panel), var(--day-paper-soft));
   box-shadow: inset 0 0 0 1px oklch(0.72 0.07 76 / 0.16);
 }
@@ -874,7 +879,7 @@
   grid-template-columns: minmax(12rem, 1fr) minmax(6rem, 0.32fr) minmax(6.2rem, 0.36fr) minmax(11rem, 0.62fr) auto;
   align-items: end;
   gap: 0.65rem;
-  margin-top: 0.9rem;
+  margin-top: 0.65rem;
   padding: 0;
   border: 0;
   background: transparent;
@@ -895,7 +900,7 @@
 .shell :global(.today-capture-row input:first-of-type) {
   width: 100%;
   min-width: 0;
-  height: 2.75rem;
+  height: 2.5rem;
   border: 1px solid oklch(0.68 0.045 80 / 0.27);
   border-radius: 999px;
   padding-inline: 0.85rem;
@@ -913,7 +918,7 @@
 
 .shell :global(.today-capture-row button) {
   min-width: 4rem;
-  height: 2.75rem;
+  height: 2.5rem;
   border-radius: 999px;
   color: var(--background);
   background: var(--foreground);
@@ -921,12 +926,12 @@
 }
 
 .shell :global(.today-focus-list) {
-  margin-top: 1rem;
+  margin-top: 0.65rem;
 }
 
 .shell :global(.today-focus-item) {
   grid-template-columns: 2.1rem minmax(0, 1fr) auto;
-  min-height: 4.65rem;
+  min-height: 3.8rem;
   margin-top: 0.18rem;
   border: 0;
   border-radius: 1.25rem;
@@ -983,7 +988,7 @@
 }
 
 .shell :global(.today-timeline) {
-  margin-top: 1.25rem;
+  margin-top: 0.8rem;
   padding-left: 0;
 }
 
@@ -999,7 +1004,7 @@
 
 .shell :global(.today-timeline-item) {
   grid-template-columns: 2.6rem minmax(0, 1fr);
-  min-height: 4.45rem;
+  min-height: 3.7rem;
   gap: 1.1rem;
 }
 
@@ -1031,8 +1036,8 @@
 .shell :global(.today-attention) {
   margin-top: 0.75rem;
   border: 0;
-  border-radius: 1.45rem;
-  padding: 1rem;
+  border-radius: 0.875rem;
+  padding: 0.8rem;
   background: var(--day-attention-panel);
 }
 
@@ -1055,8 +1060,8 @@
 .shell :global(.today-context-grid) {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1rem;
-  margin-top: 1rem;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
   border: 0;
 }
 
@@ -1068,25 +1073,24 @@
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--day-border);
-  border-radius: 2rem 2rem 3.8rem 2rem;
-  padding: 1.5rem;
+  border-radius: 1rem;
+  padding: 1.1rem;
   background: var(--day-paper);
-  box-shadow: 0 1.25rem 3.5rem var(--day-shadow);
-  backdrop-filter: blur(18px);
+  box-shadow: 0 0.45rem 1.5rem var(--day-shadow);
 }
 
 .shell :global(.today-context-section:nth-child(2)) {
-  border-radius: 3.8rem 2rem 2rem 2rem;
+  border-radius: 1rem;
   background: var(--day-warm-panel);
 }
 
 .shell :global(.today-context-section:nth-child(3)) {
-  border-radius: 2rem 3.8rem 2rem 2rem;
+  border-radius: 1rem;
   background: var(--day-green-panel);
 }
 
 .shell :global(.today-context-section:nth-child(4)) {
-  border-radius: 2rem 2rem 2rem 3.8rem;
+  border-radius: 1rem;
   background: var(--day-blue-panel);
 }
 
@@ -1098,18 +1102,18 @@
 }
 
 .shell :global(.today-context-heading > svg) {
-  width: 2.15rem;
-  height: 2.15rem;
+  width: 1.9rem;
+  height: 1.9rem;
   margin: 0;
   border-radius: 50%;
-  padding: 0.5rem;
+  padding: 0.42rem;
   color: var(--primary);
   background: var(--day-paper-soft);
 }
 
 .shell :global(.today-context-heading h2) {
   margin: 0;
-  font-size: 1.12rem;
+  font-size: 1.02rem;
 }
 
 .shell :global(.today-context-heading p) {
@@ -1132,7 +1136,7 @@
 }
 
 .shell :global(.today-context-content) {
-  margin-top: 1rem;
+  margin-top: 0.7rem;
 }
 
 .shell :global(.today-context-row),
@@ -1146,7 +1150,7 @@
 }
 
 .shell :global(.today-context-row) {
-  min-height: 3.65rem;
+  min-height: 3.2rem;
 }
 
 .shell :global(.today-context-row:hover),
@@ -1176,7 +1180,7 @@
 
 .shell :global(.today-memory-row),
 .shell :global(.today-project-row) {
-  min-height: 4.6rem;
+  min-height: 3.85rem;
 }
 
 .shell :global(.today-memory-row > span) {
@@ -1213,31 +1217,30 @@
 }
 
 .usageCockpit {
-  --usage-current: oklch(0.58 0.16 245);
-  --usage-previous: oklch(0.7 0.15 65);
-  --usage-input: oklch(0.62 0.14 245);
-  --usage-output: oklch(0.72 0.13 67);
+  --usage-current: oklch(0.68 0.15 67);
+  --usage-previous: oklch(0.52 0.13 158);
+  --usage-input: oklch(0.7 0.14 69);
+  --usage-output: oklch(0.52 0.12 158);
   position: relative;
   z-index: 1;
-  margin: 1.1rem 0 2rem;
+  margin: 1rem 0 0;
   overflow: hidden;
   border: 1px solid var(--day-border);
-  border-radius: 3rem 7rem 3rem 3rem;
+  border-radius: 1rem;
   color: var(--foreground);
   background:
-    radial-gradient(circle at 88% 8%, oklch(0.76 0.11 239 / 0.14), transparent 25rem),
-    linear-gradient(132deg, var(--day-paper-strong), var(--day-blue-panel));
-  box-shadow: 0 2rem 6rem var(--day-shadow);
-  backdrop-filter: blur(22px);
+    radial-gradient(circle at 88% 8%, var(--day-sun-glow), transparent 20rem),
+    linear-gradient(132deg, var(--day-paper-strong), var(--day-dusk-panel));
+  box-shadow: 0 0.55rem 1.8rem var(--day-shadow);
 }
 
 .usageHalo {
   position: absolute;
   z-index: 0;
-  top: -9rem;
-  right: -5rem;
-  width: 23rem;
-  height: 23rem;
+  top: -10rem;
+  right: -6rem;
+  width: 20rem;
+  height: 20rem;
   border: 1px solid oklch(from var(--usage-current) l c h / 0.2);
   border-radius: 50%;
   pointer-events: none;
@@ -1275,14 +1278,14 @@
   display: flex;
   align-items: end;
   justify-content: space-between;
-  gap: 1.5rem;
-  padding: clamp(1.5rem, 2.6vw, 2.7rem);
+  gap: 1rem;
+  padding: clamp(1.05rem, 1.8vw, 1.45rem);
 }
 
 .usageHeader h2 {
   margin-top: 0.22rem;
   font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
-  font-size: clamp(1.75rem, 3vw, 2.75rem);
+  font-size: clamp(1.55rem, 2.2vw, 2rem);
   font-weight: 560;
   letter-spacing: -0.045em;
 }
@@ -1318,7 +1321,7 @@
 }
 
 .usagePeriodSwitch button {
-  min-height: 2.2rem;
+  min-height: 2rem;
   border: 0;
   border-radius: 999px;
   padding: 0.45rem 0.85rem;
@@ -1335,7 +1338,7 @@
 .usagePeriodSwitch button[aria-pressed="true"] {
   color: var(--primary-ink);
   background: var(--primary);
-  box-shadow: 0 0.45rem 1.2rem oklch(from var(--primary) l c h / 0.2);
+  box-shadow: 0 0.3rem 0.8rem oklch(from var(--primary) l c h / 0.16);
 }
 
 .usagePeriodSwitch button:focus-visible {
@@ -1357,10 +1360,10 @@
 
 .usagePrimaryMetric {
   display: flex;
-  min-height: 13.5rem;
+  min-height: 9rem;
   justify-content: center;
   flex-direction: column;
-  padding: clamp(1.5rem, 2.8vw, 2.8rem);
+  padding: clamp(1.05rem, 1.8vw, 1.5rem);
   border-right: 1px solid var(--day-divider);
 }
 
@@ -1373,17 +1376,17 @@
 }
 
 .usagePrimaryMetric > strong {
-  margin-top: 0.6rem;
+  margin-top: 0.4rem;
   font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
-  font-size: clamp(3.5rem, 6vw, 6.2rem);
+  font-size: clamp(2.8rem, 4.4vw, 4.2rem);
   font-weight: 520;
   line-height: 0.92;
-  letter-spacing: -0.075em;
+  letter-spacing: -0.04em;
   font-variant-numeric: tabular-nums;
 }
 
 .usagePrimaryMetric > small {
-  margin-top: 0.75rem;
+  margin-top: 0.5rem;
   color: var(--muted);
   font-size: 0.68rem;
 }
@@ -1392,15 +1395,15 @@
   display: inline-flex;
   width: fit-content;
   align-items: center;
-  margin-top: 0.85rem;
+  margin-top: 0.55rem;
   border-radius: 999px;
   padding: 0.34rem 0.58rem;
   font-size: 0.64rem;
   font-weight: 740;
 }
 
-.usageDelta.up { color: oklch(0.43 0.13 245); background: oklch(0.9 0.05 241 / 0.72); }
-.usageDelta.down { color: oklch(0.48 0.13 62); background: oklch(0.93 0.06 73 / 0.72); }
+.usageDelta.up { color: oklch(0.45 0.12 158); background: oklch(0.92 0.05 158 / 0.82); }
+.usageDelta.down { color: oklch(0.48 0.13 62); background: oklch(0.93 0.06 73 / 0.82); }
 .usageDelta.flat { color: var(--muted); background: var(--day-paper-soft); }
 
 .usageMetricLedger {
@@ -1413,12 +1416,12 @@
   min-width: 0;
   align-content: center;
   gap: 0.26rem;
-  padding: 1.3rem clamp(0.8rem, 1.5vw, 1.45rem);
+  padding: 0.85rem clamp(0.7rem, 1.2vw, 1.05rem);
   border-right: 1px solid var(--day-divider);
 }
 
 .usageMetric:last-child { border-right: 0; }
-.usageMetric > svg { margin-bottom: 0.55rem; color: var(--usage-current); }
+.usageMetric > svg { margin-bottom: 0.35rem; color: var(--usage-current); }
 .usageMetric:nth-child(2n) > svg { color: var(--usage-previous); }
 
 .usageMetric > span {
@@ -1432,7 +1435,7 @@
 .usageMetric > strong {
   overflow: hidden;
   font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
-  font-size: clamp(1.45rem, 2.3vw, 2.25rem);
+  font-size: clamp(1.25rem, 1.8vw, 1.8rem);
   font-weight: 570;
   letter-spacing: -0.045em;
   text-overflow: ellipsis;
@@ -1454,7 +1457,7 @@
 
 .usageTrendPanel {
   min-width: 0;
-  padding: clamp(1.4rem, 2.5vw, 2.5rem);
+  padding: clamp(1rem, 1.7vw, 1.45rem);
 }
 
 .usageTrendHeading,
@@ -1506,7 +1509,7 @@
 
 .usageChartFigure {
   position: relative;
-  margin-top: 1rem;
+  margin-top: 0.65rem;
 }
 
 .usageChart {
@@ -1633,7 +1636,7 @@
 }
 
 .usageBreakdown {
-  padding: clamp(1.25rem, 2vw, 2rem);
+  padding: clamp(0.95rem, 1.5vw, 1.35rem);
 }
 
 .usageBreakdown + .usageBreakdown { border-top: 1px solid var(--day-divider); }
@@ -1651,21 +1654,21 @@
 
 .usageBreakdown ol {
   display: grid;
-  gap: 0.74rem;
-  margin-top: 1rem;
+  gap: 0.55rem;
+  margin-top: 0.7rem;
   padding: 0;
   list-style: none;
 }
 
 .usageBreakdown li {
-  --mix-color: oklch(0.58 0.16 245);
+  --mix-color: oklch(0.68 0.15 67);
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 0.68rem;
 }
 
-.usageBreakdown li[data-color="1"] { --mix-color: oklch(0.7 0.15 65); }
+.usageBreakdown li[data-color="1"] { --mix-color: oklch(0.52 0.13 158); }
 .usageBreakdown li[data-color="2"] { --mix-color: oklch(0.57 0.15 305); }
 .usageBreakdown li[data-color="3"] { --mix-color: oklch(0.58 0.11 188); }
 .usageBreakdown li[data-color="4"] { --mix-color: oklch(0.61 0.1 15); }
@@ -1740,7 +1743,7 @@
 .usageDisclosure {
   align-items: center;
   border-top: 1px solid var(--day-divider);
-  padding: 0.9rem clamp(1.4rem, 2.5vw, 2.5rem);
+  padding: 0.7rem clamp(1rem, 1.7vw, 1.45rem);
   color: var(--muted);
   font-size: 0.59rem;
   line-height: 1.5;
@@ -1762,11 +1765,11 @@
   position: relative;
   z-index: 1;
   display: flex;
-  min-height: 12rem;
+  min-height: 8rem;
   align-items: center;
   gap: 0.9rem;
   border-top: 1px solid var(--day-divider);
-  padding: clamp(1.5rem, 3vw, 3rem);
+  padding: clamp(1rem, 2vw, 1.6rem);
 }
 
 .usageUnavailable > svg { color: var(--usage-current); }
@@ -1786,15 +1789,15 @@
 }
 
 :global(:root[data-theme="dark"]) .usageCockpit {
-  --usage-current: oklch(0.72 0.13 242);
-  --usage-previous: oklch(0.78 0.13 70);
-  --usage-input: oklch(0.7 0.13 242);
-  --usage-output: oklch(0.78 0.12 70);
+  --usage-current: oklch(0.78 0.13 70);
+  --usage-previous: oklch(0.68 0.11 158);
+  --usage-input: oklch(0.78 0.12 70);
+  --usage-output: oklch(0.68 0.1 158);
 }
 
 :global(:root[data-theme="dark"]) .usageDelta.up {
-  color: oklch(0.82 0.09 241);
-  background: oklch(0.31 0.07 242 / 0.72);
+  color: oklch(0.81 0.09 158);
+  background: oklch(0.31 0.06 158 / 0.72);
 }
 
 :global(:root[data-theme="dark"]) .usageDelta.down {
@@ -1833,7 +1836,7 @@
 
 @media (max-width: 88rem) {
   .shell :global(.today-overview) {
-    margin-top: -1.6rem;
+    margin-top: -0.65rem;
   }
 
   .dayArc {
@@ -1856,9 +1859,9 @@
 
 @media (max-width: 76rem) {
   .shell :global(.today-brief) {
-    grid-template-columns: 6.5rem minmax(0, 1fr);
-    min-height: 21rem;
-    padding-bottom: 4rem;
+    grid-template-columns: 5rem minmax(0, 1fr);
+    min-height: 15.5rem;
+    padding-bottom: 2.25rem;
   }
 
   .shell :global(.today-actions) {
@@ -1868,14 +1871,14 @@
   }
 
   .daylightArt {
-    right: -5rem;
-    width: 28rem;
+    right: -4rem;
+    width: 24rem;
     opacity: 0.8;
   }
 
   .shell :global(.today-generated-brief) {
     grid-template-columns: minmax(0, 1.15fr) minmax(17rem, 0.85fr);
-    border-radius: 2.4rem 4.6rem 2.4rem 2.4rem;
+    border-radius: 1rem;
   }
 
   .shell :global(.today-brief-focus) {
@@ -1887,7 +1890,7 @@
     display: grid;
     grid-template-columns: 1fr 1fr minmax(14rem, 0.65fr);
     border-top: 1px solid oklch(0.7 0.045 78 / 0.25);
-    padding-right: 2rem;
+    padding-right: 1.6rem;
   }
 
   .shell :global(.today-brief-schedule) {
@@ -1921,7 +1924,7 @@
   }
 
   .usagePrimaryMetric {
-    min-height: 11.5rem;
+    min-height: 8rem;
     border-right: 0;
     border-bottom: 1px solid var(--day-divider);
   }
@@ -1950,29 +1953,29 @@
 
   .shell :global(.today-brief) {
     display: block;
-    min-height: 29rem;
-    padding: 2rem 0.35rem 4.5rem;
+    min-height: 19.5rem;
+    padding: 1.2rem 0.35rem 2.4rem;
   }
 
   .daylightArt {
-    top: -5.5rem;
-    right: -10rem;
-    width: 27rem;
-    opacity: 0.7;
+    top: -5rem;
+    right: -9rem;
+    width: 23rem;
+    opacity: 0.62;
   }
 
   .sun {
-    top: 6rem;
-    right: 7rem;
-    width: 10rem;
-    height: 10rem;
+    top: 5.7rem;
+    right: 6.5rem;
+    width: 8rem;
+    height: 8rem;
   }
 
   .sunRing {
-    top: 3.4rem;
+    top: 3.6rem;
     right: 4.4rem;
-    width: 15rem;
-    height: 15rem;
+    width: 12.5rem;
+    height: 12.5rem;
   }
 
   .cloud {
@@ -1981,7 +1984,7 @@
 
   .shell :global(.today-date) {
     display: flex;
-    min-height: 5rem;
+    min-height: 4rem;
     align-items: flex-end;
     gap: 0.55rem;
   }
@@ -1991,7 +1994,7 @@
   }
 
   .shell :global(.today-date strong) {
-    font-size: 4.4rem;
+    font-size: 3.8rem;
     line-height: 0.78;
   }
 
@@ -2002,11 +2005,11 @@
   }
 
   .shell :global(.today-intro) {
-    margin-top: 1.9rem;
+    margin-top: 1rem;
   }
 
   .shell :global(.today-intro h1) {
-    font-size: clamp(4rem, 22vw, 6.2rem);
+    font-size: clamp(3.5rem, 18vw, 4.8rem);
   }
 
   .shell :global(.today-intro > p:last-child) {
@@ -2036,7 +2039,7 @@
     display: grid;
     grid-template-columns: auto auto minmax(8rem, 1fr);
     width: 100%;
-    margin-top: 1.25rem;
+    margin-top: 0.85rem;
   }
 
   .shell :global(.today-actions .primary-button) {
@@ -2046,12 +2049,12 @@
   .shell :global(.today-error) {
     align-items: flex-start;
     flex-direction: column;
-    margin-top: -2.5rem;
+    margin-top: -1.2rem;
   }
 
   .shell :global(.today-overview) {
-    margin-top: -2.7rem;
-    padding-bottom: 1.8rem;
+    margin-top: -1.15rem;
+    padding-bottom: 1rem;
   }
 
   .dayArc {
@@ -2082,16 +2085,16 @@
 
   .shell :global(.today-overview-item),
   .shell :global(.today-overview-item:nth-child(n)) {
-    width: 15rem;
-    min-width: 15rem;
-    min-height: 5.3rem;
+    width: 14rem;
+    min-width: 14rem;
+    min-height: 4.65rem;
     scroll-snap-align: start;
   }
 
   .shell :global(.today-generated-brief) {
     display: block;
     margin-top: 0;
-    border-radius: 2rem 3.4rem 2rem 2rem;
+    border-radius: 1rem;
   }
 
   .shell :global(.today-brief-lead),
@@ -2099,7 +2102,7 @@
   .shell :global(.today-brief-side) {
     display: flex;
     flex-direction: column;
-    padding: 1.4rem;
+    padding: 1.1rem;
     border-right: 0;
   }
 
@@ -2129,8 +2132,8 @@
 
   .shell :global(.today-focus),
   .shell :global(.today-agenda) {
-    border-radius: 1.8rem 1.8rem 2.8rem 1.8rem;
-    padding: 1.2rem;
+    border-radius: 1rem;
+    padding: 1rem;
   }
 
   .shell :global(.today-agenda) {
@@ -2143,7 +2146,7 @@
   }
 
   .shell :global(.today-capture-panel) {
-    border-radius: 1.4rem 1.4rem 2.5rem 1.4rem;
+    border-radius: 0.875rem;
     padding: 0.85rem;
   }
 
@@ -2183,13 +2186,13 @@
   .shell :global(.today-context-section:nth-child(3)) {
     margin-top: 0.85rem;
     border: 1px solid var(--day-border);
-    border-radius: 1.7rem 1.7rem 3rem 1.7rem;
-    padding: 1.25rem;
+    border-radius: 1rem;
+    padding: 1rem;
   }
 
   .usageCockpit {
-    margin: 0 0 1.2rem;
-    border-radius: 2rem 3.6rem 2rem 2rem;
+    margin: 0.85rem 0 0;
+    border-radius: 1rem;
   }
 
   .usageHalo {
@@ -2201,11 +2204,11 @@
   .usageHeader {
     align-items: flex-start;
     flex-direction: column;
-    padding: 1.35rem;
+    padding: 1.05rem;
   }
 
   .usageHeader h2 {
-    font-size: 1.75rem;
+    font-size: 1.55rem;
   }
 
   .usagePeriodSwitch {
@@ -2218,12 +2221,12 @@
   }
 
   .usagePrimaryMetric {
-    min-height: 10rem;
-    padding: 1.35rem;
+    min-height: 7.5rem;
+    padding: 1.05rem;
   }
 
   .usagePrimaryMetric > strong {
-    font-size: clamp(3.2rem, 18vw, 4.7rem);
+    font-size: clamp(2.8rem, 15vw, 3.8rem);
   }
 
   .usageMetricLedger {
@@ -2231,18 +2234,18 @@
   }
 
   .usageMetric {
-    min-height: 8.5rem;
+    min-height: 6.5rem;
     border-bottom: 1px solid var(--day-divider);
   }
 
   .usageMetric:nth-child(2n) { border-right: 0; }
   .usageMetric:last-child {
     grid-column: 1 / -1;
-    min-height: 7.5rem;
+    min-height: 6rem;
     border-bottom: 0;
   }
 
-  .usageTrendPanel { padding: 1.25rem 0.85rem; }
+  .usageTrendPanel { padding: 1rem 0.75rem; }
 
   .usageTrendHeading {
     align-items: flex-start;
@@ -2324,7 +2327,7 @@
   .usageMetric:nth-child(2n),
   .usageMetric:last-child {
     grid-column: auto;
-    min-height: 7.3rem;
+    min-height: 6.25rem;
     border-right: 0;
     border-bottom: 1px solid var(--day-divider);
   }
