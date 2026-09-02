@@ -15,6 +15,10 @@ import {
 } from "@/lib/capabilities/toolbox";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { generateModelToolTurn } from "@/lib/models/gateway";
+import {
+  createMemoryAccessContext,
+  usesDurableMemory,
+} from "@/lib/memory/access-context";
 import type {
   ModelAttemptReceipt,
   ModelToolCall,
@@ -54,6 +58,7 @@ import {
   type CitationSource,
 } from "@/lib/rag/citations";
 import type { ContextPack } from "@/lib/rag/types";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import {
   appendRunEvent,
   cancelAgentRun,
@@ -146,7 +151,6 @@ export async function* runAgent(
       }
     : { ...deploymentModelRoute, reason: runtimeModel.reason };
   const providerConfigured = runtimeModel.configured;
-  const durableMemoryEnabled = request.agentProfile?.memoryScope !== "session";
   const run = request.preclaimedRunId
     ? await requirePreclaimedAgentRun(request.preclaimedRunId, {
         tenantId: request.tenantId,
@@ -170,6 +174,20 @@ export async function* runAgent(
   // costs longer than the flush interval, and a blocking write per delta
   // clamps streaming to ~1 delta per write round-trip.
   const runId = run.id;
+  const memoryAccessContext = createMemoryAccessContext({
+    executionScope: createExecutionScope({
+      tenantId: normalizeTenantId(request.tenantId),
+      initiatingActorId: request.actorId?.trim() || null,
+      executingPrincipalType: "agent",
+      executingPrincipalId: request.agentId?.trim() || null,
+      correlationId: runId,
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+      purpose: "agent.context.retrieve",
+    }),
+    mode: request.agentProfile?.memoryScope || "all",
+  });
+  const durableMemoryEnabled = usesDurableMemory(memoryAccessContext);
   let pendingDeltaText = "";
   let lastDeltaFlush = Date.now();
   let deltaWriteChain: Promise<void> = Promise.resolve();
@@ -246,6 +264,7 @@ export async function* runAgent(
       ? buildContextPack(retrievalQuery, {
           limit: 8,
           tenantId: request.tenantId,
+          accessContext: memoryAccessContext,
           evidenceIds: request.contextSelection?.evidenceIds,
         })
       : Promise.resolve(fallbackContextPack(query));
