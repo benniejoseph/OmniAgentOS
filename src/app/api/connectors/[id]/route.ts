@@ -174,7 +174,9 @@ async function PATCHHandler(
           ? (parsed.data.authTokenEnv === null ? "" : parsed.data.authTokenEnv)
           : parsed.data.authType
             ? ""
-            : parsed.data.authTokenEnv,
+            : parsed.data.authTokenEnv === null
+              ? ""
+              : parsed.data.authTokenEnv,
       },
       { tenantId: securityContext.tenantId },
     );

@@ -284,6 +284,8 @@ async function processAgentResumeJob(
         message: "Resume lease was lost before completion.",
       };
     }
+    const outcomeReason = "reason" in outcome ? outcome.reason : undefined;
+    const outcomeStatus = "status" in outcome ? outcome.status : undefined;
     if (!outcome.resumed) {
       const current = await getAgentRun(agentRunId, {
         tenantId: job.tenantId,
@@ -294,7 +296,7 @@ async function processAgentResumeJob(
       ) {
         return deferResumeJob(
           job,
-          outcome.reason || "Agent continuation is not ready.",
+          outcomeReason || "Agent continuation is not ready.",
           base,
         );
       }
@@ -302,8 +304,8 @@ async function processAgentResumeJob(
     return completeResumeJob(
       job,
       outcome.resumed
-        ? `Agent continuation ${outcome.status || "completed"}.`
-        : outcome.reason || "Agent continuation was already resolved.",
+        ? `Agent continuation ${outcomeStatus || "completed"}.`
+        : outcomeReason || "Agent continuation was already resolved.",
       base,
     );
   } catch (error) {
