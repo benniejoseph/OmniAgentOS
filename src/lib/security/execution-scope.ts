@@ -112,6 +112,65 @@ export function executionScopeFromSecurityContext(
   });
 }
 
+export function parsePersistedExecutionScope(
+  value: unknown,
+): ExecutionScope | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Persisted execution scope is invalid.");
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.version !== EXECUTION_SCOPE_VERSION ||
+    typeof candidate.tenantId !== "string" ||
+    !isNullableString(candidate.initiatingActorId) ||
+    !isExecutionPrincipalType(candidate.executingPrincipalType) ||
+    !isNullableString(candidate.executingPrincipalId) ||
+    !isNullableString(candidate.workspaceId) ||
+    !isNullableString(candidate.projectId) ||
+    !isNullableString(candidate.missionId) ||
+    !isNullableString(candidate.delegationId) ||
+    typeof candidate.correlationId !== "string" ||
+    !isNullableString(candidate.causationId) ||
+    !isStringArray(candidate.contextGrantIds) ||
+    !isStringArray(candidate.capabilityGrantIds) ||
+    typeof candidate.purpose !== "string"
+  ) {
+    throw new Error("Persisted execution scope is invalid.");
+  }
+
+  try {
+    return createExecutionScope({
+      tenantId: candidate.tenantId,
+      initiatingActorId: candidate.initiatingActorId,
+      executingPrincipalType: candidate.executingPrincipalType,
+      executingPrincipalId: candidate.executingPrincipalId,
+      workspaceId: candidate.workspaceId,
+      projectId: candidate.projectId,
+      missionId: candidate.missionId,
+      delegationId: candidate.delegationId,
+      correlationId: candidate.correlationId,
+      causationId: candidate.causationId,
+      contextGrantIds: candidate.contextGrantIds,
+      capabilityGrantIds: candidate.capabilityGrantIds,
+      purpose: candidate.purpose,
+    });
+  } catch {
+    throw new Error("Persisted execution scope is invalid.");
+  }
+}
+
+export function assertExecutionScopeTenant(
+  scope: ExecutionScope,
+  tenantId: string,
+): void {
+  if (scope.tenantId !== tenantId.trim()) {
+    throw new Error("Execution scope tenant does not match the authorized tenant.");
+  }
+}
+
 function normalizedIds(values: readonly string[] | undefined): readonly string[] {
   return Object.freeze(
     [...new Set((values || []).map((value) => optionalValue(value)).filter(isString))]
@@ -140,4 +199,19 @@ function optionalValue(value: string | null | undefined): string | null {
 
 function isString(value: string | null): value is string {
   return typeof value === "string";
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isExecutionPrincipalType(value: unknown): value is ExecutionPrincipalType {
+  return value === "user" || value === "agent" || value === "system";
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) &&
+    value.length <= 256 &&
+    value.every((item) => typeof item === "string") &&
+    new Set(value).size === value.length;
 }

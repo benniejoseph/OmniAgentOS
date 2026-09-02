@@ -9,6 +9,10 @@ import {
   getAgentResumeJobDedupeKey,
 } from "@/lib/operations/job-queue";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  assertExecutionScopeTenant,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
 import type { AgentRunContinuation, AgentRunEventRecord, AgentRunFeedback, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
@@ -179,7 +183,7 @@ export async function claimQueuedAgentRun(
 export async function appendRunEvent(
   runId: string,
   event: AgentEvent,
-  options: { tenantId?: string } = {},
+  options: { tenantId?: string; executionScope?: ExecutionScope } = {},
 ) {
   const redactedEvent = redactSensitive(event) as AgentEvent;
   const record: AgentRunEventRecord = {
@@ -200,7 +204,8 @@ export async function appendRunEvent(
     streamId: `run:${runId}`,
     type: `run.${event.type}`,
     payload: domainEventPayload(redactedEvent),
-    correlationId: runId,
+    correlationId: options.executionScope?.correlationId || runId,
+    executionScope: options.executionScope,
   };
 
   if (hasDatabaseUrl()) {
@@ -210,6 +215,9 @@ export async function appendRunEvent(
       : getDatabaseTenantContext() ||
         (await resolveAgentRunTenantId(runId));
     record.tenantId = tenantId;
+    if (options.executionScope) {
+      assertExecutionScopeTenant(options.executionScope, tenantId);
+    }
     await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
       await appendDomainEvent(
         { ...domainEvent, tenantId },
@@ -223,6 +231,17 @@ export async function appendRunEvent(
     return record;
   }
 
+  if (options.executionScope) {
+    const ledger = await readRunLedger();
+    const scopedRun = ledger.runs.find((run) => run.id === runId);
+    if (!scopedRun) {
+      throw new Error("Scoped agent run event requires an existing run.");
+    }
+    assertExecutionScopeTenant(
+      options.executionScope,
+      normalizeTenantId(scopedRun.tenantId),
+    );
+  }
   await appendDomainEventSafely({
     ...domainEvent,
     tenantId: options.tenantId,

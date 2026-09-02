@@ -58,7 +58,10 @@ import {
   type CitationSource,
 } from "@/lib/rag/citations";
 import type { ContextPack } from "@/lib/rag/types";
-import { createExecutionScope } from "@/lib/security/execution-scope";
+import {
+  assertExecutionScopeTenant,
+  createExecutionScope,
+} from "@/lib/security/execution-scope";
 import {
   appendRunEvent,
   cancelAgentRun,
@@ -174,17 +177,20 @@ export async function* runAgent(
   // costs longer than the flush interval, and a blocking write per delta
   // clamps streaming to ~1 delta per write round-trip.
   const runId = run.id;
+  const runTenantId = normalizeTenantId(run.tenantId || request.tenantId);
+  const executionScope = request.executionScope || createExecutionScope({
+    tenantId: runTenantId,
+    initiatingActorId: request.actorId?.trim() || null,
+    executingPrincipalType: "agent",
+    executingPrincipalId: run.agentId?.trim() || null,
+    correlationId: runId,
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+    purpose: "agent.run.legacy",
+  });
+  assertExecutionScopeTenant(executionScope, runTenantId);
   const memoryAccessContext = createMemoryAccessContext({
-    executionScope: createExecutionScope({
-      tenantId: normalizeTenantId(request.tenantId),
-      initiatingActorId: request.actorId?.trim() || null,
-      executingPrincipalType: "agent",
-      executingPrincipalId: request.agentId?.trim() || null,
-      correlationId: runId,
-      contextGrantIds: [],
-      capabilityGrantIds: [],
-      purpose: "agent.context.retrieve",
-    }),
+    executionScope,
     mode: request.agentProfile?.memoryScope || "all",
   });
   const durableMemoryEnabled = usesDurableMemory(memoryAccessContext);
@@ -204,7 +210,7 @@ export async function* runAgent(
         await appendRunEvent(
           runId,
           { type: "delta", text: chunk },
-          { tenantId: request.tenantId },
+          { tenantId: request.tenantId, executionScope },
         );
       })
       .catch((error: unknown) => {
@@ -238,6 +244,7 @@ export async function* runAgent(
     const safeEvent = redactSensitive(event) as AgentEvent;
     await appendRunEvent(run.id, safeEvent, {
       tenantId: request.tenantId,
+      executionScope,
     });
     return safeEvent;
   }
@@ -1047,7 +1054,11 @@ export async function* runAgent(
       const message = "Agent run canceled after the client stopped the request.";
       const canceled = await cancelAgentRun(run.id, message);
       if (canceled) {
-        await appendRunEvent(run.id, { type: "canceled", message });
+        await appendRunEvent(
+          run.id,
+          { type: "canceled", message },
+          { tenantId: request.tenantId, executionScope },
+        );
       }
       yield await emit({ type: "status", label: "Canceled", detail: message });
       return;
