@@ -5,6 +5,10 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
+import {
+  toLegacyTenantOptions,
+  type MemoryAccessContext,
+} from "@/lib/memory/access-context";
 import type { MemorySearchResult } from "@/lib/memory/types";
 import { embedTexts } from "@/lib/openai/client";
 import { searchMemoryGraph } from "@/lib/memory/graph";
@@ -25,8 +29,13 @@ import type {
 import { citationIdForEvidence } from "@/lib/rag/citations";
 import { redactSensitive } from "@/lib/security/context";
 
-type BuildContextPackOptions = {
+export type BuildContextPackOptions = {
   tenantId?: string;
+  /**
+   * Versioned execution-aware access metadata. During P0.1 this is adapted to
+   * the existing tenant-only retrieval contract without changing results.
+   */
+  accessContext?: MemoryAccessContext;
   limit?: number;
   candidateLimit?: number;
   persistTrace?: boolean;
@@ -76,6 +85,7 @@ export async function buildContextPack(
   options: BuildContextPackOptions = {},
 ): Promise<ContextPack> {
   const startedAt = Date.now();
+  const tenantId = resolveContextTenantId(options);
   const normalizedQuery = String(redactSensitive(query.trim())).slice(0, 4_000);
   const evidenceIds = options.evidenceIds === undefined
     ? undefined
@@ -99,7 +109,7 @@ export async function buildContextPack(
     };
     if (options.persistTrace !== false) {
       pack.trace = await saveRetrievalTrace({
-        tenantId: options.tenantId,
+        tenantId,
         query: normalizedQuery,
         profile,
         resultCount: 0,
@@ -114,11 +124,11 @@ export async function buildContextPack(
   const retrievalQuery = profile.expandedQueries.join("\n");
   const queryEmbedding = (await embedTexts([retrievalQuery || normalizedQuery]))?.[0];
   const [memoryResults, knowledgeResults, graphResults] = await Promise.all([
-    searchMemories(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId: options.tenantId }),
-    searchKnowledge(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId: options.tenantId }),
+    searchMemories(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId }),
+    searchKnowledge(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId }),
     searchMemoryGraph(normalizedQuery, {
       limit: Math.min(candidateLimit, 24),
-      tenantId: options.tenantId,
+      tenantId,
     }),
   ]);
   const evidence = scoreEvidenceItems({
@@ -158,7 +168,7 @@ export async function buildContextPack(
     options.persistTrace === false
       ? undefined
       : await saveRetrievalTrace({
-          tenantId: options.tenantId,
+          tenantId,
           query: normalizedQuery,
           profile,
           resultCount: memoryResults.length + knowledgeResults.length + graphResults.length,
@@ -177,6 +187,21 @@ export async function buildContextPack(
     contextBlock: formatContextPack(selected, profile),
     trace,
   });
+}
+
+function resolveContextTenantId(options: BuildContextPackOptions): string | undefined {
+  if (!options.accessContext) {
+    return options.tenantId;
+  }
+
+  const scopedTenantId = toLegacyTenantOptions(options.accessContext).tenantId;
+  if (
+    options.tenantId !== undefined &&
+    normalizeTenantId(options.tenantId) !== normalizeTenantId(scopedTenantId)
+  ) {
+    throw new Error("Context retrieval tenant does not match its execution scope.");
+  }
+  return scopedTenantId;
 }
 
 function sanitizeContextPack(pack: ContextPack): ContextPack {
