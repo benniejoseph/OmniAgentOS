@@ -24,6 +24,7 @@ import {
   CredentialVaultUnavailableError,
   credentialVaultStatus,
 } from "@/lib/settings/credential-vault";
+import type { McpConnectorRecord } from "@/lib/connectors/types";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -196,7 +197,7 @@ async function POSTHandler(request: Request) {
     return connectorCredentialErrorResponse(new CredentialVaultUnavailableError());
   }
 
-  let connector = await saveMcpConnector(
+  let connector: McpConnectorRecord = await saveMcpConnector(
     createMcpConnectorRecord({
       name: parsed.data.name,
       tenantId: context.tenantId,

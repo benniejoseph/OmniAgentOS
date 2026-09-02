@@ -1069,7 +1069,9 @@ function parseProviderToolState(
   };
 }
 
-function parseToolProvider(value: unknown) {
+function parseToolProvider(
+  value: unknown,
+): "openai" | "google" | "anthropic" | "aws_bedrock" | undefined {
   return value === "openai" ||
     value === "google" ||
     value === "anthropic" ||
