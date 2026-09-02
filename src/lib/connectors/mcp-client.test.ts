@@ -12,7 +12,7 @@ const credentialMocks = vi.hoisted(() => ({
 vi.mock("@/lib/security/network", () => networkMocks);
 vi.mock("@/lib/connectors/credential-store", () => credentialMocks);
 
-import { discoverMcpTools } from "@/lib/connectors/mcp-client";
+import { callMcpTool, discoverMcpTools } from "@/lib/connectors/mcp-client";
 
 describe("discoverMcpTools", () => {
   beforeEach(() => {
@@ -210,6 +210,58 @@ describe("discoverMcpTools", () => {
     expect(scope).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(scope).not.toContain("actor-a");
     expect(scope).not.toContain("test-tenant");
+  });
+
+  it("rejects MCP tool results that carry the protocol error flag", async () => {
+    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const method = init?.method || "GET";
+      if (method === "GET") return new Response(null, { status: 405 });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+
+      const message = JSON.parse(String(init?.body || "{}")) as {
+        id?: string | number;
+        method?: string;
+      };
+      if (message.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (message.method === "initialize") {
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: { tools: { listChanged: false } },
+            serverInfo: { name: "Mock MCP", version: "1.0.0" },
+          },
+        });
+      }
+      if (message.method === "tools/call") {
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            isError: true,
+            content: [{
+              type: "text",
+              text: "Chromium could not start: Socket path too long.",
+            }],
+          },
+        });
+      }
+      throw new Error(`Unexpected MCP method ${message.method || method}`);
+    });
+
+    await expect(callMcpTool({
+      connector: connector(),
+      toolName: "browser_navigate",
+      args: { url: "https://example.com" },
+    })).rejects.toThrow(
+      "MCP tool reported an error: Chromium could not start: Socket path too long.",
+    );
   });
 });
 
