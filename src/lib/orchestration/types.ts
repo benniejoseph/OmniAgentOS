@@ -1,4 +1,5 @@
 import type { GroundingReport } from "@/lib/rag/citations";
+import type { ExecutionScope } from "@/lib/security/execution-scope";
 
 export type ChatRole = "user" | "assistant";
 
@@ -94,6 +95,8 @@ export type AgentEvent =
 
 export type AgentRunRequest = {
   messages: ChatMessage[];
+  /** Trusted server-created attribution; authorization remains in SecurityContext. */
+  executionScope?: ExecutionScope;
   /** Server-validated saved-context selection using canonical `kind:id` evidence IDs. */
   contextSelection?: {
     query: string;

@@ -6,6 +6,11 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  assertExecutionScopeTenant,
+  parsePersistedExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 
@@ -28,6 +33,7 @@ export type DomainEvent = {
   payload: Record<string, unknown>;
   causationId?: string;
   correlationId?: string;
+  executionScope?: ExecutionScope;
   at: string;
 };
 
@@ -39,6 +45,7 @@ export type AppendDomainEventInput = {
   payload?: Record<string, unknown>;
   causationId?: string;
   correlationId?: string;
+  executionScope?: ExecutionScope;
 };
 
 type EventLedger = {
@@ -54,16 +61,43 @@ export async function appendDomainEvent(
   input: AppendDomainEventInput,
   options: { sql?: EventSqlClient } = {},
 ): Promise<DomainEvent> {
+  const executionScope = input.executionScope;
+  if (executionScope && input.tenantId) {
+    assertExecutionScopeTenant(executionScope, normalizeTenantId(input.tenantId));
+  }
+  if (
+    executionScope?.initiatingActorId &&
+    input.actorId &&
+    executionScope.initiatingActorId !== input.actorId
+  ) {
+    throw new Error("Domain event actor does not match its execution scope.");
+  }
+  if (
+    executionScope &&
+    input.correlationId &&
+    executionScope.correlationId !== input.correlationId
+  ) {
+    throw new Error("Domain event correlation does not match its execution scope.");
+  }
+  if (
+    executionScope?.causationId &&
+    input.causationId &&
+    executionScope.causationId !== input.causationId
+  ) {
+    throw new Error("Domain event causation does not match its execution scope.");
+  }
+
   const event: DomainEvent = {
     id: randomUUID(),
     seq: 0,
     streamId: input.streamId,
     type: input.type,
-    tenantId: normalizeTenantId(input.tenantId),
-    actorId: input.actorId || "system",
-    payload: boundedEventPayload(input.payload || {}),
-    causationId: input.causationId,
-    correlationId: input.correlationId,
+    tenantId: executionScope?.tenantId || normalizeTenantId(input.tenantId),
+    actorId: executionScope?.initiatingActorId || input.actorId || "system",
+    payload: boundedEventPayload(input.payload || {}, executionScope),
+    causationId: executionScope?.causationId || input.causationId,
+    correlationId: executionScope?.correlationId || input.correlationId,
+    executionScope,
     at: new Date().toISOString(),
   };
 
@@ -95,8 +129,16 @@ export async function appendDomainEvent(
   return event;
 }
 
-function boundedEventPayload(payload: Record<string, unknown>) {
-  const redacted = redactSensitive(payload) as Record<string, unknown>;
+function boundedEventPayload(
+  payload: Record<string, unknown>,
+  executionScope?: ExecutionScope,
+) {
+  const { _executionScope: _untrustedScope, ...domainPayload } = payload;
+  void _untrustedScope;
+  const redacted = redactSensitive({
+    ...domainPayload,
+    ...(executionScope ? { _executionScope: executionScope } : {}),
+  }) as Record<string, unknown>;
   const serialized = JSON.stringify(redacted);
   if (Buffer.byteLength(serialized, "utf8") <= 64_000) {
     return redacted;
@@ -105,6 +147,7 @@ function boundedEventPayload(payload: Record<string, unknown>) {
     truncated: true,
     originalBytes: Buffer.byteLength(serialized, "utf8"),
     preview: serialized.slice(0, 32_000),
+    ...(executionScope ? { _executionScope: executionScope } : {}),
   };
 }
 
@@ -208,6 +251,11 @@ export async function listRecentEvents(
 }
 
 function eventFromRow(row: Record<string, unknown>): DomainEvent {
+  const payload = (
+    row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
+      ? row.payload
+      : {}
+  ) as Record<string, unknown>;
   return {
     id: String(row.id),
     seq: Number(row.seq),
@@ -215,15 +263,30 @@ function eventFromRow(row: Record<string, unknown>): DomainEvent {
     type: String(row.type),
     tenantId: String(row.tenant_id),
     actorId: String(row.actor_id),
-    payload: (row.payload && typeof row.payload === "object" ? row.payload : {}) as Record<string, unknown>,
+    payload,
     causationId: row.causation_id ? String(row.causation_id) : undefined,
     correlationId: row.correlation_id ? String(row.correlation_id) : undefined,
+    executionScope: parsePersistedExecutionScope(
+      row.execution_scope || payload._executionScope,
+    ),
     at: row.at instanceof Date ? row.at.toISOString() : String(row.at),
   };
 }
 
 async function readLedger() {
-  return readJsonFile<EventLedger>(getEventsFile(), { nextSeq: 1, events: [] });
+  const ledger = await readJsonFile<EventLedger>(
+    getEventsFile(),
+    { nextSeq: 1, events: [] },
+  );
+  return {
+    ...ledger,
+    events: ledger.events.map((event) => ({
+      ...event,
+      executionScope: parsePersistedExecutionScope(
+        event.executionScope || event.payload?._executionScope,
+      ),
+    })),
+  };
 }
 
 function getEventsFile() {

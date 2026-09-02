@@ -27,6 +27,7 @@ import {
   routeAgentRequest,
 } from "@/lib/orchestration/supervisor";
 import { redactSensitive } from "@/lib/security/context";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getCustomAgent, listAgentSkills } from "@/lib/skills/store";
 import {
@@ -376,6 +377,7 @@ async function POSTHandler(request: Request) {
         if (parsed.data.missionId && mission) {
           safeMessages = includeMissionContext(safeMessages, mission);
         }
+        const executingAgentId = customAgent?.id || decision.primaryAgentId;
         let directExecutorId = "";
         let directTerminal = false;
         let directMissionAttachment: Promise<{ error?: unknown }> | undefined;
@@ -385,10 +387,17 @@ async function POSTHandler(request: Request) {
             threadId,
             messages: safeMessages,
             contextSelection,
+            executionScope: executionScopeFromSecurityContext(context, {
+              executingPrincipalType: "agent",
+              executingPrincipalId: executingAgentId,
+              missionId: mission?.id,
+              correlationId: requestId,
+              purpose: "agent.run",
+            }),
             tenantId: context.tenantId,
             actorId: context.actorId,
             role: context.role,
-            agentId: customAgent?.id || decision.primaryAgentId,
+            agentId: executingAgentId,
             specialistIds: decision.specialistIds,
             learning: decision.learning,
             agentProfile,
