@@ -4,6 +4,7 @@ import { indexMemoryGraphRecords } from "@/lib/memory/graph";
 import { saveMemories, searchMemories } from "@/lib/memory/store";
 import type { MemorySearchResult } from "@/lib/memory/types";
 import { createKnowledgeDocument, searchKnowledge } from "@/lib/rag/store";
+import { jsonbSafeText } from "@/lib/rag/text-safety";
 import type { KnowledgeSearchResult, KnowledgeSourceType } from "@/lib/rag/types";
 import { redactSensitive } from "@/lib/security/context";
 
@@ -30,11 +31,20 @@ export async function ingestTextDocument({
   evidenceRefs?: string[];
   abortSignal?: AbortSignal;
 }) {
-  const safeTitle = String(redactSensitive(title)).slice(0, 240);
-  const safeContent = String(redactSensitive(content)).slice(0, 900_000);
-  const safeSource = String(redactSensitive(source)).slice(0, 2_000);
-  const safeTags = tags.map((tag) => String(redactSensitive(tag))).slice(0, 50);
-  const chunks = chunkText(safeContent);
+  const safeTitle = jsonbSafeText(String(redactSensitive(title)).slice(0, 240));
+  const safeContent = jsonbSafeText(
+    String(redactSensitive(content)).slice(0, 900_000),
+  );
+  const safeSource = jsonbSafeText(
+    String(redactSensitive(source)).slice(0, 2_000),
+  );
+  const safeTags = tags
+    .map((tag) => jsonbSafeText(String(redactSensitive(tag))))
+    .slice(0, 50);
+  const chunks = chunkText(safeContent).map((chunk) => ({
+    ...chunk,
+    content: jsonbSafeText(chunk.content),
+  }));
   const embeddings = await embedKnowledgeTexts(
     chunks.map((chunk) => chunk.content),
     abortSignal,
