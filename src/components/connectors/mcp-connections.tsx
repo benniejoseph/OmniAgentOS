@@ -6,7 +6,7 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleAlert,
-  Github,
+  GitBranch,
   KeyRound,
   Loader2,
   LockKeyhole,
@@ -557,7 +557,7 @@ export function McpConnections({
             <div className="mt-4 flex flex-col gap-3 rounded-md border border-primary/30 bg-primary/8 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex min-w-0 items-start gap-3">
                 <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">
-                  <Github size={17} aria-hidden="true" />
+                  <GitBranch size={17} aria-hidden="true" />
                 </span>
                 <div className="min-w-0">
                   <p className="text-sm font-semibold">Connect GitHub</p>
@@ -586,7 +586,7 @@ export function McpConnections({
                 }
                 className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-primary/35 bg-background px-3 text-xs font-semibold text-foreground transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-55"
               >
-                <Github size={14} aria-hidden="true" />
+                <GitBranch size={14} aria-hidden="true" />
                 {githubPresetApplied
                   ? "GitHub preset applied"
                   : "Use GitHub preset"}
@@ -996,7 +996,7 @@ function ConnectionRow({
           {legacyGitHubEndpoint ? (
             <ActionButton
               label="Add Actions tools"
-              icon={Github}
+              icon={GitBranch}
               busy={pendingAction === `upgrade-github-${connector.id}`}
               disabled={
                 busy || Boolean(disabledReason) || Boolean(credentialUnavailableReason)
