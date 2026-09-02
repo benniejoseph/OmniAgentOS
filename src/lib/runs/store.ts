@@ -10,7 +10,7 @@ import {
 } from "@/lib/operations/job-queue";
 import { redactSensitive } from "@/lib/security/context";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
-import type { GroundingReport } from "@/lib/rag/citations";
+import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
 import type { AgentRunContinuation, AgentRunEventRecord, AgentRunFeedback, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
@@ -943,17 +943,21 @@ function isCitationId(value: unknown): value is string {
     /^(?:memory|knowledge|graph|web):[^\]\s]{1,240}$/.test(value);
 }
 
+function isCitationKind(value: unknown): value is CitationSource["kind"] {
+  return value === "memory" || value === "knowledge" || value === "graph" || value === "web";
+}
+
 function parseCitationSources(value: unknown): GroundingReport["sources"] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return [];
     const source = item as Record<string, unknown>;
     const kind = source.kind;
+    if (!isCitationKind(kind)) return [];
     if (
       !isCitationId(source.citationId) ||
       typeof source.evidenceId !== "string" ||
       typeof source.title !== "string" ||
-      (kind !== "memory" && kind !== "knowledge" && kind !== "graph" && kind !== "web") ||
       !source.citationId.startsWith(`${kind}:`)
     ) return [];
     return [{
