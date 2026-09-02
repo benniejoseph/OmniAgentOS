@@ -230,7 +230,10 @@ async function POSTHandler(request: Request) {
   }
 
   try {
-    const discovery = await discoverMcpTools(connector, { actorRole: context.role });
+    const discovery = await discoverMcpTools(connector, {
+      actorId: context.actorId,
+      actorRole: context.role,
+    });
     const saved = await saveMcpDiscovery({
       connector,
       tools: discovery.tools,

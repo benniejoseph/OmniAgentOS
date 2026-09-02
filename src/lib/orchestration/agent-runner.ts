@@ -772,6 +772,7 @@ export async function* runAgent(
             abortSignal,
             idempotencyKey: `${run.id}:${item.call.callId}`,
             forceApproval: agentToolPolicy?.forceApproval,
+            mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
           })));
           for (let index = 0; index < prepared.length; index += 1) {
             const item = prepared[index];
@@ -836,6 +837,7 @@ export async function* runAgent(
             abortSignal,
             idempotencyKey: `${run.id}:${call.callId}`,
             forceApproval: agentToolPolicy?.forceApproval,
+            mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
           });
           citationSources = mergeCitationSources(
             citationSources,
@@ -1223,6 +1225,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           abortSignal: input.abortSignal,
           idempotencyKey: `${input.runId}:${activeProvider}:${item.call.callId}`,
           forceApproval: input.forceApproval,
+          mcpSessionScope: agentMcpSessionScope(input.runId, input.securityContext),
         })),
       );
       for (let index = 0; index < prepared.length; index += 1) {
@@ -1283,6 +1286,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           abortSignal: input.abortSignal,
           idempotencyKey: `${input.runId}:${activeProvider}:${call.callId}`,
           forceApproval: input.forceApproval,
+          mcpSessionScope: agentMcpSessionScope(input.runId, input.securityContext),
         });
         citationSources = mergeCitationSources(
           citationSources,
@@ -1583,6 +1587,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         abortSignal,
         idempotencyKey: `${run.id}:${call.callId}`,
         forceApproval: continuation.toolPolicy?.forceApproval,
+        mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
       });
       citationSources = mergeCitationSources(
         citationSources,
@@ -1721,6 +1726,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           abortSignal,
           idempotencyKey: `${run.id}:${call.callId}`,
           forceApproval: continuation.toolPolicy?.forceApproval,
+          mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
         });
         citationSources = mergeCitationSources(
           citationSources,
@@ -2134,6 +2140,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         idempotencyKey:
           `${run.id}:${providerState.provider}:${call.callId}`,
         forceApproval: continuation.toolPolicy?.forceApproval,
+        mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
       });
       citationSources = mergeCitationSources(
         citationSources,
@@ -2757,6 +2764,17 @@ function toolExecutionStatus(status: ToolExecutionRecord["status"]): "executed" 
 
 function normalizeTenantId(value?: string) {
   return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim() || "default";
+}
+
+function agentMcpSessionScope(
+  runId: string,
+  context: Pick<SecurityContext, "tenantId" | "actorId">,
+) {
+  return {
+    tenantId: normalizeTenantId(context.tenantId),
+    actorId: context.actorId,
+    executionId: `agent:${runId}`,
+  };
 }
 
 async function settleOptionalWithin<T>(

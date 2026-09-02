@@ -36,3 +36,22 @@ export function isOfficialBrowserUseMcpEndpoint(endpoint?: string) {
     return false;
   }
 }
+
+export function isOmniAgentPlaywrightMcpEndpoint(endpoint?: string) {
+  if (!endpoint) return false;
+  try {
+    const url = new URL(endpoint);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "omniagent-os-browser.fly.dev" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      (url.pathname === "/mcp" || url.pathname === "/mcp/") &&
+      url.search === "" &&
+      url.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}

@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -6,6 +7,7 @@ import { resolveMcpBearerCredential } from "@/lib/connectors/credential-store";
 import {
   isOfficialBrowserUseMcpEndpoint,
   isOfficialGitHubMcpEndpoint,
+  isOmniAgentPlaywrightMcpEndpoint,
 } from "@/lib/connectors/mcp-trust";
 import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
 import { createMcpToolId } from "@/lib/connectors/store";
@@ -29,15 +31,30 @@ const MCP_MAX_TOOL_ARGUMENT_BYTES = 256_000;
 const MCP_MAX_TOOL_RESULT_BYTES = 1_000_000;
 const MCP_MAX_INSTRUCTIONS_BYTES = 64_000;
 
+export type McpSessionScope = {
+  tenantId: string;
+  actorId: string;
+  executionId: string;
+};
+
 export async function discoverMcpTools(
   connector: McpConnectorRecord,
-  options: { abortSignal?: AbortSignal; actorRole?: SecurityRole } = {},
+  options: {
+    abortSignal?: AbortSignal;
+    actorId?: string;
+    actorRole?: SecurityRole;
+  } = {},
 ) {
   const deadlineAt = Date.now() + MCP_DISCOVERY_DEADLINE_MS;
   const session = await connectMcp(connector, {
     deadlineAt,
     abortSignal: options.abortSignal,
     actorRole: options.actorRole,
+    sessionScope: {
+      tenantId: normalizeTenantId(connector.tenantId),
+      actorId: options.actorId?.trim() || "connector-discovery",
+      executionId: `connector:${connector.id}:discovery`,
+    },
   });
   try {
     const discoveredTools = redactExactSecrets(
@@ -79,6 +96,7 @@ export async function callMcpTool({
   idempotencyKey,
   abortSignal,
   actorRole,
+  sessionScope,
 }: {
   connector: McpConnectorRecord;
   toolName: string;
@@ -86,6 +104,7 @@ export async function callMcpTool({
   idempotencyKey?: string;
   abortSignal?: AbortSignal;
   actorRole?: SecurityRole;
+  sessionScope?: McpSessionScope;
 }) {
   assertSerializedBytes(args, MCP_MAX_TOOL_ARGUMENT_BYTES, "MCP tool arguments");
   const deadlineAt = Date.now() + MCP_TOOL_DEADLINE_MS;
@@ -94,6 +113,7 @@ export async function callMcpTool({
     idempotencyKey,
     abortSignal,
     actorRole,
+    sessionScope,
   });
   try {
     const result = await session.client.callTool(
@@ -126,6 +146,7 @@ async function connectMcp(
     idempotencyKey?: string;
     abortSignal?: AbortSignal;
     actorRole?: SecurityRole;
+    sessionScope?: McpSessionScope;
   },
 ) {
   if (connector.transport !== "streamable_http") {
@@ -141,7 +162,11 @@ async function connectMcp(
   const client = new Client(CLIENT_INFO, {
     capabilities: {},
   });
-  const auth = await createRequestInit(connector, options.actorRole);
+  const auth = await createRequestInit(
+    connector,
+    options.actorRole,
+    options.sessionScope,
+  );
   const transport = new StreamableHTTPClientTransport(endpoint, {
     requestInit: auth.requestInit,
     fetch: createValidatedMcpFetch(
@@ -216,9 +241,11 @@ async function closeMcp(session: {
 async function createRequestInit(
   connector: McpConnectorRecord,
   actorRole?: SecurityRole,
+  sessionScope?: McpSessionScope,
 ): Promise<{ requestInit: RequestInit; secretValues: string[] }> {
   const headers = new Headers();
   const secretValues: string[] = [];
+  let bearerToken: string | undefined;
   if (connector.authType === "bearer_env") {
     const envName = connector.authTokenEnv?.trim().toUpperCase();
     if (!envName) {
@@ -236,6 +263,7 @@ async function createRequestInit(
     }
     headers.set("authorization", `Bearer ${token}`);
     secretValues.push(token);
+    bearerToken = token;
   } else if (connector.authType === "bearer_vault") {
     const token = await resolveMcpBearerCredential(connector);
     if (isOfficialBrowserUseMcpEndpoint(connector.endpoint)) {
@@ -244,6 +272,19 @@ async function createRequestInit(
       headers.set("authorization", `Bearer ${token}`);
     }
     secretValues.push(token);
+    bearerToken = token;
+  }
+  if (isOmniAgentPlaywrightMcpEndpoint(connector.endpoint)) {
+    if (!bearerToken) {
+      throw new Error("The Playwright browser service requires an app-managed service token.");
+    }
+    if (!sessionScope) {
+      throw new Error("Playwright browser requests require an explicit tenant, actor, and execution scope.");
+    }
+    headers.set(
+      "x-omniagent-browser-scope",
+      createPlaywrightScope(connector, bearerToken, sessionScope),
+    );
   }
   return {
     requestInit: {
@@ -291,6 +332,9 @@ export function inferMcpToolRisk(
 ): ToolRiskLevel {
   const destructive = annotations?.destructiveHint === true;
   const readOnly = annotations?.readOnlyHint === true;
+  if (isOmniAgentPlaywrightMcpEndpoint(options.endpoint)) {
+    return inferOmniAgentPlaywrightToolRisk(defaultRisk, options.toolName);
+  }
   if (isOfficialBrowserUseMcpEndpoint(options.endpoint)) {
     return inferOfficialBrowserUseToolRisk(defaultRisk, options.toolName);
   }
@@ -318,6 +362,99 @@ export function inferMcpToolRisk(
     remoteFloor = 2;
   }
   return Math.max(defaultRisk, remoteFloor) as ToolRiskLevel;
+}
+
+function inferOmniAgentPlaywrightToolRisk(
+  defaultRisk: ToolRiskLevel,
+  toolName?: string,
+): ToolRiskLevel {
+  const name = toolName?.trim().toLowerCase();
+  if (
+    name === "browser_evaluate" ||
+    name === "browser_run_code" ||
+    name === "browser_run_code_unsafe" ||
+    name === "browser_file_upload" ||
+    name === "browser_drop" ||
+    name === "browser_network_request"
+  ) {
+    return 3;
+  }
+  if (
+    name === "browser_snapshot" ||
+    name === "browser_take_screenshot" ||
+    name === "browser_console_messages" ||
+    name === "browser_network_requests" ||
+    name === "browser_wait_for" ||
+    name === "browser_find"
+  ) {
+    return 0;
+  }
+  if (
+    name === "browser_navigate" ||
+    name === "browser_navigate_back" ||
+    name === "browser_hover" ||
+    name === "browser_resize"
+  ) {
+    return Math.max(defaultRisk, 1) as ToolRiskLevel;
+  }
+  if (
+    name === "browser_click" ||
+    name === "browser_type" ||
+    name === "browser_fill_form" ||
+    name === "browser_select_option" ||
+    name === "browser_press_key" ||
+    name === "browser_drag" ||
+    name === "browser_handle_dialog" ||
+    name === "browser_tabs" ||
+    name === "browser_close"
+  ) {
+    return Math.max(defaultRisk, 2) as ToolRiskLevel;
+  }
+
+  // The upstream server can add tools independently. Unknown browser powers
+  // remain approval-gated until OmniAgent classifies their exact contract.
+  return Math.max(defaultRisk, 2) as ToolRiskLevel;
+}
+
+function createPlaywrightScope(
+  connector: McpConnectorRecord,
+  token: string,
+  scope?: McpSessionScope,
+) {
+  const tenantId = normalizeTenantId(scope?.tenantId || connector.tenantId);
+  if (tenantId !== normalizeTenantId(connector.tenantId)) {
+    throw new Error("Playwright browser scope does not match the connector tenant.");
+  }
+  const actorId = normalizeScopePart(scope?.actorId || "", "actor");
+  const executionId = normalizeScopePart(
+    scope?.executionId || "",
+    "execution",
+  );
+  const connectorId = normalizeScopePart(connector.id, "connector");
+  return createHmac("sha256", token)
+    .update("omniagent-playwright-scope-v1\u0000", "utf8")
+    .update(tenantId, "utf8")
+    .update("\u0000", "utf8")
+    .update(actorId, "utf8")
+    .update("\u0000", "utf8")
+    .update(executionId, "utf8")
+    .update("\u0000", "utf8")
+    .update(connectorId, "utf8")
+    .digest("base64url");
+}
+
+function normalizeScopePart(value: string, label: string) {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 240 || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw new Error(`Playwright browser ${label} scope is invalid.`);
+  }
+  return normalized;
+}
+
+function normalizeTenantId(value?: string) {
+  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
+    .trim()
+    .slice(0, 120) || "default";
 }
 
 function inferOfficialBrowserUseToolRisk(

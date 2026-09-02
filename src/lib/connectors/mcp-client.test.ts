@@ -154,6 +154,63 @@ describe("discoverMcpTools", () => {
     );
     expect(initializeHeaders?.has("authorization")).toBe(false);
   });
+
+  it("authenticates Playwright and sends only an opaque tenant-actor-run scope", async () => {
+    credentialMocks.resolveMcpBearerCredential.mockResolvedValue(
+      "playwright-service-token-for-tests",
+    );
+    let initializeHeaders: Headers | undefined;
+    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const method = init?.method || "GET";
+      if (method === "GET") return new Response(null, { status: 405 });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+
+      const message = JSON.parse(String(init?.body || "{}")) as {
+        id?: string | number;
+        method?: string;
+      };
+      if (message.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (message.method === "initialize") {
+        initializeHeaders = new Headers(init?.headers);
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: "2025-03-26",
+            capabilities: { tools: { listChanged: false } },
+            serverInfo: { name: "Playwright", version: "1.0.0" },
+          },
+        });
+      }
+      if (message.method === "tools/list") {
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: { tools: [] },
+        });
+      }
+      throw new Error(`Unexpected MCP method ${message.method || method}`);
+    });
+
+    await discoverMcpTools(connector({
+      endpoint: "https://omniagent-os-browser.fly.dev/mcp",
+      authType: "bearer_vault",
+      approvalRequired: false,
+    }), { actorId: "actor-a" });
+
+    expect(initializeHeaders?.get("authorization")).toBe(
+      "Bearer playwright-service-token-for-tests",
+    );
+    const scope = initializeHeaders?.get("x-omniagent-browser-scope") || "";
+    expect(scope).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(scope).not.toContain("actor-a");
+    expect(scope).not.toContain("test-tenant");
+  });
 });
 
 function sseResponse(message: unknown) {

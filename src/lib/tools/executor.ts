@@ -3,7 +3,10 @@ import { z } from "zod";
 import { embedTexts } from "@/lib/openai/client";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import { validateConnectorInput } from "@/lib/connectors/input-validation";
-import { callMcpTool } from "@/lib/connectors/mcp-client";
+import {
+  callMcpTool,
+  type McpSessionScope,
+} from "@/lib/connectors/mcp-client";
 import { callOpenApiOperation } from "@/lib/connectors/openapi-client";
 import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/openapi-store";
@@ -189,6 +192,7 @@ export async function executeGovernedTool({
   abortSignal,
   idempotencyKey,
   forceApproval = false,
+  mcpSessionScope,
 }: {
   toolId: string;
   input: Record<string, unknown>;
@@ -202,6 +206,8 @@ export async function executeGovernedTool({
   idempotencyKey?: string;
   /** Hardens write tools for agents configured to approve every mutation. */
   forceApproval?: boolean;
+  /** Explicit owner/run boundary used only by stateful MCP transports. */
+  mcpSessionScope?: McpSessionScope;
 }) {
   try {
     assertToolInputSize(input);
@@ -547,6 +553,7 @@ export async function executeGovernedTool({
       context,
       existingRecord?.id || idempotencyKey,
       abortSignal,
+      mcpSessionScope,
     );
     const safeResult = redactSensitive(result);
     const record = createRecord({
@@ -678,6 +685,7 @@ async function runTool(
   context?: SecurityContext,
   idempotencyKey?: string,
   abortSignal?: AbortSignal,
+  mcpSessionScope?: McpSessionScope,
 ) {
   const parsed = parseInput(tool, input);
 
@@ -892,6 +900,11 @@ async function runTool(
         idempotencyKey,
         actorRole: context?.role,
         abortSignal,
+        sessionScope: mcpSessionScope || {
+          tenantId: normalizeTenantId(context?.tenantId),
+          actorId: context?.actorId || "tool-executor",
+          executionId: `tool:${idempotencyKey || randomUUID()}`,
+        },
       }),
     };
   }

@@ -12,6 +12,7 @@ import {
   wakeOperationJobByDedupeKey,
 } from "@/lib/operations/job-queue";
 import { rejectAgentRunApproval } from "@/lib/orchestration/agent-runner";
+import { findAgentRunWaitingForToolApproval } from "@/lib/runs/store";
 import {
   approveAndClaimToolExecution,
   failClaimedToolExecution,
@@ -365,6 +366,12 @@ async function POSTHandler(
     );
   }
 
+  const waitingRun = await findAgentRunWaitingForToolApproval(
+    claim.record.id,
+    { tenantId: securityContext.tenantId },
+  );
+  const waitingContext = waitingRun?.continuation?.context;
+
   const result = await executeGovernedTool({
     toolId: claim.record.toolId,
     input: approvedInput,
@@ -374,6 +381,13 @@ async function POSTHandler(
     existingRecord: claim.record,
     approvalReason: parsed.data.reason,
     executionClaimToken: claimToken,
+    mcpSessionScope: waitingRun && waitingContext
+      ? {
+          tenantId: waitingContext.tenantId,
+          actorId: waitingContext.actorId,
+          executionId: `agent:${waitingRun.id}`,
+        }
+      : undefined,
   });
 
   const resumeJobs = await wakeOperationJobByDedupeKey(
