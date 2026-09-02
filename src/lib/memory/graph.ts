@@ -882,7 +882,7 @@ async function upsertGraphNodes(
     SELECT
       id, tenant_id, kind, label, slug, aliases, summary, weight, source_count,
       memory_ids, trace_ids, tags, metadata, created_at, updated_at
-    FROM jsonb_to_recordset(${jsonbSafeStringify(payload)}::jsonb) AS input(
+    FROM jsonb_to_recordset(${jsonbSafeStringify(payload)}::text::jsonb) AS input(
       id text,
       tenant_id text,
       kind text,
@@ -952,7 +952,7 @@ async function upsertGraphEdges(
     SELECT
       id, tenant_id, source_node_id, target_node_id, relation, weight,
       evidence_count, memory_ids, trace_ids, metadata, created_at, updated_at
-    FROM jsonb_to_recordset(${jsonbSafeStringify(payload)}::jsonb) AS input(
+    FROM jsonb_to_recordset(${jsonbSafeStringify(payload)}::text::jsonb) AS input(
       id text,
       tenant_id text,
       source_node_id text,
@@ -993,7 +993,7 @@ async function insertGraphNode(node: MemoryGraphNode, sql: GraphSqlClient = getS
       ${node.id}, ${node.tenantId}, ${node.kind}, ${node.label},
       ${storageGraphSlug(node.tenantId, node.slug)}, ${node.aliases},
       ${node.summary}, ${node.weight}, ${node.sourceCount}, ${node.memoryIds},
-      ${node.traceIds}, ${node.tags}, ${jsonbSafeStringify(node.metadata)}::jsonb,
+      ${node.traceIds}, ${node.tags}, ${jsonbSafeStringify(node.metadata)}::text::jsonb,
       ${node.createdAt}, ${node.updatedAt}
     )
   `;
@@ -1008,7 +1008,7 @@ async function insertGraphEdge(edge: MemoryGraphEdge, sql: GraphSqlClient = getS
     VALUES (
       ${edge.id}, ${edge.tenantId}, ${edge.sourceNodeId}, ${edge.targetNodeId}, ${edge.relation},
       ${edge.weight}, ${edge.evidenceCount}, ${edge.memoryIds}, ${edge.traceIds},
-      ${jsonbSafeStringify(edge.metadata)}::jsonb, ${edge.createdAt}, ${edge.updatedAt}
+      ${jsonbSafeStringify(edge.metadata)}::text::jsonb, ${edge.createdAt}, ${edge.updatedAt}
     )
   `;
 }
