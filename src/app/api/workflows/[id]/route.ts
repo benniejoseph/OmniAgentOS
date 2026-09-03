@@ -4,6 +4,10 @@ import {
   getWorkflowRunStatus,
 } from "@/lib/workflows/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import {
+  publicWorkflowRunDetail,
+  publicWorkflowStatus,
+} from "@/lib/workflows/public";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -38,5 +42,9 @@ async function GETHandler(
     return Response.json({ error: "Workflow run not found." }, { status: 404 });
   }
 
-  return Response.json(statusOnly ? { run: detail } : detail);
+  return Response.json(
+    statusOnly
+      ? { run: publicWorkflowStatus(detail) }
+      : publicWorkflowRunDetail(detail),
+  );
 }

@@ -2,6 +2,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getOperationJobStats } from "@/lib/operations/job-queue";
 import { processWorkflowQueue } from "@/lib/workflows/queue";
+import { publicWorkflowRunDetail } from "@/lib/workflows/public";
 import { getWorkflowRunDetail } from "@/lib/workflows/store";
 
 export const runtime = "nodejs";
@@ -27,8 +28,11 @@ async function POSTHandler(
       bootstrapQueuedRuns: false,
       tenantId: securityContext.tenantId,
     });
+    const detail = await getWorkflowRunDetail(id, {
+      tenantId: securityContext.tenantId,
+    });
     return Response.json({
-      detail: await getWorkflowRunDetail(id, { tenantId: securityContext.tenantId }),
+      detail: detail ? publicWorkflowRunDetail(detail) : null,
       queue,
       stats: await getOperationJobStats({ tenantId: securityContext.tenantId }),
     });

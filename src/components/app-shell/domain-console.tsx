@@ -78,9 +78,11 @@ type MetricConfig = {
 type Row = {
   title: string;
   status?: string;
+  secondaryStatus?: string;
   meta?: string;
   time?: string;
   tone?: "neutral" | "success" | "warning" | "danger";
+  secondaryTone?: "neutral" | "success" | "warning" | "danger";
 };
 
 type DataSection = {
@@ -390,13 +392,20 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
         description: "Current and recent durable executions.",
         emptyLabel: "No workflow runs yet. Start one from the action panel.",
         rows: (data) =>
-          arrayPath(data, "workflows.runs").map((item) => ({
-            title: stringValue(item.goal, "Workflow run"),
-            status: stringValue(item.status, "unknown"),
-            meta: `${stringValue(item.currentStep, "preflight")} · ${stringValue(item.id, "unknown ID")}`,
-            time: stringValue(item.updatedAt || item.createdAt),
-            tone: toneForStatus(item.status),
-          })),
+          arrayPath(data, "workflows.runs").map((item) => {
+            const outcome = stringPath(item, "canonicalStatus.status", "");
+            return {
+              title: stringValue(item.goal, "Workflow run"),
+              status: stringValue(item.status, "unknown"),
+              secondaryStatus: outcome
+                ? `Outcome: ${outcome.replaceAll("_", " ")}`
+                : undefined,
+              meta: `${stringValue(item.currentStep, "preflight")} · ${stringValue(item.id, "unknown ID")}`,
+              time: stringValue(item.updatedAt || item.createdAt),
+              tone: toneForStatus(item.status),
+              secondaryTone: toneForStatus(outcome),
+            };
+          }),
       },
       {
         title: "Generated plans",
@@ -1913,6 +1922,7 @@ function DataPanel({
               </div>
               <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                 {row.status ? <span className={clsx("rounded-md px-2 py-1 font-mono text-xs", statusPillClass(row.tone || toneForStatus(row.status)))}>{row.status}</span> : null}
+                {row.secondaryStatus ? <span className={clsx("rounded-md px-2 py-1 font-mono text-xs", statusPillClass(row.secondaryTone || "neutral"))}>{row.secondaryStatus}</span> : null}
                 {row.time ? <span className="font-mono text-xs text-muted">{formatTime(row.time)}</span> : null}
               </div>
             </div>
@@ -2598,10 +2608,10 @@ function releaseRows(data: DomainData): Row[] {
 
 function toneForStatus(value: unknown): Row["tone"] {
   const text = stringValue(value).toLowerCase();
-  if (["healthy", "passed", "success", "completed", "executed", "active", "allow", "approved", "ready", "info"].includes(text)) {
+  if (["healthy", "passed", "success", "succeeded", "completed", "executed", "active", "allow", "approved", "ready", "info"].includes(text)) {
     return "success";
   }
-  if (["warn", "warning", "waiting_approval", "queued", "paused", "pending", "degraded", "dry_run", "unavailable"].includes(text)) {
+  if (["warn", "warning", "waiting", "waiting_approval", "partial", "queued", "paused", "pending", "degraded", "dry_run", "unavailable"].includes(text)) {
     return "warning";
   }
   if (["error", "failed", "blocked", "deny", "unhealthy", "rejected", "open"].includes(text)) {

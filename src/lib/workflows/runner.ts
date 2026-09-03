@@ -16,6 +16,10 @@ import {
 } from "@/lib/subagents/context";
 import { executeDynamicWorkflowPlan, parseWorkflowPlanOutput } from "@/lib/workflows/executor";
 import {
+  buildWorkflowOutcomeEvaluationV1,
+  workflowOutcomeEventPayloadV1,
+} from "@/lib/workflows/outcome-evaluator";
+import {
   buildDynamicWorkflowPlan,
   getWorkflowPlanById,
 } from "@/lib/workflows/planner";
@@ -1119,19 +1123,48 @@ async function completeWorkflow(
 ) {
   const detail = await getWorkflowRunDetail(runId, { tenantId });
   const reportOutput = detail ? stepOutput(detail, "persist_report") : undefined;
+  const result: Record<string, unknown> = {
+    report: reportOutput?.report || "Workflow completed.",
+    memoryId: reportOutput?.memoryId,
+    dynamicPlanId: reportOutput?.dynamicPlanId,
+    planExecutionStatus: reportOutput?.planExecutionStatus,
+  };
+  let outcomeEventPayload: Record<string, unknown> | undefined;
+  if (detail) {
+    try {
+      const outcomeEvaluation = buildWorkflowOutcomeEvaluationV1({
+        detail,
+        result,
+      });
+      result.outcomeEvaluation = outcomeEvaluation;
+      outcomeEventPayload = workflowOutcomeEventPayloadV1(outcomeEvaluation);
+    } catch {
+      // Outcome receipts are an additive shadow projection during P1.3. A
+      // malformed evaluator result must not change the legacy state machine.
+      console.error("Workflow outcome evaluation failed.");
+    }
+  }
   const completed = await transitionWorkflowRun(runId, ["running"], {
     status: "completed",
     currentStep: undefined,
     error: undefined,
     completedAt: new Date().toISOString(),
-    result: {
-      report: reportOutput?.report || "Workflow completed.",
-      memoryId: reportOutput?.memoryId,
-      dynamicPlanId: reportOutput?.dynamicPlanId,
-      planExecutionStatus: reportOutput?.planExecutionStatus,
-    },
+    result,
   }, { tenantId, expectedUpdatedAt });
   if (completed) {
+    if (outcomeEventPayload) {
+      try {
+        await appendWorkflowEvent(
+          runId,
+          "workflow.outcome_evaluated",
+          outcomeEventPayload,
+        );
+      } catch {
+        // The validated receipt is already stored atomically with the legacy
+        // completion record; event transactionalization belongs to P1.1.
+        console.error("Workflow outcome event persistence failed.");
+      }
+    }
     await appendWorkflowEvent(runId, "workflow.completed", {});
     const threadId = detail?.run.input.metadata?.threadId;
     if (typeof threadId === "string" && threadId) {

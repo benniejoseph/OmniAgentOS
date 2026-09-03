@@ -2257,7 +2257,12 @@ export function AgentRunsWorkspace({
                     {loading === "tick" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
                     Tick queue
                   </button>
-                  {workflowRun ? <StatusPill label={stringPath(workflowRun, "run.status", "workflow created")} tone={toneForStatus(readPath(workflowRun, "run.status"))} /> : null}
+                  {workflowRun ? (
+                    <>
+                      <StatusPill label={stringPath(workflowRun, "run.status", "workflow created")} tone={toneForStatus(readPath(workflowRun, "run.status"))} />
+                      <WorkflowOutcomePill status={readPath(workflowRun, "run.canonicalStatus.status")} />
+                    </>
+                  ) : null}
                   {workflowRun ? (
                     <Link href="/app/workflows" className="action-link">
                       Manage workflow
@@ -3098,7 +3103,7 @@ function TaskProgressTimeline({
     }
     return (
       <section className="mb-4 overflow-hidden rounded-md border border-line bg-background" aria-label="Workflow progress">
-        <header className="flex items-start justify-between gap-3 border-b border-line px-3 py-3">
+        <header className="flex flex-col gap-3 border-b border-line px-3 py-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <p className="text-sm font-semibold">Workflow progress</p>
             <p className="mt-1 text-xs leading-5 text-muted">
@@ -3107,10 +3112,13 @@ function TaskProgressTimeline({
                 : "Loading the workflow stages…"}
             </p>
           </div>
-          <StatusPill
-            label={stringValue(workflow.status, "starting").replaceAll("_", " ")}
-            tone={toneForStatus(workflow.status)}
-          />
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+            <StatusPill
+              label={stringValue(workflow.status, "starting").replaceAll("_", " ")}
+              tone={toneForStatus(workflow.status)}
+            />
+            <WorkflowOutcomePill status={readPath(workflow, "canonicalStatus.status")} />
+          </div>
         </header>
         <ol className="divide-y divide-line">
           {workflowSteps.length ? workflowSteps.map((step, index) => {
@@ -3588,6 +3596,25 @@ function StatusPill({ label, tone }: { label: string; tone: Tone }) {
   return <span className={clsx("inline-flex h-10 items-center rounded-md px-3 font-mono text-sm", pillTone(tone))}>{label}</span>;
 }
 
+function WorkflowOutcomePill({ status }: { status: unknown }) {
+  const outcome = stringValue(status).trim().toLowerCase();
+  if (!outcome) {
+    return null;
+  }
+  const label = outcome.replaceAll("_", " ");
+  return (
+    <span
+      aria-label={`Workflow outcome: ${label}`}
+      className={clsx(
+        "inline-flex shrink-0 items-center self-center rounded-md px-2 py-1 font-mono text-[11px]",
+        pillTone(toneForWorkflowOutcome(outcome)),
+      )}
+    >
+      Outcome: {label}
+    </span>
+  );
+}
+
 async function readSse(stream: ReadableStream<Uint8Array>, onEvent: (event: StreamEvent) => void) {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -3951,6 +3978,20 @@ function toneForStatus(value: unknown): Tone {
   }
   if (["error", "failed", "blocked", "deny", "unhealthy", "rejected", "open"].includes(text)) {
     return "danger";
+  }
+  return "neutral";
+}
+
+function toneForWorkflowOutcome(value: unknown): Tone {
+  const text = stringValue(value).toLowerCase();
+  if (text === "succeeded") {
+    return "success";
+  }
+  if (["failed", "blocked"].includes(text)) {
+    return "danger";
+  }
+  if (["waiting", "partial"].includes(text)) {
+    return "warning";
   }
   return "neutral";
 }

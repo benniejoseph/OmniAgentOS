@@ -29,6 +29,7 @@ import {
   listWorkflowRuns,
   listWorkflowRunsByStatus,
 } from "@/lib/workflows/store";
+import { publicWorkflowRun } from "@/lib/workflows/public";
 import type { WorkflowRunRecord } from "@/lib/workflows/types";
 
 export type ApprovalQueueItem =
@@ -173,7 +174,7 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
     },
     recovery,
     latest: {
-      workflows: workflowRuns,
+      workflows: workflowRuns.map(publicWorkflowRun),
       toolExecutions,
       agentRuns: agentRuns.map(publicAgentRun),
       operationJobs,
@@ -243,7 +244,7 @@ function workflowApprovalToQueueItem(
       ...(record.input || {}),
       planReview: review,
     }) as Record<string, unknown>,
-    record,
+    record: publicWorkflowRun(record),
   };
 }
 
