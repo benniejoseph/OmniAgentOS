@@ -43,6 +43,27 @@ const backgroundStartupDelayMs = normalizeNonNegativeInteger(
   process.env.OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS,
   Math.floor(backgroundIntervalMs / 2),
 );
+const idleMaxIntervalMs = Math.max(
+  intervalMs,
+  normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKER_IDLE_MAX_INTERVAL_MS,
+    30_000,
+  ),
+);
+const backgroundIdleMaxIntervalMs = Math.max(
+  backgroundIntervalMs,
+  normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKER_BACKGROUND_IDLE_MAX_INTERVAL_MS,
+    5 * 60 * 1_000,
+  ),
+);
+const remoteHeartbeatIntervalMs = Math.max(
+  normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKER_REMOTE_HEARTBEAT_INTERVAL_MS,
+    5 * 60 * 1_000,
+  ),
+  30_000,
+);
 const maintenanceIntervalMs = Math.max(
   normalizePositiveInteger(
     process.env.OMNIAGENT_WORKER_MAINTENANCE_INTERVAL_MS,
@@ -95,6 +116,7 @@ const canonicalRetryIntervalMs = 30_000;
 const canonicalPromotionRetryIntervalMs = 2_000;
 const canonicalPromotionRetryWindowMs = 70_000;
 const laneHeartbeats = new Map();
+const remoteHeartbeatTimes = new Map();
 let heartbeatWrite = Promise.resolve();
 let heavyLaneQueue = Promise.resolve();
 
@@ -208,6 +230,9 @@ console.log(JSON.stringify({
   intervalMs,
   backgroundIntervalMs,
   backgroundStartupDelayMs,
+  idleMaxIntervalMs,
+  backgroundIdleMaxIntervalMs,
+  remoteHeartbeatIntervalMs,
   maintenanceIntervalMs,
   maintenanceStartupDelayMs,
   maintenanceFirstRunDelayMs,
@@ -482,6 +507,7 @@ async function runTickLane(
     );
   }
   let startup = true;
+  let idleAttempts = 0;
   let tenantCursor;
   let targetGeneration = workerDestination.generation;
   while (!shuttingDown) {
@@ -491,6 +517,7 @@ async function runTickLane(
     if (targetGeneration !== workerDestination.generation) {
       targetGeneration = workerDestination.generation;
       startup = true;
+      idleAttempts = 0;
       tenantCursor = undefined;
     }
     const releaseGeneration = releaseWorkGeneration;
@@ -504,6 +531,8 @@ async function runTickLane(
       const executeTick = async () => {
         startedAt = Date.now();
         await recordLaneState(lane, "running", startedAt);
+        const sendRemoteHeartbeat =
+          startupAttempt || shouldSendRemoteHeartbeat(lane, startedAt);
         return requestWorkerEndpoint(
           "/api/workflows/tick",
           {
@@ -514,6 +543,11 @@ async function runTickLane(
             ...(lane === "maintenance" ? { tenantCursor } : {}),
           },
           1_000_000,
+          {
+            "x-omni-worker-heartbeat": sendRemoteHeartbeat
+              ? "active"
+              : "skip",
+          },
         );
       };
       const result = lane === "fast" || startupAttempt
@@ -537,6 +571,9 @@ async function runTickLane(
         if (releaseWorkIsEnabled()) {
           startup = false;
         }
+        if (body?.workerHeartbeat?.recordedAt) {
+          remoteHeartbeatTimes.set(lane, Date.now());
+        }
         if (startupAttempt) {
           if (releaseWorkIsEnabled()) {
             nextDelayMs = firstWorkDelayMs;
@@ -559,8 +596,21 @@ async function runTickLane(
               ? body.nextTenantCursor
               : undefined;
         }
+        if (!startupAttempt) {
+          if (workerTickHasActivity(body)) {
+            idleAttempts = 0;
+          } else {
+            idleAttempts += 1;
+            nextDelayMs = idleDelayForLane(
+              lane,
+              cadenceMs,
+              idleAttempts,
+            );
+          }
+        }
         await recordLaneState(lane, "succeeded", startedAt);
       } else {
+        idleAttempts = 0;
         if (!releaseWorkIsEnabled()) {
           nextDelayMs = canonicalRetryIntervalMs;
         }
@@ -591,6 +641,7 @@ async function runTickLane(
         error: body?.error,
       }));
     } catch (error) {
+      idleAttempts = 0;
       waitForHeldWorkerEvent = false;
       if (!releaseWorkIsEnabled()) {
         nextDelayMs = canonicalRetryIntervalMs;
@@ -698,7 +749,12 @@ async function runRetentionLoop(startupDelayMs) {
   }
 }
 
-async function requestWorkerEndpoint(pathname, payload, maxBytes) {
+async function requestWorkerEndpoint(
+  pathname,
+  payload,
+  maxBytes,
+  additionalHeaders = {},
+) {
   const destination = workerDestination;
   const controller = new AbortController();
   activeControllers.add(controller);
@@ -712,7 +768,10 @@ async function requestWorkerEndpoint(pathname, payload, maxBytes) {
   try {
     const response = await fetch(`${destination.baseUrl}${pathname}`, {
       method: "POST",
-      headers: workerHeaders(destination.target),
+      headers: {
+        ...workerHeaders(destination.target),
+        ...additionalHeaders,
+      },
       body: JSON.stringify(payload),
       redirect: "error",
       signal: controller.signal,
@@ -726,6 +785,43 @@ async function requestWorkerEndpoint(pathname, payload, maxBytes) {
     clearTimeout(timeout);
     activeControllers.delete(controller);
   }
+}
+
+function shouldSendRemoteHeartbeat(lane, now = Date.now()) {
+  const previous = remoteHeartbeatTimes.get(lane) || 0;
+  return now - previous >= remoteHeartbeatIntervalMs;
+}
+
+function idleDelayForLane(lane, cadenceMs, idleAttempts) {
+  const maximum = lane === "fast"
+    ? idleMaxIntervalMs
+    : lane === "background"
+      ? backgroundIdleMaxIntervalMs
+      : cadenceMs;
+  return Math.min(
+    maximum,
+    cadenceMs * (2 ** Math.min(Math.max(idleAttempts, 0), 10)),
+  );
+}
+
+function workerTickHasActivity(body) {
+  if (typeof body?.idle === "boolean") {
+    return !body.idle;
+  }
+  const counts = [
+    body?.count,
+    body?.queue?.leased,
+    body?.queue?.completed,
+    body?.queue?.failed,
+    body?.queue?.requeued,
+    body?.agentResumes?.leased,
+    body?.durableSpecialists?.leased,
+    body?.backgroundJobs?.leased,
+    body?.activityCount,
+  ];
+  return counts.some((value) => Number.isFinite(Number(value)) && Number(value) > 0) ||
+    Boolean(body?.nextTenantCursor) ||
+    (Array.isArray(body?.maintenanceTenantIds) && body.maintenanceTenantIds.length > 0);
 }
 
 function workerHeaders(workerTarget) {

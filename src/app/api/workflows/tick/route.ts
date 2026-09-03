@@ -252,6 +252,10 @@ async function POSTHandler(request: Request) {
     }
   }
 
+  const workerInstance = request.headers.get("x-omni-worker-instance");
+  const dedicatedWorkerTick =
+    parsed.data.scope === "all_tenants" && Boolean(workerInstance);
+
   try {
     const context = await authorizeRequest({
       request,
@@ -265,6 +269,7 @@ async function POSTHandler(request: Request) {
         hasTenantCursor: Boolean(parsed.data.tenantCursor),
         lane: parsed.data.lane || "all",
       },
+      deferAllowedAuditToOutcome: dedicatedWorkerTick,
     });
     if (parsed.data.scope === "all_tenants") {
       if (context.role !== "system") {
@@ -274,9 +279,6 @@ async function POSTHandler(request: Request) {
         );
       }
       const lane = parsed.data.lane || "all";
-      const workerInstance = request.headers.get(
-        "x-omni-worker-instance",
-      );
       const requestTarget = new URL(request.url).origin;
       const declaredWorkerTarget = normalizeWorkerTarget(
         request.headers.get("x-omni-worker-target"),
@@ -312,6 +314,20 @@ async function POSTHandler(request: Request) {
           ...workerHeartbeatInput,
           phase: "startup",
         });
+        await recordSecurityAudit({
+          context,
+          action: "manage.workflow",
+          resourceType: "workflow_queue",
+          decision: "allow",
+          reason: "Dedicated worker startup registered.",
+          metadata: {
+            trigger: "dedicated_worker",
+            lane,
+            workerInstance,
+            workerRevision: request.headers.get("x-omni-worker-revision"),
+            workerTarget: requestTarget,
+          },
+        });
         return Response.json({
           startup: true,
           lane,
@@ -333,35 +349,51 @@ async function POSTHandler(request: Request) {
         maintenanceTenantLimit: parsed.data.maintenanceTenantLimit || 25,
         timeBudgetMs: parsed.data.timeBudgetMs || 240_000,
       });
-      const workerHeartbeat = workerHeartbeatInput
+      const workerHeartbeat = workerHeartbeatInput &&
+        request.headers.get("x-omni-worker-heartbeat") !== "skip"
         ? await recordWorkerHeartbeat({
             ...workerHeartbeatInput,
             phase: "active",
           })
         : undefined;
-      await recordRuntimeEventSafely({
-        category: "workflow",
-        action: "workflow_tick.system",
-        route: "/api/workflows/tick",
-        method: "POST",
-        statusCode: 200,
-        durationMs: Date.now() - startedAt,
-        requestId: telemetry.requestId,
-        correlationId: telemetry.correlationId,
-        tenantId: context.tenantId,
-        actorId: context.actorId,
-        resourceType: "workflow_queue",
-        message: "System workflow queue and tenant maintenance tick completed.",
-        metadata: {
-          workflowLeased: scheduled.queue?.leased || 0,
-          workflowCompleted: scheduled.queue?.completed || 0,
-          maintenanceTenants: scheduled.maintenanceTenantIds.length,
-          hasMoreTenants: Boolean(scheduled.nextTenantCursor),
-        },
-      });
+      const outcome = summarizeScheduledOutcome(scheduled);
+      if (outcome.hasActivity) {
+        await recordSecurityAudit({
+          context,
+          action: "manage.workflow",
+          resourceType: "workflow_queue",
+          decision: "allow",
+          reason: "Dedicated worker processed scheduled work.",
+          metadata: {
+            trigger: "dedicated_worker",
+            lane,
+            ...outcome.counts,
+          },
+        });
+        await recordRuntimeEventSafely({
+          category: "workflow",
+          action: "workflow_tick.system",
+          route: "/api/workflows/tick",
+          method: "POST",
+          statusCode: 200,
+          durationMs: Date.now() - startedAt,
+          requestId: telemetry.requestId,
+          correlationId: telemetry.correlationId,
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          resourceType: "workflow_queue",
+          message: "System workflow queue and tenant maintenance tick completed.",
+          metadata: {
+            ...outcome.counts,
+            hasMoreTenants: Boolean(scheduled.nextTenantCursor),
+          },
+        });
+      }
       return Response.json({
         ...scheduled,
         workerHeartbeat,
+        idle: !outcome.hasActivity,
+        activityCount: outcome.activityCount,
         count:
           scheduled.queue?.leased ||
           scheduled.durableSpecialists?.leased ||
@@ -496,6 +528,39 @@ async function POSTHandler(request: Request) {
       { status: 500 },
     );
   }
+}
+
+function summarizeScheduledOutcome(
+  scheduled: Awaited<ReturnType<typeof runAllTenantScheduledWork>>,
+) {
+  const counts = {
+    workflowLeased: scheduled.queue?.leased || 0,
+    workflowCompleted: scheduled.queue?.completed || 0,
+    workflowFailed: scheduled.queue?.failed || 0,
+    workflowRequeued: scheduled.queue?.requeued || 0,
+    agentResumesLeased: scheduled.agentResumes?.leased || 0,
+    agentResumesCompleted: scheduled.agentResumes?.completed || 0,
+    agentResumesDeferred: scheduled.agentResumes?.deferred || 0,
+    agentResumesFailed: scheduled.agentResumes?.failed || 0,
+    durableSpecialistsLeased: scheduled.durableSpecialists?.leased || 0,
+    durableSpecialistsCompleted: scheduled.durableSpecialists?.completed || 0,
+    durableSpecialistsFailed: scheduled.durableSpecialists?.failed || 0,
+    durableSpecialistsStale: scheduled.durableSpecialists?.stale || 0,
+    backgroundJobsLeased: scheduled.backgroundJobs?.leased || 0,
+    backgroundJobsCompleted: scheduled.backgroundJobs?.completed || 0,
+    backgroundJobsFailed: scheduled.backgroundJobs?.failed || 0,
+    memoryGraphRebuilds: scheduled.memoryGraphRebuilds?.processed || 0,
+    maintenanceTenants: scheduled.maintenanceTenantIds.length,
+  };
+  const activityCount = Object.values(counts).reduce(
+    (total, value) => total + value,
+    0,
+  );
+  return {
+    counts,
+    activityCount,
+    hasActivity: activityCount > 0 || Boolean(scheduled.nextTenantCursor),
+  };
 }
 
 function normalizeWorkerTarget(value: string | null) {

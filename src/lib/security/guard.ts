@@ -19,6 +19,7 @@ export async function authorizeRequest({
   resourceId,
   riskLevel,
   metadata,
+  deferAllowedAuditToOutcome = false,
 }: {
   request: Request;
   action: string;
@@ -26,6 +27,12 @@ export async function authorizeRequest({
   resourceId?: string;
   riskLevel?: number;
   metadata?: Record<string, unknown>;
+  /**
+   * Trusted system workers may authenticate a high-frequency poll without
+   * writing a redundant allow row. The caller must persist any consequential
+   * outcome after the poll; denials are still audited here.
+   */
+  deferAllowedAuditToOutcome?: boolean;
 }) {
   let context: SecurityContext;
   try {
@@ -79,6 +86,7 @@ export async function authorizeRequest({
   try {
     assertTrustedSessionMutation(request, context);
     requirePermission(context, action);
+    assertOutcomeManagedAllowedAudit(context, deferAllowedAuditToOutcome);
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Access denied.";
     await measureRequestStage("audit", async () => {
@@ -109,6 +117,10 @@ export async function authorizeRequest({
     throw error;
   }
 
+  if (deferAllowedAuditToOutcome) {
+    return context;
+  }
+
   const allowedAudit = {
     context,
     action,
@@ -128,6 +140,19 @@ export async function authorizeRequest({
     );
   }
   return context;
+}
+
+function assertOutcomeManagedAllowedAudit(
+  context: SecurityContext,
+  requested: boolean,
+) {
+  if (!requested) return;
+  if (context.role !== "system" || context.source !== "headers") {
+    throw new SecurityPolicyError(
+      "Outcome-managed auditing requires trusted system authentication.",
+      403,
+    );
+  }
 }
 
 export function shouldDeferAllowedAudit(
