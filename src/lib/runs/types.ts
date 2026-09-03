@@ -1,5 +1,6 @@
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { GroundingReport } from "@/lib/rag/citations";
+import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type {
   ModelToolCall,
   ModelToolContinuation,
@@ -36,6 +37,8 @@ export type AgentProviderToolContinuation = {
 };
 
 export type AgentRunContinuation = {
+  /** Canonical root attribution retained across approval pauses. */
+  executionScope?: ExecutionScope;
   /** Full conversation array for ZDR-safe resume (replaces previousResponseId). */
   conversationItems: Array<Record<string, unknown>>;
   instructions: string;

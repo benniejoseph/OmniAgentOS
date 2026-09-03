@@ -32,6 +32,10 @@ import type {
 } from "@/lib/missions/types";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  assertExecutionScopeTenant,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { assertPublicHttpUrl, fetchPublicHttpUrl } from "@/lib/security/network";
 import { redactExactSecrets } from "@/lib/security/secret-redaction";
 import { ingestTextDocument } from "@/lib/rag/retriever";
@@ -51,6 +55,13 @@ import {
 import { toolApprovalFingerprint } from "@/lib/tools/fingerprint";
 import { evaluateToolPolicy } from "@/lib/tools/policy";
 import type { SecurityContext } from "@/lib/security/types";
+import {
+  assertToolExecutionBindingMatchesRequest,
+  bindToolExecutionScope,
+  getToolExecutionScopeBinding,
+  ToolExecutionScopeBindingError,
+  type ToolExecutionScopeBinding,
+} from "@/lib/tools/execution-scope";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/lib/tools/types";
 import { actionClassFor, recordActionOutcome, resolveAutonomy } from "@/lib/trust/ledger";
@@ -194,6 +205,7 @@ export async function executeGovernedTool({
   idempotencyKey,
   forceApproval = false,
   mcpSessionScope,
+  executionScope,
 }: {
   toolId: string;
   input: Record<string, unknown>;
@@ -209,7 +221,15 @@ export async function executeGovernedTool({
   forceApproval?: boolean;
   /** Explicit owner/run boundary used only by stateful MCP transports. */
   mcpSessionScope?: McpSessionScope;
+  /** Durable attribution inherited from the initiating run or request. */
+  executionScope?: ExecutionScope;
 }) {
+  assertRequestedToolExecutionScope(
+    executionScope,
+    context,
+    existingRecord,
+    executionClaimToken,
+  );
   try {
     assertToolInputSize(input);
   } catch (error) {
@@ -227,10 +247,18 @@ export async function executeGovernedTool({
     (await getMcpGovernedTool(toolId, { tenantId: context?.tenantId })) ||
     (await getOpenApiGovernedTool(toolId, { tenantId: context?.tenantId }));
   if (!registeredTool) {
+    const scopedRequest = await resolveToolExecutionScopeRequest({
+      record: existingRecord,
+      toolInput: input,
+      requestedScope: executionScope,
+      context,
+      executionClaimToken,
+      mcpSessionScope,
+    });
     const reason = "Unknown tools are blocked by default.";
     const patch: Omit<ToolExecutionRecord, "id" | "createdAt"> = {
-      tenantId: context?.tenantId,
-      actorId: context?.actorId,
+      tenantId: existingRecord?.tenantId || context?.tenantId,
+      actorId: existingRecord?.actorId || context?.actorId,
       toolId,
       toolName: "Unknown tool",
       riskLevel: 3,
@@ -253,6 +281,7 @@ export async function executeGovernedTool({
       : createToolExecutionRecord(patch);
     await recordToolPolicyBlock({
       context,
+      executionScope: scopedRequest.executionScope,
       toolId,
       reason,
       input,
@@ -264,6 +293,11 @@ export async function executeGovernedTool({
     if (!saved) {
       throw new ExecutionClaimLostError();
     }
+    await bindToolScopeIfPresent({
+      record: saved,
+      toolInput: input,
+      scopedRequest,
+    });
     return { record: saved, result: null };
   }
   const effectiveForceApproval = forceApproval || Boolean(
@@ -319,6 +353,20 @@ export async function executeGovernedTool({
     }
   }
 
+  const scopedRequest = await resolveToolExecutionScopeRequest({
+    record: existingRecord,
+    toolInput: preparedInput,
+    requestedScope: executionScope,
+    context,
+    executionClaimToken,
+    mcpSessionScope,
+  });
+  const toolRuntimeContext = scopedToolRuntimeContext(
+    context,
+    existingRecord,
+    scopedRequest,
+  );
+
   // Idempotent retries must resolve their existing receipt before consulting
   // (and consuming) the earned-autonomy budget. This keeps transport retries
   // from spending additional authority or producing a new approval decision.
@@ -337,6 +385,13 @@ export async function executeGovernedTool({
           })
         : undefined;
       const record = recovered || existing;
+      await assertExistingScopedToolReceipt({
+        record,
+        toolInput: preparedInput,
+        requestedScope: executionScope,
+        context,
+        mcpSessionScope,
+      });
       return {
         record,
         result: record.status === "executed" ? record.output : null,
@@ -427,9 +482,35 @@ export async function executeGovernedTool({
       createdAt: executionRecord.createdAt,
     };
   };
+  const bindPersistedRecord = async (record: ToolExecutionRecord) => {
+    try {
+      await bindToolScopeIfPresent({
+        record,
+        toolInput: preparedInput,
+        scopedRequest,
+      });
+    } catch (error) {
+      if (record.status === "approval_required") {
+        await saveToolExecution({
+          ...record,
+          status: "failed",
+          output: {
+            error:
+              "The action was not offered for approval because its execution scope could not be bound.",
+          },
+          reason:
+            "Governed tool execution scope binding failed before approval.",
+          completedAt: new Date().toISOString(),
+        }).catch(() => undefined);
+      }
+      throw error;
+    }
+    return record;
+  };
   const persistRecord = async (record: ToolExecutionRecord) => {
     if (!activeExecutionClaimToken) {
-      return saveToolExecution(record);
+      const saved = await saveToolExecution(record);
+      return bindPersistedRecord(saved);
     }
     const saved = await completeClaimedToolExecution(
       record,
@@ -438,7 +519,7 @@ export async function executeGovernedTool({
     if (!saved) {
       throw new ExecutionClaimLostError();
     }
-    return saved;
+    return bindPersistedRecord(saved);
   };
 
   if (decision.blocked) {
@@ -450,6 +531,7 @@ export async function executeGovernedTool({
     });
     await recordToolPolicyBlock({
       context,
+      executionScope: scopedRequest.executionScope,
       toolId: tool.id,
       toolName: tool.name,
       reason: decision.reason,
@@ -473,13 +555,19 @@ export async function executeGovernedTool({
         toolApprovalFingerprint(tool),
       ),
     };
+    await bindToolScopeIfPresent({
+      record,
+      toolInput: preparedInput,
+      scopedRequest,
+    });
     const saved = await persistRecord(record);
     await recordRuntimeEventSafely({
       level: "warn",
       category: "workflow",
       action: "tool.approval_pending",
-      tenantId: context?.tenantId,
-      actorId: context?.actorId,
+      tenantId: scopedRequest.executionScope?.tenantId || context?.tenantId,
+      actorId:
+        scopedRequest.executionScope?.initiatingActorId || context?.actorId,
       resourceType: "tool_execution",
       resourceId: saved.id,
       message: `${tool.name} is waiting for human approval.`,
@@ -488,6 +576,7 @@ export async function executeGovernedTool({
         toolName: tool.name,
         riskLevel: tool.riskLevel,
       },
+      correlationId: scopedRequest.executionScope?.correlationId,
     });
     return { record: saved, result: null };
   }
@@ -526,6 +615,13 @@ export async function executeGovernedTool({
             })
           : undefined;
       const record = recovered || claim.record;
+      await assertExistingScopedToolReceipt({
+        record,
+        toolInput: preparedInput,
+        requestedScope: executionScope,
+        context,
+        mcpSessionScope,
+      });
       return {
         record,
         result: record.status === "executed" ? record.output : null,
@@ -533,6 +629,37 @@ export async function executeGovernedTool({
     }
     executionRecord = claim.record;
     activeExecutionClaimToken = claimToken;
+    await bindToolScopeIfPresent({
+      record: executionRecord,
+      toolInput: preparedInput,
+      scopedRequest,
+    });
+  }
+
+  if (
+    !dryRun &&
+    !idempotencyKey &&
+    !executionRecord &&
+    scopedRequest.executionScope
+  ) {
+    const claimToken = randomUUID();
+    const intent = createToolExecutionRecord({
+      ...baseRecord,
+      status: "executing",
+      output: {
+        __executionClaim: {
+          token: claimToken,
+          claimedAt: new Date().toISOString(),
+        },
+      },
+    });
+    executionRecord = await saveToolExecution(intent);
+    activeExecutionClaimToken = claimToken;
+    await bindToolScopeIfPresent({
+      record: executionRecord,
+      toolInput: preparedInput,
+      scopedRequest,
+    });
   }
 
   try {
@@ -551,7 +678,7 @@ export async function executeGovernedTool({
     const result = await runTool(
       tool,
       preparedInput,
-      context,
+      toolRuntimeContext,
       existingRecord?.id || idempotencyKey,
       abortSignal,
       mcpSessionScope,
@@ -574,7 +701,7 @@ export async function executeGovernedTool({
         toolInput: preparedInput,
         toolResult: safeResult,
         executionId: saved.id,
-        context,
+        context: toolRuntimeContext,
         sessionScope: mcpSessionScope,
         abortSignal,
       });
@@ -584,8 +711,9 @@ export async function executeGovernedTool({
         level: "warn",
         category: "security",
         action: "autonomy.auto_approved",
-        tenantId: context?.tenantId,
-        actorId: context?.actorId,
+        tenantId: scopedRequest.executionScope?.tenantId || context?.tenantId,
+        actorId:
+          scopedRequest.executionScope?.initiatingActorId || context?.actorId,
         resourceType: "tool_execution",
         resourceId: saved.id,
         message: `${tool.name} executed on earned autonomy without a fresh human approval.`,
@@ -596,9 +724,15 @@ export async function executeGovernedTool({
           autonomyReason: autonomy?.reason,
           cleanStreak: autonomy?.cleanStreak,
         },
+        correlationId: scopedRequest.executionScope?.correlationId,
       });
     }
-    await recordTrustOutcomeSafely(tool, context, "success", effectiveApproved);
+    await recordTrustOutcomeSafely(
+      tool,
+      toolRuntimeContext,
+      "success",
+      effectiveApproved,
+    );
     return { record: saved, result: safeResult };
   } catch (error) {
     if (error instanceof ExecutionClaimLostError) {
@@ -612,8 +746,9 @@ export async function executeGovernedTool({
         level: "error",
         category: "connector",
         action: tool.category === "mcp" ? "connector.mcp.tool_failed" : "connector.openapi.tool_failed",
-        tenantId: context?.tenantId,
-        actorId: context?.actorId,
+        tenantId: scopedRequest.executionScope?.tenantId || context?.tenantId,
+        actorId:
+          scopedRequest.executionScope?.initiatingActorId || context?.actorId,
         resourceType: "tool",
         resourceId: tool.id,
         message,
@@ -623,6 +758,7 @@ export async function executeGovernedTool({
           toolCategory: tool.category,
           riskLevel: tool.riskLevel,
         },
+        correlationId: scopedRequest.executionScope?.correlationId,
       });
     }
     const record = createRecord({
@@ -633,8 +769,203 @@ export async function executeGovernedTool({
       completedAt: new Date().toISOString(),
     });
     const saved = await persistRecord(record);
-    await recordTrustOutcomeSafely(tool, context, "failure", effectiveApproved);
+    await recordTrustOutcomeSafely(
+      tool,
+      toolRuntimeContext,
+      "failure",
+      effectiveApproved,
+    );
     return { record: saved, result: null };
+  }
+}
+
+type ResolvedToolExecutionScope = Readonly<{
+  executionScope?: ExecutionScope;
+  requesterRole?: SecurityContext["role"];
+  binding?: ToolExecutionScopeBinding;
+}>;
+
+function assertRequestedToolExecutionScope(
+  executionScope: ExecutionScope | undefined,
+  context: SecurityContext | undefined,
+  existingRecord: ToolExecutionRecord | undefined,
+  executionClaimToken: string | undefined,
+) {
+  if (!executionScope) return;
+  if (!context) {
+    throw new ToolExecutionScopeBindingError(
+      "Scoped governed tool execution requires an authorized security context.",
+    );
+  }
+  try {
+    assertExecutionScopeTenant(executionScope, normalizeTenantId(context.tenantId));
+  } catch {
+    throw new ToolExecutionScopeBindingError(
+      "Governed tool execution scope does not match the authorized tenant.",
+    );
+  }
+  const isClaimedApproval = Boolean(
+    existingRecord?.status === "executing" && executionClaimToken,
+  );
+  if (
+    executionScope.initiatingActorId &&
+    executionScope.initiatingActorId !== context.actorId &&
+    !isClaimedApproval
+  ) {
+    throw new ToolExecutionScopeBindingError(
+      "Governed tool execution scope does not match the authorized actor.",
+    );
+  }
+  if (
+    executionScope.executingPrincipalType === "user" &&
+    executionScope.executingPrincipalId !== context.actorId &&
+    !isClaimedApproval
+  ) {
+    throw new ToolExecutionScopeBindingError(
+      "Governed tool user principal does not match the authorized actor.",
+    );
+  }
+}
+
+async function resolveToolExecutionScopeRequest(input: {
+  record?: ToolExecutionRecord;
+  toolInput: Record<string, unknown>;
+  requestedScope?: ExecutionScope;
+  context?: SecurityContext;
+  executionClaimToken?: string;
+  mcpSessionScope?: McpSessionScope;
+}): Promise<ResolvedToolExecutionScope> {
+  if (
+    input.record?.tenantId &&
+    input.context?.tenantId &&
+    normalizeTenantId(input.record.tenantId) !==
+      normalizeTenantId(input.context.tenantId)
+  ) {
+    throw new ToolExecutionScopeBindingError(
+      "Governed tool receipt does not belong to the authorized tenant.",
+    );
+  }
+
+  const binding = input.record
+    ? await getToolExecutionScopeBinding(input.record.id, {
+        tenantId: input.record.tenantId || input.context?.tenantId,
+      })
+    : undefined;
+  if (binding && input.record) {
+    assertToolExecutionBindingMatchesRequest({
+      binding,
+      record: input.record,
+      toolInput: input.toolInput,
+      requestedScope: input.requestedScope,
+    });
+    if (
+      !input.requestedScope &&
+      !(
+        input.record.status === "executing" &&
+        Boolean(input.executionClaimToken)
+      )
+    ) {
+      throw new ToolExecutionScopeBindingError(
+        "A scoped governed tool receipt cannot be reused by an unscoped request.",
+      );
+    }
+    assertMcpSessionMatchesToolScope(
+      input.mcpSessionScope,
+      binding.executionScope,
+      input.record,
+    );
+    return {
+      executionScope: binding.executionScope,
+      requesterRole: binding.requesterRole,
+      binding,
+    };
+  }
+
+  if (input.record && input.requestedScope) {
+    throw new ToolExecutionScopeBindingError(
+      "A legacy governed tool receipt cannot be rebound during execution.",
+    );
+  }
+  if (input.requestedScope) {
+    assertMcpSessionMatchesToolScope(
+      input.mcpSessionScope,
+      input.requestedScope,
+      input.record,
+    );
+  }
+  return {
+    executionScope: input.requestedScope,
+    requesterRole: input.requestedScope ? input.context?.role : undefined,
+  };
+}
+
+async function assertExistingScopedToolReceipt(input: {
+  record: ToolExecutionRecord;
+  toolInput: Record<string, unknown>;
+  requestedScope?: ExecutionScope;
+  context?: SecurityContext;
+  mcpSessionScope?: McpSessionScope;
+}) {
+  await resolveToolExecutionScopeRequest({
+    ...input,
+    executionClaimToken: undefined,
+  });
+}
+
+async function bindToolScopeIfPresent(input: {
+  record: ToolExecutionRecord;
+  toolInput: Record<string, unknown>;
+  scopedRequest: ResolvedToolExecutionScope;
+}) {
+  if (
+    !input.scopedRequest.executionScope ||
+    !input.scopedRequest.requesterRole
+  ) {
+    return;
+  }
+  await bindToolExecutionScope({
+    record: input.record,
+    toolInput: input.toolInput,
+    executionScope: input.scopedRequest.executionScope,
+    requesterRole: input.scopedRequest.requesterRole,
+  });
+}
+
+function scopedToolRuntimeContext(
+  context: SecurityContext | undefined,
+  record: ToolExecutionRecord | undefined,
+  scopedRequest: ResolvedToolExecutionScope,
+): SecurityContext | undefined {
+  if (!scopedRequest.binding || !context) return context;
+  return {
+    ...context,
+    tenantId: scopedRequest.binding.executionScope.tenantId,
+    actorId:
+      scopedRequest.binding.executionScope.initiatingActorId ||
+      record?.actorId ||
+      context.actorId,
+    role: scopedRequest.binding.requesterRole,
+  };
+}
+
+function assertMcpSessionMatchesToolScope(
+  mcpSessionScope: McpSessionScope | undefined,
+  executionScope: ExecutionScope,
+  record: ToolExecutionRecord | undefined,
+) {
+  if (!mcpSessionScope) return;
+  if (
+    normalizeTenantId(mcpSessionScope.tenantId) !== executionScope.tenantId
+  ) {
+    throw new ToolExecutionScopeBindingError(
+      "MCP session tenant does not match the governed tool execution scope.",
+    );
+  }
+  const requesterId = executionScope.initiatingActorId || record?.actorId;
+  if (requesterId && mcpSessionScope.actorId !== requesterId) {
+    throw new ToolExecutionScopeBindingError(
+      "MCP session actor does not match the governed tool requester.",
+    );
   }
 }
 
@@ -965,6 +1296,7 @@ async function runTool(
 
 async function recordToolPolicyBlock({
   context,
+  executionScope,
   toolId,
   toolName,
   reason,
@@ -972,6 +1304,7 @@ async function recordToolPolicyBlock({
   riskLevel,
 }: {
   context?: SecurityContext;
+  executionScope?: ExecutionScope;
   toolId: string;
   toolName?: string;
   reason: string;
@@ -982,8 +1315,8 @@ async function recordToolPolicyBlock({
     level: "warn",
     category: "security",
     action: "security.policy_blocked",
-    tenantId: context?.tenantId,
-    actorId: context?.actorId,
+    tenantId: executionScope?.tenantId || context?.tenantId,
+    actorId: executionScope?.initiatingActorId || context?.actorId,
     resourceType: "tool",
     resourceId: toolId,
     message: reason,
@@ -994,6 +1327,7 @@ async function recordToolPolicyBlock({
       riskLevel,
       input,
     },
+    correlationId: executionScope?.correlationId,
   });
 }
 
