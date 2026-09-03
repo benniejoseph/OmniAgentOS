@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
@@ -6,10 +7,12 @@ import {
   parseJsonBody,
 } from "@/lib/http/body";
 import { redactSensitive } from "@/lib/security/context";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getOperationJobStats } from "@/lib/operations/job-queue";
 import { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import {
+  assertWorkflowRunExecutionAuthority,
   createWorkflowRun,
   getWorkflowRunDetail,
   getWorkflowStats,
@@ -173,6 +176,17 @@ async function POSTHandler(request: Request) {
         );
       }
     }
+    const executionAuthority = {
+      executionScope: executionScopeFromSecurityContext(context, {
+        correlationId: selectedPlan
+          ? `workflow-plan:${selectedPlan.id}`
+          : idempotencyKey
+            ? `workflow-request:${idempotencyKey}`
+            : `workflow-request:${randomUUID()}`,
+        purpose: "workflow.run",
+      }),
+      requesterRole: context.role,
+    } as const;
     if (selectedPlan?.workflowRunId) {
       const existing = await getWorkflowRunDetail(selectedPlan.workflowRunId, {
         tenantId: context.tenantId,
@@ -182,6 +196,21 @@ async function POSTHandler(request: Request) {
           {
             error: "The selected workflow plan has an invalid run binding.",
             message: "Generate a fresh plan and contact an administrator if this repeats.",
+          },
+          { status: 409 },
+        );
+      }
+      try {
+        await assertWorkflowRunExecutionAuthority(
+          existing.run.id,
+          executionAuthority,
+          { tenantId: context.tenantId },
+        );
+      } catch {
+        return Response.json(
+          {
+            error: "The selected workflow authority no longer matches this request.",
+            message: "Generate a fresh plan before starting this workflow.",
           },
           { status: 409 },
         );
@@ -201,6 +230,7 @@ async function POSTHandler(request: Request) {
     }
     const detail = await createWorkflowRun({
       ...parsed.data,
+      executionAuthority,
       metadata: {
         ...(parsed.data.metadata || {}),
         actorId: context.actorId,

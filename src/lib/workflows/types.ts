@@ -164,6 +164,8 @@ export type WorkflowRunInput = {
   requireApproval?: boolean;
   maxAttempts?: number;
   metadata?: Record<string, unknown>;
+  /** Internal fail-closed marker; public request schemas never accept it. */
+  executionAuthorityRequired?: true;
 };
 
 export type WorkflowRunRecord = {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { hasOpenAIKey } from "@/lib/config";
 import { hashPassword, verifyPassword } from "@/lib/auth/crypto";
 import { isAuthEnforced } from "@/lib/auth/store";
@@ -65,6 +66,7 @@ import { reconcileOperationsRecovery } from "@/lib/operations/recovery";
 import { buildContextPack, getContextEngineStats } from "@/lib/rag/context-engine";
 import { retrieveContext } from "@/lib/rag/retriever";
 import { canPerform, redactSensitive } from "@/lib/security/context";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, processWorkflowQueue } from "@/lib/workflows/queue";
 import { executeDynamicWorkflowPlan, getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats } from "@/lib/workflows/planner";
@@ -100,6 +102,34 @@ type CaseResult = {
   output: Record<string, unknown>;
   estimatedCostUsd?: number;
 };
+
+function evaluationWorkflowAuthority(
+  caseId: string,
+  stage: string,
+  tenantId?: string,
+) {
+  const normalizedTenantId = (
+    tenantId ||
+    getDatabaseTenantContext() ||
+    process.env.OMNIAGENT_DEFAULT_TENANT ||
+    "default"
+  )
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120) || "default";
+  return {
+    executionScope: createExecutionScope({
+      tenantId: normalizedTenantId,
+      initiatingActorId: null,
+      executingPrincipalType: "system",
+      executingPrincipalId: "evaluation-harness",
+      correlationId: `evaluation:${caseId}:${randomUUID()}`,
+      causationId: `evaluation:${caseId}:${stage}`,
+      purpose: `evaluation.workflow.${stage}`,
+    }),
+    requesterRole: "system" as const,
+  };
+}
 
 type RawEvalCaseDefinition = Omit<EvalCaseDefinition, "governance">;
 
@@ -1180,6 +1210,7 @@ async function evaluateToolPolicy(
 
 async function evaluateWorkflowLifecycle(evalCase: EvalCaseDefinition): Promise<CaseResult> {
   const detail = await createWorkflowRun({
+    executionAuthority: evaluationWorkflowAuthority(evalCase.id, "lifecycle"),
     goal: String(evalCase.input.goal),
     requireApproval: Boolean(evalCase.input.requireApproval),
     maxAttempts: 2,
@@ -1225,6 +1256,7 @@ async function evaluateDynamicPlanner(evalCase: EvalCaseDefinition): Promise<Cas
   const goal = String(evalCase.input.goal || "");
   const mode = String(evalCase.input.mode || "orchestrate") as "orchestrate" | "research" | "execute" | "learn";
   const detail = await createWorkflowRun({
+    executionAuthority: evaluationWorkflowAuthority(evalCase.id, "planner"),
     goal,
     mode,
     requireApproval: false,
@@ -1281,6 +1313,7 @@ async function evaluatePlanExecutor(evalCase: EvalCaseDefinition): Promise<CaseR
   const goal = String(evalCase.input.goal || "");
   const mode = String(evalCase.input.mode || "orchestrate") as "orchestrate" | "research" | "execute" | "learn";
   const detail = await createWorkflowRun({
+    executionAuthority: evaluationWorkflowAuthority(evalCase.id, "executor"),
     goal,
     mode,
     requireApproval: false,
@@ -1583,6 +1616,11 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
     workflowA = await withDatabaseTenant(tenantA, () =>
       createWorkflowRun({
         tenantId: tenantA,
+        executionAuthority: evaluationWorkflowAuthority(
+          evalCase.id,
+          "tenant-a",
+          tenantA,
+        ),
         goal: `Tenant A isolation workflow ${markerA}`,
         mode: "research",
         requireApproval: true,
@@ -1593,6 +1631,11 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
     workflowB = await withDatabaseTenant(tenantB, () =>
       createWorkflowRun({
         tenantId: tenantB,
+        executionAuthority: evaluationWorkflowAuthority(
+          evalCase.id,
+          "tenant-b",
+          tenantB,
+        ),
         goal: `Tenant B isolation workflow ${markerB}`,
         mode: "research",
         requireApproval: true,
@@ -1851,12 +1894,14 @@ async function evaluateSelfHealingDiagnostics(evalCase: EvalCaseDefinition): Pro
 
 async function evaluateQueueRecovery(evalCase: EvalCaseDefinition): Promise<CaseResult> {
   const requeueRun = await createWorkflowRun({
+    executionAuthority: evaluationWorkflowAuthority(evalCase.id, "queue-requeue"),
     goal: `${String(evalCase.input.goal || "Queue recovery fixture")} requeue`,
     mode: "orchestrate",
     requireApproval: false,
     maxAttempts: 3,
   });
   const failRun = await createWorkflowRun({
+    executionAuthority: evaluationWorkflowAuthority(evalCase.id, "queue-fail"),
     goal: `${String(evalCase.input.goal || "Queue recovery fixture")} fail`,
     mode: "orchestrate",
     requireApproval: false,

@@ -57,6 +57,7 @@ const FILE_TRANSIENT_EVENT_CAP = 5_000;
 const DURABLE_BINDING_EVENT_TYPES = new Set([
   "run.scope_bound",
   "tool.scope_bound",
+  "workflow.scope_bound",
 ]);
 
 type EventSqlClient = ReturnType<typeof getSql>;

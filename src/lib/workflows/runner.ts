@@ -22,6 +22,7 @@ import {
 import {
   approveWorkflowRun,
   appendWorkflowEvent,
+  getWorkflowRunExecutionAuthority,
   getWorkflowRunDetail,
   listRunnableWorkflowRuns,
   transitionWorkflowRun,
@@ -63,6 +64,15 @@ export async function tickWorkflowRun(
 
   if (TERMINAL_STATUSES.has(detail.run.status)) {
     return detail;
+  }
+
+  if (
+    detail.run.input.executionAuthorityRequired &&
+    !(await getWorkflowRunExecutionAuthority(detail.run.id, {
+      tenantId: detail.run.tenantId,
+    }))
+  ) {
+    throw new Error("Workflow execution authority is missing.");
   }
 
   if (detail.run.status === "queued") {
