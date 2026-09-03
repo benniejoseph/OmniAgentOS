@@ -1643,6 +1643,17 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
   const markerA = `tenant-a-marker-${suffix}`;
   const markerB = `tenant-b-marker-${suffix}`;
   const correlationId = `eval-tenant-isolation-${suffix}`;
+  const connectorMutationOptions = (tenantId: string, connectorKind: "mcp" | "openapi") => ({
+    executionScope: createExecutionScope({
+      tenantId,
+      initiatingActorId: null,
+      executingPrincipalType: "system",
+      executingPrincipalId: "evaluation-harness",
+      correlationId,
+      causationId: evalCase.id,
+      purpose: `evaluation.connector.${connectorKind}.tenant_isolation`,
+    }),
+  });
   let workflowA: Awaited<ReturnType<typeof createWorkflowRun>> | undefined;
   let workflowB: Awaited<ReturnType<typeof createWorkflowRun>> | undefined;
 
@@ -1678,6 +1689,7 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
           defaultRiskLevel: 1,
           approvalRequired: false,
         }),
+        connectorMutationOptions(tenantA, "mcp"),
       ),
     );
     const mcpB = await withDatabaseTenant(tenantB, () =>
@@ -1690,6 +1702,7 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
           defaultRiskLevel: 1,
           approvalRequired: false,
         }),
+        connectorMutationOptions(tenantB, "mcp"),
       ),
     );
     const openApiA = await withDatabaseTenant(tenantA, () =>
@@ -1702,6 +1715,7 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
           defaultRiskLevel: 1,
           approvalRequired: false,
         }),
+        connectorMutationOptions(tenantA, "openapi"),
       ),
     );
     const openApiB = await withDatabaseTenant(tenantB, () =>
@@ -1714,6 +1728,7 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
           defaultRiskLevel: 1,
           approvalRequired: false,
         }),
+        connectorMutationOptions(tenantB, "openapi"),
       ),
     );
 

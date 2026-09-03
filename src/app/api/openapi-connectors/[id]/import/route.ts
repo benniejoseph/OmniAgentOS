@@ -9,6 +9,8 @@ import {
   saveOpenApiImport,
 } from "@/lib/connectors/openapi-store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { createRequestTelemetry } from "@/lib/observability/store";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { assertPublicHttpUrl } from "@/lib/security/network";
 
@@ -25,6 +27,7 @@ async function POSTHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
+  const telemetry = createRequestTelemetry(request, "openapi_connector");
   const { id } = await context.params;
   let requestBody: unknown;
   try {
@@ -110,6 +113,12 @@ async function POSTHandler(
       specHash: imported.specHash,
       baseUrl: imported.baseUrl,
       info: imported.info,
+    }, {
+      executionScope: executionScopeFromSecurityContext(securityContext, {
+        correlationId: telemetry.correlationId,
+        causationId: id,
+        purpose: "connector.openapi.import",
+      }),
     });
     return Response.json({
       ...saved,
@@ -125,7 +134,17 @@ async function POSTHandler(
     const message = error instanceof Error ? error.message : "OpenAPI import failed.";
     return Response.json(
       {
-        connector: redactOpenApiConnector(await recordOpenApiConnectorError(connector, message)),
+        connector: redactOpenApiConnector(await recordOpenApiConnectorError(
+          connector,
+          message,
+          {
+            executionScope: executionScopeFromSecurityContext(securityContext, {
+              correlationId: telemetry.correlationId,
+              causationId: id,
+              purpose: "connector.openapi.import_error.record",
+            }),
+          },
+        )),
         operations: [],
         error: message,
       },

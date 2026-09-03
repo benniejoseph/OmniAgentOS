@@ -8,6 +8,7 @@ import {
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
+  executionScopesEqual,
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
@@ -50,6 +51,13 @@ export type AppendDomainEventInput = {
   executionScope?: ExecutionScope;
 };
 
+export type AppendScopedDomainEventInput = Omit<
+  AppendDomainEventInput,
+  "tenantId" | "actorId" | "correlationId" | "causationId" | "executionScope"
+> & {
+  executionScope: ExecutionScope;
+};
+
 type EventLedger = {
   nextSeq: number;
   events: DomainEvent[];
@@ -61,6 +69,10 @@ const DURABLE_BINDING_EVENT_TYPES = new Set([
   "tool.scope_bound",
   "workflow.scope_bound",
 ]);
+
+function isDurableBindingEvent(type: string) {
+  return DURABLE_BINDING_EVENT_TYPES.has(type) || type.endsWith(".scope_bound");
+}
 
 type EventSqlClient = ReturnType<typeof getSql>;
 
@@ -132,11 +144,22 @@ export async function appendDomainEvent(
   await updateJsonFile<EventLedger>(getEventsFile(), { nextSeq: 1, events: [] }, (ledger) => {
     const existing = ledger.events.find((item) => item.id === event.id);
     if (existing) {
+      const existingScope = parsePersistedExecutionScope(
+        existing.executionScope || existing.payload?._executionScope,
+      );
       if (
         existing.tenantId !== event.tenantId ||
         existing.actorId !== event.actorId ||
         existing.streamId !== event.streamId ||
-        existing.type !== event.type
+        existing.type !== event.type ||
+        existing.correlationId !== event.correlationId ||
+        existing.causationId !== event.causationId ||
+        Boolean(existingScope) !== Boolean(event.executionScope) ||
+        (
+          existingScope &&
+          event.executionScope &&
+          !executionScopesEqual(existingScope, event.executionScope)
+        )
       ) {
         throw new Error("Domain event id is already bound to a different event.");
       }
@@ -148,10 +171,10 @@ export async function appendDomainEvent(
     ledger.events.push(event);
     if (ledger.events.length > FILE_TRANSIENT_EVENT_CAP) {
       const bindings = ledger.events.filter((item) =>
-        DURABLE_BINDING_EVENT_TYPES.has(item.type)
+        isDurableBindingEvent(item.type)
       );
       const transient = ledger.events
-        .filter((item) => !DURABLE_BINDING_EVENT_TYPES.has(item.type))
+        .filter((item) => !isDurableBindingEvent(item.type))
         .slice(-FILE_TRANSIENT_EVENT_CAP);
       ledger.events = [...bindings, ...transient]
         .sort((left, right) => left.seq - right.seq);
@@ -159,6 +182,29 @@ export async function appendDomainEvent(
     return ledger;
   });
   return persistedEvent;
+}
+
+/**
+ * Strict writer for new scoped operations. Legacy dual-writes may still use
+ * appendDomainEvent while their callers are migrated, but new mutations use
+ * this entry point so attribution cannot silently fall back to `system`.
+ */
+export async function appendScopedDomainEvent(
+  input: AppendScopedDomainEventInput,
+  options: { sql?: EventSqlClient } = {},
+): Promise<DomainEvent> {
+  const executionScope = parsePersistedExecutionScope(input.executionScope);
+  if (!executionScope) {
+    throw new Error("Scoped domain events require a valid execution scope.");
+  }
+  return appendDomainEvent({
+    ...input,
+    tenantId: executionScope.tenantId,
+    actorId: executionScope.initiatingActorId || undefined,
+    correlationId: executionScope.correlationId,
+    causationId: executionScope.causationId || undefined,
+    executionScope,
+  }, options);
 }
 
 function boundedEventPayload(

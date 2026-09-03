@@ -41,8 +41,20 @@ import {
   saveMcpTool,
 } from "@/lib/connectors/store";
 import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const originalBindings = process.env.OMNIAGENT_CONNECTOR_SECRET_BINDINGS;
+
+const connectorMutationOptions = {
+  executionScope: createExecutionScope({
+    tenantId: "tenant-a",
+    initiatingActorId: "connector-security-test-actor",
+    executingPrincipalType: "user",
+    executingPrincipalId: "connector-security-test-actor",
+    correlationId: "connector-security-test",
+    purpose: "test.connector.security.mutation",
+  }),
+};
 
 afterEach(() => {
   if (originalBindings === undefined) {
@@ -360,9 +372,13 @@ describe("connector security", () => {
     delete process.env.DATABASE_URL;
 
     try {
-      const mcpConnector = await saveMcpConnector(connectorRecord());
+      const mcpConnector = await saveMcpConnector(
+        connectorRecord(),
+        connectorMutationOptions,
+      );
       const pendingMcp = await saveMcpTool(
         toolRecord({ status: "pending_review" }),
+        connectorMutationOptions,
       );
       await saveMcpTool(
         toolRecord({
@@ -370,6 +386,7 @@ describe("connector security", () => {
           name: "disabled",
           status: "disabled",
         }),
+        connectorMutationOptions,
       );
       const mcpReview = mcpContractReviewSummary(
         [pendingMcp],
@@ -381,7 +398,7 @@ describe("connector security", () => {
             connectorId: mcpConnector.id,
             expectedFingerprint: "stale-review-token",
           },
-          { tenantId: "tenant-a" },
+          connectorMutationOptions,
         ),
       ).rejects.toBeInstanceOf(ConnectorContractReviewConflictError);
       const promotedMcp = await promoteMcpContracts(
@@ -389,7 +406,7 @@ describe("connector security", () => {
           connectorId: mcpConnector.id,
           expectedFingerprint: mcpReview.fingerprint!,
         },
-        { tenantId: "tenant-a" },
+        connectorMutationOptions,
       );
       expect(promotedMcp?.promoted).toBe(1);
       expect(promotedMcp?.connector.status).toBe("active");
@@ -399,9 +416,11 @@ describe("connector security", () => {
 
       const openApiConnector = await saveOpenApiConnector(
         openApiConnectorRecord(),
+        connectorMutationOptions,
       );
       const pendingOperation = await saveOpenApiOperation(
         openApiOperationRecord({ status: "pending_review" }),
+        connectorMutationOptions,
       );
       const openApiReview = openApiContractReviewSummary(
         [pendingOperation],
@@ -412,7 +431,7 @@ describe("connector security", () => {
           connectorId: openApiConnector.id,
           expectedFingerprint: openApiReview.fingerprint!,
         },
-        { tenantId: "tenant-a" },
+        connectorMutationOptions,
       );
       expect(promotedOpenApi?.promoted).toBe(1);
       expect(promotedOpenApi?.connector.status).toBe("active");

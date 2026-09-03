@@ -3,6 +3,7 @@ import {
   createCaptureRecording,
   listCaptureRecordings,
 } from "@/lib/capture/recordings";
+import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseBoundedInteger, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -38,6 +39,11 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    context,
+    request,
+    "capture.recording.start",
+  );
   let body: unknown;
   try {
     body = await parseJsonBody(request);
@@ -46,7 +52,11 @@ async function POSTHandler(request: Request) {
   }
   const parsed = createRecordingSchema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid recording details.", details: parsed.error.flatten() }, { status: 400 });
-  const recording = await createCaptureRecording({ ...context, ...parsed.data });
+  const recording = await createCaptureRecording({
+    ...context,
+    ...parsed.data,
+    executionScope,
+  });
   return Response.json({ recording }, {
     status: 201,
     headers: { location: `/api/capture/recordings/${recording.id}`, "cache-control": "private, no-store" },

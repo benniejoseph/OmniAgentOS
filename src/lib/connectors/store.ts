@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   ensureDatabaseSchema,
   getDatabaseTenantContext,
@@ -14,8 +14,14 @@ import {
   connectorCredentialFields,
   credentialMetadata,
 } from "@/lib/connectors/credential-store";
+import { appendScopedDomainEvent } from "@/lib/events/store";
 import { isOfficialGitHubMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
+import {
+  assertExecutionScopeTenant,
+  parsePersistedExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type {
@@ -55,6 +61,23 @@ export type McpContractPromotionResult = {
 type TenantScopedOptions = {
   tenantId?: string;
 };
+
+export type McpConnectorMutationOptions = {
+  executionScope: ExecutionScope;
+};
+
+type McpConnectorDomainEventType =
+  | "connector.scope_bound"
+  | "connector.mcp.created"
+  | "connector.mcp.saved"
+  | "connector.mcp.updated"
+  | "connector.mcp.deleted"
+  | "connector.mcp.discovery_saved"
+  | "connector.mcp.contracts_promoted"
+  | "connector.mcp.tool_saved"
+  | "connector.mcp.error_recorded";
+
+const MCP_CONNECTOR_EVENT_SCHEMA_VERSION = 1 as const;
 
 export type McpToolMetadataRecord = Pick<
   McpToolRecord,
@@ -114,15 +137,92 @@ export function parseMcpToolId(toolId: string) {
   };
 }
 
-export async function saveMcpConnector(connector: McpConnectorRecord) {
+export async function saveMcpConnector(
+  connector: McpConnectorRecord,
+  options: McpConnectorMutationOptions,
+) {
+  const record = {
+    ...connector,
+    tenantId: normalizeTenantId(connector.tenantId),
+  };
+  const executionScope = requireMcpMutationScope(
+    options.executionScope,
+    record.tenantId,
+  );
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const existingRows = await sql`
+        SELECT id
+        FROM omni_mcp_connectors
+        WHERE id = ${record.id}
+          AND tenant_id = ${record.tenantId}
+        FOR UPDATE
+      `;
+      const saved = await persistMcpConnector(record, { sql });
+      if (!existingRows[0]) {
+        await appendMcpConnectorScopeBinding(record.id, executionScope, { sql });
+      }
+      await appendMcpConnectorEvent({
+        connectorId: record.id,
+        type: existingRows[0] ? "connector.mcp.saved" : "connector.mcp.created",
+        executionScope,
+        payload: mcpConnectorEventMetadata(saved),
+      }, { sql });
+      return saved;
+    }) as Promise<McpConnectorRecord>;
+  }
+
+  const existing = await getMcpConnector(record.id, { tenantId: record.tenantId });
+  if (!existing) {
+    // File storage cannot atomically update two ledgers. Bind authority first so
+    // a failed primary write can be retried without ever creating an unscoped record.
+    await appendMcpConnectorScopeBinding(record.id, executionScope);
+  }
+  const saved = await persistMcpConnector(record);
+  await appendMcpConnectorEvent({
+    connectorId: record.id,
+    type: existing ? "connector.mcp.saved" : "connector.mcp.created",
+    executionScope,
+    payload: mcpConnectorEventMetadata(saved),
+  });
+  return saved;
+}
+
+async function appendMcpConnectorScopeBinding(
+  connectorId: string,
+  executionScope: ExecutionScope,
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
+  return appendMcpConnectorEvent({
+    id: `mcp-connector-scope-bound:v1:${createHash("sha256")
+      .update(`${executionScope.tenantId}\0${connectorId}`)
+      .digest("hex")}`,
+    connectorId,
+    type: "connector.scope_bound",
+    executionScope,
+    payload: {
+      scopeVersion: executionScope.version,
+      scopeSha256: executionScopeSha256(executionScope),
+    },
+  }, options);
+}
+
+async function persistMcpConnector(
+  connector: McpConnectorRecord,
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
   const record = {
     ...connector,
     tenantId: normalizeTenantId(connector.tenantId),
   };
 
   if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    await getSql()`
+    if (!options.sql) {
+      await ensureDatabaseSchema();
+    }
+    const sql = options.sql || getSql();
+    const rows = await sql`
       INSERT INTO omni_mcp_connectors (
         id, tenant_id, name, endpoint, transport, auth_type, auth_token_env, status,
         default_risk_level, approval_required, tool_count, capabilities,
@@ -139,7 +239,6 @@ export async function saveMcpConnector(connector: McpConnectorRecord) {
         ${record.createdAt}, ${record.updatedAt}
       )
       ON CONFLICT (id) DO UPDATE SET
-        tenant_id = EXCLUDED.tenant_id,
         name = EXCLUDED.name,
         endpoint = EXCLUDED.endpoint,
         transport = EXCLUDED.transport,
@@ -155,12 +254,24 @@ export async function saveMcpConnector(connector: McpConnectorRecord) {
         last_discovered_at = EXCLUDED.last_discovered_at,
         last_error = EXCLUDED.last_error,
         updated_at = EXCLUDED.updated_at
+      WHERE omni_mcp_connectors.tenant_id = EXCLUDED.tenant_id
+      RETURNING id
     `;
+    if (!rows[0]) {
+      throw new Error("MCP connector id is already bound to another tenant.");
+    }
     return record;
   }
 
   await mutateConnectorLedger((ledger) => {
-    ledger.connectors = [record, ...ledger.connectors.filter((item) => item.id !== record.id)];
+    ledger.connectors = [
+      record,
+      ...ledger.connectors.filter(
+        (item) =>
+          item.id !== record.id ||
+          normalizeTenantId(item.tenantId) !== record.tenantId,
+      ),
+    ];
     return ledger;
   });
   return record;
@@ -252,9 +363,15 @@ export async function getMcpConnector(connectorId: string, options: TenantScoped
 export async function updateMcpConnector(
   connectorId: string,
   input: UpdateMcpConnectorInput,
-  options: TenantScopedOptions = {},
+  options: McpConnectorMutationOptions,
 ) {
-  const connector = await getMcpConnector(connectorId, options);
+  const executionScope = requireMcpMutationScope(
+    options.executionScope,
+    options.executionScope.tenantId,
+  );
+  const connector = await getMcpConnector(connectorId, {
+    tenantId: executionScope.tenantId,
+  });
   if (!connector) {
     return null;
   }
@@ -284,15 +401,38 @@ export async function updateMcpConnector(
       : connector.lastError,
     updatedAt: now,
   };
-  const saved = await saveMcpConnector(nextConnector);
+  const saved = await persistMcpConnector(nextConnector);
   await syncMcpToolsForConnector(saved, {
     invalidateReviewedContracts: contractConfigurationChanged,
   });
-  return getMcpConnector(connectorId, options);
+  const result = await getMcpConnector(connectorId, {
+    tenantId: executionScope.tenantId,
+  });
+  if (!result) {
+    throw new Error("Updated MCP connector could not be read back.");
+  }
+  await appendMcpConnectorEvent({
+    connectorId,
+    type: "connector.mcp.updated",
+    executionScope,
+    payload: {
+      ...mcpConnectorEventMetadata(result),
+      changedFields: safeMcpConnectorChangedFields(input),
+      contractConfigurationChanged,
+    },
+  });
+  return result;
 }
 
-export async function deleteMcpConnector(connectorId: string, options: TenantScopedOptions = {}) {
-  const tenantId = normalizeTenantId(options.tenantId);
+export async function deleteMcpConnector(
+  connectorId: string,
+  options: McpConnectorMutationOptions,
+) {
+  const executionScope = requireMcpMutationScope(
+    options.executionScope,
+    options.executionScope.tenantId,
+  );
+  const tenantId = executionScope.tenantId;
   const connector = await getMcpConnector(connectorId, { tenantId });
   if (!connector) {
     return null;
@@ -310,6 +450,12 @@ export async function deleteMcpConnector(connectorId: string, options: TenantSco
       WHERE id = ${connectorId}
         AND tenant_id = ${tenantId}
     `;
+    await appendMcpConnectorEvent({
+      connectorId,
+      type: "connector.mcp.deleted",
+      executionScope,
+      payload: mcpConnectorEventMetadata(connector),
+    });
     return connector;
   }
 
@@ -329,6 +475,12 @@ export async function deleteMcpConnector(connectorId: string, options: TenantSco
     );
     return ledger;
   });
+  await appendMcpConnectorEvent({
+    connectorId,
+    type: "connector.mcp.deleted",
+    executionScope,
+    payload: mcpConnectorEventMetadata(connector),
+  });
   return connector;
 }
 
@@ -346,7 +498,11 @@ export async function saveMcpDiscovery({
   instructions?: string;
   serverVersion?: Record<string, unknown>;
   resetReviewedPolicy?: boolean;
-}) {
+}, options: McpConnectorMutationOptions) {
+  const executionScope = requireMcpMutationScope(
+    options.executionScope,
+    normalizeTenantId(connector.tenantId),
+  );
   const discoveredAt = new Date().toISOString();
   const existingTools = await listMcpTools(connector.id, {
     tenantId: normalizeTenantId(connector.tenantId),
@@ -378,20 +534,37 @@ export async function saveMcpDiscovery({
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await saveMcpConnector(nextConnector);
+    await persistMcpConnector(nextConnector);
     await getSql()`
       DELETE FROM omni_mcp_tools
       WHERE connector_id = ${connector.id}
         AND tenant_id = ${nextConnector.tenantId}
     `;
     for (const tool of nextTools) {
-      await saveMcpTool(tool);
+      await persistMcpTool(tool);
     }
+    await appendMcpConnectorEvent({
+      connectorId: connector.id,
+      type: "connector.mcp.discovery_saved",
+      executionScope,
+      payload: {
+        ...mcpConnectorEventMetadata(nextConnector),
+        discoveredToolCount: nextTools.length,
+        resetReviewedPolicy,
+      },
+    });
     return { connector: nextConnector, tools: nextTools };
   }
 
   await mutateConnectorLedger((ledger) => {
-    ledger.connectors = [nextConnector, ...ledger.connectors.filter((item) => item.id !== connector.id)];
+    ledger.connectors = [
+      nextConnector,
+      ...ledger.connectors.filter(
+        (item) =>
+          item.id !== connector.id ||
+          normalizeTenantId(item.tenantId) !== nextConnector.tenantId,
+      ),
+    ];
     ledger.tools = [
       ...nextTools,
       ...ledger.tools.filter((tool) =>
@@ -399,6 +572,16 @@ export async function saveMcpDiscovery({
       ),
     ];
     return ledger;
+  });
+  await appendMcpConnectorEvent({
+    connectorId: connector.id,
+    type: "connector.mcp.discovery_saved",
+    executionScope,
+    payload: {
+      ...mcpConnectorEventMetadata(nextConnector),
+      discoveredToolCount: nextTools.length,
+      resetReviewedPolicy,
+    },
   });
   return { connector: nextConnector, tools: nextTools };
 }
@@ -416,6 +599,7 @@ function resetMcpToolPolicyForReview({
   return discovered.map((tool) => ({
     ...tool,
     tenantId: normalizeTenantId(connector.tenantId),
+    connectorId: connector.id,
     connectorName: connector.name,
     status: "pending_review" as const,
     createdAt: existingByName.get(tool.name)?.createdAt || tool.createdAt,
@@ -439,6 +623,7 @@ export function preserveReviewedMcpToolPolicy({
     return {
       ...tool,
       tenantId: normalizeTenantId(connector.tenantId),
+      connectorId: connector.id,
       connectorName: connector.name,
       riskLevel: Math.max(tool.riskLevel, reviewed?.riskLevel ?? 0) as ToolRiskLevel,
       approvalRequired: tool.approvalRequired || Boolean(reviewed?.approvalRequired),
@@ -461,9 +646,13 @@ export async function promoteMcpContracts(
     connectorId: string;
     expectedFingerprint: string;
   },
-  options: TenantScopedOptions = {},
+  options: McpConnectorMutationOptions,
 ): Promise<McpContractPromotionResult | null> {
-  const tenantId = normalizeTenantId(options.tenantId);
+  const executionScope = requireMcpMutationScope(
+    options.executionScope,
+    options.executionScope.tenantId,
+  );
+  const tenantId = executionScope.tenantId;
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -516,7 +705,7 @@ export async function promoteMcpContracts(
       const activatedConnector = activatedRows[0]
         ? connectorFromRow(activatedRows[0])
         : { ...connector, status: "active" as const };
-      return {
+      const result = {
         connector: activatedConnector,
         tools: tools.map((tool) =>
           tool.status === "pending_review"
@@ -525,6 +714,16 @@ export async function promoteMcpContracts(
         ),
         promoted: review.pendingCount,
       };
+      await appendMcpConnectorEvent({
+        connectorId,
+        type: "connector.mcp.contracts_promoted",
+        executionScope,
+        payload: {
+          ...mcpConnectorEventMetadata(activatedConnector),
+          promotedCount: review.pendingCount,
+        },
+      }, { sql });
+      return result;
     }) as Promise<McpContractPromotionResult | null>;
   }
 
@@ -581,18 +780,58 @@ export async function promoteMcpContracts(
     };
     return ledger;
   });
-  return result;
+  const promotedResult = result as McpContractPromotionResult | null;
+  if (promotedResult && promotedResult.promoted > 0) {
+    await appendMcpConnectorEvent({
+      connectorId,
+      type: "connector.mcp.contracts_promoted",
+      executionScope,
+      payload: {
+        ...mcpConnectorEventMetadata(promotedResult.connector),
+        promotedCount: promotedResult.promoted,
+      },
+    });
+  }
+  return promotedResult;
 }
 
-export async function saveMcpTool(tool: McpToolRecord) {
+export async function saveMcpTool(
+  tool: McpToolRecord,
+  options: McpConnectorMutationOptions,
+) {
+  const record = {
+    ...tool,
+    tenantId: normalizeTenantId(tool.tenantId),
+  };
+  const executionScope = requireMcpMutationScope(
+    options.executionScope,
+    record.tenantId,
+  );
+  const saved = await persistMcpTool(record);
+  await appendMcpConnectorEvent({
+    connectorId: record.connectorId,
+    type: "connector.mcp.tool_saved",
+    executionScope,
+    payload: mcpToolEventMetadata(saved),
+  });
+  return saved;
+}
+
+async function persistMcpTool(
+  tool: McpToolRecord,
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
   const record = {
     ...tool,
     tenantId: normalizeTenantId(tool.tenantId),
   };
 
   if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    await getSql()`
+    if (!options.sql) {
+      await ensureDatabaseSchema();
+    }
+    const sql = options.sql || getSql();
+    const rows = await sql`
       INSERT INTO omni_mcp_tools (
         id, tenant_id, connector_id, connector_name, name, title, description,
         input_schema, output_schema, annotations, risk_level,
@@ -608,7 +847,6 @@ export async function saveMcpTool(tool: McpToolRecord) {
         ${record.createdAt}, ${record.updatedAt}
       )
       ON CONFLICT (id) DO UPDATE SET
-        tenant_id = EXCLUDED.tenant_id,
         connector_name = EXCLUDED.connector_name,
         title = EXCLUDED.title,
         description = EXCLUDED.description,
@@ -619,12 +857,25 @@ export async function saveMcpTool(tool: McpToolRecord) {
         approval_required = EXCLUDED.approval_required,
         status = EXCLUDED.status,
         updated_at = EXCLUDED.updated_at
+      WHERE omni_mcp_tools.tenant_id = EXCLUDED.tenant_id
+        AND omni_mcp_tools.connector_id = EXCLUDED.connector_id
+      RETURNING id
     `;
+    if (!rows[0]) {
+      throw new Error("MCP tool id is already bound to another connector or tenant.");
+    }
     return record;
   }
 
   await mutateConnectorLedger((ledger) => {
-    ledger.tools = [record, ...ledger.tools.filter((item) => item.id !== record.id)];
+    ledger.tools = [
+      record,
+      ...ledger.tools.filter(
+        (item) =>
+          item.id !== record.id ||
+          normalizeTenantId(item.tenantId) !== record.tenantId,
+      ),
+    ];
     return ledger;
   });
   return record;
@@ -829,26 +1080,44 @@ export async function getMcpToolById(toolId: string, options: TenantScopedOption
   ) || null;
 }
 
-export async function recordMcpConnectorError(connector: McpConnectorRecord, error: string) {
+export async function recordMcpConnectorError(
+  connector: McpConnectorRecord,
+  error: string,
+  options: McpConnectorMutationOptions,
+) {
+  const executionScope = requireMcpMutationScope(
+    options.executionScope,
+    normalizeTenantId(connector.tenantId),
+  );
   const now = new Date().toISOString();
-  const saved = await saveMcpConnector({
+  const saved = await persistMcpConnector({
     ...connector,
     status: "error",
     lastError: error,
     updatedAt: now,
   });
   await syncMcpToolsForConnector(saved);
+  await appendMcpConnectorEvent({
+    connectorId: saved.id,
+    type: "connector.mcp.error_recorded",
+    executionScope,
+    payload: {
+      ...mcpConnectorEventMetadata(saved),
+      failureRecorded: true,
+    },
+  });
   await recordRuntimeEventSafely({
     level: "error",
     category: "connector",
     action: "connector.mcp.discovery_failed",
     tenantId: saved.tenantId,
+    actorId: executionScope.initiatingActorId || undefined,
+    correlationId: executionScope.correlationId,
     resourceType: "mcp_connector",
     resourceId: saved.id,
-    message: error,
+    message: "MCP connector discovery failed.",
     metadata: {
       failureType: "connector_failure",
-      connectorName: saved.name,
       connectorStatus: saved.status,
     },
   });
@@ -1053,6 +1322,100 @@ function normalizeTenantId(value?: string) {
     .trim()
     .replace(/[^a-zA-Z0-9_.:-]/g, "_")
     .slice(0, 120) || "default";
+}
+
+function requireMcpMutationScope(
+  candidate: ExecutionScope | undefined,
+  tenantId: string,
+) {
+  const executionScope = parsePersistedExecutionScope(candidate);
+  if (!executionScope) {
+    throw new Error("MCP connector mutations require a trusted execution scope.");
+  }
+  assertExecutionScopeTenant(executionScope, normalizeTenantId(tenantId));
+  if (!executionScope.executingPrincipalId) {
+    throw new Error("MCP connector mutations require an executing principal.");
+  }
+  if (
+    executionScope.executingPrincipalType === "user" &&
+    (
+      !executionScope.initiatingActorId ||
+      executionScope.executingPrincipalId !== executionScope.initiatingActorId
+    )
+  ) {
+    throw new Error("MCP connector user scope does not match its initiating actor.");
+  }
+  return executionScope;
+}
+
+async function appendMcpConnectorEvent(
+  input: {
+    id?: string;
+    connectorId: string;
+    type: McpConnectorDomainEventType;
+    executionScope: ExecutionScope;
+    payload?: Record<string, unknown>;
+  },
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
+  const executionScope = requireMcpMutationScope(
+    input.executionScope,
+    input.executionScope.tenantId,
+  );
+  return appendScopedDomainEvent({
+    id: input.id,
+    streamId: `connector:${input.connectorId}`,
+    type: input.type,
+    executionScope,
+    payload: {
+      ...input.payload,
+      schemaVersion: MCP_CONNECTOR_EVENT_SCHEMA_VERSION,
+      connectorId: input.connectorId,
+    },
+  }, options);
+}
+
+function mcpConnectorEventMetadata(connector: McpConnectorRecord) {
+  return {
+    connectorKind: "mcp",
+    status: connector.status,
+    authType: connector.authType,
+    defaultRiskLevel: connector.defaultRiskLevel,
+    approvalRequired: connector.approvalRequired,
+    credentialConfigured: Boolean(connector.credentialConfigured),
+    toolCount: connector.toolCount,
+  };
+}
+
+function mcpToolEventMetadata(tool: McpToolRecord) {
+  return {
+    connectorKind: "mcp",
+    toolId: tool.id,
+    status: tool.status,
+    riskLevel: tool.riskLevel,
+    approvalRequired: tool.approvalRequired,
+  };
+}
+
+function safeMcpConnectorChangedFields(input: UpdateMcpConnectorInput) {
+  const allowed = new Set<keyof UpdateMcpConnectorInput>([
+    "name",
+    "endpoint",
+    "authType",
+    "authTokenEnv",
+    "defaultRiskLevel",
+    "approvalRequired",
+    "status",
+  ]);
+  return (Object.keys(input) as Array<keyof UpdateMcpConnectorInput>)
+    .filter((key) => allowed.has(key))
+    .sort();
+}
+
+function executionScopeSha256(executionScope: ExecutionScope) {
+  return createHash("sha256")
+    .update(JSON.stringify(executionScope))
+    .digest("hex");
 }
 
 type McpConnectorFileCredentialReference = {

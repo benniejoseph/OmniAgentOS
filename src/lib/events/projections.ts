@@ -1,5 +1,9 @@
 import type { DomainEvent } from "@/lib/events/store";
 import type { RunStatus } from "@/lib/runs/types";
+import {
+  executionScopesEqual,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { applyOutcome } from "@/lib/trust/ledger";
 import { computeAutonomy } from "@/lib/trust/policy";
 import type { TrustProfile } from "@/lib/trust/types";
@@ -77,7 +81,66 @@ export type RunProjection = {
   memoryContextCount: number;
   toolCalls: RunToolCallProjection[];
   waitingApproval?: { executionId: string; toolId: string; message: string };
+  /** Additive P0.1 projection metadata; absent for legacy unscoped streams. */
+  scopeBinding?: ProjectionScopeBinding;
 };
+
+export type ProjectionScopeBinding = {
+  status: "bound" | "invalid" | "conflict";
+  version?: number;
+  executionScope?: ExecutionScope;
+  scopeSha256?: string;
+  boundAt?: string;
+};
+
+/**
+ * Fold immutable scope-binding events without changing a domain projection's
+ * legacy state semantics. Invalid or conflicting history is reported as data
+ * instead of silently selecting broader authority or taking the read down.
+ */
+export function foldProjectionScopeBinding(
+  events: DomainEvent[],
+  bindingEventType: string,
+): ProjectionScopeBinding | undefined {
+  const bindings = [...events]
+    .filter((event) => event.type === bindingEventType)
+    .sort((left, right) => left.seq - right.seq);
+  if (!bindings.length) return undefined;
+
+  let boundScope: ExecutionScope | undefined;
+  let boundAt: string | undefined;
+  let scopeSha256: string | undefined;
+  for (const event of bindings) {
+    const scope = event.executionScope;
+    if (!scope || event.tenantId !== scope.tenantId) {
+      return { status: "invalid" };
+    }
+    if (boundScope && !executionScopesEqual(boundScope, scope)) {
+      return {
+        status: "conflict",
+        version: boundScope.version,
+        executionScope: boundScope,
+        scopeSha256,
+        boundAt,
+      };
+    }
+    boundScope = scope;
+    boundAt ||= event.at;
+    scopeSha256 ||= typeof event.payload.scopeSha256 === "string"
+      ? event.payload.scopeSha256
+      : undefined;
+  }
+
+  return boundScope
+    ? {
+        status: "bound",
+        version: boundScope.version,
+        executionScope: boundScope,
+        scopeSha256,
+        boundAt,
+      }
+    : { status: "invalid" };
+}
 
 /**
  * Stage-2 (EVENT_LOG.md): rebuild a run's lifecycle status, response/error,
@@ -94,6 +157,8 @@ export function foldRunProjection(events: DomainEvent[]): RunProjection {
     memoryContextCount: 0,
     toolCalls: [],
   };
+  const scopeBinding = foldProjectionScopeBinding(ordered, "run.scope_bound");
+  if (scopeBinding) projection.scopeBinding = scopeBinding;
 
   for (const event of ordered) {
     const kind = event.type.replace("run.", "");

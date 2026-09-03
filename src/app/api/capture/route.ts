@@ -4,6 +4,7 @@ import {
   saveCaptureAsset,
   updateCaptureAssetStatus,
 } from "@/lib/capture/assets";
+import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseBoundedInteger } from "@/lib/http/body";
 import { BackgroundJobIdempotencyConflictError, enqueueKnowledgeIngestJob } from "@/lib/operations/background-jobs";
@@ -45,6 +46,11 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    context,
+    request,
+    "capture.asset.ingest",
+  );
 
   let form: FormData;
   try {
@@ -65,6 +71,7 @@ async function POSTHandler(request: Request) {
       const bytes = new Uint8Array(await file.arrayBuffer());
       asset = await saveCaptureAsset({
         ...context,
+        executionScope,
         filename: file.name,
         mediaType: file.type,
         bytes,
@@ -79,6 +86,8 @@ async function POSTHandler(request: Request) {
           sourceStreamId: `capture-asset:${asset.id}`,
           operation: "ocr",
           purpose: "capture.file.extract",
+          correlationId: executionScope.correlationId,
+          executionScope,
           credentialSource: "deployment_environment",
         },
       );
@@ -107,7 +116,7 @@ async function POSTHandler(request: Request) {
       };
     } else if (asset) {
       const captureError = error instanceof CaptureFileError ? error : undefined;
-      const stored = await updateCaptureAssetStatus(asset.id, context, {
+      const stored = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
         status: captureError?.status === 415 ? "unsupported" : "failed",
         extractionStatus: captureError?.status === 415 ? "unsupported" : "failed",
         error: error instanceof Error ? error.message : "The captured file could not be extracted.",
@@ -133,6 +142,7 @@ async function POSTHandler(request: Request) {
     job = await enqueueKnowledgeIngestJob({
       tenantId: context.tenantId,
       actorId: context.actorId,
+      executionScope,
       idempotencyKey: request.headers.get("idempotency-key")?.trim().slice(0, 200) || undefined,
       request: {
         ...document,
@@ -148,7 +158,7 @@ async function POSTHandler(request: Request) {
       return Response.json({ error: error.message }, { status: 409 });
     }
     if (asset) {
-      asset = await updateCaptureAssetStatus(asset.id, context, {
+      asset = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
         status: "failed",
         extractionStatus: "completed",
         error: error instanceof Error ? error.message : "Capture queue failed.",
@@ -157,7 +167,7 @@ async function POSTHandler(request: Request) {
     return Response.json({ error: error instanceof Error ? error.message : "Capture queue failed.", asset }, { status: 500 });
   }
   if (asset) {
-    asset = await updateCaptureAssetStatus(asset.id, context, {
+    asset = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
       status: "queued",
       extractionStatus: "completed",
       ingestJobId: job.id,

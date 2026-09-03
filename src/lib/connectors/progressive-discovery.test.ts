@@ -21,6 +21,7 @@ import type {
   OpenApiConnectorRecord,
   OpenApiOperationRecord,
 } from "@/lib/connectors/openapi-types";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 describe("progressive connector discovery", () => {
   it("searches active tenant metadata without schemas and hydrates exact contracts", async () => {
@@ -33,24 +34,24 @@ describe("progressive connector discovery", () => {
     try {
       const mcpConnector = mcpConnectorRecord();
       const mcpTool = mcpToolRecord(mcpConnector);
-      await saveMcpConnector(mcpConnector);
-      await saveMcpTool(mcpTool);
+      await saveMcpConnector(mcpConnector, connectorMutationOptions("tenant-a"));
+      await saveMcpTool(mcpTool, connectorMutationOptions("tenant-a"));
       await saveMcpConnector(mcpConnectorRecord({
         id: "disabled-mcp",
         status: "disabled",
-      }));
+      }), connectorMutationOptions("tenant-a"));
       await saveMcpTool(mcpToolRecord(mcpConnectorRecord({
         id: "disabled-mcp",
         status: "disabled",
-      })));
+      })), connectorMutationOptions("tenant-a"));
       await saveMcpConnector(mcpConnectorRecord({
         id: "other-tenant-mcp",
         tenantId: "tenant-b",
-      }));
+      }), connectorMutationOptions("tenant-b"));
       await saveMcpTool(mcpToolRecord(mcpConnectorRecord({
         id: "other-tenant-mcp",
         tenantId: "tenant-b",
-      })));
+      })), connectorMutationOptions("tenant-b"));
 
       const mcpMetadata = await searchActiveMcpToolMetadata({
         tenantId: "tenant-a",
@@ -69,14 +70,14 @@ describe("progressive connector discovery", () => {
           name: `generic_operation_${index}`,
           description: "Please use this generic connector operation.",
           updatedAt: `2026-08-26T00:${String(index).padStart(2, "0")}:00.000Z`,
-        }));
+        }), connectorMutationOptions("tenant-a"));
       }
       const calendarDigest = mcpToolRecord(mcpConnector, {
         name: "summarize_calendar_digest",
         description: "Summarize the calendar into a daily digest.",
         updatedAt: "2020-01-01T00:00:00.000Z",
       });
-      await saveMcpTool(calendarDigest);
+      await saveMcpTool(calendarDigest, connectorMutationOptions("tenant-a"));
       await expect(searchActiveMcpToolMetadata({
         tenantId: "tenant-a",
         query: "please use the calendar digest",
@@ -87,16 +88,16 @@ describe("progressive connector discovery", () => {
 
       const openApiConnector = openApiConnectorRecord();
       const operation = openApiOperationRecord(openApiConnector);
-      await saveOpenApiConnector(openApiConnector);
-      await saveOpenApiOperation(operation);
+      await saveOpenApiConnector(openApiConnector, connectorMutationOptions("tenant-a"));
+      await saveOpenApiOperation(operation, connectorMutationOptions("tenant-a"));
       await saveOpenApiConnector(openApiConnectorRecord({
         id: "disabled-openapi",
         status: "disabled",
-      }));
+      }), connectorMutationOptions("tenant-a"));
       await saveOpenApiOperation(openApiOperationRecord(openApiConnectorRecord({
         id: "disabled-openapi",
         status: "disabled",
-      })));
+      })), connectorMutationOptions("tenant-a"));
 
       const openApiMetadata = await searchActiveOpenApiOperationMetadata({
         tenantId: "tenant-a",
@@ -122,6 +123,19 @@ describe("progressive connector discovery", () => {
     }
   });
 });
+
+function connectorMutationOptions(tenantId: string) {
+  return {
+    executionScope: createExecutionScope({
+      tenantId,
+      initiatingActorId: "connector-test-actor",
+      executingPrincipalType: "user",
+      executingPrincipalId: "connector-test-actor",
+      correlationId: `connector-test:${tenantId}`,
+      purpose: "test.connector.mutation",
+    }),
+  };
+}
 
 function mcpConnectorRecord(
   overrides: Partial<McpConnectorRecord> = {},

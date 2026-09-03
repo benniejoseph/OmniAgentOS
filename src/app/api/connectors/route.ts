@@ -18,6 +18,8 @@ import {
 } from "@/lib/connectors/store";
 import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { createRequestTelemetry } from "@/lib/observability/store";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { assertPublicHttpUrl } from "@/lib/security/network";
 import {
@@ -137,6 +139,7 @@ async function GETHandler(request: Request) {
 }
 
 async function POSTHandler(request: Request) {
+  const telemetry = createRequestTelemetry(request, "mcp_connector");
   let body: unknown;
   try {
     body = await parseJsonBody(request);
@@ -207,20 +210,36 @@ async function POSTHandler(request: Request) {
       defaultRiskLevel: parsed.data.defaultRiskLevel ?? 2,
       approvalRequired: parsed.data.approvalRequired ?? true,
     }),
+    {
+      executionScope: executionScopeFromSecurityContext(context, {
+        correlationId: telemetry.correlationId,
+        purpose: "connector.mcp.create",
+      }),
+    },
   );
 
   if (parsed.data.authType === "bearer_vault") {
     try {
       await storeMcpBearerCredential({
         tenantId: context.tenantId,
-        actorId: context.actorId,
         connectorId: connector.id,
         endpoint: connector.endpoint,
         bearerToken: parsed.data.bearerToken!,
+        executionScope: executionScopeFromSecurityContext(context, {
+          correlationId: telemetry.correlationId,
+          causationId: connector.id,
+          purpose: "connector.mcp.credential.save",
+        }),
       });
       connector = (await getMcpConnector(connector.id, { tenantId: context.tenantId }))!;
     } catch (error) {
-      await deleteMcpConnector(connector.id, { tenantId: context.tenantId }).catch(() => undefined);
+      await deleteMcpConnector(connector.id, {
+        executionScope: executionScopeFromSecurityContext(context, {
+          correlationId: telemetry.correlationId,
+          causationId: connector.id,
+          purpose: "connector.mcp.create.rollback",
+        }),
+      }).catch(() => undefined);
       return connectorCredentialErrorResponse(error);
     }
   }
@@ -240,6 +259,12 @@ async function POSTHandler(request: Request) {
       capabilities: discovery.capabilities,
       instructions: discovery.instructions,
       serverVersion: discovery.serverVersion,
+    }, {
+      executionScope: executionScopeFromSecurityContext(context, {
+        correlationId: telemetry.correlationId,
+        causationId: connector.id,
+        purpose: "connector.mcp.discover",
+      }),
     });
     return Response.json(
       {
@@ -255,7 +280,17 @@ async function POSTHandler(request: Request) {
     const message = error instanceof Error ? error.message : "MCP discovery failed.";
     return Response.json(
       {
-        connector: redactMcpConnector(await recordMcpConnectorError(connector, message)),
+        connector: redactMcpConnector(await recordMcpConnectorError(
+          connector,
+          message,
+          {
+            executionScope: executionScopeFromSecurityContext(context, {
+              correlationId: telemetry.correlationId,
+              causationId: connector.id,
+              purpose: "connector.mcp.discovery_error.record",
+            }),
+          },
+        )),
         tools: [],
         error: message,
         discoveryFailed: true,

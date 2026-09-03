@@ -41,6 +41,7 @@ import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
+  executionScopeFromSecurityContext,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import { assertPublicHttpUrl, fetchPublicHttpUrl } from "@/lib/security/network";
@@ -726,15 +727,28 @@ export async function executeGovernedTool({
     });
     const saved = await persistRecord(record);
     if (tool.category === "mcp") {
-      await captureBrowserFrameAfterToolSafely({
-        toolId: tool.id,
-        toolInput: preparedInput,
-        toolResult: safeResult,
-        executionId: saved.id,
-        context: toolRuntimeContext,
-        sessionScope: mcpSessionScope,
-        abortSignal,
-      });
+      const frameExecutionScope = scopedRequest.executionScope ||
+        (toolRuntimeContext
+          ? executionScopeFromSecurityContext(toolRuntimeContext, {
+              executingPrincipalType: "system",
+              executingPrincipalId: "browser-frame-recorder",
+              correlationId: saved.id,
+              causationId: saved.id,
+              purpose: "browser.frame.capture.legacy",
+            })
+          : undefined);
+      if (frameExecutionScope) {
+        await captureBrowserFrameAfterToolSafely({
+          toolId: tool.id,
+          toolInput: preparedInput,
+          toolResult: safeResult,
+          executionId: saved.id,
+          executionScope: frameExecutionScope,
+          context: toolRuntimeContext,
+          sessionScope: mcpSessionScope,
+          abortSignal,
+        });
+      }
     }
     if (autonomyApproved) {
       await recordRuntimeEventSafely({

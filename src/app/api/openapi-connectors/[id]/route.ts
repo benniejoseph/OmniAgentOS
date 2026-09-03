@@ -8,6 +8,7 @@ import {
 } from "@/lib/connectors/openapi-store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { assertPublicHttpUrl } from "@/lib/security/network";
 
@@ -152,7 +153,13 @@ async function PATCHHandler(
         authTokenEnv: parsed.data.authTokenEnv === null ? "" : parsed.data.authTokenEnv,
         authHeaderName: parsed.data.authHeaderName === null ? "" : parsed.data.authHeaderName,
       },
-      { tenantId: securityContext.tenantId },
+      {
+        executionScope: executionScopeFromSecurityContext(securityContext, {
+          correlationId: telemetry.correlationId,
+          causationId: id,
+          purpose: "connector.openapi.update",
+        }),
+      },
     );
 
     if (!connector) {
@@ -221,7 +228,13 @@ async function DELETEHandler(
   }
 
   try {
-    const deleted = await deleteOpenApiConnector(id, { tenantId: securityContext.tenantId });
+    const deleted = await deleteOpenApiConnector(id, {
+      executionScope: executionScopeFromSecurityContext(securityContext, {
+        correlationId: telemetry.correlationId,
+        causationId: id,
+        purpose: "connector.openapi.delete",
+      }),
+    });
     if (!deleted) {
       await recordConnectorEvent({
         telemetry,
