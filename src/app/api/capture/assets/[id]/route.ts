@@ -108,7 +108,17 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     let content = "";
     let contentOrigin: "extracted" | "supplied_note" = "extracted";
     try {
-      const extracted = await extractCaptureFile(new File([bytes], asset.filename, { type: asset.mediaType }));
+      const extracted = await extractCaptureFile(
+        new File([bytes], asset.filename, { type: asset.mediaType }),
+        {
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          sourceStreamId: `capture-asset:${asset.id}`,
+          operation: "ocr",
+          purpose: "capture.asset.extract",
+          credentialSource: "deployment_environment",
+        },
+      );
       title = parsed.data.title || extracted.title;
       content = extracted.content;
     } catch (error) {
@@ -122,6 +132,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     if (!content.trim()) throw new CaptureFileError("The stored asset has no extractable or supplied text to index.", 400, "no_readable_text", asset.extension);
     const job = await enqueueKnowledgeIngestJob({
       tenantId: context.tenantId,
+      actorId: context.actorId,
       idempotencyKey: request.headers.get("idempotency-key")?.trim().slice(0, 200) || `capture-asset:${asset.id}`,
       request: {
         title,

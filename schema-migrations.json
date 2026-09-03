@@ -153,5 +153,20 @@
     "version": 31,
     "name": "app_managed_mcp_connector_credentials",
     "checksum": "4e2984db8326387d5f2f986adf9b57e68e4585974ea1396d07533dddf7c4df1b"
+  },
+  {
+    "version": 32,
+    "name": "unified_ai_usage_ledger",
+    "checksum": "5aeef094ee18a0c5cb3605d8d3dd335a4c4d3de874f1d4cc9c797d00db8c40d8"
+  },
+  {
+    "version": 33,
+    "name": "unified_ai_usage_ledger_compatibility",
+    "checksum": "2397fee16c95c3e3cf0a42c76b4cb54db9ee7e9a14d088679be96715917c3b85"
+  },
+  {
+    "version": 34,
+    "name": "durable_mobile_sessions",
+    "checksum": "b2eda03f3a1287fdf67042851ae1cd76a902375a4ba00f0835f7085c3c699d38"
   }
 ]

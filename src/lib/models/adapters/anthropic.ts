@@ -12,13 +12,17 @@ import type {
   ModelTextRequest,
   ModelToolTurnRequest,
 } from "@/lib/models/types";
-import { ModelProviderError } from "@/lib/models/types";
+import {
+  attachModelProviderResponseReceipt,
+  ModelProviderError,
+} from "@/lib/models/types";
 import type { ModelUsage } from "@/lib/openai/model-router";
 import { getModelRuntimeApiKey } from "@/lib/models/runtime-context";
 
 const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 
 type AnthropicResponse = {
+  id?: string;
   model?: string;
   stop_reason?: string;
   content?: Array<{
@@ -49,12 +53,18 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
   },
   async generateText(request, target) {
     const result = await callAnthropic(request, target);
-    const text = (result.body.content || [])
+    const text = anthropicContent(result.body)
       .filter((item) => item.type === "text")
       .map((item) => item.text || "")
       .join("")
       .trim();
-    if (!text) throw new ModelProviderError("Claude returned no text.", "anthropic", "unknown", false);
+    if (!text) {
+      throw anthropicResponseFailure(
+        new ModelProviderError("Claude returned no text.", "anthropic", "unknown", false),
+        result,
+        target,
+      );
+    }
     return modelResult(result.body, target, result.latencyMs, text);
   },
   async generateStructured(request, target) {
@@ -66,11 +76,15 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
       }],
       tool_choice: { type: "tool", name: request.name.slice(0, 64) },
     });
-    const toolUse = (result.body.content || []).find((item) =>
+    const toolUse = anthropicContent(result.body).find((item) =>
       item.type === "tool_use" && item.name === request.name.slice(0, 64)
     );
     if (!toolUse || !toolUse.input || typeof toolUse.input !== "object") {
-      throw new ModelProviderError("Claude returned no structured tool result.", "anthropic", "invalid_request", false);
+      throw anthropicResponseFailure(
+        new ModelProviderError("Claude returned no structured tool result.", "anthropic", "invalid_request", false),
+        result,
+        target,
+      );
     }
     return modelResult(result.body, target, result.latencyMs, JSON.stringify(toolUse.input));
   },
@@ -84,12 +98,13 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
         input_schema: tool.parameters,
       })),
     });
-    const text = (result.body.content || [])
+    const content = anthropicContent(result.body);
+    const text = content
       .filter((item) => item.type === "text")
       .map((item) => item.text || "")
       .join("")
       .trim();
-    const toolCalls = (result.body.content || []).flatMap((item) => {
+    const toolCalls = content.flatMap((item) => {
       if (item.type !== "tool_use" || !item.id || !item.name) return [];
       return [{
         callId: item.id,
@@ -100,11 +115,15 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
       }];
     });
     if (!text && !toolCalls.length) {
-      throw new ModelProviderError(
-        "Claude returned neither text nor tool calls.",
-        "anthropic",
-        "unknown",
-        false,
+      throw anthropicResponseFailure(
+        new ModelProviderError(
+          "Claude returned neither text nor tool calls.",
+          "anthropic",
+          "unknown",
+          false,
+        ),
+        result,
+        target,
       );
     }
     return {
@@ -116,7 +135,7 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
           ...messages,
           {
             role: "assistant",
-            content: result.body.content || [],
+            content,
           },
         ],
       },
@@ -157,10 +176,15 @@ async function callAnthropic(
     error.status = response.status;
     throw error;
   }
+  const result = { body, latencyMs: Date.now() - startedAt };
   if (body.stop_reason === "refusal") {
-    throw new ModelProviderError("Claude refused the request.", "anthropic", "safety", false);
+    throw anthropicResponseFailure(
+      new ModelProviderError("Claude refused the request.", "anthropic", "safety", false),
+      result,
+      target,
+    );
   }
-  return { body, latencyMs: Date.now() - startedAt };
+  return result;
 }
 
 function anthropicToolMessages(request: ModelToolTurnRequest) {
@@ -200,7 +224,34 @@ function modelResult(body: AnthropicResponse, target: ModelTarget, latencyMs: nu
     usage,
     latencyMs,
     ...pricing,
+    ...(body.id ? { providerRequestId: body.id } : {}),
   };
+}
+
+function anthropicContent(body: AnthropicResponse) {
+  return Array.isArray(body.content) ? body.content : [];
+}
+
+function anthropicResponseFailure(
+  error: Error,
+  result: { body: AnthropicResponse; latencyMs: number },
+  target: ModelTarget,
+) {
+  const usage = anthropicUsage(result.body.usage);
+  const pricing = estimateProviderCost(
+    "anthropic",
+    result.body.model || target.model,
+    usage,
+  );
+  return attachModelProviderResponseReceipt(error, {
+    usage,
+    latencyMs: result.latencyMs,
+    model: result.body.model || target.model,
+    estimatedCostUsd: pricing.costKnown
+      ? pricing.estimatedCostUsd
+      : undefined,
+    providerRequestId: result.body.id,
+  });
 }
 
 function anthropicUsage(raw: AnthropicResponse["usage"]): ModelUsage {

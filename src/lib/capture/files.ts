@@ -1,5 +1,6 @@
 import { hasOpenAIKey } from "@/lib/config";
 import { extractTextFromImages } from "@/lib/openai/ocr";
+import type { AiUsageScope } from "@/lib/usage/types";
 
 export const MAX_CAPTURE_FILE_BYTES = 5 * 1024 * 1024;
 
@@ -42,7 +43,7 @@ export function captureTitle(filename: string, fallback = "Untitled capture") {
   return clean.slice(0, 240) || fallback;
 }
 
-export async function extractCaptureFile(file: File) {
+export async function extractCaptureFile(file: File, usageScope?: AiUsageScope) {
   if (!file.size) throw new CaptureFileError("The selected file is empty.", 400, "empty_file");
   if (file.size > MAX_CAPTURE_FILE_BYTES) throw new CaptureFileError("Files must be 5 MB or smaller.", 413, "file_too_large");
   const extension = resolveExtension(file);
@@ -55,10 +56,10 @@ export async function extractCaptureFile(file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   let content: string;
   try {
-    if (extension === "pdf") content = await extractPdfText(bytes);
+    if (extension === "pdf") content = await extractPdfText(bytes, usageScope);
     else if (extension === "docx") content = await extractDocxText(bytes);
     else if (archiveDocumentExtensions.has(extension)) content = await extractArchiveDocumentText(bytes, extension);
-    else if (imageExtensions.has(extension)) content = await extractImageText(bytes, extension);
+    else if (imageExtensions.has(extension)) content = await extractImageText(bytes, extension, usageScope);
     else if (extension === "eml") content = extractEmailText(bytes);
     else if (extension === "ics") content = extractCalendarText(bytes);
     else if (extension === "rtf") content = extractRtfText(bytes);
@@ -121,7 +122,7 @@ function extractCalendarText(bytes: Uint8Array) {
   }).join("\n");
 }
 
-async function extractPdfText(bytes: Uint8Array) {
+async function extractPdfText(bytes: Uint8Array, usageScope?: AiUsageScope) {
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: bytes.slice() });
   try {
@@ -129,16 +130,22 @@ async function extractPdfText(bytes: Uint8Array) {
     if (result.text.trim()) return result.text;
     if (!hasOpenAIKey()) throw new CaptureFileError("This PDF appears to be scanned and OCR is not configured.", 503, "ocr_not_configured", "pdf");
     const pages = await parser.getScreenshot({ first: 10, desiredWidth: 1600, imageDataUrl: true, imageBuffer: false });
-    return extractTextFromImages(pages.pages.map((page) => page.dataUrl).filter(Boolean));
+    return extractTextFromImages(
+      pages.pages.map((page) => page.dataUrl).filter(Boolean),
+      usageScope,
+    );
   } finally {
     await parser.destroy().catch(() => undefined);
   }
 }
 
-async function extractImageText(bytes: Uint8Array, extension: string) {
+async function extractImageText(bytes: Uint8Array, extension: string, usageScope?: AiUsageScope) {
   if (!hasOpenAIKey()) throw new CaptureFileError("Image OCR is not configured.", 503, "ocr_not_configured", extension);
   const mediaType = extension === "jpg" || extension === "jpeg" ? "image/jpeg" : `image/${extension}`;
-  return extractTextFromImages([`data:${mediaType};base64,${Buffer.from(bytes).toString("base64")}`]);
+  return extractTextFromImages(
+    [`data:${mediaType};base64,${Buffer.from(bytes).toString("base64")}`],
+    usageScope,
+  );
 }
 
 async function extractDocxText(bytes: Uint8Array) {

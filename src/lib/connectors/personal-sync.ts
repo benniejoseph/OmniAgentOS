@@ -32,7 +32,12 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
   try {
     const accessToken = await activeAccessToken(input, secrets.tokens, secrets.grant.expiresAt);
     const cursor = parseCursor(secrets.syncCursor);
-    const result = await syncGoogle(accessToken, cursor, input.abortSignal);
+    const result = await syncGoogle(
+      accessToken,
+      cursor,
+      input.abortSignal,
+      { tenantId: input.tenantId, actorId: input.actorId, provider: input.provider },
+    );
     let imported = 0;
     let removed = 0;
     for (const item of result.items.slice(0, 40)) {
@@ -52,6 +57,14 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
         sourceType: "api",
         tags: ["connected-source", input.provider, item.kind],
         abortSignal: input.abortSignal,
+        usageScope: {
+          tenantId: input.tenantId,
+          actorId: input.actorId,
+          sourceStreamId: `connector-sync:${input.provider}:${input.actorId}`,
+          operation: "embedding",
+          purpose: `connector.${input.provider}.${item.kind}.ingest`,
+          credentialSource: "deployment_environment",
+        },
       });
       imported += 1;
     }
@@ -73,12 +86,17 @@ async function activeAccessToken(input: { tenantId: string; actorId: string; pro
   return String(refreshed.access_token);
 }
 
-async function syncGoogle(accessToken: string, cursor: SyncCursor, signal?: AbortSignal) {
+async function syncGoogle(
+  accessToken: string,
+  cursor: SyncCursor,
+  signal?: AbortSignal,
+  identity?: { tenantId: string; actorId: string; provider: OAuthProvider },
+) {
   const headers = { authorization: `Bearer ${accessToken}`, accept: "application/json" };
   const [mail, calendar, drive] = await Promise.all([
     googleMail(headers, cursor.gmailHistoryId, signal),
     googleCalendar(headers, cursor.calendar, signal),
-    googleDrive(headers, cursor.driveModifiedAfter, signal),
+    googleDrive(headers, cursor.driveModifiedAfter, signal, identity),
   ]);
   return { items: [...mail.items, ...calendar.items, ...drive.items], cursor: { ...cursor, gmailHistoryId: mail.historyId, calendar: calendar.syncToken, driveModifiedAfter: drive.modifiedAfter } };
 }
@@ -130,7 +148,12 @@ async function googleCalendar(headers: Record<string, string>, syncToken?: strin
   return { items, syncToken: String(payload.nextSyncToken || syncToken || "") || undefined };
 }
 
-async function googleDrive(headers: Record<string, string>, modifiedAfter?: string, signal?: AbortSignal) {
+async function googleDrive(
+  headers: Record<string, string>,
+  modifiedAfter?: string,
+  signal?: AbortSignal,
+  identity?: { tenantId: string; actorId: string; provider: OAuthProvider },
+) {
   const url = new URL("https://www.googleapis.com/drive/v3/files");
   url.searchParams.set("pageSize", "20");
   url.searchParams.set("orderBy", "modifiedTime desc");
@@ -162,7 +185,17 @@ async function googleDrive(headers: Record<string, string>, modifiedAfter?: stri
       if (download) {
         try {
           const bytes = await providerBytes(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, headers, signal, 5 * 1024 * 1024);
-          const parsed = await extractCaptureFile(new File([bytes], `${String(file.name || "drive-file")}.${download.extension}`, { type: download.mimeType }));
+          const parsed = await extractCaptureFile(
+            new File([bytes], `${String(file.name || "drive-file")}.${download.extension}`, { type: download.mimeType }),
+            identity ? {
+              tenantId: identity.tenantId,
+              actorId: identity.actorId,
+              sourceStreamId: `connector-sync:${identity.provider}:${identity.actorId}`,
+              operation: "ocr",
+              purpose: "connector.google.drive.extract",
+              credentialSource: "deployment_environment",
+            } : undefined,
+          );
           extracted = parsed.content.slice(0, 100_000);
         } catch {
           // Metadata remains useful when a Drive binary cannot be extracted.

@@ -1,6 +1,17 @@
 import { WEB_SEARCH_MODEL, WEB_SEARCH_TIMEOUT_MS, hasOpenAIKey } from "@/lib/config";
-import { getOpenAIClient } from "@/lib/openai/client";
+import {
+  classifyOpenAITerminalResponse,
+  getOpenAIClient,
+} from "@/lib/openai/client";
+import {
+  attachModelProviderResponseReceipt,
+  getModelProviderResponseReceipt,
+  ModelProviderError,
+} from "@/lib/models/types";
+import { estimateWebSearchCostUsd } from "@/lib/openai/model-router";
 import { citationIdForWebUrl } from "@/lib/rag/citations";
+import { recordAiUsageSafely } from "@/lib/usage/ledger";
+import type { AiUsageScope } from "@/lib/usage/types";
 
 export type LiveWebSearchContextSize = "low" | "medium" | "high";
 
@@ -44,12 +55,14 @@ export async function runLiveWebSearch({
   allowedDomains,
   maxSources = 8,
   abortSignal,
+  usageScope,
 }: {
   query: string;
   contextSize?: LiveWebSearchContextSize;
   allowedDomains?: string[];
   maxSources?: number;
   abortSignal?: AbortSignal;
+  usageScope?: AiUsageScope;
 }): Promise<LiveWebSearchResult> {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) {
@@ -66,6 +79,7 @@ export async function runLiveWebSearch({
     : timeoutController.signal;
 
   let response;
+  const startedAt = Date.now();
   try {
     response = await getOpenAIClient().responses.create(
       {
@@ -99,6 +113,63 @@ export async function runLiveWebSearch({
       },
       { signal: combinedSignal },
     );
+    const usage = normalizeWebUsage(response);
+    const estimatedCostUsd = response.usage
+      ? estimateWebSearchCostUsd(WEB_SEARCH_MODEL, usage, 1)
+      : undefined;
+    const responseFailure = classifyOpenAITerminalResponse(response);
+    if (responseFailure) {
+      throw attachModelProviderResponseReceipt(responseFailure, {
+        usage,
+        latencyMs: Date.now() - startedAt,
+        model: WEB_SEARCH_MODEL,
+        estimatedCostUsd,
+        providerRequestId: response.id,
+      });
+    }
+    if (usageScope) {
+      await recordAiUsageSafely({
+        ...usageScope,
+        status: "completed",
+        provider: "openai",
+        model: WEB_SEARCH_MODEL,
+        usage: { ...usage, searchQueryCount: 1 },
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 0,
+        latencyMs: Date.now() - startedAt,
+        estimatedCostUsd,
+        providerRequestId: response.id,
+      });
+    }
+  } catch (error) {
+    const responseReceipt = getModelProviderResponseReceipt(error);
+    const providerFailure = error instanceof ModelProviderError ? error : undefined;
+    if (usageScope) {
+      await recordAiUsageSafely({
+        ...usageScope,
+        status: "failed",
+        provider: "openai",
+        model: WEB_SEARCH_MODEL,
+        usage: {
+          ...(responseReceipt?.usage || {}),
+          searchQueryCount: 1,
+        },
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 1,
+        latencyMs: Date.now() - startedAt,
+        estimatedCostUsd: responseReceipt?.estimatedCostUsd,
+        providerRequestId: responseReceipt?.providerRequestId,
+        failureKind: combinedSignal.aborted
+          ? "abort"
+          : providerFailure?.kind || "provider_error",
+        retryable: combinedSignal.aborted
+          ? false
+          : providerFailure?.retryable ?? true,
+      });
+    }
+    throw error;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -114,6 +185,26 @@ export async function runLiveWebSearch({
     sources,
     sourceCount: sources.length,
   };
+}
+
+function normalizeWebUsage(response: unknown) {
+  const raw = response && typeof response === "object"
+    ? (response as { usage?: Record<string, unknown> }).usage
+    : undefined;
+  const details = raw?.input_tokens_details as Record<string, unknown> | undefined;
+  const inputTokens = finiteUsageUnit(raw?.input_tokens);
+  const outputTokens = finiteUsageUnit(raw?.output_tokens);
+  return {
+    inputTokens,
+    cachedInputTokens: finiteUsageUnit(details?.cached_tokens),
+    outputTokens,
+    totalTokens: finiteUsageUnit(raw?.total_tokens) || inputTokens + outputTokens,
+  };
+}
+
+function finiteUsageUnit(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : 0;
 }
 
 // Cap how much web evidence is injected into the agent prompt. The production

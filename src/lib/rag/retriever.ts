@@ -7,6 +7,7 @@ import { createKnowledgeDocument, searchKnowledge } from "@/lib/rag/store";
 import { jsonbSafeText } from "@/lib/rag/text-safety";
 import type { KnowledgeSearchResult, KnowledgeSourceType } from "@/lib/rag/types";
 import { redactSensitive } from "@/lib/security/context";
+import type { AiUsageScope } from "@/lib/usage/types";
 
 export async function ingestTextDocument({
   idempotencyKey,
@@ -19,6 +20,7 @@ export async function ingestTextDocument({
   metadata,
   evidenceRefs = [],
   abortSignal,
+  usageScope,
 }: {
   idempotencyKey?: string;
   tenantId?: string;
@@ -30,6 +32,7 @@ export async function ingestTextDocument({
   metadata?: Record<string, unknown>;
   evidenceRefs?: string[];
   abortSignal?: AbortSignal;
+  usageScope?: AiUsageScope;
 }) {
   const safeTitle = jsonbSafeText(String(redactSensitive(title)).slice(0, 240));
   const safeContent = jsonbSafeText(
@@ -48,6 +51,7 @@ export async function ingestTextDocument({
   const embeddings = await embedKnowledgeTexts(
     chunks.map((chunk) => chunk.content),
     abortSignal,
+    usageScope,
   );
   abortSignal?.throwIfAborted();
   const knowledge = await createKnowledgeDocument({
@@ -100,9 +104,13 @@ export async function ingestTextDocument({
   };
 }
 
-async function embedKnowledgeTexts(input: string[], abortSignal?: AbortSignal) {
+async function embedKnowledgeTexts(
+  input: string[],
+  abortSignal?: AbortSignal,
+  usageScope?: AiUsageScope,
+) {
   try {
-    return await embedTexts(input, abortSignal);
+    return await embedTexts(input, abortSignal, usageScope);
   } catch (error) {
     if (abortSignal?.aborted) throw abortSignal.reason || error;
     // Lexical RAG and durable memory remain useful when the optional vector
@@ -111,9 +119,13 @@ async function embedKnowledgeTexts(input: string[], abortSignal?: AbortSignal) {
   }
 }
 
-export async function retrieveContext(query: string, limit = 8, options: { tenantId?: string } = {}) {
+export async function retrieveContext(
+  query: string,
+  limit = 8,
+  options: { tenantId?: string; usageScope?: AiUsageScope } = {},
+) {
   const safeQuery = String(redactSensitive(query));
-  const queryEmbedding = (await embedTexts([safeQuery]))?.[0];
+  const queryEmbedding = (await embedTexts([safeQuery], undefined, options.usageScope))?.[0];
   const [memoryResults, knowledgeResults] = await Promise.all([
     searchMemories(safeQuery, { limit, queryEmbedding, tenantId: options.tenantId }),
     searchKnowledge(safeQuery, { limit, queryEmbedding, tenantId: options.tenantId }),

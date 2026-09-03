@@ -88,6 +88,7 @@ Key properties:
 - Gated calls create `approval_required` records and persist a run continuation. Approval executes the real call and resumes the same run with its saved conversation and outputs.
 - The loop re-sends instructions and the complete conversation array on every turn. It does not use `previous_response_id`, so it remains compatible with OpenAI Zero Data Retention.
 - Step budget (`OMNIAGENT_AGENT_MAX_TOOL_STEPS`), per-turn call cap, and output truncation bound cost.
+- Each run emits one `run.harness` receipt with the effective context decision, model route, tool/skill set, approval mode, execution budgets, and contract hashes.
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
 ## Durable workflows
@@ -105,6 +106,7 @@ Schema changes run as ordered, idempotent migrations under a Postgres advisory l
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.
+- `omni_ai_usage` is the canonical tenant/actor-scoped projection for every paid or metered AI operation. Each logical receipt retains per-provider-call usage, price provenance, failure state, and request identity so fallback totals are attributed to the provider/model that incurred them. Its matching `ai.usage.recorded` event preserves the typed decision receipt; run and observability copies are compatibility views, not accounting sources.
 - Tool-execution records are mutable by design while status, approvals, and output are resolved.
 - Local JSON ledgers are bounded and rewrite files during updates; they are not an immutable audit archive.
 - Signed evaluation exports provide integrity evidence, but durable retention and object-lock controls belong in the deployment platform.

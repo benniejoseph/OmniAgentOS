@@ -38,6 +38,8 @@ export type DomainEvent = {
 };
 
 export type AppendDomainEventInput = {
+  /** Stable server-generated identity for idempotent projection repair. */
+  id?: string;
   streamId: string;
   type: string;
   tenantId?: string;
@@ -92,8 +94,12 @@ export async function appendDomainEvent(
     throw new Error("Domain event causation does not match its execution scope.");
   }
 
+  const requestedId = input.id?.trim();
+  if (input.id !== undefined && (!requestedId || requestedId.length > 240)) {
+    throw new Error("Domain event id must be between 1 and 240 characters.");
+  }
   const event: DomainEvent = {
-    id: randomUUID(),
+    id: requestedId || randomUUID(),
     seq: 0,
     streamId: input.streamId,
     type: input.type,
@@ -122,7 +128,21 @@ export async function appendDomainEvent(
     return { ...event, seq: Number(rows[0]?.seq || 0) };
   }
 
+  let persistedEvent = event;
   await updateJsonFile<EventLedger>(getEventsFile(), { nextSeq: 1, events: [] }, (ledger) => {
+    const existing = ledger.events.find((item) => item.id === event.id);
+    if (existing) {
+      if (
+        existing.tenantId !== event.tenantId ||
+        existing.actorId !== event.actorId ||
+        existing.streamId !== event.streamId ||
+        existing.type !== event.type
+      ) {
+        throw new Error("Domain event id is already bound to a different event.");
+      }
+      persistedEvent = existing;
+      return ledger;
+    }
     event.seq = ledger.nextSeq;
     ledger.nextSeq += 1;
     ledger.events.push(event);
@@ -138,7 +158,7 @@ export async function appendDomainEvent(
     }
     return ledger;
   });
-  return event;
+  return persistedEvent;
 }
 
 function boundedEventPayload(

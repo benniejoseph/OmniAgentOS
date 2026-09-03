@@ -8,6 +8,15 @@ import {
   hasOpenAIKey,
 } from "@/lib/config";
 import { estimateModelCostUsd, type ModelUsage } from "@/lib/openai/model-router";
+import {
+  attachModelProviderResponseReceipt,
+  getModelProviderResponseReceipt,
+  ModelProviderError,
+  type ModelAttemptReceipt,
+  type ModelProviderResponseReceipt,
+} from "@/lib/models/types";
+import { recordAiUsageSafely } from "@/lib/usage/ledger";
+import type { AiUsageScope } from "@/lib/usage/types";
 
 let client: OpenAI | null = null;
 let readinessCache:
@@ -135,23 +144,69 @@ export async function getOpenAIReadiness(
   return result;
 }
 
-export async function embedTexts(input: string[], abortSignal?: AbortSignal) {
+export async function embedTexts(
+  input: string[],
+  abortSignal?: AbortSignal,
+  usageScope?: AiUsageScope,
+) {
   if (!hasOpenAIKey() || input.length === 0) {
     return null;
   }
 
-  const response = await getOpenAIClient().embeddings.create(
-    {
-      model: EMBEDDING_MODEL,
-      input,
-      ...(EMBEDDING_MODEL.startsWith("text-embedding-3")
-        ? { dimensions: EMBEDDING_DIMENSIONS }
-        : {}),
-    },
-    { signal: abortSignal },
-  );
-
-  return response.data.map((item) => item.embedding);
+  const startedAt = Date.now();
+  try {
+    const response = await getOpenAIClient().embeddings.create(
+      {
+        model: EMBEDDING_MODEL,
+        input,
+        ...(EMBEDDING_MODEL.startsWith("text-embedding-3")
+          ? { dimensions: EMBEDDING_DIMENSIONS }
+          : {}),
+      },
+      { signal: abortSignal },
+    );
+    if (usageScope) {
+      const inputTokens = finiteToken(response.usage?.prompt_tokens);
+      await recordAiUsageSafely({
+        ...usageScope,
+        status: "completed",
+        provider: "openai",
+        model: EMBEDDING_MODEL,
+        usage: {
+          inputTokens,
+          totalTokens: finiteToken(response.usage?.total_tokens) || inputTokens,
+        },
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 0,
+        latencyMs: Date.now() - startedAt,
+        estimatedCostUsd: estimateModelCostUsd(EMBEDDING_MODEL, {
+          inputTokens,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+          totalTokens: finiteToken(response.usage?.total_tokens) || inputTokens,
+        }),
+      });
+    }
+    return response.data.map((item) => item.embedding);
+  } catch (error) {
+    if (usageScope) {
+      await recordAiUsageSafely({
+        ...usageScope,
+        status: "failed",
+        provider: "openai",
+        model: EMBEDDING_MODEL,
+        usage: {},
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 1,
+        latencyMs: Date.now() - startedAt,
+        failureKind: abortSignal?.aborted ? "abort" : "provider_error",
+        retryable: !abortSignal?.aborted,
+      });
+    }
+    throw error;
+  }
 }
 
 export async function* streamOpenAIResponse({
@@ -229,6 +284,8 @@ export async function streamResponseTurn({
   model = AGENT_MODEL,
   fallbackModel,
   apiKey,
+  usageScope,
+  usageRecordId,
 }: {
   instructions?: string;
   input: ResponseTurnInput;
@@ -241,6 +298,10 @@ export async function streamResponseTurn({
   fallbackModel?: string;
   /** Server-only request credential. Never persist or include in receipts. */
   apiKey?: string;
+  /** Optional provider-bound metering scope for calls that are not metered by the gateway. */
+  usageScope?: AiUsageScope;
+  /** Stable receipt id lets a later run-event fallback converge without double counting. */
+  usageRecordId?: string;
 }): Promise<{
   responseId: string;
   functionCalls: ResponseFunctionCall[];
@@ -251,19 +312,33 @@ export async function streamResponseTurn({
   latencyMs: number;
   usage: ModelUsage;
   estimatedCostUsd?: number;
+  attempts: ModelAttemptReceipt[];
+  usageReceiptRecorded: boolean;
+  usageReceiptId?: string;
 }> {
   const startedAt = Date.now();
   let activeModel = model;
   let fallbackUsed = false;
   let emittedOutput = false;
+  let attemptStartedAt = startedAt;
+  const failedAttempts: ModelAttemptReceipt[] = [];
   let stream: Awaited<ReturnType<ReturnType<typeof getOpenAIClient>["responses"]["create"]>>;
   try {
     stream = await createTurnStream(activeModel);
   } catch (error) {
-    if (!fallbackModel || fallbackModel === activeModel) throw error;
+    addFailedAttempt(error);
+    if (!fallbackModel || fallbackModel === activeModel) {
+      throw attachResponseTurnAttempts(error, failedAttempts);
+    }
     activeModel = fallbackModel;
     fallbackUsed = true;
-    stream = await createTurnStream(activeModel);
+    attemptStartedAt = Date.now();
+    try {
+      stream = await createTurnStream(activeModel);
+    } catch (fallbackError) {
+      addFailedAttempt(fallbackError);
+      throw attachResponseTurnAttempts(fallbackError, failedAttempts);
+    }
   }
 
   function createTurnStream(selectedModel: string) {
@@ -282,18 +357,100 @@ export async function streamResponseTurn({
   );
   }
 
+  function addFailedAttempt(error: unknown) {
+    const aborted = Boolean(abortSignal?.aborted) ||
+      (error instanceof Error && error.name === "AbortError");
+    const providerFailure = error instanceof ModelProviderError ? error : undefined;
+    const responseReceipt = getModelProviderResponseReceipt(error);
+    failedAttempts.push({
+      provider: "openai",
+      model: responseReceipt?.model || activeModel,
+      status: "failed",
+      latencyMs: responseReceipt?.latencyMs ??
+        Math.max(0, Date.now() - attemptStartedAt),
+      ...(responseReceipt?.usage ? { usage: responseReceipt.usage } : {}),
+      ...(responseReceipt?.estimatedCostUsd !== undefined
+        ? { estimatedCostUsd: responseReceipt.estimatedCostUsd }
+        : {}),
+      ...(responseReceipt?.providerRequestId
+        ? { providerRequestId: responseReceipt.providerRequestId }
+        : {}),
+      ...(aborted
+        ? { failureKind: "abort" as const, retryable: false }
+        : providerFailure
+          ? {
+              failureKind: providerFailure.kind,
+              retryable: providerFailure.retryable,
+            }
+          : {}),
+    });
+  }
+
   let responseId = "";
   let text = "";
   const callsByItemId = new Map<string, { itemId: string; callId: string; name: string; argumentsJson: string }>();
   let usage: ModelUsage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 };
+  let usageObserved = false;
+  let terminalSeen = false;
+  let terminalFailure: ModelProviderError | undefined;
+  const billableFailureReceipts: ModelProviderResponseReceipt[] = [];
 
-  try {
-    for await (const rawEvent of stream as AsyncIterable<Record<string, unknown>>) {
+  async function consumeStreamEvent(rawEvent: Record<string, unknown>) {
     const eventType = String(rawEvent.type || "");
+    const response = rawEvent.response as {
+      id?: string;
+      usage?: Record<string, unknown>;
+      incomplete_details?: { reason?: string };
+    } | undefined;
 
-    if (eventType === "response.created") {
-      const response = rawEvent.response as { id?: string } | undefined;
+    if (
+      eventType === "response.created" ||
+      eventType === "response.completed" ||
+      eventType === "response.failed" ||
+      eventType === "response.incomplete"
+    ) {
       responseId = response?.id || responseId;
+    }
+    if (
+      (eventType === "response.completed" ||
+        eventType === "response.failed" ||
+        eventType === "response.incomplete") &&
+      response?.usage
+    ) {
+      usage = normalizeUsage(response.usage);
+      usageObserved = true;
+    }
+    if (eventType === "response.completed") terminalSeen = true;
+    if (eventType === "response.failed") {
+      terminalSeen = true;
+      terminalFailure = new ModelProviderError(
+        "OpenAI could not complete the response.",
+        "openai",
+        "unavailable",
+        true,
+      );
+    }
+    if (eventType === "response.incomplete") {
+      terminalSeen = true;
+      const reason = response?.incomplete_details?.reason || "";
+      terminalFailure = new ModelProviderError(
+        reason === "content_filter"
+          ? "OpenAI blocked the response for safety."
+          : "OpenAI returned an incomplete response.",
+        "openai",
+        reason === "content_filter" ? "safety" : "unknown",
+        false,
+      );
+      if (reason === "content_filter") emittedOutput = true;
+    }
+    if (eventType.startsWith("response.refusal.")) {
+      emittedOutput = true;
+      terminalFailure = new ModelProviderError(
+        "OpenAI refused the request.",
+        "openai",
+        "safety",
+        false,
+      );
     }
 
     if (eventType === "response.output_text.delta" && typeof rawEvent.delta === "string" && rawEvent.delta) {
@@ -324,42 +481,144 @@ export async function streamResponseTurn({
         call.argumentsJson = rawEvent.arguments;
       }
     }
-
-    if (eventType === "response.completed") {
-      const response = rawEvent.response as { id?: string; usage?: Record<string, unknown> } | undefined;
-      responseId = response?.id || responseId;
-      usage = normalizeUsage(response?.usage);
-    }
   }
+
+  function currentResponseFailure(error: unknown) {
+    return attachModelProviderResponseReceipt(error, {
+      ...(usageObserved ? { usage } : {}),
+      latencyMs: Date.now() - attemptStartedAt,
+      model: activeModel,
+      estimatedCostUsd: usageObserved
+        ? estimateModelCostUsd(activeModel, usage)
+        : undefined,
+      providerRequestId: responseId,
+    });
+  }
+
+  try {
+    for await (const rawEvent of stream as AsyncIterable<Record<string, unknown>>) {
+      await consumeStreamEvent(rawEvent);
+    }
+    if (!terminalSeen) {
+      throw currentResponseFailure(
+        new ModelProviderError(
+          "OpenAI ended the stream without a terminal response.",
+          "openai",
+          "unavailable",
+          true,
+        ),
+      );
+    }
+    if (terminalFailure) throw currentResponseFailure(terminalFailure);
   } catch (error) {
-    if (emittedOutput || fallbackUsed || !fallbackModel || fallbackModel === activeModel) throw error;
+    const meteredError = getModelProviderResponseReceipt(error)
+      ? error
+      : currentResponseFailure(error);
+    addFailedAttempt(meteredError);
+    const failedReceipt = getModelProviderResponseReceipt(meteredError);
+    if (emittedOutput || fallbackUsed || !fallbackModel || fallbackModel === activeModel) {
+      throw attachResponseTurnAttempts(meteredError, failedAttempts);
+    }
+    if (failedReceipt?.usage) billableFailureReceipts.push(failedReceipt);
     activeModel = fallbackModel;
     fallbackUsed = true;
-    stream = await createTurnStream(activeModel);
-    for await (const rawEvent of stream as AsyncIterable<Record<string, unknown>>) {
-      const eventType = String(rawEvent.type || "");
-      if (eventType === "response.created") responseId = (rawEvent.response as { id?: string } | undefined)?.id || responseId;
-      if (eventType === "response.output_text.delta" && typeof rawEvent.delta === "string" && rawEvent.delta) {
-        text += rawEvent.delta;
-        await onDelta(rawEvent.delta);
+    attemptStartedAt = Date.now();
+    responseId = "";
+    usage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 };
+    usageObserved = false;
+    terminalSeen = false;
+    terminalFailure = undefined;
+    try {
+      stream = await createTurnStream(activeModel);
+      for await (const rawEvent of stream as AsyncIterable<Record<string, unknown>>) {
+        await consumeStreamEvent(rawEvent);
       }
-      if (eventType === "response.output_item.added") {
-        const item = rawEvent.item as { id?: string; type?: string; call_id?: string; name?: string; arguments?: string } | undefined;
-        if (item?.type === "function_call" && item.id) callsByItemId.set(item.id, { itemId: item.id, callId: item.call_id || item.id, name: item.name || "", argumentsJson: item.arguments || "" });
+      if (!terminalSeen) {
+        throw currentResponseFailure(
+          new ModelProviderError(
+            "OpenAI ended the fallback stream without a terminal response.",
+            "openai",
+            "unavailable",
+            true,
+          ),
+        );
       }
-      if (eventType === "response.function_call_arguments.done") {
-        const call = callsByItemId.get(typeof rawEvent.item_id === "string" ? rawEvent.item_id : "");
-        if (call && typeof rawEvent.arguments === "string") call.argumentsJson = rawEvent.arguments;
-      }
-      if (eventType === "response.completed") {
-        const completed = rawEvent.response as { id?: string; usage?: Record<string, unknown> } | undefined;
-        responseId = completed?.id || responseId;
-        usage = normalizeUsage(completed?.usage);
-      }
+      if (terminalFailure) throw currentResponseFailure(terminalFailure);
+    } catch (fallbackError) {
+      const meteredFallbackError = getModelProviderResponseReceipt(fallbackError)
+        ? fallbackError
+        : currentResponseFailure(fallbackError);
+      addFailedAttempt(meteredFallbackError);
+      const fallbackReceipt = getModelProviderResponseReceipt(meteredFallbackError);
+      const billedReceipts = [
+        ...billableFailureReceipts,
+        ...(fallbackReceipt ? [fallbackReceipt] : []),
+      ];
+      const combinedError = billedReceipts.length
+        ? attachModelProviderResponseReceipt(meteredFallbackError, {
+            usage: sumModelUsage(billedReceipts),
+            latencyMs: Date.now() - startedAt,
+            model: fallbackReceipt?.model || activeModel,
+            estimatedCostUsd: sumKnownModelCost(billedReceipts),
+            providerRequestId: fallbackReceipt?.providerRequestId,
+          })
+        : meteredFallbackError;
+      throw attachResponseTurnAttempts(combinedError, failedAttempts);
     }
   }
 
   const calls = [...callsByItemId.values()];
+  const activeEstimatedCostUsd = estimateModelCostUsd(activeModel, usage);
+  const turnLatencyMs = Date.now() - startedAt;
+  const completedReceipt: ModelProviderResponseReceipt = {
+    usage,
+    latencyMs: Math.max(0, Date.now() - attemptStartedAt),
+    model: activeModel,
+    estimatedCostUsd: activeEstimatedCostUsd,
+    providerRequestId: responseId,
+  };
+  const billedReceipts = [...billableFailureReceipts, completedReceipt];
+  const attempts: ModelAttemptReceipt[] = [
+    ...failedAttempts,
+    {
+      provider: "openai",
+      model: activeModel,
+      status: "completed",
+      latencyMs: completedReceipt.latencyMs,
+      usage,
+      estimatedCostUsd: activeEstimatedCostUsd,
+      ...(responseId ? { providerRequestId: responseId } : {}),
+    },
+  ];
+  const totalUsage = sumModelUsage(billedReceipts);
+  const estimatedCostUsd = sumKnownModelCost(billedReceipts);
+  const usageReceiptRecorded = usageScope
+    ? Boolean(await recordAiUsageSafely({
+        ...usageScope,
+        ...(usageRecordId ? { id: usageRecordId } : {}),
+        status: "completed",
+        provider: "openai",
+        model: activeModel,
+        usage: totalUsage,
+        providerCallCount: attempts.length,
+        attemptCount: attempts.length,
+        failedAttemptCount: failedAttempts.length,
+        callReceipts: attempts.map((attempt) => ({
+          provider: attempt.provider,
+          model: attempt.model,
+          status: attempt.status,
+          usage: attempt.usage || {},
+          latencyMs: attempt.latencyMs,
+          estimatedCostUsd: attempt.estimatedCostUsd,
+          providerRequestId: attempt.providerRequestId,
+          failureKind: attempt.failureKind,
+          retryable: attempt.retryable,
+        })),
+        latencyMs: turnLatencyMs,
+        estimatedCostUsd,
+        providerRequestId: responseId,
+      }))
+    : false;
   return {
     responseId,
     text,
@@ -377,10 +636,71 @@ export async function streamResponseTurn({
     })),
     model: activeModel,
     fallbackUsed,
-    latencyMs: Date.now() - startedAt,
-    usage,
-    estimatedCostUsd: estimateModelCostUsd(activeModel, usage),
+    latencyMs: turnLatencyMs,
+    usage: totalUsage,
+    estimatedCostUsd,
+    attempts,
+    usageReceiptRecorded,
+    ...(usageRecordId ? { usageReceiptId: usageRecordId } : {}),
   };
+}
+
+function attachResponseTurnAttempts(
+  error: unknown,
+  attempts: ModelAttemptReceipt[],
+) {
+  const target = error instanceof Error
+    ? error
+    : new Error("OpenAI response turn failed.", { cause: error });
+  try {
+    Object.defineProperty(target, "attempts", {
+      value: [...attempts],
+      enumerable: false,
+      configurable: true,
+    });
+    return target;
+  } catch {
+    const wrapped = new Error(target.message, { cause: target });
+    Object.defineProperty(wrapped, "attempts", {
+      value: [...attempts],
+      enumerable: false,
+      configurable: false,
+    });
+    const responseReceipt = getModelProviderResponseReceipt(target);
+    return responseReceipt
+      ? attachModelProviderResponseReceipt(wrapped, responseReceipt)
+      : wrapped;
+  }
+}
+
+function sumModelUsage(receipts: readonly ModelProviderResponseReceipt[]): ModelUsage {
+  return receipts.reduce(
+    (total, receipt) => ({
+      inputTokens: total.inputTokens + (receipt.usage?.inputTokens || 0),
+      outputTokens: total.outputTokens + (receipt.usage?.outputTokens || 0),
+      cachedInputTokens:
+        total.cachedInputTokens + (receipt.usage?.cachedInputTokens || 0),
+      totalTokens: total.totalTokens + (receipt.usage?.totalTokens || 0),
+    }),
+    { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 },
+  );
+}
+
+function sumKnownModelCost(
+  receipts: readonly ModelProviderResponseReceipt[],
+) {
+  if (
+    !receipts.length ||
+    receipts.some((receipt) => receipt.estimatedCostUsd === undefined)
+  ) {
+    return undefined;
+  }
+  return Math.round(
+    receipts.reduce(
+      (total, receipt) => total + (receipt.estimatedCostUsd || 0),
+      0,
+    ) * 1_000_000,
+  ) / 1_000_000;
 }
 
 function normalizeUsage(raw?: Record<string, unknown>): ModelUsage {
@@ -409,6 +729,7 @@ export async function createStructuredResponse({
   reasoningEffort,
   model,
   apiKey,
+  usageScope,
 }: {
   instructions: string;
   input: string;
@@ -418,6 +739,7 @@ export async function createStructuredResponse({
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
   model?: string;
   apiKey?: string;
+  usageScope?: AiUsageScope;
 }) {
   return (await createStructuredResponseWithMetrics({
     instructions,
@@ -428,6 +750,7 @@ export async function createStructuredResponse({
     reasoningEffort,
     model,
     apiKey,
+    usageScope,
   })).text;
 }
 
@@ -440,6 +763,7 @@ export async function createStructuredResponseWithMetrics({
   reasoningEffort,
   model = AGENT_MODEL,
   apiKey,
+  usageScope,
 }: {
   instructions: string;
   input: string;
@@ -450,34 +774,154 @@ export async function createStructuredResponseWithMetrics({
   model?: string;
   /** Server-only request credential. Never persist or include in receipts. */
   apiKey?: string;
+  usageScope?: AiUsageScope;
 }) {
   const startedAt = Date.now();
-  const response = await getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
-    {
-      model,
-      instructions,
-      input,
-      text: {
-        format: {
-          type: "json_schema",
-          name,
-          strict: true,
-          schema,
+  try {
+    const response = await getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
+      {
+        model,
+        instructions,
+        input,
+        text: {
+          format: {
+            type: "json_schema",
+            name,
+            strict: true,
+            schema,
+          },
         },
+        ...(reasoningEffort && supportsReasoningEffort(model) ? { reasoning: { effort: reasoningEffort } } : {}),
+        store: false,
       },
-      ...(reasoningEffort && supportsReasoningEffort(model) ? { reasoning: { effort: reasoningEffort } } : {}),
-      store: false,
-    },
-    { signal: abortSignal },
-  );
+      { signal: abortSignal },
+    );
 
-  const usage = normalizeUsage(response.usage as unknown as Record<string, unknown> | undefined);
-  return {
-    text: response.output_text,
-    responseId: response.id,
-    model,
-    usage,
-    latencyMs: Date.now() - startedAt,
-    estimatedCostUsd: estimateModelCostUsd(model, usage),
-  };
+    const usage = normalizeUsage(response.usage as unknown as Record<string, unknown> | undefined);
+    const estimatedCostUsd = estimateModelCostUsd(model, usage);
+    const responseFailure = classifyOpenAITerminalResponse(response);
+    if (responseFailure || !response.output_text?.trim()) {
+      throw attachModelProviderResponseReceipt(
+        responseFailure || new ModelProviderError(
+          "OpenAI returned no structured output.",
+          "openai",
+          "unknown",
+          false,
+        ),
+        {
+          usage,
+          latencyMs: Date.now() - startedAt,
+          model,
+          estimatedCostUsd,
+          providerRequestId: response.id,
+        },
+      );
+    }
+    if (usageScope) {
+      await recordAiUsageSafely({
+        ...usageScope,
+        status: "completed",
+        provider: "openai",
+        model,
+        usage,
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 0,
+        latencyMs: Date.now() - startedAt,
+        estimatedCostUsd,
+        providerRequestId: response.id,
+      });
+    }
+    return {
+      text: response.output_text,
+      responseId: response.id,
+      model,
+      usage,
+      latencyMs: Date.now() - startedAt,
+      estimatedCostUsd,
+    };
+  } catch (error) {
+    const responseReceipt = getModelProviderResponseReceipt(error);
+    const providerFailure = error instanceof ModelProviderError ? error : undefined;
+    if (usageScope) {
+      await recordAiUsageSafely({
+        ...usageScope,
+        status: "failed",
+        provider: "openai",
+        model: responseReceipt?.model || model,
+        usage: responseReceipt?.usage || {},
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 1,
+        latencyMs: Date.now() - startedAt,
+        estimatedCostUsd: responseReceipt?.estimatedCostUsd,
+        providerRequestId: responseReceipt?.providerRequestId,
+        failureKind: abortSignal?.aborted
+          ? "abort"
+          : providerFailure?.kind || "provider_error",
+        retryable: abortSignal?.aborted
+          ? false
+          : providerFailure?.retryable ?? true,
+      });
+    }
+    throw error;
+  }
+}
+
+export function classifyOpenAITerminalResponse(response: unknown) {
+  const value = response && typeof response === "object"
+    ? response as Record<string, unknown>
+    : {};
+  const status = String(value.status || "");
+  const output = Array.isArray(value.output) ? value.output : [];
+  const refused = output.some((item) => {
+    if (!item || typeof item !== "object") return false;
+    const content = (item as Record<string, unknown>).content;
+    return Array.isArray(content) && content.some((part) =>
+      Boolean(
+        part &&
+        typeof part === "object" &&
+        (part as Record<string, unknown>).type === "refusal",
+      )
+    );
+  });
+  if (refused) {
+    return new ModelProviderError(
+      "OpenAI refused the request.",
+      "openai",
+      "safety",
+      false,
+    );
+  }
+  if (status === "failed") {
+    return new ModelProviderError(
+      "OpenAI could not complete the response.",
+      "openai",
+      "unavailable",
+      true,
+    );
+  }
+  if (status === "incomplete") {
+    const details = value.incomplete_details && typeof value.incomplete_details === "object"
+      ? value.incomplete_details as Record<string, unknown>
+      : {};
+    const safety = details.reason === "content_filter";
+    return new ModelProviderError(
+      safety
+        ? "OpenAI blocked the response for safety."
+        : "OpenAI returned an incomplete response.",
+      "openai",
+      safety ? "safety" : "unknown",
+      false,
+    );
+  }
+  if (status && status !== "completed") {
+    return new ModelProviderError(
+      `OpenAI response ended with status ${status}.`,
+      "openai",
+      status === "cancelled" ? "abort" : "unavailable",
+      status !== "cancelled",
+    );
+  }
+  return undefined;
 }

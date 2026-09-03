@@ -68,7 +68,14 @@ async function GETHandler(request: Request) {
 
   if (query) {
     const safeQuery = String(redactSensitive(query));
-    const queryEmbedding = (await embedTexts([safeQuery]))?.[0];
+    const queryEmbedding = (await embedTexts([safeQuery], undefined, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      sourceStreamId: "api:memory",
+      operation: "embedding",
+      purpose: "api.memory.search",
+      credentialSource: "deployment_environment",
+    }))?.[0];
     return Response.json({
       results: (
         await searchMemories(safeQuery, {
@@ -132,7 +139,14 @@ async function POSTHandler(request: Request) {
     const safeMemory = redactSensitive(parsed.data) as typeof parsed.data;
     const embedding = (await embedTexts([
       `${safeMemory.title}\n\n${safeMemory.content}`,
-    ]))?.[0];
+    ], undefined, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      sourceStreamId: "api:memory",
+      operation: "embedding",
+      purpose: "api.memory.write",
+      credentialSource: "deployment_environment",
+    }))?.[0];
     const record = await saveMemory({
       ...safeMemory,
       tenantId: context.tenantId,

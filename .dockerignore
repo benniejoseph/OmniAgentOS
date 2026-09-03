@@ -1,0 +1,6 @@
+*
+!Dockerfile.worker
+!scripts/
+scripts/*
+!scripts/worker.mjs
+!scripts/openai-egress-gateway.mjs

@@ -6,6 +6,8 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import { listRecentEvents, type DomainEvent } from "@/lib/events/store";
+import { listFileAiUsageRecords } from "@/lib/usage/ledger";
+import type { AiUsageRecord } from "@/lib/usage/types";
 
 export type UsagePeriodKey = "day" | "week" | "month";
 
@@ -14,8 +16,17 @@ export type UsageTotals = {
   outputTokens: number;
   cachedInputTokens: number;
   totalTokens: number;
+  /** Distinct agent-run streams; retained for compatibility. */
   runs: number;
+  /** Persisted agent-run model events; retained for compatibility. */
   modelCalls: number;
+  /** Distinct metered sources across agent, workflow, retrieval, media, and browser paths. */
+  sourceStreams: number;
+  /** Logical provider calls across every metered AI operation. */
+  providerCalls: number;
+  attempts: number;
+  failedAttempts: number;
+  failedCalls: number;
   knownEstimatedCostUsd: number;
   knownCostCalls: number;
   unknownCostCalls: number;
@@ -64,8 +75,13 @@ export type UsageSummary = {
 type TrackedModelEvent = {
   streamId: string;
   at: number;
+  isAgentModelCall: boolean;
+  status: "completed" | "failed";
   provider: string;
   model: string;
+  providerCallCount: number;
+  attemptCount: number;
+  failedAttemptCount: number;
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
@@ -83,8 +99,9 @@ type PeriodDefinition = {
   bucketUnit: "hour" | "day";
 };
 
-type MutableTotals = Omit<UsageTotals, "runs" | "costCoveragePercent"> & {
+type MutableTotals = Omit<UsageTotals, "runs" | "sourceStreams" | "costCoveragePercent"> & {
   runIds: Set<string>;
+  sourceIds: Set<string>;
 };
 
 const HOUR_MS = 60 * 60 * 1_000;
@@ -135,18 +152,16 @@ export async function loadUsageSummary({
   const nowMs = Number.isFinite(now.getTime()) ? now.getTime() : Date.now();
   const earliestAt = nowMs - 60 * DAY_MS;
   const loaded = await loadTrackedModelEvents(normalizedTenantId, earliestAt);
-  const events = loaded.events
-    .map(toTrackedModelEvent)
-    .filter((event): event is TrackedModelEvent => Boolean(event));
+  const events = loaded.events;
   const periods = Object.fromEntries(
     PERIODS.map((period) => [period.key, summarizePeriod(events, period, nowMs)]),
   ) as Record<UsagePeriodKey, UsagePeriodSummary>;
 
   return {
     generatedAt: new Date(nowMs).toISOString(),
-    scopeLabel: "Tracked agent consumption",
+    scopeLabel: "Unified AI consumption ledger",
     disclosure:
-      "Based on recorded agent-run model calls. Other model paths are not yet included. Input tokens are shown as context consumed; this is token volume, not a context-window percentage.",
+      "Includes recorded agent turns, council and workflow calls, embeddings, web search, OCR, image generation, transcription, speech, and browser automation. Historical agent-run events remain visible without double-counting dual-written receipts. Costs are estimates when a configured price is known; input tokens are volume, not context-window percentage.",
     sourceEventLimitReached: loaded.limitReached,
     periods,
   };
@@ -155,39 +170,90 @@ export async function loadUsageSummary({
 async function loadTrackedModelEvents(tenantId: string, earliestAt: number) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const cutoff = new Date(earliestAt).toISOString();
     const rows = await getSql()`
-      SELECT stream_id, payload, at
-      FROM omni_events
-      WHERE tenant_id = ${tenantId}
-        AND type = 'run.model'
-        AND at >= ${new Date(earliestAt).toISOString()}::timestamptz
+      WITH combined AS (
+        SELECT
+          usage.recorded_at AS at,
+          jsonb_build_object(
+            'kind', 'usage',
+            'source_stream_id', usage.source_stream_id,
+            'source_event_id', usage.source_event_id,
+            'purpose', usage.purpose,
+            'status', usage.status,
+            'provider', usage.provider,
+            'model', usage.model,
+            'usage', usage.usage,
+            'call_receipts', usage.call_receipts,
+            'provider_call_count', usage.provider_call_count,
+            'attempt_count', usage.attempt_count,
+            'failed_attempt_count', usage.failed_attempt_count,
+            'estimated_cost_microusd', usage.estimated_cost_microusd
+          ) AS data
+        FROM omni_ai_usage usage
+        WHERE usage.tenant_id = ${tenantId}
+          AND usage.recorded_at >= ${cutoff}::timestamptz
+
+        UNION ALL
+
+        SELECT
+          event.at,
+          jsonb_build_object(
+            'kind', 'legacy',
+            'stream_id', event.stream_id,
+            'payload', event.payload
+          ) AS data
+        FROM omni_events event
+        WHERE event.tenant_id = ${tenantId}
+          AND event.type = 'run.model'
+          AND event.at >= ${cutoff}::timestamptz
+          AND COALESCE(event.payload->>'usageLedgerVersion', '') <> '1'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM omni_ai_usage usage
+            WHERE usage.tenant_id = event.tenant_id
+              AND usage.source_event_id = event.id
+          )
+      )
+      SELECT at, data
+      FROM combined
       ORDER BY at DESC
       LIMIT ${MAX_DATABASE_EVENTS + 1}
     `;
+    const limitReached = rows.length > MAX_DATABASE_EVENTS;
     return {
-      events: rows.slice(0, MAX_DATABASE_EVENTS).map((row) => ({
-        streamId: String(row.stream_id || ""),
-        at: row.at instanceof Date ? row.at.toISOString() : String(row.at || ""),
-        payload: objectRecord(row.payload),
-      })),
-      limitReached: rows.length > MAX_DATABASE_EVENTS,
+      events: rows.slice(0, MAX_DATABASE_EVENTS)
+        .flatMap(toCombinedTrackedEvents),
+      limitReached,
     };
   }
 
-  const events = await listRecentEvents({
-    tenantId,
-    type: "run.model",
-    limit: MAX_FILE_EVENTS,
-  });
+  const [usageRecords, legacyEvents] = await Promise.all([
+    listFileAiUsageRecords({ tenantId, limit: MAX_FILE_EVENTS + 1 }),
+    listRecentEvents({ tenantId, type: "run.model", limit: MAX_FILE_EVENTS }),
+  ]);
+  const meteredSourceEvents = new Set(
+    usageRecords.map((record) => record.sourceEventId || "").filter(Boolean),
+  );
+  const events = [
+      ...usageRecords
+        .filter((record) => Date.parse(record.recordedAt) >= earliestAt)
+        .flatMap(toTrackedUsageRecord),
+      ...legacyEvents
+        .filter((event) =>
+          Date.parse(event.at) >= earliestAt &&
+          event.payload.usageLedgerVersion !== 1 &&
+          !meteredSourceEvents.has(event.id)
+        )
+        .map(toLegacyTrackedModelEvent)
+        .filter((event): event is TrackedModelEvent => Boolean(event)),
+    ].sort((left, right) => right.at - left.at);
   return {
-    events: events
-      .filter((event) => Date.parse(event.at) >= earliestAt)
-      .map((event) => ({
-        streamId: event.streamId,
-        at: event.at,
-        payload: event.payload,
-      })),
-    limitReached: events.length >= MAX_FILE_EVENTS,
+    events: events.slice(0, MAX_FILE_EVENTS),
+    limitReached:
+      events.length > MAX_FILE_EVENTS ||
+      usageRecords.length > MAX_FILE_EVENTS ||
+      legacyEvents.length >= MAX_FILE_EVENTS,
   };
 }
 
@@ -286,10 +352,15 @@ function mutableTotals(): MutableTotals {
     cachedInputTokens: 0,
     totalTokens: 0,
     modelCalls: 0,
+    providerCalls: 0,
+    attempts: 0,
+    failedAttempts: 0,
+    failedCalls: 0,
     knownEstimatedCostUsd: 0,
     knownCostCalls: 0,
     unknownCostCalls: 0,
     runIds: new Set<string>(),
+    sourceIds: new Set<string>(),
   };
 }
 
@@ -298,13 +369,20 @@ function addToTotals(totals: MutableTotals, event: TrackedModelEvent) {
   totals.outputTokens += event.outputTokens;
   totals.cachedInputTokens += event.cachedInputTokens;
   totals.totalTokens += event.totalTokens;
-  totals.modelCalls += 1;
-  totals.runIds.add(event.streamId);
+  totals.sourceIds.add(event.streamId);
+  totals.providerCalls += event.providerCallCount;
+  totals.attempts += event.attemptCount;
+  totals.failedAttempts += event.failedAttemptCount;
+  if (event.isAgentModelCall) {
+    totals.modelCalls += 1;
+    totals.runIds.add(event.streamId);
+  }
+  if (event.status === "failed") totals.failedCalls += event.providerCallCount;
   if (event.estimatedCostUsd === undefined) {
-    totals.unknownCostCalls += 1;
+    totals.unknownCostCalls += event.providerCallCount;
   } else {
     totals.knownEstimatedCostUsd += event.estimatedCostUsd;
-    totals.knownCostCalls += 1;
+    totals.knownCostCalls += event.providerCallCount;
   }
 }
 
@@ -317,6 +395,11 @@ function finishTotals(totals: MutableTotals): UsageTotals {
     totalTokens: totals.totalTokens,
     runs: totals.runIds.size,
     modelCalls: totals.modelCalls,
+    sourceStreams: totals.sourceIds.size,
+    providerCalls: totals.providerCalls,
+    attempts: totals.attempts,
+    failedAttempts: totals.failedAttempts,
+    failedCalls: totals.failedCalls,
     knownEstimatedCostUsd: roundUsd(totals.knownEstimatedCostUsd),
     knownCostCalls: totals.knownCostCalls,
     unknownCostCalls: totals.unknownCostCalls,
@@ -326,7 +409,23 @@ function finishTotals(totals: MutableTotals): UsageTotals {
   };
 }
 
-function toTrackedModelEvent(event: Pick<DomainEvent, "streamId" | "at" | "payload">): TrackedModelEvent | undefined {
+function toCombinedTrackedEvents(row: Record<string, unknown>): TrackedModelEvent[] {
+  const data = objectRecord(row.data);
+  const at = row.at instanceof Date ? row.at.toISOString() : String(row.at || "");
+  if (data.kind === "legacy") {
+    const event = toLegacyTrackedModelEvent({
+      streamId: normalizedLabel(data.stream_id, "unknown-run"),
+      at,
+      payload: objectRecord(data.payload),
+    });
+    return event ? [event] : [];
+  }
+  if (data.kind !== "usage") return [];
+  return toTrackedUsageRows({ ...data, recorded_at: at });
+}
+
+function toLegacyTrackedModelEvent(event: Pick<DomainEvent, "streamId" | "at" | "payload">): TrackedModelEvent | undefined {
+  if (event.payload.usageExpiredAt) return undefined;
   const at = Date.parse(event.at);
   if (!Number.isFinite(at)) return undefined;
   const inputTokens = nonNegative(event.payload.inputTokens);
@@ -338,14 +437,116 @@ function toTrackedModelEvent(event: Pick<DomainEvent, "streamId" | "at" | "paylo
   return {
     streamId: event.streamId || "unknown-run",
     at,
+    isAgentModelCall: true,
+    status: "completed",
     provider: normalizedLabel(event.payload.provider, "unknown"),
     model: normalizedLabel(event.payload.model, "Unknown model"),
+    providerCallCount: positiveInteger(event.payload.iterationCount, 1),
+    attemptCount: positiveInteger(
+      event.payload.attemptCount,
+      event.payload.fallbackUsed === true ? 2 : 1,
+    ),
+    failedAttemptCount: nonNegative(
+      event.payload.failedAttemptCount ?? (event.payload.fallbackUsed === true ? 1 : 0),
+    ),
     inputTokens,
     outputTokens,
     cachedInputTokens,
     totalTokens: recordedTotal ?? inputTokens + outputTokens,
     ...(costKnown ? { estimatedCostUsd: cost } : {}),
   };
+}
+
+function toTrackedUsageRows(row: Record<string, unknown>): TrackedModelEvent[] {
+  const callReceipts = Array.isArray(row.call_receipts)
+    ? row.call_receipts.map(objectRecord)
+    : [];
+  if (!callReceipts.length) return [toAggregateTrackedUsageRow(row)];
+
+  const recordedAt = row.recorded_at instanceof Date
+    ? row.recorded_at.getTime()
+    : Date.parse(String(row.recorded_at || ""));
+  const streamId = normalizedLabel(row.source_stream_id, "unknown-source");
+  const logicalAgentModelCall = Boolean(
+    row.status !== "failed" &&
+    normalizedLabel(row.purpose, "") === "agent.turn" &&
+    streamId.startsWith("run:"),
+  );
+  return callReceipts.map((receipt, index) => {
+    const usage = objectRecord(receipt.usage);
+    const inputTokens = nonNegative(usage.inputTokens);
+    const outputTokens = nonNegative(usage.outputTokens);
+    const costMicrousd = optionalNonNegative(receipt.estimatedCostMicrousd);
+    const failed = receipt.status === "failed";
+    return {
+      streamId,
+      at: Number.isFinite(recordedAt) ? recordedAt : 0,
+      isAgentModelCall:
+        logicalAgentModelCall && index === callReceipts.length - 1 && !failed,
+      status: failed ? "failed" : "completed",
+      provider: normalizedLabel(receipt.provider, "unknown"),
+      model: normalizedLabel(receipt.model, "Unknown model"),
+      providerCallCount: 1,
+      attemptCount: 1,
+      failedAttemptCount: failed ? 1 : 0,
+      inputTokens,
+      outputTokens,
+      cachedInputTokens: nonNegative(usage.cachedInputTokens),
+      totalTokens:
+        optionalNonNegative(usage.totalTokens) ?? inputTokens + outputTokens,
+      ...(costMicrousd === undefined
+        ? {}
+        : { estimatedCostUsd: costMicrousd / 1_000_000 }),
+    };
+  });
+}
+
+function toAggregateTrackedUsageRow(row: Record<string, unknown>): TrackedModelEvent {
+  const usage = objectRecord(row.usage);
+  const recordedAt = row.recorded_at instanceof Date
+    ? row.recorded_at.getTime()
+    : Date.parse(String(row.recorded_at || ""));
+  const inputTokens = nonNegative(usage.inputTokens);
+  const outputTokens = nonNegative(usage.outputTokens);
+  const costMicrousd = optionalNonNegative(row.estimated_cost_microusd);
+  return {
+    streamId: normalizedLabel(row.source_stream_id, "unknown-source"),
+    at: Number.isFinite(recordedAt) ? recordedAt : 0,
+    isAgentModelCall: Boolean(
+      row.status !== "failed" &&
+      normalizedLabel(row.purpose, "") === "agent.turn" &&
+      normalizedLabel(row.source_stream_id, "").startsWith("run:"),
+    ),
+    status: row.status === "failed" ? "failed" : "completed",
+    provider: normalizedLabel(row.provider, "unknown"),
+    model: normalizedLabel(row.model, "Unknown model"),
+    providerCallCount: nonNegativeInteger(row.provider_call_count, 0),
+    attemptCount: nonNegativeInteger(row.attempt_count, 0),
+    failedAttemptCount: nonNegativeInteger(row.failed_attempt_count, 0),
+    inputTokens,
+    outputTokens,
+    cachedInputTokens: nonNegative(usage.cachedInputTokens),
+    totalTokens: optionalNonNegative(usage.totalTokens) ?? inputTokens + outputTokens,
+    ...(costMicrousd === undefined ? {} : { estimatedCostUsd: costMicrousd / 1_000_000 }),
+  };
+}
+
+function toTrackedUsageRecord(record: AiUsageRecord): TrackedModelEvent[] {
+  return toTrackedUsageRows({
+    source_stream_id: record.sourceStreamId,
+    source_event_id: record.sourceEventId,
+    purpose: record.purpose,
+    status: record.status,
+    provider: record.provider,
+    model: record.model,
+    usage: record.usage,
+    call_receipts: record.callReceipts,
+    provider_call_count: record.providerCallCount,
+    attempt_count: record.attemptCount,
+    failed_attempt_count: record.failedAttemptCount,
+    estimated_cost_microusd: record.estimatedCostMicrousd,
+    recorded_at: record.recordedAt,
+  });
 }
 
 function bucketIndex(at: number, start: number, bucketMs: number, count: number) {
@@ -356,7 +557,18 @@ function nonNegative(value: unknown) {
   return optionalNonNegative(value) ?? 0;
 }
 
+function positiveInteger(value: unknown, fallback: number) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.round(number) : fallback;
+}
+
+function nonNegativeInteger(value: unknown, fallback: number) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.round(number) : fallback;
+}
+
 function optionalNonNegative(value: unknown) {
+  if (value === null || value === undefined) return undefined;
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : undefined;
 }

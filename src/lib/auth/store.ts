@@ -474,6 +474,13 @@ export async function rotateUserPassword({
           WHERE user_id = ${String(users[0].id)}
             AND tenant_id = ${normalizedTenantId}
         `;
+        await sql`
+          UPDATE omni_mobile_sessions
+          SET revoked_at = NOW(), updated_at = NOW()
+          WHERE user_id = ${String(users[0].id)}
+            AND tenant_id = ${normalizedTenantId}
+            AND revoked_at IS NULL
+        `;
         return userFromRow({
           ...users[0],
           password_hash: passwordHash,
@@ -517,7 +524,12 @@ export async function rotateUserPassword({
       ),
     };
   });
-  return rotated;
+  const rotatedResult = rotated as AuthUser | null;
+  if (rotatedResult) {
+    const { revokeMobileSessionsForUser } = await import("@/lib/auth/mobile");
+    await revokeMobileSessionsForUser(rotatedResult.id, normalizedTenantId);
+  }
+  return rotatedResult;
 }
 
 export async function getAuthControlPlane(options: { tenantId?: string } = {}): Promise<AuthControlPlane> {

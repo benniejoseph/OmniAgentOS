@@ -10,7 +10,10 @@ import type {
   ModelTarget,
   ModelTextRequest,
 } from "@/lib/models/types";
-import { ModelProviderError } from "@/lib/models/types";
+import {
+  ModelProviderError,
+  preserveModelProviderResponseReceipt,
+} from "@/lib/models/types";
 import { getModelRuntimeApiKey } from "@/lib/models/runtime-context";
 
 export const openAIModelAdapter: ModelProviderAdapter = {
@@ -44,6 +47,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       latencyMs: turn.latencyMs,
       estimatedCostUsd: turn.estimatedCostUsd,
       costKnown: turn.estimatedCostUsd !== undefined,
+      providerRequestId: turn.responseId,
     };
   },
   async generateStructured(request: ModelStructuredRequest, target: ModelTarget) {
@@ -65,6 +69,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       latencyMs: result.latencyMs,
       estimatedCostUsd: result.estimatedCostUsd,
       costKnown: result.estimatedCostUsd !== undefined,
+      providerRequestId: result.responseId,
     };
   },
   async generateToolTurn(request, target) {
@@ -113,6 +118,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       latencyMs: turn.latencyMs,
       estimatedCostUsd: turn.estimatedCostUsd,
       costKnown: turn.estimatedCostUsd !== undefined,
+      providerRequestId: turn.responseId,
     };
   },
   classifyError(error) {
@@ -123,7 +129,10 @@ export const openAIModelAdapter: ModelProviderAdapter = {
 export function classifyProviderError(provider: "openai" | "google" | "anthropic" | "aws_bedrock" | "local", error: unknown) {
   if (error instanceof ModelProviderError) return error;
   if (error instanceof DOMException && error.name === "AbortError") {
-    return new ModelProviderError("Model request was aborted.", provider, "abort", false);
+    return preserveModelProviderResponseReceipt(
+      error,
+      new ModelProviderError("Model request was aborted.", provider, "abort", false),
+    );
   }
   const candidate = error as {
     status?: unknown;
@@ -135,23 +144,25 @@ export function classifyProviderError(provider: "openai" | "google" | "anthropic
   const status = Number(candidate?.status);
   const message = String(candidate?.message || "Model provider request failed.").slice(0, 1_000);
   const normalized = message.toLowerCase();
-  if (candidate?.name === "AbortError") return new ModelProviderError(message, provider, "abort", false, status);
-  if (status === 401 || status === 403) return new ModelProviderError(message, provider, "authentication", false, status);
-  if (status === 400 || status === 404 || status === 422) return new ModelProviderError(message, provider, "invalid_request", false, status);
-  if (status === 429) return new ModelProviderError(message, provider, "rate_limit", true, status);
+  const preserve = (classified: ModelProviderError) =>
+    preserveModelProviderResponseReceipt(error, classified);
+  if (candidate?.name === "AbortError") return preserve(new ModelProviderError(message, provider, "abort", false, status));
+  if (status === 401 || status === 403) return preserve(new ModelProviderError(message, provider, "authentication", false, status));
+  if (status === 400 || status === 404 || status === 422) return preserve(new ModelProviderError(message, provider, "invalid_request", false, status));
+  if (status === 429) return preserve(new ModelProviderError(message, provider, "rate_limit", true, status));
   if (normalized.includes("safety") || normalized.includes("refusal") || normalized.includes("blocked")) {
-    return new ModelProviderError(message, provider, "safety", false, status);
+    return preserve(new ModelProviderError(message, provider, "safety", false, status));
   }
   if (normalized.includes("timeout") || normalized.includes("timed out")) {
-    return new ModelProviderError(message, provider, "timeout", true, status);
+    return preserve(new ModelProviderError(message, provider, "timeout", true, status));
   }
   if (status >= 500 || normalized.includes("unavailable") || normalized.includes("connection")) {
-    return new ModelProviderError(message, provider, "unavailable", true, status);
+    return preserve(new ModelProviderError(message, provider, "unavailable", true, status));
   }
   if (isRetryableNetworkFailure(candidate)) {
-    return new ModelProviderError(message, provider, "unavailable", true, status);
+    return preserve(new ModelProviderError(message, provider, "unavailable", true, status));
   }
-  return new ModelProviderError(message, provider, "unknown", false, Number.isFinite(status) ? status : undefined);
+  return preserve(new ModelProviderError(message, provider, "unknown", false, Number.isFinite(status) ? status : undefined));
 }
 
 const retryableNetworkCodes = new Set([

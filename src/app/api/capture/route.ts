@@ -71,7 +71,17 @@ async function POSTHandler(request: Request) {
         tags,
         metadata: { requestedTitle, note },
       });
-      document = await extractCaptureFile(new File([bytes], file.name, { type: file.type }));
+      document = await extractCaptureFile(
+        new File([bytes], file.name, { type: file.type }),
+        {
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          sourceStreamId: `capture-asset:${asset.id}`,
+          operation: "ocr",
+          purpose: "capture.file.extract",
+          credentialSource: "deployment_environment",
+        },
+      );
       document.source = `capture:asset:${asset.id}`;
       if (note) {
         const separator = "\n\n---\nCapture note:\n";
@@ -122,6 +132,7 @@ async function POSTHandler(request: Request) {
   try {
     job = await enqueueKnowledgeIngestJob({
       tenantId: context.tenantId,
+      actorId: context.actorId,
       idempotencyKey: request.headers.get("idempotency-key")?.trim().slice(0, 200) || undefined,
       request: {
         ...document,

@@ -11,7 +11,12 @@ import type {
   ModelToolDefinition,
   ModelToolTurnRequest,
 } from "@/lib/models/types";
-import { ModelProviderError } from "@/lib/models/types";
+import {
+  attachModelProviderResponseReceipt,
+  ModelProviderError,
+  preserveModelProviderResponseReceipt,
+} from "@/lib/models/types";
+import { estimateProviderCost } from "@/lib/models/pricing";
 import type { ModelUsage } from "@/lib/openai/model-router";
 
 const PROVIDER = "aws_bedrock" as const;
@@ -80,6 +85,7 @@ type BedrockConverseResponse = {
 type BedrockCallResult = {
   body: BedrockConverseResponse;
   latencyMs: number;
+  providerRequestId?: string;
 };
 
 export function createBedrockModelAdapter(
@@ -118,17 +124,21 @@ export function createBedrockModelAdapter(
         now,
         requestTimeoutMs,
       });
-      rejectUnsafeStopReason(result.body.stopReason);
-      const output = normalizeAssistantOutput(result.body.output?.message);
-      if (!output.text) {
-        throw new ModelProviderError(
-          "Amazon Bedrock returned no text.",
-          PROVIDER,
-          "unknown",
-          false,
-        );
+      try {
+        rejectUnsafeStopReason(result.body.stopReason);
+        const output = normalizeAssistantOutput(result.body.output?.message);
+        if (!output.text) {
+          throw new ModelProviderError(
+            "Amazon Bedrock returned no text.",
+            PROVIDER,
+            "unknown",
+            false,
+          );
+        }
+        return modelResult(result, target, output.text);
+      } catch (error) {
+        throw bedrockResponseFailure(error, result, target);
       }
-      return modelResult(result, target, output.text);
     },
     async generateToolTurn(request, target) {
       const messages = bedrockToolMessages(request);
@@ -145,32 +155,36 @@ export function createBedrockModelAdapter(
         now,
         requestTimeoutMs,
       });
-      rejectUnsafeStopReason(result.body.stopReason);
-      const output = normalizeAssistantOutput(result.body.output?.message);
-      if (!output.text && !output.toolCalls.length) {
-        throw new ModelProviderError(
-          "Amazon Bedrock returned neither text nor tool calls.",
-          PROVIDER,
-          "unknown",
-          false,
-        );
+      try {
+        rejectUnsafeStopReason(result.body.stopReason);
+        const output = normalizeAssistantOutput(result.body.output?.message);
+        if (!output.text && !output.toolCalls.length) {
+          throw new ModelProviderError(
+            "Amazon Bedrock returned neither text nor tool calls.",
+            PROVIDER,
+            "unknown",
+            false,
+          );
+        }
+        if (result.body.stopReason === "tool_use" && !output.toolCalls.length) {
+          throw new ModelProviderError(
+            "Amazon Bedrock reported tool use without a valid tool call.",
+            PROVIDER,
+            "invalid_request",
+            false,
+          );
+        }
+        return {
+          ...modelResult(result, target, output.text),
+          toolCalls: output.toolCalls,
+          continuation: {
+            provider: PROVIDER,
+            state: [...messages, output.message],
+          },
+        };
+      } catch (error) {
+        throw bedrockResponseFailure(error, result, target);
       }
-      if (result.body.stopReason === "tool_use" && !output.toolCalls.length) {
-        throw new ModelProviderError(
-          "Amazon Bedrock reported tool use without a valid tool call.",
-          PROVIDER,
-          "invalid_request",
-          false,
-        );
-      }
-      return {
-        ...modelResult(result, target, output.text),
-        toolCalls: output.toolCalls,
-        continuation: {
-          provider: PROVIDER,
-          state: [...messages, output.message],
-        },
-      };
     },
     classifyError(error) {
       return classifyProviderError(PROVIDER, error);
@@ -256,33 +270,50 @@ async function callBedrockConverse(input: {
       redirect: "error",
       signal: boundedSignal.signal,
     });
-    const responseText = await readBoundedResponse(response);
-    const parsed = parseResponseJson(responseText, response.ok);
-    if (!response.ok) {
-      throw bedrockHttpError(
-        response.status,
-        bedrockErrorCode(response, parsed),
-      );
+    const providerRequestId = response.headers.get("x-amzn-requestid")?.trim();
+    try {
+      const responseText = await readBoundedResponse(response);
+      const parsed = parseResponseJson(responseText, response.ok);
+      if (!response.ok) {
+        throw bedrockHttpError(
+          response.status,
+          bedrockErrorCode(response, parsed),
+        );
+      }
+      return {
+        body: parsed as BedrockConverseResponse,
+        latencyMs: Date.now() - startedAt,
+        ...(providerRequestId ? { providerRequestId } : {}),
+      };
+    } catch (error) {
+      if (!response.ok) throw error;
+      throw attachModelProviderResponseReceipt(error, {
+        latencyMs: Date.now() - startedAt,
+        model: input.target.model,
+        providerRequestId,
+      });
     }
-    return {
-      body: parsed as BedrockConverseResponse,
-      latencyMs: Date.now() - startedAt,
-    };
   } catch (error) {
     if (boundedSignal.timedOut()) {
-      throw new ModelProviderError(
-        "Amazon Bedrock request timed out.",
-        PROVIDER,
-        "timeout",
-        true,
+      throw preserveModelProviderResponseReceipt(
+        error,
+        new ModelProviderError(
+          "Amazon Bedrock request timed out.",
+          PROVIDER,
+          "timeout",
+          true,
+        ),
       );
     }
     if (input.request.abortSignal?.aborted) {
-      throw new ModelProviderError(
-        "Amazon Bedrock request was aborted.",
-        PROVIDER,
-        "abort",
-        false,
+      throw preserveModelProviderResponseReceipt(
+        error,
+        new ModelProviderError(
+          "Amazon Bedrock request was aborted.",
+          PROVIDER,
+          "abort",
+          false,
+        ),
       );
     }
     throw error;
@@ -950,14 +981,37 @@ function modelResult(
   target: ModelTarget,
   text: string,
 ) {
+  const usage = bedrockUsage(result.body.usage);
+  const pricing = estimateProviderCost(PROVIDER, target.model, usage);
   return {
     text,
     provider: PROVIDER,
     model: target.model,
-    usage: bedrockUsage(result.body.usage),
+    usage,
     latencyMs: result.latencyMs,
-    costKnown: false as const,
+    ...pricing,
+    ...(result.providerRequestId
+      ? { providerRequestId: result.providerRequestId }
+      : {}),
   };
+}
+
+function bedrockResponseFailure(
+  error: unknown,
+  result: BedrockCallResult,
+  target: ModelTarget,
+) {
+  const usage = bedrockUsage(result.body.usage);
+  const pricing = estimateProviderCost(PROVIDER, target.model, usage);
+  return attachModelProviderResponseReceipt(error, {
+    usage,
+    latencyMs: result.latencyMs,
+    model: target.model,
+    estimatedCostUsd: pricing.costKnown
+      ? pricing.estimatedCostUsd
+      : undefined,
+    providerRequestId: result.providerRequestId,
+  });
 }
 
 function bedrockUsage(raw: BedrockConverseResponse["usage"]): ModelUsage {

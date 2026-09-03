@@ -14,7 +14,14 @@ import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/o
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { readResponseTextLimited } from "@/lib/http/body";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
-import { saveMemory, searchMemories } from "@/lib/memory/store";
+import { queueMemoryGraphRebuild } from "@/lib/memory/graph";
+import {
+  correctMemory,
+  forgetMemory,
+  getMemory,
+  saveMemory,
+  searchMemories,
+} from "@/lib/memory/store";
 import type { MemoryType } from "@/lib/memory/types";
 import {
   appendMissionTaskComment,
@@ -67,6 +74,7 @@ import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/l
 import { actionClassFor, recordActionOutcome, resolveAutonomy } from "@/lib/trust/ledger";
 import { isGraduatedAutonomyEnabled } from "@/lib/trust/policy";
 import { runLiveWebSearch } from "@/lib/web-search/search";
+import type { AiUsageOperation, AiUsageScope } from "@/lib/usage/types";
 
 const searchSchema = z.object({
   query: z.string().min(1).max(4_000),
@@ -86,6 +94,27 @@ const memoryWriteSchema = z.object({
   type: z.enum(["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"]).optional(),
   tags: z.array(z.string().min(1).max(80)).max(50).optional(),
   importance: z.number().min(0).max(1).optional(),
+}).strict();
+
+const memoryCorrectSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(240).optional(),
+  content: z.string().min(1).max(200_000).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  validTo: z.string().datetime().optional(),
+  contradiction: z.literal(true).optional(),
+}).strict().refine(
+  ({ title, content, confidence, validTo, contradiction }) =>
+    title !== undefined ||
+    content !== undefined ||
+    confidence !== undefined ||
+    validTo !== undefined ||
+    contradiction === true,
+  { message: "At least one correction field is required." },
+);
+
+const memoryForgetSchema = z.object({
+  id: z.string().trim().min(1).max(200),
 }).strict();
 
 const knowledgeIngestSchema = z.object({
@@ -679,9 +708,10 @@ export async function executeGovernedTool({
       tool,
       preparedInput,
       toolRuntimeContext,
-      existingRecord?.id || idempotencyKey,
+      executionRecord?.id || idempotencyKey,
       abortSignal,
       mcpSessionScope,
+      scopedRequest.binding?.executionScope || executionScope,
     );
     const safeResult = redactSensitive(result);
     const record = createRecord({
@@ -1029,13 +1059,28 @@ async function runTool(
   idempotencyKey?: string,
   abortSignal?: AbortSignal,
   mcpSessionScope?: McpSessionScope,
+  executionScope?: ExecutionScope,
 ) {
   const parsed = parseInput(tool, input);
+  const aiUsageScope = (
+    operation: AiUsageOperation,
+    purpose: string,
+  ) => toolAiUsageScope(
+    context,
+    executionScope,
+    idempotencyKey,
+    operation,
+    purpose,
+  );
 
   if (tool.id === "memory.search") {
     const { query, limit } = searchSchema.parse(parsed);
     const safeQuery = String(redactSensitive(query));
-    const queryEmbedding = (await embedTexts([safeQuery], abortSignal))?.[0];
+    const queryEmbedding = (await embedTexts(
+      [safeQuery],
+      abortSignal,
+      aiUsageScope("embedding", "tool.memory.search"),
+    ))?.[0];
     const results = await searchMemories(safeQuery, { limit: limit || 5, queryEmbedding, tenantId: context?.tenantId });
     return {
       results: results.map((result) => ({
@@ -1052,7 +1097,11 @@ async function runTool(
   if (tool.id === "knowledge.search") {
     const { query, limit } = searchSchema.parse(parsed);
     const safeQuery = String(redactSensitive(query));
-    const queryEmbedding = (await embedTexts([safeQuery], abortSignal))?.[0];
+    const queryEmbedding = (await embedTexts(
+      [safeQuery],
+      abortSignal,
+      aiUsageScope("embedding", "tool.knowledge.search"),
+    ))?.[0];
     const results = await searchKnowledge(safeQuery, { limit: limit || 5, queryEmbedding, tenantId: context?.tenantId });
     return {
       results: results.map((result) => ({
@@ -1077,6 +1126,7 @@ async function runTool(
       contextSize: searchContextSize || "medium",
       allowedDomains,
       abortSignal,
+      usageScope: aiUsageScope("web_search", "tool.web.search"),
     });
   }
 
@@ -1084,7 +1134,11 @@ async function runTool(
     const value = memoryWriteSchema.parse(parsed);
     const safeValue = redactSensitive(value) as typeof value;
     const contentForEmbedding = `${safeValue.title}\n\n${safeValue.content}`;
-    const embedding = (await embedTexts([contentForEmbedding], abortSignal))?.[0];
+    const embedding = (await embedTexts(
+      [contentForEmbedding],
+      abortSignal,
+      aiUsageScope("embedding", "tool.memory.write"),
+    ))?.[0];
     return {
       record: stripEmbedding(await saveMemory({
         tenantId: context?.tenantId,
@@ -1100,6 +1154,49 @@ async function runTool(
     };
   }
 
+  if (tool.id === "memory.correct") {
+    const { id, ...correction } = memoryCorrectSchema.parse(parsed);
+    const existing = await getMemory(id, { tenantId: context?.tenantId });
+    if (!existing || existing.claimStatus === "forgotten") {
+      throw new Error("Memory not found.");
+    }
+    const safeCorrection = redactSensitive(correction) as typeof correction;
+    const title = safeCorrection.title ?? existing.title;
+    const content = safeCorrection.content ?? existing.content;
+    const embedding = (await embedTexts(
+      [`${title}\n\n${content}`],
+      abortSignal,
+      aiUsageScope("embedding", "tool.memory.correct"),
+    ))?.[0];
+    const result = await correctMemory(
+      id,
+      { ...safeCorrection, embedding },
+      { tenantId: context?.tenantId, actorId: context?.actorId },
+    );
+    if (!result) {
+      throw new Error("Memory not found.");
+    }
+    await queueMemoryGraphRebuild({ tenantId: context?.tenantId });
+    return {
+      previous: stripEmbedding(result.previous),
+      corrected: stripEmbedding(result.corrected),
+    };
+  }
+
+  if (tool.id === "memory.forget") {
+    const { id } = memoryForgetSchema.parse(parsed);
+    const forgotten = await forgetMemory(id, { tenantId: context?.tenantId });
+    if (!forgotten) {
+      throw new Error("Memory not found.");
+    }
+    await queueMemoryGraphRebuild({ tenantId: context?.tenantId });
+    return {
+      forgotten: true,
+      id: forgotten.id,
+      record: stripEmbedding(forgotten),
+    };
+  }
+
   if (tool.id === "knowledge.ingest") {
     const value = knowledgeIngestSchema.parse(parsed);
     const safeValue = redactSensitive(value) as typeof value;
@@ -1110,6 +1207,7 @@ async function runTool(
       source: safeValue.source || "tool-executor",
       sourceType: "manual",
       tags: safeValue.tags || ["tool-execution"],
+      usageScope: aiUsageScope("embedding", "tool.knowledge.ingest"),
     });
     return {
       document: result.document,
@@ -1292,6 +1390,30 @@ async function runTool(
   }
 
   throw new Error(`No handler is registered for ${tool.id}.`);
+}
+
+function toolAiUsageScope(
+  context: SecurityContext | undefined,
+  executionScope: ExecutionScope | undefined,
+  receiptId: string | undefined,
+  operation: AiUsageOperation,
+  purpose: string,
+): AiUsageScope | undefined {
+  const tenantId = context?.tenantId?.trim();
+  const actorId = context?.actorId?.trim();
+  if (!tenantId || !actorId) return undefined;
+  const sourceId = receiptId?.trim() || executionScope?.correlationId || randomUUID();
+  return {
+    tenantId,
+    actorId,
+    sourceStreamId: `tool-execution:${sourceId}`,
+    operation,
+    purpose,
+    correlationId: executionScope?.correlationId || sourceId,
+    causationId: executionScope?.causationId || undefined,
+    executionScope,
+    credentialSource: "deployment_environment",
+  };
 }
 
 async function recordToolPolicyBlock({
@@ -1702,6 +1824,14 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return memoryWriteSchema.parse(input);
   }
 
+  if (tool.id === "memory.correct") {
+    return memoryCorrectSchema.parse(input);
+  }
+
+  if (tool.id === "memory.forget") {
+    return memoryForgetSchema.parse(input);
+  }
+
   if (tool.id === "knowledge.ingest") {
     return knowledgeIngestSchema.parse(input);
   }
@@ -1741,6 +1871,22 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
 function describeSideEffects(toolId: string) {
   if (toolId === "memory.write") {
     return ["writes omni_memories", "may create embedding"];
+  }
+
+  if (toolId === "memory.correct") {
+    return [
+      "creates a corrected omni_memories record",
+      "marks the previous record as superseded or contradicted without erasing it",
+      "regenerates the corrected embedding and queues a memory graph rebuild",
+    ];
+  }
+
+  if (toolId === "memory.forget") {
+    return [
+      "irreversibly scrubs the selected memory's title, content, tags, source, and embeddings",
+      "marks the selected memory as forgotten",
+      "queues a memory graph rebuild",
+    ];
   }
 
   if (toolId === "knowledge.ingest") {

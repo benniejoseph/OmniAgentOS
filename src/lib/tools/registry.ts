@@ -67,6 +67,58 @@ export const governedTools: ToolDefinition[] = [
     }),
   },
   {
+    id: "memory.correct",
+    name: "Correct Memory",
+    description:
+      "Replace an existing tenant-scoped memory with a corrected version while retaining the prior record as superseded or contradicted.",
+    category: "memory",
+    status: "active",
+    riskLevel: 1,
+    dryRunSupported: true,
+    approvalRequired: false,
+    reversible: true,
+    inputSchema: {
+      ...objectSchema({
+        id: { type: "string", description: "Exact memory record ID to correct.", minLength: 1, maxLength: 200 },
+        title: { type: "string", minLength: 1, maxLength: 240 },
+        content: { type: "string", minLength: 1, maxLength: 200_000 },
+        confidence: { type: "number", minimum: 0, maximum: 1 },
+        validTo: { type: "string", format: "date-time" },
+        contradiction: {
+          type: "boolean",
+          enum: [true],
+          description: "Mark the prior memory as contradicted instead of superseded.",
+        },
+      }),
+      required: ["id"],
+      anyOf: [
+        { required: ["title"] },
+        { required: ["content"] },
+        { required: ["confidence"] },
+        { required: ["validTo"] },
+        { required: ["contradiction"] },
+      ],
+    },
+  },
+  {
+    id: "memory.forget",
+    name: "Forget Memory",
+    description:
+      "Irreversibly scrub one tenant-scoped memory by its exact ID. Human approval is always required.",
+    category: "memory",
+    status: "active",
+    riskLevel: 2,
+    dryRunSupported: true,
+    approvalRequired: true,
+    reversible: false,
+    inputSchema: {
+      ...objectSchema({
+        id: { type: "string", description: "Exact memory record ID to forget.", minLength: 1, maxLength: 200 },
+      }),
+      required: ["id"],
+    },
+  },
+  {
     id: "knowledge.ingest",
     name: "Ingest Knowledge",
     description: "Chunk, embed, and store source text as retrievable knowledge.",

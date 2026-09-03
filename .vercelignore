@@ -6,3 +6,5 @@ node_modules
 .omniagent
 coverage
 screenshots
+apps/flutter
+.design

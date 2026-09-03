@@ -7,6 +7,8 @@ import { indexMemoryGraphRecords } from "@/lib/memory/graph";
 import { listMemories, saveMemories, saveMemory, type CreateMemoryInput } from "@/lib/memory/store";
 import type { MemoryRecord } from "@/lib/memory/types";
 import { redactSensitive } from "@/lib/security/context";
+import type { ExecutionScope } from "@/lib/security/execution-scope";
+import type { AiUsageOperation, AiUsageScope } from "@/lib/usage/types";
 
 const consolidatedMemoryTypeSchema = z.enum([
   "preference",
@@ -45,6 +47,8 @@ export function shouldConsolidateRunMemory(prompt: string, response: string) {
 
 export async function consolidateAgentRunMemory({
   tenantId,
+  actorId,
+  executionScope,
   runId,
   threadId,
   mode,
@@ -53,6 +57,8 @@ export async function consolidateAgentRunMemory({
   abortSignal,
 }: {
   tenantId?: string;
+  actorId?: string;
+  executionScope?: ExecutionScope;
   runId: string;
   threadId?: string;
   mode: AgentMode;
@@ -66,7 +72,18 @@ export async function consolidateAgentRunMemory({
     `User request: ${safePrompt}`,
     `Assistant response: ${safeResponse}`,
   ].join("\n\n");
-  const embedding = (await embedMemoryTexts([episodeContent], abortSignal))?.[0];
+  const embedding = (await embedMemoryTexts(
+    [episodeContent],
+    abortSignal,
+    memoryUsageScope({
+      tenantId,
+      actorId,
+      executionScope,
+      runId,
+      operation: "embedding",
+      purpose: "memory.episode.embedding",
+    }),
+  ))?.[0];
   abortSignal?.throwIfAborted();
   const episode = await saveMemory({
     id: `agent_run_${runId}`,
@@ -84,6 +101,8 @@ export async function consolidateAgentRunMemory({
   });
   const consolidation = await consolidateRunMemory({
     tenantId,
+    actorId,
+    executionScope,
     runId,
     threadId,
     mode,
@@ -96,6 +115,8 @@ export async function consolidateAgentRunMemory({
 
 export async function consolidateRunMemory({
   tenantId,
+  actorId,
+  executionScope,
   runId,
   threadId,
   mode,
@@ -104,6 +125,8 @@ export async function consolidateRunMemory({
   abortSignal,
 }: {
   tenantId?: string;
+  actorId?: string;
+  executionScope?: ExecutionScope;
   runId: string;
   threadId?: string;
   mode: AgentMode;
@@ -128,6 +151,14 @@ export async function consolidateRunMemory({
   try {
     const safePrompt = safeMemoryText(prompt).slice(0, 8_000);
     const safeResponse = safeMemoryText(response).slice(0, 24_000);
+    const usageScope = memoryUsageScope({
+      tenantId,
+      actorId,
+      executionScope,
+      runId,
+      operation: "structured_generation",
+      purpose: "memory.consolidate",
+    });
     const generated = await generateModelStructured({
       name: "memory_consolidation",
       schema: consolidationJsonSchema,
@@ -140,6 +171,7 @@ export async function consolidateRunMemory({
       ].join("\n\n"),
       abortSignal,
       tier: "fast",
+      ...(usageScope ? { usageScope } : {}),
     });
     const parsed = consolidationSchema.parse(JSON.parse(generated.text));
     const items = parsed.items
@@ -148,6 +180,8 @@ export async function consolidateRunMemory({
       .slice(0, 8);
     const saved = await persistConsolidatedItems({
       tenantId,
+      actorId,
+      executionScope,
       runId,
       threadId,
       mode,
@@ -176,6 +210,8 @@ export async function consolidateRunMemory({
 
 async function persistConsolidatedItems({
   tenantId,
+  actorId,
+  executionScope,
   runId,
   threadId,
   mode,
@@ -184,6 +220,8 @@ async function persistConsolidatedItems({
   abortSignal,
 }: {
   tenantId?: string;
+  actorId?: string;
+  executionScope?: ExecutionScope;
   runId: string;
   threadId?: string;
   mode: AgentMode;
@@ -220,6 +258,14 @@ async function persistConsolidatedItems({
   const embeddings = await embedMemoryTexts(
     reconciledInputs.map((item) => `${item.title}\n\n${item.content}`),
     abortSignal,
+    memoryUsageScope({
+      tenantId,
+      actorId,
+      executionScope,
+      runId,
+      operation: "embedding",
+      purpose: "memory.claims.embedding",
+    }),
   );
   abortSignal?.throwIfAborted();
 
@@ -243,9 +289,13 @@ function threadEvidenceRefs(runId: string, threadId?: string) {
   ];
 }
 
-async function embedMemoryTexts(input: string[], abortSignal?: AbortSignal) {
+async function embedMemoryTexts(
+  input: string[],
+  abortSignal?: AbortSignal,
+  usageScope?: AiUsageScope,
+) {
   try {
-    return await embedTexts(input, abortSignal);
+    return await embedTexts(input, abortSignal, usageScope);
   } catch (error) {
     if (abortSignal?.aborted) {
       throw abortSignal.reason || error;
@@ -254,6 +304,37 @@ async function embedMemoryTexts(input: string[], abortSignal?: AbortSignal) {
     // being recorded when the embedding provider is temporarily unavailable.
     return null;
   }
+}
+
+function memoryUsageScope({
+  tenantId,
+  actorId,
+  executionScope,
+  runId,
+  operation,
+  purpose,
+}: {
+  tenantId?: string;
+  actorId?: string;
+  executionScope?: ExecutionScope;
+  runId: string;
+  operation: AiUsageOperation;
+  purpose: string;
+}): AiUsageScope | undefined {
+  const scopedTenantId = tenantId?.trim();
+  const scopedActorId = actorId?.trim();
+  if (!scopedTenantId || !scopedActorId) return undefined;
+  return {
+    tenantId: scopedTenantId,
+    actorId: scopedActorId,
+    sourceStreamId: `run:${runId}`,
+    operation,
+    purpose,
+    correlationId: executionScope?.correlationId || runId,
+    causationId: executionScope?.causationId || undefined,
+    executionScope,
+    credentialSource: "deployment_environment",
+  };
 }
 
 export function reconcileConsolidatedMemoryClaims(

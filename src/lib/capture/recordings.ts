@@ -145,6 +145,35 @@ export async function getCaptureRecording(id: string, owner: Owner): Promise<Cap
   };
 }
 
+/** Trusted compatibility lookup for Capture jobs queued before actor metadata moved out of the request body. */
+export async function resolveCaptureRecordingActorForIngestJob(
+  id: string,
+  input: { tenantId: string; ingestJobId: string },
+) {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const recordingId = normalizeId(id);
+  const ingestJobId = normalizeId(input.ingestJobId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT actor_id
+      FROM omni_capture_recordings
+      WHERE id = ${recordingId}
+        AND tenant_id = ${tenantId}
+        AND ingest_job_id = ${ingestJobId}
+      LIMIT 1
+    `;
+    return rows[0]?.actor_id ? normalizeActorId(String(rows[0].actor_id)) : undefined;
+  }
+  const ledger = await readCaptureLedger();
+  const recording = ledger.recordings.find((item) =>
+    item.id === recordingId &&
+    item.tenantId === tenantId &&
+    item.ingestJobId === ingestJobId
+  );
+  return recording?.actorId;
+}
+
 export async function updateCaptureRecording(id: string, owner: Owner, input: {
   title?: string;
   tags?: string[];
@@ -513,7 +542,13 @@ function withoutAudioPath(segment: CaptureLedger["segments"][number]): CaptureSe
 function stripSegments(detail: CaptureRecordingDetail): CaptureRecording { const { segments, ...recording } = detail; void segments; return recording; }
 function normalizeId(value: string) { const id = value.trim(); if (!/^[a-zA-Z0-9_-]{1,200}$/.test(id)) throw new CaptureRecordingError("Invalid recording id."); return id; }
 function normalizeTenantId(value: string) { return value.trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default"; }
-function normalizeActorId(value: string) { return value.trim().slice(0, 240) || "anonymous"; }
+function normalizeActorId(value: string) {
+  const actorId = value.trim();
+  if (actorId.length > 256) {
+    throw new Error("Capture recording actor identity exceeds 256 characters.");
+  }
+  return actorId || "anonymous";
+}
 function normalizeLanguage(value?: string) { const language = value?.trim().slice(0, 35) || "en-US"; return /^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$/.test(language) ? language : "en-US"; }
 function normalizeMimeType(value: string) { return value.split(";", 1)[0].trim().toLowerCase().slice(0, 120) || "application/octet-stream"; }
 function normalizeTags(values: string[]) { return [...new Set(values.map((value) => safeShort(value, 80).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")).filter(Boolean))].slice(0, 50); }

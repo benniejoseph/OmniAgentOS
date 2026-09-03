@@ -34,6 +34,7 @@ export const googleModelAdapter: ModelProviderAdapter = {
       latencyMs: result.latencyMs,
       estimatedCostUsd: result.estimatedCostUsd,
       costKnown: result.estimatedCostUsd !== undefined,
+      providerRequestId: result.responseId,
     };
   },
   async generateToolTurn(request, target) {
@@ -58,6 +59,7 @@ export const googleModelAdapter: ModelProviderAdapter = {
       latencyMs: result.latencyMs,
       estimatedCostUsd: result.estimatedCostUsd,
       costKnown: result.estimatedCostUsd !== undefined,
+      providerRequestId: result.responseId,
     };
   },
   classifyError(error) {

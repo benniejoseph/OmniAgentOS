@@ -1,8 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { OPERATION_QUEUE_LEASE_SECONDS } from "@/lib/config";
-import { updateCaptureAssetStatus } from "@/lib/capture/assets";
-import { markCaptureRecordingIndexed } from "@/lib/capture/recordings";
+import {
+  resolveCaptureAssetActorForIngestJob,
+  updateCaptureAssetStatus,
+} from "@/lib/capture/assets";
+import {
+  markCaptureRecordingIndexed,
+  resolveCaptureRecordingActorForIngestJob,
+} from "@/lib/capture/recordings";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { runEvaluationSuite } from "@/lib/evaluations/runner";
 import {
@@ -15,6 +21,7 @@ import { deleteKnowledgeDocumentsBySourcePrefix } from "@/lib/rag/store";
 import {
   appendRunEvent,
   getAgentRun,
+  getAgentRunExecutionScope,
   recordRunConsolidation,
 } from "@/lib/runs/store";
 import {
@@ -56,6 +63,8 @@ const memoryConsolidationJobRequestSchema = z
   .object({
     runId: z.string().min(1).max(200),
     mode: z.enum(["orchestrate", "research", "execute", "learn"]),
+    // Optional only so jobs queued by a previous release can still finish.
+    actorId: z.string().min(1).max(256).optional(),
   })
   .strict();
 
@@ -80,22 +89,26 @@ const BACKGROUND_JOB_LEASE_SECONDS = Math.max(
 
 export async function enqueueEvaluationJob({
   tenantId,
+  actorId,
   request,
   idempotencyKey,
 }: {
   tenantId: string;
+  actorId?: string;
   request: EvaluationJobRequest;
   idempotencyKey?: string;
 }) {
   const parsed = evaluationJobRequestSchema.parse(request);
   const requestId = idempotencyKey?.trim().slice(0, 200) || randomUUID();
   const requestHash = backgroundRequestHash(parsed);
+  const usageActorId = normalizeQueuedActorId(actorId);
   const job = await enqueueOperationJob({
     tenantId,
     type: "evaluation.run",
     dedupeKey: requestDedupeKey("evaluation.run", { requestId }),
     payload: {
       request: parsed,
+      actorId: usageActorId,
       requestHash,
       progress: { stage: "queued", completed: 0, total: parsed.caseIds.length },
     },
@@ -103,21 +116,33 @@ export async function enqueueEvaluationJob({
     priority: 1,
     dedupeMode: "idempotent",
   });
+  const existingActorId = typeof job.payload.actorId === "string"
+    ? job.payload.actorId.trim()
+    : undefined;
+  if (existingActorId && usageActorId && existingActorId !== usageActorId) {
+    throw new BackgroundJobIdempotencyConflictError("evaluation.run");
+  }
   assertIdempotentRequest(job, requestHash, "evaluation.run");
   return job;
 }
 
 export async function enqueueKnowledgeIngestJob({
   tenantId,
+  actorId,
   request,
   idempotencyKey,
 }: {
   tenantId: string;
+  actorId?: string;
   request: KnowledgeIngestJobRequest;
   idempotencyKey?: string;
 }) {
   const parsed = knowledgeIngestJobRequestSchema.parse(request);
   const requestId = idempotencyKey?.trim().slice(0, 200) || randomUUID();
+  const usageActorId = normalizeQueuedActorId(actorId);
+  // Keep the document-only hash so an idempotency key created by an older
+  // release remains replay-compatible. Actor attribution is trusted metadata,
+  // not part of the document mutation contract.
   const requestHash = backgroundRequestHash(parsed);
   const job = await enqueueOperationJob({
     tenantId,
@@ -125,6 +150,7 @@ export async function enqueueKnowledgeIngestJob({
     dedupeKey: requestDedupeKey("knowledge.ingest", { requestId }),
     payload: {
       request: parsed,
+      actorId: usageActorId,
       requestHash,
       progress: { stage: "queued" },
     },
@@ -132,6 +158,12 @@ export async function enqueueKnowledgeIngestJob({
     priority: 1,
     dedupeMode: "idempotent",
   });
+  const existingActorId = typeof job.payload.actorId === "string"
+    ? job.payload.actorId.trim()
+    : undefined;
+  if (existingActorId && usageActorId && existingActorId !== usageActorId) {
+    throw new BackgroundJobIdempotencyConflictError("knowledge.ingest");
+  }
   assertIdempotentRequest(job, requestHash, "knowledge.ingest");
   return job;
 }
@@ -140,16 +172,19 @@ export async function enqueueMemoryConsolidationJob({
   tenantId,
   runId,
   mode,
+  actorId,
 }: {
   tenantId?: string;
   runId: string;
   mode: AgentMode;
+  actorId?: string;
   prompt: string;
   response: string;
 }) {
   const request = memoryConsolidationJobRequestSchema.parse({
     runId,
     mode,
+    actorId: actorId?.trim() || undefined,
   });
   return enqueueOperationJob({
     tenantId,
@@ -363,7 +398,7 @@ async function markCaptureIngestFailureSafely(job: OperationJobRecord, message: 
   const parsed = knowledgeIngestJobRequestSchema.safeParse(job.payload.request);
   if (!parsed.success) return;
   const metadata = parsed.data.metadata || {};
-  const actorId = typeof metadata.actorId === "string" ? metadata.actorId : undefined;
+  const actorId = await resolveKnowledgeIngestActorId(job, parsed.data);
   if (!actorId) return;
   try {
     if (typeof metadata.captureAssetId === "string") {
@@ -381,6 +416,41 @@ async function markCaptureIngestFailureSafely(job: OperationJobRecord, message: 
     // The operation job remains the durable source of failure truth if the
     // convenience status projection cannot be updated.
   }
+}
+
+async function resolveKnowledgeIngestActorId(
+  job: OperationJobRecord,
+  request: KnowledgeIngestJobRequest,
+) {
+  const queuedActorId = typeof job.payload.actorId === "string"
+    ? normalizeQueuedActorId(job.payload.actorId) || ""
+    : "";
+  if (queuedActorId) return queuedActorId;
+
+  const metadata = request.metadata || {};
+  try {
+    if (
+      typeof metadata.captureAssetId === "string" &&
+      request.source === `capture:asset:${metadata.captureAssetId}`
+    ) {
+      return resolveCaptureAssetActorForIngestJob(metadata.captureAssetId, {
+        tenantId: job.tenantId,
+        ingestJobId: job.id,
+      });
+    }
+    if (
+      typeof metadata.captureRecordingId === "string" &&
+      request.source === `capture:recording:${metadata.captureRecordingId}`
+    ) {
+      return resolveCaptureRecordingActorForIngestJob(metadata.captureRecordingId, {
+        tenantId: job.tenantId,
+        ingestJobId: job.id,
+      });
+    }
+  } catch {
+    // Projection recovery is best effort; document ingestion remains canonical.
+  }
+  return undefined;
 }
 
 async function executeBackgroundOperation(
@@ -405,10 +475,23 @@ async function executeBackgroundOperation(
       },
       { tenantId: job.tenantId },
     );
+    const executionScope = await getAgentRunExecutionScope(parsed.runId, {
+      tenantId: job.tenantId,
+    });
+    const actorId = parsed.actorId || executionScope?.initiatingActorId || undefined;
+    if (
+      parsed.actorId &&
+      executionScope?.initiatingActorId &&
+      parsed.actorId !== executionScope.initiatingActorId
+    ) {
+      throw new Error("Memory consolidation actor does not match its run scope.");
+    }
     const { episode, consolidation } = await consolidateAgentRunMemory({
       runId: run.id,
       threadId: run.threadId,
       tenantId: job.tenantId,
+      actorId,
+      executionScope,
       mode: run.mode,
       prompt: run.prompt,
       response: run.response || "",
@@ -450,14 +533,25 @@ async function executeBackgroundOperation(
 
   if (job.type === "knowledge.ingest") {
     const parsed = knowledgeIngestJobRequestSchema.parse(request);
+    const metadata = parsed.metadata || {};
+    const actorId = await resolveKnowledgeIngestActorId(job, parsed);
     const result = await ingestTextDocument({
       ...parsed,
       tenantId: job.tenantId,
       idempotencyKey: job.id,
       abortSignal,
+      ...(actorId ? {
+        usageScope: {
+          tenantId: job.tenantId,
+          actorId,
+          sourceStreamId: `operation-job:${job.id}`,
+          operation: "embedding" as const,
+          purpose: "knowledge.ingest.background",
+          correlationId: job.id,
+          credentialSource: "deployment_environment" as const,
+        },
+      } : {}),
     });
-    const metadata = parsed.metadata || {};
-    const actorId = typeof metadata.actorId === "string" ? metadata.actorId : undefined;
     if (actorId) {
       try {
         if (typeof metadata.captureAssetId === "string") {
@@ -491,6 +585,9 @@ async function executeBackgroundOperation(
     const detail = await runEvaluationSuite({
       ...parsed,
       tenantId: job.tenantId,
+      actorId: typeof job.payload.actorId === "string"
+        ? job.payload.actorId
+        : undefined,
       runId: `evaluation_job_${job.id}`,
       abortSignal,
       onProgress: async (progress) => {
@@ -626,6 +723,15 @@ function assertIdempotentRequest(
   ) {
     throw new BackgroundJobIdempotencyConflictError(type);
   }
+}
+
+function normalizeQueuedActorId(value: string | undefined) {
+  const actorId = value?.trim();
+  if (!actorId) return undefined;
+  if (actorId.length > 256) {
+    throw new Error("Background job actor identity exceeds 256 characters.");
+  }
+  return actorId;
 }
 
 function stableStringify(value: unknown): string {

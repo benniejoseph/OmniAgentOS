@@ -43,6 +43,14 @@ async function GETHandler(request: Request) {
         tenantId: context.tenantId,
         limit: Math.min(limit, 24),
         persistTrace: url.searchParams.get("persistTrace") !== "false",
+        usageScope: {
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          sourceStreamId: "api:retrieval",
+          operation: "embedding",
+          purpose: "api.retrieval.plan",
+          credentialSource: "deployment_environment",
+        },
       }),
       stats: await getContextEngineStats({ tenantId: context.tenantId }),
     });
@@ -90,6 +98,14 @@ async function POSTHandler(request: Request) {
       tenantId: context.tenantId,
       limit: parsed.data.limit,
       persistTrace: parsed.data.persistTrace,
+      usageScope: {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        sourceStreamId: "api:retrieval",
+        operation: "embedding",
+        purpose: "api.retrieval.plan",
+        credentialSource: "deployment_environment",
+      },
     }),
     stats: await getContextEngineStats({ tenantId: context.tenantId }),
   });

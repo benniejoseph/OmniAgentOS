@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { getSessionToken } from "@/lib/auth/session";
 import { getSessionIdentity, isAuthEnforced } from "@/lib/auth/store";
+import { getMobileIdentityFromRequest, hasBearerAuthorization } from "@/lib/auth/mobile";
 import { enterDatabaseTenantContext } from "@/lib/db/client";
 import type { RbacRule, SecurityContext, SecurityRole } from "@/lib/security/types";
 
@@ -9,6 +10,7 @@ const sensitiveKeyPattern =
   /api[_-]?key|token|secret|password|authorization|cookie|connection[_-]?string|database[_-]?url|private[_-]?key/i;
 const nonSecretTokenMetadataKeys = new Set([
   "input_tokens",
+  "cached_input_tokens",
   "output_tokens",
   "total_tokens",
   "max_tokens",
@@ -20,6 +22,18 @@ const nonSecretTokenMetadataKeys = new Set([
   "token_index",
   "token_type",
   "token_usage",
+  "input_characters",
+  "input_bytes",
+  "output_bytes",
+  "input_audio_milliseconds",
+  "output_audio_milliseconds",
+  "image_count",
+  "search_query_count",
+  "browser_task_count",
+  "provider_call_count",
+  "attempt_count",
+  "failed_attempt_count",
+  "estimated_cost_microusd",
 ]);
 const forbiddenConnectorSecretNames = new Set([
   "DATABASE_URL",
@@ -129,6 +143,18 @@ export async function resolveSecurityContext(request?: Request): Promise<Securit
   enterDatabaseTenantContext();
   if (getTrustedIdentityHeaders(request).source === "headers") {
     return getSecurityContext(request);
+  }
+
+  // An Authorization header is an explicit choice of native/API auth. Never
+  // fall back to a browser cookie when a malformed, expired, or revoked bearer
+  // credential was supplied.
+  if (hasBearerAuthorization(request)) {
+    const mobileIdentity = await getMobileIdentityFromRequest(request);
+    if (!mobileIdentity) {
+      throw new SecurityPolicyError("Authentication required.", 401);
+    }
+    enterDatabaseTenantContext(mobileIdentity.context.tenantId);
+    return mobileIdentity.context;
   }
 
   if (!isAuthEnforced()) {

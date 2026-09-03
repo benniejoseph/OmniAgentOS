@@ -280,6 +280,14 @@ export async function generateDailyBrief(options: {
           "If evidence is sparse, say so plainly. Keep the summary under three sentences.",
         ].join(" "),
         input: JSON.stringify(evidence),
+        usageScope: {
+          tenantId: normalizeTenantId(options.tenantId),
+          actorId: options.actorId,
+          sourceStreamId: `today:${localDate}:${options.actorId}`,
+          operation: "structured_generation",
+          purpose: "today.daily_brief",
+          credentialSource: "deployment_environment",
+        },
       });
       content = briefSchema.parse(JSON.parse(output));
       generatedBy = "ai";

@@ -4,6 +4,9 @@ import { AGENT_REASONING_EFFORT } from "@/lib/config";
 import { generateModelStructured } from "@/lib/models/gateway";
 import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
 import type { AgentMode } from "@/lib/orchestration/types";
+import type { AiUsageScope } from "@/lib/usage/types";
+
+type CouncilUsageAttribution = Omit<AiUsageScope, "operation" | "purpose">;
 
 export type CouncilAgentId = "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne";
 
@@ -37,6 +40,7 @@ export async function runCouncilRound(input: {
   contextBlock: string;
   tenantId?: string;
   abortSignal?: AbortSignal;
+  usageAttribution?: CouncilUsageAttribution;
 }) {
   const memberIds = [...new Set(input.specialistIds)]
     .filter((agentId) => agentId !== input.primaryAgentId && agentId !== "sentinel")
@@ -69,6 +73,15 @@ export async function runCouncilRound(input: {
         reasoningEffort: AGENT_REASONING_EFFORT,
         abortSignal: input.abortSignal,
         tier: "reasoning",
+        ...(input.usageAttribution
+          ? {
+              usageScope: {
+                ...input.usageAttribution,
+                operation: "structured_generation" as const,
+                purpose: `council.member.${agentId}`,
+              },
+            }
+          : {}),
       });
       const parsed = JSON.parse(generated.text) as Partial<CouncilContribution>;
       return {
@@ -109,6 +122,7 @@ export async function reviewCouncilResponse(input: {
   contributions: CouncilContribution[];
   contextBlock: string;
   abortSignal?: AbortSignal;
+  usageAttribution?: CouncilUsageAttribution;
 }): Promise<CouncilVerdict> {
   const generated = await generateModelStructured({
     instructions: "You are Sentinel, the final critic in a private agent council. Fail work with unsupported claims, missed requirements, unsafe advice, invented execution, or material disagreement with the specialist evidence. Be strict but specific.",
@@ -123,6 +137,15 @@ export async function reviewCouncilResponse(input: {
     reasoningEffort: AGENT_REASONING_EFFORT,
     abortSignal: input.abortSignal,
     tier: "reasoning",
+    ...(input.usageAttribution
+      ? {
+          usageScope: {
+            ...input.usageAttribution,
+            operation: "structured_generation" as const,
+            purpose: "council.review",
+          },
+        }
+      : {}),
   });
   const parsed = JSON.parse(generated.text) as CouncilVerdict;
   return {
@@ -140,6 +163,7 @@ export async function reviseCouncilResponse(input: {
   contributions: CouncilContribution[];
   contextBlock: string;
   abortSignal?: AbortSignal;
+  usageAttribution?: CouncilUsageAttribution;
 }) {
   const generated = await generateModelStructured({
     instructions: "You are Atlas. Revise the candidate response to satisfy Sentinel's required changes. Preserve valid bracketed citation IDs exactly, remove unsupported claims, state unresolved uncertainty, and return only the improved final response.",
@@ -160,6 +184,15 @@ export async function reviseCouncilResponse(input: {
     reasoningEffort: AGENT_REASONING_EFFORT,
     abortSignal: input.abortSignal,
     tier: "reasoning",
+    ...(input.usageAttribution
+      ? {
+          usageScope: {
+            ...input.usageAttribution,
+            operation: "structured_generation" as const,
+            purpose: "council.revise",
+          },
+        }
+      : {}),
   });
   return String((JSON.parse(generated.text) as { response?: string }).response || input.response);
 }

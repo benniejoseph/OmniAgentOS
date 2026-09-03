@@ -20,7 +20,14 @@ async function POSTHandler(request: Request) {
   if (!parsed.success) return Response.json({ error: "Add text between 1 and 5,000 characters." }, { status: 400 });
   const startedAt = Date.now();
   try {
-    const audio = await synthesizeGoogleSpeech(parsed.data.text, request.signal);
+    const audio = await synthesizeGoogleSpeech(parsed.data.text, request.signal, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      sourceStreamId: "api:media:speech",
+      operation: "speech_synthesis",
+      purpose: "agent.voice.synthesize",
+      credentialSource: "deployment_environment",
+    });
     await recordRuntimeEventSafely({ category: "api", action: "media.speech", tenantId: context.tenantId, actorId: context.actorId, resourceType: "media", durationMs: Date.now() - startedAt, message: "Speech synthesis completed.", metadata: { provider: "google", characters: parsed.data.text.length } });
     return new Response(audio, { headers: { "content-type": "audio/mpeg", "content-length": String(audio.length), "cache-control": "private, no-store", "content-disposition": "inline; filename=asael-response.mp3" } });
   } catch (error) {
