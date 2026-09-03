@@ -757,6 +757,12 @@ The first safe delivery sequence is intentionally narrow:
 11. P5.1/P5.2 ontology and entity registry without replacing current graph UI.
 12. P6.1 Loop v2 for one low-risk, read-only canary task.
 
+The first P1.3 workflow slice is implemented as an additive shadow projection:
+completion persists a validated outcome evaluation, public reads display its
+canonical outcome beside legacy status, and existing workflow controls remain
+unchanged. Strong effect verification and broader terminal-path convergence
+continue in P1.4 and later P1.3 expansion slices.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

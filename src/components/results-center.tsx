@@ -229,7 +229,10 @@ export function ResultsCenter() {
   });
   const evaluationRuns = arrayPath(data, "evaluations.runs");
   const resultTimeline = useMemo(
-    () => buildResultTimeline({ agentRuns, workflowRuns, approvalItems }),
+    () => withWorkflowOutcomeMetadata(
+      buildResultTimeline({ agentRuns, workflowRuns, approvalItems }),
+      workflowRuns,
+    ),
     [agentRuns, approvalItems, workflowRuns],
   );
   const resultSourceError = Boolean(resourceError(data.runs) || resourceError(data.workflows) || resourceError(data.approvals));
@@ -865,7 +868,35 @@ function refreshMessage(error: unknown) {
 }
 
 function workflowMeta(run: JsonRecord) {
-  return `${stringValue(run.currentStep, "complete")} / ${formatResultTime(stringValue(run.completedAt || run.updatedAt || run.createdAt))}`;
+  const outcome = stringPath(run, "canonicalStatus.status", "")
+    .trim()
+    .toLowerCase()
+    .replaceAll("_", " ");
+  return [
+    stringValue(run.currentStep, "complete"),
+    outcome ? `Outcome: ${outcome}` : "",
+    formatResultTime(stringValue(run.completedAt || run.updatedAt || run.createdAt)),
+  ].filter(Boolean).join(" / ");
+}
+
+function withWorkflowOutcomeMetadata(
+  timeline: ResultTimelineItem[],
+  workflowRuns: JsonRecord[],
+) {
+  const workflowsByKey = new Map<string, JsonRecord>();
+  for (const run of workflowRuns) {
+    const runId = stringValue(run.id);
+    if (runId) {
+      workflowsByKey.set(`workflow:${runId}`, run);
+    }
+  }
+  return timeline.map((item) => {
+    if (item.kind !== "workflow") {
+      return item;
+    }
+    const run = workflowsByKey.get(item.key);
+    return run ? { ...item, meta: workflowMeta(run) } : item;
+  });
 }
 
 function resultPreview(value: unknown, fallback = "No result text available.") {

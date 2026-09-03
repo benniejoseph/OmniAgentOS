@@ -8,6 +8,7 @@ import {
   WorkflowNotFoundError,
   WorkflowSignalConflictError,
 } from "@/lib/workflows/runner";
+import { publicWorkflowRunDetail } from "@/lib/workflows/public";
 
 export const runtime = "nodejs";
 export const POST = withDatabaseRequestScope(POSTHandler);
@@ -67,7 +68,7 @@ async function POSTHandler(
     }
 
     return Response.json({
-      ...detail,
+      ...publicWorkflowRunDetail(detail),
       queueJob,
       canceledJobs,
     });

@@ -37,6 +37,7 @@ type ActivityRow = {
   key: string;
   title: string;
   status: string;
+  outcomeStatus?: string;
   detail: string;
   timestamp: number;
   time: string;
@@ -498,10 +499,14 @@ function mergeActivity(agentRuns: JsonRecord[], workflowRuns: JsonRecord[]) {
     }),
     ...workflowRuns.map((item): ActivityRow => {
       const time = stringValue(item.completedAt || item.updatedAt || item.createdAt);
+      const outcomeStatus = stringValue(
+        readPath(item, "canonicalStatus.status"),
+      );
       return {
         key: `workflow-${stringValue(item.id, `${stringValue(item.goal)}-${time}`)}`,
         title: stringValue(item.goal, "Workflow"),
         status: stringValue(item.status, "unknown"),
+        outcomeStatus,
         detail: stringValue(item.currentStep, "workflow"),
         timestamp: timestampValue(time),
         time,
@@ -533,7 +538,15 @@ function ActivityItem({ row, compact = false }: { row: ActivityRow; compact?: bo
               <p className="truncate text-sm font-semibold">{row.title}</p>
               <p className="mt-1 text-xs text-muted">{row.detail} · {formatTime(row.time)}</p>
             </div>
-            <StatusBadge status={row.status} />
+            <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+              <StatusBadge status={row.status} />
+              {row.outcomeStatus ? (
+                <StatusBadge
+                  status={`Outcome: ${row.outcomeStatus.replaceAll("_", " ")}`}
+                  toneStatus={row.outcomeStatus}
+                />
+              ) : null}
+            </div>
           </div>
           {row.result && compact ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">{row.result}</p> : null}
         </div>
@@ -558,8 +571,8 @@ function AttentionItem({ item, kind }: { item: JsonRecord; kind: "approval" | "i
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const tone = toneForStatus(status);
+function StatusBadge({ status, toneStatus = status }: { status: string; toneStatus?: string }) {
+  const tone = toneForStatus(toneStatus);
   const Icon = tone === "success" ? CheckCircle2 : tone === "warning" ? Clock3 : tone === "danger" ? AlertTriangle : CircleHelp;
   return (
     <span className={clsx("inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 font-mono text-xs", pillTone(tone))}>
@@ -733,8 +746,8 @@ function formatTime(value: string) {
 
 function toneForStatus(value: unknown): Tone {
   const status = stringValue(value).toLowerCase();
-  if (["completed", "success", "approved", "healthy", "ready"].includes(status)) return "success";
-  if (["running", "queued", "pending", "waiting_approval", "paused", "degraded"].includes(status)) return "warning";
+  if (["completed", "success", "succeeded", "approved", "healthy", "ready"].includes(status)) return "success";
+  if (["running", "queued", "pending", "waiting", "waiting_approval", "partial", "paused", "degraded"].includes(status)) return "warning";
   if (["failed", "blocked", "rejected", "canceled", "error", "unhealthy", "open"].includes(status)) return "danger";
   return "neutral";
 }

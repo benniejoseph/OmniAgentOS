@@ -37,6 +37,7 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 ## Workflows and operations
 
 - `/api/workflows`, `/api/workflows/:id`, `/api/workflows/plan`, and `/api/workflows/executions`.
+- Workflow run responses preserve the legacy `status` field for polling and mutation controls. Full and list projections also add a display-only `canonicalStatus` plus `outcome`; `outcome` is either a schema-validated, metadata-only outcome contract and terminal receipt or `null`. `outcome.outcomeContractBindingState` is `posthoc` in this first slice because the contract is derived from the persisted pre-execution plan but was not itself bound before execution. A missing or malformed shadow receipt never upgrades legacy `completed` beyond canonical `unverified`. The compact `?view=status` response intentionally returns `outcome: null` because it does not load the result record.
 - `POST /api/workflows` accepts a reviewed `planId`; retries with that plan return the already-bound run instead of creating or canceling duplicate work. Callers that start without a plan may send an `Idempotency-Key` header using up to 200 letters, numbers, dots, underscores, colons, or hyphens.
 - `/api/workflows/:id/tick` and `/api/workflows/:id/signal` for controlled progression.
 - `/api/triggers` and `/api/triggers/:id/dispatch`.

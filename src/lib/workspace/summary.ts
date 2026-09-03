@@ -4,6 +4,7 @@ import { listAgentRunSummaries } from "@/lib/runs/store";
 import type { AgentRunRecord } from "@/lib/runs/types";
 import { canPerform } from "@/lib/security/context";
 import type { SecurityRole } from "@/lib/security/types";
+import { publicWorkflowRun } from "@/lib/workflows/public";
 import { listWorkflowRunSummaries } from "@/lib/workflows/store";
 import type { WorkflowRunRecord } from "@/lib/workflows/types";
 
@@ -176,10 +177,13 @@ function projectAgentRun(run: AgentRunRecord) {
 }
 
 function projectWorkflowRun(run: WorkflowRunRecord) {
+  const publicRun = publicWorkflowRun(run);
   return {
     id: run.id,
     workflowType: run.workflowType,
     status: run.status,
+    canonicalStatus: publicRun.canonicalStatus,
+    outcome: publicRun.outcome,
     goal: run.goal,
     currentStep: run.currentStep,
     attempt: run.attempt,

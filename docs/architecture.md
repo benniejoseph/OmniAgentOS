@@ -109,6 +109,18 @@ outcome-evaluator terminal receipt with verified required outcomes can project
 and UI presentation remain authoritative and unchanged during this shadow
 stage.
 
+P1.3 extends that shadow path to completed workflows. The workflow result row
+stores a strict outcome evaluation beside the legacy report in the same state
+transition. Public workflow projections validate it before exposing its
+metadata-only outcome contract, terminal receipt, and canonical status. The
+legacy workflow status still drives queueing, polling, retries, approvals, and
+controls. Dry-run, skipped, blocked, waiting, partial, model-asserted, and
+otherwise unverified work cannot project canonical `succeeded`.
+The first evaluator explicitly labels its contract binding `posthoc`: it uses
+requirements from the persisted pre-execution plan, but no exact outcome
+contract digest was bound before execution. Therefore this slice cannot emit
+`succeeded`; pre-execution binding and strong effect receipts are later gates.
+
 ## Durable workflows
 
 Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured output), persisted, and executed node-by-node through queue leases (`omni_operation_jobs`): lease → tick → retry with backoff (max 5 attempts) → recovery for stale leases. Approval nodes pause until signaled. The daily cron plus `after()` drains advance work; see [deployment.md](deployment.md) for cadence options.

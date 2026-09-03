@@ -123,6 +123,28 @@ UI lifecycle vocabulary: for example, terminal `waiting_approval` projects to
 canonical UI `waiting`, while active `running` and `preview` remain projection
 states rather than terminal dispositions.
 
+### Workflow shadow evaluation
+
+P1.3 reuses `OutcomeContractV1` and `TerminalReceiptV1` for completed workflow
+runs. The evaluator derives opaque requirement IDs from the persisted plan,
+binds the contract and receipt with SHA-256 digests, and stores the validated
+evaluation under the workflow result. During this initial display-only slice,
+legacy `status` remains authoritative for execution behavior.
+
+The derived workflow contract carries `outcomeContractBindingState: "posthoc"`.
+Its source plan existed before execution, but the exact outcome-contract object
+and digest were not pre-bound. That qualifier is preserved in the private
+evaluation, compact event, and public outcome projection. A posthoc contract is
+never eligible for `succeeded`.
+
+Current workflow verification can include model assertions and generated
+summaries, which are evidence metadata but are not strong verifier methods.
+Consequently, the evaluator may report waiting, blocked, partial, failed, or
+unverified, but it must not claim `succeeded` until later effect-receipt and
+strong-verifier slices provide the required live evidence. A malformed stored
+evaluation is ignored at the public boundary and falls back to the truthful
+legacy canonical projection.
+
 ## Event payloads
 
 Keep a full envelope only on its intended private scoped record or active

@@ -24,6 +24,11 @@ import {
   getWorkflowPlanById,
   validateWorkflowPlan,
 } from "@/lib/workflows/planner";
+import {
+  publicWorkflowRun,
+  publicWorkflowRunDetail,
+  publicWorkflowStats,
+} from "@/lib/workflows/public";
 import { getThread } from "@/lib/threads/store";
 
 export const runtime = "nodejs";
@@ -68,8 +73,8 @@ async function GETHandler(request: Request) {
       : Promise.resolve(undefined),
   ]);
   return Response.json({
-    runs,
-    ...(stats ? { stats } : {}),
+    runs: runs.map(publicWorkflowRun),
+    ...(stats ? { stats: publicWorkflowStats(stats) } : {}),
     ...(queue ? { queue } : {}),
   });
 }
@@ -226,7 +231,11 @@ async function POSTHandler(request: Request) {
       if (queueJob) {
         scheduleWorkflowQueueDrain(undefined, context.tenantId);
       }
-      return Response.json({ ...existing, queueJob, replayed: true });
+      return Response.json({
+        ...publicWorkflowRunDetail(existing),
+        queueJob,
+        replayed: true,
+      });
     }
     const detail = await createWorkflowRun({
       ...parsed.data,
@@ -280,7 +289,11 @@ async function POSTHandler(request: Request) {
             context.tenantId,
           );
           scheduleWorkflowQueueDrain(undefined, context.tenantId);
-          return Response.json({ ...detail, queueJob, replayed: true });
+          return Response.json({
+            ...publicWorkflowRunDetail(detail),
+            queueJob,
+            replayed: true,
+          });
         }
         await transitionWorkflowRun(
           detail.run.id,
@@ -309,7 +322,10 @@ async function POSTHandler(request: Request) {
       context.tenantId,
     );
     scheduleWorkflowQueueDrain(undefined, context.tenantId);
-    return Response.json({ ...detail, queueJob }, { status: 201 });
+    return Response.json(
+      { ...publicWorkflowRunDetail(detail), queueJob },
+      { status: 201 },
+    );
   } catch (error) {
     return forbiddenResponse(error);
   }

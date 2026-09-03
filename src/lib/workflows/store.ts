@@ -434,9 +434,19 @@ export async function listWorkflowRunSummaries(
         '{}'::jsonb AS input,
         current_step, attempt, max_attempts, approval_required, error,
         CASE
-          WHEN jsonb_typeof(result -> 'report') = 'string'
-          THEN jsonb_build_object('report', result -> 'report')
-          ELSE NULL
+          WHEN result IS NULL THEN NULL
+          ELSE jsonb_strip_nulls(jsonb_build_object(
+            'report', CASE
+              WHEN jsonb_typeof(result -> 'report') = 'string'
+              THEN result -> 'report'
+              ELSE NULL
+            END,
+            'outcomeEvaluation', CASE
+              WHEN jsonb_typeof(result -> 'outcomeEvaluation') = 'object'
+              THEN result -> 'outcomeEvaluation'
+              ELSE NULL
+            END
+          ))
         END AS result,
         created_at, updated_at, completed_at
       FROM omni_workflow_runs

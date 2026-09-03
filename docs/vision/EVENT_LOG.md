@@ -51,6 +51,15 @@ stores, controls, mutation contracts, or UI presentation. Legacy completion is
 `unverified`; `succeeded` requires a valid outcome-evaluator terminal receipt
 whose required outcomes are verified.
 
+P1.3 adds `workflow.outcome_evaluated` after a completed workflow stores its
+validated shadow evaluation. Its payload is a strict metadata-only projection:
+schema version, the explicit `posthoc` contract-binding state, opaque
+run/contract/receipt IDs, SHA-256 bindings, terminal and verification enums,
+and bounded counts. It does not include goals, reports,
+acceptance-criterion text, tool data, model output, errors, or private
+reasoning. The result record is the durable shadow source in this slice;
+transactional workflow state/event writes remain P1.1 work.
+
 ## Event shape
 
 ```ts
