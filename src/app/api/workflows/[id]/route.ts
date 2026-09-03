@@ -30,21 +30,26 @@ async function GETHandler(
   }
 
   const statusOnly = new URL(request.url).searchParams.get("view") === "status";
-  const detail = statusOnly
-    ? await getWorkflowRunStatus(id, {
-        tenantId: securityContext.tenantId,
-      })
-    : await getWorkflowRunDetail(id, {
-        tenantId: securityContext.tenantId,
-      });
+  if (statusOnly) {
+    const status = await getWorkflowRunStatus(id, {
+      tenantId: securityContext.tenantId,
+    });
+    if (!status) {
+      return Response.json(
+        { error: "Workflow run not found." },
+        { status: 404 },
+      );
+    }
+    return Response.json({ run: publicWorkflowStatus(status) });
+  }
+
+  const detail = await getWorkflowRunDetail(id, {
+    tenantId: securityContext.tenantId,
+  });
 
   if (!detail) {
     return Response.json({ error: "Workflow run not found." }, { status: 404 });
   }
 
-  return Response.json(
-    statusOnly
-      ? { run: publicWorkflowStatus(detail) }
-      : publicWorkflowRunDetail(detail),
-  );
+  return Response.json(publicWorkflowRunDetail(detail));
 }
