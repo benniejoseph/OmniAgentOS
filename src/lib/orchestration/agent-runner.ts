@@ -1407,7 +1407,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
 
     yield {
       type: "model",
-      provider: turn.provider === "local" ? undefined : turn.provider,
+      provider: turn.provider,
       model: turn.model,
       tier: input.tier,
       inputTokens: turn.usage.inputTokens,
