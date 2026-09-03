@@ -194,7 +194,14 @@ export async function importGooglePhotosPickerSelection(
           [preview.bytes],
           previewFilename(item, preview.extension),
           { type: preview.mimeType },
-        ));
+        ), {
+          tenantId: identity.tenantId,
+          actorId: identity.actorId,
+          sourceStreamId: `google-photos-picker:${sealed.sessionId}`,
+          operation: "ocr",
+          purpose: "connector.google_photos.extract",
+          credentialSource: "deployment_environment",
+        });
         detectedText = extracted.content.trim().slice(0, 100_000);
         visualExtraction = detectedText ? "text_detected" : "metadata_only";
       } catch {
@@ -207,6 +214,7 @@ export async function importGooglePhotosPickerSelection(
     try {
       const job = await enqueueKnowledgeIngestJob({
         tenantId: identity.tenantId,
+        actorId: identity.actorId,
         idempotencyKey: request.idempotencyKey,
         request: request.document,
       });

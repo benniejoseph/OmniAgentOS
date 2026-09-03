@@ -43,7 +43,14 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   if (!existing) return Response.json({ error: "Memory not found." }, { status: 404 });
   const embedding = (await embedTexts([
     `${parsed.data.title || existing.title}\n\n${parsed.data.content || existing.content}`,
-  ]))?.[0] || existing.embedding;
+  ], undefined, {
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    sourceStreamId: `memory:${id}`,
+    operation: "embedding",
+    purpose: "api.memory.correct",
+    credentialSource: "deployment_environment",
+  }))?.[0] || existing.embedding;
   const result = await correctMemory(id, { ...parsed.data, embedding }, { tenantId: context.tenantId, actorId: context.actorId });
   if (!result) return Response.json({ error: "Memory not found." }, { status: 404 });
   await queueMemoryGraphRebuild({ tenantId: context.tenantId });

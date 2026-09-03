@@ -16,6 +16,7 @@ import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type { ToolDefinition } from "@/lib/tools/types";
+import type { AiUsageScope } from "@/lib/usage/types";
 import { shouldUseLiveWebSearch } from "@/lib/web-search/search";
 import type {
   WorkflowDynamicPlan,
@@ -44,6 +45,7 @@ type BuildWorkflowPlanInput = {
   readOnlyTools?: boolean;
   agentInstructions?: string;
   abortSignal?: AbortSignal;
+  usageAttribution?: Pick<AiUsageScope, "actorId" | "executionScope" | "correlationId" | "causationId">;
 };
 
 type WorkflowPlanLedger = {
@@ -142,10 +144,27 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
   }
 
   const mode = input.mode || "orchestrate";
+  const planId = randomUUID();
+  const usageActorId = effectivePlannerActorId(input.actorId, input.usageAttribution);
   const context = await buildContextPack(contextSelection?.query || goal, {
     limit: 8,
     tenantId,
     evidenceIds: contextSelection?.evidenceIds,
+    ...(usageActorId ? {
+      usageScope: {
+        tenantId,
+        actorId: usageActorId,
+        sourceStreamId: input.workflowRunId
+          ? `workflow:${input.workflowRunId}`
+          : `workflow-plan:${planId}`,
+        operation: "embedding" as const,
+        purpose: "workflow.context.retrieve",
+        correlationId: input.usageAttribution?.correlationId || input.workflowRunId || planId,
+        causationId: input.usageAttribution?.causationId,
+        executionScope: input.usageAttribution?.executionScope,
+        credentialSource: "deployment_environment" as const,
+      },
+    } : {}),
   });
   const availableCandidates = await getPlannerToolCandidates(goal, context.contextBlock, {
     tenantId,
@@ -157,7 +176,7 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     : availableCandidates).filter((tool) => !input.readOnlyTools || tool.riskLevel === 0);
   const generated = await generatePlan({
     tenantId,
-    actorId: input.actorId || "",
+    actorId: usageActorId,
     goal,
     mode,
     requireApproval: Boolean(input.requireApproval),
@@ -166,6 +185,10 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     toolCandidates,
     agentInstructions: input.agentInstructions,
     abortSignal: input.abortSignal,
+    sourceStreamId: input.workflowRunId
+      ? `workflow:${input.workflowRunId}`
+      : `workflow-plan:${planId}`,
+    usageAttribution: input.usageAttribution,
   });
   const safePlan = redactSensitive(
     generated.plan,
@@ -179,7 +202,7 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     validation.missingDependencies.length === 0 &&
     !missingExecutableInput;
   const record: WorkflowPlanRecord = {
-    id: randomUUID(),
+    id: planId,
     tenantId,
     workflowRunId: input.workflowRunId,
     goal,
@@ -434,6 +457,8 @@ async function generatePlan({
   toolCandidates,
   agentInstructions,
   abortSignal,
+  sourceStreamId,
+  usageAttribution,
 }: {
   tenantId: string;
   actorId: string;
@@ -445,6 +470,8 @@ async function generatePlan({
   toolCandidates: PlannerToolCandidate[];
   agentInstructions?: string;
   abortSignal?: AbortSignal;
+  sourceStreamId: string;
+  usageAttribution?: BuildWorkflowPlanInput["usageAttribution"];
 }): Promise<{ planner: WorkflowPlanRecord["planner"]; model: string; plan: WorkflowDynamicPlan }> {
   const runtimeModel = await resolveRuntimeModelAssignment({
     tenantId,
@@ -485,6 +512,24 @@ async function generatePlan({
           : controller.signal,
         reasoningEffort: "minimal",
         tier: "reasoning",
+        ...(actorId
+          ? {
+              usageScope: {
+                tenantId,
+                actorId,
+                sourceStreamId,
+                operation: "structured_generation" as const,
+                purpose: "workflow.plan",
+                correlationId: usageAttribution?.correlationId || sourceStreamId,
+                causationId: usageAttribution?.causationId,
+                executionScope: usageAttribution?.executionScope,
+                assignmentId: runtimeModel.assignmentId,
+                credentialSource: runtimeModel.source === "tenant_assignment"
+                  ? "tenant_vault" as const
+                  : "deployment_environment" as const,
+              },
+            }
+          : {}),
       }),
     ).finally(() => clearTimeout(timer));
     const parsed = dynamicPlanSchema.parse(JSON.parse(generated.text));
@@ -510,6 +555,36 @@ async function generatePlan({
       },
     };
   }
+}
+
+function effectivePlannerActorId(
+  actorId: string | undefined,
+  attribution: BuildWorkflowPlanInput["usageAttribution"],
+) {
+  const directActorId = actorId?.trim() || "";
+  const attributedActorId = attribution?.actorId.trim() || "";
+  const scope = attribution?.executionScope;
+  const scopedActorId = scope?.initiatingActorId?.trim() ||
+    (scope?.executingPrincipalType === "system"
+      ? scope.executingPrincipalId?.trim() || "omniagent-system"
+      : "");
+  if (scope) {
+    if (attributedActorId && scopedActorId !== attributedActorId) {
+      throw new Error(
+        "Workflow planner usage actor does not match its immutable execution scope.",
+      );
+    }
+    if (directActorId && scopedActorId && directActorId !== scopedActorId) {
+      throw new Error(
+        "Workflow planner actor does not match its immutable execution scope.",
+      );
+    }
+    return scopedActorId;
+  }
+  if (directActorId && attributedActorId && directActorId !== attributedActorId) {
+    throw new Error("Workflow planner actor attribution is inconsistent.");
+  }
+  return attributedActorId || directActorId;
 }
 
 function addRoutingWarnings(

@@ -4,6 +4,7 @@ import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 
 const mocks = vi.hoisted(() => ({
   appendRunEvent: vi.fn(),
+  bindAgentRunExecutionScope: vi.fn(),
   buildContextPack: vi.fn(),
   completeAgentRun: vi.fn(),
   createAgentRun: vi.fn(),
@@ -71,6 +72,7 @@ vi.mock("@/lib/rag/context-engine", () => ({
 
 vi.mock("@/lib/runs/store", () => ({
   appendRunEvent: mocks.appendRunEvent,
+  bindAgentRunExecutionScope: mocks.bindAgentRunExecutionScope,
   cancelAgentRun: vi.fn(),
   completeAgentRun: mocks.completeAgentRun,
   createAgentRun: mocks.createAgentRun,
@@ -93,6 +95,7 @@ describe("agent memory scope", () => {
     vi.clearAllMocks();
     mocks.createAgentRun.mockResolvedValue({ id: "run-memory-scope" });
     mocks.appendRunEvent.mockResolvedValue(undefined);
+    mocks.bindAgentRunExecutionScope.mockResolvedValue({ id: "run-memory-scope" });
     mocks.completeAgentRun.mockResolvedValue({ id: "run-memory-scope" });
     mocks.updateRunContextCount.mockResolvedValue(undefined);
     mocks.enqueueMemoryConsolidationJob.mockResolvedValue(null);
@@ -132,6 +135,19 @@ describe("agent memory scope", () => {
           cachedInputTokens: 0,
           totalTokens: 7,
         },
+        attempts: [{
+          provider: "openai",
+          model: "gpt-test",
+          status: "completed",
+          latencyMs: 1,
+          usage: {
+            inputTokens: 5,
+            outputTokens: 2,
+            cachedInputTokens: 0,
+            totalTokens: 7,
+          },
+        }],
+        usageReceiptRecorded: false,
       };
     });
   });
@@ -161,10 +177,10 @@ describe("agent memory scope", () => {
     const events = await collectRun("all");
 
     expect(mocks.buildContextPack).toHaveBeenCalledOnce();
-    expect(mocks.buildContextPack).toHaveBeenCalledWith("hello", {
+    expect(mocks.buildContextPack).toHaveBeenCalledWith("hello", expect.objectContaining({
       limit: 8,
       tenantId: "paid-test-tenant",
-    });
+    }));
     expect(mocks.updateRunContextCount).toHaveBeenCalledWith(
       "run-memory-scope",
       0,
@@ -181,7 +197,7 @@ describe("agent memory scope", () => {
     expect(mocks.appendRunEvent).toHaveBeenCalledWith(
       "run-memory-scope",
       expect.objectContaining({ type: "memory", count: 0 }),
-      { tenantId: "paid-test-tenant" },
+      expect.objectContaining({ tenantId: "paid-test-tenant" }),
     );
     expect(events).toContainEqual(expect.objectContaining({
       type: "status",

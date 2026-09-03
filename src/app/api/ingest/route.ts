@@ -49,6 +49,7 @@ async function POSTHandler(request: Request) {
   try {
     job = await enqueueKnowledgeIngestJob({
       tenantId: context.tenantId,
+      actorId: context.actorId,
       idempotencyKey:
         request.headers.get("idempotency-key")?.trim().slice(0, 200) ||
         undefined,

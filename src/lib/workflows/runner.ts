@@ -35,6 +35,7 @@ import type {
   WorkflowSignalType,
   WorkflowStepKey,
 } from "@/lib/workflows/types";
+import type { AiUsageOperation, AiUsageScope } from "@/lib/usage/types";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "canceled"]);
 
@@ -624,10 +625,16 @@ async function executeStep(
       };
     }
     const contextSelection = workflowContextSelection(detail);
+    const usageScope = await workflowUsageScope(
+      detail,
+      "embedding",
+      "workflow.context.retrieve",
+    );
     const retrieval = await buildContextPack(contextSelection?.query || detail.run.goal, {
       limit: 6,
       tenantId: detail.run.tenantId,
       evidenceIds: contextSelection?.evidenceIds,
+      ...(usageScope ? { usageScope } : {}),
     });
     return {
       contextCount: retrieval.results.length + specialistContext.count,
@@ -683,6 +690,7 @@ async function executeStep(
     const mechanicalPassed = Boolean(executeOutput?.response || executeOutput?.deliverable) &&
       (!planExecution || planExecution.failedNodes === 0);
     const modelVerdict = await verifyWithModel({
+      detail,
       runtimeModel: await resolveWorkflowRuntimeModel(detail),
       goal: detail.run.goal,
       criteria,
@@ -722,10 +730,8 @@ function hasReplanned(detail: WorkflowRunDetail) {
   return detail.events.some((event) => event.type === "workflow.replan_triggered");
 }
 
-function resolveWorkflowRuntimeModel(detail: WorkflowRunDetail) {
-  const actorId = typeof detail.run.input.metadata?.actorId === "string"
-    ? detail.run.input.metadata.actorId
-    : "";
+async function resolveWorkflowRuntimeModel(detail: WorkflowRunDetail) {
+  const { actorId } = await workflowAttribution(detail);
   return resolveRuntimeModelAssignment({
     tenantId: detail.run.tenantId || "",
     actorId,
@@ -733,6 +739,58 @@ function resolveWorkflowRuntimeModel(detail: WorkflowRunDetail) {
     tier: "reasoning",
     requiredFeature: "json_schema",
   });
+}
+
+async function workflowUsageScope(
+  detail: WorkflowRunDetail,
+  operation: AiUsageOperation,
+  purpose: string,
+  runtimeModel?: RuntimeModelResolution,
+): Promise<AiUsageScope | undefined> {
+  const { actorId, executionScope } = await workflowAttribution(detail);
+  const tenantId = detail.run.tenantId?.trim();
+  if (!tenantId || !actorId) return undefined;
+  return {
+    tenantId,
+    actorId,
+    sourceStreamId: `workflow:${detail.run.id}`,
+    operation,
+    purpose,
+    correlationId: executionScope?.correlationId || detail.run.id,
+    causationId: executionScope?.causationId || undefined,
+    executionScope,
+    assignmentId: runtimeModel?.assignmentId,
+    credentialSource: runtimeModel?.source === "tenant_assignment"
+      ? "tenant_vault" as const
+      : "deployment_environment" as const,
+  };
+}
+
+async function workflowAttribution(detail: WorkflowRunDetail) {
+  const metadataActorId = typeof detail.run.input.metadata?.actorId === "string"
+    ? detail.run.input.metadata.actorId.trim()
+    : "";
+  const authority = await getWorkflowRunExecutionAuthority(detail.run.id, {
+    tenantId: detail.run.tenantId,
+  });
+  const executionScope = authority?.executionScope;
+  const scopedActorId = executionScope?.initiatingActorId?.trim() || "";
+  if (scopedActorId && metadataActorId && scopedActorId !== metadataActorId) {
+    throw new Error(
+      "Workflow usage metadata actor does not match its immutable execution scope.",
+    );
+  }
+  const authorityActorId = scopedActorId ||
+    (executionScope?.executingPrincipalType === "system"
+      ? executionScope.executingPrincipalId?.trim() || "omniagent-system"
+      : "");
+  const actorId = authority
+    ? authorityActorId
+    : metadataActorId;
+  return {
+    actorId,
+    executionScope,
+  };
 }
 
 type ModelVerificationVerdict = {
@@ -744,6 +802,7 @@ type ModelVerificationVerdict = {
 };
 
 async function verifyWithModel({
+  detail,
   runtimeModel,
   goal,
   criteria,
@@ -751,6 +810,7 @@ async function verifyWithModel({
   planExecution,
   abortSignal,
 }: {
+  detail: WorkflowRunDetail;
   runtimeModel: RuntimeModelResolution;
   goal: string;
   criteria: string[];
@@ -768,6 +828,12 @@ async function verifyWithModel({
     WORKFLOW_EXECUTOR_TIMEOUT_MS,
   );
   try {
+    const usageScope = await workflowUsageScope(
+      detail,
+      "structured_generation",
+      "workflow.verify",
+      runtimeModel,
+    );
     const generated = await generateModelStructured(runtimeModel.bind({
       instructions:
         "You are a strict verification reviewer for an agent workflow. Judge ONLY from the evidence provided whether the acceptance criteria are satisfied. Dry-run or approval-pending tool results do not satisfy criteria that require real side effects. Be conservative: if evidence is missing or ambiguous, fail that criterion.",
@@ -791,6 +857,7 @@ async function verifyWithModel({
       },
       abortSignal: combineAbortSignals(controller.signal, abortSignal),
       tier: "reasoning",
+      ...(usageScope ? { usageScope } : {}),
     }));
     const parsed = JSON.parse(generated.text) as ModelVerificationVerdict;
     return {
@@ -830,6 +897,11 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
           tenantId: detail.run.tenantId,
         })
       : undefined;
+  const usageAttribution = await workflowUsageScope(
+    detail,
+    "structured_generation",
+    "workflow.plan",
+  );
   if (
     detail.run.input.planId &&
     !replanEvent &&
@@ -851,7 +923,15 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
       tenantId: detail.run.tenantId,
       actorId: typeof detail.run.input.metadata?.actorId === "string"
         ? detail.run.input.metadata.actorId
-        : undefined,
+        : usageAttribution?.actorId,
+      ...(usageAttribution ? {
+        usageAttribution: {
+          actorId: usageAttribution.actorId,
+          executionScope: usageAttribution.executionScope,
+          correlationId: usageAttribution.correlationId,
+          causationId: usageAttribution.causationId,
+        },
+      } : {}),
       goal: detail.run.goal,
       mode: detail.run.input.mode || "orchestrate",
       workflowRunId: detail.run.id,
@@ -931,6 +1011,12 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
       () => controller.abort(new Error("Workflow executor synthesis timed out.")),
       WORKFLOW_EXECUTOR_TIMEOUT_MS,
     );
+    const usageScope = await workflowUsageScope(
+      detail,
+      "structured_generation",
+      "workflow.synthesize",
+      runtimeModel,
+    );
     const generated = await generateModelStructured(runtimeModel.bind({
       instructions,
       input,
@@ -947,6 +1033,7 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
       },
       abortSignal: combineAbortSignals(controller.signal, abortSignal),
       tier: "reasoning",
+      ...(usageScope ? { usageScope } : {}),
     })).finally(() => clearTimeout(timer));
 
     return {
@@ -985,7 +1072,12 @@ async function persistWorkflowReport(detail: WorkflowRunDetail, abortSignal?: Ab
   ].filter(Boolean).join("\n\n");
   let embedding: number[] | undefined;
   try {
-    embedding = (await embedTexts([content], abortSignal))?.[0];
+    const usageScope = await workflowUsageScope(
+      detail,
+      "embedding",
+      "workflow.report.embedding",
+    );
+    embedding = (await embedTexts([content], abortSignal, usageScope))?.[0];
   } catch (error) {
     if (abortSignal?.aborted) {
       throw abortSignal.reason || error;

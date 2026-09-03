@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { modelTargets } from "@/lib/models/registry";
 import { bindModelRuntime, getModelRuntime } from "@/lib/models/runtime-context";
 import type {
@@ -11,7 +12,12 @@ import type {
   ModelToolTurnRequest,
   ModelToolTurnResult,
 } from "@/lib/models/types";
-import { ModelProviderError } from "@/lib/models/types";
+import {
+  attachModelProviderResponseReceipt,
+  getModelProviderResponseReceipt,
+  ModelProviderError,
+} from "@/lib/models/types";
+import { recordAiUsageSafely } from "@/lib/usage/ledger";
 
 const MAX_TARGET_ATTEMPTS = 4;
 const MAX_TOOL_DEFINITIONS = 32;
@@ -119,6 +125,8 @@ async function executeGateway<
     target: ReturnType<typeof modelTargets>[number]["target"],
   ) => Promise<TResult>,
 ): Promise<TResult & { attempts: ModelAttemptReceipt[] }> {
+  const gatewayStartedAt = Date.now();
+  const usageRecordId = request.usageScope ? randomUUID() : undefined;
   const runtime = getModelRuntime(request);
   const candidates = modelTargets({
     tier: request.tier || "fast",
@@ -129,12 +137,38 @@ async function executeGateway<
     runtimeTargets: runtime?.targets,
   }).slice(0, MAX_TARGET_ATTEMPTS);
   if (!candidates.length) {
-    throw new ModelProviderError(
-      `No configured model provider supports ${feature}.`,
-      request.preferredProvider || request.allowedProviders?.[0] || "local",
-      "unavailable",
-      false,
-    );
+    const gatewayLatencyMs = Date.now() - gatewayStartedAt;
+    let usageReceiptRecorded = false;
+    if (request.usageScope) {
+      usageReceiptRecorded = Boolean(await recordAiUsageSafely({
+        ...request.usageScope,
+        id: usageRecordId,
+        status: "failed",
+        provider:
+          request.preferredProvider || request.allowedProviders?.[0] || "local",
+        model: "unresolved",
+        usage: {},
+        providerCallCount: 0,
+        attemptCount: 0,
+        failedAttemptCount: 0,
+        latencyMs: gatewayLatencyMs,
+        failureKind: "unavailable",
+        retryable: false,
+      }));
+    }
+    throw attachAttempts(attachModelProviderResponseReceipt(
+      new ModelProviderError(
+        `No configured model provider supports ${feature}.`,
+        request.preferredProvider || request.allowedProviders?.[0] || "local",
+        "unavailable",
+        false,
+      ),
+      {
+        usage: {},
+        latencyMs: gatewayLatencyMs,
+        model: "unresolved",
+      },
+    ), [], usageRecordId, usageReceiptRecorded);
   }
 
   const attempts: ModelAttemptReceipt[] = [];
@@ -148,26 +182,152 @@ async function executeGateway<
         model: result.model,
         status: "completed",
         latencyMs: result.latencyMs,
+        usage: result.usage,
+        ...(result.costKnown && result.estimatedCostUsd !== undefined
+          ? { estimatedCostUsd: result.estimatedCostUsd }
+          : {}),
+        ...(result.providerRequestId
+          ? { providerRequestId: result.providerRequestId }
+          : {}),
       });
-      return { ...result, attempts };
+      const totalUsage = sumAttemptUsage(attempts);
+      const estimatedCostUsd = sumKnownAttemptCost(attempts);
+      const gatewayLatencyMs = Date.now() - gatewayStartedAt;
+      let usageReceiptRecorded = false;
+      if (request.usageScope) {
+        usageReceiptRecorded = Boolean(await recordAiUsageSafely({
+          ...request.usageScope,
+          id: usageRecordId,
+          status: "completed",
+          provider: result.provider,
+          model: result.model,
+          usage: totalUsage,
+          providerCallCount: attempts.length,
+          attemptCount: attempts.length,
+          failedAttemptCount: attempts.filter((attempt) => attempt.status === "failed").length,
+          callReceipts: modelAttemptCallReceipts(attempts),
+          latencyMs: gatewayLatencyMs,
+          estimatedCostUsd,
+          providerRequestId: result.providerRequestId,
+        }));
+      }
+      return {
+        ...result,
+        usage: totalUsage,
+        estimatedCostUsd,
+        costKnown: estimatedCostUsd !== undefined,
+        latencyMs: gatewayLatencyMs,
+        attempts,
+        usageReceiptRecorded,
+        ...(usageRecordId ? { usageReceiptId: usageRecordId } : {}),
+      };
     } catch (error) {
       const failure = candidate.adapter.classifyError(error);
+      const responseReceipt =
+        getModelProviderResponseReceipt(error) ||
+        getModelProviderResponseReceipt(failure);
       attempts.push({
         provider: candidate.adapter.id,
-        model: candidate.target.model,
+        model: responseReceipt?.model || candidate.target.model,
         status: "failed",
-        latencyMs: Date.now() - startedAt,
+        latencyMs: responseReceipt?.latencyMs ?? Date.now() - startedAt,
         failureKind: failure.kind,
         retryable: failure.retryable,
+        ...(responseReceipt?.usage ? { usage: responseReceipt.usage } : {}),
+        ...(responseReceipt?.estimatedCostUsd !== undefined
+          ? { estimatedCostUsd: responseReceipt.estimatedCostUsd }
+          : {}),
+        ...(responseReceipt?.providerRequestId
+          ? { providerRequestId: responseReceipt.providerRequestId }
+          : {}),
       });
       lastError = failure;
-      if (!failure.retryable || index === candidates.length - 1) throw attachAttempts(failure, attempts);
+      if (!failure.retryable || index === candidates.length - 1) {
+        const totalUsage = sumAttemptUsage(attempts);
+        const estimatedCostUsd = sumKnownAttemptCost(attempts);
+        const gatewayLatencyMs = Date.now() - gatewayStartedAt;
+        const meteredFailure = attachModelProviderResponseReceipt(failure, {
+          usage: totalUsage,
+          latencyMs: gatewayLatencyMs,
+          model: responseReceipt?.model || candidate.target.model,
+          estimatedCostUsd,
+          providerRequestId: responseReceipt?.providerRequestId,
+        });
+        let usageReceiptRecorded = false;
+        if (request.usageScope) {
+          usageReceiptRecorded = Boolean(await recordAiUsageSafely({
+            ...request.usageScope,
+            id: usageRecordId,
+            status: "failed",
+            provider: candidate.adapter.id,
+            model: responseReceipt?.model || candidate.target.model,
+            usage: totalUsage,
+            providerCallCount: attempts.length,
+            attemptCount: attempts.length,
+            failedAttemptCount: attempts.length,
+            callReceipts: modelAttemptCallReceipts(attempts),
+            latencyMs: gatewayLatencyMs,
+            estimatedCostUsd,
+            providerRequestId: responseReceipt?.providerRequestId,
+            failureKind: failure.kind,
+            retryable: failure.retryable,
+          }));
+        }
+        throw attachAttempts(
+          meteredFailure,
+          attempts,
+          usageRecordId,
+          usageReceiptRecorded,
+        );
+      }
     }
   }
   throw attachAttempts(
     lastError || new ModelProviderError("Every model provider failed.", "local", "unknown", false),
     attempts,
   );
+}
+
+function sumAttemptUsage(attempts: readonly ModelAttemptReceipt[]) {
+  return attempts.reduce(
+    (total, attempt) => ({
+      inputTokens: total.inputTokens + (attempt.usage?.inputTokens || 0),
+      outputTokens: total.outputTokens + (attempt.usage?.outputTokens || 0),
+      cachedInputTokens:
+        total.cachedInputTokens + (attempt.usage?.cachedInputTokens || 0),
+      totalTokens: total.totalTokens + (attempt.usage?.totalTokens || 0),
+    }),
+    { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 },
+  );
+}
+
+function sumKnownAttemptCost(attempts: readonly ModelAttemptReceipt[]) {
+  if (
+    !attempts.length ||
+    attempts.some((attempt) => attempt.estimatedCostUsd === undefined)
+  ) {
+    return undefined;
+  }
+  return Math.round(
+    attempts.reduce(
+      (total, attempt) => total + (attempt.estimatedCostUsd || 0),
+      0,
+    ) * 1_000_000,
+  ) / 1_000_000;
+}
+
+function modelAttemptCallReceipts(attempts: readonly ModelAttemptReceipt[]) {
+  return attempts.map((attempt) => ({
+    provider: attempt.provider,
+    model: attempt.model,
+    status: attempt.status,
+    usage: attempt.usage || {},
+    latencyMs: attempt.latencyMs,
+    estimatedCostUsd: attempt.estimatedCostUsd,
+    providerRequestId: attempt.providerRequestId,
+    failureKind: attempt.failureKind,
+    retryable: attempt.retryable,
+  }));
 }
 
 function sanitizeToolDefinitions(
@@ -252,11 +412,28 @@ function sanitizeToolResults(results: readonly ModelToolResult[] | undefined) {
   }));
 }
 
-function attachAttempts(error: ModelProviderError, attempts: ModelAttemptReceipt[]) {
+function attachAttempts(
+  error: Error,
+  attempts: ModelAttemptReceipt[],
+  usageReceiptId?: string,
+  usageReceiptRecorded = false,
+) {
   Object.defineProperty(error, "attempts", {
     value: attempts,
     enumerable: true,
     configurable: false,
   });
+  Object.defineProperty(error, "usageReceiptRecorded", {
+    value: usageReceiptRecorded,
+    enumerable: false,
+    configurable: true,
+  });
+  if (usageReceiptId) {
+    Object.defineProperty(error, "usageReceiptId", {
+      value: usageReceiptId,
+      enumerable: false,
+      configurable: true,
+    });
+  }
   return error;
 }

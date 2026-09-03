@@ -78,6 +78,14 @@ export async function restorePortableArchive(archive: unknown, input: { tenantId
       sourceType: item.sourceType,
       tags: [...new Set([...(item.tags || []), "portable-restore"])],
       abortSignal: input.abortSignal,
+      usageScope: {
+        tenantId: input.tenantId,
+        actorId: input.actorId,
+        sourceStreamId: "portable:restore",
+        operation: "embedding",
+        purpose: "portable.knowledge.restore",
+        credentialSource: "deployment_environment",
+      },
     });
     knowledge += 1;
   }

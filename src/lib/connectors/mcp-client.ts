@@ -15,6 +15,7 @@ import { assertPublicHttpUrl, fetchPublicHttpUrl } from "@/lib/security/network"
 import { redactExactSecrets } from "@/lib/security/secret-redaction";
 import type { SecurityRole } from "@/lib/security/types";
 import type { ToolRiskLevel } from "@/lib/tools/types";
+import { recordAiUsageSafely } from "@/lib/usage/ledger";
 
 const CLIENT_INFO = {
   name: "asael",
@@ -157,6 +158,25 @@ export async function callMcpTool({
       : undefined,
   });
   let receivedToolResult = false;
+  const browserUseTask = isMeteredBrowserUseTool(connector.endpoint, toolName) && sessionScope
+    ? {
+        id: idempotencyKey
+          ? `browser-use:${createHash("sha256")
+              .update(`${connector.id}\u0000${toolName}\u0000${idempotencyKey}`)
+              .digest("hex")}`
+          : undefined,
+        tenantId: sessionScope.tenantId,
+        actorId: sessionScope.actorId,
+        sourceStreamId: `tool-execution:${sessionScope.executionId}`,
+        operation: "browser_automation" as const,
+        purpose: `browser_use.${toolName.trim().toLowerCase()}`,
+        correlationId: sessionScope.executionId,
+        credentialSource: connector.authType === "bearer_vault"
+          ? "tenant_vault" as const
+          : "deployment_environment" as const,
+      }
+    : undefined;
+  const browserUseStartedAt = Date.now();
   try {
     const result = await lease.session.client.callTool(
       {
@@ -185,8 +205,36 @@ export async function callMcpTool({
     if (failure) {
       throw new Error(failure);
     }
+    if (browserUseTask) {
+      await recordAiUsageSafely({
+        ...browserUseTask,
+        status: "completed",
+        provider: "browser_use",
+        model: "browser-use-cloud",
+        usage: { browserTaskCount: 1 },
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 0,
+        latencyMs: Date.now() - browserUseStartedAt,
+      });
+    }
     return safeResult;
   } catch (error) {
+    if (browserUseTask) {
+      await recordAiUsageSafely({
+        ...browserUseTask,
+        status: "failed",
+        provider: "browser_use",
+        model: "browser-use-cloud",
+        usage: { browserTaskCount: 1 },
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 1,
+        latencyMs: Date.now() - browserUseStartedAt,
+        failureKind: abortSignal?.aborted ? "abort" : "provider_error",
+        retryable: !abortSignal?.aborted,
+      });
+    }
     if (!receivedToolResult) {
       lease.invalidate();
     }
@@ -194,6 +242,16 @@ export async function callMcpTool({
   } finally {
     await lease.release();
   }
+}
+
+function isMeteredBrowserUseTool(endpoint: string | undefined, toolName: string) {
+  if (!isOfficialBrowserUseMcpEndpoint(endpoint)) return false;
+  return new Set([
+    "browser_task",
+    "execute_skill",
+    "run_session",
+    "send_task",
+  ]).has(toolName.trim().toLowerCase());
 }
 
 async function acquireToolSession(

@@ -103,10 +103,29 @@ type CaseResult = {
   estimatedCostUsd?: number;
 };
 
+type EvalUsageContext = {
+  tenantId: string;
+  actorId: string;
+  sourceStreamId: string;
+};
+
+function evaluationEmbeddingScope(context: EvalUsageContext, purpose: string) {
+  return {
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    sourceStreamId: context.sourceStreamId,
+    operation: "embedding" as const,
+    purpose,
+    correlationId: context.sourceStreamId,
+    credentialSource: "deployment_environment" as const,
+  };
+}
+
 function evaluationWorkflowAuthority(
   caseId: string,
   stage: string,
   tenantId?: string,
+  actorId?: string,
 ) {
   const normalizedTenantId = (
     tenantId ||
@@ -120,7 +139,7 @@ function evaluationWorkflowAuthority(
   return {
     executionScope: createExecutionScope({
       tenantId: normalizedTenantId,
-      initiatingActorId: null,
+      initiatingActorId: actorId?.trim() || null,
       executingPrincipalType: "system",
       executingPrincipalId: "evaluation-harness",
       correlationId: `evaluation:${caseId}:${randomUUID()}`,
@@ -790,6 +809,7 @@ export async function runEvaluationSuite({
   suite = "core",
   caseIds,
   tenantId,
+  actorId,
   runId,
   onProgress,
   abortSignal,
@@ -797,6 +817,7 @@ export async function runEvaluationSuite({
   suite?: string;
   caseIds?: string[];
   tenantId?: string;
+  actorId?: string;
   runId?: string;
   abortSignal?: AbortSignal;
   onProgress?: (progress: {
@@ -830,6 +851,11 @@ export async function runEvaluationSuite({
         total: cases.length,
         tenantId: runTenantId,
       }));
+    const usageContext: EvalUsageContext = {
+      tenantId: runTenantId,
+      actorId: actorId?.trim() || "evaluation-harness",
+      sourceStreamId: `evaluation:${run.id}`,
+    };
     const savedResults: EvalResultRecord[] = [...(existing?.results || [])];
     const completedCaseIds = new Set(
       savedResults.map((result) => result.caseId),
@@ -843,7 +869,7 @@ export async function runEvaluationSuite({
         }
         const startedAt = Date.now();
         try {
-          const result = await runEvalCase(evalCase, abortSignal);
+          const result = await runEvalCase(evalCase, abortSignal, usageContext);
           abortSignal?.throwIfAborted();
           const latencyMs = Date.now() - startedAt;
           savedResults.push(
@@ -912,6 +938,7 @@ export async function runEvaluationSuite({
 async function runEvalCase(
   evalCase: EvalCaseDefinition,
   abortSignal?: AbortSignal,
+  usageContext?: EvalUsageContext,
 ): Promise<CaseResult> {
   abortSignal?.throwIfAborted();
   if (evalCase.id === "system.readiness") {
@@ -919,15 +946,15 @@ async function runEvalCase(
   }
 
   if (evalCase.id === "retrieval.context_quality") {
-    return evaluateRetrieval(evalCase);
+    return evaluateRetrieval(evalCase, usageContext);
   }
 
   if (evalCase.id === "retrieval.context_engine") {
-    return evaluateContextEngine(evalCase);
+    return evaluateContextEngine(evalCase, usageContext);
   }
 
   if (evalCase.id === "memory.graph_engine") {
-    return evaluateMemoryGraph(evalCase);
+    return evaluateMemoryGraph(evalCase, usageContext);
   }
 
   if (evalCase.id === "tool.policy_dry_run") {
@@ -935,15 +962,15 @@ async function runEvalCase(
   }
 
   if (evalCase.id === "workflow.lifecycle") {
-    return evaluateWorkflowLifecycle(evalCase);
+    return evaluateWorkflowLifecycle(evalCase, usageContext);
   }
 
   if (evalCase.id === "workflow.dynamic_planner") {
-    return evaluateDynamicPlanner(evalCase);
+    return evaluateDynamicPlanner(evalCase, usageContext);
   }
 
   if (evalCase.id === "workflow.plan_executor") {
-    return evaluatePlanExecutor(evalCase);
+    return evaluatePlanExecutor(evalCase, usageContext);
   }
 
   if (evalCase.id === "workflow.webhook_triggers") {
@@ -971,7 +998,7 @@ async function runEvalCase(
   }
 
   if (evalCase.id === "operations.queue_recovery") {
-    return evaluateQueueRecovery(evalCase);
+    return evaluateQueueRecovery(evalCase, usageContext);
   }
 
   if (evalCase.id === "operations.health_semantics") {
@@ -1045,10 +1072,16 @@ async function evaluateSystemReadiness(): Promise<CaseResult> {
   };
 }
 
-async function evaluateRetrieval(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+async function evaluateRetrieval(
+  evalCase: EvalCaseDefinition,
+  usageContext?: EvalUsageContext,
+): Promise<CaseResult> {
   const query = String(evalCase.input.query || "");
   const limit = Number(evalCase.input.limit || 6);
-  const retrieval = await retrieveContext(query, limit);
+  const retrieval = await retrieveContext(query, limit, usageContext ? {
+    tenantId: usageContext.tenantId,
+    usageScope: evaluationEmbeddingScope(usageContext, "evaluation.retrieval"),
+  } : {});
   const contextCount = retrieval.results.length;
   const score = Math.min(1, contextCount / Number(evalCase.expected.minContextCount || 1));
 
@@ -1066,10 +1099,19 @@ async function evaluateRetrieval(evalCase: EvalCaseDefinition): Promise<CaseResu
   };
 }
 
-async function evaluateContextEngine(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+async function evaluateContextEngine(
+  evalCase: EvalCaseDefinition,
+  usageContext?: EvalUsageContext,
+): Promise<CaseResult> {
   const query = String(evalCase.input.query || "");
   const limit = Number(evalCase.input.limit || 6);
-  const pack = await buildContextPack(query, { limit });
+  const pack = await buildContextPack(query, {
+    limit,
+    tenantId: usageContext?.tenantId,
+    usageScope: usageContext
+      ? evaluationEmbeddingScope(usageContext, "evaluation.context_engine")
+      : undefined,
+  });
   const stats = await getContextEngineStats();
   const allowedModes = Array.isArray(evalCase.expected.allowedModes)
     ? evalCase.expected.allowedModes.map(String)
@@ -1110,7 +1152,10 @@ async function evaluateContextEngine(evalCase: EvalCaseDefinition): Promise<Case
   };
 }
 
-async function evaluateMemoryGraph(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+async function evaluateMemoryGraph(
+  evalCase: EvalCaseDefinition,
+  usageContext?: EvalUsageContext,
+): Promise<CaseResult> {
   const query = String(evalCase.input.query || "");
   const limit = Number(evalCase.input.limit || 6);
   await ensureGraphEvalSeedMemory();
@@ -1120,7 +1165,13 @@ async function evaluateMemoryGraph(evalCase: EvalCaseDefinition): Promise<CaseRe
     traceLimit: 200,
   });
   const graphResults = await searchMemoryGraph(query, { limit });
-  const pack = await buildContextPack(query, { limit });
+  const pack = await buildContextPack(query, {
+    limit,
+    tenantId: usageContext?.tenantId,
+    usageScope: usageContext
+      ? evaluationEmbeddingScope(usageContext, "evaluation.memory_graph")
+      : undefined,
+  });
   const stats = await getMemoryGraphStats();
   const checks = {
     nodesBuilt: stats.nodes >= Number(evalCase.expected.minNodes || 1),
@@ -1208,15 +1259,26 @@ async function evaluateToolPolicy(
   };
 }
 
-async function evaluateWorkflowLifecycle(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+async function evaluateWorkflowLifecycle(
+  evalCase: EvalCaseDefinition,
+  usageContext?: EvalUsageContext,
+): Promise<CaseResult> {
+  const authority = evaluationWorkflowAuthority(
+    evalCase.id,
+    "lifecycle",
+    usageContext?.tenantId,
+    usageContext?.actorId,
+  );
   const detail = await createWorkflowRun({
-    executionAuthority: evaluationWorkflowAuthority(evalCase.id, "lifecycle"),
+    tenantId: usageContext?.tenantId,
+    executionAuthority: authority,
     goal: String(evalCase.input.goal),
     requireApproval: Boolean(evalCase.input.requireApproval),
     maxAttempts: 2,
     metadata: {
       source: "evaluation",
       caseId: evalCase.id,
+      actorId: usageContext?.actorId,
     },
   });
   const maxTicks = Number(evalCase.input.maxTicks || 8);
@@ -1252,11 +1314,21 @@ async function evaluateWorkflowLifecycle(evalCase: EvalCaseDefinition): Promise<
   };
 }
 
-async function evaluateDynamicPlanner(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+async function evaluateDynamicPlanner(
+  evalCase: EvalCaseDefinition,
+  usageContext?: EvalUsageContext,
+): Promise<CaseResult> {
   const goal = String(evalCase.input.goal || "");
   const mode = String(evalCase.input.mode || "orchestrate") as "orchestrate" | "research" | "execute" | "learn";
+  const authority = evaluationWorkflowAuthority(
+    evalCase.id,
+    "planner",
+    usageContext?.tenantId,
+    usageContext?.actorId,
+  );
   const detail = await createWorkflowRun({
-    executionAuthority: evaluationWorkflowAuthority(evalCase.id, "planner"),
+    tenantId: usageContext?.tenantId,
+    executionAuthority: authority,
     goal,
     mode,
     requireApproval: false,
@@ -1264,6 +1336,7 @@ async function evaluateDynamicPlanner(evalCase: EvalCaseDefinition): Promise<Cas
     metadata: {
       source: "evaluation",
       caseId: evalCase.id,
+      actorId: usageContext?.actorId,
     },
   });
   const plan = await buildDynamicWorkflowPlan({
@@ -1271,6 +1344,16 @@ async function evaluateDynamicPlanner(evalCase: EvalCaseDefinition): Promise<Cas
     mode,
     workflowRunId: detail.run.id,
     requireApproval: false,
+    tenantId: usageContext?.tenantId,
+    actorId: usageContext?.actorId,
+    ...(usageContext ? {
+      usageAttribution: {
+        actorId: usageContext.actorId,
+        executionScope: authority.executionScope,
+        correlationId: authority.executionScope.correlationId,
+        causationId: authority.executionScope.causationId || undefined,
+      },
+    } : {}),
   });
   const stats = await getWorkflowPlanStats();
   const checks = {
@@ -1309,11 +1392,21 @@ async function evaluateDynamicPlanner(evalCase: EvalCaseDefinition): Promise<Cas
   };
 }
 
-async function evaluatePlanExecutor(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+async function evaluatePlanExecutor(
+  evalCase: EvalCaseDefinition,
+  usageContext?: EvalUsageContext,
+): Promise<CaseResult> {
   const goal = String(evalCase.input.goal || "");
   const mode = String(evalCase.input.mode || "orchestrate") as "orchestrate" | "research" | "execute" | "learn";
+  const authority = evaluationWorkflowAuthority(
+    evalCase.id,
+    "executor",
+    usageContext?.tenantId,
+    usageContext?.actorId,
+  );
   const detail = await createWorkflowRun({
-    executionAuthority: evaluationWorkflowAuthority(evalCase.id, "executor"),
+    tenantId: usageContext?.tenantId,
+    executionAuthority: authority,
     goal,
     mode,
     requireApproval: false,
@@ -1321,6 +1414,7 @@ async function evaluatePlanExecutor(evalCase: EvalCaseDefinition): Promise<CaseR
     metadata: {
       source: "evaluation",
       caseId: evalCase.id,
+      actorId: usageContext?.actorId,
     },
   });
   const plan = await buildDynamicWorkflowPlan({
@@ -1328,6 +1422,16 @@ async function evaluatePlanExecutor(evalCase: EvalCaseDefinition): Promise<CaseR
     mode,
     workflowRunId: detail.run.id,
     requireApproval: false,
+    tenantId: usageContext?.tenantId,
+    actorId: usageContext?.actorId,
+    ...(usageContext ? {
+      usageAttribution: {
+        actorId: usageContext.actorId,
+        executionScope: authority.executionScope,
+        correlationId: authority.executionScope.correlationId,
+        causationId: authority.executionScope.causationId || undefined,
+      },
+    } : {}),
   });
   await updateWorkflowStep(detail.run.id, "retrieve_context", {
     status: "completed",
@@ -1892,20 +1996,39 @@ async function evaluateSelfHealingDiagnostics(evalCase: EvalCaseDefinition): Pro
   };
 }
 
-async function evaluateQueueRecovery(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+async function evaluateQueueRecovery(
+  evalCase: EvalCaseDefinition,
+  usageContext?: EvalUsageContext,
+): Promise<CaseResult> {
+  const tenantId = usageContext?.tenantId;
+  const actorId = usageContext?.actorId || "evaluation-harness";
   const requeueRun = await createWorkflowRun({
-    executionAuthority: evaluationWorkflowAuthority(evalCase.id, "queue-requeue"),
+    tenantId,
+    executionAuthority: evaluationWorkflowAuthority(
+      evalCase.id,
+      "queue-requeue",
+      tenantId,
+      actorId,
+    ),
     goal: `${String(evalCase.input.goal || "Queue recovery fixture")} requeue`,
     mode: "orchestrate",
     requireApproval: false,
     maxAttempts: 3,
+    metadata: { source: "evaluation", caseId: evalCase.id, actorId },
   });
   const failRun = await createWorkflowRun({
-    executionAuthority: evaluationWorkflowAuthority(evalCase.id, "queue-fail"),
+    tenantId,
+    executionAuthority: evaluationWorkflowAuthority(
+      evalCase.id,
+      "queue-fail",
+      tenantId,
+      actorId,
+    ),
     goal: `${String(evalCase.input.goal || "Queue recovery fixture")} fail`,
     mode: "orchestrate",
     requireApproval: false,
     maxAttempts: 1,
+    metadata: { source: "evaluation", caseId: evalCase.id, actorId },
   });
   await updateWorkflowRun(failRun.run.id, {
     attempt: failRun.run.maxAttempts,
@@ -1919,14 +2042,16 @@ async function evaluateQueueRecovery(evalCase: EvalCaseDefinition): Promise<Case
       staleWorkflowMs: 0,
       failAfterMs: 60_000,
       limit: 10,
-      actorId: "evaluation",
+      actorId,
+      tenantId,
     });
     const repair = await reconcileOperationsRecovery({
       mode: "repair",
       staleWorkflowMs: 0,
       failAfterMs: 60_000,
       limit: 10,
-      actorId: "evaluation",
+      actorId,
+      tenantId,
     });
     const drain = await reconcileOperationsRecovery({
       mode: "drain",
@@ -1934,15 +2059,16 @@ async function evaluateQueueRecovery(evalCase: EvalCaseDefinition): Promise<Case
       failAfterMs: 60_000,
       limit: 5,
       drainLimit: 2,
-      actorId: "evaluation",
+      actorId,
+      tenantId,
     });
-    const requeueDetail = await getWorkflowRunDetail(requeueRun.run.id);
-    const failDetail = await getWorkflowRunDetail(failRun.run.id);
+    const requeueDetail = await getWorkflowRunDetail(requeueRun.run.id, { tenantId });
+    const failDetail = await getWorkflowRunDetail(failRun.run.id, { tenantId });
     const registry = getCapabilityRegistry();
     const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
-    await signalWorkflowRun(requeueRun.run.id, "cancel").catch(() => undefined);
-    await cancelWorkflowRunTick(requeueRun.run.id, "Evaluation queue recovery cleanup.").catch(() => undefined);
-    await cancelWorkflowRunTick(failRun.run.id, "Evaluation queue recovery cleanup.").catch(() => undefined);
+    await signalWorkflowRun(requeueRun.run.id, "cancel", { tenantId, actorId }).catch(() => undefined);
+    await cancelWorkflowRunTick(requeueRun.run.id, "Evaluation queue recovery cleanup.", tenantId).catch(() => undefined);
+    await cancelWorkflowRunTick(failRun.run.id, "Evaluation queue recovery cleanup.", tenantId).catch(() => undefined);
     cleanup = true;
 
     const checks = {

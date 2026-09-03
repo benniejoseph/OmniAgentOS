@@ -5,7 +5,10 @@ import type {
   ModelToolDefinition,
   ModelToolResult,
 } from "@/lib/models/types";
+import { attachModelProviderResponseReceipt } from "@/lib/models/types";
 import type { ModelUsage } from "@/lib/openai/model-router";
+import { recordAiUsageSafely } from "@/lib/usage/ledger";
+import type { AiUsageScope } from "@/lib/usage/types";
 
 const INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const SPEECH_URL = "https://speech.googleapis.com/v1/speech:recognize";
@@ -95,8 +98,23 @@ export async function generateGeminiText(input: {
     signal: input.abortSignal,
   });
   const body = await readInteractionResponse(response);
+  if (body.status === "failed") {
+    throw geminiResponseFailure(
+      new Error(body.error?.message || "Gemini interaction failed."),
+      body,
+      model,
+      startedAt,
+    );
+  }
   const text = interactionContents(body).filter((item) => item.type === "text").map((item) => item.text || "").join("").trim();
-  if (!text) throw new Error("Gemini returned no text.");
+  if (!text) {
+    throw geminiResponseFailure(
+      new Error("Gemini returned no text."),
+      body,
+      model,
+      startedAt,
+    );
+  }
   const usage = normalizeGeminiUsage(body.usage);
   return { text, model: body.model || model, responseId: body.id, latencyMs: Date.now() - startedAt, usage, estimatedCostUsd: estimateGeminiCostUsd(body.model || model, usage) };
 }
@@ -160,7 +178,15 @@ export async function generateGeminiToolTurn(input: {
     signal: input.abortSignal,
   });
   const body = await readInteractionResponse(response);
-  const steps = body.steps || [];
+  if (body.status === "failed") {
+    throw geminiResponseFailure(
+      new Error(body.error?.message || "Gemini interaction failed."),
+      body,
+      model,
+      startedAt,
+    );
+  }
+  const steps = Array.isArray(body.steps) ? body.steps : [];
   const text = interactionContents(body)
     .filter((item) => item.type === "text")
     .map((item) => item.text || "")
@@ -181,7 +207,12 @@ export async function generateGeminiToolTurn(input: {
     }];
   });
   if (!text && !toolCalls.length) {
-    throw new Error("Gemini returned neither text nor function calls.");
+    throw geminiResponseFailure(
+      new Error("Gemini returned neither text nor function calls."),
+      body,
+      model,
+      startedAt,
+    );
   }
   const usage = normalizeGeminiUsage(body.usage);
   return {
@@ -205,6 +236,7 @@ export async function generateGeminiImage(input: {
   prompt: string;
   aspectRatio?: "1:1" | "16:9" | "9:16" | "4:3" | "3:4";
   abortSignal?: AbortSignal;
+  usageScope?: AiUsageScope;
 }) {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey || !hasGeminiKey()) {
@@ -219,6 +251,7 @@ export async function generateGeminiImage(input: {
   }
   const startedAt = Date.now();
   let response: Response | undefined;
+  let responseBody: InteractionResponse | undefined;
   try {
     response = await fetch(INTERACTIONS_URL, {
       method: "POST",
@@ -237,6 +270,10 @@ export async function generateGeminiImage(input: {
       signal: input.abortSignal,
     });
     const body = await readInteractionResponse(response);
+    responseBody = body;
+    if (body.status === "failed") {
+      throw new Error(body.error?.message || "Gemini interaction failed.");
+    }
     input.abortSignal?.throwIfAborted();
     const image = interactionContents(body).find((item) => item.type === "image" && item.data);
     if (!image?.data) {
@@ -251,15 +288,55 @@ export async function generateGeminiImage(input: {
     }
     const mimeType = normalizeGeneratedImageMimeType(image.mime_type);
     const bytes = decodeGeneratedImage(image.data, mimeType);
+    const model = body.model || GEMINI_IMAGE_MODEL;
+    const usage = normalizeGeminiUsage(body.usage);
+    if (input.usageScope) {
+      await recordAiUsageSafely({
+        ...input.usageScope,
+        status: "completed",
+        provider: "google",
+        model,
+        usage: { ...usage, imageCount: 1, outputBytes: bytes.length },
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 0,
+        latencyMs: Date.now() - startedAt,
+        estimatedCostUsd: estimateGeminiCostUsd(model, usage),
+        providerRequestId: body.id,
+      });
+    }
     return {
       bytes,
       mimeType,
-      model: body.model || GEMINI_IMAGE_MODEL,
+      model,
       responseId: body.id,
       latencyMs: Date.now() - startedAt,
-      usage: normalizeGeminiUsage(body.usage),
+      usage,
     };
   } catch (error) {
+    const failure = classifyGeminiImageFailure(error, response);
+    const model = responseBody?.model || GEMINI_IMAGE_MODEL;
+    const usage = normalizeGeminiUsage(responseBody?.usage);
+    const estimatedCostUsd = responseBody?.usage
+      ? estimateGeminiCostUsd(model, usage)
+      : undefined;
+    if (input.usageScope) {
+      await recordAiUsageSafely({
+        ...input.usageScope,
+        status: "failed",
+        provider: "google",
+        model,
+        usage,
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 1,
+        latencyMs: Date.now() - startedAt,
+        estimatedCostUsd,
+        providerRequestId: responseBody?.id,
+        failureKind: failure.category,
+        retryable: failure.retryable,
+      });
+    }
     if (error instanceof GeminiImageGenerationError) throw error;
     if (input.abortSignal?.aborted) {
       throw new GeminiImageGenerationError(
@@ -277,46 +354,143 @@ export function describeGeminiImageFailure(error: unknown): GeminiImageFailure {
   return classifyGeminiImageFailure(error);
 }
 
-export async function transcribeGoogleAudio(audio: File, abortSignal?: AbortSignal) {
+export async function transcribeGoogleAudio(
+  audio: File,
+  abortSignal?: AbortSignal,
+  usageScope?: AiUsageScope,
+) {
   const apiKey = process.env.GOOGLE_MEDIA_API_KEY?.trim();
   if (!apiKey || !hasGoogleMediaKey()) throw new Error("Google Speech is not configured.");
   const mimeType = audio.type.split(";", 1)[0].toLowerCase();
   const encoding = speechEncoding(mimeType);
   const content = Buffer.from(await audio.arrayBuffer()).toString("base64");
-  const response = await fetch(`${SPEECH_URL}?key=${encodeURIComponent(apiKey)}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ config: { ...(encoding ? { encoding } : {}), languageCode: "en-US", enableAutomaticPunctuation: true, model: "latest_long" }, audio: { content } }),
-    signal: abortSignal,
-  });
-  const body = await readJsonResponse(response) as { results?: Array<{ alternatives?: Array<{ transcript?: string }> }> };
-  const text = (body.results || []).map((result) => result.alternatives?.[0]?.transcript || "").filter(Boolean).join(" ").trim();
-  if (!text) throw new Error("Google Speech could not recognize this recording.");
-  return { text, model: "google-cloud-speech:latest_long" };
+  const startedAt = Date.now();
+  const model = "google-cloud-speech:latest_long";
+  try {
+    const response = await fetch(`${SPEECH_URL}?key=${encodeURIComponent(apiKey)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ config: { ...(encoding ? { encoding } : {}), languageCode: "en-US", enableAutomaticPunctuation: true, model: "latest_long" }, audio: { content } }),
+      signal: abortSignal,
+    });
+    const body = await readJsonResponse(response) as { results?: Array<{ alternatives?: Array<{ transcript?: string }> }> };
+    const text = (body.results || []).map((result) => result.alternatives?.[0]?.transcript || "").filter(Boolean).join(" ").trim();
+    if (!text) throw new Error("Google Speech could not recognize this recording.");
+    if (usageScope) {
+      await recordAiUsageSafely({
+        ...usageScope,
+        status: "completed",
+        provider: "google",
+        model,
+        usage: { inputBytes: audio.size },
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 0,
+        latencyMs: Date.now() - startedAt,
+      });
+    }
+    return { text, model };
+  } catch (error) {
+    if (usageScope) {
+      await recordAiUsageSafely({
+        ...usageScope,
+        status: "failed",
+        provider: "google",
+        model,
+        usage: { inputBytes: audio.size },
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 1,
+        latencyMs: Date.now() - startedAt,
+        failureKind: abortSignal?.aborted ? "abort" : "provider_error",
+        retryable: !abortSignal?.aborted,
+      });
+    }
+    throw error;
+  }
 }
 
-export async function synthesizeGoogleSpeech(text: string, abortSignal?: AbortSignal) {
+export async function synthesizeGoogleSpeech(
+  text: string,
+  abortSignal?: AbortSignal,
+  usageScope?: AiUsageScope,
+) {
   const apiKey = process.env.GOOGLE_MEDIA_API_KEY?.trim();
   if (!apiKey || !hasGoogleMediaKey()) throw new Error("Google Text-to-Speech is not configured.");
-  const response = await fetch(`${TTS_URL}?key=${encodeURIComponent(apiKey)}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ input: { text: text.slice(0, 5_000) }, voice: { languageCode: "en-US", ssmlGender: "NEUTRAL" }, audioConfig: { audioEncoding: "MP3", speakingRate: 1.02 } }),
-    signal: abortSignal,
-  });
-  const body = await readJsonResponse(response) as { audioContent?: string };
-  if (!body.audioContent) throw new Error("Google Text-to-Speech returned no audio.");
-  return Buffer.from(body.audioContent, "base64");
+  const boundedText = text.slice(0, 5_000);
+  const startedAt = Date.now();
+  const model = "google-cloud-tts:standard-neutral";
+  try {
+    const response = await fetch(`${TTS_URL}?key=${encodeURIComponent(apiKey)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: { text: boundedText }, voice: { languageCode: "en-US", ssmlGender: "NEUTRAL" }, audioConfig: { audioEncoding: "MP3", speakingRate: 1.02 } }),
+      signal: abortSignal,
+    });
+    const body = await readJsonResponse(response) as { audioContent?: string };
+    if (!body.audioContent) throw new Error("Google Text-to-Speech returned no audio.");
+    const audio = Buffer.from(body.audioContent, "base64");
+    if (usageScope) {
+      await recordAiUsageSafely({
+        ...usageScope,
+        status: "completed",
+        provider: "google",
+        model,
+        usage: { inputCharacters: boundedText.length, outputBytes: audio.length },
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 0,
+        latencyMs: Date.now() - startedAt,
+      });
+    }
+    return audio;
+  } catch (error) {
+    if (usageScope) {
+      await recordAiUsageSafely({
+        ...usageScope,
+        status: "failed",
+        provider: "google",
+        model,
+        usage: { inputCharacters: boundedText.length },
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 1,
+        latencyMs: Date.now() - startedAt,
+        failureKind: abortSignal?.aborted ? "abort" : "provider_error",
+        retryable: !abortSignal?.aborted,
+      });
+    }
+    throw error;
+  }
 }
 
 function interactionContents(body: InteractionResponse) {
-  return (body.steps || []).flatMap((step) => step.type === "model_output" ? step.content || [] : []);
+  return (Array.isArray(body.steps) ? body.steps : []).flatMap((step) =>
+    step.type === "model_output" && Array.isArray(step.content)
+      ? step.content
+      : []
+  );
 }
 
 async function readInteractionResponse(response: Response) {
-  const body = await readJsonResponse(response) as InteractionResponse;
-  if (body.status === "failed") throw new Error(body.error?.message || "Gemini interaction failed.");
-  return body;
+  return await readJsonResponse(response) as InteractionResponse;
+}
+
+function geminiResponseFailure(
+  error: Error,
+  body: InteractionResponse,
+  requestedModel: string,
+  startedAt: number,
+) {
+  const model = body.model || requestedModel;
+  const usage = body.usage ? normalizeGeminiUsage(body.usage) : undefined;
+  return attachModelProviderResponseReceipt(error, {
+    ...(usage ? { usage } : {}),
+    latencyMs: Date.now() - startedAt,
+    model,
+    estimatedCostUsd: usage ? estimateGeminiCostUsd(model, usage) : undefined,
+    providerRequestId: body.id,
+  });
 }
 
 async function readJsonResponse(response: Response) {

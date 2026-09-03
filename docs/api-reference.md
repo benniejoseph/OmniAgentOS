@@ -50,6 +50,7 @@ Connector API records never contain credential plaintext or sealed payloads. App
 
 ## Evaluation, security, and operations evidence
 
+- `GET /api/usage/summary`: tenant-scoped daily, weekly, and monthly AI consumption. `sourceStreams` and `providerCalls` cover model, embedding, search, media, and browser operations; provider/model breakdowns attribute retry and fallback receipts per actual provider call. `runs` and `modelCalls` remain compatibility counters for agent conversations. Unknown prices remain explicitly unpriced.
 - `/api/evaluations`, `/api/evaluations/:id`, `/api/evaluations/:id/report`, and `/api/evaluations/:id/report/verify`.
 - `/api/release/evidence`.
 - `/api/security/context`, `/api/security/audits`, and `/api/security/isolation-report`.

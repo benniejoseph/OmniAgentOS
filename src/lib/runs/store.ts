@@ -21,6 +21,7 @@ import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
 import type { AgentRunContinuation, AgentRunEventRecord, AgentRunFeedback, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
+import { recordAiUsage } from "@/lib/usage/ledger";
 
 export async function createAgentRun(input: {
   tenantId?: string;
@@ -307,10 +308,20 @@ export async function appendRunEvent(
   if (event.type === "delta") {
     return record;
   }
+  const meteredModelEvent = Boolean(
+    redactedEvent.type === "model" &&
+    (
+      options.executionScope?.initiatingActorId ||
+      redactedEvent.usageReceiptRecorded
+    ),
+  );
   const domainEvent = {
     streamId: `run:${runId}`,
     type: `run.${event.type}`,
-    payload: domainEventPayload(redactedEvent),
+    payload: {
+      ...domainEventPayload(redactedEvent),
+      ...(meteredModelEvent ? { usageLedgerVersion: 1 } : {}),
+    },
     correlationId: options.executionScope?.correlationId || runId,
     executionScope: options.executionScope,
   };
@@ -326,10 +337,57 @@ export async function appendRunEvent(
       assertExecutionScopeTenant(options.executionScope, tenantId);
     }
     await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
-      await appendDomainEvent(
+      const persistedDomainEvent = await appendDomainEvent(
         { ...domainEvent, tenantId },
         { sql },
       );
+      if (
+        redactedEvent.type === "model" &&
+        options.executionScope?.initiatingActorId &&
+        !redactedEvent.usageReceiptRecorded
+      ) {
+        await recordAiUsage({
+          id: redactedEvent.usageReceiptId || `run-model:${record.id}`,
+          tenantId,
+          actorId: options.executionScope.initiatingActorId,
+          sourceStreamId: `run:${runId}`,
+          sourceEventId: persistedDomainEvent.id,
+          operation: "tool_turn",
+          purpose: "agent.turn",
+          status: "completed",
+          provider: redactedEvent.provider || "unknown",
+          model: redactedEvent.model,
+          usage: {
+            inputTokens: redactedEvent.inputTokens,
+            cachedInputTokens: redactedEvent.cachedInputTokens,
+            outputTokens: redactedEvent.outputTokens,
+            totalTokens: redactedEvent.totalTokens,
+          },
+          providerCallCount:
+            redactedEvent.callReceipts?.length ||
+            redactedEvent.attemptCount ||
+            redactedEvent.iterationCount ||
+            1,
+          attemptCount:
+            redactedEvent.attemptCount ||
+            (redactedEvent.iterationCount || 1) +
+              (redactedEvent.fallbackUsed ? 1 : 0),
+          failedAttemptCount:
+            redactedEvent.failedAttemptCount ??
+            (redactedEvent.fallbackUsed ? 1 : 0),
+          callReceipts: redactedEvent.callReceipts,
+          latencyMs: redactedEvent.latencyMs,
+          estimatedCostUsd: redactedEvent.costKnown === false
+            ? undefined
+            : redactedEvent.estimatedCostUsd,
+          providerRequestId: redactedEvent.providerRequestId,
+          assignmentId: redactedEvent.assignmentId,
+          credentialSource: redactedEvent.credentialSource,
+          correlationId: options.executionScope.correlationId,
+          causationId: options.executionScope.causationId || undefined,
+          executionScope: options.executionScope,
+        }, { sql });
+      }
       await sql`
         INSERT INTO omni_agent_events (id, tenant_id, run_id, type, payload, created_at)
         VALUES (${record.id}, ${tenantId}, ${record.runId}, ${record.type}, ${record.payload}::jsonb, ${record.createdAt})
@@ -349,7 +407,7 @@ export async function appendRunEvent(
       normalizeTenantId(scopedRun.tenantId),
     );
   }
-  await appendDomainEventSafely({
+  const persistedDomainEvent = await appendDomainEventSafely({
     ...domainEvent,
     tenantId: options.tenantId,
   });
@@ -367,6 +425,54 @@ export async function appendRunEvent(
     ledger.events.push(record);
     return ledger;
   });
+  if (
+    persistedDomainEvent &&
+    redactedEvent.type === "model" &&
+    options.executionScope?.initiatingActorId &&
+    !redactedEvent.usageReceiptRecorded
+  ) {
+    await recordAiUsage({
+      id: redactedEvent.usageReceiptId || `run-model:${record.id}`,
+      tenantId: record.tenantId || normalizeTenantId(options.tenantId),
+      actorId: options.executionScope.initiatingActorId,
+      sourceStreamId: `run:${runId}`,
+      sourceEventId: persistedDomainEvent.id,
+      operation: "tool_turn",
+      purpose: "agent.turn",
+      status: "completed",
+      provider: redactedEvent.provider || "unknown",
+      model: redactedEvent.model,
+      usage: {
+        inputTokens: redactedEvent.inputTokens,
+        cachedInputTokens: redactedEvent.cachedInputTokens,
+        outputTokens: redactedEvent.outputTokens,
+        totalTokens: redactedEvent.totalTokens,
+      },
+      providerCallCount:
+        redactedEvent.callReceipts?.length ||
+        redactedEvent.attemptCount ||
+        redactedEvent.iterationCount ||
+        1,
+      attemptCount:
+        redactedEvent.attemptCount ||
+        (redactedEvent.iterationCount || 1) +
+          (redactedEvent.fallbackUsed ? 1 : 0),
+      failedAttemptCount:
+        redactedEvent.failedAttemptCount ??
+        (redactedEvent.fallbackUsed ? 1 : 0),
+      callReceipts: redactedEvent.callReceipts,
+      latencyMs: redactedEvent.latencyMs,
+      estimatedCostUsd: redactedEvent.costKnown === false
+        ? undefined
+        : redactedEvent.estimatedCostUsd,
+      providerRequestId: redactedEvent.providerRequestId,
+      assignmentId: redactedEvent.assignmentId,
+      credentialSource: redactedEvent.credentialSource,
+      correlationId: options.executionScope.correlationId,
+      causationId: options.executionScope.causationId || undefined,
+      executionScope: options.executionScope,
+    });
+  }
   return record;
 }
 

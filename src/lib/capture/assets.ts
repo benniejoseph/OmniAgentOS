@@ -172,6 +172,39 @@ export async function getCaptureAsset(id: string, owner: Owner) {
   return asset ? withoutContentPath(asset) : undefined;
 }
 
+/**
+ * Recover the trusted owner for a Capture ingestion job created by an older
+ * release. The job binding prevents arbitrary knowledge metadata from being
+ * used to cross an actor boundary.
+ */
+export async function resolveCaptureAssetActorForIngestJob(
+  id: string,
+  input: { tenantId: string; ingestJobId: string },
+) {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const assetId = normalizeId(id);
+  const ingestJobId = normalizeId(input.ingestJobId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT actor_id
+      FROM omni_capture_assets
+      WHERE id = ${assetId}
+        AND tenant_id = ${tenantId}
+        AND ingest_job_id = ${ingestJobId}
+      LIMIT 1
+    `;
+    return rows[0]?.actor_id ? normalizeActorId(String(rows[0].actor_id)) : undefined;
+  }
+  const ledger = await readJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] });
+  const asset = ledger.assets.find((item) =>
+    item.id === assetId &&
+    item.tenantId === tenantId &&
+    item.ingestJobId === ingestJobId
+  );
+  return asset?.actorId;
+}
+
 export async function getCaptureAssetContent(id: string, owner: Owner) {
   const asset = await requireCaptureAsset(id, owner);
   if (hasDatabaseUrl()) {
@@ -254,7 +287,13 @@ function getAssetDirectory(id: string) { return getDataPath("capture-assets", no
 function withoutContentPath(value: CaptureAssetLedger["assets"][number]): CaptureAsset { const { contentPath, ...asset } = value; void contentPath; return asset; }
 function normalizeId(value: string) { const id = value.trim(); if (!/^[a-zA-Z0-9_-]{1,200}$/.test(id)) throw new CaptureAssetError("Invalid captured file id."); return id; }
 function normalizeTenantId(value: string) { return value.trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default"; }
-function normalizeActorId(value: string) { return value.trim().slice(0, 240) || "anonymous"; }
+function normalizeActorId(value: string) {
+  const actorId = value.trim();
+  if (actorId.length > 256) {
+    throw new Error("Capture asset actor identity exceeds 256 characters.");
+  }
+  return actorId || "anonymous";
+}
 function safeFilename(value: string) { return path.basename(safeText(value, 240).replace(/[\u0000-\u001f]/g, "")) || "untitled"; }
 function normalizeMime(value: string) { return value.split(";", 1)[0].trim().toLowerCase().slice(0, 120) || "application/octet-stream"; }
 function fileExtension(value: string) { return safeFilename(value).split(".").pop()?.toLowerCase().slice(0, 20) || ""; }

@@ -35,7 +35,18 @@ async function POSTHandler(request: Request) {
   if (!parsed.success) return Response.json({ error: "Add a valid image prompt and aspect ratio." }, { status: 400 });
   const startedAt = Date.now();
   try {
-    const result = await generateGeminiImage({ ...parsed.data, abortSignal: request.signal });
+    const result = await generateGeminiImage({
+      ...parsed.data,
+      abortSignal: request.signal,
+      usageScope: {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        sourceStreamId: "api:media:image",
+        operation: "image_generation",
+        purpose: "media.image.generate",
+        credentialSource: "deployment_environment",
+      },
+    });
     request.signal.throwIfAborted();
     let asset;
     try {

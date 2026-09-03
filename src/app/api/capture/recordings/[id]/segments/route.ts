@@ -94,7 +94,14 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
       return Response.json({ segment: saved.segment, duplicate: true }, { headers: { "cache-control": "private, no-store" } });
     }
     try {
-      const transcription = await transcribeCaptureAudio(audio, request.signal);
+      const transcription = await transcribeCaptureAudio(audio, request.signal, {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        sourceStreamId: `capture-recording:${id}`,
+        operation: "transcription",
+        purpose: "capture.recording.segment.transcribe",
+        credentialSource: "deployment_environment",
+      });
       const segment = await updateCaptureSegmentTranscription({
         ...context,
         recordingId: id,

@@ -12,8 +12,9 @@ export const POST = withDatabaseRequestScope(POSTHandler);
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 
 async function POSTHandler(request: Request) {
+  let context;
   try {
-    await authorizeRequest({ request, action: "write.memory", resourceType: "knowledge", metadata: { operation: "transcribe" } });
+    context = await authorizeRequest({ request, action: "write.memory", resourceType: "knowledge", metadata: { operation: "transcribe" } });
   } catch (error) {
     return forbiddenResponse(error);
   }
@@ -35,8 +36,15 @@ async function POSTHandler(request: Request) {
 
   const startedAt = Date.now();
   try {
-    const { text, model, fallbackUsed } = await transcribeCaptureAudio(audio, request.signal);
-    await recordRuntimeEventSafely({ category: "api", action: "media.transcription", resourceType: "capture", durationMs: Date.now() - startedAt, message: fallbackUsed ? "Voice transcription completed through fallback." : "Voice transcription completed.", metadata: { model, fallbackUsed, bytes: audio.size } });
+    const { text, model, fallbackUsed } = await transcribeCaptureAudio(audio, request.signal, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      sourceStreamId: "api:capture:transcribe",
+      operation: "transcription",
+      purpose: "capture.voice.transcribe",
+      credentialSource: "deployment_environment",
+    });
+    await recordRuntimeEventSafely({ category: "api", action: "media.transcription", tenantId: context.tenantId, actorId: context.actorId, resourceType: "capture", durationMs: Date.now() - startedAt, message: fallbackUsed ? "Voice transcription completed through fallback." : "Voice transcription completed.", metadata: { model, fallbackUsed, bytes: audio.size } });
     return Response.json({ text, model, fallbackUsed }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Transcription failed." }, { status: 502 });

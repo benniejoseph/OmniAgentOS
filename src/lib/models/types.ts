@@ -1,4 +1,5 @@
 import type { ModelUsage } from "@/lib/openai/model-router";
+import type { AiUsageScope } from "@/lib/usage/types";
 
 export type ProviderId = "openai" | "google" | "anthropic" | "aws_bedrock" | "local";
 export type ModelTier = "fast" | "reasoning";
@@ -19,6 +20,9 @@ export type ModelAttemptReceipt = {
   latencyMs: number;
   failureKind?: ModelFailureKind;
   retryable?: boolean;
+  usage?: ModelUsage;
+  estimatedCostUsd?: number;
+  providerRequestId?: string;
 };
 
 export type ModelGenerationResult = {
@@ -30,7 +34,18 @@ export type ModelGenerationResult = {
   estimatedCostUsd?: number;
   costKnown: boolean;
   attempts: ModelAttemptReceipt[];
+  providerRequestId?: string;
+  usageReceiptRecorded?: boolean;
+  usageReceiptId?: string;
 };
+
+export type ModelProviderResponseReceipt = Readonly<{
+  usage?: ModelUsage;
+  latencyMs: number;
+  model?: string;
+  estimatedCostUsd?: number;
+  providerRequestId?: string;
+}>;
 
 export type ModelToolDefinition = {
   type: "function";
@@ -91,6 +106,8 @@ export type ModelTextRequest = {
   allowCrossProviderFallback?: boolean;
   maxOutputTokens?: number;
   abortSignal?: AbortSignal;
+  /** Content-free tenant/actor attribution for the unified AI usage ledger. */
+  usageScope?: AiUsageScope;
 };
 
 export type ModelStructuredRequest = ModelTextRequest & {
@@ -111,6 +128,88 @@ export class ModelProviderError extends Error {
     super(message);
     this.name = "ModelProviderError";
   }
+}
+
+const modelProviderResponseReceiptKey = Symbol.for(
+  "omniagent.model-provider-response-receipt",
+);
+
+/** Attach content-free billing evidence without exposing it in serialized errors. */
+export function attachModelProviderResponseReceipt(
+  error: unknown,
+  receipt: ModelProviderResponseReceipt,
+) {
+  const target = error instanceof Error
+    ? error
+    : new Error("Model provider response failed.", { cause: error });
+  const normalized = normalizeProviderResponseReceipt(receipt);
+  try {
+    Object.defineProperty(target, modelProviderResponseReceiptKey, {
+      value: normalized,
+      enumerable: false,
+      configurable: true,
+    });
+    return target;
+  } catch {
+    const wrapped = new Error(target.message, { cause: target });
+    Object.defineProperty(wrapped, modelProviderResponseReceiptKey, {
+      value: normalized,
+      enumerable: false,
+      configurable: false,
+    });
+    return wrapped;
+  }
+}
+
+export function getModelProviderResponseReceipt(
+  error: unknown,
+): ModelProviderResponseReceipt | undefined {
+  if (!error || (typeof error !== "object" && typeof error !== "function")) {
+    return undefined;
+  }
+  return (error as Record<PropertyKey, unknown>)[modelProviderResponseReceiptKey] as
+    | ModelProviderResponseReceipt
+    | undefined;
+}
+
+export function preserveModelProviderResponseReceipt<T extends Error>(
+  source: unknown,
+  target: T,
+): T {
+  const receipt = getModelProviderResponseReceipt(source);
+  return (receipt
+    ? attachModelProviderResponseReceipt(target, receipt)
+    : target) as T;
+}
+
+function normalizeProviderResponseReceipt(
+  receipt: ModelProviderResponseReceipt,
+): ModelProviderResponseReceipt {
+  const usage = receipt.usage
+    ? {
+        inputTokens: finiteUsageNumber(receipt.usage.inputTokens),
+        outputTokens: finiteUsageNumber(receipt.usage.outputTokens),
+        cachedInputTokens: finiteUsageNumber(receipt.usage.cachedInputTokens),
+        totalTokens: finiteUsageNumber(receipt.usage.totalTokens),
+      }
+    : undefined;
+  const estimatedCostUsd = Number(receipt.estimatedCostUsd);
+  const model = receipt.model?.trim().slice(0, 200);
+  const providerRequestId = receipt.providerRequestId?.trim().slice(0, 240);
+  return {
+    latencyMs: finiteUsageNumber(receipt.latencyMs),
+    ...(usage ? { usage } : {}),
+    ...(model ? { model } : {}),
+    ...(Number.isFinite(estimatedCostUsd) && estimatedCostUsd >= 0
+      ? { estimatedCostUsd }
+      : {}),
+    ...(providerRequestId ? { providerRequestId } : {}),
+  };
+}
+
+function finiteUsageNumber(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : 0;
 }
 
 export interface ModelProviderAdapter {

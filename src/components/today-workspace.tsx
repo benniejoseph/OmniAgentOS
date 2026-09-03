@@ -713,6 +713,9 @@ function UsageCockpit({
   onRetry: () => void;
 }) {
   const period = summary?.periods[periodKey];
+  const currentSourceStreams = period?.current.sourceStreams ?? period?.current.runs ?? 0;
+  const currentProviderCalls = period?.current.providerCalls ?? period?.current.modelCalls ?? 0;
+  const previousProviderCalls = period?.previous.providerCalls ?? period?.previous.modelCalls ?? 0;
   const periods: Array<{ key: UsagePeriodKey; label: string }> = [
     { key: "day", label: "Daily" },
     { key: "week", label: "Weekly" },
@@ -725,8 +728,8 @@ function UsageCockpit({
       <header className={styles.usageHeader}>
         <div>
           <p className={styles.usageKicker}><Activity size={14} aria-hidden="true" /> Consumption</p>
-          <h2 id="usage-cockpit-title">Tracked agent consumption</h2>
-          <p>Token volume and known estimated cost from recorded agent model calls.</p>
+          <h2 id="usage-cockpit-title">AI consumption</h2>
+          <p>Models, retrieval, media AI, retries, and known estimated cost in one ledger.</p>
         </div>
         <div className={styles.usagePeriodSwitch} role="group" aria-label="Consumption period">
           {periods.map((item) => (
@@ -749,7 +752,7 @@ function UsageCockpit({
               <span>Total consumption · {period.label}</span>
               <strong>{formatTokens(period.current.totalTokens)}</strong>
               <UsageDelta current={period.current.totalTokens} previous={period.previous.totalTokens} />
-              <small>tokens across {period.current.runs.toLocaleString()} {period.current.runs === 1 ? "run" : "runs"}</small>
+              <small>tokens across {currentSourceStreams.toLocaleString()} distinct {currentSourceStreams === 1 ? "source" : "sources"}</small>
             </div>
 
             <div className={styles.usageMetricLedger}>
@@ -773,9 +776,9 @@ function UsageCockpit({
               />
               <UsageMetric
                 icon={Cpu}
-                label="Model calls"
-                value={period.current.modelCalls.toLocaleString()}
-                detail={`${compactComparison(period.current.modelCalls, period.previous.modelCalls)} · ${period.current.runs.toLocaleString()} distinct ${period.current.runs === 1 ? "run" : "runs"}`}
+                label="AI calls"
+                value={currentProviderCalls.toLocaleString()}
+                detail={`${compactComparison(currentProviderCalls, previousProviderCalls)} · ${(period.current.attempts ?? 0).toLocaleString()} attempts · ${(period.current.failedAttempts ?? 0).toLocaleString()} failed`}
               />
               <UsageMetric
                 icon={Coins}
@@ -1004,6 +1007,7 @@ function UsageBreakdown({
         <ol>
           {visible.map((item, index) => {
             const share = tokenShare(item.totals.totalTokens, totalTokens);
+            const providerCalls = item.totals.providerCalls ?? item.totals.modelCalls;
             return (
               <li key={item.id} data-color={index % 5}>
                 <span className={styles.usageIdentity}>{item.label.slice(0, 2).toUpperCase()}</span>
@@ -1011,7 +1015,7 @@ function UsageBreakdown({
                   <p><strong>{item.label}</strong>{showProvider && item.provider ? <small>{item.provider}</small> : null}<span>{formatTokens(item.totals.totalTokens)} · {share}%</span></p>
                   <span className={styles.usageBar}><i style={{ width: `${share}%` }} /></span>
                   <small className={styles.usageItemCost}>
-                    {formatTokens(item.totals.inputTokens)} context · {item.totals.modelCalls.toLocaleString()} {item.totals.modelCalls === 1 ? "call" : "calls"} · {formatBreakdownCost(item.totals)} · {item.totals.costCoveragePercent}% priced
+                    {formatTokens(item.totals.inputTokens)} context · {providerCalls.toLocaleString()} {providerCalls === 1 ? "call" : "calls"} · {formatBreakdownCost(item.totals)} · {item.totals.costCoveragePercent}% priced
                   </small>
                 </div>
               </li>
@@ -1141,7 +1145,8 @@ function formatTokens(value: number) {
 }
 
 function formatKnownCost(totals: UsageTotals) {
-  if (!totals.knownCostCalls && totals.modelCalls) return "Unknown";
+  const calls = totals.providerCalls ?? totals.modelCalls;
+  if (!totals.knownCostCalls && calls) return "Unknown";
   const value = totals.knownEstimatedCostUsd;
   return new Intl.NumberFormat(undefined, {
     style: "currency",

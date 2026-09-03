@@ -27,7 +27,9 @@ function providerPricing(provider: ProviderId) {
       ? process.env.GEMINI_MODEL_PRICING_JSON
       : provider === "anthropic"
         ? process.env.ANTHROPIC_MODEL_PRICING_JSON
-        : process.env.LOCAL_MODEL_PRICING_JSON;
+        : provider === "aws_bedrock"
+          ? process.env.BEDROCK_MODEL_PRICING_JSON
+          : process.env.LOCAL_MODEL_PRICING_JSON;
   try {
     const parsed = JSON.parse(raw || "{}") as Record<string, Record<string, unknown>>;
     return Object.fromEntries(Object.entries(parsed).flatMap(([model, value]) => {

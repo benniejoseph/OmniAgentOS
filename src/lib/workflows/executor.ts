@@ -502,7 +502,10 @@ async function executePlanNode({
     throwIfAborted(abortSignal);
     const executionSignal = workflowBudgetAbortSignal(budget, abortSignal);
     const executionScope = executionAuthority?.executionScope;
-    const initiatingActorId = executionScope?.initiatingActorId || "workflow";
+    const workflowActorId = executionScope?.initiatingActorId?.trim() ||
+      (executionScope?.executingPrincipalType === "system"
+        ? executionScope.executingPrincipalId?.trim() || "omniagent-system"
+        : "workflow");
     const execution = await executeGovernedTool({
       toolId,
       input: buildToolInput({ detail, plan, planId, node, toolId }),
@@ -510,7 +513,7 @@ async function executePlanNode({
       approved: workflowApproved && !dryRun,
       context: {
         tenantId: normalizeTenantId(detail.run.tenantId),
-        actorId: initiatingActorId,
+        actorId: workflowActorId,
         role: executionAuthority?.requesterRole || "system",
         source: "default",
       },
@@ -521,7 +524,7 @@ async function executePlanNode({
       idempotencyKey: `workflow:${detail.run.id}:plan:${planId}:node:${node.id}:tool:${toolId}`,
       mcpSessionScope: {
         tenantId: normalizeTenantId(detail.run.tenantId),
-        actorId: initiatingActorId,
+        actorId: workflowActorId,
         executionId: `workflow:${detail.run.id}`,
       },
       executionScope: executionScope

@@ -1,5 +1,6 @@
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
+import type { AiUsageCallInput } from "@/lib/usage/types";
 
 export type ChatRole = "user" | "assistant";
 
@@ -84,7 +85,7 @@ export type AgentEvent =
   | AgentHarnessEvent
   | { type: "delta"; text: string }
   | { type: "memory"; title: string; count?: number }
-  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean; iteration?: number; iterationCount?: number }
+  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean; iteration?: number; iterationCount?: number; attemptCount?: number; failedAttemptCount?: number; callReceipts?: AiUsageCallInput[]; assignmentId?: string; credentialSource?: "tenant_vault" | "deployment_environment"; providerRequestId?: string; usageReceiptRecorded?: boolean; usageReceiptId?: string }
   | AgentCouncilEvent
   | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | AgentToolEvent

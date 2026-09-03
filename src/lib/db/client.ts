@@ -96,6 +96,7 @@ export const tenantRootPolicyTables = [
   "omni_observability_slo_policy_changes",
   "omni_trust_profiles",
   "omni_events",
+  "omni_ai_usage",
   "omni_memory_graph_nodes",
   "omni_memory_graph_edges",
   "omni_memory_graph_builds",
@@ -109,6 +110,7 @@ export const tenantRootPolicyTables = [
   "omni_access_requests",
   "omni_auth_memberships",
   "omni_auth_sessions",
+  "omni_mobile_sessions",
   "omni_oauth_grants",
   "omni_today_items",
   "omni_today_preferences",
@@ -670,6 +672,27 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[30],
       up: ensureMcpConnectorCredentialVault,
+    },
+    {
+      ...databaseSchemaMigrations[31],
+      up: async (sql) => {
+        await ensureUnifiedAiUsageLedger(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[32],
+      up: async (sql) => {
+        await ensureUnifiedAiUsageLedgerCompatibility(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[33],
+      up: async (sql) => {
+        await ensureMobileSessions(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
     },
   ];
 }
@@ -2392,6 +2415,8 @@ async function runTableMigrations(sql: SqlClient) {
   await sql`CREATE INDEX IF NOT EXISTS omni_auth_sessions_user_idx ON omni_auth_sessions (user_id)`;
   await sql`CREATE INDEX IF NOT EXISTS omni_auth_sessions_expires_idx ON omni_auth_sessions (expires_at)`;
 
+  await ensureMobileSessions(sql);
+
   await sql`
     CREATE TABLE IF NOT EXISTS omni_security_audits (
       id TEXT PRIMARY KEY,
@@ -3224,6 +3249,184 @@ async function ensureMcpConnectorCredentialVault(sql: SqlClient) {
         ALTER TABLE omni_mcp_connectors
         ADD CONSTRAINT omni_mcp_connectors_credential_version_check
         CHECK (credential_version IS NULL OR credential_version > 0);
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureMobileSessions(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_mobile_sessions (
+      id TEXT PRIMARY KEY,
+      family_id TEXT NOT NULL UNIQUE,
+      user_id TEXT NOT NULL REFERENCES omni_auth_users(id) ON DELETE CASCADE,
+      tenant_id TEXT NOT NULL REFERENCES omni_auth_tenants(id) ON DELETE CASCADE,
+      device_id TEXT NOT NULL,
+      device_name TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      app_version TEXT,
+      access_token_hash TEXT NOT NULL UNIQUE,
+      refresh_token_hash TEXT NOT NULL UNIQUE,
+      consumed_refresh_token_hashes JSONB NOT NULL DEFAULT '[]',
+      access_expires_at TIMESTAMPTZ NOT NULL,
+      refresh_expires_at TIMESTAMPTZ NOT NULL,
+      revoked_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mobile_sessions_access_idx ON omni_mobile_sessions (access_token_hash)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mobile_sessions_refresh_idx ON omni_mobile_sessions (refresh_token_hash)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mobile_sessions_consumed_refresh_idx ON omni_mobile_sessions USING GIN (consumed_refresh_token_hashes)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mobile_sessions_user_device_idx ON omni_mobile_sessions (user_id, device_id)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_mobile_sessions_expiry_idx ON omni_mobile_sessions (refresh_expires_at)`;
+}
+
+async function ensureUnifiedAiUsageLedger(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_ai_usage (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      source_stream_id TEXT NOT NULL,
+      source_event_id TEXT,
+      correlation_id TEXT,
+      causation_id TEXT,
+      execution_scope JSONB CHECK (
+        execution_scope IS NULL OR jsonb_typeof(execution_scope) = 'object'
+      ),
+      operation TEXT NOT NULL
+        CONSTRAINT omni_ai_usage_operation_check CHECK (operation IN (
+          'text_generation', 'structured_generation', 'tool_turn',
+          'embedding', 'web_search', 'ocr', 'image_generation',
+          'transcription', 'speech_synthesis', 'browser_automation'
+        )),
+      purpose TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      usage JSONB NOT NULL DEFAULT '{}'::jsonb
+        CHECK (jsonb_typeof(usage) = 'object'),
+      call_receipts JSONB NOT NULL DEFAULT '[]'::jsonb
+        CONSTRAINT omni_ai_usage_call_receipts_check
+        CHECK (jsonb_typeof(call_receipts) = 'array'),
+      provider_call_count INTEGER NOT NULL DEFAULT 1
+        CHECK (provider_call_count >= 0),
+      attempt_count INTEGER NOT NULL DEFAULT 1 CHECK (attempt_count >= 0),
+      failed_attempt_count INTEGER NOT NULL DEFAULT 0
+        CHECK (failed_attempt_count >= 0 AND failed_attempt_count <= attempt_count),
+      latency_ms INTEGER NOT NULL DEFAULT 0 CHECK (latency_ms >= 0),
+      estimated_cost_microusd BIGINT CHECK (
+        estimated_cost_microusd IS NULL OR estimated_cost_microusd >= 0
+      ),
+      pricing_source TEXT,
+      pricing_version TEXT,
+      provider_request_id TEXT,
+      assignment_id TEXT,
+      credential_source TEXT CHECK (
+        credential_source IS NULL
+        OR credential_source IN ('tenant_vault', 'deployment_environment')
+      ),
+      failure_kind TEXT,
+      retryable BOOLEAN,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (btrim(tenant_id) <> ''),
+      CHECK (btrim(actor_id) <> ''),
+      CHECK (btrim(source_stream_id) <> ''),
+      CHECK (btrim(purpose) <> ''),
+      CHECK (btrim(provider) <> ''),
+      CHECK (btrim(model) <> ''),
+      CONSTRAINT omni_ai_usage_provider_attempt_check
+        CHECK (provider_call_count <= attempt_count)
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_ai_usage_tenant_source_event_idx
+    ON omni_ai_usage (tenant_id, source_event_id)
+    WHERE source_event_id IS NOT NULL
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_ai_usage_tenant_recorded_idx
+    ON omni_ai_usage (tenant_id, recorded_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_ai_usage_tenant_actor_recorded_idx
+    ON omni_ai_usage (tenant_id, actor_id, recorded_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_ai_usage_tenant_purpose_recorded_idx
+    ON omni_ai_usage (tenant_id, purpose, recorded_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_ai_usage_retention_idx
+    ON omni_ai_usage (recorded_at ASC)
+  `;
+}
+
+async function ensureUnifiedAiUsageLedgerCompatibility(sql: SqlClient) {
+  await ensureUnifiedAiUsageLedger(sql);
+  await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS correlation_id TEXT`;
+  await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS causation_id TEXT`;
+  await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS execution_scope JSONB`;
+  await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS call_receipts JSONB NOT NULL DEFAULT '[]'::jsonb`;
+  await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS provider_request_id TEXT`;
+  await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS assignment_id TEXT`;
+  await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS credential_source TEXT`;
+  await sql`ALTER TABLE omni_ai_usage DROP CONSTRAINT IF EXISTS omni_ai_usage_operation_check`;
+  await sql`
+    ALTER TABLE omni_ai_usage
+    ADD CONSTRAINT omni_ai_usage_operation_check CHECK (operation IN (
+      'text_generation', 'structured_generation', 'tool_turn',
+      'embedding', 'web_search', 'ocr', 'image_generation',
+      'transcription', 'speech_synthesis', 'browser_automation'
+    ))
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_ai_usage_call_receipts_check'
+          AND conrelid = 'omni_ai_usage'::regclass
+      ) THEN
+        ALTER TABLE omni_ai_usage
+        ADD CONSTRAINT omni_ai_usage_call_receipts_check
+        CHECK (jsonb_typeof(call_receipts) = 'array');
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_ai_usage_provider_attempt_check'
+          AND conrelid = 'omni_ai_usage'::regclass
+      ) THEN
+        ALTER TABLE omni_ai_usage
+        ADD CONSTRAINT omni_ai_usage_provider_attempt_check
+        CHECK (provider_call_count <= attempt_count);
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_ai_usage_execution_scope_check'
+          AND conrelid = 'omni_ai_usage'::regclass
+      ) THEN
+        ALTER TABLE omni_ai_usage
+        ADD CONSTRAINT omni_ai_usage_execution_scope_check
+        CHECK (execution_scope IS NULL OR jsonb_typeof(execution_scope) = 'object');
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_ai_usage_credential_source_check'
+          AND conrelid = 'omni_ai_usage'::regclass
+      ) THEN
+        ALTER TABLE omni_ai_usage
+        ADD CONSTRAINT omni_ai_usage_credential_source_check
+        CHECK (
+          credential_source IS NULL
+          OR credential_source IN ('tenant_vault', 'deployment_environment')
+        );
       END IF;
     END
     $migration$

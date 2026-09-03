@@ -29,6 +29,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     }
     const job = await enqueueKnowledgeIngestJob({
       tenantId: context.tenantId,
+      actorId: context.actorId,
       idempotencyKey: `capture-recording:${recording.id}`,
       request: {
         title: recording.title,

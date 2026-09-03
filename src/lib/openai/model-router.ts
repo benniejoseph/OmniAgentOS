@@ -111,13 +111,33 @@ export function estimateModelCostUsd(model: string, usage: ModelUsage) {
   const pricing = parsePricing();
   const rate = pricing[model];
   if (!rate) return undefined;
+  return estimateTokenCostUsd(rate, usage);
+}
+
+export function estimateWebSearchCostUsd(
+  model: string,
+  usage: ModelUsage,
+  searchQueryCount: number,
+) {
+  const rate = parsePricing()[model];
+  if (!rate || rate.webSearch === undefined) return undefined;
+  return roundUsd(
+    estimateTokenCostUsd(rate, usage) +
+    Math.max(0, Math.round(searchQueryCount)) * rate.webSearch,
+  );
+}
+
+function estimateTokenCostUsd(
+  rate: { input: number; output: number; cachedInput?: number },
+  usage: ModelUsage,
+) {
   const uncachedInput = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
   return roundUsd(
     (uncachedInput * rate.input + usage.cachedInputTokens * (rate.cachedInput ?? rate.input) + usage.outputTokens * rate.output) / 1_000_000,
   );
 }
 
-function parsePricing(): Record<string, { input: number; output: number; cachedInput?: number }> {
+function parsePricing(): Record<string, { input: number; output: number; cachedInput?: number; webSearch?: number }> {
   try {
     const value = JSON.parse(process.env.OPENAI_MODEL_PRICING_JSON || "{}") as Record<string, unknown>;
     return Object.fromEntries(Object.entries(value).flatMap(([model, raw]) => {
@@ -126,8 +146,14 @@ function parsePricing(): Record<string, { input: number; output: number; cachedI
       const input = Number(candidate.input);
       const output = Number(candidate.output);
       const cachedInput = Number(candidate.cachedInput);
+      const webSearch = Number(candidate.webSearch);
       if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0) return [];
-      return [[model, { input, output, ...(Number.isFinite(cachedInput) && cachedInput >= 0 ? { cachedInput } : {}) }]];
+      return [[model, {
+        input,
+        output,
+        ...(Number.isFinite(cachedInput) && cachedInput >= 0 ? { cachedInput } : {}),
+        ...(Number.isFinite(webSearch) && webSearch >= 0 ? { webSearch } : {}),
+      }]];
     }));
   } catch {
     return {};

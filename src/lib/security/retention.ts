@@ -21,6 +21,7 @@ export type RetentionPolicy = {
   operationJobDays: number;
   runContentDays: number;
   toolPayloadDays: number;
+  aiUsageDays: number;
   domainEventDays: number;
   observabilityDays: number;
   healthHistoryDays: number;
@@ -50,6 +51,11 @@ export type RetentionSweepResult = {
     operationJobs: number;
     runs: number;
     toolExecutions: number;
+    aiUsage: number;
+    aiUsageEvents: number;
+    aiUsageAgentEvents: number;
+    aiUsageRunEvents: number;
+    aiUsageObservabilityEvents: number;
     domainEvents: number;
     observabilityEvents: number;
     healthChecks: number;
@@ -75,6 +81,7 @@ export function getRetentionPolicy(): RetentionPolicy {
     operationJobDays: retentionDays("OMNIAGENT_RETENTION_OPERATION_JOB_DAYS", 90),
     runContentDays: retentionDays("OMNIAGENT_RETENTION_RUN_DAYS", 30),
     toolPayloadDays: retentionDays("OMNIAGENT_RETENTION_TOOL_DAYS", 90),
+    aiUsageDays: retentionDays("OMNIAGENT_RETENTION_AI_USAGE_DAYS", 90),
     domainEventDays: retentionDays("OMNIAGENT_RETENTION_EVENT_DAYS", 90),
     observabilityDays: retentionDays("OMNIAGENT_RETENTION_OBSERVABILITY_DAYS", 30),
     healthHistoryDays: retentionDays("OMNIAGENT_RETENTION_HEALTH_DAYS", 30),
@@ -143,6 +150,7 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
   const operationJobCutoff = cutoff(policy.operationJobDays);
   const runCutoff = cutoff(policy.runContentDays);
   const toolCutoff = cutoff(policy.toolPayloadDays);
+  const aiUsageCutoff = cutoff(policy.aiUsageDays);
   const eventCutoff = cutoff(policy.domainEventDays);
   const observabilityCutoff = cutoff(policy.observabilityDays);
   const healthCutoff = cutoff(policy.healthHistoryDays);
@@ -791,12 +799,245 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
           WHERE target.ctid = expired.ctid
           RETURNING target.id
         `;
+    const aiUsage = tenantId
+      ? await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_ai_usage
+            WHERE tenant_id = ${tenantId}
+              AND recorded_at < ${aiUsageCutoff}::timestamptz
+            ORDER BY recorded_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          DELETE FROM omni_ai_usage target
+          USING expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `
+      : await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_ai_usage
+            WHERE recorded_at < ${aiUsageCutoff}::timestamptz
+            ORDER BY recorded_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          DELETE FROM omni_ai_usage target
+          USING expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `;
+    const aiUsageEvents = tenantId
+      ? await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_events
+            WHERE tenant_id = ${tenantId}
+              AND type = 'ai.usage.recorded'
+              AND at < ${aiUsageCutoff}::timestamptz
+            ORDER BY at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          DELETE FROM omni_events target
+          USING expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `
+      : await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_events
+            WHERE type = 'ai.usage.recorded'
+              AND at < ${aiUsageCutoff}::timestamptz
+            ORDER BY at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          DELETE FROM omni_events target
+          USING expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `;
+    const aiUsageAgentEvents = tenantId
+      ? await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_agent_events
+            WHERE tenant_id = ${tenantId}
+              AND type = 'model'
+              AND created_at < ${aiUsageCutoff}::timestamptz
+              AND payload ?| ARRAY[
+                'inputTokens', 'outputTokens', 'cachedInputTokens',
+                'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+                'providerRequestId', 'usageReceiptId', 'attemptCount',
+                'failedAttemptCount', 'iterationCount', 'callReceipts'
+              ]
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          UPDATE omni_agent_events target
+          SET payload = (
+            target.payload - ARRAY[
+              'inputTokens', 'outputTokens', 'cachedInputTokens',
+              'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+              'providerRequestId', 'usageReceiptId', 'attemptCount',
+              'failedAttemptCount', 'iterationCount', 'callReceipts'
+            ]::text[]
+          ) || jsonb_build_object('usageExpiredAt', NOW())
+          FROM expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `
+      : await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_agent_events
+            WHERE type = 'model'
+              AND created_at < ${aiUsageCutoff}::timestamptz
+              AND payload ?| ARRAY[
+                'inputTokens', 'outputTokens', 'cachedInputTokens',
+                'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+                'providerRequestId', 'usageReceiptId', 'attemptCount',
+                'failedAttemptCount', 'iterationCount', 'callReceipts'
+              ]
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          UPDATE omni_agent_events target
+          SET payload = (
+            target.payload - ARRAY[
+              'inputTokens', 'outputTokens', 'cachedInputTokens',
+              'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+              'providerRequestId', 'usageReceiptId', 'attemptCount',
+              'failedAttemptCount', 'iterationCount', 'callReceipts'
+            ]::text[]
+          ) || jsonb_build_object('usageExpiredAt', NOW())
+          FROM expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `;
+    const aiUsageRunEvents = tenantId
+      ? await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_events
+            WHERE tenant_id = ${tenantId}
+              AND type = 'run.model'
+              AND at < ${aiUsageCutoff}::timestamptz
+              AND payload ?| ARRAY[
+                'inputTokens', 'outputTokens', 'cachedInputTokens',
+                'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+                'providerRequestId', 'usageReceiptId', 'attemptCount',
+                'failedAttemptCount', 'iterationCount', 'callReceipts'
+              ]
+            ORDER BY at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          UPDATE omni_events target
+          SET payload = (
+            target.payload - ARRAY[
+              'inputTokens', 'outputTokens', 'cachedInputTokens',
+              'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+              'providerRequestId', 'usageReceiptId', 'attemptCount',
+              'failedAttemptCount', 'iterationCount', 'callReceipts'
+            ]::text[]
+          ) || jsonb_build_object('usageExpiredAt', NOW())
+          FROM expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `
+      : await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_events
+            WHERE type = 'run.model'
+              AND at < ${aiUsageCutoff}::timestamptz
+              AND payload ?| ARRAY[
+                'inputTokens', 'outputTokens', 'cachedInputTokens',
+                'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+                'providerRequestId', 'usageReceiptId', 'attemptCount',
+                'failedAttemptCount', 'iterationCount', 'callReceipts'
+              ]
+            ORDER BY at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          UPDATE omni_events target
+          SET payload = (
+            target.payload - ARRAY[
+              'inputTokens', 'outputTokens', 'cachedInputTokens',
+              'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+              'providerRequestId', 'usageReceiptId', 'attemptCount',
+              'failedAttemptCount', 'iterationCount', 'callReceipts'
+            ]::text[]
+          ) || jsonb_build_object('usageExpiredAt', NOW())
+          FROM expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `;
+    const aiUsageObservabilityEvents = tenantId
+      ? await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_observability_events
+            WHERE tenant_id = ${tenantId}
+              AND created_at < ${aiUsageCutoff}::timestamptz
+              AND metadata ?| ARRAY[
+                'usage', 'estimatedCostUsd', 'costKnown', 'attempts', 'turns',
+                'callReceipts', 'responseId', 'providerRequestId'
+              ]
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          UPDATE omni_observability_events target
+          SET metadata = (
+            target.metadata - ARRAY[
+              'usage', 'estimatedCostUsd', 'costKnown', 'attempts', 'turns',
+              'callReceipts', 'responseId', 'providerRequestId'
+            ]::text[]
+          ) || jsonb_build_object('usageExpiredAt', NOW())
+          FROM expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `
+      : await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_observability_events
+            WHERE created_at < ${aiUsageCutoff}::timestamptz
+              AND metadata ?| ARRAY[
+                'usage', 'estimatedCostUsd', 'costKnown', 'attempts', 'turns',
+                'callReceipts', 'responseId', 'providerRequestId'
+              ]
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          UPDATE omni_observability_events target
+          SET metadata = (
+            target.metadata - ARRAY[
+              'usage', 'estimatedCostUsd', 'costKnown', 'attempts', 'turns',
+              'callReceipts', 'responseId', 'providerRequestId'
+            ]::text[]
+          ) || jsonb_build_object('usageExpiredAt', NOW())
+          FROM expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `;
     const domainEvents = tenantId
       ? await transaction`
           WITH expired AS (
             SELECT ctid
             FROM omni_events
             WHERE tenant_id = ${tenantId}
+              AND type <> 'ai.usage.recorded'
               AND at < ${eventCutoff}::timestamptz
             ORDER BY at ASC
             FOR UPDATE SKIP LOCKED
@@ -811,7 +1052,8 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
           WITH expired AS (
             SELECT ctid
             FROM omni_events
-            WHERE at < ${eventCutoff}::timestamptz
+            WHERE type <> 'ai.usage.recorded'
+              AND at < ${eventCutoff}::timestamptz
             ORDER BY at ASC
             FOR UPDATE SKIP LOCKED
             LIMIT ${batchLimit}
@@ -994,6 +1236,11 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
         operationJobs: operationJobs.length,
         runs: runs.length,
         toolExecutions: toolExecutions.length,
+        aiUsage: aiUsage.length,
+        aiUsageEvents: aiUsageEvents.length,
+        aiUsageAgentEvents: aiUsageAgentEvents.length,
+        aiUsageRunEvents: aiUsageRunEvents.length,
+        aiUsageObservabilityEvents: aiUsageObservabilityEvents.length,
         domainEvents: domainEvents.length,
         observabilityEvents: observabilityEvents.length,
         healthChecks: healthChecks.length,
@@ -1217,6 +1464,11 @@ function emptyDeletedCounts(): RetentionSweepResult["deleted"] {
     operationJobs: 0,
     runs: 0,
     toolExecutions: 0,
+    aiUsage: 0,
+    aiUsageEvents: 0,
+    aiUsageAgentEvents: 0,
+    aiUsageRunEvents: 0,
+    aiUsageObservabilityEvents: 0,
     domainEvents: 0,
     observabilityEvents: 0,
     healthChecks: 0,

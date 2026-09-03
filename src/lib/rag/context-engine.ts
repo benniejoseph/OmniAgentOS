@@ -28,6 +28,7 @@ import type {
 } from "@/lib/rag/types";
 import { citationIdForEvidence } from "@/lib/rag/citations";
 import { redactSensitive } from "@/lib/security/context";
+import type { AiUsageScope } from "@/lib/usage/types";
 
 export type BuildContextPackOptions = {
   tenantId?: string;
@@ -46,6 +47,8 @@ export type BuildContextPackOptions = {
    * intentionally disables saved context for this task.
    */
   evidenceIds?: string[];
+  /** Trusted server-created attribution for the retrieval embedding call. */
+  usageScope?: AiUsageScope;
 };
 
 type RetrievalTraceLedger = {
@@ -122,7 +125,11 @@ export async function buildContextPack(
   }
 
   const retrievalQuery = profile.expandedQueries.join("\n");
-  const queryEmbedding = (await embedTexts([retrievalQuery || normalizedQuery]))?.[0];
+  const queryEmbedding = (await embedTexts(
+    [retrievalQuery || normalizedQuery],
+    undefined,
+    options.usageScope,
+  ))?.[0];
   const [memoryResults, knowledgeResults, graphResults] = await Promise.all([
     searchMemories(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId }),
     searchKnowledge(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId }),

@@ -72,6 +72,7 @@ export async function decomposeProject(input: {
   if (hasOpenAIKey()) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30_000);
+    const usageTenantId = project.tenantId?.trim() || input.tenantId?.trim();
     try {
       const output = await createStructuredResponse({
         name: "personal_project_plan",
@@ -87,6 +88,16 @@ export async function decomposeProject(input: {
           "Order tasks by dependency. For each task, dependsOn contains zero-based indices of earlier tasks only. Include verification as a final task. Keep titles action-oriented and details concrete.",
         ].join(" "),
         input: JSON.stringify(evidence),
+        ...(usageTenantId ? {
+          usageScope: {
+            tenantId: usageTenantId,
+            actorId: input.actorId,
+            sourceStreamId: `project:${project.id}`,
+            operation: "structured_generation" as const,
+            purpose: "project.decompose",
+            credentialSource: "deployment_environment" as const,
+          },
+        } : {}),
       });
       plan = planSchema.parse(JSON.parse(output));
       generatedBy = "ai";

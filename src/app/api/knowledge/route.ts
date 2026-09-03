@@ -47,7 +47,14 @@ async function GETHandler(request: Request) {
 
   if (query) {
     const safeQuery = String(redactSensitive(query));
-    const queryEmbedding = (await embedTexts([safeQuery]))?.[0];
+    const queryEmbedding = (await embedTexts([safeQuery], undefined, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      sourceStreamId: "api:knowledge",
+      operation: "embedding",
+      purpose: "api.knowledge.search",
+      credentialSource: "deployment_environment",
+    }))?.[0];
     return Response.json({
       results: (
         await searchKnowledge(safeQuery, {

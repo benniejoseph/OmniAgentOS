@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, hasAnthropicKey, hasGeminiKey, hasOpenAIKey } from "@/lib/config";
 import { getAgentLearningGuidance } from "@/lib/agents/learning";
 import {
@@ -15,6 +15,10 @@ import {
 } from "@/lib/capabilities/toolbox";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { generateModelToolTurn } from "@/lib/models/gateway";
+import {
+  getModelProviderResponseReceipt,
+  ModelProviderError,
+} from "@/lib/models/types";
 import {
   createMemoryAccessContext,
   usesDurableMemory,
@@ -91,6 +95,7 @@ import { executeGovernedTool } from "@/lib/tools/executor";
 import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { appendThreadTurn } from "@/lib/threads/store";
+import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
 
 const MAX_TOOL_RESULT_CHARS = 8_000;
@@ -290,6 +295,19 @@ export async function* runAgent(
           tenantId: request.tenantId,
           accessContext: memoryAccessContext,
           evidenceIds: request.contextSelection?.evidenceIds,
+          ...(request.actorId ? {
+            usageScope: {
+              tenantId: runTenantId,
+              actorId: request.actorId,
+              sourceStreamId: `run:${run.id}`,
+              operation: "embedding" as const,
+              purpose: "agent.context.retrieve",
+              correlationId: executionScope.correlationId,
+              causationId: executionScope.causationId || undefined,
+              executionScope,
+              credentialSource: "deployment_environment" as const,
+            },
+          } : {}),
         })
       : Promise.resolve(fallbackContextPack(query));
     const configuredToolIds = request.agentProfile ? [...new Set([
@@ -333,6 +351,19 @@ export async function* runAgent(
           contextSize: "low",
           maxSources: 4,
           abortSignal,
+          ...(request.actorId ? {
+            usageScope: {
+              tenantId: runTenantId,
+              actorId: request.actorId,
+              sourceStreamId: `run:${run.id}`,
+              operation: "web_search" as const,
+              purpose: "agent.web.prefetch",
+              correlationId: executionScope.correlationId,
+              causationId: executionScope.causationId || undefined,
+              executionScope,
+              credentialSource: "deployment_environment" as const,
+            },
+          } : {}),
         })
           .then((result) => ({ result }))
           .catch((error: unknown) => ({ error }))
@@ -534,6 +565,19 @@ export async function* runAgent(
         contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
         tenantId: request.tenantId,
         abortSignal,
+        ...(request.actorId
+          ? {
+              usageAttribution: {
+                tenantId: runTenantId,
+                actorId: request.actorId,
+                sourceStreamId: `run:${run.id}`,
+                correlationId: executionScope.correlationId,
+                causationId: executionScope.causationId || undefined,
+                executionScope,
+                credentialSource: "deployment_environment" as const,
+              },
+            }
+          : {}),
       });
       for (const contribution of councilContributions) {
         yield await emit({
@@ -595,25 +639,55 @@ export async function* runAgent(
           securityContext,
           executionScope,
           runId: run.id,
+          assignmentId: runtimeModel.assignmentId,
+          credentialSource: runtimeModel.source === "tenant_assignment"
+            ? "tenant_vault"
+            : "deployment_environment",
           abortSignal,
           forceApproval: agentToolPolicy?.forceApproval,
           bindModelRequest: (turnRequest) => runtimeModel.bind(turnRequest),
         });
         let result: NonOpenAIProviderLoopResult;
-        for (;;) {
-          const next = await providerLoop.next();
-          if (next.done) {
-            result = next.value;
-            break;
+        try {
+          for (;;) {
+            const next = await providerLoop.next();
+            if (next.done) {
+              result = next.value;
+              break;
+            }
+            const event = next.value;
+            if (event.type === "delta") {
+              response += event.text;
+              persistDelta(event.text);
+              yield event;
+            } else {
+              yield await emit(event.type === "model"
+                ? {
+                    ...event,
+                    assignmentId: runtimeModel.assignmentId,
+                    credentialSource: runtimeModel.source === "tenant_assignment"
+                      ? "tenant_vault"
+                      : "deployment_environment",
+                  }
+                : event);
+            }
           }
-          const event = next.value;
-          if (event.type === "delta") {
-            response += event.text;
-            persistDelta(event.text);
-            yield event;
-          } else {
-            yield await emit(event);
-          }
+        } catch (error) {
+          await recordAgentModelFailure({
+            tenantId: runTenantId,
+            actorId: request.actorId,
+            runId: run.id,
+            executionScope,
+            provider: modelRoute.provider,
+            model: modelRoute.model,
+            assignmentId: runtimeModel.assignmentId,
+            credentialSource: runtimeModel.source === "tenant_assignment"
+              ? "tenant_vault"
+              : "deployment_environment",
+            error,
+            requireProviderEvidence: true,
+          });
+          throw error;
         }
         citationSources = mergeCitationSources(
           citationSources,
@@ -621,21 +695,6 @@ export async function* runAgent(
         );
         const fallbackUsed = result.attempts.some((attempt) => attempt.status === "failed");
         const crossProviderFallbackUsed = result.provider !== modelRoute.provider;
-        yield await emit({
-          type: "model",
-          provider: result.provider,
-          model: result.model,
-          tier: modelRoute.tier,
-          inputTokens: result.usage.inputTokens,
-          outputTokens: result.usage.outputTokens,
-          cachedInputTokens: result.usage.cachedInputTokens,
-          totalTokens: result.usage.totalTokens,
-          latencyMs: result.latencyMs,
-          fallbackUsed,
-          estimatedCostUsd: result.estimatedCostUsd,
-          costKnown: result.costKnown,
-          iterationCount: result.turns,
-        });
         await recordRuntimeEventSafely({
           category: "api",
           action: `${result.provider}.response`,
@@ -728,6 +787,8 @@ export async function* runAgent(
         const turnInput: ResponseTurnInput =
           conversationItems ?? initialConversationItems;
         const channel = createDeltaChannel();
+        const turnStartedAt = Date.now();
+        const usageReceiptId = request.actorId ? randomUUID() : undefined;
         const turnPromise: ReturnType<typeof streamResponseTurn> = runtimeModel.withProviderApiKey(
           "openai",
           (apiKey) => streamResponseTurn({
@@ -741,8 +802,42 @@ export async function* runAgent(
             fallbackModel: modelRoute.fallbackModel,
             apiKey,
             onDelta: (text) => channel.push(text),
+            ...(request.actorId ? {
+              usageScope: {
+                tenantId: runTenantId,
+                actorId: request.actorId,
+                sourceStreamId: `run:${run.id}`,
+                operation: "tool_turn" as const,
+                purpose: "agent.turn",
+                correlationId: executionScope.correlationId,
+                causationId: executionScope.causationId || undefined,
+                executionScope,
+                assignmentId: runtimeModel.assignmentId,
+                credentialSource: runtimeModel.source === "tenant_assignment"
+                  ? "tenant_vault" as const
+                  : "deployment_environment" as const,
+              },
+              usageRecordId: usageReceiptId,
+            } : {}),
           }),
-        ).finally(() => channel.close());
+        ).catch(async (error) => {
+          await recordAgentModelFailure({
+            tenantId: runTenantId,
+            actorId: request.actorId,
+            runId: run.id,
+            executionScope,
+            provider: "openai",
+            model: modelRoute.model,
+            assignmentId: runtimeModel.assignmentId,
+            credentialSource: runtimeModel.source === "tenant_assignment"
+              ? "tenant_vault"
+              : "deployment_environment",
+            usageRecordId: usageReceiptId,
+            error,
+            latencyMs: Date.now() - turnStartedAt,
+          });
+          throw error;
+        }).finally(() => channel.close());
 
         for await (const text of channel.drain()) {
           response += text;
@@ -765,6 +860,28 @@ export async function* runAgent(
           estimatedCostUsd: turn.estimatedCostUsd,
           costKnown: turn.estimatedCostUsd !== undefined,
           iteration: toolSteps + 1,
+          attemptCount: turn.attempts.length,
+          failedAttemptCount: turn.attempts.filter(
+            (attempt) => attempt.status === "failed",
+          ).length,
+          callReceipts: turn.attempts.map((attempt) => ({
+            provider: attempt.provider,
+            model: attempt.model,
+            status: attempt.status,
+            usage: attempt.usage || {},
+            latencyMs: attempt.latencyMs,
+            estimatedCostUsd: attempt.estimatedCostUsd,
+            providerRequestId: attempt.providerRequestId,
+            failureKind: attempt.failureKind,
+            retryable: attempt.retryable,
+          })),
+          assignmentId: runtimeModel.assignmentId,
+          credentialSource: runtimeModel.source === "tenant_assignment"
+            ? "tenant_vault"
+            : "deployment_environment",
+          providerRequestId: turn.responseId,
+          usageReceiptRecorded: turn.usageReceiptRecorded,
+          usageReceiptId: turn.usageReceiptId,
         });
         await recordRuntimeEventSafely({
           category: "api",
@@ -1002,6 +1119,19 @@ export async function* runAgent(
           contributions: councilContributions,
           contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
           abortSignal,
+          ...(request.actorId
+            ? {
+                usageAttribution: {
+                  tenantId: runTenantId,
+                  actorId: request.actorId,
+                  sourceStreamId: `run:${run.id}`,
+                  correlationId: executionScope.correlationId,
+                  causationId: executionScope.causationId || undefined,
+                  executionScope,
+                  credentialSource: "deployment_environment" as const,
+                },
+              }
+            : {}),
         });
         if (!verdict.passed) {
           response = await reviseCouncilResponse({
@@ -1011,6 +1141,19 @@ export async function* runAgent(
             contributions: councilContributions,
             contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
             abortSignal,
+            ...(request.actorId
+              ? {
+                  usageAttribution: {
+                    tenantId: runTenantId,
+                    actorId: request.actorId,
+                    sourceStreamId: `run:${run.id}`,
+                    correlationId: executionScope.correlationId,
+                    causationId: executionScope.causationId || undefined,
+                    executionScope,
+                    credentialSource: "deployment_environment" as const,
+                  },
+                }
+              : {}),
           });
         }
         yield await emit({
@@ -1070,6 +1213,7 @@ export async function* runAgent(
       ? enqueueMemoryConsolidationSafely({
           runId: run.id,
           tenantId: request.tenantId,
+          actorId: request.actorId,
           mode,
           prompt: query,
           response,
@@ -1099,7 +1243,7 @@ export async function* runAgent(
 
 type NonOpenAIProviderLoopEvent = Extract<
   AgentEvent,
-  { type: "delta" | "status" | "tool" }
+  { type: "delta" | "status" | "tool" | "model" }
 >;
 
 type NonOpenAIProviderLoopResult = {
@@ -1116,6 +1260,7 @@ type NonOpenAIProviderLoopResult = {
   estimatedCostUsd?: number;
   costKnown: boolean;
   attempts: ModelAttemptReceipt[];
+  providerRequestId?: string;
   turns: number;
   toolSteps: number;
   citationSources: CitationSource[];
@@ -1145,6 +1290,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   securityContext: SecurityContext;
   executionScope?: ExecutionScope;
   runId: string;
+  assignmentId?: string;
+  credentialSource?: "tenant_vault" | "deployment_environment";
   abortSignal?: AbortSignal;
   forceApproval?: boolean;
   continuation?: ModelToolTurnResult["continuation"];
@@ -1172,6 +1319,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   let latencyMs = 0;
   let costKnown = true;
   let estimatedCostUsd = 0;
+  let providerRequestId: string | undefined;
   const attempts: ModelAttemptReceipt[] = [];
   const usage = {
     inputTokens: 0,
@@ -1195,6 +1343,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     } : {}),
     costKnown,
     attempts,
+    ...(turns === 1 && providerRequestId ? { providerRequestId } : {}),
     turns,
     toolSteps,
     citationSources,
@@ -1215,6 +1364,20 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       tools: toolsEnabled ? input.tools : [],
       continuation,
       toolResults,
+      usageScope: {
+        tenantId: input.securityContext.tenantId,
+        actorId:
+          input.executionScope?.initiatingActorId ||
+          input.securityContext.actorId,
+        sourceStreamId: `run:${input.runId}`,
+        operation: "tool_turn",
+        purpose: "agent.turn",
+        correlationId: input.executionScope?.correlationId || input.runId,
+        causationId: input.executionScope?.causationId || undefined,
+        executionScope: input.executionScope,
+        assignmentId: input.assignmentId,
+        credentialSource: input.credentialSource,
+      },
     };
     const turn = await generateTurn(
       input.bindModelRequest
@@ -1228,6 +1391,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
 
     turns += 1;
     model = turn.model;
+    providerRequestId = turn.providerRequestId;
     latencyMs += turn.latencyMs;
     attempts.push(...turn.attempts);
     usage.inputTokens += turn.usage.inputTokens;
@@ -1241,6 +1405,37 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     }
     continuation = turn.continuation;
 
+    yield {
+      type: "model",
+      provider: turn.provider === "local" ? undefined : turn.provider,
+      model: turn.model,
+      tier: input.tier,
+      inputTokens: turn.usage.inputTokens,
+      outputTokens: turn.usage.outputTokens,
+      cachedInputTokens: turn.usage.cachedInputTokens,
+      totalTokens: turn.usage.totalTokens,
+      latencyMs: turn.latencyMs,
+      fallbackUsed: turn.attempts.some((attempt) => attempt.status === "failed"),
+      estimatedCostUsd: turn.estimatedCostUsd,
+      costKnown: turn.costKnown,
+      iteration: turns,
+      attemptCount: turn.attempts.length,
+      failedAttemptCount: turn.attempts.filter((attempt) => attempt.status === "failed").length,
+      callReceipts: turn.attempts.map((attempt) => ({
+        provider: attempt.provider,
+        model: attempt.model,
+        status: attempt.status,
+        usage: attempt.usage || {},
+        latencyMs: attempt.latencyMs,
+        estimatedCostUsd: attempt.estimatedCostUsd,
+        providerRequestId: attempt.providerRequestId,
+        failureKind: attempt.failureKind,
+        retryable: attempt.retryable,
+      })),
+      providerRequestId: turn.providerRequestId,
+      usageReceiptRecorded: turn.usageReceiptRecorded,
+      usageReceiptId: turn.usageReceiptId,
+    };
     if (turn.text) {
       text += turn.text;
       yield { type: "delta", text: turn.text };
@@ -1830,26 +2025,102 @@ async function resumeAgentRunAfterToolApprovalInScope({
     conversationItems = [...conversationItems, ...carriedOutputs];
 
     for (;;) {
-      const turn = await resumeRuntimeModel.withProviderApiKey(
-        "openai",
-        (apiKey) => streamResponseTurn({
-          instructions: continuation.instructions,
-          input: conversationItems,
-          tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
-          abortSignal,
-          reasoningEffort: AGENT_REASONING_EFFORT,
-          maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      const turnStartedAt = Date.now();
+      const usageReceiptId = continuation.context.actorId ? randomUUID() : undefined;
+      let turn: Awaited<ReturnType<typeof streamResponseTurn>>;
+      try {
+        turn = await resumeRuntimeModel.withProviderApiKey(
+          "openai",
+          (apiKey) => streamResponseTurn({
+            instructions: continuation.instructions,
+            input: conversationItems,
+            tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
+            abortSignal,
+            reasoningEffort: AGENT_REASONING_EFFORT,
+            maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+            model: resumeModel,
+            apiKey: workspaceOpenAIAvailable ? apiKey : undefined,
+            usageScope: {
+              tenantId: normalizeTenantId(tenantId),
+              actorId: continuation.context.actorId,
+              sourceStreamId: `run:${run.id}`,
+              operation: "tool_turn",
+              purpose: "agent.turn",
+              correlationId: executionScope?.correlationId || run.id,
+              causationId: executionScope?.causationId || undefined,
+              executionScope,
+              assignmentId: resumeRuntimeModel.assignmentId,
+              credentialSource: resumeRuntimeModel.source === "tenant_assignment"
+                ? "tenant_vault"
+                : "deployment_environment",
+            },
+            usageRecordId: usageReceiptId,
+            onDelta: (text) => {
+              response += text;
+              pendingDeltaText += text;
+              if (pendingDeltaText.length >= 2_000 || Date.now() - lastDeltaFlush >= 750) {
+                queueDeltaWrite();
+              }
+            },
+          }),
+        );
+      } catch (error) {
+        await recordAgentModelFailure({
+          tenantId: normalizeTenantId(tenantId),
+          actorId: continuation.context.actorId,
+          runId: run.id,
+          executionScope,
+          provider: "openai",
           model: resumeModel,
-          apiKey: workspaceOpenAIAvailable ? apiKey : undefined,
-          onDelta: (text) => {
-            response += text;
-            pendingDeltaText += text;
-            if (pendingDeltaText.length >= 2_000 || Date.now() - lastDeltaFlush >= 750) {
-              queueDeltaWrite();
-            }
-          },
-        }),
-      );
+          assignmentId: resumeRuntimeModel.assignmentId,
+          credentialSource: resumeRuntimeModel.source === "tenant_assignment"
+            ? "tenant_vault"
+            : "deployment_environment",
+          usageRecordId: usageReceiptId,
+          error,
+          latencyMs: Date.now() - turnStartedAt,
+        });
+        throw error;
+      }
+
+      await flushDeltas();
+      await appendScopedRunEvent({
+        type: "model",
+        provider: "openai",
+        model: turn.model,
+        tier: resumeTier,
+        inputTokens: turn.usage.inputTokens,
+        outputTokens: turn.usage.outputTokens,
+        cachedInputTokens: turn.usage.cachedInputTokens,
+        totalTokens: turn.usage.totalTokens,
+        latencyMs: turn.latencyMs,
+        fallbackUsed: turn.fallbackUsed,
+        estimatedCostUsd: turn.estimatedCostUsd,
+        costKnown: turn.estimatedCostUsd !== undefined,
+        iteration: toolSteps + 1,
+        attemptCount: turn.attempts.length,
+        failedAttemptCount: turn.attempts.filter(
+          (attempt) => attempt.status === "failed",
+        ).length,
+        callReceipts: turn.attempts.map((attempt) => ({
+          provider: attempt.provider,
+          model: attempt.model,
+          status: attempt.status,
+          usage: attempt.usage || {},
+          latencyMs: attempt.latencyMs,
+          estimatedCostUsd: attempt.estimatedCostUsd,
+          providerRequestId: attempt.providerRequestId,
+          failureKind: attempt.failureKind,
+          retryable: attempt.retryable,
+        })),
+        assignmentId: resumeRuntimeModel.assignmentId,
+        credentialSource: resumeRuntimeModel.source === "tenant_assignment"
+          ? "tenant_vault"
+          : "deployment_environment",
+        providerRequestId: turn.responseId,
+        usageReceiptRecorded: turn.usageReceiptRecorded,
+        usageReceiptId: turn.usageReceiptId,
+      });
 
       if (!turn.functionCalls.length) {
         break;
@@ -2008,6 +2279,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       : enqueueMemoryConsolidationSafely({
           runId: run.id,
           tenantId: continuation.context.tenantId,
+          actorId: continuation.context.actorId,
           mode: run.mode,
           prompt: run.prompt,
           response,
@@ -2130,6 +2402,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
     }, { tenantId, actorId: continuation.context.actorId });
     return { resumed: false, reason: message };
   }
+  const resumeCredentialSource =
+    runtimeCarriesProvider && resumeRuntimeModel.source === "tenant_assignment"
+      ? "tenant_vault" as const
+      : "deployment_environment" as const;
 
   const claimed = await markAgentRunResuming(run.id);
   if (!claimed) {
@@ -2382,6 +2658,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
       },
       executionScope,
       runId: run.id,
+      assignmentId: resumeRuntimeModel.assignmentId,
+      credentialSource: resumeCredentialSource,
       abortSignal,
       forceApproval: continuation.toolPolicy?.forceApproval,
       continuation: providerState.continuation,
@@ -2392,26 +2670,48 @@ async function resumeProviderBoundAgentRunAfterApproval({
         : undefined,
     });
     let result: NonOpenAIProviderLoopResult;
-    for (;;) {
-      const next = await providerLoop.next();
-      if (next.done) {
-        result = next.value;
-        break;
-      }
-      const event = next.value;
-      if (event.type === "delta") {
-        response += event.text;
-        pendingDeltaText += event.text;
-        if (
-          pendingDeltaText.length >= 2_000 ||
-          Date.now() - lastDeltaFlush >= 750
-        ) {
-          queueDeltaWrite();
+    try {
+      for (;;) {
+        const next = await providerLoop.next();
+        if (next.done) {
+          result = next.value;
+          break;
         }
-      } else {
-        await flushDeltas();
-        await appendScopedRunEvent(event);
+        const event = next.value;
+        if (event.type === "delta") {
+          response += event.text;
+          pendingDeltaText += event.text;
+          if (
+            pendingDeltaText.length >= 2_000 ||
+            Date.now() - lastDeltaFlush >= 750
+          ) {
+            queueDeltaWrite();
+          }
+        } else {
+          await flushDeltas();
+          await appendScopedRunEvent(event.type === "model"
+            ? {
+                ...event,
+                assignmentId: resumeRuntimeModel.assignmentId,
+                credentialSource: resumeCredentialSource,
+              }
+            : event);
+        }
       }
+    } catch (error) {
+      await recordAgentModelFailure({
+        tenantId: normalizeTenantId(tenantId),
+        actorId: continuation.context.actorId,
+        runId: run.id,
+        executionScope,
+        provider: providerState.provider,
+        model: resumeModel,
+        assignmentId: resumeRuntimeModel.assignmentId,
+        credentialSource: resumeCredentialSource,
+        error,
+        requireProviderEvidence: true,
+      });
+      throw error;
     }
     toolSteps = result.toolSteps;
     citationSources = mergeCitationSources(
@@ -2422,20 +2722,6 @@ async function resumeProviderBoundAgentRunAfterApproval({
       (attempt) => attempt.status === "failed",
     );
     await flushDeltas();
-    await appendScopedRunEvent({
-      type: "model",
-      provider: result.provider,
-      model: result.model,
-      tier: providerState.tier,
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-      cachedInputTokens: result.usage.cachedInputTokens,
-      totalTokens: result.usage.totalTokens,
-      latencyMs: result.latencyMs,
-      fallbackUsed,
-      estimatedCostUsd: result.estimatedCostUsd,
-      costKnown: result.costKnown,
-    });
     await recordRuntimeEventSafely({
       category: "api",
       action: `${result.provider}.response`,
@@ -2485,6 +2771,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       : enqueueMemoryConsolidationSafely({
           runId: run.id,
           tenantId: continuation.context.tenantId,
+          actorId: continuation.context.actorId,
           mode: run.mode,
           prompt: run.prompt,
           response,
@@ -2940,6 +3227,130 @@ async function requirePreclaimedAgentRun(
     throw new Error("The durable specialist claim does not match its queued request.");
   }
   return run;
+}
+
+async function recordAgentModelFailure(input: {
+  tenantId: string;
+  actorId?: string;
+  runId: string;
+  executionScope?: ExecutionScope;
+  provider: "openai" | "google" | "anthropic" | "aws_bedrock";
+  model: string;
+  assignmentId?: string;
+  credentialSource: "tenant_vault" | "deployment_environment";
+  usageRecordId?: string;
+  error: unknown;
+  latencyMs?: number;
+  requireProviderEvidence?: boolean;
+}) {
+  const actorId = input.actorId?.trim();
+  if (!actorId) return;
+  if (
+    input.error &&
+    typeof input.error === "object" &&
+    (input.error as { usageReceiptRecorded?: unknown }).usageReceiptRecorded === true
+  ) {
+    return;
+  }
+  const attempts = modelAttemptsFromError(input.error);
+  const responseReceipt = getModelProviderResponseReceipt(input.error);
+  const errorUsageReceiptId = input.error && typeof input.error === "object"
+    ? (input.error as { usageReceiptId?: unknown }).usageReceiptId
+    : undefined;
+  const retryUsageReceiptId = input.usageRecordId ||
+    (typeof errorUsageReceiptId === "string" ? errorUsageReceiptId : undefined);
+  if (
+    input.requireProviderEvidence &&
+    !(input.error instanceof ModelProviderError) &&
+    !attempts.length
+  ) {
+    return;
+  }
+  const lastAttempt = attempts[attempts.length - 1];
+  const classified = input.error instanceof ModelProviderError
+    ? input.error
+    : getModelProvider(input.provider)?.classifyError(input.error);
+  const attemptsHaveUsage = attempts.some((attempt) => attempt.usage);
+  const usage = attemptsHaveUsage
+    ? attempts.reduce(
+        (total, attempt) => ({
+          inputTokens: total.inputTokens + (attempt.usage?.inputTokens || 0),
+          outputTokens: total.outputTokens + (attempt.usage?.outputTokens || 0),
+          cachedInputTokens:
+            total.cachedInputTokens + (attempt.usage?.cachedInputTokens || 0),
+          totalTokens: total.totalTokens + (attempt.usage?.totalTokens || 0),
+        }),
+        { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 },
+      )
+    : responseReceipt?.usage || {};
+  const attemptCostsKnown = attempts.length > 0 &&
+    attempts.every((attempt) => attempt.estimatedCostUsd !== undefined);
+  const estimatedCostUsd = attemptCostsKnown
+    ? Math.round(
+        attempts.reduce(
+          (total, attempt) => total + (attempt.estimatedCostUsd || 0),
+          0,
+        ) * 1_000_000,
+      ) / 1_000_000
+    : responseReceipt?.estimatedCostUsd;
+  await recordAiUsageSafely({
+    ...(retryUsageReceiptId ? { id: retryUsageReceiptId } : {}),
+    tenantId: normalizeTenantId(input.tenantId),
+    actorId,
+    sourceStreamId: `run:${input.runId}`,
+    operation: "tool_turn",
+    purpose: "agent.turn",
+    status: "failed",
+    provider: lastAttempt?.provider || classified?.provider || input.provider,
+    model: responseReceipt?.model || lastAttempt?.model || input.model,
+    usage,
+    providerCallCount: Math.max(attempts.length, 1),
+    attemptCount: Math.max(attempts.length, 1),
+    failedAttemptCount: Math.max(attempts.length, 1),
+    callReceipts: attempts.map((attempt) => ({
+      provider: attempt.provider,
+      model: attempt.model,
+      status: "failed" as const,
+      usage: attempt.usage || {},
+      latencyMs: attempt.latencyMs,
+      estimatedCostUsd: attempt.estimatedCostUsd,
+      providerRequestId: attempt.providerRequestId,
+      failureKind: attempt.failureKind,
+      retryable: attempt.retryable,
+    })),
+    latencyMs: input.latencyMs ?? responseReceipt?.latencyMs ?? attempts.reduce(
+      (total, attempt) => total + Math.max(0, attempt.latencyMs || 0),
+      0,
+    ),
+    estimatedCostUsd,
+    providerRequestId: responseReceipt?.providerRequestId,
+    assignmentId: input.assignmentId,
+    credentialSource: input.credentialSource,
+    correlationId: input.executionScope?.correlationId || input.runId,
+    causationId: input.executionScope?.causationId || undefined,
+    executionScope: input.executionScope,
+    failureKind:
+      lastAttempt?.failureKind ||
+      classified?.kind ||
+      (input.error instanceof DOMException && input.error.name === "AbortError"
+        ? "abort"
+        : "unknown"),
+    retryable: lastAttempt?.retryable ?? classified?.retryable,
+  });
+}
+
+function modelAttemptsFromError(error: unknown): ModelAttemptReceipt[] {
+  const attempts = error && typeof error === "object"
+    ? (error as { attempts?: unknown }).attempts
+    : undefined;
+  if (!Array.isArray(attempts)) return [];
+  return attempts.filter((attempt): attempt is ModelAttemptReceipt => Boolean(
+    attempt &&
+    typeof attempt === "object" &&
+    (attempt as { status?: unknown }).status === "failed" &&
+    typeof (attempt as { provider?: unknown }).provider === "string" &&
+    typeof (attempt as { model?: unknown }).model === "string",
+  ));
 }
 
 function normalizeRole(role?: string): SecurityRole {

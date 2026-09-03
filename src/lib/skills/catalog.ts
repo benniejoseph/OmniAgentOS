@@ -25,7 +25,7 @@ export const builtInSkills: AgentSkill[] = [
     id: "core.memory", tenantId: "system", actorId: "system", slug: "memory-curation", name: "Memory curation",
     description: "Retrieve, reconcile, and retain personal context with provenance and contradiction awareness.",
     instructions: "Prefer explicit user corrections and newer grounded claims. Preserve provenance, mark superseded information, and never turn uncertainty into a durable fact.",
-    category: "memory", status: "active", version: 1, toolIds: ["memory.search", "memory.write", "knowledge.search", "knowledge.ingest"], tags: ["memory", "provenance"], knowledgeTags: [], builtIn: true, createdAt, updatedAt: createdAt,
+    category: "memory", status: "active", version: 1, toolIds: ["memory.search", "memory.write", "memory.correct", "memory.forget", "knowledge.search", "knowledge.ingest"], tags: ["memory", "provenance"], knowledgeTags: [], builtIn: true, createdAt, updatedAt: createdAt,
   },
 ];
 
