@@ -5,6 +5,8 @@
 - [Product](vision/PRODUCT.md) — the earned-autonomy thesis and six pillars
 - [Business model](vision/BUSINESS_MODEL.md) — market, pricing, moat, GTM, roadmap
 - [Event-log substrate spec](vision/EVENT_LOG.md) — the M1 source-of-truth design
+- [Master implementation plan](vision/OMNIAGENT_MASTER_PLAN.md) — dependency-ordered core and client roadmap
+- [Execution scope inventory](vision/EXECUTION_SCOPE.md) — P0.1 ownership boundaries and compatibility rules
 
 ## Platform docs
 

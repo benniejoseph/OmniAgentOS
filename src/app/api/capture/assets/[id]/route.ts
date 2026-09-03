@@ -5,6 +5,7 @@ import {
   getCaptureAssetContent,
   updateCaptureAssetStatus,
 } from "@/lib/capture/assets";
+import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { CaptureFileError, captureTitle, extractCaptureFile } from "@/lib/capture/files";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -70,12 +71,17 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    context,
+    request,
+    "capture.asset.delete",
+  );
   try {
     const asset = await getCaptureAsset(id, context);
     if (!asset) return Response.json({ error: "Captured file not found." }, { status: 404 });
     await cancelIngestJob(asset.ingestJobId, context.tenantId);
     const forgotten = await deleteKnowledgeDocumentsBySourcePrefix(`capture:asset:${asset.id}`, { tenantId: context.tenantId });
-    await deleteCaptureAsset(id, context);
+    await deleteCaptureAsset(id, { ...context, executionScope });
     return Response.json({ deleted: true, forgotten }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
     return assetErrorResponse(error);
@@ -90,6 +96,11 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    context,
+    request,
+    "capture.asset.index",
+  );
   let body: unknown;
   try {
     body = await parseJsonBody(request);
@@ -116,6 +127,8 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
           sourceStreamId: `capture-asset:${asset.id}`,
           operation: "ocr",
           purpose: "capture.asset.extract",
+          correlationId: executionScope.correlationId,
+          executionScope,
           credentialSource: "deployment_environment",
         },
       );
@@ -133,6 +146,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     const job = await enqueueKnowledgeIngestJob({
       tenantId: context.tenantId,
       actorId: context.actorId,
+      executionScope,
       idempotencyKey: request.headers.get("idempotency-key")?.trim().slice(0, 200) || `capture-asset:${asset.id}`,
       request: {
         title,
@@ -144,13 +158,13 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
         evidenceRefs: [`capture-asset:${asset.id}`],
       },
     });
-    const updated = await updateCaptureAssetStatus(asset.id, context, { status: "queued", extractionStatus: "completed", ingestJobId: job.id });
+    const updated = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, { status: "queued", extractionStatus: "completed", ingestJobId: job.id });
     return Response.json({ asset: updated, job: projectOperationJobStatus(job) }, { status: 202, headers: { location: `/api/operations/jobs/${job.id}`, "retry-after": "2", "cache-control": "private, no-store" } });
   } catch (error) {
     if (error instanceof BackgroundJobIdempotencyConflictError) return Response.json({ error: error.message }, { status: 409 });
     if (error instanceof CaptureFileError) {
       const existing = await getCaptureAsset(id, context);
-      const asset = existing ? await updateCaptureAssetStatus(id, context, {
+      const asset = existing ? await updateCaptureAssetStatus(id, { ...context, executionScope }, {
         status: error.status === 415 ? "unsupported" : "failed",
         extractionStatus: error.status === 415 ? "unsupported" : "failed",
         error: error.message,

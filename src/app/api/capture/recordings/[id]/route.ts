@@ -5,6 +5,7 @@ import {
   getCaptureRecording,
   updateCaptureRecording,
 } from "@/lib/capture/recordings";
+import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { deleteKnowledgeDocumentsBySourcePrefix } from "@/lib/rag/store";
@@ -47,6 +48,11 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    context,
+    request,
+    "capture.recording.update",
+  );
   let body: unknown;
   try {
     body = await parseJsonBody(request);
@@ -56,7 +62,13 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   const parsed = updateRecordingSchema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid recording details.", details: parsed.error.flatten() }, { status: 400 });
   try {
-    return Response.json({ recording: await updateCaptureRecording(id, context, parsed.data) }, { headers: { "cache-control": "private, no-store" } });
+    return Response.json({
+      recording: await updateCaptureRecording(
+        id,
+        { ...context, executionScope },
+        parsed.data,
+      ),
+    }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
     return captureErrorResponse(error);
   }
@@ -70,6 +82,11 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    context,
+    request,
+    "capture.recording.delete",
+  );
   try {
     const recording = await getCaptureRecording(id, context);
     if (!recording) return Response.json({ error: "Recording not found." }, { status: 404 });
@@ -78,7 +95,7 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
       if (job?.dedupeKey) await cancelOperationJobByDedupeKey(job.dedupeKey, "Captured recording deleted by its owner.", { tenantId: context.tenantId });
     }
     const forgotten = await deleteKnowledgeDocumentsBySourcePrefix(recording.source, { tenantId: context.tenantId });
-    await deleteCaptureRecording(id, context);
+    await deleteCaptureRecording(id, { ...context, executionScope });
     return Response.json({ deleted: true, forgotten }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
     return captureErrorResponse(error);

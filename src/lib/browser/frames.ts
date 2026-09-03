@@ -13,6 +13,11 @@ import {
 import { isOmniAgentPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { getMcpConnector, parseMcpToolId } from "@/lib/connectors/store";
 import { appendDomainEventSafely } from "@/lib/events/store";
+import {
+  assertExecutionScopeTenant,
+  deriveExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 
 const INTERNAL_KIND = "browserFrame";
@@ -58,6 +63,7 @@ export async function captureBrowserFrameAfterToolSafely(input: {
   toolInput: Record<string, unknown>;
   toolResult?: unknown;
   executionId: string;
+  executionScope: ExecutionScope;
   context?: SecurityContext;
   sessionScope?: McpSessionScope;
   abortSignal?: AbortSignal;
@@ -65,6 +71,17 @@ export async function captureBrowserFrameAfterToolSafely(input: {
   const scope = input.sessionScope;
   const runId = scope ? agentRunId(scope.executionId) : undefined;
   if (!scope || !runId) return undefined;
+  let executionScope: ExecutionScope;
+  try {
+    executionScope = deriveExecutionScope(input.executionScope, {
+      executingPrincipalType: "system",
+      executingPrincipalId: "browser-frame-recorder",
+      causationId: input.executionId,
+      purpose: "browser.frame.capture",
+    });
+  } catch {
+    return undefined;
+  }
 
   let parsed: ReturnType<typeof parseMcpToolId>;
   try {
@@ -79,7 +96,7 @@ export async function captureBrowserFrameAfterToolSafely(input: {
   if (!sensitiveEntry && !CAPTURED_OPERATIONS.has(operation)) return undefined;
 
   try {
-    assertMatchingScope(scope, input.context);
+    assertMatchingScope(scope, executionScope, input.context);
     const connector = await getMcpConnector(parsed.connectorId, {
       tenantId: scope.tenantId,
     });
@@ -94,6 +111,7 @@ export async function captureBrowserFrameAfterToolSafely(input: {
       await appendFrameEvent({
         runId,
         scope,
+        executionScope,
         type: "browser.frame.suppressed",
         payload: {
           executionId: input.executionId,
@@ -129,6 +147,7 @@ export async function captureBrowserFrameAfterToolSafely(input: {
     const asset = await saveCaptureAsset({
       tenantId: scope.tenantId,
       actorId: scope.actorId,
+      executionScope,
       filename: `browser-${runId}-${Date.now()}.${extensionForMime(image.mimeType)}`,
       mediaType: image.mimeType,
       bytes,
@@ -147,6 +166,7 @@ export async function captureBrowserFrameAfterToolSafely(input: {
     await appendFrameEvent({
       runId,
       scope,
+      executionScope,
       type: "browser.frame.captured",
       payload: {
         assetId: asset.id,
@@ -157,12 +177,13 @@ export async function captureBrowserFrameAfterToolSafely(input: {
         pageOrigin,
       },
     });
-    await pruneRunFrames(runId, scope).catch(() => undefined);
+    await pruneRunFrames(runId, scope, executionScope).catch(() => undefined);
     return frame;
   } catch (error) {
     await appendFrameEvent({
       runId,
       scope,
+      executionScope,
       type: "browser.frame.failed",
       payload: {
         executionId: input.executionId,
@@ -229,7 +250,11 @@ function browserFrameFromAsset(
   };
 }
 
-async function pruneRunFrames(runId: string, scope: McpSessionScope) {
+async function pruneRunFrames(
+  runId: string,
+  scope: McpSessionScope,
+  executionScope: ExecutionScope,
+) {
   const frames = await listInternalCaptureAssets(
     { tenantId: scope.tenantId, actorId: scope.actorId },
     {
@@ -244,6 +269,10 @@ async function pruneRunFrames(runId: string, scope: McpSessionScope) {
       deleteCaptureAsset(frame.id, {
         tenantId: scope.tenantId,
         actorId: scope.actorId,
+        executionScope: deriveExecutionScope(executionScope, {
+          causationId: frame.id,
+          purpose: "browser.frame.retention_prune",
+        }),
       }),
     ),
   );
@@ -252,6 +281,7 @@ async function pruneRunFrames(runId: string, scope: McpSessionScope) {
 async function appendFrameEvent(input: {
   runId: string;
   scope: McpSessionScope;
+  executionScope: ExecutionScope;
   type: "browser.frame.captured" | "browser.frame.failed" | "browser.frame.suppressed";
   payload: Record<string, unknown>;
 }) {
@@ -260,9 +290,10 @@ async function appendFrameEvent(input: {
     type: input.type,
     tenantId: input.scope.tenantId,
     actorId: input.scope.actorId,
-    causationId: stringMetadata(input.payload, "executionId"),
-    correlationId: input.runId,
+    causationId: input.executionScope.causationId || undefined,
+    correlationId: input.executionScope.correlationId,
     payload: input.payload,
+    executionScope: input.executionScope,
   });
 }
 
@@ -367,7 +398,15 @@ function agentRunId(executionId: string) {
   return /^[a-zA-Z0-9_-]{1,200}$/.test(value) ? value : undefined;
 }
 
-function assertMatchingScope(scope: McpSessionScope, context?: SecurityContext) {
+function assertMatchingScope(
+  scope: McpSessionScope,
+  executionScope: ExecutionScope,
+  context?: SecurityContext,
+) {
+  assertExecutionScopeTenant(executionScope, normalizeTenant(scope.tenantId));
+  if (executionScope.initiatingActorId !== scope.actorId.trim()) {
+    throw new Error("Browser evidence execution scope did not match the tool actor.");
+  }
   if (context?.tenantId && normalizeTenant(context.tenantId) !== normalizeTenant(scope.tenantId)) {
     throw new Error("Browser evidence scope did not match the tool tenant.");
   }

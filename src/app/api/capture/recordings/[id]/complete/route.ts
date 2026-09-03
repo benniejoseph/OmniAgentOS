@@ -3,6 +3,7 @@ import {
   markCaptureRecordingIngestQueued,
   prepareCaptureRecordingCompletion,
 } from "@/lib/capture/recordings";
+import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   BackgroundJobIdempotencyConflictError,
@@ -22,14 +23,23 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    context,
+    request,
+    "capture.recording.complete_and_index",
+  );
   try {
-    const recording = await prepareCaptureRecordingCompletion(id, context);
+    const recording = await prepareCaptureRecordingCompletion(id, {
+      ...context,
+      executionScope,
+    });
     if (recording.ingestJobId) {
       return Response.json({ recording, job: { id: recording.ingestJobId } }, { headers: { "cache-control": "private, no-store" } });
     }
     const job = await enqueueKnowledgeIngestJob({
       tenantId: context.tenantId,
       actorId: context.actorId,
+      executionScope,
       idempotencyKey: `capture-recording:${recording.id}`,
       request: {
         title: recording.title,
@@ -49,7 +59,11 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
         evidenceRefs: [`capture-recording:${recording.id}`],
       },
     });
-    const updated = await markCaptureRecordingIngestQueued(recording.id, context, job.id);
+    const updated = await markCaptureRecordingIngestQueued(
+      recording.id,
+      { ...context, executionScope },
+      job.id,
+    );
     return Response.json({
       recording: updated,
       job: projectOperationJobStatus(job),

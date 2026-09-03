@@ -3,6 +3,8 @@ import { ConnectorContractReviewConflictError } from "@/lib/connectors/contract-
 import { promoteMcpContracts } from "@/lib/connectors/store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { createRequestTelemetry } from "@/lib/observability/store";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -18,6 +20,7 @@ async function POSTHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
+  const telemetry = createRequestTelemetry(request, "mcp_connector_contract");
   const { id } = await context.params;
   let body: unknown;
   try {
@@ -52,7 +55,13 @@ async function POSTHandler(
         connectorId: id,
         expectedFingerprint: parsed.data.expectedFingerprint,
       },
-      { tenantId: securityContext.tenantId },
+      {
+        executionScope: executionScopeFromSecurityContext(securityContext, {
+          correlationId: telemetry.correlationId,
+          causationId: id,
+          purpose: "connector.mcp.contracts.review",
+        }),
+      },
     );
     if (!result) {
       return Response.json({ error: "MCP connector not found." }, { status: 404 });

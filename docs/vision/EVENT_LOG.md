@@ -19,6 +19,12 @@ database privileges do not prohibit update/delete, and file mode rewrites and
 caps its ledger. WORM/object-lock controls and retention remain deployment
 responsibilities until later stages explicitly implement them.
 
+New P0.1 mutation paths use `appendScopedDomainEvent`, which requires an
+`ExecutionScope` and derives tenant, actor, correlation, and causation from it.
+Immutable `*.scope_bound` events are retained outside the transient file-event
+cap. Legacy dual-writes continue through the compatibility writer only until
+their owning store is migrated.
+
 ## Event shape
 
 ```ts

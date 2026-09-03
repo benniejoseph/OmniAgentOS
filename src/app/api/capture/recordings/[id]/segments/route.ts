@@ -10,6 +10,7 @@ import {
   saveCaptureSegment,
   updateCaptureSegmentTranscription,
 } from "@/lib/capture/recordings";
+import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -64,6 +65,11 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    context,
+    request,
+    "capture.recording.segment.append_and_transcribe",
+  );
   let form: FormData;
   try {
     form = await request.formData();
@@ -83,6 +89,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   try {
     const saved = await saveCaptureSegment({
       ...context,
+      executionScope,
       recordingId: id,
       segmentIndex,
       durationMs,
@@ -100,10 +107,13 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
         sourceStreamId: `capture-recording:${id}`,
         operation: "transcription",
         purpose: "capture.recording.segment.transcribe",
+        correlationId: executionScope.correlationId,
+        executionScope,
         credentialSource: "deployment_environment",
       });
       const segment = await updateCaptureSegmentTranscription({
         ...context,
+        executionScope,
         recordingId: id,
         segmentIndex,
         status: "completed",
@@ -113,6 +123,9 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
       await recordRuntimeEventSafely({
         category: "api",
         action: "capture.segment.transcribed",
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        correlationId: executionScope.correlationId,
         resourceType: "capture_recording",
         resourceId: id,
         durationMs: Date.now() - startedAt,
@@ -123,6 +136,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     } catch (error) {
       const segment = await updateCaptureSegmentTranscription({
         ...context,
+        executionScope,
         recordingId: id,
         segmentIndex,
         status: "failed",

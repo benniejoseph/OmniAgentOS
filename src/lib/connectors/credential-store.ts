@@ -5,7 +5,12 @@ import {
   hasDatabaseUrl,
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
-import { appendDomainEventSafely } from "@/lib/events/store";
+import { appendScopedDomainEvent } from "@/lib/events/store";
+import {
+  assertExecutionScopeTenant,
+  parsePersistedExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import {
   openCredentialBundle,
   sealCredentialBundle,
@@ -62,12 +67,16 @@ export class McpCredentialStoreError extends Error {
 
 export async function storeMcpBearerCredential(input: {
   tenantId: string;
-  actorId: string;
   connectorId: string;
   endpoint: string;
   bearerToken: string;
+  executionScope: ExecutionScope;
 }) {
-  requireTenantActor(input.tenantId, input.actorId);
+  const executionScope = requireCredentialMutationScope(
+    input.executionScope,
+    input.tenantId,
+  );
+  const actorId = requireCredentialActor(executionScope);
   validateBearerToken(input.bearerToken);
   const expectedOrigin = mcpCredentialEndpointOrigin(input.endpoint);
 
@@ -117,8 +126,8 @@ export async function storeMcpBearerCredential(input: {
               credential_fingerprint = ${fingerprint},
               credential_origin = ${expectedOrigin},
               sealed_credential = ${sealedCredential}::jsonb,
-              credential_created_by = COALESCE(credential_created_by, ${input.actorId}),
-              credential_rotated_by = ${input.actorId},
+              credential_created_by = COALESCE(credential_created_by, ${actorId}),
+              credential_rotated_by = ${actorId},
               credential_created_at = COALESCE(credential_created_at, ${now}),
               credential_rotated_at = ${now},
               status = 'disabled',
@@ -202,8 +211,8 @@ export async function storeMcpBearerCredential(input: {
           keyId: sealedCredential.keyId,
           fingerprint: mcpBearerFingerprint(input.bearerToken),
           sealedCredential,
-          createdBy: existing?.createdBy || input.actorId,
-          rotatedBy: input.actorId,
+          createdBy: existing?.createdBy || actorId,
+          rotatedBy: actorId,
           createdAt: existing?.createdAt || now,
           rotatedAt: now,
         };
@@ -247,23 +256,29 @@ export async function storeMcpBearerCredential(input: {
   });
 
   await credentialEvent({
-    tenantId: input.tenantId,
-    actorId: input.actorId,
     connectorId: input.connectorId,
     type: result.rotated
       ? "connector.mcp.credential_rotated"
       : "connector.mcp.credential_saved",
+    executionScope,
+    credentialAction: result.rotated ? "rotated" : "saved",
     credentialVersion: result.credential.version,
+    credentialFingerprint: result.credential.fingerprint,
+    credentialOrigin: expectedOrigin,
   });
   return result;
 }
 
 export async function removeMcpBearerCredential(input: {
   tenantId: string;
-  actorId: string;
   connectorId: string;
+  executionScope: ExecutionScope;
 }) {
-  requireTenantActor(input.tenantId, input.actorId);
+  const executionScope = requireCredentialMutationScope(
+    input.executionScope,
+    input.tenantId,
+  );
+  const actorId = requireCredentialActor(executionScope);
 
   const result = await runWithDatabaseTenantScope(input.tenantId, async () => {
     if (hasDatabaseUrl()) {
@@ -307,7 +322,7 @@ export async function removeMcpBearerCredential(input: {
               credential_fingerprint = NULL,
               credential_origin = NULL,
               sealed_credential = NULL,
-              credential_rotated_by = ${input.actorId},
+              credential_rotated_by = ${actorId},
               credential_rotated_at = ${now},
               status = 'disabled',
               tool_count = 0,
@@ -381,8 +396,8 @@ export async function removeMcpBearerCredential(input: {
             connectorId: input.connectorId,
             tenantId: input.tenantId,
             version: credentialVersion || 1,
-            createdBy: existing?.createdBy || input.actorId,
-            rotatedBy: input.actorId,
+            createdBy: existing?.createdBy || actorId,
+            rotatedBy: actorId,
             createdAt: existing?.createdAt || now,
             rotatedAt: now,
           },
@@ -418,11 +433,12 @@ export async function removeMcpBearerCredential(input: {
   });
 
   await credentialEvent({
-    tenantId: input.tenantId,
-    actorId: input.actorId,
     connectorId: input.connectorId,
     type: "connector.mcp.credential_removed",
+    executionScope,
+    credentialAction: "removed",
     credentialVersion: result.credential.version,
+    removed: result.removed,
   });
   return result;
 }
@@ -675,13 +691,47 @@ function normalizeDate(value: unknown) {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-function requireTenantActor(tenantId: string, actorId: string) {
-  if (!tenantId.trim() || !actorId.trim()) {
+function requireCredentialMutationScope(
+  candidate: ExecutionScope | undefined,
+  tenantId: string,
+) {
+  const executionScope = parsePersistedExecutionScope(candidate);
+  if (!executionScope) {
     throw new McpCredentialStoreError(
-      "Tenant and actor identity are required for MCP credential changes.",
+      "MCP credential mutations require a trusted execution scope.",
       400,
     );
   }
+  try {
+    assertExecutionScopeTenant(executionScope, tenantId);
+  } catch {
+    throw new McpCredentialStoreError(
+      "MCP credential execution scope does not match the authorized tenant.",
+      400,
+    );
+  }
+  if (!executionScope.executingPrincipalId) {
+    throw new McpCredentialStoreError(
+      "MCP credential mutations require an executing principal.",
+      400,
+    );
+  }
+  return executionScope;
+}
+
+function requireCredentialActor(executionScope: ExecutionScope) {
+  const actorId = executionScope.initiatingActorId?.trim();
+  if (
+    !actorId ||
+    executionScope.executingPrincipalType !== "user" ||
+    executionScope.executingPrincipalId !== actorId
+  ) {
+    throw new McpCredentialStoreError(
+      "MCP credential mutations require an authenticated user scope.",
+      400,
+    );
+  }
+  return actorId;
 }
 
 function sameTenant(value: string | undefined, tenantId: string) {
@@ -689,20 +739,34 @@ function sameTenant(value: string | undefined, tenantId: string) {
 }
 
 async function credentialEvent(input: {
-  tenantId: string;
-  actorId: string;
   connectorId: string;
-  type: string;
+  type:
+    | "connector.mcp.credential_saved"
+    | "connector.mcp.credential_rotated"
+    | "connector.mcp.credential_removed";
+  executionScope: ExecutionScope;
+  credentialAction: "saved" | "rotated" | "removed";
   credentialVersion?: number;
+  credentialFingerprint?: string;
+  credentialOrigin?: string;
+  removed?: boolean;
 }) {
-  await appendDomainEventSafely({
-    streamId: `mcp-connector:${input.connectorId}`,
+  const executionScope = requireCredentialMutationScope(
+    input.executionScope,
+    input.executionScope.tenantId,
+  );
+  await appendScopedDomainEvent({
+    streamId: `connector:${input.connectorId}`,
     type: input.type,
-    tenantId: input.tenantId,
-    actorId: input.actorId,
+    executionScope,
     payload: {
+      schemaVersion: 1,
       connectorId: input.connectorId,
+      credentialAction: input.credentialAction,
       credentialVersion: input.credentialVersion,
+      credentialFingerprint: input.credentialFingerprint,
+      credentialOrigin: input.credentialOrigin,
+      removed: input.removed,
     },
   });
 }

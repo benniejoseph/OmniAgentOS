@@ -2,7 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import { appendScopedDomainEvent } from "@/lib/events/store";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  assertExecutionScopeTenant,
+  parsePersistedExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type { CaptureAsset, CaptureAssetStatus } from "@/lib/capture/types";
@@ -12,6 +18,25 @@ type CaptureAssetLedger = {
 };
 
 type Owner = { tenantId: string; actorId: string };
+type ScopedOwner = Owner & { executionScope: ExecutionScope };
+type CaptureAssetEventPayload = {
+  schemaVersion: 1;
+  assetId: string;
+  contentSha256?: string;
+  byteCount?: number;
+  status?: CaptureAssetStatus;
+  previousStatus?: CaptureAssetStatus;
+  extractionStatus?: CaptureAsset["extractionStatus"];
+  previousExtractionStatus?: CaptureAsset["extractionStatus"];
+  ingestJobId?: string;
+  knowledgeDocumentId?: string;
+  errorSha256?: string;
+  errorByteCount?: number;
+  scopeVersion?: ExecutionScope["version"];
+  scopeSha256?: string;
+};
+
+const CAPTURE_ASSET_EVENT_SCHEMA_VERSION = 1 as const;
 export const MAX_CAPTURE_ASSET_BYTES = 20 * 1024 * 1024;
 
 export type InternalCaptureAssetQuery = {
@@ -28,13 +53,14 @@ export class CaptureAssetError extends Error {
   }
 }
 
-export async function saveCaptureAsset(input: Owner & {
+export async function saveCaptureAsset(input: ScopedOwner & {
   filename: string;
   mediaType: string;
   bytes: Uint8Array;
   tags?: string[];
   metadata?: Record<string, unknown>;
 }) {
+  const executionScope = requireCaptureAssetMutationScope(input);
   if (!input.bytes.byteLength) throw new CaptureAssetError("The selected file is empty.");
   if (input.bytes.byteLength > MAX_CAPTURE_ASSET_BYTES) throw new CaptureAssetError("Stored files must be 20 MB or smaller.", 413);
   const now = new Date().toISOString();
@@ -58,23 +84,36 @@ export async function saveCaptureAsset(input: Owner & {
   };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      INSERT INTO omni_capture_assets (
-        id, tenant_id, actor_id, filename, media_type, extension, byte_count,
-        content_sha256, storage_kind, content, status, extraction_status, tags,
-        metadata, created_at, updated_at
-      ) VALUES (
-        ${asset.id}, ${asset.tenantId}, ${asset.actorId}, ${asset.filename},
-        ${asset.mediaType}, ${asset.extension}, ${asset.byteCount},
-        ${asset.contentSha256}, 'database', ${Buffer.from(input.bytes)},
-        ${asset.status}, ${asset.extractionStatus}, ${asset.tags},
-        ${asset.metadata}::jsonb, ${now}, ${now}
-      ) RETURNING id, tenant_id, actor_id, filename, media_type, extension,
-        byte_count, content_sha256, storage_kind, status, extraction_status,
-        ingest_job_id, knowledge_document_id, error, tags, metadata, created_at,
-        updated_at
-    `;
-    return assetFromRow(rows[0]);
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        INSERT INTO omni_capture_assets (
+          id, tenant_id, actor_id, filename, media_type, extension, byte_count,
+          content_sha256, storage_kind, content, status, extraction_status, tags,
+          metadata, created_at, updated_at
+        ) VALUES (
+          ${asset.id}, ${asset.tenantId}, ${asset.actorId}, ${asset.filename},
+          ${asset.mediaType}, ${asset.extension}, ${asset.byteCount},
+          ${asset.contentSha256}, 'database', ${Buffer.from(input.bytes)},
+          ${asset.status}, ${asset.extractionStatus}, ${asset.tags},
+          ${asset.metadata}::jsonb, ${now}, ${now}
+        ) RETURNING id, tenant_id, actor_id, filename, media_type, extension,
+          byte_count, content_sha256, storage_kind, status, extraction_status,
+          ingest_job_id, knowledge_document_id, error, tags, metadata, created_at,
+          updated_at
+      `;
+      const saved = assetFromRow(rows[0]);
+      await appendCaptureAssetEvent(saved, executionScope, "capture_asset.scope_bound", {
+        schemaVersion: CAPTURE_ASSET_EVENT_SCHEMA_VERSION,
+        assetId: saved.id,
+        contentSha256: saved.contentSha256,
+        byteCount: saved.byteCount,
+        status: saved.status,
+        extractionStatus: saved.extractionStatus,
+        scopeVersion: executionScope.version,
+        scopeSha256: sha256Json(executionScope),
+      }, { sql });
+      return saved;
+    }) as Promise<CaptureAsset>;
   }
   const directory = getAssetDirectory(asset.id);
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -83,6 +122,16 @@ export async function saveCaptureAsset(input: Owner & {
   await updateJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] }, (ledger) => ({
     assets: [{ ...asset, contentPath }, ...ledger.assets],
   }));
+  await appendCaptureAssetEvent(asset, executionScope, "capture_asset.scope_bound", {
+    schemaVersion: CAPTURE_ASSET_EVENT_SCHEMA_VERSION,
+    assetId: asset.id,
+    contentSha256: asset.contentSha256,
+    byteCount: asset.byteCount,
+    status: asset.status,
+    extractionStatus: asset.extractionStatus,
+    scopeVersion: executionScope.version,
+    scopeSha256: sha256Json(executionScope),
+  });
   return asset;
 }
 
@@ -218,49 +267,117 @@ export async function getCaptureAssetContent(id: string, owner: Owner) {
   return { asset, bytes: await readFile(stored.contentPath) };
 }
 
-export async function updateCaptureAssetStatus(id: string, owner: Owner, input: {
+export async function updateCaptureAssetStatus(id: string, owner: ScopedOwner, input: {
   status: CaptureAssetStatus;
   extractionStatus: CaptureAsset["extractionStatus"];
   ingestJobId?: string;
   knowledgeDocumentId?: string;
   error?: string;
 }) {
+  const executionScope = requireCaptureAssetMutationScope(owner);
   const asset = await requireCaptureAsset(id, owner);
   const now = new Date().toISOString();
   const error = safeText(input.error, 1_000);
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`
-      UPDATE omni_capture_assets
-      SET status = ${input.status}, extraction_status = ${input.extractionStatus},
-        ingest_job_id = ${input.ingestJobId || null},
-        knowledge_document_id = ${input.knowledgeDocumentId || null},
-        error = ${error || null}, updated_at = ${now}
-      WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId} AND actor_id = ${asset.actorId}
-      RETURNING id, tenant_id, actor_id, filename, media_type, extension,
-        byte_count, content_sha256, storage_kind, status, extraction_status,
-        ingest_job_id, knowledge_document_id, error, tags, metadata, created_at,
-        updated_at
-    `;
-    return assetFromRow(rows[0]);
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_capture_assets
+        SET status = ${input.status}, extraction_status = ${input.extractionStatus},
+          ingest_job_id = ${input.ingestJobId || null},
+          knowledge_document_id = ${input.knowledgeDocumentId || null},
+          error = ${error || null}, updated_at = ${now}
+        WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId} AND actor_id = ${asset.actorId}
+        RETURNING id, tenant_id, actor_id, filename, media_type, extension,
+          byte_count, content_sha256, storage_kind, status, extraction_status,
+          ingest_job_id, knowledge_document_id, error, tags, metadata, created_at,
+          updated_at
+      `;
+      const updated = assetFromRow(rows[0]);
+      await appendCaptureAssetStatusEvent(asset, updated, executionScope, error, { sql });
+      return updated;
+    }) as Promise<CaptureAsset>;
   }
   const next: CaptureAsset = { ...asset, ...input, error: error || undefined, updatedAt: now };
   await updateJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] }, (ledger) => ({
     assets: ledger.assets.map((item) => item.id === asset.id && item.actorId === asset.actorId ? { ...item, ...next, contentPath: item.contentPath } : item),
   }));
+  await appendCaptureAssetStatusEvent(asset, next, executionScope, error);
   return next;
 }
 
-export async function deleteCaptureAsset(id: string, owner: Owner) {
+export async function deleteCaptureAsset(id: string, owner: ScopedOwner) {
+  const executionScope = requireCaptureAssetMutationScope(owner);
   const asset = await requireCaptureAsset(id, owner);
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`DELETE FROM omni_capture_assets WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId} AND actor_id = ${asset.actorId} RETURNING id`;
-    return Boolean(rows[0]);
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`DELETE FROM omni_capture_assets WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId} AND actor_id = ${asset.actorId} RETURNING id`;
+      if (!rows[0]) return false;
+      await appendCaptureAssetEvent(asset, executionScope, "capture_asset.deleted", {
+        schemaVersion: CAPTURE_ASSET_EVENT_SCHEMA_VERSION,
+        assetId: asset.id,
+        contentSha256: asset.contentSha256,
+        byteCount: asset.byteCount,
+        previousStatus: asset.status,
+        previousExtractionStatus: asset.extractionStatus,
+        ingestJobId: asset.ingestJobId,
+        knowledgeDocumentId: asset.knowledgeDocumentId,
+      }, { sql });
+      return true;
+    }) as Promise<boolean>;
   }
   await updateJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] }, (ledger) => ({
     assets: ledger.assets.filter((item) => !(item.id === asset.id && item.tenantId === asset.tenantId && item.actorId === asset.actorId)),
   }));
   await rm(getAssetDirectory(asset.id), { recursive: true, force: true }).catch(() => undefined);
+  await appendCaptureAssetEvent(asset, executionScope, "capture_asset.deleted", {
+    schemaVersion: CAPTURE_ASSET_EVENT_SCHEMA_VERSION,
+    assetId: asset.id,
+    contentSha256: asset.contentSha256,
+    byteCount: asset.byteCount,
+    previousStatus: asset.status,
+    previousExtractionStatus: asset.extractionStatus,
+    ingestJobId: asset.ingestJobId,
+    knowledgeDocumentId: asset.knowledgeDocumentId,
+  });
   return true;
+}
+
+async function appendCaptureAssetStatusEvent(
+  previous: CaptureAsset,
+  next: CaptureAsset,
+  executionScope: ExecutionScope,
+  error: string,
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
+  await appendCaptureAssetEvent(next, executionScope, "capture_asset.status_changed", {
+    schemaVersion: CAPTURE_ASSET_EVENT_SCHEMA_VERSION,
+    assetId: next.id,
+    contentSha256: next.contentSha256,
+    byteCount: next.byteCount,
+    previousStatus: previous.status,
+    status: next.status,
+    previousExtractionStatus: previous.extractionStatus,
+    extractionStatus: next.extractionStatus,
+    ingestJobId: next.ingestJobId,
+    knowledgeDocumentId: next.knowledgeDocumentId,
+    errorSha256: error ? sha256Text(error) : undefined,
+    errorByteCount: error ? Buffer.byteLength(error, "utf8") : undefined,
+  }, options);
+}
+
+async function appendCaptureAssetEvent(
+  asset: Pick<CaptureAsset, "id" | "tenantId" | "actorId">,
+  executionScope: ExecutionScope,
+  type: "capture_asset.scope_bound" | "capture_asset.status_changed" | "capture_asset.deleted",
+  payload: CaptureAssetEventPayload,
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
+  await appendScopedDomainEvent({
+    streamId: `capture-asset:${asset.id}`,
+    type,
+    payload,
+    executionScope,
+  }, options);
 }
 
 async function requireCaptureAsset(id: string, owner: Owner) {
@@ -303,3 +420,26 @@ function safeText(value: unknown, limit: number) { return String(redactSensitive
 function safeMetadataLookup(value: string, label: string) { const normalized = value.trim(); if (!/^[a-zA-Z][a-zA-Z0-9]{0,63}$/.test(normalized)) throw new CaptureAssetError(`Invalid ${label}.`); return normalized; }
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function optionalString(value: unknown) { const text = String(value || "").trim(); return text || undefined; }
+function sha256Text(value: string) { return createHash("sha256").update(value).digest("hex"); }
+function sha256Json(value: unknown) { return sha256Text(JSON.stringify(value)); }
+
+function requireCaptureAssetMutationScope(owner: ScopedOwner) {
+  const executionScope = parsePersistedExecutionScope(owner.executionScope);
+  if (!executionScope) throw new Error("Capture asset mutation requires a trusted execution scope.");
+  const tenantId = normalizeTenantId(owner.tenantId);
+  const actorId = normalizeActorId(owner.actorId);
+  assertExecutionScopeTenant(executionScope, tenantId);
+  if (executionScope.initiatingActorId !== actorId) {
+    throw new Error("Capture asset execution scope does not match the authorized actor.");
+  }
+  if (!executionScope.executingPrincipalId) {
+    throw new Error("Capture asset execution scope requires an executing principal.");
+  }
+  if (
+    executionScope.executingPrincipalType === "user" &&
+    executionScope.executingPrincipalId !== actorId
+  ) {
+    throw new Error("Capture asset user principal does not match the authorized actor.");
+  }
+  return executionScope;
+}

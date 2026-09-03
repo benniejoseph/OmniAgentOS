@@ -6,7 +6,13 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
+import { appendScopedDomainEvent } from "@/lib/events/store";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  assertExecutionScopeTenant,
+  parsePersistedExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type {
@@ -28,6 +34,43 @@ type CaptureLedger = {
 };
 
 type Owner = { tenantId: string; actorId: string };
+type ScopedOwner = Owner & { executionScope: ExecutionScope };
+type CaptureRecordingEventPayload = {
+  schemaVersion: 1;
+  recordingId: string;
+  status?: CaptureRecordingStatus;
+  previousStatus?: CaptureRecordingStatus;
+  byteCount?: number;
+  segmentCount?: number;
+  transcriptSha256?: string;
+  transcriptByteCount?: number;
+  detailsSha256?: string;
+  ingestJobId?: string;
+  knowledgeDocumentId?: string;
+  errorSha256?: string;
+  errorByteCount?: number;
+  scopeVersion?: ExecutionScope["version"];
+  scopeSha256?: string;
+};
+type CaptureSegmentEventPayload = {
+  schemaVersion: 1;
+  segmentId: string;
+  recordingId: string;
+  segmentIndex: number;
+  audioSha256?: string;
+  byteCount?: number;
+  transcriptionStatus?: CaptureTranscriptionStatus;
+  previousTranscriptionStatus?: CaptureTranscriptionStatus;
+  transcriptSha256?: string;
+  transcriptByteCount?: number;
+  modelSha256?: string;
+  errorSha256?: string;
+  errorByteCount?: number;
+  scopeVersion?: ExecutionScope["version"];
+  scopeSha256?: string;
+};
+
+const CAPTURE_EVENT_SCHEMA_VERSION = 1 as const;
 
 export class CaptureRecordingError extends Error {
   constructor(
@@ -40,12 +83,13 @@ export class CaptureRecordingError extends Error {
   }
 }
 
-export async function createCaptureRecording(input: Owner & {
+export async function createCaptureRecording(input: ScopedOwner & {
   title?: string;
   language?: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
 }) {
+  const executionScope = requireCaptureRecordingMutationScope(input);
   const now = new Date().toISOString();
   const id = randomUUID();
   const recording: CaptureRecording = {
@@ -69,28 +113,51 @@ export async function createCaptureRecording(input: Owner & {
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      INSERT INTO omni_capture_recordings (
-        id, tenant_id, actor_id, title, status, language, tags, started_at,
-        duration_ms, byte_count, segment_count, transcript, source, metadata,
-        created_at, updated_at
-      ) VALUES (
-        ${recording.id}, ${recording.tenantId}, ${recording.actorId},
-        ${recording.title}, ${recording.status}, ${recording.language},
-        ${recording.tags}, ${recording.startedAt}, ${recording.durationMs},
-        ${recording.byteCount}, ${recording.segmentCount}, ${recording.transcript},
-        ${recording.source}, ${recording.metadata}::jsonb, ${recording.createdAt},
-        ${recording.updatedAt}
-      )
-      RETURNING *
-    `;
-    return recordingFromRow(rows[0]);
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        INSERT INTO omni_capture_recordings (
+          id, tenant_id, actor_id, title, status, language, tags, started_at,
+          duration_ms, byte_count, segment_count, transcript, source, metadata,
+          created_at, updated_at
+        ) VALUES (
+          ${recording.id}, ${recording.tenantId}, ${recording.actorId},
+          ${recording.title}, ${recording.status}, ${recording.language},
+          ${recording.tags}, ${recording.startedAt}, ${recording.durationMs},
+          ${recording.byteCount}, ${recording.segmentCount}, ${recording.transcript},
+          ${recording.source}, ${recording.metadata}::jsonb, ${recording.createdAt},
+          ${recording.updatedAt}
+        )
+        RETURNING *
+      `;
+      const saved = recordingFromRow(rows[0]);
+      await appendCaptureRecordingEvent(saved.id, executionScope, "capture_recording.scope_bound", {
+        schemaVersion: CAPTURE_EVENT_SCHEMA_VERSION,
+        recordingId: saved.id,
+        status: saved.status,
+        byteCount: saved.byteCount,
+        segmentCount: saved.segmentCount,
+        detailsSha256: captureRecordingDetailsSha256(saved),
+        scopeVersion: executionScope.version,
+        scopeSha256: sha256Json(executionScope),
+      }, { sql });
+      return saved;
+    }) as Promise<CaptureRecording>;
   }
 
   await updateJsonFile<CaptureLedger>(getCaptureLedgerFile(), emptyLedger(), (ledger) => ({
     recordings: [recording, ...ledger.recordings],
     segments: ledger.segments,
   }));
+  await appendCaptureRecordingEvent(recording.id, executionScope, "capture_recording.scope_bound", {
+    schemaVersion: CAPTURE_EVENT_SCHEMA_VERSION,
+    recordingId: recording.id,
+    status: recording.status,
+    byteCount: recording.byteCount,
+    segmentCount: recording.segmentCount,
+    detailsSha256: captureRecordingDetailsSha256(recording),
+    scopeVersion: executionScope.version,
+    scopeSha256: sha256Json(executionScope),
+  });
   return recording;
 }
 
@@ -174,11 +241,12 @@ export async function resolveCaptureRecordingActorForIngestJob(
   return recording?.actorId;
 }
 
-export async function updateCaptureRecording(id: string, owner: Owner, input: {
+export async function updateCaptureRecording(id: string, owner: ScopedOwner, input: {
   title?: string;
   tags?: string[];
   language?: string;
 }) {
+  const executionScope = requireCaptureRecordingMutationScope(owner);
   const current = await requireCaptureRecording(id, owner);
   const updatedAt = new Date().toISOString();
   const next = {
@@ -189,22 +257,27 @@ export async function updateCaptureRecording(id: string, owner: Owner, input: {
     updatedAt,
   };
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`
-      UPDATE omni_capture_recordings
-      SET title = ${next.title}, tags = ${next.tags}, language = ${next.language}, updated_at = ${updatedAt}
-      WHERE id = ${current.id} AND tenant_id = ${current.tenantId} AND actor_id = ${current.actorId}
-      RETURNING *
-    `;
-    return recordingFromRow(rows[0]);
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_capture_recordings
+        SET title = ${next.title}, tags = ${next.tags}, language = ${next.language}, updated_at = ${updatedAt}
+        WHERE id = ${current.id} AND tenant_id = ${current.tenantId} AND actor_id = ${current.actorId}
+        RETURNING *
+      `;
+      const updated = recordingFromRow(rows[0]);
+      await appendCaptureRecordingDetailsEvent(updated, executionScope, { sql });
+      return updated;
+    }) as Promise<CaptureRecording>;
   }
   await updateJsonFile<CaptureLedger>(getCaptureLedgerFile(), emptyLedger(), (ledger) => ({
     ...ledger,
     recordings: ledger.recordings.map((item) => item.id === current.id && item.tenantId === current.tenantId && item.actorId === current.actorId ? stripSegments(next) : item),
   }));
+  await appendCaptureRecordingDetailsEvent(stripSegments(next), executionScope);
   return stripSegments(next);
 }
 
-export async function saveCaptureSegment(input: Owner & {
+export async function saveCaptureSegment(input: ScopedOwner & {
   recordingId: string;
   segmentIndex: number;
   mimeType: string;
@@ -212,6 +285,7 @@ export async function saveCaptureSegment(input: Owner & {
   durationMs?: number;
   metadata?: Record<string, unknown>;
 }) {
+  const executionScope = requireCaptureRecordingMutationScope(input);
   const recording = await requireCaptureRecording(input.recordingId, input);
   if (recording.status !== "recording") {
     throw new CaptureRecordingError("This recording is already being finalized.", 409, "recording_closed");
@@ -293,7 +367,19 @@ export async function saveCaptureSegment(input: Owner & {
       if (!updated[0]) {
         throw new CaptureRecordingError("This recording is closed or reached its storage limit.", 409, "recording_closed");
       }
-      return { segment: segmentFromRow(inserted[0]), created: true };
+      const saved = segmentFromRow(inserted[0]);
+      await appendCaptureSegmentEvent(saved, executionScope, "capture_segment.scope_bound", {
+        schemaVersion: CAPTURE_EVENT_SCHEMA_VERSION,
+        segmentId: saved.id,
+        recordingId: saved.recordingId,
+        segmentIndex: saved.segmentIndex,
+        audioSha256: saved.audioSha256,
+        byteCount: saved.byteCount,
+        transcriptionStatus: saved.transcriptionStatus,
+        scopeVersion: executionScope.version,
+        scopeSha256: sha256Json(executionScope),
+      }, { sql });
+      return { segment: saved, created: true };
     });
     return result as { segment: CaptureSegment; created: boolean };
   }
@@ -322,10 +408,23 @@ export async function saveCaptureSegment(input: Owner & {
     };
   });
   if (!result.created) await rm(audioPath, { force: true }).catch(() => undefined);
+  if (result.created) {
+    await appendCaptureSegmentEvent(result.segment, executionScope, "capture_segment.scope_bound", {
+      schemaVersion: CAPTURE_EVENT_SCHEMA_VERSION,
+      segmentId: result.segment.id,
+      recordingId: result.segment.recordingId,
+      segmentIndex: result.segment.segmentIndex,
+      audioSha256: result.segment.audioSha256,
+      byteCount: result.segment.byteCount,
+      transcriptionStatus: result.segment.transcriptionStatus,
+      scopeVersion: executionScope.version,
+      scopeSha256: sha256Json(executionScope),
+    });
+  }
   return result;
 }
 
-export async function updateCaptureSegmentTranscription(input: Owner & {
+export async function updateCaptureSegmentTranscription(input: ScopedOwner & {
   recordingId: string;
   segmentIndex: number;
   status: CaptureTranscriptionStatus;
@@ -333,25 +432,32 @@ export async function updateCaptureSegmentTranscription(input: Owner & {
   model?: string;
   error?: string;
 }) {
+  const executionScope = requireCaptureRecordingMutationScope(input);
   const recording = await requireCaptureRecording(input.recordingId, input);
+  const previous = recording.segments.find((segment) => segment.segmentIndex === input.segmentIndex);
+  if (!previous) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
   const now = new Date().toISOString();
   const transcript = safeTranscript(input.transcript || "");
   const model = safeShort(input.model, 160);
   const error = safeShort(input.error, 1_000);
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`
-      UPDATE omni_capture_segments
-      SET transcript = ${transcript}, transcription_status = ${input.status},
-          transcription_model = ${model || null}, transcription_error = ${error || null},
-          updated_at = ${now}
-      WHERE tenant_id = ${recording.tenantId} AND actor_id = ${recording.actorId}
-        AND recording_id = ${recording.id} AND segment_index = ${input.segmentIndex}
-      RETURNING id, tenant_id, actor_id, recording_id, segment_index, mime_type,
-        byte_count, duration_ms, audio_sha256, transcript, transcription_status,
-        transcription_model, transcription_error, metadata, created_at, updated_at
-    `;
-    if (!rows[0]) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
-    return segmentFromRow(rows[0]);
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_capture_segments
+        SET transcript = ${transcript}, transcription_status = ${input.status},
+            transcription_model = ${model || null}, transcription_error = ${error || null},
+            updated_at = ${now}
+        WHERE tenant_id = ${recording.tenantId} AND actor_id = ${recording.actorId}
+          AND recording_id = ${recording.id} AND segment_index = ${input.segmentIndex}
+        RETURNING id, tenant_id, actor_id, recording_id, segment_index, mime_type,
+          byte_count, duration_ms, audio_sha256, transcript, transcription_status,
+          transcription_model, transcription_error, metadata, created_at, updated_at
+      `;
+      if (!rows[0]) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
+      const updated = segmentFromRow(rows[0]);
+      await appendCaptureSegmentTranscriptionEvent(previous, updated, executionScope, { sql });
+      return updated;
+    }) as Promise<CaptureSegment>;
   }
   let updated: CaptureSegment | undefined;
   await updateJsonFile<CaptureLedger>(getCaptureLedgerFile(), emptyLedger(), (ledger) => ({
@@ -364,6 +470,7 @@ export async function updateCaptureSegmentTranscription(input: Owner & {
     }),
   }));
   if (!updated) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
+  await appendCaptureSegmentTranscriptionEvent(previous, updated, executionScope);
   return updated;
 }
 
@@ -391,7 +498,8 @@ export async function getCaptureSegmentAudio(recordingId: string, segmentIndex: 
   return { bytes: await readFile(segment.audioPath), mimeType: segment.mimeType, byteCount: segment.byteCount, sha256: segment.audioSha256 };
 }
 
-export async function prepareCaptureRecordingCompletion(id: string, owner: Owner) {
+export async function prepareCaptureRecordingCompletion(id: string, owner: ScopedOwner) {
+  const executionScope = requireCaptureRecordingMutationScope(owner);
   const detail = await requireCaptureRecording(id, owner);
   if (detail.status === "ready" && detail.ingestJobId) return detail;
   const usable = detail.segments.filter((segment) => segment.transcriptionStatus === "completed" && segment.transcript.trim());
@@ -404,46 +512,58 @@ export async function prepareCaptureRecordingCompletion(id: string, owner: Owner
   const completedAt = new Date().toISOString();
   const status: CaptureRecordingStatus = "processing";
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`
-      UPDATE omni_capture_recordings
-      SET status = ${status}, transcript = ${transcript}, completed_at = ${completedAt}, updated_at = ${completedAt}
-      WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId} AND actor_id = ${detail.actorId}
-      RETURNING *
-    `;
-    return { ...recordingFromRow(rows[0]), segments: detail.segments };
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_capture_recordings
+        SET status = ${status}, transcript = ${transcript}, completed_at = ${completedAt}, updated_at = ${completedAt}
+        WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId} AND actor_id = ${detail.actorId}
+        RETURNING *
+      `;
+      const updated = recordingFromRow(rows[0]);
+      await appendCaptureRecordingStatusEvent(detail, updated, executionScope, undefined, { sql });
+      return { ...updated, segments: detail.segments };
+    }) as Promise<CaptureRecordingDetail>;
   }
   const next = { ...stripSegments(detail), status, transcript, completedAt, updatedAt: completedAt };
   await updateJsonFile<CaptureLedger>(getCaptureLedgerFile(), emptyLedger(), (ledger) => ({
     ...ledger,
     recordings: ledger.recordings.map((item) => item.id === detail.id && item.actorId === detail.actorId ? next : item),
   }));
+  await appendCaptureRecordingStatusEvent(detail, next, executionScope);
   return { ...next, segments: detail.segments };
 }
 
-export async function markCaptureRecordingIngestQueued(id: string, owner: Owner, ingestJobId: string) {
+export async function markCaptureRecordingIngestQueued(id: string, owner: ScopedOwner, ingestJobId: string) {
+  const executionScope = requireCaptureRecordingMutationScope(owner);
   const detail = await requireCaptureRecording(id, owner);
   const now = new Date().toISOString();
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`
-      UPDATE omni_capture_recordings
-      SET ingest_job_id = ${ingestJobId}, status = 'processing', updated_at = ${now}
-      WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId} AND actor_id = ${detail.actorId}
-      RETURNING *
-    `;
-    return recordingFromRow(rows[0]);
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_capture_recordings
+        SET ingest_job_id = ${ingestJobId}, status = 'processing', updated_at = ${now}
+        WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId} AND actor_id = ${detail.actorId}
+        RETURNING *
+      `;
+      const updated = recordingFromRow(rows[0]);
+      await appendCaptureRecordingStatusEvent(detail, updated, executionScope, undefined, { sql });
+      return updated;
+    }) as Promise<CaptureRecording>;
   }
   const next: CaptureRecording = { ...stripSegments(detail), ingestJobId, status: "processing", updatedAt: now };
   await updateJsonFile<CaptureLedger>(getCaptureLedgerFile(), emptyLedger(), (ledger) => ({
     ...ledger,
     recordings: ledger.recordings.map((item) => item.id === detail.id && item.actorId === detail.actorId ? next : item),
   }));
+  await appendCaptureRecordingStatusEvent(detail, next, executionScope);
   return next;
 }
 
-export async function markCaptureRecordingIndexed(id: string, owner: Owner, input: {
+export async function markCaptureRecordingIndexed(id: string, owner: ScopedOwner, input: {
   knowledgeDocumentId?: string;
   error?: string;
 }) {
+  const executionScope = requireCaptureRecordingMutationScope(owner);
   const detail = await requireCaptureRecording(id, owner);
   const now = new Date().toISOString();
   const status: CaptureRecordingStatus = input.error ? "failed" : "ready";
@@ -452,35 +572,174 @@ export async function markCaptureRecordingIndexed(id: string, owner: Owner, inpu
   if (error) metadata.ingestError = error;
   else delete metadata.ingestError;
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`
-      UPDATE omni_capture_recordings
-      SET status = ${status}, knowledge_document_id = ${input.knowledgeDocumentId || null},
-          metadata = ${metadata}::jsonb, updated_at = ${now}
-      WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId} AND actor_id = ${detail.actorId}
-      RETURNING *
-    `;
-    return recordingFromRow(rows[0]);
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_capture_recordings
+        SET status = ${status}, knowledge_document_id = ${input.knowledgeDocumentId || null},
+            metadata = ${metadata}::jsonb, updated_at = ${now}
+        WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId} AND actor_id = ${detail.actorId}
+        RETURNING *
+      `;
+      const updated = recordingFromRow(rows[0]);
+      await appendCaptureRecordingStatusEvent(detail, updated, executionScope, error, { sql });
+      return updated;
+    }) as Promise<CaptureRecording>;
   }
   const next: CaptureRecording = { ...stripSegments(detail), status, knowledgeDocumentId: input.knowledgeDocumentId, metadata, updatedAt: now };
   await updateJsonFile<CaptureLedger>(getCaptureLedgerFile(), emptyLedger(), (ledger) => ({
     ...ledger,
     recordings: ledger.recordings.map((item) => item.id === detail.id && item.actorId === detail.actorId ? next : item),
   }));
+  await appendCaptureRecordingStatusEvent(detail, next, executionScope, error);
   return next;
 }
 
-export async function deleteCaptureRecording(id: string, owner: Owner) {
+export async function deleteCaptureRecording(id: string, owner: ScopedOwner) {
+  const executionScope = requireCaptureRecordingMutationScope(owner);
   const detail = await requireCaptureRecording(id, owner);
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`DELETE FROM omni_capture_recordings WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId} AND actor_id = ${detail.actorId} RETURNING id`;
-    return Boolean(rows[0]);
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`DELETE FROM omni_capture_recordings WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId} AND actor_id = ${detail.actorId} RETURNING id`;
+      if (!rows[0]) return false;
+      await appendCaptureRecordingEvent(detail.id, executionScope, "capture_recording.deleted", captureRecordingReferencePayload(detail, {
+        previousStatus: detail.status,
+      }), { sql });
+      return true;
+    }) as Promise<boolean>;
   }
   await updateJsonFile<CaptureLedger>(getCaptureLedgerFile(), emptyLedger(), (ledger) => ({
     recordings: ledger.recordings.filter((item) => !(item.id === detail.id && item.tenantId === detail.tenantId && item.actorId === detail.actorId)),
     segments: ledger.segments.filter((item) => !(item.recordingId === detail.id && item.tenantId === detail.tenantId && item.actorId === detail.actorId)),
   }));
   await rm(getCaptureAudioDirectory(detail.id), { recursive: true, force: true }).catch(() => undefined);
+  await appendCaptureRecordingEvent(detail.id, executionScope, "capture_recording.deleted", captureRecordingReferencePayload(detail, {
+    previousStatus: detail.status,
+  }));
   return true;
+}
+
+async function appendCaptureRecordingDetailsEvent(
+  recording: CaptureRecording,
+  executionScope: ExecutionScope,
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
+  await appendCaptureRecordingEvent(
+    recording.id,
+    executionScope,
+    "capture_recording.details_changed",
+    captureRecordingReferencePayload(recording, {
+      status: recording.status,
+      detailsSha256: captureRecordingDetailsSha256(recording),
+    }),
+    options,
+  );
+}
+
+async function appendCaptureRecordingStatusEvent(
+  previous: CaptureRecording,
+  next: CaptureRecording,
+  executionScope: ExecutionScope,
+  error?: string,
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
+  await appendCaptureRecordingEvent(
+    next.id,
+    executionScope,
+    "capture_recording.status_changed",
+    captureRecordingReferencePayload(next, {
+      previousStatus: previous.status,
+      status: next.status,
+      ingestJobId: next.ingestJobId,
+      knowledgeDocumentId: next.knowledgeDocumentId,
+      errorSha256: error ? sha256Text(error) : undefined,
+      errorByteCount: error ? Buffer.byteLength(error, "utf8") : undefined,
+    }),
+    options,
+  );
+}
+
+function captureRecordingReferencePayload(
+  recording: CaptureRecording,
+  additional: Partial<CaptureRecordingEventPayload> = {},
+): CaptureRecordingEventPayload {
+  return {
+    schemaVersion: CAPTURE_EVENT_SCHEMA_VERSION,
+    recordingId: recording.id,
+    byteCount: recording.byteCount,
+    segmentCount: recording.segmentCount,
+    transcriptSha256: recording.transcript ? sha256Text(recording.transcript) : undefined,
+    transcriptByteCount: recording.transcript
+      ? Buffer.byteLength(recording.transcript, "utf8")
+      : 0,
+    ...additional,
+  };
+}
+
+async function appendCaptureRecordingEvent(
+  recordingId: string,
+  executionScope: ExecutionScope,
+  type:
+    | "capture_recording.scope_bound"
+    | "capture_recording.details_changed"
+    | "capture_recording.status_changed"
+    | "capture_recording.deleted",
+  payload: CaptureRecordingEventPayload,
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
+  await appendScopedDomainEvent({
+    streamId: `capture-recording:${recordingId}`,
+    type,
+    payload,
+    executionScope,
+  }, options);
+}
+
+async function appendCaptureSegmentTranscriptionEvent(
+  previous: CaptureSegment,
+  next: CaptureSegment,
+  executionScope: ExecutionScope,
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
+  const error = next.transcriptionError || "";
+  const model = next.transcriptionModel || "";
+  await appendCaptureSegmentEvent(
+    next,
+    executionScope,
+    "capture_segment.transcription_changed",
+    {
+      schemaVersion: CAPTURE_EVENT_SCHEMA_VERSION,
+      segmentId: next.id,
+      recordingId: next.recordingId,
+      segmentIndex: next.segmentIndex,
+      audioSha256: next.audioSha256,
+      byteCount: next.byteCount,
+      previousTranscriptionStatus: previous.transcriptionStatus,
+      transcriptionStatus: next.transcriptionStatus,
+      transcriptSha256: next.transcript ? sha256Text(next.transcript) : undefined,
+      transcriptByteCount: next.transcript
+        ? Buffer.byteLength(next.transcript, "utf8")
+        : 0,
+      modelSha256: model ? sha256Text(model) : undefined,
+      errorSha256: error ? sha256Text(error) : undefined,
+      errorByteCount: error ? Buffer.byteLength(error, "utf8") : undefined,
+    },
+    options,
+  );
+}
+
+async function appendCaptureSegmentEvent(
+  segment: Pick<CaptureSegment, "id">,
+  executionScope: ExecutionScope,
+  type: "capture_segment.scope_bound" | "capture_segment.transcription_changed",
+  payload: CaptureSegmentEventPayload,
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
+  await appendScopedDomainEvent({
+    streamId: `capture-segment:${segment.id}`,
+    type,
+    payload,
+    executionScope,
+  }, options);
 }
 
 async function requireCaptureRecording(id: string, owner: Owner) {
@@ -562,3 +821,33 @@ function optionalString(value: unknown) { const text = String(value || "").trim(
 function iso(value: unknown) { return new Date(String(value)).toISOString(); }
 function optionalIso(value: unknown) { return value ? iso(value) : undefined; }
 function formatCaptureDate(value: string) { return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(value)); }
+function sha256Text(value: string) { return createHash("sha256").update(value).digest("hex"); }
+function sha256Json(value: unknown) { return sha256Text(JSON.stringify(value)); }
+function captureRecordingDetailsSha256(recording: CaptureRecording) {
+  return sha256Json({
+    title: recording.title,
+    language: recording.language,
+    tags: recording.tags,
+  });
+}
+
+function requireCaptureRecordingMutationScope(owner: ScopedOwner) {
+  const executionScope = parsePersistedExecutionScope(owner.executionScope);
+  if (!executionScope) throw new Error("Capture recording mutation requires a trusted execution scope.");
+  const tenantId = normalizeTenantId(owner.tenantId);
+  const actorId = normalizeActorId(owner.actorId);
+  assertExecutionScopeTenant(executionScope, tenantId);
+  if (executionScope.initiatingActorId !== actorId) {
+    throw new Error("Capture recording execution scope does not match the authorized actor.");
+  }
+  if (!executionScope.executingPrincipalId) {
+    throw new Error("Capture recording execution scope requires an executing principal.");
+  }
+  if (
+    executionScope.executingPrincipalType === "user" &&
+    executionScope.executingPrincipalId !== actorId
+  ) {
+    throw new Error("Capture recording user principal does not match the authorized actor.");
+  }
+  return executionScope;
+}

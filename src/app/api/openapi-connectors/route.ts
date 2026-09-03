@@ -12,6 +12,8 @@ import {
   saveOpenApiImport,
 } from "@/lib/connectors/openapi-store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { createRequestTelemetry } from "@/lib/observability/store";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { assertPublicHttpUrl } from "@/lib/security/network";
 
@@ -113,6 +115,7 @@ async function GETHandler(request: Request) {
 }
 
 async function POSTHandler(request: Request) {
+  const telemetry = createRequestTelemetry(request, "openapi_connector");
   let body: unknown;
   try {
     body = await parseJsonBody(request, 4_100_000);
@@ -187,6 +190,12 @@ async function POSTHandler(request: Request) {
       defaultRiskLevel: parsed.data.defaultRiskLevel ?? 2,
       approvalRequired: parsed.data.approvalRequired ?? true,
     }),
+    {
+      executionScope: executionScopeFromSecurityContext(context, {
+        correlationId: telemetry.correlationId,
+        purpose: "connector.openapi.create",
+      }),
+    },
   );
 
   if (!parsed.data.importSpec) {
@@ -216,6 +225,12 @@ async function POSTHandler(request: Request) {
       specHash: imported.specHash,
       baseUrl: imported.baseUrl,
       info: imported.info,
+    }, {
+      executionScope: executionScopeFromSecurityContext(context, {
+        correlationId: telemetry.correlationId,
+        causationId: connector.id,
+        purpose: "connector.openapi.import",
+      }),
     });
     return Response.json(
       {
@@ -234,7 +249,17 @@ async function POSTHandler(request: Request) {
     const message = error instanceof Error ? error.message : "OpenAPI import failed.";
     return Response.json(
       {
-        connector: redactOpenApiConnector(await recordOpenApiConnectorError(connector, message)),
+        connector: redactOpenApiConnector(await recordOpenApiConnectorError(
+          connector,
+          message,
+          {
+            executionScope: executionScopeFromSecurityContext(context, {
+              correlationId: telemetry.correlationId,
+              causationId: connector.id,
+              purpose: "connector.openapi.import_error.record",
+            }),
+          },
+        )),
         operations: [],
         error: message,
       },

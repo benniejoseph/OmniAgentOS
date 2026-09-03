@@ -9,6 +9,7 @@ import {
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { assertPublicHttpUrl } from "@/lib/security/network";
 
@@ -178,7 +179,13 @@ async function PATCHHandler(
               ? ""
               : parsed.data.authTokenEnv,
       },
-      { tenantId: securityContext.tenantId },
+      {
+        executionScope: executionScopeFromSecurityContext(securityContext, {
+          correlationId: telemetry.correlationId,
+          causationId: id,
+          purpose: "connector.mcp.update",
+        }),
+      },
     );
 
     if (!connector) {
@@ -247,7 +254,13 @@ async function DELETEHandler(
   }
 
   try {
-    const deleted = await deleteMcpConnector(id, { tenantId: securityContext.tenantId });
+    const deleted = await deleteMcpConnector(id, {
+      executionScope: executionScopeFromSecurityContext(securityContext, {
+        correlationId: telemetry.correlationId,
+        causationId: id,
+        purpose: "connector.mcp.delete",
+      }),
+    });
     if (!deleted) {
       await recordConnectorEvent({
         telemetry,

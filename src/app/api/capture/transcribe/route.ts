@@ -3,6 +3,7 @@ import {
   captureTranscriptionConfigured,
   transcribeCaptureAudio,
 } from "@/lib/capture/transcription";
+import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -18,6 +19,11 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    context,
+    request,
+    "capture.voice.transcribe",
+  );
   if (!captureTranscriptionConfigured()) return Response.json({ error: "Voice transcription is not configured." }, { status: 503 });
   if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("multipart/form-data")) {
     return Response.json({ error: "Audio transcription requires multipart form data." }, { status: 415 });
@@ -42,9 +48,11 @@ async function POSTHandler(request: Request) {
       sourceStreamId: "api:capture:transcribe",
       operation: "transcription",
       purpose: "capture.voice.transcribe",
+      correlationId: executionScope.correlationId,
+      executionScope,
       credentialSource: "deployment_environment",
     });
-    await recordRuntimeEventSafely({ category: "api", action: "media.transcription", tenantId: context.tenantId, actorId: context.actorId, resourceType: "capture", durationMs: Date.now() - startedAt, message: fallbackUsed ? "Voice transcription completed through fallback." : "Voice transcription completed.", metadata: { model, fallbackUsed, bytes: audio.size } });
+    await recordRuntimeEventSafely({ category: "api", action: "media.transcription", tenantId: context.tenantId, actorId: context.actorId, correlationId: executionScope.correlationId, resourceType: "capture", durationMs: Date.now() - startedAt, message: fallbackUsed ? "Voice transcription completed through fallback." : "Voice transcription completed.", metadata: { model, fallbackUsed, bytes: audio.size } });
     return Response.json({ text, model, fallbackUsed }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Transcription failed." }, { status: 502 });

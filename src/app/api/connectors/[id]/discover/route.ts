@@ -7,6 +7,8 @@ import {
   recordMcpConnectorError,
   saveMcpDiscovery,
 } from "@/lib/connectors/store";
+import { createRequestTelemetry } from "@/lib/observability/store";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -16,6 +18,7 @@ async function POSTHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
+  const telemetry = createRequestTelemetry(request, "mcp_connector");
   const { id } = await context.params;
   let securityContext;
   try {
@@ -79,6 +82,12 @@ async function POSTHandler(
       instructions: discovery.instructions,
       serverVersion: discovery.serverVersion,
       resetReviewedPolicy: resetOfficialGitHubPolicy,
+    }, {
+      executionScope: executionScopeFromSecurityContext(securityContext, {
+        correlationId: telemetry.correlationId,
+        causationId: id,
+        purpose: "connector.mcp.discover",
+      }),
     });
     return Response.json({
       ...saved,
@@ -91,7 +100,17 @@ async function POSTHandler(
     const message = error instanceof Error ? error.message : "MCP discovery failed.";
     return Response.json(
       {
-        connector: redactMcpConnector(await recordMcpConnectorError(connector, message)),
+        connector: redactMcpConnector(await recordMcpConnectorError(
+          connector,
+          message,
+          {
+            executionScope: executionScopeFromSecurityContext(securityContext, {
+              correlationId: telemetry.correlationId,
+              causationId: id,
+              purpose: "connector.mcp.discovery_error.record",
+            }),
+          },
+        )),
         tools: [],
         error: message,
         discoveryFailed: true,

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { saveCaptureAsset } from "@/lib/capture/assets";
+import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { GEMINI_IMAGE_MODEL } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
@@ -29,6 +30,12 @@ async function POSTHandler(request: Request) {
   try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "media", metadata: { operation: "generate_image" } }); }
   catch (error) { return forbiddenResponse(error); }
   const telemetry = createRequestTelemetry(request, "gemini-image");
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    context,
+    request,
+    "media.image.capture_asset.store",
+    { correlationId: telemetry.correlationId },
+  );
   let body: unknown;
   try { body = await parseJsonBody(request); } catch (error) { return jsonBodyErrorResponse(error); }
   const parsed = schema.safeParse(body);
@@ -44,6 +51,8 @@ async function POSTHandler(request: Request) {
         sourceStreamId: "api:media:image",
         operation: "image_generation",
         purpose: "media.image.generate",
+        correlationId: executionScope.correlationId,
+        executionScope,
         credentialSource: "deployment_environment",
       },
     });
@@ -53,6 +62,7 @@ async function POSTHandler(request: Request) {
       asset = await saveCaptureAsset({
         tenantId: context.tenantId,
         actorId: context.actorId,
+        executionScope,
         filename: `gemini-visual-${Date.now()}.${imageExtension(result.mimeType)}`,
         mediaType: result.mimeType,
         bytes: result.bytes,

@@ -25,6 +25,13 @@ import {
   recordRunConsolidation,
 } from "@/lib/runs/store";
 import {
+  assertExecutionScopeTenant,
+  createExecutionScope,
+  deriveExecutionScope,
+  parsePersistedExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
+import {
   BACKGROUND_OPERATION_JOB_TYPES,
   completeOperationJob,
   enqueueOperationJob,
@@ -129,17 +136,22 @@ export async function enqueueEvaluationJob({
 export async function enqueueKnowledgeIngestJob({
   tenantId,
   actorId,
+  executionScope,
   request,
   idempotencyKey,
 }: {
   tenantId: string;
   actorId?: string;
+  executionScope?: ExecutionScope;
   request: KnowledgeIngestJobRequest;
   idempotencyKey?: string;
 }) {
   const parsed = knowledgeIngestJobRequestSchema.parse(request);
   const requestId = idempotencyKey?.trim().slice(0, 200) || randomUUID();
   const usageActorId = normalizeQueuedActorId(actorId);
+  const trustedExecutionScope = executionScope
+    ? requireQueuedExecutionScope(executionScope, tenantId, usageActorId)
+    : undefined;
   // Keep the document-only hash so an idempotency key created by an older
   // release remains replay-compatible. Actor attribution is trusted metadata,
   // not part of the document mutation contract.
@@ -151,6 +163,7 @@ export async function enqueueKnowledgeIngestJob({
     payload: {
       request: parsed,
       actorId: usageActorId,
+      executionScope: trustedExecutionScope,
       requestHash,
       progress: { stage: "queued" },
     },
@@ -397,20 +410,30 @@ async function cleanCanceledCaptureIngestSafely(job: OperationJobRecord) {
 async function markCaptureIngestFailureSafely(job: OperationJobRecord, message: string) {
   const parsed = knowledgeIngestJobRequestSchema.safeParse(job.payload.request);
   if (!parsed.success) return;
-  const metadata = parsed.data.metadata || {};
+  const target = captureIngestTarget(parsed.data);
+  if (!target) return;
   const actorId = await resolveKnowledgeIngestActorId(job, parsed.data);
   if (!actorId) return;
   try {
-    if (typeof metadata.captureAssetId === "string") {
-      await updateCaptureAssetStatus(metadata.captureAssetId, { tenantId: job.tenantId, actorId }, {
+    const executionScope = captureIngestMutationExecutionScope(job, actorId);
+    if (target.assetId) {
+      await updateCaptureAssetStatus(target.assetId, {
+        tenantId: job.tenantId,
+        actorId,
+        executionScope,
+      }, {
         status: "failed",
         extractionStatus: "completed",
         ingestJobId: job.id,
         error: message,
       });
     }
-    if (typeof metadata.captureRecordingId === "string") {
-      await markCaptureRecordingIndexed(metadata.captureRecordingId, { tenantId: job.tenantId, actorId }, { error: message });
+    if (target.recordingId) {
+      await markCaptureRecordingIndexed(target.recordingId, {
+        tenantId: job.tenantId,
+        actorId,
+        executionScope,
+      }, { error: message });
     }
   } catch {
     // The operation job remains the durable source of failure truth if the
@@ -533,8 +556,11 @@ async function executeBackgroundOperation(
 
   if (job.type === "knowledge.ingest") {
     const parsed = knowledgeIngestJobRequestSchema.parse(request);
-    const metadata = parsed.metadata || {};
+    const captureTarget = captureIngestTarget(parsed);
     const actorId = await resolveKnowledgeIngestActorId(job, parsed);
+    const captureExecutionScope = actorId && captureTarget
+      ? captureIngestMutationExecutionScope(job, actorId)
+      : undefined;
     const result = await ingestTextDocument({
       ...parsed,
       tenantId: job.tenantId,
@@ -547,23 +573,34 @@ async function executeBackgroundOperation(
           sourceStreamId: `operation-job:${job.id}`,
           operation: "embedding" as const,
           purpose: "knowledge.ingest.background",
-          correlationId: job.id,
+          correlationId: captureExecutionScope?.correlationId || job.id,
+          causationId: captureExecutionScope?.causationId || undefined,
+          executionScope: captureExecutionScope,
           credentialSource: "deployment_environment" as const,
         },
       } : {}),
     });
-    if (actorId) {
+    if (actorId && captureExecutionScope) {
       try {
-        if (typeof metadata.captureAssetId === "string") {
-          await updateCaptureAssetStatus(metadata.captureAssetId, { tenantId: job.tenantId, actorId }, {
+        const executionScope = captureExecutionScope;
+        if (captureTarget?.assetId) {
+          await updateCaptureAssetStatus(captureTarget.assetId, {
+            tenantId: job.tenantId,
+            actorId,
+            executionScope,
+          }, {
             status: "indexed",
             extractionStatus: "completed",
             ingestJobId: job.id,
             knowledgeDocumentId: result.document.id,
           });
         }
-        if (typeof metadata.captureRecordingId === "string") {
-          await markCaptureRecordingIndexed(metadata.captureRecordingId, { tenantId: job.tenantId, actorId }, {
+        if (captureTarget?.recordingId) {
+          await markCaptureRecordingIndexed(captureTarget.recordingId, {
+            tenantId: job.tenantId,
+            actorId,
+            executionScope,
+          }, {
             knowledgeDocumentId: result.document.id,
           });
         }
@@ -732,6 +769,74 @@ function normalizeQueuedActorId(value: string | undefined) {
     throw new Error("Background job actor identity exceeds 256 characters.");
   }
   return actorId;
+}
+
+function requireQueuedExecutionScope(
+  value: ExecutionScope,
+  tenantId: string,
+  actorId: string | undefined,
+) {
+  const executionScope = parsePersistedExecutionScope(value);
+  if (!executionScope) {
+    throw new Error("Background knowledge ingestion requires a valid execution scope.");
+  }
+  assertExecutionScopeTenant(executionScope, tenantId.trim());
+  if (actorId && executionScope.initiatingActorId !== actorId) {
+    throw new Error("Background knowledge ingestion scope does not match its actor.");
+  }
+  if (!executionScope.executingPrincipalId) {
+    throw new Error("Background knowledge ingestion scope requires an executing principal.");
+  }
+  return executionScope;
+}
+
+function captureIngestMutationExecutionScope(
+  job: OperationJobRecord,
+  actorId: string,
+) {
+  const persisted = parsePersistedExecutionScope(job.payload.executionScope);
+  if (persisted) {
+    assertExecutionScopeTenant(persisted, job.tenantId);
+    if (persisted.initiatingActorId !== actorId) {
+      throw new Error("Capture ingest job scope does not match its stored owner.");
+    }
+    return deriveExecutionScope(persisted, {
+      executingPrincipalType: "system",
+      executingPrincipalId: "background-operations-worker",
+      causationId: job.id,
+      purpose: "capture.ingest.projection.update",
+    });
+  }
+
+  // Explicit compatibility authority for jobs created before execution scopes
+  // were persisted. The actor has already been recovered from the trusted job
+  // payload or from a capture record bound to this exact ingest job ID.
+  return createExecutionScope({
+    tenantId: job.tenantId,
+    initiatingActorId: actorId,
+    executingPrincipalType: "system",
+    executingPrincipalId: "background-operations-worker",
+    correlationId: job.id,
+    causationId: job.id,
+    purpose: "capture.ingest.projection.update.legacy",
+  });
+}
+
+function captureIngestTarget(request: KnowledgeIngestJobRequest) {
+  const metadata = request.metadata || {};
+  if (
+    typeof metadata.captureAssetId === "string" &&
+    request.source === `capture:asset:${metadata.captureAssetId}`
+  ) {
+    return { assetId: metadata.captureAssetId, recordingId: undefined };
+  }
+  if (
+    typeof metadata.captureRecordingId === "string" &&
+    request.source === `capture:recording:${metadata.captureRecordingId}`
+  ) {
+    return { assetId: undefined, recordingId: metadata.captureRecordingId };
+  }
+  return undefined;
 }
 
 function stableStringify(value: unknown): string {
