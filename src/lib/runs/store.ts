@@ -13,6 +13,7 @@ import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
   executionScopesEqual,
+  parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
@@ -1125,7 +1126,15 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
     return undefined;
   }
 
+  let executionScope: ExecutionScope | undefined;
+  try {
+    executionScope = parsePersistedExecutionScope(candidate.executionScope);
+  } catch {
+    return undefined;
+  }
+
   return {
+    executionScope,
     conversationItems: Array.isArray(candidate.conversationItems)
       ? (candidate.conversationItems as Array<Record<string, unknown>>)
       : [],

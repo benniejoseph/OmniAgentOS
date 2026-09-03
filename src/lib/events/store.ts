@@ -53,7 +53,11 @@ type EventLedger = {
   events: DomainEvent[];
 };
 
-const FILE_EVENT_CAP = 5_000;
+const FILE_TRANSIENT_EVENT_CAP = 5_000;
+const DURABLE_BINDING_EVENT_TYPES = new Set([
+  "run.scope_bound",
+  "tool.scope_bound",
+]);
 
 type EventSqlClient = ReturnType<typeof getSql>;
 
@@ -121,8 +125,15 @@ export async function appendDomainEvent(
     event.seq = ledger.nextSeq;
     ledger.nextSeq += 1;
     ledger.events.push(event);
-    if (ledger.events.length > FILE_EVENT_CAP) {
-      ledger.events = ledger.events.slice(-FILE_EVENT_CAP);
+    if (ledger.events.length > FILE_TRANSIENT_EVENT_CAP) {
+      const bindings = ledger.events.filter((item) =>
+        DURABLE_BINDING_EVENT_TYPES.has(item.type)
+      );
+      const transient = ledger.events
+        .filter((item) => !DURABLE_BINDING_EVENT_TYPES.has(item.type))
+        .slice(-FILE_TRANSIENT_EVENT_CAP);
+      ledger.events = [...bindings, ...transient]
+        .sort((left, right) => left.seq - right.seq);
     }
     return ledger;
   });

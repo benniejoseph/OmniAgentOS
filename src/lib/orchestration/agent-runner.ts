@@ -61,15 +61,20 @@ import type { ContextPack } from "@/lib/rag/types";
 import {
   assertExecutionScopeTenant,
   createExecutionScope,
+  deriveExecutionScope,
+  executionScopesEqual,
+  type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import {
   appendRunEvent,
+  bindAgentRunExecutionScope,
   cancelAgentRun,
   completeAgentRun,
   createAgentRun,
   failAgentRun,
   findAgentRunWaitingForToolApproval,
   getAgentRun,
+  getAgentRunExecutionScope,
   markAgentRunResuming,
   markAgentRunWaitingForApproval,
   updateRunContextCount,
@@ -83,6 +88,7 @@ import type { SecurityContext, SecurityRole } from "@/lib/security/types";
 import { redactSensitive } from "@/lib/security/context";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import { executeGovernedTool } from "@/lib/tools/executor";
+import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { appendThreadTurn } from "@/lib/threads/store";
 import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
@@ -189,6 +195,17 @@ export async function* runAgent(
     purpose: "agent.run.legacy",
   });
   assertExecutionScopeTenant(executionScope, runTenantId);
+  try {
+    await bindAgentRunExecutionScope(runId, executionScope, {
+      tenantId: runTenantId,
+    });
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : "Agent run execution scope could not be bound.";
+    await failAgentRun(runId, message).catch(() => undefined);
+    throw error;
+  }
   const memoryAccessContext = createMemoryAccessContext({
     executionScope,
     mode: request.agentProfile?.memoryScope || "all",
@@ -576,6 +593,7 @@ export async function* runAgent(
           })),
           toolbox,
           securityContext,
+          executionScope,
           runId: run.id,
           abortSignal,
           forceApproval: agentToolPolicy?.forceApproval,
@@ -648,6 +666,7 @@ export async function* runAgent(
         if (result.waitingApproval) {
           const waiting = result.waitingApproval;
           const continuation: AgentRunContinuation = {
+            executionScope,
             conversationItems: [],
             instructions,
             response,
@@ -813,6 +832,10 @@ export async function* runAgent(
             idempotencyKey: `${run.id}:${item.call.callId}`,
             forceApproval: agentToolPolicy?.forceApproval,
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
+            executionScope: agentToolExecutionScope(
+              executionScope,
+              item.call.callId,
+            ),
           })));
           for (let index = 0; index < prepared.length; index += 1) {
             const item = prepared[index];
@@ -878,6 +901,10 @@ export async function* runAgent(
             idempotencyKey: `${run.id}:${call.callId}`,
             forceApproval: agentToolPolicy?.forceApproval,
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
+            executionScope: agentToolExecutionScope(
+              executionScope,
+              call.callId,
+            ),
           });
           citationSources = mergeCitationSources(
             citationSources,
@@ -897,6 +924,7 @@ export async function* runAgent(
 
           if (execution.record.status === "approval_required") {
             const continuation: AgentRunContinuation = {
+              executionScope,
               conversationItems: withContinuationQueue(
                 conversationItems ?? [],
                 queuedCallsAfterPause(turn.functionCalls, callIndex),
@@ -1115,6 +1143,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     byFunctionName: Map<string, ToolboxEntry>;
   };
   securityContext: SecurityContext;
+  executionScope?: ExecutionScope;
   runId: string;
   abortSignal?: AbortSignal;
   forceApproval?: boolean;
@@ -1270,6 +1299,9 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           idempotencyKey: `${input.runId}:${activeProvider}:${item.call.callId}`,
           forceApproval: input.forceApproval,
           mcpSessionScope: agentMcpSessionScope(input.runId, input.securityContext),
+          executionScope: input.executionScope
+            ? agentToolExecutionScope(input.executionScope, item.call.callId)
+            : undefined,
         })),
       );
       for (let index = 0; index < prepared.length; index += 1) {
@@ -1331,6 +1363,9 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           idempotencyKey: `${input.runId}:${activeProvider}:${call.callId}`,
           forceApproval: input.forceApproval,
           mcpSessionScope: agentMcpSessionScope(input.runId, input.securityContext),
+          executionScope: input.executionScope
+            ? agentToolExecutionScope(input.executionScope, call.callId)
+            : undefined,
         });
         citationSources = mergeCitationSources(
           citationSources,
@@ -1419,6 +1454,81 @@ function agentDisplayName(agentId: string) {
   return ({ atlas: "Atlas", scout: "Scout", forge: "Forge", sentinel: "Sentinel", mnemosyne: "Mnemosyne" } as Record<string, string>)[agentId] || "Atlas";
 }
 
+function agentToolExecutionScope(
+  runScope: ExecutionScope,
+  callId: string,
+) {
+  return deriveExecutionScope(runScope, {
+    causationId: callId,
+    purpose: "agent.tool.execute",
+  });
+}
+
+async function resolveContinuationExecutionScope(
+  run: AgentRunRecord,
+  continuation: AgentRunContinuation,
+  tenantId?: string,
+) {
+  const normalizedTenantId = normalizeTenantId(
+    tenantId || run.tenantId || continuation.context.tenantId,
+  );
+  const persistedScope = continuation.executionScope;
+  if (persistedScope) {
+    assertExecutionScopeTenant(persistedScope, normalizedTenantId);
+  }
+  const boundScope = await getAgentRunExecutionScope(run.id, {
+    tenantId: normalizedTenantId,
+  });
+  if (
+    persistedScope &&
+    boundScope &&
+    !executionScopesEqual(persistedScope, boundScope)
+  ) {
+    throw new Error(
+      "The waiting agent continuation does not match its run execution scope.",
+    );
+  }
+  if (persistedScope && !boundScope) {
+    throw new Error(
+      "The waiting agent continuation is scoped but its run binding is missing.",
+    );
+  }
+  return boundScope;
+}
+
+async function assertPendingToolExecutionScope(
+  continuation: AgentRunContinuation,
+  record: ToolExecutionRecord,
+  runScope?: ExecutionScope,
+) {
+  const binding = await getToolExecutionScopeBinding(record.id, {
+    tenantId: record.tenantId || continuation.context.tenantId,
+  });
+  if (!binding) {
+    if (runScope) {
+      throw new Error(
+        "The scoped agent run cannot resume because its pending tool binding is missing.",
+      );
+    }
+    // Legacy approvals predate both run and tool scope binding.
+    return;
+  }
+  if (!runScope) {
+    throw new Error(
+      "A scoped governed tool cannot resume an unscoped agent run.",
+    );
+  }
+  const expected = agentToolExecutionScope(
+    runScope,
+    continuation.pendingToolCall.callId,
+  );
+  if (!executionScopesEqual(binding.executionScope, expected)) {
+    throw new Error(
+      "The approved tool execution does not belong to this agent continuation.",
+    );
+  }
+}
+
 export function resumeAgentRunAfterToolApproval(input: {
   executionId: string;
   toolExecution: { record: ToolExecutionRecord; result?: unknown };
@@ -1451,6 +1561,16 @@ async function resumeAgentRunAfterToolApprovalInScope({
   if (!run || !continuation || run.status !== "waiting_approval") {
     return { resumed: false, reason: "No waiting agent run continuation found." };
   }
+  const executionScope = await resolveContinuationExecutionScope(
+    run,
+    continuation,
+    tenantId,
+  );
+  await assertPendingToolExecutionScope(
+    continuation,
+    toolExecution.record,
+    executionScope,
+  );
 
   if (continuation.providerToolState) {
     return resumeProviderBoundAgentRunAfterApproval({
@@ -1460,8 +1580,15 @@ async function resumeAgentRunAfterToolApprovalInScope({
       toolExecution,
       tenantId,
       abortSignal,
+      executionScope,
     });
   }
+
+  const appendScopedRunEvent = (event: AgentEvent) => appendRunEvent(
+    run.id,
+    event,
+    { tenantId, executionScope },
+  );
 
   const resumeDeploymentRoute = selectAgentModel({
     message: run.prompt,
@@ -1488,7 +1615,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   if (!workspaceOpenAIAvailable && !hasOpenAIKey()) {
     const message = "Cannot resume the approved OpenAI continuation because its provider credential is no longer available.";
     await failAgentRun(run.id, message);
-    await appendRunEvent(run.id, { type: "error", message });
+    await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -1502,7 +1629,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   if (!claimed) {
     return { resumed: false, reason: "Run is already being resumed by another approval decision." };
   }
-  await appendRunEvent(run.id, {
+  await appendScopedRunEvent({
     type: "status",
     label: "resuming after approval",
     detail: `Tool approval ${executionId} resolved; continuing the same agent run.`,
@@ -1610,7 +1737,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       }
 
       const definition = entry.definition;
-      await appendRunEvent(run.id, {
+      await appendScopedRunEvent({
         type: "tool",
         toolId: definition.id,
         toolName: definition.name,
@@ -1632,12 +1759,15 @@ async function resumeAgentRunAfterToolApprovalInScope({
         idempotencyKey: `${run.id}:${call.callId}`,
         forceApproval: continuation.toolPolicy?.forceApproval,
         mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
+        executionScope: executionScope
+          ? agentToolExecutionScope(executionScope, call.callId)
+          : undefined,
       });
       citationSources = mergeCitationSources(
         citationSources,
         citationSourcesFromToolResult(definition.id, execution.result),
       );
-      await appendRunEvent(run.id, {
+      await appendScopedRunEvent({
         type: "tool",
         toolId: definition.id,
         toolName: definition.name,
@@ -1652,6 +1782,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         await markAgentRunWaitingForApproval(run.id, {
           response,
           continuation: {
+            executionScope,
             conversationItems: withContinuationQueue(
               conversationItems,
               queuedCalls.slice(queueIndex + 1),
@@ -1674,7 +1805,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             createdAt: new Date().toISOString(),
           },
         });
-        await appendRunEvent(run.id, {
+        await appendScopedRunEvent({
           type: "waiting_approval",
           executionId: execution.record.id,
           toolId: definition.id,
@@ -1738,7 +1869,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         }
 
         const definition = entry.definition;
-        await appendRunEvent(run.id, {
+        await appendScopedRunEvent({
           type: "tool",
           toolId: definition.id,
           toolName: definition.name,
@@ -1771,13 +1902,16 @@ async function resumeAgentRunAfterToolApprovalInScope({
           idempotencyKey: `${run.id}:${call.callId}`,
           forceApproval: continuation.toolPolicy?.forceApproval,
           mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
+          executionScope: executionScope
+            ? agentToolExecutionScope(executionScope, call.callId)
+            : undefined,
         });
         citationSources = mergeCitationSources(
           citationSources,
           citationSourcesFromToolResult(definition.id, execution.result),
         );
 
-        await appendRunEvent(run.id, {
+        await appendScopedRunEvent({
           type: "tool",
           toolId: definition.id,
           toolName: definition.name,
@@ -1792,6 +1926,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           await markAgentRunWaitingForApproval(run.id, {
             response,
             continuation: {
+              executionScope,
               conversationItems: withContinuationQueue(
                 conversationItems,
                 queuedCallsAfterPause(turn.functionCalls, callIndex),
@@ -1814,7 +1949,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               createdAt: new Date().toISOString(),
             },
           });
-          await appendRunEvent(run.id, {
+          await appendScopedRunEvent({
             type: "waiting_approval",
             executionId: execution.record.id,
             toolId: definition.id,
@@ -1842,7 +1977,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       }
 
       if (toolSteps >= AGENT_MAX_TOOL_STEPS) {
-        await appendRunEvent(run.id, {
+        await appendScopedRunEvent({
           type: "status",
           label: "tool budget reached",
           detail: `Tool step budget (${AGENT_MAX_TOOL_STEPS}) reached; asking the model for its final answer.`,
@@ -1877,7 +2012,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           prompt: run.prompt,
           response,
         });
-    await appendRunEvent(run.id, { type: "done", response, grounding });
+    await appendScopedRunEvent({ type: "done", response, grounding });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -1893,7 +2028,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     const message = error instanceof Error ? error.message : "Approved agent run resume failed.";
     await flushDeltas().catch(() => undefined);
     await failAgentRun(run.id, message);
-    await appendRunEvent(run.id, { type: "error", message });
+    await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -1911,6 +2046,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   toolExecution,
   tenantId,
   abortSignal,
+  executionScope,
 }: {
   run: AgentRunRecord;
   continuation: AgentRunContinuation;
@@ -1918,8 +2054,14 @@ async function resumeProviderBoundAgentRunAfterApproval({
   toolExecution: { record: ToolExecutionRecord; result?: unknown };
   tenantId?: string;
   abortSignal?: AbortSignal;
+  executionScope?: ExecutionScope;
 }) {
   const providerState = continuation.providerToolState;
+  const appendScopedRunEvent = (event: AgentEvent) => appendRunEvent(
+    run.id,
+    event,
+    { tenantId, executionScope },
+  );
   if (
     !providerState ||
     providerState.continuation.provider !== providerState.provider ||
@@ -1934,7 +2076,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   ) {
     const message = "Cannot resume the approved run because its provider-bound continuation is invalid.";
     await failAgentRun(run.id, message);
-    await appendRunEvent(run.id, { type: "error", message });
+    await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -1979,7 +2121,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     const message =
       `Cannot resume the approved ${providerState.provider} continuation because its provider credential is no longer available.`;
     await failAgentRun(run.id, message);
-    await appendRunEvent(run.id, { type: "error", message });
+    await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -1996,7 +2138,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       reason: "Run is already being resumed by another approval decision.",
     };
   }
-  await appendRunEvent(run.id, {
+  await appendScopedRunEvent({
     type: "status",
     label: "resuming after approval",
     detail:
@@ -2082,6 +2224,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     waiting: NonNullable<NonOpenAIProviderLoopResult["waitingApproval"]>,
   ) {
     const nextContinuation: AgentRunContinuation = {
+      executionScope,
       conversationItems: [],
       instructions: continuation.instructions,
       response,
@@ -2106,7 +2249,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       response,
       continuation: nextContinuation,
     });
-    await appendRunEvent(run.id, {
+    await appendScopedRunEvent({
       type: "waiting_approval",
       executionId: waiting.executionId,
       toolId: waiting.toolId,
@@ -2143,7 +2286,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       }
 
       const definition = entry.definition;
-      await appendRunEvent(run.id, {
+      await appendScopedRunEvent({
         type: "tool",
         toolId: definition.id,
         toolName: definition.name,
@@ -2157,7 +2300,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         const message = error instanceof Error
           ? error.message
           : "Tool arguments were rejected.";
-        await appendRunEvent(run.id, {
+        await appendScopedRunEvent({
           type: "tool",
           toolId: definition.id,
           toolName: definition.name,
@@ -2185,13 +2328,15 @@ async function resumeProviderBoundAgentRunAfterApproval({
           `${run.id}:${providerState.provider}:${call.callId}`,
         forceApproval: continuation.toolPolicy?.forceApproval,
         mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
+        executionScope: executionScope
+          ? agentToolExecutionScope(executionScope, call.callId)
+          : undefined,
       });
       citationSources = mergeCitationSources(
         citationSources,
         citationSourcesFromToolResult(definition.id, execution.result),
       );
-      await appendRunEvent(
-        run.id,
+      await appendScopedRunEvent(
         toolEventForExecution(definition, execution.record),
       );
 
@@ -2235,6 +2380,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         role: continuation.context.role,
         source: "default",
       },
+      executionScope,
       runId: run.id,
       abortSignal,
       forceApproval: continuation.toolPolicy?.forceApproval,
@@ -2264,7 +2410,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         }
       } else {
         await flushDeltas();
-        await appendRunEvent(run.id, event);
+        await appendScopedRunEvent(event);
       }
     }
     toolSteps = result.toolSteps;
@@ -2276,7 +2422,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       (attempt) => attempt.status === "failed",
     );
     await flushDeltas();
-    await appendRunEvent(run.id, {
+    await appendScopedRunEvent({
       type: "model",
       provider: result.provider,
       model: result.model,
@@ -2343,7 +2489,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
           prompt: run.prompt,
           response,
         });
-    await appendRunEvent(run.id, { type: "done", response, grounding });
+    await appendScopedRunEvent({ type: "done", response, grounding });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -2361,7 +2507,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       : "Approved provider-bound agent run resume failed.";
     await flushDeltas().catch(() => undefined);
     await failAgentRun(run.id, message);
-    await appendRunEvent(run.id, { type: "error", message });
+    await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
