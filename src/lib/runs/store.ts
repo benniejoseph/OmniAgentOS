@@ -3,6 +3,7 @@ import { getDatabaseTenantContext, hasDatabaseUrl, ensureDatabaseSchema, getSql 
 import {
   appendDomainEvent,
   appendDomainEventSafely,
+  appendScopedDomainEvent,
   listStreamEvents,
 } from "@/lib/events/store";
 import {
@@ -18,6 +19,15 @@ import {
 } from "@/lib/security/execution-scope";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
+import {
+  buildLegacyTerminalReceiptV1,
+  buildRunContractEnvelopeV1,
+  buildRunContractEventPayloadV1,
+  parseRunContractEnvelopeV1,
+  runContractEventPayloadV1Schema,
+  type RunContractEnvelopeV1,
+  type RunContractEventPayloadV1,
+} from "@/lib/runs/contracts";
 import type { AgentRunContinuation, AgentRunEventRecord, AgentRunFeedback, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
@@ -252,6 +262,63 @@ export async function getAgentRunExecutionScope(
   return bound;
 }
 
+export type RunContractLifecycleEventType =
+  | "run.contracts.bound"
+  | "run.manifests.resolved"
+  | "run.terminal_receipt.recorded";
+
+/**
+ * Strict, scoped writer for the additive P0.2 shadow contract lifecycle.
+ * The compact payload is schema-closed and contains metadata only.
+ */
+export async function appendRunContractEvent(
+  runId: string,
+  type: RunContractLifecycleEventType,
+  payload: RunContractEventPayloadV1,
+  options: { tenantId: string; executionScope: ExecutionScope },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  assertExecutionScopeTenant(options.executionScope, tenantId);
+  const parsed = runContractEventPayloadV1Schema.parse(payload);
+  if (parsed.runId !== runId) {
+    throw new Error("Run contract event is bound to another run.");
+  }
+  const run = await getAgentRun(runId, { tenantId });
+  if (!run) {
+    throw new Error("Run contract event requires an existing run.");
+  }
+  const boundScope = await getAgentRunExecutionScope(runId, { tenantId });
+  if (!boundScope || !executionScopesEqual(boundScope, options.executionScope)) {
+    throw new Error("Run contract event scope does not match the run binding.");
+  }
+  return appendScopedDomainEvent({
+    streamId: `run:${runId}`,
+    type,
+    payload: parsed,
+    executionScope: options.executionScope,
+  });
+}
+
+/** Shadow telemetry must not change the legacy run control path. */
+export async function appendRunContractEventSafely(
+  runId: string,
+  type: RunContractLifecycleEventType,
+  payload: RunContractEventPayloadV1,
+  options: { tenantId: string; executionScope: ExecutionScope },
+) {
+  try {
+    return await appendRunContractEvent(runId, type, payload, options);
+  } catch (error) {
+    console.warn(
+      "Run contract shadow event append failed.",
+      String(redactSensitive(
+        error instanceof Error ? error.message : "Unknown contract event error.",
+      )).slice(0, 1_000),
+    );
+    return undefined;
+  }
+}
+
 /** Exactly one queue delivery may move a pre-created run into execution. */
 export async function claimQueuedAgentRun(
   runId: string,
@@ -291,7 +358,11 @@ export async function claimQueuedAgentRun(
 export async function appendRunEvent(
   runId: string,
   event: AgentEvent,
-  options: { tenantId?: string; executionScope?: ExecutionScope } = {},
+  options: {
+    tenantId?: string;
+    executionScope?: ExecutionScope;
+    runContractEnvelope?: RunContractEnvelopeV1;
+  } = {},
 ) {
   const redactedEvent = redactSensitive(event) as AgentEvent;
   const record: AgentRunEventRecord = {
@@ -393,6 +464,14 @@ export async function appendRunEvent(
         VALUES (${record.id}, ${tenantId}, ${record.runId}, ${record.type}, ${record.payload}::jsonb, ${record.createdAt})
       `;
     });
+    await appendLegacyRunTerminalReceiptSafely(
+      runId,
+      redactedEvent,
+      record.id,
+      tenantId,
+      options.executionScope,
+      options.runContractEnvelope,
+    );
     return record;
   }
 
@@ -473,7 +552,112 @@ export async function appendRunEvent(
       executionScope: options.executionScope,
     });
   }
+  await appendLegacyRunTerminalReceiptSafely(
+    runId,
+    redactedEvent,
+    record.id,
+    record.tenantId || normalizeTenantId(options.tenantId),
+    options.executionScope,
+    options.runContractEnvelope,
+  );
   return record;
+}
+
+async function appendLegacyRunTerminalReceiptSafely(
+  runId: string,
+  event: AgentEvent,
+  sourceEventId: string,
+  tenantId: string,
+  executionScope?: ExecutionScope,
+  runContractEnvelope?: RunContractEnvelopeV1,
+) {
+  if (
+    !runContractEnvelope ||
+    event.type !== "waiting_approval" &&
+      event.type !== "done" &&
+      event.type !== "error" &&
+      event.type !== "canceled"
+  ) {
+    return;
+  }
+
+  try {
+    const terminalExecutionScope = executionScope ||
+      await getAgentRunExecutionScope(runId, { tenantId });
+    if (!terminalExecutionScope) return;
+    const currentRun = await getAgentRun(runId, { tenantId });
+    const expectedStatus: RunStatus = event.type === "waiting_approval"
+      ? "waiting_approval"
+      : event.type === "done"
+        ? "completed"
+        : event.type === "canceled"
+          ? "canceled"
+          : "failed";
+    if (currentRun?.status !== expectedStatus) return;
+    const legacyStatus = event.type === "waiting_approval"
+      ? "waiting_approval" as const
+      : event.type === "done"
+        ? "completed" as const
+        : event.type === "canceled"
+          ? "canceled" as const
+          : "failed" as const;
+    const pendingApprovalIds = event.type === "waiting_approval"
+      ? [runContractReferenceId("approval", event.executionId)]
+      : [];
+    const outputSha256 = event.type === "done"
+      ? createHash("sha256").update(event.response).digest("hex")
+      : null;
+    const receipt = buildLegacyTerminalReceiptV1({
+      terminalReceiptId: runContractReferenceId(
+        "receipt",
+        `${runId}:receipt:${sourceEventId}:v1`,
+      ),
+      runId,
+      legacyStatus,
+      pendingApprovalIds,
+      outputSha256,
+    });
+    const {
+      schemaVersion: _schemaVersion,
+      ...activeEnvelope
+    } = runContractEnvelope;
+    void _schemaVersion;
+    const terminalEnvelope = buildRunContractEnvelopeV1({
+      ...activeEnvelope,
+      envelopeId: runContractReferenceId(
+        "envelope",
+        `${runId}:terminal:${sourceEventId}:v1`,
+      ),
+      terminalReceipt: receipt,
+    });
+    const terminalPayload = buildRunContractEventPayloadV1({
+      envelope: terminalEnvelope,
+      envelopeSha256: createHash("sha256")
+        .update(JSON.stringify(terminalEnvelope))
+        .digest("hex"),
+    });
+    await appendRunContractEvent(
+      runId,
+      "run.terminal_receipt.recorded",
+      terminalPayload,
+      { tenantId, executionScope: terminalExecutionScope },
+    );
+  } catch (error) {
+    console.warn(
+      "Run terminal receipt shadow append failed.",
+      String(redactSensitive(
+        error instanceof Error ? error.message : "Unknown terminal receipt error.",
+      )).slice(0, 1_000),
+    );
+  }
+}
+
+function runContractReferenceId(prefix: string, value: string) {
+  const normalized = value.trim();
+  if (/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$/.test(normalized)) {
+    return normalized;
+  }
+  return `${prefix}:${createHash("sha256").update(normalized).digest("hex")}`;
 }
 
 function domainEventPayload(event: AgentEvent): Record<string, unknown> {
@@ -1238,9 +1422,18 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
   } catch {
     return undefined;
   }
+  let runContractEnvelope: RunContractEnvelopeV1 | undefined;
+  try {
+    runContractEnvelope = parseRunContractEnvelopeV1(
+      candidate.runContractEnvelope,
+    );
+  } catch {
+    return undefined;
+  }
 
   return {
     executionScope,
+    runContractEnvelope,
     conversationItems: Array.isArray(candidate.conversationItems)
       ? (candidate.conversationItems as Array<Record<string, unknown>>)
       : [],

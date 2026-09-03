@@ -1,6 +1,7 @@
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
+import type { RunContractEnvelopeV1 } from "@/lib/runs/contracts";
 import type {
   ModelToolCall,
   ModelToolContinuation,
@@ -39,6 +40,8 @@ export type AgentProviderToolContinuation = {
 export type AgentRunContinuation = {
   /** Canonical root attribution retained across approval pauses. */
   executionScope?: ExecutionScope;
+  /** P0.2 shadow snapshot retained only while an approval-paused run resumes. */
+  runContractEnvelope?: RunContractEnvelopeV1;
   /** Full conversation array for ZDR-safe resume (replaces previousResponseId). */
   conversationItems: Array<Record<string, unknown>>;
   instructions: string;

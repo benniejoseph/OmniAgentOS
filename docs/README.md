@@ -7,6 +7,7 @@
 - [Event-log substrate spec](vision/EVENT_LOG.md) — the M1 source-of-truth design
 - [Master implementation plan](vision/OMNIAGENT_MASTER_PLAN.md) — dependency-ordered core and client roadmap
 - [Execution scope inventory](vision/EXECUTION_SCOPE.md) — P0.1 ownership boundaries and compatibility rules
+- [Run contracts](vision/RUN_CONTRACTS.md) — P0.2 metadata envelopes, terminal truth, and legacy compatibility
 
 ## Platform docs
 

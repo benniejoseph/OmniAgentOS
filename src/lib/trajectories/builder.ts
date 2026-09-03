@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import type { DomainEvent } from "@/lib/events/store";
+import {
+  runContractEventPayloadV1Schema,
+  type RunContractEventPayloadV1,
+} from "@/lib/runs/contracts";
 import type { AgentRunRecord } from "@/lib/runs/types";
 import type {
   RunTrajectory,
@@ -17,6 +21,43 @@ const zeroUsage: TrajectoryUsage = {
   latencyMs: 0,
   fallbackCount: 0,
 };
+
+const runContractReceiptKeys = [
+  "schemaVersion",
+  "payloadKind",
+  "runId",
+  "envelopeId",
+  "envelopeSha256",
+  "agentPrincipalId",
+  "agentPrincipalSha256",
+  "intentSpecId",
+  "intentSpecSha256",
+  "outcomeContractId",
+  "outcomeContractSha256",
+  "harnessManifestId",
+  "contextManifestCount",
+  "toolContractCount",
+  "skillCount",
+  "policyCount",
+  "terminalState",
+  "terminalReceiptId",
+  "terminalDisposition",
+  "terminalExecutionMode",
+  "terminalVerificationState",
+  "terminalSource",
+  "terminalReasonCode",
+  "legacyStatus",
+  "requiredRequirementCount",
+  "verifiedRequirementCount",
+  "failedRequirementCount",
+  "unverifiedRequirementCount",
+  "usefulWorkUnitCount",
+  "artifactReceiptCount",
+  "effectReceiptCount",
+  "verifierReceiptCount",
+  "pendingApprovalCount",
+  "blockingDependencyCount",
+] as const satisfies readonly (keyof RunContractEventPayloadV1)[];
 
 export function buildRunTrajectory(
   run: AgentRunRecord,
@@ -125,6 +166,17 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
       "learningState", "learningSampleSize", "learningGuidanceCount",
       "learningGuidanceSha256",
     ]);
+  } else if (
+    event.type === "run.contracts.bound" ||
+    event.type === "run.manifests.resolved" ||
+    event.type === "run.terminal_receipt.recorded"
+  ) {
+    const contractPayload = { ...payload };
+    delete contractPayload._executionScope;
+    const parsed = runContractEventPayloadV1Schema.safeParse(contractPayload);
+    if (parsed.success) {
+      copy(receipt, parsed.data, runContractReceiptKeys);
+    }
   } else if (event.type === "run.tool") {
     copy(receipt, payload, [
       "toolId", "toolName", "status", "riskLevel", "dryRun", "executionId",
@@ -165,7 +217,7 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
 function copy(
   target: TrajectoryEvent["receipt"],
   source: Record<string, unknown>,
-  keys: string[],
+  keys: readonly string[],
 ) {
   for (const key of keys) {
     const value = source[key];

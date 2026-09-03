@@ -25,6 +25,32 @@ Immutable `*.scope_bound` events are retained outside the transient file-event
 cap. Legacy dual-writes continue through the compatibility writer only until
 their owning store is migrated.
 
+## Shadow run-contract events (P0.2)
+
+Versioned run-contract envelopes are additive shadow data; legacy run records
+and projections remain authoritative. A scoped run records three typed lifecycle
+events using one metadata-only payload contract:
+
+| Event | Observable decision |
+|---|---|
+| `run.contracts.bound` | Principal, intent, and outcome contracts were bound to the run. |
+| `run.manifests.resolved` | Context and execution manifests were resolved and pinned or explicitly left unassessed. |
+| `run.terminal_receipt.recorded` | A terminal disposition and its verification counts were recorded. |
+
+The shared event payload contains only schema and lifecycle enums, opaque IDs,
+SHA-256 digests, and bounded counts. It never embeds contract bodies, prompts,
+retrieved content, tool input/output, credentials, model output, or private
+reasoning. The events retain the run's explicit tenant, actor, correlation, and
+causation scope through the scoped event writer. Trajectory exports validate the
+payload and use a typed allowlist of the same compact fields rather than copying
+arbitrary payload data.
+
+P0.4 canonical status is likewise a shadow projection, not a state transition.
+It translates legacy domain status into a shared vocabulary without changing
+stores, controls, mutation contracts, or UI presentation. Legacy completion is
+`unverified`; `succeeded` requires a valid outcome-evaluator terminal receipt
+whose required outcomes are verified.
+
 ## Event shape
 
 ```ts

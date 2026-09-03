@@ -14,6 +14,7 @@ const nonSecretTokenMetadataKeys = new Set([
   "output_tokens",
   "total_tokens",
   "max_tokens",
+  "max_output_tokens",
   "min_tokens",
   "token_count",
   "token_limit",
