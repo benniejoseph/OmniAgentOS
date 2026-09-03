@@ -4,6 +4,11 @@ import type {
   MissionDetail,
   MissionTask,
 } from "@/lib/missions/types";
+import {
+  canonicalStatusForMission,
+  canonicalStatusForMissionAttempt,
+  canonicalStatusForMissionTask,
+} from "@/lib/status/canonical";
 
 export function toMissionSummaryView(mission: Mission) {
   return {
@@ -11,6 +16,7 @@ export function toMissionSummaryView(mission: Mission) {
     title: mission.title,
     objective: mission.objective,
     status: mission.status,
+    canonicalStatus: canonicalStatusForMission(mission),
     priority: mission.priority,
     source: mission.source,
     startedAt: mission.startedAt,
@@ -31,6 +37,7 @@ export function toMissionTaskView(task: MissionTask) {
     instructions: task.instructions,
     definitionOfDone: task.definitionOfDone,
     status: task.status,
+    canonicalStatus: canonicalStatusForMissionTask(task),
     priority: task.priority,
     position: task.position,
     dependencyIds: task.dependencyIds,
@@ -79,6 +86,7 @@ export function toMissionDetailView(detail: MissionDetail) {
       taskId: attempt.taskId,
       executorType: attempt.executorType,
       status: attempt.status,
+      canonicalStatus: canonicalStatusForMissionAttempt(attempt),
       agentRunId: attempt.agentRunId,
       workflowRunId: attempt.workflowRunId,
       error: attempt.error,

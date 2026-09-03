@@ -38,5 +38,6 @@ does not replace authentication, RBAC, RLS, tool policy, or approval checks.
 
 P0.1 is deliberately additive. It does not change memory retrieval ranking,
 connector execution policy, capture limits, approval behavior, or UI status.
-The next slice adds versioned run contracts and canonical status adapters in
-shadow mode before any existing status is reinterpreted.
+The P0.2 versioned run-contract envelope and P0.4 canonical status adapter are
+present in shadow mode: they add scoped metadata events and a compatibility
+projection without reinterpreting existing store state, controls, or UI status.

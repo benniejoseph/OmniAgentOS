@@ -71,6 +71,7 @@ import {
 } from "@/lib/security/execution-scope";
 import {
   appendRunEvent,
+  appendRunContractEventSafely,
   bindAgentRunExecutionScope,
   cancelAgentRun,
   completeAgentRun,
@@ -83,6 +84,11 @@ import {
   markAgentRunWaitingForApproval,
   updateRunContextCount,
 } from "@/lib/runs/store";
+import {
+  buildInitialShadowRunContract,
+  resolveShadowRunContract,
+  type ShadowRunContractSnapshot,
+} from "@/lib/runs/contract-runtime";
 import type {
   AgentProviderToolContinuation,
   AgentRunContinuation,
@@ -211,6 +217,43 @@ export async function* runAgent(
     await failAgentRun(runId, message).catch(() => undefined);
     throw error;
   }
+  let shadowRunContract: ShadowRunContractSnapshot | undefined;
+  try {
+    shadowRunContract = buildInitialShadowRunContract({
+      runId,
+      tenantId: runTenantId,
+      agentId: run.agentId,
+      executionScope,
+      requestSha256: createHash("sha256")
+        .update(JSON.stringify({ mode, messages: safeMessages }))
+        .digest("hex"),
+      requestedOutcomeSha256: createHash("sha256")
+        .update(query)
+        .digest("hex"),
+      interactionMode: runContractInteractionMode(mode),
+      executionMode: "live",
+      autonomy: request.agentProfile?.autonomy || "governed",
+      approvalPolicy: request.agentProfile?.approvalPolicy || "risk_based",
+      budget: {
+        maxModelTurns: AGENT_MAX_TOOL_STEPS + 1,
+        maxToolCalls: AGENT_MAX_TOOL_STEPS * MAX_TOOL_CALLS_PER_TURN,
+        maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+        maxToolResultBytes:
+          AGENT_MAX_TOOL_STEPS *
+          MAX_TOOL_CALLS_PER_TURN *
+          MAX_TOOL_RESULT_CHARS,
+        maxExternalEffects: AGENT_MAX_TOOL_STEPS * MAX_TOOL_CALLS_PER_TURN,
+      },
+    });
+    await appendRunContractEventSafely(
+      runId,
+      "run.contracts.bound",
+      shadowRunContract.eventPayload,
+      { tenantId: runTenantId, executionScope },
+    );
+  } catch (error) {
+    logRunContractShadowFailure("initial", error);
+  }
   const memoryAccessContext = createMemoryAccessContext({
     executionScope,
     mode: request.agentProfile?.memoryScope || "all",
@@ -267,6 +310,7 @@ export async function* runAgent(
     await appendRunEvent(run.id, safeEvent, {
       tenantId: request.tenantId,
       executionScope,
+      runContractEnvelope: shadowRunContract?.envelope,
     });
     return safeEvent;
   }
@@ -499,6 +543,72 @@ export async function* runAgent(
     const approvalToolCount = toolbox.tools.filter(
       (entry) => entry.definition.approvalRequired || entry.definition.riskLevel >= 2,
     ).length;
+    const contextDecision = contextDecisionForRun({
+      durableMemoryEnabled,
+      evidenceIds: request.contextSelection?.evidenceIds,
+      shouldRetrieve: retrieval.profile.shouldRetrieve,
+    });
+    const contextEvidenceIds = buildCitationSources(retrieval.results)
+      .map((source) => source.citationId);
+    const contextRationale = contextRationaleForRun({
+      durableMemoryEnabled,
+      evidenceIds: request.contextSelection?.evidenceIds,
+      rationale: retrieval.profile.rationale,
+    });
+    if (shadowRunContract) {
+      try {
+        const compiledContext = [retrieval.contextBlock, liveWebContext]
+          .filter(Boolean)
+          .join("\n\n");
+        const userIncluded = new Set(request.contextSelection?.evidenceIds || []);
+        shadowRunContract = resolveShadowRunContract({
+          active: shadowRunContract,
+          querySha256: createHash("sha256")
+            .update(retrievalQuery)
+            .digest("hex"),
+          retrievalTraceId: retrieval.trace?.id,
+          scopeDecision: runContractScopeDecision(contextDecision),
+          selectedContext: citationSources.map((source, index) => ({
+            id: source.citationId,
+            score: retrieval.results[index]?.score,
+            userIncluded: userIncluded.has(source.citationId) ||
+              userIncluded.has(retrieval.results[index]?.id || ""),
+          })),
+          userInclusionIds: request.contextSelection?.evidenceIds || [],
+          userExclusionIds: [],
+          compiledContextSha256: compiledContext
+            ? createHash("sha256").update(compiledContext).digest("hex")
+            : undefined,
+          providerDisclosureBoundary:
+            providerConfigured && compiledContext
+              ? "authorized_content"
+              : "none",
+          providerId: providerConfigured ? modelRoute.provider : undefined,
+          modelProvider: providerConfigured ? modelRoute.provider : "fallback",
+          modelId: providerConfigured ? modelRoute.model : "fallback",
+          modelTier: modelRoute.tier,
+          modelRouteId: runtimeModel.assignmentId,
+          toolIds,
+          skillIds: (request.agentProfile?.skills || []).map((skill) => skill.id),
+          policyIds: [
+            request.agentProfile?.approvalPolicy || "risk_based",
+            request.agentProfile?.autonomy || "governed",
+          ],
+          instructionsSha256: createHash("sha256")
+            .update(instructions)
+            .digest("hex"),
+          toolboxSha256: stableToolboxFingerprint(toolbox.tools),
+        });
+        await appendRunContractEventSafely(
+          runId,
+          "run.manifests.resolved",
+          shadowRunContract.eventPayload,
+          { tenantId: runTenantId, executionScope },
+        );
+      } catch (error) {
+        logRunContractShadowFailure("resolved", error);
+      }
+    }
     yield await emit({
       type: "harness",
       version: 2,
@@ -507,20 +617,12 @@ export async function* runAgent(
       model: providerConfigured ? modelRoute.model : "fallback",
       tier: modelRoute.tier,
       memoryScope: request.agentProfile?.memoryScope || "all",
-      contextDecision: contextDecisionForRun({
-        durableMemoryEnabled,
-        evidenceIds: request.contextSelection?.evidenceIds,
-        shouldRetrieve: retrieval.profile.shouldRetrieve,
-      }),
+      contextDecision,
       contextMode: durableMemoryEnabled ? retrieval.profile.mode : "session",
       contextCount: retrieval.results.length,
       contextTraceId: retrieval.trace?.id,
-      contextEvidenceIds: buildCitationSources(retrieval.results).map((source) => source.citationId),
-      contextRationale: contextRationaleForRun({
-        durableMemoryEnabled,
-        evidenceIds: request.contextSelection?.evidenceIds,
-        rationale: retrieval.profile.rationale,
-      }),
+      contextEvidenceIds,
+      contextRationale,
       liveWeb: useLiveWeb,
       toolCount: toolIds.length,
       toolIds,
@@ -726,6 +828,7 @@ export async function* runAgent(
           const waiting = result.waitingApproval;
           const continuation: AgentRunContinuation = {
             executionScope,
+            runContractEnvelope: shadowRunContract?.envelope,
             conversationItems: [],
             instructions,
             response,
@@ -1042,6 +1145,7 @@ export async function* runAgent(
           if (execution.record.status === "approval_required") {
             const continuation: AgentRunContinuation = {
               executionScope,
+              runContractEnvelope: shadowRunContract?.envelope,
               conversationItems: withContinuationQueue(
                 conversationItems ?? [],
                 queuedCallsAfterPause(turn.functionCalls, callIndex),
@@ -1229,7 +1333,11 @@ export async function* runAgent(
         await appendRunEvent(
           run.id,
           { type: "canceled", message },
-          { tenantId: request.tenantId, executionScope },
+          {
+            tenantId: request.tenantId,
+            executionScope,
+            runContractEnvelope: shadowRunContract?.envelope,
+          },
         );
       }
       yield await emit({ type: "status", label: "Canceled", detail: message });
@@ -1782,7 +1890,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const appendScopedRunEvent = (event: AgentEvent) => appendRunEvent(
     run.id,
     event,
-    { tenantId, executionScope },
+    {
+      tenantId,
+      executionScope,
+      runContractEnvelope: continuation.runContractEnvelope,
+    },
   );
 
   const resumeDeploymentRoute = selectAgentModel({
@@ -1978,6 +2090,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           response,
           continuation: {
             executionScope,
+            runContractEnvelope: continuation.runContractEnvelope,
             conversationItems: withContinuationQueue(
               conversationItems,
               queuedCalls.slice(queueIndex + 1),
@@ -2198,6 +2311,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             response,
             continuation: {
               executionScope,
+              runContractEnvelope: continuation.runContractEnvelope,
               conversationItems: withContinuationQueue(
                 conversationItems,
                 queuedCallsAfterPause(turn.functionCalls, callIndex),
@@ -2332,7 +2446,11 @@ async function resumeProviderBoundAgentRunAfterApproval({
   const appendScopedRunEvent = (event: AgentEvent) => appendRunEvent(
     run.id,
     event,
-    { tenantId, executionScope },
+    {
+      tenantId,
+      executionScope,
+      runContractEnvelope: continuation.runContractEnvelope,
+    },
   );
   if (
     !providerState ||
@@ -2501,6 +2619,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   ) {
     const nextContinuation: AgentRunContinuation = {
       executionScope,
+      runContractEnvelope: continuation.runContractEnvelope,
       conversationItems: [],
       instructions: continuation.instructions,
       response,
@@ -2866,7 +2985,11 @@ export async function rejectAgentRunApproval({
   }
   const message = reason ? `Approval rejected: ${reason}` : "Approval rejected by operator.";
   await failAgentRun(run.id, message);
-  await appendRunEvent(run.id, { type: "error", message });
+  await appendRunEvent(run.id, { type: "error", message }, {
+    tenantId,
+    executionScope: run.continuation?.executionScope,
+    runContractEnvelope: run.continuation?.runContractEnvelope,
+  });
   const actorId = run.continuation?.context.actorId;
   if (actorId) {
     await syncMissionExecutorSafely({
@@ -3425,6 +3548,34 @@ function contextRationaleForRun(input: {
     return ["Only the saved context explicitly selected by the user was eligible."];
   }
   return input.rationale.slice(0, 4);
+}
+
+function runContractInteractionMode(mode: AgentRunRequest["mode"]) {
+  if (mode === "execute") return "execute" as const;
+  if (mode === "orchestrate") return "orchestrate" as const;
+  return "inform" as const;
+}
+
+function runContractScopeDecision(
+  decision: Extract<AgentEvent, { type: "harness" }>["contextDecision"],
+) {
+  if (decision === "disabled_session") return "disabled" as const;
+  if (decision === "excluded_by_user") return "user_excluded" as const;
+  if (decision === "selected_by_user") return "user_selected" as const;
+  if (decision === "retrieved") return "automatic" as const;
+  return "skipped" as const;
+}
+
+function logRunContractShadowFailure(
+  phase: "initial" | "resolved",
+  error: unknown,
+) {
+  console.warn(
+    `Run contract ${phase} shadow build failed.`,
+    String(redactSensitive(
+      error instanceof Error ? error.message : "Unknown run contract error.",
+    )).slice(0, 1_000),
+  );
 }
 
 function stableToolboxFingerprint(tools: readonly ToolboxEntry[]) {

@@ -91,6 +91,24 @@ Key properties:
 - Each run emits one `run.harness` receipt with the effective context decision, model route, tool/skill set, approval mode, execution budgets, and contract hashes.
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
+P0.2 builds and validates a versioned run-contract envelope in shadow mode
+while the legacy run record stays authoritative. The envelope binds the scoped
+agent principal, intent and outcome contracts, resolved context and harness
+manifests, and an optional terminal receipt. Approval-paused runs retain the
+active envelope inside their private continuation so resumption can emit a
+consistent receipt. `run.contracts.bound`, `run.manifests.resolved`, and
+`run.terminal_receipt.recorded` carry the same compact event projection: opaque
+IDs, SHA-256 digests, counts, and closed-state enums only. Full contract bodies,
+prompt or retrieved content, tool input/output, and model reasoning do not enter
+these event receipts or trajectory metadata.
+
+P0.4 provides a versioned, client-safe canonical status adapter as an additive
+compatibility projection. Legacy completion maps to `unverified`; only a valid,
+outcome-evaluator terminal receipt with verified required outcomes can project
+`succeeded`. Existing store states, state machines, mutation inputs, controls,
+and UI presentation remain authoritative and unchanged during this shadow
+stage.
+
 ## Durable workflows
 
 Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured output), persisted, and executed node-by-node through queue leases (`omni_operation_jobs`): lease → tick → retry with backoff (max 5 attempts) → recovery for stale leases. Approval nodes pause until signaled. The daily cron plus `after()` drains advance work; see [deployment.md](deployment.md) for cadence options.

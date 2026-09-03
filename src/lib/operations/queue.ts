@@ -12,6 +12,11 @@ import { inspectOperationsRecovery } from "@/lib/operations/recovery";
 import { listAgentRuns } from "@/lib/runs/store";
 import { publicAgentRun } from "@/lib/runs/public";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  canonicalStatusForApproval,
+  canonicalStatusForSloPolicyChange,
+  type CanonicalStatusProjection,
+} from "@/lib/status/canonical";
 import { getToolExecutionStats, listPendingToolApprovals, listToolExecutions } from "@/lib/tools/audit-store";
 import {
   getWorkflowPlanForRun,
@@ -32,6 +37,7 @@ export type ApprovalQueueItem =
       id: string;
       title: string;
       status: "approval_required";
+      canonicalStatus: CanonicalStatusProjection;
       riskLevel: number;
       requestedBy?: string;
       tenantId?: string;
@@ -45,6 +51,7 @@ export type ApprovalQueueItem =
       id: string;
       title: string;
       status: "waiting_approval";
+      canonicalStatus: CanonicalStatusProjection;
       riskLevel: number;
       requestedBy?: string;
       tenantId?: string;
@@ -58,6 +65,7 @@ export type ApprovalQueueItem =
       id: string;
       title: string;
       status: "pending";
+      canonicalStatus: CanonicalStatusProjection;
       riskLevel: number;
       requestedBy?: string;
       tenantId?: string;
@@ -183,6 +191,7 @@ function toolApprovalToQueueItem(record: ToolExecutionRecord): ApprovalQueueItem
     id: record.id,
     title: record.toolName,
     status: "approval_required",
+    canonicalStatus: canonicalStatusForApproval("approval_required"),
     riskLevel: record.riskLevel,
     requestedBy: record.actorId,
     tenantId: record.tenantId,
@@ -226,6 +235,7 @@ function workflowApprovalToQueueItem(
     id: record.id,
     title: record.goal,
     status: "waiting_approval",
+    canonicalStatus: canonicalStatusForApproval("waiting_approval"),
     riskLevel: 2,
     reason: record.error || "Workflow requires human approval before execution.",
     createdAt: record.updatedAt,
@@ -250,6 +260,7 @@ function sloPolicyChangeToQueueItem(
     id: record.id,
     title: `SLO ${record.action.replace(/_/g, " ")}: ${title}`,
     status: "pending",
+    canonicalStatus: canonicalStatusForSloPolicyChange(record),
     riskLevel: record.riskLevel,
     requestedBy: record.requestedBy,
     tenantId: record.tenantId,

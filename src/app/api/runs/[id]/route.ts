@@ -201,7 +201,12 @@ async function DELETEHandler(
         run.error || "Canceled by the operator.",
         { tenantId: auth.tenantId },
       )).length;
-      await ensureRunCancellationEvent(run.id, run.error || "Canceled by the operator.", auth.tenantId);
+      await ensureRunCancellationEvent(
+        run.id,
+        run.error || "Canceled by the operator.",
+        auth.tenantId,
+        run.continuation,
+      );
       await syncMissionExecutorSafely({
         executorType: "agent_run",
         executorId: run.id,
@@ -229,7 +234,12 @@ async function DELETEHandler(
         reason,
         { tenantId: auth.tenantId },
       ));
-      await ensureRunCancellationEvent(current.id, current.error || reason, auth.tenantId);
+      await ensureRunCancellationEvent(
+        current.id,
+        current.error || reason,
+        auth.tenantId,
+        run.continuation,
+      );
       await syncMissionExecutorSafely({
         executorType: "agent_run",
         executorId: current.id,
@@ -258,7 +268,12 @@ async function DELETEHandler(
     reason,
     { tenantId: auth.tenantId },
   ));
-  await ensureRunCancellationEvent(run.id, reason, auth.tenantId);
+  await ensureRunCancellationEvent(
+    run.id,
+    reason,
+    auth.tenantId,
+    run.continuation,
+  );
   await syncMissionExecutorSafely({
     executorType: "agent_run",
     executorId: run.id,
@@ -275,8 +290,13 @@ async function ensureRunCancellationEvent(
   runId: string,
   message: string,
   tenantId: string,
+  continuation?: NonNullable<Awaited<ReturnType<typeof getAgentRun>>>["continuation"],
 ) {
   const events = await listStreamEvents(`run:${runId}`, { tenantId });
   if (events.some((event) => event.type === "run.canceled")) return;
-  await appendRunEvent(runId, { type: "canceled", message }, { tenantId });
+  await appendRunEvent(runId, { type: "canceled", message }, {
+    tenantId,
+    executionScope: continuation?.executionScope,
+    runContractEnvelope: continuation?.runContractEnvelope,
+  });
 }
