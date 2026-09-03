@@ -164,7 +164,12 @@ async function executeGateway<
         false,
       ),
       {
-        usage: {},
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+          totalTokens: 0,
+        },
         latencyMs: gatewayLatencyMs,
         model: "unresolved",
       },
