@@ -1,15 +1,22 @@
 # API and Configuration Reference
 
-All routes are under `/api`. JSON is the default request/response format; `/api/agent` returns server-sent events. Dynamic IDs are opaque strings and callers must not infer tenancy from them.
+All routes are under `/api`. The canonical production origin is
+`https://asael.bennierichard.com`. JSON is the default request/response format;
+`/api/agent` returns server-sent events. Dynamic IDs are opaque strings and
+callers must not infer tenancy from them.
 
 ## Authentication
 
-- Browser sessions use the `omniagent_session` cookie. Login sets `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` in production.
+- Browser sessions use the `__Host-asael_session` cookie in production and `asael_session` locally. Login sets `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` in production.
 - `GET /api/auth/session` is safe to call anonymously and reports whether auth is enabled and whether the request is authenticated.
 - Internal automation sends `x-omni-internal-auth` with `OMNIAGENT_INTERNAL_AUTH_SECRET` plus explicit tenant, user, and role headers. Never accept those identity headers without the secret in production.
-- Inbound MCP uses one-time-visible `omni_sk_...` service API keys created in Settings. Only a SHA-256 digest is stored. The verified key scope is intersected with the actor's enabled MCP export policy; neither layer can grant access by itself.
+- Inbound MCP uses one-time-visible `asael_sk_...` service API keys created in Settings. Only a SHA-256 digest is stored. Existing `omni_sk_...` keys remain verifiable during the compatibility window. The verified key scope is intersected with the actor's enabled MCP export policy; neither layer can grant access by itself.
 - Vercel cron uses `Authorization: Bearer <CRON_SECRET>` with `GET /api/workflows/tick`.
 - The dedicated worker uses internal authentication with `POST /api/workflows/tick`.
+
+Existing `OMNIAGENT_*`, `x-omni-*`, `x-omniagent-*`, and `omni_sk_...` names
+remain stable wire and deployment compatibility contracts; they are not
+product display names.
 
 Viewer permissions cover protected reads. Operator permissions cover agent runs, workflows, evaluations, and routine tool actions. Admin permissions cover identity, connectors, security controls, and other high-risk configuration. Each route performs its own action-level authorization; a valid session alone does not guarantee access.
 
@@ -71,6 +78,6 @@ Connector API records never contain credential plaintext or sealed payloads. App
 
 ## Configuration precedence and safety
 
-Application configuration comes from process environment variables. `NEXT_PUBLIC_*` values are embedded into browser bundles at build time; everything else must remain server-only. Vercel supplies deployment metadata through `VERCEL_*`. The worker reads `OMNIAGENT_WORKER_BASE_URL`, then `NEXT_PUBLIC_APP_URL`, then `BASE_URL`.
+Application configuration comes from process environment variables. `NEXT_PUBLIC_*` values are embedded into browser bundles at build time; everything else must remain server-only. Set the production `NEXT_PUBLIC_APP_URL` to exactly `https://asael.bennierichard.com`. Vercel supplies deployment metadata through `VERCEL_*`. The worker reads `OMNIAGENT_WORKER_BASE_URL`, then `NEXT_PUBLIC_APP_URL`, then `BASE_URL`.
 
 Use `.env.example` for the full supported list and defaults. Production-required values and operational smoke credentials are separated there. Smoke-only `SMOKE_*` values belong in the CI secret store, not in the web deployment. See [deployment.md](deployment.md) for rollout and rotation guidance.

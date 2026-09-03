@@ -27,7 +27,7 @@ If pgvector is unavailable, set `OMNIAGENT_LOG_PGVECTOR_FAILURES=true` temporari
 - For first boot, set both bootstrap email and password before the first auth-store request.
 - Production auth cannot be disabled. Local auth follows `OMNIAGENT_AUTH_ENABLED`.
 - A 429 response means the in-process IP or account login limit was reached; honor `Retry-After`.
-- After a successful login, verify the `omniagent_session` cookie is present and that HTTPS deployments receive the `Secure` attribute.
+- After a successful login, verify the `__Host-asael_session` cookie is present in production (`asael_session` locally) and that HTTPS deployments receive the `Secure` attribute.
 
 ## Protected API returns 401 or 403
 

@@ -2,7 +2,12 @@
 
 import { Moon, Monitor, Sun } from "lucide-react";
 import { useSyncExternalStore } from "react";
-import { getStoredTheme, setStoredTheme, type ThemePreference } from "@/components/theme/theme-provider";
+import {
+  getStoredTheme,
+  setStoredTheme,
+  themeChangeEvent,
+  type ThemePreference,
+} from "@/components/theme/theme-provider";
 
 const order: ThemePreference[] = ["system", "dark", "light"];
 const options: Array<{ value: ThemePreference; label: string; icon: typeof Sun }> = [
@@ -67,11 +72,11 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
 }
 
 function subscribeToTheme(callback: () => void) {
-  window.addEventListener("omniagent-theme-change", callback);
+  window.addEventListener(themeChangeEvent, callback);
   window.addEventListener("storage", callback);
 
   return () => {
-    window.removeEventListener("omniagent-theme-change", callback);
+    window.removeEventListener(themeChangeEvent, callback);
     window.removeEventListener("storage", callback);
   };
 }

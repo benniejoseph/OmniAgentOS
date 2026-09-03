@@ -1,6 +1,7 @@
 # Getting Started
 
-Run OmniAgent OS locally and complete your first agent task in about 10 minutes.
+Run Asael locally and complete your first agent task in about 10 minutes. The
+canonical production app is [asael.bennierichard.com](https://asael.bennierichard.com).
 
 ## Prerequisites
 

@@ -1,3 +1,5 @@
+import { ASAEL_PLAYWRIGHT_MCP_ENDPOINT } from "@/lib/connectors/mcp-trust";
+
 export type ConnectionCatalogItem = {
   id: string;
   name: string;
@@ -135,7 +137,7 @@ export const connectionCatalog: ConnectionCatalogItem[] = [
     category: "browser",
     adapter: "mcp",
     status: "requires_credentials",
-    endpoint: "https://omniagent-os-browser.fly.dev/mcp",
+    endpoint: ASAEL_PLAYWRIGHT_MCP_ENDPOINT,
     authEnvVars: [],
     credentialMode: "app_vault",
     authHeaderName: "authorization",

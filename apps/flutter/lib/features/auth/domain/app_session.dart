@@ -19,7 +19,7 @@ class AppSession {
       email: (user['email'] ?? '').toString(),
       displayName: (user['name'] ?? user['displayName'] ?? 'Operator')
           .toString(),
-      workspaceName: (workspace['name'] ?? json['workspaceName'] ?? 'OmniAgent')
+      workspaceName: (workspace['name'] ?? json['workspaceName'] ?? 'Asael')
           .toString(),
       role: (user['role'] ?? json['role'] ?? 'member').toString(),
     );

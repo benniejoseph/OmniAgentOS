@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:omniagent/features/missions/missions.dart';
+import 'package:asael/features/missions/missions.dart';
 
 void main() {
   test('decodes public mission detail projection', () {

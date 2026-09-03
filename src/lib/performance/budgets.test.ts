@@ -9,7 +9,7 @@ describe("frontend performance budgets", () => {
     const heroAsset = path.join(
       root,
       "public",
-      "omniagent-command-center.webp",
+      "asael-command-center.webp",
     );
     const markAsset = path.join(root, "public", "asael-mark-128.webp");
     const [metadata, markMetadata, hero, landing] = await Promise.all([
@@ -39,14 +39,14 @@ describe("frontend performance budgets", () => {
 
     expect(metadata.size).toBeLessThanOrEqual(budgets.heroImageMaxBytes);
     expect(markMetadata.size).toBeLessThanOrEqual(8_000);
-    expect(hero).toContain('src="/omniagent-command-center.webp"');
+    expect(hero).toContain('src="/asael-command-center.webp"');
     expect(hero).toContain("preload");
     expect(hero).toContain("unoptimized");
     expect(hero).toContain("sizes=");
     expect(hero).not.toContain("animate-drift");
     expect(landing).not.toContain('"use client"');
     await expect(
-      stat(path.join(root, "public", "omniagent-command-center.png")),
+      stat(path.join(root, "public", "asael-command-center.png")),
     ).rejects.toThrow();
   });
 

@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:omniagent/features/results/results.dart';
+import 'package:asael/features/results/results.dart';
 
 void main() {
   test('agent result exposes grounding evidence and cancel state', () {

@@ -25,7 +25,13 @@ export type {
   ServiceApiScope,
 } from "@/lib/settings/types";
 
-const TOKEN_PREFIX = "omni_sk";
+const TOKEN_PREFIX = "asael_sk";
+const TOKEN_DIGEST_DOMAINS = {
+  asael_sk: "asael:service-api-key:v1\0",
+  omni_sk: "omniagent:service-api-key:v1\0",
+} as const;
+
+type ServiceApiKeyTokenPrefix = keyof typeof TOKEN_DIGEST_DOMAINS;
 
 export class ServiceApiKeyError extends Error {
   constructor(message: string, readonly status: 400 | 403 | 404 = 400) {
@@ -59,7 +65,7 @@ export async function createServiceApiKey(input: {
     tenantId: input.tenantId,
     actorId: input.actorId,
     name,
-    tokenHash: tokenDigest(token),
+    tokenHash: tokenDigest(token, TOKEN_PREFIX),
     tokenPrefix: `${TOKEN_PREFIX}_${tenantSegment.slice(0, 10)}…${id.slice(0, 8)}`,
     tokenLastFour: secret.slice(-4),
     scopes,
@@ -119,7 +125,7 @@ export async function resolveServiceApiKeyToken(
   if (!record || record.status !== "active") return null;
   if (record.expiresAt && Date.parse(record.expiresAt) <= Date.now()) return null;
   const expected = Buffer.from(record.tokenHash, "hex");
-  const supplied = Buffer.from(tokenDigest(token), "hex");
+  const supplied = Buffer.from(tokenDigest(token, parsed.tokenPrefix), "hex");
   if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) return null;
 
   const lastUsedAt = new Date().toISOString();
@@ -174,22 +180,25 @@ function redactServiceApiKey(record: RedactedServiceApiKey & { tokenHash: string
 }
 
 function parseToken(token: string) {
-  const match = token.match(/^omni_sk_([A-Za-z0-9_-]{1,180})\.([0-9a-f-]{36})\.([A-Za-z0-9_-]{43})$/);
+  const match = token.match(
+    /^(asael_sk|omni_sk)_([A-Za-z0-9_-]{1,180})\.([0-9a-f-]{36})\.([A-Za-z0-9_-]{43})$/,
+  );
   if (!match) return undefined;
   try {
-    const tenantBuffer = Buffer.from(match[1], "base64url");
-    if (tenantBuffer.toString("base64url") !== match[1]) return undefined;
+    const tokenPrefix = match[1] as ServiceApiKeyTokenPrefix;
+    const tenantBuffer = Buffer.from(match[2], "base64url");
+    if (tenantBuffer.toString("base64url") !== match[2]) return undefined;
     const tenantId = tenantBuffer.toString("utf8");
     if (!tenantId || Buffer.byteLength(tenantId, "utf8") > 120 || /[^a-zA-Z0-9_.:-]/.test(tenantId)) return undefined;
-    return { tenantId, keyId: match[2] };
+    return { tenantId, keyId: match[3], tokenPrefix };
   } catch {
     return undefined;
   }
 }
 
-function tokenDigest(token: string) {
+function tokenDigest(token: string, tokenPrefix: ServiceApiKeyTokenPrefix) {
   return createHash("sha256")
-    .update("omniagent:service-api-key:v1\0", "utf8")
+    .update(TOKEN_DIGEST_DOMAINS[tokenPrefix], "utf8")
     .update(token, "utf8")
     .digest("hex");
 }

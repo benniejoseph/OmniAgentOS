@@ -1,6 +1,8 @@
 # Native mobile authentication API
 
-The Flutter client uses a dedicated opaque-token flow. Browser session cookies and their CSRF protections are unchanged.
+The Asael Flutter client uses a dedicated opaque-token flow against
+`https://asael.bennierichard.com` by default. Browser session cookies and their
+CSRF protections are unchanged.
 
 ## Endpoints
 
@@ -13,7 +15,7 @@ All mobile auth responses are `private, no-store`. Errors use `{ "error": { "cod
 
 ## Client storage and rotation
 
-Store both tokens only in iOS Keychain or Android Keystore-backed secure storage. Never log or place tokens in analytics, crash metadata, URLs, or ordinary preferences. Refresh proactively shortly before `accessExpiresAt`; serialize refresh calls per device and atomically replace both returned tokens. On any refresh `401`, erase both tokens and return to sign-in.
+Store both tokens only in iOS Keychain or Android Keystore-backed secure storage. Never log or place tokens in analytics, crash metadata, URLs, or ordinary preferences. Refresh proactively shortly before `accessExpiresAt`; serialize refresh calls per device and atomically replace both returned tokens. On any refresh `401`, erase both tokens and return to sign-in. The client writes `asael.session_token` and migrates an existing legacy secure-storage entry on first read so installed users remain signed in.
 
 Access and refresh tokens are SHA-256 hashed at rest. A session is bound to one user, tenant, membership, and stable installation/device identifier. Access defaults to 15 minutes and refresh to 30 days; operators may set bounded `OMNIAGENT_MOBILE_ACCESS_TTL_SECONDS` and `OMNIAGENT_MOBILE_REFRESH_TTL_DAYS` values.
 

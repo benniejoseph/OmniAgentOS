@@ -11,7 +11,7 @@ import {
   McpAccessError,
   mcpBearerChallenge,
 } from "@/lib/mcp/auth";
-import { createOmniMcpServer } from "@/lib/mcp/server";
+import { createAsaelMcpServer } from "@/lib/mcp/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -72,7 +72,7 @@ async function POSTHandler(request: Request) {
     return secureMcpResponse(response, allowedOrigin);
   }
 
-  const server = createOmniMcpServer(principal);
+  const server = createAsaelMcpServer(principal);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,

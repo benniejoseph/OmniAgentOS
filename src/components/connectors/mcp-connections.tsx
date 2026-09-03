@@ -21,6 +21,10 @@ import {
   Trash2,
 } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
+import {
+  ASAEL_PLAYWRIGHT_MCP_ENDPOINT,
+  isAsaelPlaywrightMcpEndpoint,
+} from "@/lib/connectors/mcp-trust";
 
 type McpAuthType = "bearer_vault" | "bearer_env" | "none";
 
@@ -69,7 +73,7 @@ type Notice = {
 
 const GITHUB_MCP_ENDPOINT = "https://api.githubcopilot.com/mcp/x/all";
 const BROWSER_USE_MCP_ENDPOINT = "https://api.browser-use.com/v3/mcp";
-const PLAYWRIGHT_MCP_ENDPOINT = "https://omniagent-os-browser.fly.dev/mcp";
+const PLAYWRIGHT_MCP_ENDPOINT = ASAEL_PLAYWRIGHT_MCP_ENDPOINT;
 
 export function McpConnections({
   payload,
@@ -160,7 +164,7 @@ export function McpConnections({
     }
     if (
       authType === "bearer_vault" &&
-      isOmniAgentPlaywrightMcpEndpoint(endpoint.trim()) &&
+      isAsaelPlaywrightMcpEndpoint(endpoint.trim()) &&
       !/^[A-Za-z0-9._~-]{32,256}$/.test(bearerToken)
     ) {
       setNotice({
@@ -191,8 +195,8 @@ export function McpConnections({
     const officialGitHubEndpoint = submittedEndpoint === GITHUB_MCP_ENDPOINT;
     const officialBrowserUseEndpoint =
       isOfficialBrowserUseMcpEndpoint(submittedEndpoint);
-    const omniAgentPlaywrightEndpoint =
-      isOmniAgentPlaywrightMcpEndpoint(submittedEndpoint);
+    const asaelPlaywrightEndpoint =
+      isAsaelPlaywrightMcpEndpoint(submittedEndpoint);
     setBearerToken("");
     setPendingAction("create");
     setNotice(undefined);
@@ -212,11 +216,11 @@ export function McpConnections({
             ...(authType === "bearer_env"
               ? { authTokenEnv: authTokenEnv.trim() }
               : {}),
-            defaultRiskLevel: omniAgentPlaywrightEndpoint ? 1 : 2,
+            defaultRiskLevel: asaelPlaywrightEndpoint ? 1 : 2,
             approvalRequired:
               !officialGitHubEndpoint &&
               !officialBrowserUseEndpoint &&
-              !omniAgentPlaywrightEndpoint,
+              !asaelPlaywrightEndpoint,
             discover: discoverOnAdd,
           }),
         },
@@ -264,7 +268,7 @@ export function McpConnections({
       return;
     }
     if (
-      isOmniAgentPlaywrightMcpEndpoint(connector.endpoint) &&
+      isAsaelPlaywrightMcpEndpoint(connector.endpoint) &&
       !/^[A-Za-z0-9._~-]{32,256}$/.test(credentialValue)
     ) {
       setNotice({
@@ -453,7 +457,7 @@ export function McpConnections({
       actionId: `delete-${connector.id}`,
       path: `/api/connectors/${encodeURIComponent(connector.id)}`,
       method: "DELETE",
-      success: `${connectorLabel(connector)} removed from OmniAgent.`,
+      success: `${connectorLabel(connector)} removed from Asael.`,
       failure: "The MCP connection could not be deleted.",
       after: () => setConfirmDeleteId(undefined),
     });
@@ -702,7 +706,7 @@ export function McpConnections({
                   <div className="min-w-0">
                     <p className="text-sm font-semibold">Connect Playwright</p>
                     <p className="mt-1 max-w-3xl text-xs leading-5 text-muted">
-                      Use OmniAgent&apos;s self-hosted, open-source Playwright MCP
+                      Use Asael&apos;s self-hosted, open-source Playwright MCP
                       service. Each task gets an isolated browser, while the
                       service token stays encrypted in this app. Remote page
                       content is always treated as untrusted data.{" "}
@@ -796,7 +800,7 @@ export function McpConnections({
                 </span>
                 <span className="min-w-0">
                   <span className="block text-sm font-semibold">
-                    Store token securely in OmniAgent
+                    Store token securely in Asael
                   </span>
                   <span className="mt-1 block text-xs leading-5 text-muted">
                     Recommended. Encrypted by the app and never shown again after
@@ -1058,7 +1062,7 @@ export function McpConnections({
             </div>
           ) : !error ? (
             <div className="mt-4 rounded-md border border-dashed border-line bg-background p-4 text-sm leading-6 text-muted">
-              Add a server above. OmniAgent will discover its tools and hold any
+              Add a server above. Asael will discover its tools and hold any
               new contracts for review.
             </div>
           ) : null}
@@ -1164,7 +1168,7 @@ function ConnectionRow({
               read directly. Remote page content remains untrusted.
             </p>
           ) : null}
-          {isOmniAgentPlaywrightMcpEndpoint(connector.endpoint) ? (
+          {isAsaelPlaywrightMcpEndpoint(connector.endpoint) ? (
             <p className="mt-2 text-xs leading-5 text-muted">
               Browser state is isolated to the current tenant, actor, and task.
               Navigation and inspection run directly; interactive actions pause
@@ -1382,8 +1386,8 @@ function ConnectionRow({
 
       {confirmRemoveCredential ? (
         <Confirmation
-          title="Remove this token from OmniAgent?"
-          description="The connection will be disabled. Removing a token from OmniAgent does not revoke it at the provider; revoke it separately in the provider account if it should no longer work anywhere."
+          title="Remove this token from Asael?"
+          description="The connection will be disabled. Removing a token from Asael does not revoke it at the provider; revoke it separately in the provider account if it should no longer work anywhere."
           confirmLabel="Remove stored token"
           busy={pendingAction === `remove-credential-${connector.id}`}
           onCancel={onToggleRemoveCredential}
@@ -1394,7 +1398,7 @@ function ConnectionRow({
       {confirmDelete ? (
         <Confirmation
           title={`Delete ${connectorLabel(connector)}?`}
-          description="This removes the connection and its discovered tools from OmniAgent. Any provider token must still be revoked separately at the provider."
+          description="This removes the connection and its discovered tools from Asael. Any provider token must still be revoked separately at the provider."
           confirmLabel="Delete connection"
           busy={pendingAction === `delete-${connector.id}`}
           onCancel={onToggleDelete}
@@ -1632,7 +1636,7 @@ function credentialStatusDetail(connector: McpConnector) {
         : undefined,
     ]
       .filter(Boolean)
-      .join(" · ") || "Encrypted by OmniAgent. The token cannot be viewed or copied.";
+      .join(" · ") || "Encrypted by Asael. The token cannot be viewed or copied.";
   }
   if (connector.authType === "bearer_env") {
     return "The token reference is managed by the deployment environment and is not stored in this app. Runtime availability is reported by the connection status.";
@@ -1652,6 +1656,9 @@ function connectorLabel(connector: McpConnector) {
 
 function displayEndpoint(endpoint?: string) {
   if (!endpoint) return "Endpoint unavailable";
+  if (isAsaelPlaywrightMcpEndpoint(endpoint)) {
+    return ASAEL_PLAYWRIGHT_MCP_ENDPOINT;
+  }
   try {
     const url = new URL(endpoint);
     return `${url.origin}${url.pathname}`;
@@ -1693,25 +1700,6 @@ function isOfficialBrowserUseMcpEndpoint(endpoint?: string) {
         url.pathname === "/mcp" ||
         url.pathname === "/mcp/"
       )
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isOmniAgentPlaywrightMcpEndpoint(endpoint?: string) {
-  if (!endpoint) return false;
-  try {
-    const url = new URL(endpoint);
-    return (
-      url.protocol === "https:" &&
-      url.hostname === "omniagent-os-browser.fly.dev" &&
-      url.port === "" &&
-      url.username === "" &&
-      url.password === "" &&
-      (url.pathname === "/mcp" || url.pathname === "/mcp/") &&
-      url.search === "" &&
-      url.hash === ""
     );
   } catch {
     return false;

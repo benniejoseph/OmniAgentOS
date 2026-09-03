@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:omniagent/features/inbox/inbox.dart';
+import 'package:asael/features/inbox/inbox.dart';
 
 void main() {
   test('decodes unified approval queue', () {

@@ -10,7 +10,7 @@ import {
   callMcpTool,
   type McpSessionScope,
 } from "@/lib/connectors/mcp-client";
-import { isOmniAgentPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
+import { isAsaelPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { getMcpConnector, parseMcpToolId } from "@/lib/connectors/store";
 import { appendDomainEventSafely } from "@/lib/events/store";
 import {
@@ -103,7 +103,7 @@ export async function captureBrowserFrameAfterToolSafely(input: {
     if (
       !connector ||
       connector.status !== "active" ||
-      !isOmniAgentPlaywrightMcpEndpoint(connector.endpoint)
+      !isAsaelPlaywrightMcpEndpoint(connector.endpoint)
     ) {
       return undefined;
     }

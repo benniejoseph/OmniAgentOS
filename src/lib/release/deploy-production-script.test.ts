@@ -54,7 +54,7 @@ describe("paired production deployment", () => {
       "fly deploy --app omniagent-os-worker --build-arg OMNIAGENT_RELEASE_SHA=test-release --env OMNIAGENT_WORKER_BASE_URL=https://staged-deployment.example",
     );
     expect(commands[5]).toContain(
-      "--env OMNIAGENT_WORKER_CANONICAL_BASE_URL=https://omniagent-os.vercel.app",
+      "--env OMNIAGENT_WORKER_CANONICAL_BASE_URL=https://asael.bennierichard.com",
     );
     expect(commands[5]).toContain(
       "--env OMNIAGENT_WORKER_RELEASE_HOLD=true",
@@ -85,19 +85,19 @@ describe("paired production deployment", () => {
     );
     const canonicalReadinessIndex = commands.findIndex((command) =>
       command.includes("wait for canonical web readiness") &&
-      command.includes("https://omniagent-os.vercel.app/api/health") &&
+      command.includes("https://asael.bennierichard.com/api/health") &&
       command.includes("revision=test-release"),
     );
     const canonicalSmokeIndex = commands.findIndex((command) =>
-      command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
+      command.includes("BASE_URL=https://asael.bennierichard.com") &&
       command.includes("npm run test:production-smoke"),
     );
     const canonicalPreviewIndex = commands.findIndex((command) =>
-      command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
+      command.includes("BASE_URL=https://asael.bennierichard.com") &&
       command.includes("npm run benchmark:preview"),
     );
     const canonicalDashboardIndex = commands.findIndex((command) =>
-      command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
+      command.includes("BASE_URL=https://asael.bennierichard.com") &&
       command.includes("npm run benchmark:dashboard"),
     );
     const workerActivationIndex = commands.findIndex((command) =>
@@ -115,7 +115,7 @@ describe("paired production deployment", () => {
     const postActivationSecurityIndex = commands.findIndex(
       (command, index) =>
         index > workerActivationIndex &&
-        command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
+        command.includes("BASE_URL=https://asael.bennierichard.com") &&
         command.includes("OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS=true") &&
         command.includes(
           "OMNIAGENT_WORKER_HEARTBEAT_NOT_BEFORE=<activation-started-at>",
@@ -125,7 +125,7 @@ describe("paired production deployment", () => {
     const postActivationEvidenceIndex = commands.findIndex(
       (command, index) =>
         index > workerActivationIndex &&
-        command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
+        command.includes("BASE_URL=https://asael.bennierichard.com") &&
         command.includes("OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS=true") &&
         command.includes(
           "OMNIAGENT_WORKER_HEARTBEAT_NOT_BEFORE=<activation-started-at>",
@@ -183,7 +183,7 @@ describe("paired production deployment", () => {
       command.includes("wait for canonical worker target registration window"),
     );
     const canonicalPaidIndex = commands.findIndex((command) =>
-      command.includes("BASE_URL=https://omniagent-os.vercel.app") &&
+      command.includes("BASE_URL=https://asael.bennierichard.com") &&
       command.includes("EXPECTED_REVISION=test-release") &&
       command.includes("LIVE_VERIFY_PAID_OPENAI=CONFIRMED") &&
       command.includes("npm run smoke:paid-agent"),
@@ -229,7 +229,7 @@ describe("paired production deployment", () => {
     const baseEnvironment = {
       ...process.env,
       OMNIAGENT_RELEASE_SHA: "release-ready",
-      BASE_URL: "https://omniagent-os.vercel.app",
+      BASE_URL: "https://asael.bennierichard.com",
       OMNIAGENT_INTERNAL_AUTH_SECRET: "internal-test-secret",
       OPENAI_API_KEY: "",
       RELEASE_EVIDENCE_OUTPUT: evidenceOutput,
@@ -270,7 +270,7 @@ describe("paired production deployment", () => {
       ["scripts/deploy-production.mjs", "--configuration-probe"],
       {
         ...baseEnvironment,
-        BASE_URL: "https://omniagent-os.vercel.app/",
+        BASE_URL: "https://asael.bennierichard.com/",
         OMNIAGENT_OPENAI_GATEWAY_URL:
           "https://omniagent-os-worker.fly.dev/v1",
         OMNIAGENT_OPENAI_GATEWAY_TOKEN: token,
@@ -280,12 +280,12 @@ describe("paired production deployment", () => {
 
     for (const invalidBaseUrl of [
       "http://omniagent-os.vercel.app",
-      "https://omniagent-os.vercel.app:443",
-      "https://omniagent-os.vercel.app:8443",
+      "https://asael.bennierichard.com:443",
+      "https://asael.bennierichard.com:8443",
       "https://user@omniagent-os.vercel.app",
-      "https://omniagent-os.vercel.app/path",
-      "https://omniagent-os.vercel.app?target=other",
-      "https://omniagent-os.vercel.app#other",
+      "https://asael.bennierichard.com/path",
+      "https://asael.bennierichard.com?target=other",
+      "https://asael.bennierichard.com#other",
       "https://other-project.vercel.app",
     ]) {
       const invalid = await runProcess(
@@ -301,7 +301,7 @@ describe("paired production deployment", () => {
       );
       expect(invalid.code).toBe(1);
       expect(invalid.stderr).toContain(
-        "BASE_URL must be exactly https://omniagent-os.vercel.app",
+        "BASE_URL must be exactly https://asael.bennierichard.com",
       );
     }
 
@@ -833,7 +833,7 @@ describe("paired production deployment", () => {
     );
     expect(deployScript).toContain("sensitive command output was suppressed");
     expect(deployScript).toContain(
-      'const PRODUCTION_BASE_URL = "https://omniagent-os.vercel.app"',
+      'const PRODUCTION_BASE_URL = "https://asael.bennierichard.com"',
     );
     expect(deployScript).toContain(
       "candidate?.status ?? candidate?.Status",

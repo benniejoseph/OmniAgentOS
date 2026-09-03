@@ -14,7 +14,7 @@ kill_timeout = "300s"
   strategy = "immediate"
 
 [env]
-  OMNIAGENT_WORKER_BASE_URL = "https://omniagent-os.vercel.app"
+  OMNIAGENT_WORKER_BASE_URL = "https://asael.bennierichard.com"
   OMNIAGENT_DEFAULT_TENANT = "default"
   OMNIAGENT_WORKER_PROTOCOL_VERSION = "1"
   OMNIAGENT_WORKER_INTERVAL_MS = "5000"

@@ -213,7 +213,7 @@ class _BrandMark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Semantics(
-    label: 'OmniAgent',
+    label: 'Asael',
     child: Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -236,7 +236,7 @@ class _BrandMark extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'OmniAgent',
+                'Asael',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
               ),
               Text('System online', style: TextStyle(fontSize: 11)),

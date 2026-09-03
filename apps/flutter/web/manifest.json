@@ -1,11 +1,11 @@
 {
-    "name": "omniagent",
-    "short_name": "omniagent",
+    "name": "Asael",
+    "short_name": "Asael",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "Asael command center for mobile and desktop.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

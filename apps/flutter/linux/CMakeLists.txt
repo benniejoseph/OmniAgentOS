@@ -2,11 +2,9 @@
 cmake_minimum_required(VERSION 3.13)
 project(runner LANGUAGES CXX)
 
-# The name of the executable created for the application. Change this to change
-# the on-disk name of your application.
+# Compatibility identity: keep the existing executable name and GTK application
+# ID so installed builds, launchers, and upgrades continue to resolve.
 set(BINARY_NAME "omniagent")
-# The unique GTK application identifier for this application. See:
-# https://wiki.gnome.org/HowDoI/ChooseApplicationID
 set(APPLICATION_ID "app.omniagent.omniagent")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent

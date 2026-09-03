@@ -13,7 +13,7 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_OPENAI_GATEWAY_URL`: required for the `sin1` topology and pinned to `https://omniagent-os-worker.fly.dev/v1`. An explicit `:443` and one trailing slash canonicalize to that value; alternate hosts, ports, paths, credentials, query strings, and fragments fail closed.
 - `OMNIAGENT_OPENAI_GATEWAY_TOKEN`: an independent URL-safe 32-256 character secret stored with the same value in Vercel and Fly. Proxy routes require it; it is never returned in release evidence.
 - `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN`: optional Fly-only overlap secret during a token rotation. When present it must independently be URL-safe, 32-256 characters, and different from the primary token. Never set it on Vercel.
-- `OMNIAGENT_PLAYWRIGHT_MCP_TOKEN`: independent URL-safe 32-256 character secret stored on the dedicated browser Fly app and, for each authorized workspace, in OmniAgent's encrypted Playwright connector credential. It is not a Vercel environment variable.
+- `OMNIAGENT_PLAYWRIGHT_MCP_TOKEN`: independent URL-safe 32-256 character secret stored on the dedicated browser Fly app and, for each authorized workspace, in Asael's encrypted Playwright connector credential. It is not a Vercel environment variable.
 - `OMNIAGENT_PLAYWRIGHT_MCP_PREVIOUS_TOKEN`: optional Fly-only overlap secret during browser-service token rotation.
 - `CRON_SECRET`: authenticates the scheduled `/api/workflows/tick` backstop.
 - `OMNIAGENT_INTERNAL_AUTH_SECRET`: shared by the worker and production smoke runner. Generate an independent high-entropy value.
@@ -23,7 +23,7 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_BOOTSTRAP_EMAIL` and `OMNIAGENT_BOOTSTRAP_PASSWORD`: required before first auth-store access. Confirm the persisted admin, then rotate or remove bootstrap credentials.
 - `OMNIAGENT_REPORT_SIGNING_SECRET`: production signing key for evaluation evidence. Set `OMNIAGENT_REPORT_SIGNING_KEY_ID`; use `OMNIAGENT_REPORT_SIGNING_KEYS` JSON during rotation.
 - `OMNIAGENT_ACCESS_REQUEST_FILE`: optional durable fallback path for local/non-database deployments. With `DATABASE_URL`, access requests are tenant-scoped in Postgres and appear in the admin Inbox for review.
-- `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. It is public and build-inlined, not a secret.
+- `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 
 Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it, and it must never be stored on Fly. The paired release runs its paid verification through Asael, so the deployed server supplies the upstream OpenAI authorization while the gateway validates `x-asael-gateway-token` and forwards that header unchanged. Production always enables auth even when `OMNIAGENT_AUTH_ENABLED=false`. Vercel forwarding headers are trusted automatically; other reverse proxies must overwrite client forwarding headers before `OMNIAGENT_TRUST_PROXY_HEADERS=true` is enabled. Do not enable `OMNIAGENT_TRUST_UNSIGNED_IDENTITY_HEADERS`, `OMNIAGENT_CONNECTOR_ALLOW_HTTP`, or `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS` in production.
 
@@ -135,9 +135,9 @@ Do not set `OPENAI_API_KEY` on Fly. `/healthz` is the intentionally minimal, non
 
 ## Self-hosted Playwright browser service
 
-The Playwright option uses the Apache-2.0 [Microsoft Playwright MCP server](https://github.com/microsoft/playwright-mcp), not a paid browser API. `Dockerfile.playwright-mcp` pins the official browser image by version and digest, while `fly.playwright-mcp.toml` keeps Chromium in a separate 1 GB Singapore machine. The gateway accepts only its bearer token, converts OmniAgent's opaque tenant+actor+run scope into one private browser process, and removes the bearer secret before starting Playwright. A DNS-validating outbound proxy permits public web ports only and blocks loopback, private, link-local, metadata, and internal Fly destinations.
+The Playwright option uses the Apache-2.0 [Microsoft Playwright MCP server](https://github.com/microsoft/playwright-mcp), not a paid browser API. `Dockerfile.playwright-mcp` pins the official browser image by version and digest, while `fly.playwright-mcp.toml` keeps Chromium in a separate 1 GB Singapore machine. The gateway accepts only its bearer token, converts Asael's opaque tenant+actor+run scope into one private browser process, and removes the bearer secret before starting Playwright. A DNS-validating outbound proxy permits public web ports only and blocks loopback, private, link-local, metadata, and internal Fly destinations.
 
-Each scoped process has its own temporary profile and a private keeper connection so OmniAgent's short MCP calls retain the same tabs and page state. Connector discovery retires immediately; execution scopes expire after 30 minutes without activity. The service deliberately allows at most two simultaneous browser scopes on the default machine. Page output remains untrusted tool data, and Playwright's arbitrary-code and file-transfer tools remain risk level 3.
+Each scoped process has its own temporary profile and a private keeper connection so Asael's short MCP calls retain the same tabs and page state. Connector discovery retires immediately; execution scopes expire after 30 minutes without activity. The service deliberately allows at most two simultaneous browser scopes on the default machine. Page output remains untrusted tool data, and Playwright's arbitrary-code and file-transfer tools remain risk level 3.
 
 Create the app and token once, save the token in the owner's password manager, and deploy the dedicated image. The token value never belongs in Vercel:
 
@@ -150,7 +150,7 @@ fly deploy --config fly.playwright-mcp.toml --remote-only
 unset playwright_token
 ```
 
-In OmniAgent, open Settings → Tools & integrations → MCP connections, apply the Playwright preset, and store that same token in the encrypted app vault. The managed endpoint is `https://omniagent-os-browser.fly.dev/mcp`. If Fly requires another globally unique app name, update the Fly app/public host, connector catalog endpoint, UI preset endpoint, and exact endpoint trust rule together. The software has no provider subscription, but the separate Fly compute resource can still incur hosting charges.
+In Asael, open Settings → Tools & integrations → MCP connections, apply the Playwright preset, and store that same token in the encrypted app vault. Clients use the canonical endpoint `https://asael.bennierichard.com/api/integrations/playwright/mcp`; Asael proxies that bounded MCP stream to the pinned browser service without exposing the internal host as the product domain. Existing connectors that still hold the former direct endpoint remain supported during rotation. If Fly requires another globally unique app name, update the internal Fly host, proxy upstream, connector trust rule, and deployment configuration together. The software has no provider subscription, but the separate Fly compute resource can still incur hosting charges.
 
 ### Two-phase gateway token rotation
 
@@ -280,7 +280,7 @@ RESTORE_CONFIRM=restore-into-isolated-database:isolated_restore \
 npm run db:restore-drill
 ```
 
-The restore drill is destructive only to `RESTORE_DATABASE_URL`. It requires the production URL for comparison, rejects a target with the production database name even when provider host aliases differ, requires target-specific confirmation, verifies the backup manifest checksum before restore, validates the exact OmniAgent table, row-count, migration-marker, database-identity, and forced-RLS inventories, and writes a restore-evidence artifact. Run it on a schedule in isolated infrastructure and retain the evidence.
+The restore drill is destructive only to `RESTORE_DATABASE_URL`. It requires the production URL for comparison, rejects a target with the production database name even when provider host aliases differ, requires target-specific confirmation, verifies the backup manifest checksum before restore, validates the exact Asael table, row-count, migration-marker, database-identity, and forced-RLS inventories, and writes a restore-evidence artifact. Run it on a schedule in isolated infrastructure and retain the evidence.
 
 Restore procedure:
 
@@ -304,7 +304,7 @@ Connector endpoints are SSRF-checked and secret references are restricted, but o
 
 - approve only HTTPS endpoints and expected DNS ownership;
 - use per-connector, least-privilege credentials with rotation and revocation;
-- prefer app-managed MCP credentials for tenant administration; removing one from OmniAgent scrubs local ciphertext but does not revoke it at the provider;
+- prefer app-managed MCP credentials for tenant administration; removing one from Asael scrubs local ciphertext but does not revoke it at the provider;
 - never add platform credentials such as `OPENAI_API_KEY` or `DATABASE_URL` to the connector allowlist;
 - review imported OpenAPI operations and MCP tool changes before activation;
 - keep risky or side-effecting operations approval-gated;

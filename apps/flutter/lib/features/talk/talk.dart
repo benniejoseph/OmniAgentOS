@@ -152,7 +152,7 @@ class TalkController extends ChangeNotifier {
     } catch (_) {
       messages[messages.length - 1] = messages.last.copyWith(
         text: messages.last.text.isEmpty
-            ? 'I could not reach OmniAgent. Tap retry when you’re back online.'
+            ? 'I could not reach Asael. Tap retry when you’re back online.'
             : messages.last.text,
         streaming: false,
         failed: true,

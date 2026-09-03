@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'app/omni_agent_app.dart';
+import 'app/asael_app.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const ProviderScope(child: OmniAgentApp()));
+  runApp(const ProviderScope(child: AsaelApp()));
 }

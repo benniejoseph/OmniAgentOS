@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ReactNode, RefObject } from "react";
 import {
   CheckCircle2,
@@ -13,7 +13,8 @@ import type { WorkspaceReadiness } from "@/lib/workspace/readiness";
 import type { WorkspaceReadinessState } from "@/components/app-shell/use-workspace-readiness";
 import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefetch-link";
 
-const compactPreferenceKey = "omniagent.workspace-readiness.compact.v1";
+const compactPreferenceKey = "asael.workspace-readiness.compact.v1";
+const legacyCompactPreferenceKey = "omniagent.workspace-readiness.compact.v1";
 
 const readinessItems = [
   { key: "identity", label: "Workspace identity", href: "/app/settings" },
@@ -35,6 +36,9 @@ export function WorkspaceReadinessCard({
     readCompactPreference,
     () => null,
   );
+  useEffect(() => {
+    migrateLegacyCompactPreference();
+  }, []);
   const [disclosure, setDisclosure] = useState<
     "automatic" | "expanded" | "compact"
   >("automatic");
@@ -50,6 +54,7 @@ export function WorkspaceReadinessCard({
   function dismiss() {
     try {
       window.localStorage.setItem(compactPreferenceKey, "1");
+      window.localStorage.removeItem(legacyCompactPreferenceKey);
     } catch {
       // The card still compacts when storage is unavailable.
     }
@@ -60,6 +65,7 @@ export function WorkspaceReadinessCard({
   function reopen() {
     try {
       window.localStorage.removeItem(compactPreferenceKey);
+      window.localStorage.removeItem(legacyCompactPreferenceKey);
     } catch {
       // The expanded state remains available when storage is unavailable.
     }
@@ -350,8 +356,21 @@ function subscribeToCompactPreference(onStoreChange: () => void) {
 
 function readCompactPreference() {
   try {
-    return window.localStorage.getItem(compactPreferenceKey) === "1";
+    const compact = window.localStorage.getItem(compactPreferenceKey);
+    if (compact !== null) return compact === "1";
+    return window.localStorage.getItem(legacyCompactPreferenceKey) === "1";
   } catch {
     return false;
+  }
+}
+
+function migrateLegacyCompactPreference() {
+  try {
+    if (window.localStorage.getItem(compactPreferenceKey) !== null) return;
+    if (window.localStorage.getItem(legacyCompactPreferenceKey) !== "1") return;
+    window.localStorage.setItem(compactPreferenceKey, "1");
+    window.localStorage.removeItem(legacyCompactPreferenceKey);
+  } catch {
+    // Reading the legacy preference remains safe when storage is unavailable.
   }
 }

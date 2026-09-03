@@ -1,6 +1,10 @@
 export const AUTH_SESSION_COOKIE = isSecureCookie()
   ? "__Host-asael_session"
   : "asael_session";
+const LEGACY_AUTH_SESSION_COOKIES = [
+  "__Host-omniagent_session",
+  "omniagent_session",
+] as const;
 
 export function getSessionToken(request?: Request) {
   const cookie = request?.headers.get("cookie");
@@ -8,11 +12,14 @@ export function getSessionToken(request?: Request) {
     return undefined;
   }
 
-  return cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(`${AUTH_SESSION_COOKIE}=`))
-    ?.slice(AUTH_SESSION_COOKIE.length + 1);
+  const parts = cookie.split(";").map((part) => part.trim());
+  for (const name of [AUTH_SESSION_COOKIE, ...LEGACY_AUTH_SESSION_COOKIES]) {
+    const token = parts
+      .find((part) => part.startsWith(`${name}=`))
+      ?.slice(name.length + 1);
+    if (token) return token;
+  }
+  return undefined;
 }
 
 export function sessionCookie(token: string, expiresAt: string) {
@@ -36,6 +43,20 @@ export function clearSessionCookie() {
     maxAge: 0,
     priority: "High",
   });
+}
+
+export function clearLegacySessionCookies() {
+  return LEGACY_AUTH_SESSION_COOKIES.map((name) =>
+    serializeCookie(name, "", {
+      httpOnly: true,
+      secure: name.startsWith("__Host-") || isSecureCookie(),
+      sameSite: "Lax",
+      path: "/",
+      expires: new Date(0),
+      maxAge: 0,
+      priority: "High",
+    }),
+  );
 }
 
 function serializeCookie(

@@ -1,4 +1,4 @@
-import { isOmniAgentPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
+import { isAsaelPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { listMcpConnectors, parseMcpToolId } from "@/lib/connectors/store";
 import { listStreamEvents } from "@/lib/events/store";
 import { listRunBrowserFrames, type BrowserFrameSummary } from "@/lib/browser/frames";
@@ -77,7 +77,7 @@ export async function listRunBrowserActivity(
   );
   const playwrightConnectorIds = new Set(
     connectors
-      .filter((connector) => isOmniAgentPlaywrightMcpEndpoint(connector.endpoint))
+      .filter((connector) => isAsaelPlaywrightMcpEndpoint(connector.endpoint))
       .map((connector) => connector.id),
   );
 

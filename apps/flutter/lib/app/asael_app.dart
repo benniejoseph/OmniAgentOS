@@ -4,12 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'router/app_router.dart';
 import 'theme/app_theme.dart';
 
-class OmniAgentApp extends ConsumerWidget {
-  const OmniAgentApp({super.key});
+class AsaelApp extends ConsumerWidget {
+  const AsaelApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) => MaterialApp.router(
-    title: 'OmniAgent',
+    title: 'Asael',
     debugShowCheckedModeBanner: false,
     theme: AppTheme.light(),
     darkTheme: AppTheme.dark(),

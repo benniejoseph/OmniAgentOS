@@ -1,4 +1,8 @@
-import { clearSessionCookie, getSessionToken } from "@/lib/auth/session";
+import {
+  clearLegacySessionCookies,
+  clearSessionCookie,
+  getSessionToken,
+} from "@/lib/auth/session";
 import { destroySession } from "@/lib/auth/store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
@@ -19,12 +23,10 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  return Response.json(
-    { authenticated: false },
-    {
-      headers: {
-        "Set-Cookie": clearSessionCookie(),
-      },
-    },
-  );
+  const headers = new Headers();
+  headers.append("Set-Cookie", clearSessionCookie());
+  for (const legacyCookie of clearLegacySessionCookies()) {
+    headers.append("Set-Cookie", legacyCookie);
+  }
+  return Response.json({ authenticated: false }, { headers });
 }

@@ -4,6 +4,7 @@ import {
   getOpenAIGatewayConfig,
   OPENAI_GATEWAY_PRODUCTION_BASE_URL,
 } from "@/lib/config";
+import { ASAEL_PUBLIC_ORIGIN } from "@/lib/identity";
 
 const gatewayToken = "a".repeat(64);
 
@@ -23,6 +24,22 @@ describe("getAppBaseUrl", () => {
     vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "asael.example\n");
 
     expect(getAppBaseUrl()).toBe("https://asael.example");
+  });
+
+  it("uses the single canonical Asael origin in production", () => {
+    vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", ASAEL_PUBLIC_ORIGIN);
+
+    expect(getAppBaseUrl()).toBe(ASAEL_PUBLIC_ORIGIN);
+  });
+
+  it("fails closed when production is configured with another public origin", () => {
+    vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://legacy.example");
+
+    expect(() => getAppBaseUrl()).toThrow(
+      `NEXT_PUBLIC_APP_URL must be exactly ${ASAEL_PUBLIC_ORIGIN} in production.`,
+    );
   });
 });
 

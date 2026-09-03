@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { connectionCatalog } from "@/lib/connectors/catalog";
+import { ASAEL_PLAYWRIGHT_MCP_ENDPOINT } from "@/lib/connectors/mcp-trust";
 
 describe("connection catalog", () => {
   it("models Google personal sources as native read-only connectors", () => {
@@ -27,7 +28,7 @@ describe("connection catalog", () => {
     expect(playwright).toMatchObject({
       name: "Playwright Browser",
       adapter: "mcp",
-      endpoint: "https://omniagent-os-browser.fly.dev/mcp",
+      endpoint: ASAEL_PLAYWRIGHT_MCP_ENDPOINT,
       credentialMode: "app_vault",
       authHeaderName: "authorization",
       riskLevel: 1,

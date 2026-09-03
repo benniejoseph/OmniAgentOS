@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:omniagent/features/knowledge/knowledge.dart';
+import 'package:asael/features/knowledge/knowledge.dart';
 
 void main() {
   test('memory preserves provenance and correction links', () {

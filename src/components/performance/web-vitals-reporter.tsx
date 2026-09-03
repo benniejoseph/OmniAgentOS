@@ -16,15 +16,15 @@ const sampleRate = normalizeSampleRate(
 export function WebVitalsReporter() {
   useEffect(() => {
     const target = window as typeof window & {
-      __omniagentWebVitalsRegistered?: boolean;
-      __omniagentWebVitalsSampleRate?: number;
+      __asaelWebVitalsRegistered?: boolean;
+      __asaelWebVitalsSampleRate?: number;
     };
-    if (target.__omniagentWebVitalsRegistered) {
+    if (target.__asaelWebVitalsRegistered) {
       return;
     }
-    target.__omniagentWebVitalsRegistered = true;
+    target.__asaelWebVitalsRegistered = true;
     const effectiveSampleRate = normalizeSampleRate(
-      target.__omniagentWebVitalsSampleRate ?? sampleRate,
+      target.__asaelWebVitalsSampleRate ?? sampleRate,
     );
     if (
       effectiveSampleRate <= 0 ||

@@ -7,7 +7,7 @@ import { resolveMcpBearerCredential } from "@/lib/connectors/credential-store";
 import {
   isOfficialBrowserUseMcpEndpoint,
   isOfficialGitHubMcpEndpoint,
-  isOmniAgentPlaywrightMcpEndpoint,
+  isAsaelPlaywrightMcpEndpoint,
 } from "@/lib/connectors/mcp-trust";
 import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
 import { createMcpToolId } from "@/lib/connectors/store";
@@ -140,7 +140,7 @@ export async function callMcpTool({
   includeImages?: boolean;
 }) {
   const trustedBrowserScreenshot =
-    isOmniAgentPlaywrightMcpEndpoint(connector.endpoint) &&
+    isAsaelPlaywrightMcpEndpoint(connector.endpoint) &&
     toolName.trim().toLowerCase() === "browser_take_screenshot";
   if (includeImages && !trustedBrowserScreenshot) {
     throw new Error("Embedded MCP images are restricted to governed browser evidence capture.");
@@ -193,7 +193,7 @@ export async function callMcpTool({
     receivedToolResult = true;
     const safeResult = redactExactSecrets(
       toBoundedJsonValue(
-        includeImages || !isOmniAgentPlaywrightMcpEndpoint(connector.endpoint)
+        includeImages || !isAsaelPlaywrightMcpEndpoint(connector.endpoint)
           ? result
           : omitMcpImageContent(result),
         includeImages ? MCP_MAX_EVIDENCE_RESULT_BYTES : MCP_MAX_TOOL_RESULT_BYTES,
@@ -270,7 +270,7 @@ async function acquireToolSession(
   release: () => Promise<void>;
 }> {
   if (
-    !isOmniAgentPlaywrightMcpEndpoint(connector.endpoint) ||
+    !isAsaelPlaywrightMcpEndpoint(connector.endpoint) ||
     !options.sessionScope
   ) {
     const session = await connectMcp(connector, options);
@@ -608,7 +608,7 @@ async function createRequestInit(
     secretValues.push(token);
     bearerToken = token;
   }
-  if (isOmniAgentPlaywrightMcpEndpoint(connector.endpoint)) {
+  if (isAsaelPlaywrightMcpEndpoint(connector.endpoint)) {
     if (!bearerToken) {
       throw new Error("The Playwright browser service requires an app-managed service token.");
     }
@@ -669,8 +669,8 @@ export function inferMcpToolRisk(
 ): ToolRiskLevel {
   const destructive = annotations?.destructiveHint === true;
   const readOnly = annotations?.readOnlyHint === true;
-  if (isOmniAgentPlaywrightMcpEndpoint(options.endpoint)) {
-    return inferOmniAgentPlaywrightToolRisk(defaultRisk, options.toolName);
+  if (isAsaelPlaywrightMcpEndpoint(options.endpoint)) {
+    return inferAsaelPlaywrightToolRisk(defaultRisk, options.toolName);
   }
   if (isOfficialBrowserUseMcpEndpoint(options.endpoint)) {
     return inferOfficialBrowserUseToolRisk(defaultRisk, options.toolName);
@@ -701,7 +701,7 @@ export function inferMcpToolRisk(
   return Math.max(defaultRisk, remoteFloor) as ToolRiskLevel;
 }
 
-function inferOmniAgentPlaywrightToolRisk(
+function inferAsaelPlaywrightToolRisk(
   defaultRisk: ToolRiskLevel,
   toolName?: string,
 ): ToolRiskLevel {
@@ -749,7 +749,7 @@ function inferOmniAgentPlaywrightToolRisk(
   }
 
   // The upstream server can add tools independently. Unknown browser powers
-  // remain approval-gated until OmniAgent classifies their exact contract.
+  // remain approval-gated until Asael classifies their exact contract.
   return Math.max(defaultRisk, 2) as ToolRiskLevel;
 }
 

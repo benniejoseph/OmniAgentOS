@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:omniagent/features/auth/domain/app_session.dart';
-import 'package:omniagent/features/settings/admin_registry.dart';
+import 'package:asael/features/auth/domain/app_session.dart';
+import 'package:asael/features/settings/admin_registry.dart';
 
 void main() {
   test('admin registry covers every control-plane domain', () {

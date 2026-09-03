@@ -6,7 +6,7 @@
 - [ ] Require `CI / quality`, `CI / build`, `CI / audit`, `CI / integration`, `CI / e2e`, and `CI / worker`.
 - [ ] Record the release commit, image digest, migration versions, owner, rollback decision-maker, RPO, and RTO.
 - [ ] Run `npm run db:backup` and verify that the latest isolated `npm run db:restore-drill` evidence passed.
-- [ ] Confirm `DATABASE_URL`, canonical app URL, OpenAI key, cron secret, internal secret, bootstrap/admin state, and report-signing key.
+- [ ] Confirm `DATABASE_URL`, canonical app URL (`https://asael.bennierichard.com` exactly), OpenAI key, cron secret, internal secret, bootstrap/admin state, and report-signing key.
 - [ ] Confirm `vercel.json` selects `sin1`, Vercel pins `OMNIAGENT_OPENAI_GATEWAY_URL` to `https://omniagent-os-worker.fly.dev/v1`, both platforms have the active sensitive token, and `OPENAI_API_KEY` is present on Vercel plus the temporary release shell but never Fly.
 - [ ] Load the non-exportable active gateway token from the owner's password manager with the silent-prompt procedure in `docs/deployment.md`. If rotating, also load the distinct token embedded in the currently promoted Vercel release as `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN`; otherwise ensure that variable is unset. Confirm all shell values will be unset after the release.
 - [ ] During rotation, keep the prior Vercel token accepted on Fly through staged verification, promotion, and the rollback window. Do not set the previous token on Vercel or retire it between paired release stages.

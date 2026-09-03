@@ -8,7 +8,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
-# OmniAgent repository map
+# Asael repository map
 
 Keep this file short. Read only the guide relevant to the change:
 

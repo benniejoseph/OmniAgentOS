@@ -52,7 +52,7 @@ export function LandingHero() {
           </div>
           <figure className="relative aspect-video">
             <Image
-              src="/omniagent-command-center.webp"
+              src="/asael-command-center.webp"
               alt="Asael workspace showing task progress, approvals, and result evidence."
               fill
               preload
