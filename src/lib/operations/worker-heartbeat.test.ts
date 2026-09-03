@@ -17,7 +17,7 @@ describe("worker heartbeat selection", () => {
       heartbeat({
         instanceId: "replaced",
         revision: "old-release",
-        target: "https://omniagent-os.vercel.app",
+        target: "https://asael.bennierichard.com",
         recordedAt: "2026-08-26T16:53:25.000Z",
       }),
     ];

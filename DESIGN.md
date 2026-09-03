@@ -1,4 +1,4 @@
-# OmniAgent Design System
+# Asael Design System
 
 This document is the Stitch-compatible design handoff for the Flutter product.
 

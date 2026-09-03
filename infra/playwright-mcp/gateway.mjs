@@ -187,7 +187,7 @@ process.on("SIGTERM", () => void shutdown(0, "SIGTERM"));
 
 console.log(JSON.stringify({
   level: "info",
-  message: "OmniAgent Playwright MCP gateway started.",
+  message: "Asael Playwright MCP gateway started.",
   port: listenPort,
   region: safeRuntimeValue(process.env.FLY_REGION),
   revision: safeRuntimeValue(process.env.OMNIAGENT_RELEASE_SHA),
@@ -1073,7 +1073,7 @@ async function shutdown(exitCode, signal) {
   clearInterval(reaper);
   console.log(JSON.stringify({
     level: "info",
-    message: "OmniAgent Playwright MCP gateway stopping.",
+    message: "Asael Playwright MCP gateway stopping.",
     signal,
   }));
   const forceTimer = setTimeout(() => {

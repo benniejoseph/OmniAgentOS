@@ -4,6 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { WebVitalsReporter } from "@/components/performance/web-vitals-reporter";
 import { PwaRegistrar } from "@/components/pwa-registrar";
+import { ASAEL_PUBLIC_ORIGIN } from "@/lib/identity";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -17,9 +18,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL(
-    process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
-  ),
+  metadataBase: new URL(ASAEL_PUBLIC_ORIGIN),
   title: {
     default: "Asael — Personal Agent Arsenal",
     template: "%s | Asael",
@@ -36,8 +35,13 @@ export const metadata: Metadata = {
 const themeBootScript = `
 (() => {
   try {
-    const key = "omniagent-theme";
-    const stored = localStorage.getItem(key) || "system";
+    const key = "asael-theme";
+    const legacyKey = "omniagent-theme";
+    const stored = localStorage.getItem(key) || localStorage.getItem(legacyKey) || "system";
+    if (!localStorage.getItem(key) && localStorage.getItem(legacyKey)) {
+      localStorage.setItem(key, stored);
+      localStorage.removeItem(legacyKey);
+    }
     const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     const resolved = stored === "system" ? (systemDark ? "dark" : "light") : stored;
     document.documentElement.dataset.theme = resolved;

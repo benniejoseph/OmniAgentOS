@@ -1,17 +1,17 @@
-# omniagent
+# Asael Flutter client
 
-A new Flutter project.
+The mobile and desktop command center for Asael. Production builds use
+`https://asael.bennierichard.com` by default. Override `API_BASE_URL` with a
+Dart define when developing against another environment.
 
-## Getting Started
+```bash
+flutter run --dart-define=API_BASE_URL=http://localhost:3000
+```
 
-This project is a starting point for a Flutter application.
+## Compatibility identifiers
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+The client writes the canonical `asael.session_token` secure-storage key and
+migrates the legacy key on first read. Installed application identifiers rooted
+at `app.omniagent.omniagent` and desktop executable names remain unchanged so
+existing builds upgrade in place. These legacy identifiers are implementation
+contracts, not user-facing product names.

@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:omniagent/features/talk/talk.dart';
+import 'package:asael/features/talk/talk.dart';
 
 void main() {
   test('parses SSE across arbitrary byte boundaries', () async {

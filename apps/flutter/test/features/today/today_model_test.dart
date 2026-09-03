@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:omniagent/features/today/today.dart';
+import 'package:asael/features/today/today.dart';
 
 void main() {
   test('decodes composite today snapshot safely', () {

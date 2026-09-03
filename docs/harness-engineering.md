@@ -1,4 +1,4 @@
-# Harness Engineering in OmniAgent
+# Harness Engineering in Asael
 
 The model is one replaceable component. The harness around it owns context,
 capabilities, permissions, durable state, progress, evaluation, and recovery.
@@ -68,7 +68,7 @@ The native tool broker exposes three separate operations:
   approval.
 
 This mirrors Waku's useful self-managed-memory pattern while retaining
-OmniAgent's tenant isolation, evidence history, and approval controls.
+Asael's tenant isolation, evidence history, and approval controls.
 
 ## Golden rules
 
@@ -94,7 +94,7 @@ OmniAgent's tenant isolation, evidence history, and approval controls.
 
 ## What not to copy from a blueprint
 
-Waku optimizes for a small, local, single-user assistant. OmniAgent is a
+Waku optimizes for a small, local, single-user assistant. Asael is a
 multi-tenant governed runtime, so SQLite as the only store, unscoped local
 credentials, and a single-process gateway are not suitable substitutions for
 RLS, durable queues, signed evidence, or the paired web/worker release model.

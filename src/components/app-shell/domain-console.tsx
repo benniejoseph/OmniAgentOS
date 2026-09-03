@@ -34,6 +34,10 @@ import {
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
 import type { NavIcon } from "@/lib/navigation";
+import {
+  ASAEL_PENDING_USER_PROVISION_KEY,
+  LEGACY_PENDING_USER_PROVISION_KEY,
+} from "@/lib/browser-storage-keys";
 import { workflowControlRunsFrom } from "@/lib/workflows/client-controls";
 import styles from "../daybook-workspaces.module.css";
 
@@ -1276,7 +1280,9 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
 
     let prefill: Record<string, FormValue> | undefined;
     try {
-      const raw = window.sessionStorage.getItem("omniagent:pending-user-provision");
+      const raw =
+        window.sessionStorage.getItem(ASAEL_PENDING_USER_PROVISION_KEY) ||
+        window.sessionStorage.getItem(LEGACY_PENDING_USER_PROVISION_KEY);
       const parsed = raw ? JSON.parse(raw) as Record<string, unknown> : undefined;
       const name = typeof parsed?.name === "string" ? parsed.name.trim().slice(0, 120) : "";
       const email = typeof parsed?.email === "string" ? parsed.email.trim().slice(0, 254) : "";
@@ -1293,7 +1299,8 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
 
     if (!prefill) {
       try {
-        window.sessionStorage.removeItem("omniagent:pending-user-provision");
+        window.sessionStorage.removeItem(ASAEL_PENDING_USER_PROVISION_KEY);
+        window.sessionStorage.removeItem(LEGACY_PENDING_USER_PROVISION_KEY);
       } catch {
         // Ignore unavailable browser storage.
       }
@@ -1381,7 +1388,8 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
       });
       if (action.id === "create-user") {
         try {
-          window.sessionStorage.removeItem("omniagent:pending-user-provision");
+          window.sessionStorage.removeItem(ASAEL_PENDING_USER_PROVISION_KEY);
+          window.sessionStorage.removeItem(LEGACY_PENDING_USER_PROVISION_KEY);
         } catch {
           // Ignore unavailable browser storage.
         }

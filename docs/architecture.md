@@ -1,4 +1,4 @@
-# Architecture Overview
+# Asael Architecture Overview
 
 ## System map
 
@@ -118,6 +118,9 @@ Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured 
 - **Postgres mode** (`DATABASE_URL`): all ledgers, pgvector embeddings + HNSW indexes, forced row-level security on every tenant-scoped table.
 - **File mode** (local dev): JSON ledgers under `.omniagent/` with per-file write locks and corrupt-file quarantine.
 - **Ephemeral mode** (hosted, no DB): `/tmp` with a persistent warning banner — for demos only.
+
+Existing `OMNIAGENT_*`, `omni_*`, and `.omniagent/` identifiers remain stable
+compatibility contracts; they are not product display names.
 
 Schema changes run as ordered, idempotent migrations under a Postgres advisory lock. `omni_schema_version` records each applied version and upgrades the older timestamp-only marker. pgvector setup is attempted under the same lock but remains optional when the database role lacks extension privileges.
 

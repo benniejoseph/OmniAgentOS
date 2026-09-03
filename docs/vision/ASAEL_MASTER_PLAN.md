@@ -1,4 +1,4 @@
-# OmniAgent Root Architecture and Delivery Master Plan
+# Asael Root Architecture and Delivery Master Plan
 
 **Status:** Proposed  
 **Date:** 2026-09-02  
@@ -6,7 +6,7 @@
 
 ## 1. Executive conclusion
 
-OmniAgent already has valuable foundations: tenant isolation, a governed tool executor, approvals, provider credentials, durable queues, an event-log first stage, basic memory/RAG, workflows, capture, connectors, browser evidence, and a conversational interface.
+Asael already has valuable foundations: tenant isolation, a governed tool executor, approvals, provider credentials, durable queues, an event-log first stage, basic memory/RAG, workflows, capture, connectors, browser evidence, and a conversational interface.
 
 The product is not yet a dependable second brain or a fully autonomous life-aware system. Its core problem is not model intelligence. It is that truth, identity, scope, provenance, execution state, and outcomes do not yet share one authoritative model.
 
@@ -43,7 +43,7 @@ The target product should let the user speak or type naturally to the Main Agent
 1. Asael understands the intended outcome using the current conversation, explicitly permitted personal context, workspace context, history, and known capabilities.
 2. If material intent, target, authority, or acceptance criteria are ambiguous, Asael asks the smallest necessary question.
 3. Asael creates a bounded plan, selects the right model, tools, skills, and agents, and explains the plan without exposing private chain-of-thought.
-4. Asael performs all authorized operations in OmniAgent through governed first-party tools: create, edit, organize, run, pause, retry, connect, assign, archive, and delete.
+4. Asael performs all authorized operations in Asael through governed first-party tools: create, edit, organize, run, pause, retry, connect, assign, archive, and delete.
 5. Asael delegates bounded work to agents with their own identities, personas, context grants, memories, tools, budgets, and acceptance contracts.
 6. Every visible progress state represents real work. Preview, waiting, partial, blocked, failed, unverified, and succeeded are never conflated.
 7. A result is complete only when its acceptance criteria and requested real-world effects are verified.
@@ -53,7 +53,7 @@ The target product should let the user speak or type naturally to the Main Agent
 
 ### Reality boundary
 
-“Fully aware of my life” cannot mean omniscience. Sources are incomplete, permissions change, people contradict themselves, relationships evolve, and models remain fallible. In OmniAgent it must mean:
+“Fully aware of my life” cannot mean omniscience. Sources are incomplete, permissions change, people contradict themselves, relationships evolve, and models remain fallible. In Asael it must mean:
 
 - aware of the information the user has knowingly connected or captured;
 - explicit about what is missing, stale, uncertain, contradicted, or inaccessible;
@@ -151,7 +151,7 @@ This register captures the static repository assessment that produced the plan. 
 - There is no general internal delegation contract, message broker, task acceptance protocol, or A2A adapter.
 - The native tool surface is small; most real work depends on separately configured MCP/OpenAPI contracts.
 - Only a bounded subset of external tool schemas is hydrated for a run, so an installed capability may be invisible to the model.
-- Inbound OmniAgent MCP is read-oriented and cannot yet command the Main Agent, launch workflows, capture data, or mutate work through the full governed surface.
+- Inbound Asael MCP is read-oriented and cannot yet command the Main Agent, launch workflows, capture data, or mutate work through the full governed surface.
 - OpenAPI authentication lacks a general OAuth/refresh-token, signed-auth, GraphQL, mTLS, and large-media framework.
 - Model routing is based on task heuristics and configured fallbacks rather than measured outcome quality, privacy, latency, price, context fit, and provider health.
 - Several model assignments visible in Settings do not have corresponding runtime consumers.
@@ -165,7 +165,7 @@ This register captures the static repository assessment that produced the plan. 
 
 ### 5.5 Product, workspaces, voice, notifications, and clients
 
-- Today is primarily an OmniAgent activity dashboard rather than a unified agenda of calendar, meetings, commitments, people, customer risks, work, and blind spots.
+- Today is primarily an Asael activity dashboard rather than a unified agenda of calendar, meetings, commitments, people, customer risks, work, and blind spots.
 - Today consumption does not cover every model/provider operation, transcription, speech, OCR, embedding, image generation, browser host, and connector cost.
 - Projects and Missions expose overlapping work models and can show inconsistent concepts of task status, assignment, execution, and evidence.
 - Marking a Mission task in progress does not necessarily start the assigned agent or workflow.
@@ -535,7 +535,7 @@ Each row is one reviewable vertical slice. “Reuse / Modify / Create” names h
 
 **Goal:** Enable real agent collaboration internally, then interoperate safely with external agents.
 
-The external adapter should track the current official [Agent2Agent Protocol specification](https://a2a-protocol.org/latest/specification/) while keeping OmniAgent’s internal envelope stable. MCP remains the agent-to-tool/data layer; A2A is the agent-to-agent task layer.
+The external adapter should track the current official [Agent2Agent Protocol specification](https://a2a-protocol.org/latest/specification/) while keeping Asael’s internal envelope stable. MCP remains the agent-to-tool/data layer; A2A is the agent-to-agent task layer.
 
 | ID | Vertical slice | Reuse / Modify / Create | Isolation and compatibility | Done when |
 |---|---|---|---|---|
@@ -589,14 +589,14 @@ The external adapter should track the current official [Agent2Agent Protocol spe
 
 #### AP2 — Agent Payments Protocol
 
-OmniAgent should integrate the current official [Agent Payments Protocol (AP2)](https://github.com/google-agentic-commerce/AP2/blob/main/docs/ap2/specification.md) through a version-pinned adapter. AP2 secures agent-performed purchases with deterministic verification, signed Checkout and Payment Mandates, Trusted Surface consent, scoped payment credentials, and signed receipts. Payment credentials and signing keys must never enter model context, memory, connector output, or ordinary events.
+Asael should integrate the current official [Agent Payments Protocol (AP2)](https://github.com/google-agentic-commerce/AP2/blob/main/docs/ap2/specification.md) through a version-pinned adapter. AP2 secures agent-performed purchases with deterministic verification, signed Checkout and Payment Mandates, Trusted Surface consent, scoped payment credentials, and signed receipts. Payment credentials and signing keys must never enter model context, memory, connector output, or ordinary events.
 
 | ID | Vertical slice | Reuse / Modify / Create | Isolation and compatibility | Done when |
 |---|---|---|---|---|
-| P9.15 | Define OmniAgent’s AP2 roles and trust boundaries: Asael/delegated agent as Shopping Agent, OmniAgent UI/native client as Trusted Surface, and external Credential Provider, Merchant, and Merchant Payment Processor adapters. | Reuse agent principals/governed executor; create versioned AP2 role and adapter contracts. | Role combination is explicit; deterministic verification remains outside the model; AP2 schema version is pinned per transaction. | Every participant, protocol version, key authority, credential boundary, and verification responsibility is inspectable before payment capability is enabled. |
+| P9.15 | Define Asael’s AP2 roles and trust boundaries: Asael/delegated agent as Shopping Agent, Asael UI/native client as Trusted Surface, and external Credential Provider, Merchant, and Merchant Payment Processor adapters. | Reuse agent principals/governed executor; create versioned AP2 role and adapter contracts. | Role combination is explicit; deterministic verification remains outside the model; AP2 schema version is pinned per transaction. | Every participant, protocol version, key authority, credential boundary, and verification responsibility is inspectable before payment capability is enabled. |
 | P9.16 | Implement the human-present purchase flow with user-reviewed, cryptographically signed Checkout and Payment Mandates. | Reuse approvals/OutcomeContract; create mandate builder, Trusted Surface review, signer, and verifier. | Mandates bind exact merchant checkout, items, quantities, price, currency, taxes, shipping, payment constraints, expiry, user, agent, and intent digest. | No checkout or payment proceeds unless the displayed terms and signed mandates match exactly; any material cart/price/plan change requires new consent and signatures. |
 | P9.17 | Add payment-credential isolation and deterministic authorization. | Reuse encrypted vault; create credential-provider interface and payment-specific hardware/key-store boundary. | Models, subagents, MCP servers, browser pages, logs, memory, and general tools receive references or scoped tokens only—never raw credentials or private signing keys. | A compromised agent prompt cannot reveal, expand, replay, or redirect a credential; verification fails closed on scope, amount, merchant, currency, expiry, nonce, or signature mismatch. |
-| P9.18 | Persist Checkout/Payment Receipts and reconcile authorization, capture, settlement, cancellation, refund, dispute, and fulfillment. | Reuse effect receipts/events; create payment ledger projection and reconciliation jobs. | Payment state is separate from model assertions and merchant UI state; retries are idempotent and transaction-bound. | OmniAgent never reports “paid” from a click or model response; signed receipts and provider reconciliation establish each payment state and expose recoverable discrepancies. |
+| P9.18 | Persist Checkout/Payment Receipts and reconcile authorization, capture, settlement, cancellation, refund, dispute, and fulfillment. | Reuse effect receipts/events; create payment ledger projection and reconciliation jobs. | Payment state is separate from model assertions and merchant UI state; retries are idempotent and transaction-bound. | Asael never reports “paid” from a click or model response; signed receipts and provider reconciliation establish each payment state and expose recoverable discrepancies. |
 | P9.19 | Add human-not-present payment mandates only after the direct flow is proven. | Modify trust/budget policy; create autonomous mandate constraints and revocation. | Require user-defined merchant/category/item allowlists, per-purchase and period limits, validity windows, delivery constraints, notification policy, kill switch, and non-delegable credential rules. | An autonomous purchase cannot exceed the signed mandate, broaden its purpose, change merchant/beneficiary, bypass revocation, or proceed when confidence/risk/reconciliation is outside policy. |
 
 **Phase gate:** zero unauthorized app, communication, or payment effects; browser grants do not leak across actors; voice shares identical policy/evidence with text; AP2 human-present mandates and receipts are proven before any human-not-present payment authority.
@@ -649,7 +649,7 @@ The domain is provider-neutral; Salesforce is the first CRM adapter, not the int
 | P11.3 | Make Conversation canvas represent real forks, delegations, related projects, and shared artifacts. | Modify conversation canvas; reuse event/delegation lineage. | Visual links never imply shared memory unless a grant exists. | Every hierarchy edge maps to a canonical relationship rather than UI grouping. |
 | P11.4 | Unify Projects and Missions around canonical WorkItems. | Modify both workspaces; reuse compatibility adapters. | Legacy URLs remain valid through migration. | No conflicting status, assignment, artifact, progress, or cost appears between surfaces. |
 | P11.5 | Rebuild Agent Council as a live delegation map. | Modify Arsenal/Council UI; reuse AgentDefinitions/A2A events. | Displayed authority and context are derived from grants. | User can see each agent’s identity, current work, allowed context/tools, messages, outputs, cost, confidence, and verifier. |
-| P11.6 | Rebuild Memory as readable claims, timeline, people/projects, provenance, conflicts, scopes, use history, and deletion state. | Modify memory workspace; reuse graph/context receipts. | Sensitive memory is progressively disclosed and never exposed through visual aggregation. | User can understand and control what OmniAgent believes and why. |
+| P11.6 | Rebuild Memory as readable claims, timeline, people/projects, provenance, conflicts, scopes, use history, and deletion state. | Modify memory workspace; reuse graph/context receipts. | Sensitive memory is progressively disclosed and never exposed through visual aggregation. | User can understand and control what Asael believes and why. |
 | P11.7 | Make Integrations display actual availability, permissions, sync coverage, freshness, cursor, failures, read/write level, and cost. | Modify integrations workspace. | Catalog suggestions are clearly separated from installed/working connectors. | No integration looks connected or complete when it is not. |
 | P11.8 | Make every Settings assignment functional or remove it until supported. | Modify settings/model runtime. | Configuration validation happens before activation and remains versioned. | Main, orchestrator, planner, verifier, council, memory, embeddings, vision, audio, and fallback assignments have real runtime receipts. |
 | P11.9 | Add knowledge/source coverage and freshness dashboard. | Modify Today/Memory/Integrations; create coverage projection. | Absence is explicit and never inferred as a negative fact. | User sees connected domains, backfill completeness, last verified sync, blind spots, and stale sources. |
@@ -768,7 +768,7 @@ The core is considered solid when:
 - every agent has durable identity, private and shared memory boundaries, explicit context, capabilities, budgets, and evaluation history;
 - natural-language goals become truthful, resumable, inspectable work with verified outcomes;
 - agents collaborate through scoped contracts and artifacts rather than shared unbounded prompts;
-- Asael can operate the whole OmniAgent product through governed tools and delegate safely;
+- Asael can operate the whole Asael product through governed tools and delegate safely;
 - voice and text are two transports for the same agent, context, policy, run, evidence, and memory;
 - workspaces unify projects, work, files, meetings, people, customers, agents, and history;
 - Salesforce-connected Customer Success workflows are evidence-backed, explainable, and approval-aware;

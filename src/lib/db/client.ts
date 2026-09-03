@@ -694,6 +694,10 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[34],
+      up: ensureAsaelCanonicalIdentity,
+    },
   ];
 }
 
@@ -3209,7 +3213,7 @@ async function ensureSettingsControlPlane(sql: SqlClient) {
       tenant_id TEXT NOT NULL,
       actor_id TEXT NOT NULL,
       enabled BOOLEAN NOT NULL DEFAULT FALSE,
-      server_name TEXT NOT NULL DEFAULT 'OmniAgent',
+      server_name TEXT NOT NULL DEFAULT 'Asael',
       allowed_scopes TEXT[] NOT NULL DEFAULT '{mcp:discover,mcp:tools:list}'
         CHECK (allowed_scopes <@ ARRAY[
           'mcp:discover', 'mcp:tools:list', 'mcp:tools:execute',
@@ -3225,6 +3229,21 @@ async function ensureSettingsControlPlane(sql: SqlClient) {
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS omni_mcp_export_configurations_tenant_actor_idx ON omni_mcp_export_configurations (tenant_id, actor_id)`;
+}
+
+async function ensureAsaelCanonicalIdentity(sql: SqlClient) {
+  // Keep the physical omni_* schema stable for existing data and rollback;
+  // migrate only the product identity stored in this user-visible setting.
+  await sql`
+    ALTER TABLE omni_mcp_export_configurations
+    ALTER COLUMN server_name SET DEFAULT 'Asael'
+  `;
+  await sql`
+    UPDATE omni_mcp_export_configurations
+    SET server_name = 'Asael',
+        updated_at = NOW()
+    WHERE server_name = 'OmniAgent'
+  `;
 }
 
 async function ensureMcpConnectorCredentialVault(sql: SqlClient) {

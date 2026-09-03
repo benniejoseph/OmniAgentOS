@@ -202,7 +202,7 @@ async function DELETEHandler(
       connector: connector ? redactMcpConnector(connector) : undefined,
       externalCredentialRevoked: false,
       message:
-        "The encrypted credential was removed from OmniAgent and the connector was disabled. " +
+        "The encrypted credential was removed from Asael and the connector was disabled. " +
         "The external token was not revoked; revoke it with the provider if it should no longer be valid.",
     });
   } catch (error) {

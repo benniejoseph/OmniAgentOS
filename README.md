@@ -1,6 +1,6 @@
 # Asael
 
-An enterprise AI agent platform: a governed tool-calling agent with durable workflows, long-term memory and RAG, MCP/OpenAPI connectors, approvals, observability, and signed release evidence — built on Next.js, OpenAI, and Neon Postgres.
+[Asael](https://asael.bennierichard.com) is an enterprise AI agent platform: a governed tool-calling agent with durable workflows, long-term memory and RAG, MCP/OpenAPI connectors, approvals, observability, and signed release evidence — built on Next.js, OpenAI, and Neon Postgres.
 
 ## Quickstart
 
@@ -31,7 +31,7 @@ Tool records are intentionally mutable while an approval moves from pending to a
 
 Agent turns use a full conversation array instead of OpenAI `previous_response_id`, which keeps the loop compatible with Zero Data Retention. When a tool needs approval, the conversation, pending call, instructions, and completed outputs are persisted; approval resumes that same run from the saved continuation.
 
-### Earned autonomy (Tenure)
+### Earned autonomy
 
 Approvals get cheaper as the agent proves itself. Every gateable action class accrues a trust profile; once it reaches a clean-streak threshold, reversible risk&lt;3 actions can graduate from "approve each" to "auto with alert" (opt-in via `OMNIAGENT_GRADUATED_AUTONOMY=true`). Any failure or rejection resets the streak; irreversible and risk-3 actions never graduate. See [docs/vision/PRODUCT.md](docs/vision/PRODUCT.md). Trust profiles are visible at `/api/trust` and on each approval card.
 

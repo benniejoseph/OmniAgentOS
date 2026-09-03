@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:omniagent/app/navigation/app_destination.dart';
-import 'package:omniagent/app/navigation/destination_placeholder.dart';
-import 'package:omniagent/app/theme/app_theme.dart';
-import 'package:omniagent/core/state/resource_state.dart';
-import 'package:omniagent/features/auth/domain/app_session.dart';
+import 'package:asael/app/navigation/app_destination.dart';
+import 'package:asael/app/navigation/destination_placeholder.dart';
+import 'package:asael/app/theme/app_theme.dart';
+import 'package:asael/core/state/resource_state.dart';
+import 'package:asael/features/auth/domain/app_session.dart';
 
 void main() {
   test('session supports nested mobile API payloads', () {

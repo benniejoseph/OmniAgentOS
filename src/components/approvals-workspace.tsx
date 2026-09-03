@@ -10,6 +10,7 @@ import {
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
 import { useLiveRefresh } from "@/components/use-live-refresh";
+import { ASAEL_PENDING_USER_PROVISION_KEY } from "@/lib/browser-storage-keys";
 import styles from "./daybook-workspaces.module.css";
 
 type JsonRecord = Record<string, unknown>;
@@ -305,7 +306,7 @@ export function ApprovalsWorkspace() {
   function beginProvisioning(item: AccessRequestItem) {
     try {
       window.sessionStorage.setItem(
-        "omniagent:pending-user-provision",
+        ASAEL_PENDING_USER_PROVISION_KEY,
         JSON.stringify({
           accessRequestId: item.id,
           name: item.name,

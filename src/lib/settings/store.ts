@@ -709,7 +709,7 @@ export async function saveMcpExportConfiguration(input: {
     const record: McpExportConfiguration = {
       ...existing,
       enabled: input.enabled,
-      serverName: input.serverName.trim().slice(0, 120) || "OmniAgent",
+      serverName: input.serverName.trim().slice(0, 120) || "Asael",
       allowedScopes: [...new Set(allowedScopes)],
       exposeResources: input.exposeResources,
       readiness: input.enabled ? "ready" : "disabled",
@@ -925,7 +925,7 @@ function mcpConfigFromRow(row: Record<string, unknown>): McpExportConfiguration 
 function defaultMcpConfig(input: { tenantId: string; actorId: string }): McpExportConfiguration {
   const now = new Date().toISOString();
   return {
-    ...input, enabled: false, serverName: "OmniAgent", allowedScopes: ["mcp:discover", "mcp:tools:list"],
+    ...input, enabled: false, serverName: "Asael", allowedScopes: ["mcp:discover", "mcp:tools:list"],
     defaultApprovalMode: "governed", exposeResources: false, endpointPath: "/api/mcp",
     readiness: "disabled", createdAt: now, updatedAt: now,
   };

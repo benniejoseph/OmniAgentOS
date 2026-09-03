@@ -1,3 +1,5 @@
+import { ASAEL_PUBLIC_ORIGIN } from "@/lib/identity";
+
 export const AGENT_MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-5";
 // Separate faster model for web search summarization — gpt-5 is too slow for the 60s Vercel budget.
 export const WEB_SEARCH_MODEL = process.env.OPENAI_WEB_SEARCH_MODEL || "gpt-4o-mini";
@@ -155,13 +157,30 @@ export function hasGoogleMediaKey() {
 
 export function getAppBaseUrl() {
   const configuredUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
-  if (configuredUrl) {
-    return configuredUrl.replace(/\/+$/, "");
+  const normalizedConfiguredUrl = configuredUrl?.replace(/\/+$/, "");
+  if (isCanonicalProductionRuntime()) {
+    if (
+      normalizedConfiguredUrl &&
+      normalizedConfiguredUrl !== ASAEL_PUBLIC_ORIGIN
+    ) {
+      throw new Error(
+        `NEXT_PUBLIC_APP_URL must be exactly ${ASAEL_PUBLIC_ORIGIN} in production.`,
+      );
+    }
+    return ASAEL_PUBLIC_ORIGIN;
+  }
+  if (normalizedConfiguredUrl) {
+    return normalizedConfiguredUrl;
   }
   const vercelHost = (
     process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL
   )?.trim();
   return vercelHost ? `https://${vercelHost}` : "http://localhost:3000";
+}
+
+function isCanonicalProductionRuntime() {
+  return process.env.VERCEL_ENV === "production" ||
+    (process.env.NODE_ENV === "production" && !process.env.VERCEL);
 }
 
 export const AGENT_MAX_TOOL_STEPS = normalizePositiveInteger(

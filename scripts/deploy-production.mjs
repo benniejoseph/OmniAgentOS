@@ -25,7 +25,7 @@ class GatewayReadinessAccessError extends Error {
 const VERCEL_ORG_ID = "team_hFIwf5wwfzIn2I1WDZwY8pAv";
 const VERCEL_PROJECT_ID = "prj_BF3Uy9PhUUitqFAeA0g0LafaL4co";
 const VERCEL_SCOPE = "benniejosephs-projects";
-const PRODUCTION_BASE_URL = "https://omniagent-os.vercel.app";
+const PRODUCTION_BASE_URL = "https://asael.bennierichard.com";
 const VERCEL_DEPLOYMENT_HOST_PATTERN =
   /^omniagent-[a-z0-9]+-benniejosephs-projects\.vercel\.app$/;
 const OPENAI_GATEWAY_SERVICE = "asael-openai-egress";

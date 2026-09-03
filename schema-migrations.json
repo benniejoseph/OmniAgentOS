@@ -168,5 +168,10 @@
     "version": 34,
     "name": "durable_mobile_sessions",
     "checksum": "b2eda03f3a1287fdf67042851ae1cd76a902375a4ba00f0835f7085c3c699d38"
+  },
+  {
+    "version": 35,
+    "name": "asael_canonical_identity",
+    "checksum": "b0f40966f3219641ed68b30f9bb127c3dee62e80a775a34dfb5cd45bdf7ff7f3"
   }
 ]

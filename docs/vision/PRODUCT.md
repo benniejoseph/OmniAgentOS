@@ -1,10 +1,10 @@
-# Tenure — Product Vision
+# Asael — Product Vision
 
-> Working name. Tagline: **"Autonomy the agent earns. Audit you can trust."**
+> Tagline: **"Autonomy the agent earns. Audit you can trust."**
 
 ## The one sentence
 
-Most teams build *an agent that uses tools*. Tenure is **a trust-accruing system that runs projects, remembers opinionatedly, recovers surgically, and proves it is getting better** — so human supervision asymptotically approaches zero for routine work and stays high for novel or dangerous work.
+Most teams build *an agent that uses tools*. Asael is **a trust-accruing system that runs projects, remembers opinionatedly, recovers surgically, and proves it is getting better** — so human supervision asymptotically approaches zero for routine work and stays high for novel or dangerous work.
 
 ## The thesis
 
@@ -14,13 +14,13 @@ The bottleneck for enterprise agents is not model intelligence. A frontier model
 2. **Context** — it does not know my world (my data, my procedures, my history).
 3. **Recovery** — when it is wrong, it fails opaquely and I cannot replay, fork, or correct.
 
-Tenure is built around closing those three gaps, not around adding more tools. The tool loop is a commodity; the trust system is the product.
+Asael is built around closing those three gaps, not around adding more tools. The tool loop is a commodity; the trust system is the product.
 
 ## What makes it different: earned autonomy
 
 Every other agent platform treats permission as **binary and static**: a human approves each action forever, or the agent is turned loose. Both are wrong. Humans don't supervise a new hire's every keystroke for life, and they don't hand a stranger the keys on day one. Trust **accrues**.
 
-In Tenure every action class carries a trust profile that moves with track record:
+In Asael every action class carries a trust profile that moves with track record:
 
 ```
 approve_each  →  (clean track record)  →  auto_with_alert  →  (rare review)
@@ -68,4 +68,4 @@ A golden set of real tasks with gradeable outcomes, run on every change, trackin
 
 ## Why this wins
 
-The hard, un-fakeable half of an agent platform is governance: audit, isolation, approvals, recovery. Most "impressive demo" agents have none of it and cannot add it without a rewrite. Tenure starts from that foundation and adds the loop on top — and then adds the one thing nobody else has: a trust model that makes the economics of supervision improve over time. That compounding supervision cost reduction is the moat (see `BUSINESS_MODEL.md`).
+The hard, un-fakeable half of an agent platform is governance: audit, isolation, approvals, recovery. Most "impressive demo" agents have none of it and cannot add it without a rewrite. Asael starts from that foundation and adds the loop on top — and then adds the one thing nobody else has: a trust model that makes the economics of supervision improve over time. That compounding supervision cost reduction is the moat (see `BUSINESS_MODEL.md`).

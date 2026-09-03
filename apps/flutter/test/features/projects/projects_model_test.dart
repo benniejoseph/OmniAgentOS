@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:omniagent/features/projects/projects.dart';
+import 'package:asael/features/projects/projects.dart';
 
 void main() {
   test('project parses execution, tasks, artifacts, and progress', () {

@@ -1,9 +1,21 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import {
+  ASAEL_PUBLIC_HOST,
+  LEGACY_PUBLIC_HOST,
+} from "@/lib/identity";
 
 const demoStorageFlag = "OMNIAGENT_ALLOW_DEMO_STORAGE";
 
 export function proxy(request: NextRequest) {
+  if (request.nextUrl.hostname.toLowerCase() === LEGACY_PUBLIC_HOST) {
+    const canonicalUrl = request.nextUrl.clone();
+    canonicalUrl.protocol = "https:";
+    canonicalUrl.hostname = ASAEL_PUBLIC_HOST;
+    canonicalUrl.port = "";
+    return NextResponse.redirect(canonicalUrl, 308);
+  }
+
   const nonce = crypto.randomUUID().replaceAll("-", "");
   const contentSecurityPolicy = buildContentSecurityPolicy(nonce);
   const requestHeaders = new Headers(request.headers);
@@ -18,7 +30,7 @@ export function proxy(request: NextRequest) {
 
   const message = [
     "Production storage is not configured.",
-    "Set DATABASE_URL for production, or set OMNIAGENT_ALLOW_DEMO_STORAGE=true only for an explicitly disposable demo deployment.",
+    "Set DATABASE_URL for production, or use the legacy OMNIAGENT_ALLOW_DEMO_STORAGE compatibility variable only for an explicitly disposable demo deployment.",
   ].join(" ");
 
   if (request.nextUrl.pathname.startsWith("/api/")) {

@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 const confirmation = "CONFIRMED";
-const productionOrigin = "https://omniagent-os.vercel.app";
+const productionOrigin = "https://asael.bennierichard.com";
 const stagedOriginPattern =
   /^https:\/\/omniagent-[a-z0-9]+-benniejosephs-projects\.vercel\.app$/;
 const paidPrompt = "hello";

@@ -132,7 +132,7 @@ export function assertTrustedMcpNetworkBoundary(request: Request) {
 
 export function mcpBearerChallenge(requiredScope?: ServiceApiScope) {
   const scope = requiredScope || "mcp:discover";
-  return `Bearer realm="OmniAgent MCP", scope="${scope}"`;
+  return `Bearer realm="Asael MCP", scope="${scope}"`;
 }
 
 function configuredHosts() {

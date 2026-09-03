@@ -1,6 +1,6 @@
 # Canonical status projection (P0.4)
 
-OmniAgent exposes a versioned, display-only status projection alongside the
+Asael exposes a versioned, display-only status projection alongside the
 existing domain status. Version 1 uses these meanings:
 
 | Status | Meaning |

@@ -125,7 +125,7 @@ export async function getLatestEvalReportSnapshot(runId: string, options: { tena
 }
 
 export function reportDownloadFilename(report: EvalReportSnapshot) {
-  return `omniagent-eval-${report.evalRunId}-${report.id}.json`;
+  return `asael-eval-${report.evalRunId}-${report.id}.json`;
 }
 
 export function getReportSigningKeyMetadata(): EvalReportSigningKeyMetadata[] {

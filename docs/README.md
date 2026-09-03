@@ -1,11 +1,12 @@
-# OmniAgent OS Documentation
+# Asael Documentation
 
-## Product vision (Tenure)
+## Product vision
 
 - [Product](vision/PRODUCT.md) — the earned-autonomy thesis and six pillars
 - [Business model](vision/BUSINESS_MODEL.md) — market, pricing, moat, GTM, roadmap
 - [Event-log substrate spec](vision/EVENT_LOG.md) — the M1 source-of-truth design
-- [Master implementation plan](vision/OMNIAGENT_MASTER_PLAN.md) — dependency-ordered core and client roadmap
+- [Master implementation plan](vision/ASAEL_MASTER_PLAN.md) — dependency-ordered core and client roadmap
+- [Identity and domain contract](identity-and-domain.md) — canonical Asael names and protected compatibility identifiers
 - [Execution scope inventory](vision/EXECUTION_SCOPE.md) — P0.1 ownership boundaries and compatibility rules
 - [Run contracts](vision/RUN_CONTRACTS.md) — P0.2 metadata envelopes, terminal truth, and legacy compatibility
 

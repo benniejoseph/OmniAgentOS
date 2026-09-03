@@ -1,9 +1,9 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
-project(omniagent LANGUAGES CXX)
+project(asael LANGUAGES CXX)
 
-# The name of the executable created for the application. Change this to change
-# the on-disk name of your application.
+# Compatibility identity: keep the existing executable name so installed
+# builds, launchers, and upgrades continue to resolve.
 set(BINARY_NAME "omniagent")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent

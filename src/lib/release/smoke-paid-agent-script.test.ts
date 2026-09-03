@@ -73,8 +73,8 @@ describe("paid agent release smoke", () => {
   it("rejects secret-bearing requests to non-Asael or noncanonical targets", async () => {
     for (const baseUrl of [
       "https://example.com",
-      "https://omniagent-os.vercel.app:443",
-      "https://omniagent-os.vercel.app/path",
+      "https://asael.bennierichard.com:443",
+      "https://asael.bennierichard.com/path",
       "https://omniagent-test-benniejosephs-projects.vercel.app.evil.test",
     ]) {
       const result = await runProcess(baseUrl);

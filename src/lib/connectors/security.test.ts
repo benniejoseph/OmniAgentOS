@@ -151,7 +151,7 @@ describe("connector security", () => {
   });
 
   it("applies a local Playwright risk policy instead of trusting remote labels", () => {
-    const endpoint = "https://omniagent-os-browser.fly.dev/mcp";
+    const endpoint = "https://asael.bennierichard.com/api/integrations/playwright/mcp";
     const risk = (toolName: string, defaultRisk: 0 | 1 | 2 | 3 = 1) =>
       inferMcpToolRisk(defaultRisk, { readOnlyHint: true }, {
         endpoint,
