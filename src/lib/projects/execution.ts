@@ -9,6 +9,7 @@ import {
 } from "@/lib/projects/store";
 import { ensureProjectWorkflowArtifact } from "@/lib/projects/artifacts";
 import type { PersonalProject, ProjectTask } from "@/lib/projects/types";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
 import { createWorkflowRun, getWorkflowRunDetail } from "@/lib/workflows/store";
@@ -184,6 +185,19 @@ async function dispatchProjectTask(project: PersonalProject, task: ProjectTask, 
   try {
     const workflow = await createWorkflowRun({
       tenantId: project.tenantId,
+      executionAuthority: {
+        executionScope: createExecutionScope({
+          tenantId: project.tenantId,
+          initiatingActorId: project.actorId,
+          executingPrincipalType: "agent",
+          executingPrincipalId: task.agentId,
+          projectId: project.id,
+          correlationId: `project-task:${task.id}:${claimed.dispatchAttempt}`,
+          causationId: task.id,
+          purpose: "project.task.workflow",
+        }),
+        requesterRole: "operator",
+      },
       idempotencyKey: `project-task:${task.id}:${claimed.dispatchAttempt}`,
       goal: projectTaskGoal(project, task),
       mode: modeForAgent(task.agentId),

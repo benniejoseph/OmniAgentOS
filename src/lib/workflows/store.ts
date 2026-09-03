@@ -1,8 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
-import { appendDomainEventSafely } from "@/lib/events/store";
+import {
+  appendDomainEvent,
+  appendDomainEventSafely,
+  listStreamEvents,
+} from "@/lib/events/store";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  assertExecutionScopeTenant,
+  executionScopesEqual,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
+import type { SecurityRole } from "@/lib/security/types";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type {
@@ -21,6 +31,20 @@ import type {
 
 export const AGENT_WORKFLOW_TYPE = "agent.workflow.v1";
 
+const WORKFLOW_SCOPE_BOUND_EVENT_TYPE = "workflow.scope_bound";
+
+export type WorkflowExecutionAuthority = Readonly<{
+  executionScope: ExecutionScope;
+  requesterRole: SecurityRole;
+}>;
+
+export class WorkflowRunExecutionScopeBindingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkflowRunExecutionScopeBindingError";
+  }
+}
+
 export const workflowStepDefinitions: Array<{ key: WorkflowStepKey; label: string }> = [
   { key: "preflight", label: "Preflight" },
   { key: "retrieve_context", label: "Retrieve context" },
@@ -32,18 +56,34 @@ export const workflowStepDefinitions: Array<{ key: WorkflowStepKey; label: strin
 ];
 
 export async function createWorkflowRun(
-  input: WorkflowRunInput & { tenantId?: string; idempotencyKey?: string },
+  input: WorkflowRunInput & {
+    tenantId?: string;
+    idempotencyKey?: string;
+    executionAuthority?: WorkflowExecutionAuthority;
+  },
 ) {
   const now = new Date().toISOString();
   const {
     tenantId: rawTenantId,
     idempotencyKey,
+    executionAuthority,
     ...workflowInput
   } = input;
   const safeWorkflowInput = redactSensitive(
     workflowInput,
   ) as WorkflowRunInput;
+  if (executionAuthority) {
+    safeWorkflowInput.executionAuthorityRequired = true;
+  }
   const tenantId = normalizeTenantId(rawTenantId);
+  if (executionAuthority) {
+    if (!isSecurityRole(executionAuthority.requesterRole)) {
+      throw new WorkflowRunExecutionScopeBindingError(
+        "Workflow execution authority has an invalid requester role.",
+      );
+    }
+    assertExecutionScopeTenant(executionAuthority.executionScope, tenantId);
+  }
   const runId = idempotencyKey
     ? deterministicWorkflowId(tenantId, idempotencyKey)
     : randomUUID();
@@ -77,7 +117,7 @@ export async function createWorkflowRun(
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const created = await getSql().transaction(
+    await getSql().transaction(
       async (sql: ReturnType<typeof getSql>) => {
         const inserted = await sql`
           INSERT INTO omni_workflow_runs (
@@ -124,18 +164,32 @@ export async function createWorkflowRun(
             ${event.payload}::jsonb, ${event.createdAt}
           )
         `;
+        await appendDomainEvent({
+          streamId: `workflow:${run.id}`,
+          type: "workflow.created",
+          tenantId,
+          payload: { goal: run.goal },
+          correlationId: run.id,
+        }, { sql });
+        if (executionAuthority) {
+          await appendWorkflowRunAuthorityBindingEvent(
+            run.id,
+            tenantId,
+            executionAuthority,
+            { sql },
+          );
+        }
         return true;
       },
-    ) as boolean;
-    if (created) {
-      await appendDomainEventSafely({
-        streamId: `workflow:${run.id}`,
-        type: "workflow.created",
-        payload: { goal: run.goal },
-        correlationId: run.id,
-      });
+    );
+    if (executionAuthority) {
+      await assertWorkflowRunExecutionAuthority(
+        run.id,
+        executionAuthority,
+        { tenantId },
+      );
     }
-    return getWorkflowRunDetail(run.id) as Promise<WorkflowRunDetail>;
+    return getWorkflowRunDetail(run.id, { tenantId }) as Promise<WorkflowRunDetail>;
   }
 
   let created = false;
@@ -158,7 +212,192 @@ export async function createWorkflowRun(
     });
   }
 
-  return getWorkflowRunDetail(run.id) as Promise<WorkflowRunDetail>;
+  if (executionAuthority && created) {
+    await bindWorkflowRunExecutionAuthority(
+      run.id,
+      executionAuthority,
+      { tenantId },
+    );
+  } else if (executionAuthority) {
+    await assertWorkflowRunExecutionAuthority(
+      run.id,
+      executionAuthority,
+      { tenantId },
+    );
+  }
+
+  return getWorkflowRunDetail(run.id, { tenantId }) as Promise<WorkflowRunDetail>;
+}
+
+/**
+ * Binds one immutable root authority to a durable workflow before it is queued.
+ * Identical idempotent replays are harmless; conflicting attribution fails.
+ */
+export async function bindWorkflowRunExecutionAuthority(
+  runId: string,
+  authority: WorkflowExecutionAuthority,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (!isSecurityRole(authority.requesterRole)) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Workflow execution authority has an invalid requester role.",
+    );
+  }
+  assertExecutionScopeTenant(authority.executionScope, tenantId);
+  const run = await getWorkflowRunDetail(runId, { tenantId });
+  if (!run) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Execution scope cannot be bound to a missing workflow run.",
+    );
+  }
+  const existing = await getWorkflowRunExecutionAuthority(runId, { tenantId });
+  if (existing) {
+    if (!workflowAuthoritiesEqual(existing, authority)) {
+      throw new WorkflowRunExecutionScopeBindingError(
+        "Workflow run is already bound to another execution scope.",
+      );
+    }
+    return existing;
+  }
+
+  await appendWorkflowRunAuthorityBindingEvent(
+    runId,
+    tenantId,
+    authority,
+  );
+  const bound = await getWorkflowRunExecutionAuthority(runId, { tenantId });
+  if (!bound || !workflowAuthoritiesEqual(bound, authority)) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Workflow run execution scope binding could not be verified.",
+    );
+  }
+  return bound;
+}
+
+/** Returns the one canonical authority shared by all workflow binding events. */
+export async function getWorkflowRunExecutionAuthority(
+  runId: string,
+  options: { tenantId?: string } = {},
+): Promise<WorkflowExecutionAuthority | undefined> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const events = await listStreamEvents(`workflow:${runId}`, {
+    tenantId,
+    limit: 2_000,
+    order: "asc",
+  });
+  let bound: WorkflowExecutionAuthority | undefined;
+  for (const event of events) {
+    if (event.type !== WORKFLOW_SCOPE_BOUND_EVENT_TYPE) continue;
+    const requesterRole = event.payload.requesterRole;
+    if (!event.executionScope || !isSecurityRole(requesterRole)) {
+      throw new WorkflowRunExecutionScopeBindingError(
+        "Workflow run has an invalid execution scope binding.",
+      );
+    }
+    try {
+      assertExecutionScopeTenant(event.executionScope, tenantId);
+    } catch {
+      throw new WorkflowRunExecutionScopeBindingError(
+        "Workflow run execution scope binding has the wrong tenant.",
+      );
+    }
+    if (
+      (event.executionScope.initiatingActorId &&
+        event.actorId !== event.executionScope.initiatingActorId) ||
+      event.correlationId !== event.executionScope.correlationId
+    ) {
+      throw new WorkflowRunExecutionScopeBindingError(
+        "Workflow run execution scope binding metadata is inconsistent.",
+      );
+    }
+    const authority = Object.freeze({
+      executionScope: event.executionScope,
+      requesterRole,
+    });
+    if (
+      !isSha256(event.payload.authoritySha256) ||
+      event.payload.authoritySha256 !== workflowAuthoritySha256(authority)
+    ) {
+      throw new WorkflowRunExecutionScopeBindingError(
+        "Workflow run execution authority binding metadata is inconsistent.",
+      );
+    }
+    if (bound && !workflowAuthoritiesEqual(bound, authority)) {
+      throw new WorkflowRunExecutionScopeBindingError(
+        "Workflow run has conflicting execution scope bindings.",
+      );
+    }
+    bound = authority;
+  }
+  return bound;
+}
+
+async function appendWorkflowRunAuthorityBindingEvent(
+  runId: string,
+  tenantId: string,
+  authority: WorkflowExecutionAuthority,
+  options: { sql?: ReturnType<typeof getSql> } = {},
+) {
+  const { executionScope, requesterRole } = authority;
+  await appendDomainEvent({
+    streamId: `workflow:${runId}`,
+    type: WORKFLOW_SCOPE_BOUND_EVENT_TYPE,
+    tenantId,
+    payload: {
+      scopeVersion: executionScope.version,
+      requesterRole,
+      authoritySha256: workflowAuthoritySha256(authority),
+    },
+    correlationId: executionScope.correlationId,
+    executionScope,
+  }, options);
+}
+
+function workflowAuthoritiesEqual(
+  left: WorkflowExecutionAuthority,
+  right: WorkflowExecutionAuthority,
+) {
+  return left.requesterRole === right.requesterRole &&
+    executionScopesEqual(left.executionScope, right.executionScope);
+}
+
+function workflowAuthoritySha256(authority: WorkflowExecutionAuthority) {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      executionScope: authority.executionScope,
+      requesterRole: authority.requesterRole,
+    }))
+    .digest("hex");
+}
+
+export async function assertWorkflowRunExecutionAuthority(
+  runId: string,
+  authority: WorkflowExecutionAuthority,
+  options: { tenantId?: string } = {},
+) {
+  const bound = await getWorkflowRunExecutionAuthority(runId, {
+    tenantId: options.tenantId,
+  });
+  if (!bound) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Workflow run execution authority binding could not be verified.",
+    );
+  }
+  if (!workflowAuthoritiesEqual(bound, authority)) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Workflow run is already bound to another execution authority.",
+    );
+  }
+}
+
+function isSecurityRole(value: unknown): value is SecurityRole {
+  return value === "viewer" || value === "operator" ||
+    value === "admin" || value === "system";
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
 export async function listWorkflowRuns(limit = 20, options: { tenantId?: string } = {}) {

@@ -306,6 +306,18 @@ async function POSTHandler(request: Request) {
             const { createWorkflowRun } = await import("@/lib/workflows/store");
             const detail = await createWorkflowRun({
               tenantId: context.tenantId,
+              executionAuthority: {
+                executionScope: executionScopeFromSecurityContext(context, {
+                  executingPrincipalType: "agent",
+                  executingPrincipalId:
+                    customAgent?.id || decision.primaryAgentId,
+                  missionId: mission.id,
+                  correlationId: requestId,
+                  causationId: missionTask.id,
+                  purpose: "workflow.run",
+                }),
+                requesterRole: context.role,
+              },
               goal: executionMessage,
               mode,
               requireApproval: decision.requiresApproval || customAgent?.approvalPolicy === "always",

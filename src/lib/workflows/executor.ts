@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   WORKFLOW_PLAN_MAX_COST_UNITS,
   WORKFLOW_PLAN_MAX_TOOL_CALLS,
@@ -13,12 +13,20 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  deriveExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { getGovernedTool } from "@/lib/tools/registry";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
-import { appendWorkflowEvent } from "@/lib/workflows/store";
+import {
+  appendWorkflowEvent,
+  getWorkflowRunExecutionAuthority,
+  type WorkflowExecutionAuthority,
+} from "@/lib/workflows/store";
 import type {
   WorkflowDynamicPlan,
   WorkflowPlanExecutionSummary,
@@ -140,6 +148,12 @@ export async function executeDynamicWorkflowPlan(
   if (!parsedPlan) {
     return null;
   }
+  const executionAuthority = await getWorkflowRunExecutionAuthority(detail.run.id, {
+    tenantId: detail.run.tenantId,
+  });
+  if (detail.run.input.executionAuthorityRequired && !executionAuthority) {
+    throw new Error("Workflow execution authority is missing.");
+  }
 
   const sortedNodes = topologicalSort(parsedPlan.plan.nodes);
   const priorRecords = await listWorkflowPlanNodeExecutionsForRun(detail.run.id, 250);
@@ -234,6 +248,7 @@ export async function executeDynamicWorkflowPlan(
         abortSignal: options.abortSignal,
         toolCache,
         budget,
+        executionAuthority,
       });
       const record = await saveWorkflowPlanNodeExecution({
         ...baseNodeExecutionRecord({ detail, planId: parsedPlan.id, node, existing: runningRecord }),
@@ -421,6 +436,7 @@ async function executePlanNode({
   abortSignal,
   toolCache,
   budget,
+  executionAuthority,
 }: {
   detail: WorkflowRunDetail;
   plan: WorkflowDynamicPlan;
@@ -430,6 +446,7 @@ async function executePlanNode({
   abortSignal?: AbortSignal;
   toolCache: Map<string, Promise<ToolDefinition | undefined>>;
   budget: WorkflowExecutionBudget;
+  executionAuthority?: WorkflowExecutionAuthority;
 }): Promise<{
   status: WorkflowPlanNodeExecutionStatus;
   output: Record<string, unknown>;
@@ -484,6 +501,8 @@ async function executePlanNode({
   }): Promise<ToolExecutionSummary> => {
     throwIfAborted(abortSignal);
     const executionSignal = workflowBudgetAbortSignal(budget, abortSignal);
+    const executionScope = executionAuthority?.executionScope;
+    const initiatingActorId = executionScope?.initiatingActorId || "workflow";
     const execution = await executeGovernedTool({
       toolId,
       input: buildToolInput({ detail, plan, planId, node, toolId }),
@@ -491,8 +510,8 @@ async function executePlanNode({
       approved: workflowApproved && !dryRun,
       context: {
         tenantId: normalizeTenantId(detail.run.tenantId),
-        actorId: "workflow",
-        role: "system",
+        actorId: initiatingActorId,
+        role: executionAuthority?.requesterRole || "system",
         source: "default",
       },
       approvalReason: detail.run.approvedAt
@@ -502,9 +521,17 @@ async function executePlanNode({
       idempotencyKey: `workflow:${detail.run.id}:plan:${planId}:node:${node.id}:tool:${toolId}`,
       mcpSessionScope: {
         tenantId: normalizeTenantId(detail.run.tenantId),
-        actorId: "workflow",
+        actorId: initiatingActorId,
         executionId: `workflow:${detail.run.id}`,
       },
+      executionScope: executionScope
+        ? workflowToolExecutionScope(executionScope, {
+            workflowRunId: detail.run.id,
+            planId,
+            nodeId: node.id,
+            toolId,
+          })
+        : undefined,
     });
     return {
       id: execution.record.id,
@@ -563,6 +590,31 @@ async function executePlanNode({
       blocked?.reason ||
       waitingApproval?.reason,
   };
+}
+
+function workflowToolExecutionScope(
+  workflowScope: ExecutionScope,
+  input: {
+    workflowRunId: string;
+    planId: string;
+    nodeId: string;
+    toolId: string;
+  },
+) {
+  const causationDigest = createHash("sha256")
+    .update([
+      input.workflowRunId,
+      input.planId,
+      input.nodeId,
+      input.toolId,
+    ].join("\0"))
+    .digest("hex");
+  return deriveExecutionScope(workflowScope, {
+    executingPrincipalType: "system",
+    executingPrincipalId: `workflow:${input.workflowRunId}`,
+    causationId: `workflow.tool:${causationDigest}`,
+    purpose: "workflow.tool.execute",
+  });
 }
 
 async function getToolDefinition(

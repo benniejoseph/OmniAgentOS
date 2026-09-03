@@ -11,6 +11,7 @@ import {
   redactSensitive,
   validateTriggerSecretEnvName,
 } from "@/lib/security/context";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import { enqueueWorkflowRunTick } from "@/lib/workflows/queue";
@@ -305,8 +306,23 @@ async function dispatchWorkflowTriggerForTenant(
   const tenantId = trigger.tenantId;
   try {
     const goal = renderGoalTemplate(trigger, payload, eventType);
+    const deliveryScopeId = createHash("sha256")
+      .update(`${trigger.id}\0${delivery.deliveryKey}`)
+      .digest("hex");
     const workflow = await createWorkflowRun({
       tenantId,
+      executionAuthority: {
+        executionScope: createExecutionScope({
+          tenantId,
+          initiatingActorId: null,
+          executingPrincipalType: "system",
+          executingPrincipalId: `workflow-trigger:${trigger.id}`,
+          correlationId: `workflow-trigger:${deliveryScopeId}`,
+          causationId: `trigger-delivery:${deliveryScopeId}`,
+          purpose: "workflow.trigger.dispatch",
+        }),
+        requesterRole: "system",
+      },
       idempotencyKey: `trigger:${trigger.id}:${delivery.deliveryKey}`,
       goal,
       mode: trigger.workflowMode,
