@@ -6,6 +6,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseJsonBody } from "@/lib/http/body";
 import { getTrustedClientIp } from "@/lib/http/client-ip";
 import { checkSharedRateLimit, RateLimitStoreUnavailableError } from "@/lib/http/rate-limit";
+import { nativeClientCompatibility } from "@/lib/auth/native-client-contract";
 
 export const runtime = "nodejs";
 export const POST = withDatabaseRequestScope(POSTHandler);
@@ -28,7 +29,14 @@ async function POSTHandler(request: Request) {
     if (!accountLimit.allowed) return mobileError(429, "rate_limited", "Too many sign-in attempts. Try again later.", { "Retry-After": String(accountLimit.retryAfterSeconds) });
     const result = await authenticateMobilePassword({ ...parsed.data, email: parsed.data.email.trim().toLowerCase() });
     if (!result) return mobileError(401, "invalid_credentials", "Email or password is incorrect, or the account is inactive.");
-    return Response.json({ authenticated: true, tokens: result.tokens, ...publicMobileIdentity(result.identity) }, { headers: mobileNoStoreHeaders });
+    return Response.json({
+      authenticated: true,
+      tokens: result.tokens,
+      ...publicMobileIdentity(result.identity),
+      client: nativeClientCompatibility(result.identity.session.device, {
+        clientAttestedAt: result.identity.session.clientAttestedAt,
+      }),
+    }, { headers: mobileNoStoreHeaders });
   } catch (error) {
     if (error instanceof PasswordWorkCapacityError || error instanceof RateLimitStoreUnavailableError) {
       return mobileError(503, "authentication_unavailable", "Sign in cannot be safely processed right now.", { "Retry-After": "30" });

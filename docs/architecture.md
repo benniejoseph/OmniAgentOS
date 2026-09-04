@@ -520,6 +520,28 @@ artifacts, ingestion recovery, recordings and segments, RAG linkage,
 background work, file fallback, portable data, and canonical writes remain
 exact-owner contracts.
 
+Migration v52 installs the native compatibility observation foundation without
+activating a capability. Structured build number, client-contract version, and
+last-seen fields are additive to mobile sessions; legacy free-text app versions
+remain untouched under contract version zero. Current login and refresh calls
+can attest a strict stable release/build/contract tuple, while bootstrap returns
+the server-owned minimum policy and compatibility status. A private admin read
+reports tenant-aggregate latest-device adoption and every still-refreshable
+session family, so deduplication cannot conceal an older legacy credential.
+The report is PostgreSQL-authoritative, identifier-free, and always held.
+
+The Flutter client now sends the version-1 device contract, stores both
+rotating credentials plus a stable installation ID in secure storage, restores
+through `/api/mobile/bootstrap`, and re-attests on refresh. Native bearer
+contexts use a distinct `mobile` source: they retain the same tenant, RBAC,
+canonical-request, and audit boundaries, while browser-only origin checks stay
+limited to cookie sessions and generic native mutations remain under an
+explicit enrollment hold. The client can fall back to the prior strict wire
+shape during server rollback, while any unattested refresh downgrades its
+structured compatibility to unknown. Bare Agent lists, Agent runtime identity, writes,
+membership authority, and all consent holds remain unchanged until a later
+reviewed enrollment release has sufficient adoption and revocation evidence.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

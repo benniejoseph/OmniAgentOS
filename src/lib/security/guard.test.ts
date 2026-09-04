@@ -160,6 +160,12 @@ describe("cookie-authenticated mutation origin checks", () => {
         { source: "headers" },
       ),
     ).not.toThrow();
+    expect(() =>
+      assertTrustedSessionMutation(
+        new Request("https://app.example.test/api/tools", { method: "POST" }),
+        { source: "mobile" },
+      ),
+    ).toThrow(/native mutations remain held/i);
   });
 
   it("can protect cookie-only routes such as logout", () => {

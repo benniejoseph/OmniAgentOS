@@ -10,6 +10,16 @@ import type {
   MobileTokenPair,
 } from "@/lib/auth/mobile-types";
 import {
+  evaluateNativeClientCompatibility,
+  isFreshNativeClientAttestation,
+  isNativeClientAttestation,
+  nativeClientPolicy,
+  NATIVE_CLIENT_ADOPTION_MAX_SESSION_FAMILIES,
+  NATIVE_CLIENT_ADOPTION_SCHEMA_VERSION,
+  NATIVE_CLIENT_ADOPTION_WINDOW_DAYS,
+  type NativeClientAttestation,
+} from "@/lib/auth/native-client-contract";
+import {
   ensureDatabaseSchema,
   getSql,
   hasDatabaseUrl,
@@ -18,6 +28,7 @@ import {
 } from "@/lib/db/client";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import type { SecurityContext } from "@/lib/security/types";
 
 const accessTtlMs = boundedTtl("OMNIAGENT_MOBILE_ACCESS_TTL_SECONDS", 15 * 60, 60, 60 * 60) * 1000;
 const refreshTtlMs = boundedTtl("OMNIAGENT_MOBILE_REFRESH_TTL_DAYS", 30, 1, 90) * 24 * 60 * 60 * 1000;
@@ -74,7 +85,11 @@ export function hasBearerAuthorization(request?: Request) {
   return Boolean(request?.headers.has("authorization"));
 }
 
-export async function rotateMobileRefreshToken(refreshToken: string, deviceId: string) {
+export async function rotateMobileRefreshToken(
+  refreshToken: string,
+  deviceId: string,
+  client?: NativeClientAttestation,
+) {
   const refreshHash = hashSessionToken(refreshToken);
   const now = new Date();
   const nextAccessToken = createOpaqueToken();
@@ -97,26 +112,73 @@ export async function rotateMobileRefreshToken(refreshToken: string, deviceId: s
         if (!row) return { error: "invalid_refresh_token" as const };
         const session = mobileSessionFromRow(row);
         if (session.consumedRefreshTokenHashes.includes(refreshHash)) {
-          await sql`UPDATE omni_mobile_sessions SET revoked_at = NOW(), updated_at = NOW() WHERE id = ${session.id}`;
+          await sql`
+            UPDATE omni_mobile_sessions
+            SET revoked_at = NOW(), updated_at = NOW()
+            WHERE id = ${session.id}
+              AND tenant_id = ${session.tenantId}
+              AND user_id = ${session.userId}
+          `;
           return { error: "refresh_token_reuse" as const };
         }
-        if (session.revokedAt || session.device.id !== deviceId || new Date(session.refreshExpiresAt) <= now) {
+        if (
+          session.revokedAt ||
+          session.device.id !== deviceId ||
+          (client && client.platform !== session.device.platform) ||
+          new Date(session.refreshExpiresAt) <= now
+        ) {
           return { error: "invalid_refresh_token" as const };
         }
         const consumed = [...session.consumedRefreshTokenHashes, refreshHash];
-        await sql`
-          UPDATE omni_mobile_sessions
-          SET access_token_hash = ${hashSessionToken(nextAccessToken)},
-              refresh_token_hash = ${hashSessionToken(nextRefreshToken)},
-              consumed_refresh_token_hashes = ${JSON.stringify(consumed)}::jsonb,
-              access_expires_at = ${nextAccessExpiresAt}, updated_at = NOW()
-          WHERE id = ${session.id}
-        `;
-        return { session };
+        const updatedRows = client
+          ? await sql`
+              UPDATE omni_mobile_sessions
+              SET access_token_hash = ${hashSessionToken(nextAccessToken)},
+                  refresh_token_hash = ${hashSessionToken(nextRefreshToken)},
+                  consumed_refresh_token_hashes = ${JSON.stringify(consumed)}::jsonb,
+                  access_expires_at = ${nextAccessExpiresAt},
+                  app_version = ${client.appVersion},
+                  app_build_number = ${client.buildNumber},
+                  client_contract_version = ${client.clientContractVersion},
+                  last_seen_at = NOW(),
+                  client_attested_at = NOW(),
+                  updated_at = NOW()
+              WHERE id = ${session.id}
+                AND tenant_id = ${session.tenantId}
+                AND user_id = ${session.userId}
+              RETURNING *
+            `
+          : await sql`
+              UPDATE omni_mobile_sessions
+              SET access_token_hash = ${hashSessionToken(nextAccessToken)},
+                  refresh_token_hash = ${hashSessionToken(nextRefreshToken)},
+                  consumed_refresh_token_hashes = ${JSON.stringify(consumed)}::jsonb,
+                  access_expires_at = ${nextAccessExpiresAt},
+                  app_build_number = NULL,
+                  client_contract_version = 0,
+                  last_seen_at = NOW(),
+                  client_attested_at = NULL,
+                  updated_at = NOW()
+              WHERE id = ${session.id}
+                AND tenant_id = ${session.tenantId}
+                AND user_id = ${session.userId}
+              RETURNING *
+            `;
+        const updated = updatedRows[0];
+        if (!updated) return { error: "invalid_refresh_token" as const };
+        return { session: mobileSessionFromRow(updated) };
       }) as Promise<RefreshRotationResult>,
     );
     if ("error" in result) throw new MobileRefreshError(result.error);
-    return tokenPair(nextAccessToken, nextRefreshToken, nextAccessExpiresAt, result.session.refreshExpiresAt);
+    return {
+      tokens: tokenPair(
+        nextAccessToken,
+        nextRefreshToken,
+        nextAccessExpiresAt,
+        result.session.refreshExpiresAt,
+      ),
+      session: result.session,
+    };
   }
 
   let outcome: { session?: MobileSessionRecord; error?: MobileRefreshError["code"] } = {};
@@ -131,7 +193,12 @@ export async function rotateMobileRefreshToken(refreshToken: string, deviceId: s
       outcome = { error: "refresh_token_reuse" };
       return { ...ledger, sessions: ledger.sessions.map((item) => item.id === session.id ? { ...item, revokedAt: now.toISOString(), updatedAt: now.toISOString() } : item) };
     }
-    if (session.revokedAt || session.device.id !== deviceId || new Date(session.refreshExpiresAt) <= now) {
+    if (
+      session.revokedAt ||
+      session.device.id !== deviceId ||
+      (client && client.platform !== session.device.platform) ||
+      new Date(session.refreshExpiresAt) <= now
+    ) {
       outcome = { error: "invalid_refresh_token" };
       return ledger;
     }
@@ -141,27 +208,287 @@ export async function rotateMobileRefreshToken(refreshToken: string, deviceId: s
       refreshTokenHash: hashSessionToken(nextRefreshToken),
       consumedRefreshTokenHashes: [...session.consumedRefreshTokenHashes, refreshHash],
       accessExpiresAt: nextAccessExpiresAt,
+      device: client
+        ? { ...session.device, ...client }
+        : legacyMobileDevice(session.device),
       updatedAt: now.toISOString(),
+      lastSeenAt: now.toISOString(),
+      clientAttestedAt: client ? now.toISOString() : undefined,
     };
     outcome = { session: rotated };
     return { ...ledger, sessions: ledger.sessions.map((item) => item.id === session.id ? rotated : item) };
   });
   if (outcome.error || !outcome.session) throw new MobileRefreshError(outcome.error || "invalid_refresh_token");
-  return tokenPair(nextAccessToken, nextRefreshToken, nextAccessExpiresAt, outcome.session.refreshExpiresAt);
+  return {
+    tokens: tokenPair(
+      nextAccessToken,
+      nextRefreshToken,
+      nextAccessExpiresAt,
+      outcome.session.refreshExpiresAt,
+    ),
+    session: outcome.session,
+  };
 }
 
-export async function revokeMobileSession(accessToken: string) {
-  const accessHash = hashSessionToken(accessToken);
+export async function recordMobileSessionSeen(
+  identity: MobileIdentity,
+  client?: NativeClientAttestation,
+) {
+  if (client && client.platform !== identity.session.device.platform) {
+    throw new MobileRefreshError("invalid_refresh_token");
+  }
+  const now = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await runWithDatabaseSystemScope(
-      "Revoke a native access token before its tenant is known.",
-      () => getSql()`UPDATE omni_mobile_sessions SET revoked_at = NOW(), updated_at = NOW() WHERE access_token_hash = ${accessHash}`,
+    const rows = await runWithDatabaseTenantScope(
+      identity.context.tenantId,
+      () => client
+        ? getSql()`
+            UPDATE omni_mobile_sessions
+            SET app_version = ${client.appVersion},
+                app_build_number = ${client.buildNumber},
+                client_contract_version = ${client.clientContractVersion},
+                last_seen_at = NOW(),
+                client_attested_at = NOW(),
+                updated_at = NOW()
+            WHERE id = ${identity.session.id}
+              AND tenant_id = ${identity.context.tenantId}
+              AND user_id = ${identity.user.id}
+              AND revoked_at IS NULL
+            RETURNING *
+          `
+        : getSql()`
+            UPDATE omni_mobile_sessions
+            SET app_build_number = NULL,
+                client_contract_version = 0,
+                last_seen_at = NOW(),
+                client_attested_at = NULL,
+                updated_at = NOW()
+            WHERE id = ${identity.session.id}
+              AND tenant_id = ${identity.context.tenantId}
+              AND user_id = ${identity.user.id}
+              AND revoked_at IS NULL
+            RETURNING *
+          `,
     );
+    if (!rows[0]) throw new MobileRefreshError("invalid_refresh_token");
+    return { ...identity, session: mobileSessionFromRow(rows[0]) };
+  }
+  let observedSession: MobileSessionRecord | undefined;
+  await mutateMobileLedger((ledger) => ({
+    ...ledger,
+    sessions: ledger.sessions.map((session) => {
+      if (session.id === identity.session.id &&
+      session.tenantId === identity.context.tenantId &&
+      session.userId === identity.user.id &&
+      !session.revokedAt) {
+        observedSession = {
+          ...session,
+          device: client
+            ? { ...session.device, ...client }
+            : legacyMobileDevice(session.device),
+          lastSeenAt: now,
+          clientAttestedAt: client ? now : undefined,
+          updatedAt: now,
+        };
+        return observedSession;
+      }
+      return session;
+    }),
+  }));
+  if (!observedSession) throw new MobileRefreshError("invalid_refresh_token");
+  return { ...identity, session: observedSession };
+}
+
+export async function getNativeClientAdoption(
+  context: Pick<SecurityContext, "tenantId">,
+) {
+  const asOf = new Date();
+  const cutoff = new Date(
+    asOf.getTime() - NATIVE_CLIENT_ADOPTION_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+  );
+  const policy = nativeClientPolicy();
+  if (policy.configurationStatus !== "valid") {
+    return {
+      schemaVersion: NATIVE_CLIENT_ADOPTION_SCHEMA_VERSION,
+      available: false as const,
+      authoritative: false as const,
+      reason: "invalid_native_client_policy" as const,
+      evidenceState: "held" as const,
+      enrollmentState: "held" as const,
+      agentCatalogEnrollment: "held" as const,
+      asOf: asOf.toISOString(),
+      cutoff: cutoff.toISOString(),
+      policy,
+    };
+  }
+  if (!hasDatabaseUrl()) {
+    return {
+      schemaVersion: NATIVE_CLIENT_ADOPTION_SCHEMA_VERSION,
+      available: false as const,
+      authoritative: false as const,
+      reason: "durable_storage_required" as const,
+      evidenceState: "held" as const,
+      enrollmentState: "held" as const,
+      agentCatalogEnrollment: "held" as const,
+      asOf: asOf.toISOString(),
+      cutoff: cutoff.toISOString(),
+      policy,
+    };
+  }
+
+  await ensureDatabaseSchema();
+  const rows = await runWithDatabaseTenantScope(context.tenantId, () => getSql()`
+    WITH ranked_devices AS (
+      SELECT
+        session.platform,
+        session.app_version,
+        session.app_build_number,
+        session.client_contract_version,
+        session.client_attested_at,
+        ROW_NUMBER() OVER (
+          PARTITION BY session.user_id, session.device_id
+          ORDER BY
+            COALESCE(session.last_seen_at, session.updated_at) DESC,
+            session.updated_at DESC,
+            session.id COLLATE "C" ASC
+        ) AS enrollment_rank
+      FROM omni_mobile_sessions session
+      JOIN omni_auth_users auth_user
+        ON auth_user.id = session.user_id
+        AND auth_user.status = 'active'
+      JOIN omni_auth_memberships membership
+        ON membership.user_id = session.user_id
+        AND membership.tenant_id = session.tenant_id
+        AND membership.status = 'active'
+      WHERE session.tenant_id = ${context.tenantId}
+        AND session.revoked_at IS NULL
+        AND session.refresh_expires_at > ${asOf.toISOString()}
+    )
+    SELECT
+      platform,
+      app_version,
+      app_build_number,
+      client_contract_version,
+      client_attested_at,
+      enrollment_rank
+    FROM ranked_devices
+    ORDER BY
+      enrollment_rank ASC,
+      platform COLLATE "C",
+      app_version COLLATE "C" NULLS LAST
+    LIMIT ${NATIVE_CLIENT_ADOPTION_MAX_SESSION_FAMILIES + 1}
+  `);
+
+  if (rows.length > NATIVE_CLIENT_ADOPTION_MAX_SESSION_FAMILIES) {
+    return {
+      schemaVersion: NATIVE_CLIENT_ADOPTION_SCHEMA_VERSION,
+      available: false as const,
+      authoritative: true as const,
+      reason: "session_family_limit_exceeded" as const,
+      evidenceState: "held" as const,
+      enrollmentState: "held" as const,
+      agentCatalogEnrollment: "held" as const,
+      asOf: asOf.toISOString(),
+      cutoff: cutoff.toISOString(),
+      policy,
+    };
+  }
+
+  const emptyCounts = () => ({
+    total: 0,
+    attested: 0,
+    compatible: 0,
+    upgradeRequired: 0,
+    unknown: 0,
+  });
+  const deviceCounts = emptyCounts();
+  const sessionFamilyCounts = emptyCounts();
+  const byPlatform = {
+    android: emptyCounts(),
+    ios: emptyCounts(),
+    unknown: emptyCounts(),
+  };
+  for (const row of rows) {
+    if (row.platform !== "android" && row.platform !== "ios") {
+      incrementUnknownCompatibilityCounts(sessionFamilyCounts);
+      if (Number(row.enrollment_rank) === 1) {
+        incrementUnknownCompatibilityCounts(deviceCounts);
+        incrementUnknownCompatibilityCounts(byPlatform.unknown);
+      }
+      continue;
+    }
+    const descriptor = {
+      platform: row.platform,
+      appVersion: row.app_version ? String(row.app_version) : undefined,
+      buildNumber: optionalPositiveInteger(row.app_build_number),
+      clientContractVersion: optionalPositiveInteger(
+        row.client_contract_version,
+      ),
+    };
+    const status = isFreshNativeClientAttestation(
+      row.client_attested_at ? String(row.client_attested_at) : undefined,
+      asOf,
+    )
+      ? evaluateNativeClientCompatibility(descriptor)
+      : "unknown";
+    incrementCompatibilityCounts(sessionFamilyCounts, descriptor, status);
+    if (Number(row.enrollment_rank) !== 1) continue;
+    incrementCompatibilityCounts(deviceCounts, descriptor, status);
+    incrementCompatibilityCounts(byPlatform[row.platform], descriptor, status);
+  }
+
+  const adoptionBasisPoints = deviceCounts.total === 0
+    ? null
+    : Math.floor((deviceCounts.compatible * 10_000) / deviceCounts.total);
+
+  return {
+    schemaVersion: NATIVE_CLIENT_ADOPTION_SCHEMA_VERSION,
+    available: true as const,
+    authoritative: true as const,
+    evidenceState: "held" as const,
+    enrollmentState: "held" as const,
+    agentCatalogEnrollment: "held" as const,
+    asOf: asOf.toISOString(),
+    cutoff: cutoff.toISOString(),
+    policy,
+    population: {
+      activeSessionFamilies: sessionFamilyCounts.total,
+      activeDevices: deviceCounts.total,
+      compatibleDevices: deviceCounts.compatible,
+      upgradeRequiredDevices: deviceCounts.upgradeRequired,
+      legacyOrUnknownDevices: deviceCounts.unknown,
+      incompatibleActiveSessionFamilies:
+        sessionFamilyCounts.total - sessionFamilyCounts.compatible,
+      adoptionBasisPoints,
+    },
+    sessionFamilies: sessionFamilyCounts,
+    devices: deviceCounts,
+    byPlatform,
+  };
+}
+
+export async function revokeMobileSession(identity: MobileIdentity) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    await runWithDatabaseTenantScope(identity.context.tenantId, () => getSql()`
+      UPDATE omni_mobile_sessions
+      SET revoked_at = NOW(), updated_at = NOW()
+      WHERE id = ${identity.session.id}
+        AND tenant_id = ${identity.context.tenantId}
+        AND user_id = ${identity.user.id}
+        AND revoked_at IS NULL
+    `);
     return;
   }
   const now = new Date().toISOString();
-  await mutateMobileLedger((ledger) => ({ ...ledger, sessions: ledger.sessions.map((item) => item.accessTokenHash === accessHash ? { ...item, revokedAt: now, updatedAt: now } : item) }));
+  await mutateMobileLedger((ledger) => ({ ...ledger, sessions: ledger.sessions.map((item) =>
+    item.id === identity.session.id &&
+    item.tenantId === identity.context.tenantId &&
+    item.userId === identity.user.id &&
+    !item.revokedAt
+      ? { ...item, revokedAt: now, updatedAt: now }
+      : item) }));
 }
 
 export async function revokeMobileSessionsForUser(userId: string, tenantId: string) {
@@ -195,17 +522,24 @@ async function createMobileSession(identity: AuthSessionIdentity, device: Mobile
     accessExpiresAt: new Date(now.getTime() + accessTtlMs).toISOString(),
     refreshExpiresAt: new Date(now.getTime() + refreshTtlMs).toISOString(),
     createdAt: now.toISOString(), updatedAt: now.toISOString(),
+    lastSeenAt: now.toISOString(),
+    clientAttestedAt: isNativeClientAttestation(device)
+      ? now.toISOString()
+      : undefined,
   };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await runWithDatabaseTenantScope(session.tenantId, () => getSql()`
       INSERT INTO omni_mobile_sessions (
         id, family_id, user_id, tenant_id, device_id, device_name, platform, app_version,
+        app_build_number, client_contract_version, last_seen_at, client_attested_at,
         access_token_hash, refresh_token_hash, consumed_refresh_token_hashes,
         access_expires_at, refresh_expires_at, created_at, updated_at
       ) VALUES (
         ${session.id}, ${session.familyId}, ${session.userId}, ${session.tenantId}, ${device.id}, ${device.name},
-        ${device.platform}, ${device.appVersion || null}, ${session.accessTokenHash}, ${session.refreshTokenHash},
+        ${device.platform}, ${device.appVersion || null}, ${device.buildNumber || null},
+        ${device.clientContractVersion || 0}, ${session.lastSeenAt}, ${session.clientAttestedAt || null},
+        ${session.accessTokenHash}, ${session.refreshTokenHash},
         ${JSON.stringify([])}::jsonb, ${session.accessExpiresAt}, ${session.refreshExpiresAt}, ${session.createdAt}, ${session.updatedAt}
       )
     `);
@@ -251,7 +585,7 @@ async function getMobileAccessIdentity(accessToken: string): Promise<MobileIdent
 
 function mobileIdentity(session: MobileSessionRecord, identity: Pick<AuthSessionIdentity, "user" | "tenant" | "membership">): MobileIdentity {
   return { session, user: identity.user, tenant: identity.tenant, membership: identity.membership, context: {
-    tenantId: identity.tenant.id, actorId: identity.user.email, role: identity.membership.role, source: "session",
+    tenantId: identity.tenant.id, actorId: identity.user.email, role: identity.membership.role, source: "mobile",
     auth: { userId: identity.user.id, email: identity.user.email, sessionId: session.id, tenantName: identity.tenant.name },
   } };
 }
@@ -267,13 +601,53 @@ function mobileIdentityFromRow(row: Record<string, unknown>) {
 
 function mobileSessionFromRow(row: Record<string, unknown>): MobileSessionRecord {
   const consumed = Array.isArray(row.consumed_refresh_token_hashes) ? row.consumed_refresh_token_hashes.map(String) : [];
-  return { id: String(row.id), familyId: String(row.family_id), userId: String(row.user_id), tenantId: String(row.tenant_id), device: { id: String(row.device_id), name: String(row.device_name), platform: String(row.platform) as "android" | "ios", appVersion: row.app_version ? String(row.app_version) : undefined }, accessTokenHash: String(row.access_token_hash), refreshTokenHash: String(row.refresh_token_hash), consumedRefreshTokenHashes: consumed, accessExpiresAt: date(row.access_expires_at), refreshExpiresAt: date(row.refresh_expires_at), createdAt: date(row.created_at), updatedAt: date(row.updated_at), revokedAt: row.revoked_at ? date(row.revoked_at) : undefined };
+  return { id: String(row.id), familyId: String(row.family_id), userId: String(row.user_id), tenantId: String(row.tenant_id), device: { id: String(row.device_id), name: String(row.device_name), platform: mobilePlatform(row.platform), appVersion: row.app_version ? String(row.app_version) : undefined, buildNumber: optionalPositiveInteger(row.app_build_number), clientContractVersion: optionalPositiveInteger(row.client_contract_version) }, accessTokenHash: String(row.access_token_hash), refreshTokenHash: String(row.refresh_token_hash), consumedRefreshTokenHashes: consumed, accessExpiresAt: date(row.access_expires_at), refreshExpiresAt: date(row.refresh_expires_at), createdAt: date(row.created_at), updatedAt: date(row.updated_at), lastSeenAt: row.last_seen_at ? date(row.last_seen_at) : undefined, clientAttestedAt: row.client_attested_at ? date(row.client_attested_at) : undefined, revokedAt: row.revoked_at ? date(row.revoked_at) : undefined };
 }
 
 function tokenPair(accessToken: string, refreshToken: string, accessExpiresAt: string, refreshExpiresAt: string): MobileTokenPair {
   return { tokenType: "Bearer", accessToken, refreshToken, accessExpiresAt, refreshExpiresAt };
 }
 function date(value: unknown) { return value instanceof Date ? value.toISOString() : String(value); }
+function optionalPositiveInteger(value: unknown) {
+  const numeric = Number(value);
+  return Number.isInteger(numeric) && numeric > 0 ? numeric : undefined;
+}
+function mobilePlatform(value: unknown): MobileDevice["platform"] {
+  if (value === "android" || value === "ios") return value;
+  throw new Error("Native session platform is invalid.");
+}
+function legacyMobileDevice(device: MobileDevice): MobileDevice {
+  return {
+    id: device.id,
+    name: device.name,
+    platform: device.platform,
+    appVersion: device.appVersion,
+  };
+}
+function incrementCompatibilityCounts(
+  counts: {
+    total: number;
+    attested: number;
+    compatible: number;
+    upgradeRequired: number;
+    unknown: number;
+  },
+  descriptor: Parameters<typeof evaluateNativeClientCompatibility>[0],
+  status: ReturnType<typeof evaluateNativeClientCompatibility>,
+) {
+  counts.total += 1;
+  if (isNativeClientAttestation(descriptor)) counts.attested += 1;
+  if (status === "compatible") counts.compatible += 1;
+  else if (status === "upgrade_required") counts.upgradeRequired += 1;
+  else counts.unknown += 1;
+}
+function incrementUnknownCompatibilityCounts(counts: {
+  total: number;
+  unknown: number;
+}) {
+  counts.total += 1;
+  counts.unknown += 1;
+}
 function boundedTtl(name: string, fallback: number, min: number, max: number) { const value = Number(process.env[name]); return Number.isFinite(value) ? Math.min(Math.max(Math.round(value), min), max) : fallback; }
 function getMobileFile() { return getDataPath("mobile-auth.json"); }
 function readMobileLedger() { return readJsonFile<MobileAuthLedger>(getMobileFile(), { sessions: [] }); }

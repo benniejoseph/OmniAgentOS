@@ -19,8 +19,11 @@ class SessionController extends AsyncNotifier<AppSession?> {
 
   Future<void> signOut() async {
     state = const AsyncLoading();
-    await ref.read(sessionRepositoryProvider).signOut();
-    state = const AsyncData(null);
+    try {
+      await ref.read(sessionRepositoryProvider).signOut();
+    } finally {
+      state = const AsyncData(null);
+    }
   }
 
   Future<void> retry() async {
