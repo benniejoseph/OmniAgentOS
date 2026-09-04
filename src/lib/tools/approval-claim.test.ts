@@ -186,9 +186,10 @@ describe("tool approval claims (file mode)", () => {
       __effectToolContractSha256: "5".repeat(64),
     };
     const intent: ToolExecutionRecord = {
-      ...pendingRecord("idem_stale_memory_effect", 1),
+      ...pendingRecord("idem_stale_memory_effect", 2),
       toolId: "memory.write",
       toolName: "Write memory",
+      riskLevel: 1,
       status: "executing",
       dryRun: false,
       approvalRequired: false,
