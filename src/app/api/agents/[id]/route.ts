@@ -1,11 +1,13 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { customAgentPatchSchema } from "@/lib/skills/schema";
 import {
   AgentSkillAssignmentError,
+  CustomAgentReadConflictError,
   deleteCustomAgent,
-  getCustomAgent,
+  getCustomAgentForRequest,
   updateCustomAgent,
 } from "@/lib/skills/store";
 
@@ -14,13 +16,34 @@ export const GET = withDatabaseRequestScope(GETHandler);
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
 export const DELETE = withDatabaseRequestScope(DELETEHandler);
 
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
+
 async function GETHandler(request: Request, context: RouteContext<"/api/agents/[id]">) {
   let auth;
   try { auth = await authorizeRequest({ request, action: "read", resourceType: "custom_agent" }); }
   catch (error) { return forbiddenResponse(error); }
   const { id } = await context.params;
-  const agent = await getCustomAgent(id, { tenantId: auth.tenantId, actorId: auth.actorId });
-  return agent ? Response.json({ agent }) : Response.json({ error: "Agent not found." }, { status: 404 });
+  try {
+    const agent = await getCustomAgentForRequest(id, {
+      tenantId: auth.tenantId,
+      actorId: auth.actorId,
+      requestActorBinding: canonicalRequestActorBindingFromSecurityContext(auth),
+    });
+    return agent
+      ? Response.json({ agent }, { headers: privateNoStoreHeaders })
+      : Response.json(
+          { error: "Agent not found." },
+          { status: 404, headers: privateNoStoreHeaders },
+        );
+  } catch (error) {
+    if (error instanceof CustomAgentReadConflictError) {
+      return Response.json(
+        { error: "Custom Agent ownership could not be verified." },
+        { status: 409, headers: privateNoStoreHeaders },
+      );
+    }
+    throw error;
+  }
 }
 
 async function PATCHHandler(request: Request, context: RouteContext<"/api/agents/[id]">) {

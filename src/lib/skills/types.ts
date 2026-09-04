@@ -50,6 +50,11 @@ export type CustomAgentDefinition = {
   updatedAt: string;
 };
 
+export type RequestCustomAgentDefinition = CustomAgentDefinition & {
+  selectable: boolean;
+  manageable: boolean;
+};
+
 export type AgentBuilderLedger = {
   skills: AgentSkill[];
   agents: CustomAgentDefinition[];

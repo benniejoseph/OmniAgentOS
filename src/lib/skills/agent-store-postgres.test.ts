@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { builtInSkills } from "@/lib/skills/catalog";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 
 const dbMocks = vi.hoisted(() => {
   const responses: Array<Record<string, unknown>[] | Error> = [];
@@ -39,11 +40,24 @@ vi.mock("@/lib/db/client", async (importOriginal) => ({
 
 import {
   AgentSkillAssignmentError,
+  CustomAgentReadConflictError,
   createCustomAgent,
+  getCustomAgent,
+  getCustomAgentForRequest,
   updateCustomAgent,
 } from "@/lib/skills/store";
 
 const scope = { tenantId: "tenant-a", actorId: "owner@example.test" };
+const authUserId = "11111111-1111-4111-8111-111111111111";
+const canonicalActorId = `actor:${authUserId}`;
+const requestActorBinding: CanonicalRequestActorBindingV1 = {
+  version: 1,
+  kind: "auth_user",
+  authUserId,
+  canonicalActorId,
+  legacyOwnerActorIds: Object.freeze([scope.actorId]),
+  readableOwnerActorIds: Object.freeze([canonicalActorId, scope.actorId]),
+};
 
 beforeEach(() => {
   dbMocks.responses.splice(0);
@@ -175,6 +189,87 @@ describe("Postgres custom Agent Skill integrity", () => {
     await expect(updateCustomAgent("agent-a", {
       skillIds: [customSkillId],
     }, scope)).rejects.toBeInstanceOf(AgentSkillAssignmentError);
+  });
+});
+
+describe("Postgres custom Agent request detail reads", () => {
+  it("reads one global ID across the owner pair and derives actionability before projection", async () => {
+    dbMocks.responses.push([{
+      ...agentRow("canonical-agent", []),
+      actor_id: canonicalActorId,
+    }]);
+
+    await expect(getCustomAgentForRequest("canonical-agent", {
+      ...scope,
+      requestActorBinding,
+    })).resolves.toEqual(expect.objectContaining({
+      id: "canonical-agent",
+      tenantId: scope.tenantId,
+      actorId: scope.actorId,
+      selectable: false,
+      manageable: false,
+    }));
+    expect(dbMocks.statements).toHaveLength(1);
+    expect(dbMocks.statements[0].text).toMatch(
+      /FROM omni_custom_agents[\s\S]*WHERE id = \$\d+ AND tenant_id = \$\d+[\s\S]*AND \(actor_id = \$\d+ OR actor_id = \$\d+\)[\s\S]*LIMIT 1/,
+    );
+    expect(dbMocks.statements[0].text).not.toMatch(/\bORDER BY\b/);
+    expect(dbMocks.statements[0].params).toEqual([
+      "canonical-agent",
+      scope.tenantId,
+      canonicalActorId,
+      scope.actorId,
+    ]);
+  });
+
+  it("falls back to an exact request query while leaving the exact helper unchanged", async () => {
+    dbMocks.responses.push([agentRow("exact-request", [])]);
+    await expect(getCustomAgentForRequest("exact-request", scope)).resolves.toEqual(
+      expect.objectContaining({ selectable: true, manageable: true }),
+    );
+    expect(dbMocks.statements[0].params).toEqual([
+      "exact-request",
+      scope.tenantId,
+      scope.actorId,
+      scope.actorId,
+    ]);
+
+    dbMocks.responses.push([agentRow("exact-helper", [])]);
+    const exact = await getCustomAgent("exact-helper", scope);
+    expect(exact).not.toHaveProperty("selectable");
+    expect(exact).not.toHaveProperty("manageable");
+    expect(dbMocks.statements[1].text).not.toContain(" OR actor_id = ");
+    expect(dbMocks.statements[1].params).toEqual([
+      scope.tenantId,
+      scope.actorId,
+    ]);
+  });
+
+  it("rejects unexpected ownership and malformed or reserved custom Agent IDs", async () => {
+    dbMocks.responses.push([{
+      ...agentRow("wrong-owner", []),
+      actor_id: "third-owner@example.test",
+    }]);
+    await expect(getCustomAgentForRequest("wrong-owner", {
+      ...scope,
+      requestActorBinding,
+    })).rejects.toBeInstanceOf(CustomAgentReadConflictError);
+
+    dbMocks.statements.splice(0);
+    dbMocks.ensureDatabaseSchema.mockClear();
+    await expect(getCustomAgentForRequest("atlas", {
+      ...scope,
+      requestActorBinding,
+    })).rejects.toBeInstanceOf(CustomAgentReadConflictError);
+    expect(dbMocks.ensureDatabaseSchema).not.toHaveBeenCalled();
+    expect(dbMocks.statements).toHaveLength(0);
+
+    await expect(getCustomAgentForRequest("malformed agent", {
+      ...scope,
+      requestActorBinding,
+    })).rejects.toBeInstanceOf(CustomAgentReadConflictError);
+    expect(dbMocks.ensureDatabaseSchema).not.toHaveBeenCalled();
+    expect(dbMocks.statements).toHaveLength(0);
   });
 });
 

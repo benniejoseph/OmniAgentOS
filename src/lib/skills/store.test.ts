@@ -3,12 +3,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { builtInSkills } from "@/lib/skills/catalog";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { customAgentPatchSchema } from "@/lib/skills/schema";
 import {
   AgentSkillAssignmentError,
   createAgentSkill,
   createCustomAgent,
   deleteAgentSkill,
+  getCustomAgentForRequest,
   listAgentSkills,
   listCustomAgents,
   updateCustomAgent,
@@ -113,6 +115,40 @@ describe("agent and skill studio store", () => {
       description: agent.description,
       skillIds: [builtInSkills[0].id, exactSkill.id],
     }]);
+  });
+
+  it("keeps request-bound custom Agent detail reads exact in file mode", async () => {
+    const actorId = "owner@example.test";
+    const authUserId = "11111111-1111-4111-8111-111111111111";
+    const canonicalActorId = `actor:${authUserId}`;
+    const scope = { tenantId: "private", actorId };
+    const binding: CanonicalRequestActorBindingV1 = {
+      version: 1,
+      kind: "auth_user",
+      authUserId,
+      canonicalActorId,
+      legacyOwnerActorIds: Object.freeze([actorId]),
+      readableOwnerActorIds: Object.freeze([canonicalActorId, actorId]),
+    };
+    const exact = await createCustomAgent(agentInput("Exact Agent"), scope);
+    const canonical = await createCustomAgent(
+      agentInput("Canonical Agent"),
+      { tenantId: scope.tenantId, actorId: canonicalActorId },
+    );
+
+    await expect(getCustomAgentForRequest(exact.id, {
+      ...scope,
+      requestActorBinding: binding,
+    })).resolves.toEqual(expect.objectContaining({
+      id: exact.id,
+      actorId,
+      selectable: true,
+      manageable: true,
+    }));
+    await expect(getCustomAgentForRequest(canonical.id, {
+      ...scope,
+      requestActorBinding: binding,
+    })).resolves.toBeUndefined();
   });
 });
 

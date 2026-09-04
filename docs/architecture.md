@@ -478,8 +478,22 @@ removed, and direct Skill deletion is accepted only at read-committed
 isolation so its lock-and-recheck protocol cannot observe a stale snapshot.
 Request projections mark exact-owner custom Skills as selectable/manageable,
 canonical compatibility rows as read-only/non-selectable, and built-ins as
-selectable/non-manageable. Custom Agent reads, runtime selection, hashes,
+selectable/non-manageable. Both web and Flutter Agent editors honor those
+flags before offering assignment, edit, or deletion. Custom Agent reads,
+runtime selection, hashes,
 portable data, and canonical writes remain exact-owner contracts.
+
+The tenth request-bound slice converges only custom Agent detail GET. A valid
+authenticated binding may resolve one globally unique custom Agent ID from
+the canonical/current-email pair; malformed or reserved built-in IDs and any
+unexpected persisted owner fail closed. Actionability is derived from the
+physical owner before the response projects the current request actor: exact
+rows are selectable/manageable and canonical compatibility rows are neither.
+Command withholds a custom preferred Agent until this detail contract returns
+the same ID with `selectable: true`. Agent list, Arsenal and Mission catalogs,
+Flutter Agent controls, mutations, runtime profile/Skill resolution,
+run-contract hashes, portable data, file fallback, and canonical writes remain
+on their exact-owner paths.
 
 The ledgers have different mutation semantics:
 

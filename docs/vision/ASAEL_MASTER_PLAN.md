@@ -1113,6 +1113,19 @@ canary safe to populate, but it does not converge custom Agent reads, Agent
 runtime identity, run-contract hashes, portable data, or canonical writes;
 those remain separate gates before any canonical Skill can drive execution.
 
+The next request canary covers custom Agent detail only. The validated
+canonical/current-email pair may resolve one globally unique custom Agent ID,
+but malformed or built-in-reserved IDs and unexpected ownership fail closed.
+The response derives `selectable` and `manageable` from the persisted owner
+before projecting the current email; Command does not retain or submit the
+Agent unless the returned ID matches and `selectable` is explicitly true.
+The Flutter Agent editor now also enforces the Skill actionability metadata
+installed with v51. Agent lists remain exact because Arsenal, Missions, and
+native controls still treat list entries as actionable; runtime selection,
+tool authority, hashes, portable data, mutations, and canonical writes also
+remain exact. Canonical Agent enrollment therefore remains dormant until the
+list consumers and runtime identity gates converge together.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

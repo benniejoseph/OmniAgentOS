@@ -19,6 +19,38 @@ void main() {
     expect(agent.memoryScope, 'project');
   });
 
+  test('skill actionability honors flags with legacy-safe defaults', () {
+    final legacyCustom = AgentSkill.fromJson({
+      'id': 'custom-current',
+      'name': 'Current custom skill',
+    });
+    final legacyBuiltIn = AgentSkill.fromJson({
+      'id': 'core.research',
+      'name': 'Research',
+      'builtIn': true,
+    });
+    final canonicalCustom = AgentSkill.fromJson({
+      'id': 'custom-canonical',
+      'name': 'Canonical custom skill',
+      'selectable': false,
+      'manageable': false,
+    });
+
+    expect(legacyCustom.selectable, isTrue);
+    expect(legacyCustom.manageable, isTrue);
+    expect(legacyBuiltIn.selectable, isTrue);
+    expect(legacyBuiltIn.manageable, isFalse);
+    expect(canonicalCustom.selectable, isFalse);
+    expect(canonicalCustom.manageable, isFalse);
+    expect(
+      filterSelectableSkillIds(
+        [legacyCustom, legacyBuiltIn, canonicalCustom],
+        ['custom-current', 'core.research', 'custom-canonical', 'missing'],
+      ),
+      {'custom-current', 'core.research'},
+    );
+  });
+
   test('performance accepts normalized API fields', () {
     final metric = AgentPerformance.fromJson({
       'agentId': 'a',

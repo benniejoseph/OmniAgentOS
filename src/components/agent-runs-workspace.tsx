@@ -188,8 +188,11 @@ export function AgentRunsWorkspace({
   } = useWorkspaceSession();
   const [goal, setGoal] = useState(initialGoal || "");
   const [mode, setMode] = useState<AgentMode>("orchestrate");
-  const [preferredAgentId, setPreferredAgentId] = useState<AgentId | undefined>(initialAgentId);
-  const [preferredAgentName, setPreferredAgentName] = useState<string | undefined>(initialAgentId ? agentDisplayName(initialAgentId) : undefined);
+  const initialBuiltInAgentId = initialAgentId && agentDisplayName(initialAgentId) !== "Custom agent"
+    ? initialAgentId
+    : undefined;
+  const [preferredAgentId, setPreferredAgentId] = useState<AgentId | undefined>(initialBuiltInAgentId);
+  const [preferredAgentName, setPreferredAgentName] = useState<string | undefined>(initialBuiltInAgentId ? agentDisplayName(initialBuiltInAgentId) : undefined);
   const [approvalRequired, setApprovalRequired] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>("context");
   const [loading, setLoading] = useState<string>();
@@ -253,10 +256,27 @@ export function AgentRunsWorkspace({
   const conversationsSheetRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (!initialAgentId || agentDisplayName(initialAgentId) !== "Custom agent") return;
+    if (!initialAgentId) {
+      setPreferredAgentId(undefined);
+      setPreferredAgentName(undefined);
+      return;
+    }
+    if (agentDisplayName(initialAgentId) !== "Custom agent") {
+      setPreferredAgentId(initialAgentId);
+      setPreferredAgentName(agentDisplayName(initialAgentId));
+      return;
+    }
+    setPreferredAgentId(undefined);
+    setPreferredAgentName(undefined);
     const controller = new AbortController();
     void readJson(`/api/agents/${encodeURIComponent(initialAgentId)}`, { signal: controller.signal })
-      .then((payload) => setPreferredAgentName(stringPath(asRecord(payload), "agent.name", "Custom agent")))
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        const agent = asRecord(asRecord(payload).agent);
+        if (agent.selectable !== true || stringValue(agent.id) !== initialAgentId) return;
+        setPreferredAgentId(initialAgentId);
+        setPreferredAgentName(stringValue(agent.name, "Custom agent"));
+      })
       .catch(() => undefined);
     return () => controller.abort();
   }, [initialAgentId]);
