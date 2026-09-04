@@ -173,5 +173,10 @@
     "version": 35,
     "name": "asael_canonical_identity",
     "checksum": "b0f40966f3219641ed68b30f9bb127c3dee62e80a775a34dfb5cd45bdf7ff7f3"
+  },
+  {
+    "version": 36,
+    "name": "governed_memory_write_effect_receipts",
+    "checksum": "d5669e132cae6e06a0f4b537edbd2cae66d0efa5b23c5ee53662a0a78bd9c1ab"
   }
 ]

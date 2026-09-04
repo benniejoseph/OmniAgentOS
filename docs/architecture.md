@@ -121,6 +121,37 @@ requirements from the persisted pre-execution plan, but no exact outcome
 contract digest was bound before execution. Therefore this slice cannot emit
 `succeeded`; pre-execution binding and strong effect receipts are later gates.
 
+The first P1.4 canary is deliberately narrower than that phase's target. Only
+live `memory.write` from a single-tool plan node in an approved workflow with
+explicit tenant and initiating-actor scope creates an `EffectReceiptV1`. Its memory target is
+deterministic from the scoped
+execution and persisted execution-time plan/node bindings. The strict metadata/hash-only
+receipt records a first-party store-commit acknowledgement plus a
+tenant-scoped read-after-write comparison; it never copies memory content,
+plan text, tool input/output, or a raw idempotency key. Legacy executions,
+system-triggered workflows without an initiating actor, dry runs, direct tool
+calls, and other tools are unchanged.
+
+Before the canary writes memory, its executing tool record binds the input,
+plan, deterministic target, idempotency identity, and tool-contract digests.
+Generic stale-claim recovery does not convert this uncertain state to failed.
+A same-key retry first reconciles the tenant-scoped target and may reclaim the
+claim only after timeout with every bound identity unchanged. An unfinished
+claim from a different tool-contract release remains pending for operator
+resolution; a receipt already finalized by the earlier release remains valid
+historical evidence.
+
+This is tool-level evidence only. P1.3 projects the ID of a strictly bound,
+verified canary receipt into its evidence and terminal receipt, but evaluation
+remains `posthoc` and canonical `succeeded` is still impossible. External
+providers, broader tool coverage, and outcome requirements bound before
+execution remain future P1.4 work.
+
+The existing workflow approval timestamp is not a cryptographic approval of
+that exact plan digest. The canary proves which persisted plan executed after
+workflow approval, not that the digest itself was presented and signed; that
+pre-execution approval binding remains a later success gate.
+
 ## Durable workflows
 
 Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured output), persisted, and executed node-by-node through queue leases (`omni_operation_jobs`): lease → tick → retry with backoff (max 5 attempts) → recovery for stale leases. Approval nodes pause until signaled. The daily cron plus `after()` drains advance work; see [deployment.md](deployment.md) for cadence options.
@@ -135,6 +166,12 @@ Existing `OMNIAGENT_*`, `omni_*`, and `.omniagent/` identifiers remain stable
 compatibility contracts; they are not product display names.
 
 Schema changes run as ordered, idempotent migrations under a Postgres advisory lock. `omni_schema_version` records each applied version and upgrades the older timestamp-only marker. pgvector setup is attempted under the same lock but remains optional when the database role lacks extension privileges.
+
+Migration v36 adds the nullable `effect_receipt` column to
+`omni_tool_executions`. For the canary, Postgres finalizes that receipt on the
+tool record and appends `tool.effect_receipt.recorded` in the same transaction.
+The local JSON fallback performs a separate best-effort event append after the
+record update and is suitable only for development compatibility.
 
 The ledgers have different mutation semantics:
 

@@ -20,9 +20,10 @@ import {
   forgetMemory,
   getMemory,
   saveMemory,
+  saveMemoryWithCommitStatus,
   searchMemories,
 } from "@/lib/memory/store";
-import type { MemoryType } from "@/lib/memory/types";
+import type { MemoryRecord, MemoryType } from "@/lib/memory/types";
 import {
   appendMissionTaskComment,
   ensureMissionTask,
@@ -56,6 +57,7 @@ import {
   createToolExecutionRecord,
   getToolExecution,
   getToolExecutionApprovalFingerprint,
+  repairFileToolEffectReceiptEvent,
   recoverStaleToolExecutionClaim,
   saveToolExecution,
   sealToolExecutionInput,
@@ -67,9 +69,18 @@ import {
   assertToolExecutionBindingMatchesRequest,
   bindToolExecutionScope,
   getToolExecutionScopeBinding,
+  toolInputSha256,
   ToolExecutionScopeBindingError,
   type ToolExecutionScopeBinding,
 } from "@/lib/tools/execution-scope";
+import {
+  buildEffectReceiptV1,
+  canonicalJsonSha256,
+  idempotencyKeySha256,
+  memoryEffectTargetIdV1,
+  parseEffectReceiptV1,
+  type EffectReceiptV1,
+} from "@/lib/tools/effect-receipt";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/lib/tools/types";
 import { actionClassFor, recordActionOutcome, resolveAutonomy } from "@/lib/trust/ledger";
@@ -215,6 +226,23 @@ class ExecutionClaimLostError extends Error {
   }
 }
 
+export class EffectReceiptFinalizationError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super(
+      "The live effect may have completed, but its verification receipt is not finalized.",
+      options,
+    );
+    this.name = "EffectReceiptFinalizationError";
+  }
+}
+
+export type GovernedToolEffectBinding = Readonly<{
+  workflowRunId: string;
+  planId: string;
+  planSha256: string;
+  planNodeId: string;
+}>;
+
 export class ToolInputValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -236,6 +264,7 @@ export async function executeGovernedTool({
   forceApproval = false,
   mcpSessionScope,
   executionScope,
+  effectBinding,
 }: {
   toolId: string;
   input: Record<string, unknown>;
@@ -253,6 +282,8 @@ export async function executeGovernedTool({
   mcpSessionScope?: McpSessionScope;
   /** Durable attribution inherited from the initiating run or request. */
   executionScope?: ExecutionScope;
+  /** Exact persisted execution-plan binding for the P1.4 memory-write canary. */
+  effectBinding?: GovernedToolEffectBinding;
 }) {
   assertRequestedToolExecutionScope(
     executionScope,
@@ -321,6 +352,11 @@ export async function executeGovernedTool({
       ? await completeClaimedToolExecution(record, executionClaimToken)
       : await saveToolExecution(record);
     if (!saved) {
+      if (record.effectReceipt) {
+        throw new EffectReceiptFinalizationError({
+          cause: new ExecutionClaimLostError(),
+        });
+      }
       throw new ExecutionClaimLostError();
     }
     await bindToolScopeIfPresent({
@@ -363,6 +399,69 @@ export async function executeGovernedTool({
         error,
       );
     }
+    if (
+      effectBinding &&
+      tool.id === "memory.write" &&
+      !dryRun &&
+      idempotencyKey
+    ) {
+      let existing: ToolExecutionRecord | undefined;
+      try {
+        existing = await getToolExecution(
+          idempotentToolExecutionId(
+            normalizeTenantId(context?.tenantId),
+            idempotencyKey,
+          ),
+          { tenantId: context?.tenantId },
+        );
+      } catch (lookupError) {
+        throw new EffectReceiptFinalizationError({ cause: lookupError });
+      }
+      if (
+        existing?.status === "executed" &&
+        !existing.dryRun &&
+        existing.effectReceipt !== undefined
+      ) {
+        try {
+          const safeRequestedInput = redactSensitive(input) as Record<
+            string,
+            unknown
+          >;
+          if (
+            toolInputSha256(safeRequestedInput) !==
+              toolInputSha256(existing.input)
+          ) {
+            throw new ToolExecutionScopeBindingError(
+              "Idempotent tool input does not match its completed governed effect.",
+            );
+          }
+          const resolved = await resolveToolExecutionScopeRequest({
+            record: existing,
+            toolInput: input,
+            requestedScope: executionScope,
+            context,
+            executionClaimToken: undefined,
+            mcpSessionScope,
+          });
+          assertCompletedMemoryWriteEffectReceipt({
+            record: existing,
+            effectBinding,
+            executionScope: resolved.executionScope,
+            idempotencyKey,
+          });
+          await repairFileToolEffectReceiptEvent(
+            existing,
+            resolved.executionScope,
+          );
+          return { record: existing, result: existing.output };
+        } catch (receiptError) {
+          throw new EffectReceiptFinalizationError({ cause: receiptError });
+        }
+      }
+      if (existing && !isLegacyExecutionForEffectCanary(existing)) {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+    }
     throw toolInputValidationError(error);
   }
   if (tool.id === "http.request") {
@@ -396,11 +495,100 @@ export async function executeGovernedTool({
     existingRecord,
     scopedRequest,
   );
+  const effectCanaryRequest = Boolean(
+    !dryRun &&
+    idempotencyKey &&
+    !existingRecord &&
+    effectBinding &&
+    tool.id === "memory.write",
+  );
+
+  if (effectCanaryRequest && idempotencyKey) {
+    let existing: ToolExecutionRecord | undefined;
+    try {
+      existing = await getToolExecution(
+        idempotentToolExecutionId(
+          normalizeTenantId(context?.tenantId),
+          idempotencyKey,
+        ),
+        { tenantId: context?.tenantId },
+      );
+    } catch (error) {
+      throw new EffectReceiptFinalizationError({ cause: error });
+    }
+    if (existing) {
+      if (isLegacyExecutionForEffectCanary(existing)) {
+        await assertExistingScopedToolReceipt({
+          record: existing,
+          tool,
+          toolInput: preparedInput,
+          requestedScope: executionScope,
+          context,
+          mcpSessionScope,
+          idempotencyKey,
+        });
+        const recovered = existing.status === "executing"
+          ? await recoverStaleToolExecutionClaim(existing.id, {
+              tenantId: context?.tenantId,
+            })
+          : undefined;
+        const record = recovered || existing;
+        return {
+          record,
+          result: record.status === "executed" ? record.output : null,
+        };
+      }
+      try {
+        await assertExistingScopedToolReceipt({
+          record: existing,
+          tool,
+          toolInput: preparedInput,
+          requestedScope: executionScope,
+          context,
+          mcpSessionScope,
+          effectBinding,
+          idempotencyKey,
+        });
+      } catch (error) {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+      const reconciled = await reconcileExistingMemoryWriteEffect({
+        record: existing,
+        tool,
+        preparedInput,
+        effectBinding,
+        executionScope: scopedRequest.executionScope,
+        idempotencyKey,
+      });
+      if (reconciled) {
+        await repairFileToolEffectReceiptEvent(
+          reconciled,
+          scopedRequest.executionScope,
+        );
+        return { record: reconciled, result: reconciled.output };
+      }
+      if (existing.status !== "executing") {
+        await repairFileToolEffectReceiptEvent(
+          existing,
+          scopedRequest.executionScope,
+        );
+        return {
+          record: existing,
+          result: existing.status === "executed" ? existing.output : null,
+        };
+      }
+    }
+  }
 
   // Idempotent retries must resolve their existing receipt before consulting
   // (and consuming) the earned-autonomy budget. This keeps transport retries
   // from spending additional authority or producing a new approval decision.
-  if (!dryRun && idempotencyKey && !existingRecord) {
+  if (
+    !dryRun &&
+    idempotencyKey &&
+    !existingRecord &&
+    !effectCanaryRequest
+  ) {
     const existing = await getToolExecution(
       idempotentToolExecutionId(
         normalizeTenantId(context?.tenantId),
@@ -409,19 +597,48 @@ export async function executeGovernedTool({
       { tenantId: context?.tenantId },
     );
     if (existing) {
-      const recovered = existing.status === "executing"
+      try {
+        await assertExistingScopedToolReceipt({
+          record: existing,
+          tool,
+          toolInput: preparedInput,
+          requestedScope: executionScope,
+          context,
+          mcpSessionScope,
+          effectBinding,
+          idempotencyKey,
+        });
+      } catch (error) {
+        if (!isLegacyExecutionForEffectCanary(existing)) {
+          throw new EffectReceiptFinalizationError({ cause: error });
+        }
+        throw error;
+      }
+      const reconciled = await reconcileExistingMemoryWriteEffect({
+        record: existing,
+        tool,
+        preparedInput,
+        effectBinding,
+        executionScope: scopedRequest.executionScope,
+        idempotencyKey,
+      });
+      const recovered = !reconciled && existing.status === "executing"
         ? await recoverStaleToolExecutionClaim(existing.id, {
             tenantId: context?.tenantId,
           })
         : undefined;
-      const record = recovered || existing;
-      await assertExistingScopedToolReceipt({
+      const record = reconciled || recovered || existing;
+      await repairFileToolEffectReceiptEvent(
         record,
-        toolInput: preparedInput,
-        requestedScope: executionScope,
-        context,
-        mcpSessionScope,
-      });
+        scopedRequest.executionScope,
+      );
+      if (
+        effectBinding &&
+        tool.id === "memory.write" &&
+        record.status === "executing"
+      ) {
+        throw new EffectReceiptFinalizationError();
+      }
       return {
         record,
         result: record.status === "executed" ? record.output : null,
@@ -542,14 +759,35 @@ export async function executeGovernedTool({
       const saved = await saveToolExecution(record);
       return bindPersistedRecord(saved);
     }
-    const saved = await completeClaimedToolExecution(
-      record,
-      activeExecutionClaimToken,
-    );
+    let saved: ToolExecutionRecord | undefined;
+    try {
+      saved = await completeClaimedToolExecution(
+        record,
+        activeExecutionClaimToken,
+        { executionScope: scopedRequest.executionScope },
+      );
+    } catch (error) {
+      if (record.effectReceipt) {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+      throw error;
+    }
     if (!saved) {
+      if (record.effectReceipt) {
+        throw new EffectReceiptFinalizationError({
+          cause: new ExecutionClaimLostError(),
+        });
+      }
       throw new ExecutionClaimLostError();
     }
-    return bindPersistedRecord(saved);
+    try {
+      return await bindPersistedRecord(saved);
+    } catch (error) {
+      if (saved.effectReceipt) {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+      throw error;
+    }
   };
 
   if (decision.blocked) {
@@ -613,6 +851,18 @@ export async function executeGovernedTool({
 
   if (!dryRun && idempotencyKey && !executionRecord) {
     const claimToken = randomUUID();
+    const intendedExecutionId = idempotentToolExecutionId(
+      normalizeTenantId(context?.tenantId),
+      idempotencyKey,
+    );
+    const intendedEffectContext = prepareMemoryWriteEffectContext({
+      tool,
+      preparedInput,
+      effectBinding,
+      executionScope: scopedRequest.executionScope,
+      executionId: intendedExecutionId,
+      idempotencyKey,
+    });
     const intent = createToolExecutionRecord({
       ...baseRecord,
       status: "executing",
@@ -624,6 +874,18 @@ export async function executeGovernedTool({
         __idempotencyKeyHash: createHash("sha256")
           .update(idempotencyKey)
           .digest("hex"),
+        ...(intendedEffectContext
+          ? {
+              __effectIdempotencyKeySha256:
+                intendedEffectContext.idempotencyKeySha256,
+              __effectInputSha256: intendedEffectContext.inputSha256,
+              __effectPlanSha256:
+                intendedEffectContext.binding.planSha256,
+              __effectTargetId: intendedEffectContext.targetId,
+              __effectToolContractSha256:
+                intendedEffectContext.toolContractSha256,
+            }
+          : {}),
       },
       approvalDecision: decision.approvalRequired ? "approved" : undefined,
       approvedBy: decision.approvalRequired ? context?.actorId : undefined,
@@ -632,26 +894,80 @@ export async function executeGovernedTool({
         : undefined,
       approvalReason,
     });
-    intent.id = idempotentToolExecutionId(
-      normalizeTenantId(context?.tenantId),
-      idempotencyKey,
-    );
-    const claim = await claimIdempotentToolExecution(intent);
+    intent.id = intendedExecutionId;
+    let claim: Awaited<ReturnType<typeof claimIdempotentToolExecution>>;
+    try {
+      claim = await claimIdempotentToolExecution(intent);
+    } catch (error) {
+      if (intendedEffectContext) {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+      throw error;
+    }
     if (claim.outcome === "existing") {
+      if (isLegacyExecutionForEffectCanary(claim.record)) {
+        await assertExistingScopedToolReceipt({
+          record: claim.record,
+          tool,
+          toolInput: preparedInput,
+          requestedScope: executionScope,
+          context,
+          mcpSessionScope,
+          idempotencyKey,
+        });
+        const recovered = claim.record.status === "executing"
+          ? await recoverStaleToolExecutionClaim(claim.record.id, {
+              tenantId: context?.tenantId,
+            })
+          : undefined;
+        const record = recovered || claim.record;
+        return {
+          record,
+          result: record.status === "executed" ? record.output : null,
+        };
+      }
+      try {
+        await assertExistingScopedToolReceipt({
+          record: claim.record,
+          tool,
+          toolInput: preparedInput,
+          requestedScope: executionScope,
+          context,
+          mcpSessionScope,
+          effectBinding,
+          idempotencyKey,
+        });
+      } catch (error) {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+      const reconciled = await reconcileExistingMemoryWriteEffect({
+        record: claim.record,
+        tool,
+        preparedInput,
+        effectBinding,
+        executionScope: scopedRequest.executionScope,
+        idempotencyKey,
+      });
       const recovered =
+        !intendedEffectContext &&
+        !reconciled &&
         claim.record.status === "executing"
           ? await recoverStaleToolExecutionClaim(claim.record.id, {
               tenantId: context?.tenantId,
             })
           : undefined;
-      const record = recovered || claim.record;
-      await assertExistingScopedToolReceipt({
+      const record = reconciled || recovered || claim.record;
+      await repairFileToolEffectReceiptEvent(
         record,
-        toolInput: preparedInput,
-        requestedScope: executionScope,
-        context,
-        mcpSessionScope,
-      });
+        scopedRequest.executionScope,
+      );
+      if (
+        effectBinding &&
+        tool.id === "memory.write" &&
+        record.status === "executing"
+      ) {
+        throw new EffectReceiptFinalizationError();
+      }
       return {
         record,
         result: record.status === "executed" ? record.output : null,
@@ -659,11 +975,35 @@ export async function executeGovernedTool({
     }
     executionRecord = claim.record;
     activeExecutionClaimToken = claimToken;
-    await bindToolScopeIfPresent({
-      record: executionRecord,
-      toolInput: preparedInput,
-      scopedRequest,
-    });
+    try {
+      await bindToolScopeIfPresent({
+        record: executionRecord,
+        toolInput: preparedInput,
+        scopedRequest,
+      });
+    } catch (error) {
+      if (intendedEffectContext) {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+      throw error;
+    }
+    if (intendedEffectContext) {
+      const reconciled = await reconcileExistingMemoryWriteEffect({
+        record: executionRecord,
+        tool,
+        preparedInput,
+        effectBinding,
+        executionScope: scopedRequest.executionScope,
+        idempotencyKey,
+      });
+      if (reconciled) {
+        await repairFileToolEffectReceiptEvent(
+          reconciled,
+          scopedRequest.executionScope,
+        );
+        return { record: reconciled, result: reconciled.output };
+      }
+    }
   }
 
   if (
@@ -705,16 +1045,51 @@ export async function executeGovernedTool({
       return { record: await persistRecord(record), result: safePreview };
     }
 
-    const result = await runTool(
+    const effectContext = prepareMemoryWriteEffectContext({
       tool,
       preparedInput,
-      toolRuntimeContext,
-      executionRecord?.id || idempotencyKey,
-      abortSignal,
-      mcpSessionScope,
-      scopedRequest.binding?.executionScope || executionScope,
-    );
-    const safeResult = redactSensitive(result);
+      effectBinding,
+      executionScope: scopedRequest.executionScope,
+      executionId: executionRecord?.id,
+      idempotencyKey,
+    });
+    if (effectContext && executionRecord) {
+      try {
+        assertPreparedEffectIntent(executionRecord, effectContext);
+      } catch (error) {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+    }
+    let result: unknown;
+    try {
+      result = await runTool(
+        tool,
+        preparedInput,
+        toolRuntimeContext,
+        executionRecord?.id || idempotencyKey,
+        abortSignal,
+        mcpSessionScope,
+        scopedRequest.binding?.executionScope || executionScope,
+        effectContext?.targetId,
+      );
+    } catch (error) {
+      if (effectContext) {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+      throw error;
+    }
+    let effectReceipt: EffectReceiptV1 | undefined;
+    try {
+      effectReceipt = effectContext
+        ? await buildMemoryWriteEffectReceipt({
+            result,
+            context: effectContext,
+          })
+        : undefined;
+    } catch (error) {
+      throw new EffectReceiptFinalizationError({ cause: error });
+    }
+    const safeResult = redactSensitive(withoutEffectCommitMetadata(result));
     const record = createRecord({
       ...baseRecord,
       status: "executed" as const,
@@ -723,6 +1098,7 @@ export async function executeGovernedTool({
       approvedBy: decision.approvalRequired ? context?.actorId : undefined,
       approvedAt: decision.approvalRequired ? new Date().toISOString() : undefined,
       approvalReason,
+      effectReceipt,
       completedAt: new Date().toISOString(),
     });
     const saved = await persistRecord(record);
@@ -779,7 +1155,10 @@ export async function executeGovernedTool({
     );
     return { record: saved, result: safeResult };
   } catch (error) {
-    if (error instanceof ExecutionClaimLostError) {
+    if (
+      error instanceof ExecutionClaimLostError ||
+      error instanceof EffectReceiptFinalizationError
+    ) {
       throw error;
     }
     const message = String(
@@ -945,15 +1324,293 @@ async function resolveToolExecutionScopeRequest(input: {
 
 async function assertExistingScopedToolReceipt(input: {
   record: ToolExecutionRecord;
+  tool: ToolDefinition;
   toolInput: Record<string, unknown>;
   requestedScope?: ExecutionScope;
   context?: SecurityContext;
   mcpSessionScope?: McpSessionScope;
+  effectBinding?: GovernedToolEffectBinding;
+  idempotencyKey?: string;
 }) {
-  await resolveToolExecutionScopeRequest({
+  if (input.record.toolId !== input.tool.id) {
+    throw new ToolExecutionScopeBindingError(
+      "Idempotent tool execution belongs to a different governed tool.",
+    );
+  }
+  const resolved = await resolveToolExecutionScopeRequest({
     ...input,
     executionClaimToken: undefined,
   });
+  const hasEffectReceipt = input.record.effectReceipt !== undefined;
+  if (!input.effectBinding) {
+    if (hasEffectReceipt) {
+      throw new Error(
+        "A workflow effect receipt cannot be reused without its persisted execution binding.",
+      );
+    }
+    return;
+  }
+  if (input.record.status === "executed" && !input.record.dryRun) {
+    assertCompletedMemoryWriteEffectReceipt({
+      record: input.record,
+      effectBinding: input.effectBinding,
+      executionScope: resolved.executionScope,
+      idempotencyKey: input.idempotencyKey,
+    });
+    return;
+  }
+  const effectContext = prepareMemoryWriteEffectContext({
+    tool: input.tool,
+    preparedInput: input.toolInput,
+    effectBinding: input.effectBinding,
+    executionScope: resolved.executionScope,
+    executionId: input.record.id,
+    idempotencyKey: input.idempotencyKey,
+  });
+  if (!effectContext) {
+    throw new Error("The workflow effect binding could not be reconstructed.");
+  }
+  if (input.record.status === "executing" && !input.record.dryRun) {
+    assertPreparedEffectIntent(input.record, effectContext);
+  } else if (hasEffectReceipt) {
+    throw new Error(
+      "Only a completed live workflow memory effect may carry a receipt.",
+    );
+  } else {
+    throw new Error(
+      "A governed memory effect intent cannot become terminal without its receipt.",
+    );
+  }
+}
+
+function assertCompletedMemoryWriteEffectReceipt(input: {
+  record: ToolExecutionRecord;
+  effectBinding: GovernedToolEffectBinding;
+  executionScope?: ExecutionScope;
+  idempotencyKey?: string;
+}) {
+  const scope = input.executionScope;
+  const rawIdempotencyKey = input.idempotencyKey?.trim();
+  if (
+    input.record.status !== "executed" ||
+    input.record.dryRun ||
+    input.record.toolId !== "memory.write" ||
+    input.record.effectReceipt === undefined ||
+    !scope ||
+    !scope.initiatingActorId ||
+    !rawIdempotencyKey
+  ) {
+    throw new Error(
+      "A completed workflow memory effect requires its receipt, scope, actor, and idempotency binding.",
+    );
+  }
+  const binding = {
+    workflowRunId: requiredEffectId(
+      input.effectBinding.workflowRunId,
+      "workflowRunId",
+    ),
+    planId: requiredEffectId(input.effectBinding.planId, "planId"),
+    planSha256: requiredEffectSha256(
+      input.effectBinding.planSha256,
+      "planSha256",
+    ),
+    planNodeId: requiredEffectId(
+      input.effectBinding.planNodeId,
+      "planNodeId",
+    ),
+  } satisfies GovernedToolEffectBinding;
+  const expectedPrincipalId = `workflow:${binding.workflowRunId}`;
+  const expectedCausationId = `workflow.tool:${createHash("sha256")
+    .update([
+      binding.workflowRunId,
+      binding.planId,
+      binding.planNodeId,
+      "memory.write",
+    ].join("\0"))
+    .digest("hex")}`;
+  if (
+    !input.record.tenantId?.trim() ||
+    input.record.tenantId !== scope.tenantId ||
+    input.record.actorId !== scope.initiatingActorId ||
+    scope.executingPrincipalType !== "system" ||
+    scope.executingPrincipalId !== expectedPrincipalId ||
+    scope.causationId !== expectedCausationId
+  ) {
+    throw new Error(
+      "The completed workflow effect does not match its governed execution scope.",
+    );
+  }
+  const inputSha256 = toolInputSha256(input.record.input);
+  const idempotencyDigest = idempotencyKeySha256({
+    tenantId: scope.tenantId,
+    idempotencyKey: rawIdempotencyKey,
+  });
+  const targetId = memoryEffectTargetIdV1({
+    tenantId: scope.tenantId,
+    executionId: input.record.id,
+    workflowRunId: binding.workflowRunId,
+    planId: binding.planId,
+    planSha256: binding.planSha256,
+    planNodeId: binding.planNodeId,
+    inputSha256,
+    idempotencyKeySha256: idempotencyDigest,
+  });
+  const receipt = parseEffectReceiptV1(input.record.effectReceipt, {
+    executionId: input.record.id,
+    tenantId: scope.tenantId,
+    actorId: scope.initiatingActorId,
+    executingPrincipalType: "system",
+    executingPrincipalId: expectedPrincipalId,
+    workflowRunId: binding.workflowRunId,
+    planId: binding.planId,
+    planSha256: binding.planSha256,
+    planNodeId: binding.planNodeId,
+    toolId: "memory.write",
+    inputSha256,
+    idempotencyKeySha256: idempotencyDigest,
+    targetType: "memory",
+    targetId,
+  });
+  if (!receipt) {
+    throw new Error("The completed workflow effect receipt is missing.");
+  }
+}
+
+async function reconcileExistingMemoryWriteEffect(input: {
+  record: ToolExecutionRecord;
+  tool: ToolDefinition;
+  preparedInput: Record<string, unknown>;
+  effectBinding?: GovernedToolEffectBinding;
+  executionScope?: ExecutionScope;
+  idempotencyKey?: string;
+}): Promise<ToolExecutionRecord | undefined> {
+  if (
+    input.record.status !== "executing" ||
+    input.tool.id !== "memory.write" ||
+    !input.effectBinding ||
+    !input.executionScope ||
+    !input.idempotencyKey
+  ) {
+    return undefined;
+  }
+  const claimToken = executionClaimTokenFromRecord(input.record);
+  if (!claimToken) return undefined;
+  const effectContext = prepareMemoryWriteEffectContext({
+    tool: input.tool,
+    preparedInput: input.preparedInput,
+    effectBinding: input.effectBinding,
+    executionScope: input.executionScope,
+    executionId: input.record.id,
+    idempotencyKey: input.idempotencyKey,
+  });
+  if (!effectContext) return undefined;
+  let observed: MemoryRecord | null;
+  try {
+    observed = await getMemory(effectContext.targetId, {
+      tenantId: effectContext.executionScope.tenantId,
+    });
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  if (!observed || !memoryWasCreatedForExecution(observed, input.record)) {
+    return undefined;
+  }
+  if (
+    canonicalJsonSha256(memoryEffectTargetState(observed)) !==
+    effectContext.expectedTargetStateSha256
+  ) {
+    throw new EffectReceiptFinalizationError({
+      cause: new Error(
+        "The committed memory target does not match its governed effect intent.",
+      ),
+    });
+  }
+  const result = { record: stripEmbedding(observed) };
+  let effectReceipt: EffectReceiptV1;
+  try {
+    effectReceipt = await buildMemoryWriteEffectReceipt({
+      result,
+      context: effectContext,
+      acceptExistingCommitAcknowledgement: true,
+    });
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  const terminalRecord: ToolExecutionRecord = {
+    ...input.record,
+    status: "executed",
+    output: redactSensitive(result),
+    effectReceipt,
+    completedAt: new Date().toISOString(),
+  };
+  let saved: ToolExecutionRecord | undefined;
+  try {
+    saved = await completeClaimedToolExecution(
+      terminalRecord,
+      claimToken,
+      { executionScope: input.executionScope },
+    );
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  if (saved) return saved;
+
+  let current: ToolExecutionRecord | undefined;
+  try {
+    current = await getToolExecution(input.record.id, {
+      tenantId: effectContext.executionScope.tenantId,
+    });
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  if (current?.status !== "executed" || !current.effectReceipt) {
+    return undefined;
+  }
+  try {
+    parseEffectReceiptV1(current.effectReceipt, {
+      executionId: effectContext.executionId,
+      tenantId: effectContext.executionScope.tenantId,
+      actorId: effectContext.executionScope.initiatingActorId,
+      executingPrincipalType:
+        effectContext.executionScope.executingPrincipalType,
+      executingPrincipalId: effectContext.executionScope.executingPrincipalId,
+      workflowRunId: effectContext.binding.workflowRunId,
+      planId: effectContext.binding.planId,
+      planSha256: effectContext.binding.planSha256,
+      planNodeId: effectContext.binding.planNodeId,
+      toolId: "memory.write",
+      inputSha256: effectContext.inputSha256,
+      idempotencyKeySha256: effectContext.idempotencyKeySha256,
+      targetType: "memory",
+      targetId: effectContext.targetId,
+    });
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  return current;
+}
+
+function executionClaimTokenFromRecord(record: ToolExecutionRecord) {
+  if (!record.output || typeof record.output !== "object" || Array.isArray(record.output)) {
+    return undefined;
+  }
+  const claim = (record.output as Record<string, unknown>).__executionClaim;
+  if (!claim || typeof claim !== "object" || Array.isArray(claim)) {
+    return undefined;
+  }
+  const token = (claim as Record<string, unknown>).token;
+  return typeof token === "string" && token.trim() ? token : undefined;
+}
+
+function memoryWasCreatedForExecution(
+  memory: MemoryRecord,
+  execution: ToolExecutionRecord,
+) {
+  const memoryCreatedAt = Date.parse(memory.createdAt);
+  const executionCreatedAt = Date.parse(execution.createdAt);
+  return Number.isFinite(memoryCreatedAt) &&
+    Number.isFinite(executionCreatedAt) &&
+    memoryCreatedAt >= executionCreatedAt;
 }
 
 async function bindToolScopeIfPresent(input: {
@@ -1066,6 +1723,357 @@ function dryRunTool(tool: ToolDefinition, input: Record<string, unknown>) {
   };
 }
 
+type PreparedMemoryWriteEffectContext = Readonly<{
+  executionScope: ExecutionScope & {
+    initiatingActorId: string;
+    executingPrincipalType: "system";
+    executingPrincipalId: string;
+  };
+  binding: GovernedToolEffectBinding;
+  executionId: string;
+  expectedTargetStateSha256: string;
+  idempotencyKeySha256: string;
+  inputSha256: string;
+  toolContractSha256: string;
+  targetId: string;
+}>;
+
+function prepareMemoryWriteEffectContext(input: {
+  tool: ToolDefinition;
+  preparedInput: Record<string, unknown>;
+  effectBinding?: GovernedToolEffectBinding;
+  executionScope?: ExecutionScope;
+  executionId?: string;
+  idempotencyKey?: string;
+}): PreparedMemoryWriteEffectContext | undefined {
+  if (!input.effectBinding) return undefined;
+  if (input.tool.id !== "memory.write") {
+    throw new Error("This effect-receipt version supports memory.write only.");
+  }
+  if (input.tool.reversible !== true) {
+    throw new Error("The memory-write effect contract must remain reversible.");
+  }
+  const scope = input.executionScope;
+  const executionId = input.executionId?.trim();
+  const rawIdempotencyKey = input.idempotencyKey?.trim();
+  if (
+    !scope ||
+    !scope.initiatingActorId ||
+    !scope.executingPrincipalId ||
+    !executionId ||
+    !rawIdempotencyKey
+  ) {
+    throw new Error(
+      "A workflow memory-write effect requires scope, principals, execution identity, and idempotency.",
+    );
+  }
+  const binding = {
+    workflowRunId: requiredEffectId(
+      input.effectBinding.workflowRunId,
+      "workflowRunId",
+    ),
+    planId: requiredEffectId(input.effectBinding.planId, "planId"),
+    planSha256: requiredEffectSha256(
+      input.effectBinding.planSha256,
+      "planSha256",
+    ),
+    planNodeId: requiredEffectId(
+      input.effectBinding.planNodeId,
+      "planNodeId",
+    ),
+  } satisfies GovernedToolEffectBinding;
+  const expectedPrincipalId = `workflow:${binding.workflowRunId}`;
+  const expectedCausationId = `workflow.tool:${createHash("sha256")
+    .update([
+      binding.workflowRunId,
+      binding.planId,
+      binding.planNodeId,
+      input.tool.id,
+    ].join("\0"))
+    .digest("hex")}`;
+  if (
+    scope.executingPrincipalType !== "system" ||
+    scope.executingPrincipalId !== expectedPrincipalId ||
+    scope.causationId !== expectedCausationId
+  ) {
+    throw new Error(
+      "Workflow effect binding does not match the governed execution scope.",
+    );
+  }
+  const safeMemoryInput = redactSensitive(
+    memoryWriteSchema.parse(input.preparedInput),
+  ) as z.infer<typeof memoryWriteSchema>;
+  const inputSha256 = toolInputSha256(safeMemoryInput);
+  const idempotencyDigest = idempotencyKeySha256({
+    tenantId: scope.tenantId,
+    idempotencyKey: rawIdempotencyKey,
+  });
+  const targetId = memoryEffectTargetIdV1({
+    tenantId: scope.tenantId,
+    executionId,
+    workflowRunId: binding.workflowRunId,
+    planId: binding.planId,
+    planSha256: binding.planSha256,
+    planNodeId: binding.planNodeId,
+    inputSha256,
+    idempotencyKeySha256: idempotencyDigest,
+  });
+  const expectedTargetStateSha256 = canonicalJsonSha256(
+    intendedMemoryEffectTargetState({
+      targetId,
+      tenantId: scope.tenantId,
+      input: safeMemoryInput,
+    }),
+  );
+  return {
+    executionScope: scope as PreparedMemoryWriteEffectContext["executionScope"],
+    binding,
+    executionId,
+    expectedTargetStateSha256,
+    idempotencyKeySha256: idempotencyDigest,
+    inputSha256,
+    toolContractSha256: canonicalJsonSha256({
+      approvalFingerprint: toolApprovalFingerprint(input.tool),
+    }),
+    targetId,
+  };
+}
+
+function assertPreparedEffectIntent(
+  record: ToolExecutionRecord,
+  context: PreparedMemoryWriteEffectContext,
+) {
+  const output = record.output &&
+    typeof record.output === "object" &&
+    !Array.isArray(record.output)
+    ? record.output as Record<string, unknown>
+    : {};
+  if (
+    record.id !== context.executionId ||
+    record.status !== "executing" ||
+    record.dryRun ||
+    record.toolId !== "memory.write" ||
+    normalizeTenantId(record.tenantId) !== context.executionScope.tenantId ||
+    record.actorId !== context.executionScope.initiatingActorId ||
+    toolInputSha256(record.input) !== context.inputSha256 ||
+    output.__effectIdempotencyKeySha256 !== context.idempotencyKeySha256 ||
+    output.__effectInputSha256 !== context.inputSha256 ||
+    output.__effectPlanSha256 !== context.binding.planSha256 ||
+    output.__effectTargetId !== context.targetId ||
+    output.__effectToolContractSha256 !== context.toolContractSha256
+  ) {
+    throw new Error(
+      "The governed memory effect does not match its persisted execution intent.",
+    );
+  }
+}
+
+async function buildMemoryWriteEffectReceipt(input: {
+  result: unknown;
+  context: PreparedMemoryWriteEffectContext;
+  acceptExistingCommitAcknowledgement?: boolean;
+}): Promise<EffectReceiptV1> {
+  const created = memoryRecordFromToolResult(input.result);
+  if (!created || created.id !== input.context.targetId) {
+    throw new Error(
+      "The memory store did not acknowledge the deterministic effect target.",
+    );
+  }
+  if (
+    !input.acceptExistingCommitAcknowledgement &&
+    !memoryEffectCommitInserted(input.result)
+  ) {
+    throw new Error(
+      "The deterministic memory target already existed, so a new commit was not acknowledged.",
+    );
+  }
+  const committedTargetStateSha256 = canonicalJsonSha256(
+    memoryEffectTargetState(created),
+  );
+  const expectedTargetStateSha256 = input.context.expectedTargetStateSha256;
+  let verificationState: EffectReceiptV1["verificationState"] = "unverifiable";
+  let verificationReasonCode: EffectReceiptV1["verificationReasonCode"] =
+    "read_unavailable";
+  let observedTargetStateSha256: string | null = null;
+  try {
+    const observed = await getMemory(input.context.targetId, {
+      tenantId: input.context.executionScope.tenantId,
+    });
+    if (!observed) {
+      verificationState = "failed";
+      verificationReasonCode = "target_missing";
+    } else {
+      observedTargetStateSha256 = canonicalJsonSha256(
+        memoryEffectTargetState(observed),
+      );
+      if (observedTargetStateSha256 === expectedTargetStateSha256) {
+        verificationState = "verified";
+        verificationReasonCode = "state_matched";
+      } else {
+        verificationState = "failed";
+        verificationReasonCode = "state_mismatch";
+      }
+    }
+  } catch {
+    verificationState = "unverifiable";
+    verificationReasonCode = "read_failed";
+    observedTargetStateSha256 = null;
+  }
+  const scope = input.context.executionScope;
+  return buildEffectReceiptV1({
+    effectMode: "live",
+    reversible: true,
+    executionId: input.context.executionId,
+    tenantId: scope.tenantId,
+    actorId: scope.initiatingActorId,
+    executingPrincipalType: scope.executingPrincipalType,
+    executingPrincipalId: scope.executingPrincipalId,
+    workflowRunId: input.context.binding.workflowRunId,
+    planId: input.context.binding.planId,
+    planSha256: input.context.binding.planSha256,
+    planNodeId: input.context.binding.planNodeId,
+    toolId: "memory.write",
+    toolContractSha256: input.context.toolContractSha256,
+    inputSha256: input.context.inputSha256,
+    idempotencyKeySha256: input.context.idempotencyKeySha256,
+    targetType: "memory",
+    targetId: input.context.targetId,
+    providerAcknowledgement: "first_party_store_commit",
+    providerAcknowledgementId: input.context.targetId,
+    providerAcknowledgementSha256: canonicalJsonSha256({
+      provider: "first_party_memory_store",
+      targetId: input.context.targetId,
+      committedTargetStateSha256,
+    }),
+    verificationMethod: "read_after_write",
+    verificationState,
+    verificationReasonCode,
+    expectedTargetStateSha256,
+    observedTargetStateSha256,
+  });
+}
+
+function memoryEffectCommitInserted(result: unknown) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return false;
+  }
+  return (result as Record<string, unknown>).__effectCommitInserted === true;
+}
+
+function isLegacyExecutionForEffectCanary(record: ToolExecutionRecord) {
+  if (record.effectReceipt !== undefined) return false;
+  const output = record.output &&
+    typeof record.output === "object" &&
+    !Array.isArray(record.output)
+    ? record.output as Record<string, unknown>
+    : {};
+  return ![
+    "__effectIdempotencyKeySha256",
+    "__effectInputSha256",
+    "__effectPlanSha256",
+    "__effectTargetId",
+    "__effectToolContractSha256",
+  ].some((key) => Object.hasOwn(output, key));
+}
+
+function withoutEffectCommitMetadata(result: unknown) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return result;
+  }
+  const {
+    __effectCommitInserted: _effectCommitInserted,
+    ...publicResult
+  } = result as Record<string, unknown>;
+  void _effectCommitInserted;
+  return publicResult;
+}
+
+function memoryRecordFromToolResult(result: unknown): MemoryRecord | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return undefined;
+  }
+  const record = (result as Record<string, unknown>).record;
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    return undefined;
+  }
+  return record as MemoryRecord;
+}
+
+function memoryEffectTargetState(record: MemoryRecord) {
+  return {
+    id: record.id,
+    tenantId: record.tenantId || "default",
+    type: record.type,
+    title: record.title,
+    content: record.content,
+    tags: record.tags,
+    scope: record.scope,
+    source: record.source,
+    importance: record.importance,
+    confidence: record.confidence ?? null,
+    claimStatus: record.claimStatus ?? null,
+    assertedBy: record.assertedBy ?? null,
+    evidenceRefs: record.evidenceRefs || [],
+    validFrom: record.validFrom ?? null,
+    validTo: record.validTo ?? null,
+    supersedesId: record.supersedesId ?? null,
+    contradictionOfId: record.contradictionOfId ?? null,
+  };
+}
+
+function intendedMemoryEffectTargetState(input: {
+  targetId: string;
+  tenantId: string;
+  input: z.infer<typeof memoryWriteSchema>;
+}) {
+  return {
+    id: input.targetId,
+    tenantId: input.tenantId,
+    type: input.input.type || "fact",
+    title: input.input.title.slice(0, 240),
+    content: input.input.content.slice(0, 200_000),
+    tags: normalizeMemoryEffectTags(
+      input.input.tags || ["tool-execution"],
+    ),
+    scope: "workspace",
+    source: "tool-executor",
+    importance: input.input.importance ?? 0.5,
+    confidence: 0.7,
+    claimStatus: "active",
+    assertedBy: "system",
+    evidenceRefs: [],
+    validFrom: null,
+    validTo: null,
+    supersedesId: null,
+    contradictionOfId: null,
+  };
+}
+
+function normalizeMemoryEffectTags(tags: string[]) {
+  return Array.from(
+    new Set(tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean).slice(0, 12)),
+  );
+}
+
+function requiredEffectId(value: string, field: string) {
+  const normalized = value.trim();
+  if (
+    !normalized ||
+    normalized.length > 240 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/.test(normalized)
+  ) {
+    throw new Error(`Workflow effect ${field} is not an opaque ID.`);
+  }
+  return normalized;
+}
+
+function requiredEffectSha256(value: string, field: string) {
+  if (!/^[a-f0-9]{64}$/.test(value)) {
+    throw new Error(`Workflow effect ${field} is not a SHA-256 digest.`);
+  }
+  return value;
+}
+
 async function runTool(
   tool: ToolDefinition,
   input: Record<string, unknown>,
@@ -1074,6 +2082,7 @@ async function runTool(
   abortSignal?: AbortSignal,
   mcpSessionScope?: McpSessionScope,
   executionScope?: ExecutionScope,
+  effectTargetId?: string,
 ) {
   const parsed = parseInput(tool, input);
   const aiUsageScope = (
@@ -1153,8 +2162,8 @@ async function runTool(
       abortSignal,
       aiUsageScope("embedding", "tool.memory.write"),
     ))?.[0];
-    return {
-      record: stripEmbedding(await saveMemory({
+    const memoryInput: Parameters<typeof saveMemory>[0] = {
+        id: effectTargetId,
         tenantId: context?.tenantId,
         title: safeValue.title,
         content: safeValue.content,
@@ -1164,7 +2173,16 @@ async function runTool(
         source: "tool-executor",
         scope: "workspace",
         embedding,
-      })),
+      };
+    if (effectTargetId) {
+      const committed = await saveMemoryWithCommitStatus(memoryInput);
+      return {
+        record: stripEmbedding(committed.record),
+        __effectCommitInserted: committed.inserted,
+      };
+    }
+    return {
+      record: stripEmbedding(await saveMemory(memoryInput)),
     };
   }
 

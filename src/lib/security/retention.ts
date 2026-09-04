@@ -495,6 +495,7 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
               reason = 'Approval expired before an operator decision.',
               approval_decision = 'rejected',
               approval_reason = 'Expired by retention policy.',
+              effect_receipt = NULL,
               completed_at = NOW()
           FROM expired
           WHERE target.ctid = expired.ctid
@@ -517,6 +518,7 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
               reason = 'Approval expired before an operator decision.',
               approval_decision = 'rejected',
               approval_reason = 'Expired by retention policy.',
+              effect_receipt = NULL,
               completed_at = NOW()
           FROM expired
           WHERE target.ctid = expired.ctid

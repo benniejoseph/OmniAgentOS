@@ -18,6 +18,12 @@ import {
   type RequirementVerificationV1,
   type TerminalReceiptV1,
 } from "@/lib/runs/contracts";
+import {
+  canonicalJsonSha256,
+  parseEffectReceiptV1,
+} from "@/lib/tools/effect-receipt";
+import { toolInputSha256 } from "@/lib/tools/execution-scope";
+import type { ToolExecutionRecord } from "@/lib/tools/types";
 import type {
   WorkflowPlanNodeExecutionStatus,
   WorkflowRunDetail,
@@ -215,7 +221,43 @@ export type WorkflowOutcomeEvaluationV1 = z.infer<
 export type BuildWorkflowOutcomeEvaluationV1Input = Readonly<{
   detail: WorkflowRunDetail;
   result?: Record<string, unknown>;
+  authoritativeToolExecutions?: readonly ToolExecutionRecord[];
 }>;
+
+/**
+ * Collects only opaque execution IDs needed to resolve authoritative effect
+ * records. Workflow output carries no full effect receipt.
+ */
+export function workflowOutcomeEffectReceiptCandidateExecutionIds(
+  detail: WorkflowRunDetail,
+): string[] {
+  const executeOutput = recordValue(stepOutput(detail, "execute"));
+  const execution = recordValue(executeOutput?.planExecution);
+  const ids: string[] = [];
+  const seen = new Set<string>();
+
+  for (const nodeExecution of arrayRecords(execution?.nodeExecutions)) {
+    const output = recordValue(nodeExecution.output);
+    for (const toolExecution of arrayRecords(output?.toolExecutions)) {
+      const executionId = stringValue(toolExecution.id);
+      if (
+        !executionId ||
+        toolExecution.toolId !== "memory.write" ||
+        toolExecution.status !== "executed" ||
+        toolExecution.dryRun !== false ||
+        !runContractIdSchema.safeParse(executionId).success ||
+        seen.has(executionId)
+      ) {
+        continue;
+      }
+      seen.add(executionId);
+      ids.push(executionId);
+      if (ids.length >= MAX_OUTCOME_REQUIREMENTS) return ids;
+    }
+  }
+
+  return ids;
+}
 
 /**
  * Evaluates the existing completed-workflow seam without upgrading its legacy
@@ -225,6 +267,7 @@ export type BuildWorkflowOutcomeEvaluationV1Input = Readonly<{
 export function buildWorkflowOutcomeEvaluationV1({
   detail,
   result = detail.run.result || {},
+  authoritativeToolExecutions = [],
 }: BuildWorkflowOutcomeEvaluationV1Input): WorkflowOutcomeEvaluationV1 {
   const workflowRunId = runContractIdSchema.parse(detail.run.id);
   if (detail.run.status !== "running") {
@@ -248,12 +291,12 @@ export function buildWorkflowOutcomeEvaluationV1({
     ? opaqueReferenceId("workflow-plan", selectedPlanId)
     : null;
   const planSha256 = plan
-    ? sha256Json({ id: stepPlanId || null, plan })
+    ? canonicalJsonSha256({ id: stepPlanId || null, plan })
     : null;
+  const workflowTenantId = stringValue(detail.run.tenantId);
 
   const executeOutput = recordValue(stepOutput(detail, "execute"));
   const execution = recordValue(executeOutput?.planExecution);
-  const executionProjection = projectExecutionEvidence(execution, plan);
   const rawExecutionWorkflowRunId = stringValue(execution?.workflowRunId);
   const rawExecutionPlanId = stringValue(execution?.planId);
   const executionWorkflowRunId = rawExecutionWorkflowRunId
@@ -279,6 +322,18 @@ export function buildWorkflowOutcomeEvaluationV1({
       hasPlan: Boolean(plan),
     },
   );
+  const executionProjection = projectExecutionEvidence(execution, plan, {
+    enabled:
+      Boolean(stringValue(detail.run.approvedAt)) &&
+      Boolean(workflowTenantId) &&
+      planBindingState === "matched" &&
+      planExecutionBindingState === "matched",
+    workflowRunId,
+    tenantId: workflowTenantId,
+    planId: stepPlanId,
+    planSha256,
+    authoritativeToolExecutions,
+  });
   const effectiveExecutionStatus = strongestExecutionStatus([
     resultExecutionStatus,
     detailExecutionStatus,
@@ -398,7 +453,7 @@ export function buildWorkflowOutcomeEvaluationV1({
     pendingApprovalIds,
     blockingDependencyIds,
     artifactReceiptIds,
-    effectReceiptIds: [],
+    effectReceiptIds: executionProjection.effectReceiptIds,
     verifierReceiptIds: [],
     usefulWorkUnitCount,
   });
@@ -439,7 +494,7 @@ export function buildWorkflowOutcomeEvaluationV1({
     requirementResults,
     usefulWorkUnitCount,
     artifactReceiptIds,
-    effectReceiptIds: [],
+    effectReceiptIds: executionProjection.effectReceiptIds,
     verifierReceiptIds: [],
     pendingApprovalIds,
     blockingDependencyIds,
@@ -831,11 +886,22 @@ type ExecutionProjection = {
   failedToolCount: number;
   pendingApprovalIds: string[];
   blockingDependencyIds: string[];
+  effectReceiptIds: string[];
 };
+
+type EffectReceiptProjectionBinding = Readonly<{
+  enabled: boolean;
+  workflowRunId: string;
+  tenantId: string | undefined;
+  planId: string | undefined;
+  planSha256: string | null;
+  authoritativeToolExecutions: readonly ToolExecutionRecord[];
+}>;
 
 function projectExecutionEvidence(
   execution: Record<string, unknown> | undefined,
   plan: Record<string, unknown> | undefined,
+  effectBinding: EffectReceiptProjectionBinding,
 ): ExecutionProjection {
   const nodeExecutions = arrayRecords(execution?.nodeExecutions);
   const planNodes = arrayRecords(plan?.nodes);
@@ -942,6 +1008,11 @@ function projectExecutionEvidence(
     ],
     MAX_OUTCOME_REQUIREMENTS,
   );
+  const effectReceiptIds = projectVerifiedEffectReceiptIds(
+    nodeExecutions,
+    planNodes,
+    effectBinding,
+  );
 
   const inferredStatus = strongestExecutionStatus([
     failedNodeCount > 0 || failedToolCount > 0 ? "failed" : undefined,
@@ -970,7 +1041,137 @@ function projectExecutionEvidence(
     failedToolCount,
     pendingApprovalIds,
     blockingDependencyIds,
+    effectReceiptIds,
   };
+}
+
+function projectVerifiedEffectReceiptIds(
+  nodeExecutions: readonly Record<string, unknown>[],
+  planNodes: readonly Record<string, unknown>[],
+  binding: EffectReceiptProjectionBinding,
+) {
+  if (
+    !binding.enabled ||
+    !binding.tenantId ||
+    !binding.planId ||
+    !binding.planSha256
+  ) {
+    return [];
+  }
+
+  const declaredPlanNodes = new Map<string, Record<string, unknown>>();
+  const duplicatePlanNodeIds = new Set<string>();
+  for (const planNode of planNodes) {
+    const nodeId = stringValue(planNode.id);
+    if (!nodeId) continue;
+    if (declaredPlanNodes.has(nodeId)) {
+      duplicatePlanNodeIds.add(nodeId);
+      continue;
+    }
+    declaredPlanNodes.set(nodeId, planNode);
+  }
+  const authoritativeById = new Map<string, ToolExecutionRecord>();
+  const duplicateAuthoritativeIds = new Set<string>();
+  for (const record of binding.authoritativeToolExecutions) {
+    const executionId = stringValue(record.id);
+    if (!executionId || !runContractIdSchema.safeParse(executionId).success) {
+      continue;
+    }
+    if (authoritativeById.has(executionId)) {
+      duplicateAuthoritativeIds.add(executionId);
+      continue;
+    }
+    authoritativeById.set(executionId, record);
+  }
+  const receiptIds: string[] = [];
+  const seen = new Set<string>();
+
+  for (const nodeExecution of nodeExecutions) {
+    const planNodeId = stringValue(nodeExecution.nodeId);
+    const planNode = planNodeId ? declaredPlanNodes.get(planNodeId) : undefined;
+    const declaredToolIds = stringArray(planNode?.toolIds);
+    if (
+      !planNodeId ||
+      !planNode ||
+      duplicatePlanNodeIds.has(planNodeId) ||
+      stringValue(nodeExecution.workflowRunId) !== binding.workflowRunId ||
+      stringValue(nodeExecution.planId) !== binding.planId ||
+      declaredToolIds.length !== 1 ||
+      declaredToolIds[0] !== "memory.write" ||
+      !["auto", "approval_required"].includes(String(planNode.policy || ""))
+    ) {
+      continue;
+    }
+    const output = recordValue(nodeExecution.output);
+    if (output?.dryRunOnly === true) continue;
+    for (const toolExecution of arrayRecords(output?.toolExecutions)) {
+      const executionId = stringValue(toolExecution.id);
+      if (
+        !executionId ||
+        !stringArray(nodeExecution.toolExecutionIds).includes(executionId) ||
+        toolExecution.toolId !== "memory.write" ||
+        toolExecution.status !== "executed" ||
+        toolExecution.dryRun !== false
+      ) {
+        continue;
+      }
+      const authoritativeRecord = authoritativeById.get(executionId);
+      if (
+        !authoritativeRecord ||
+        duplicateAuthoritativeIds.has(executionId) ||
+        authoritativeRecord.id !== executionId ||
+        authoritativeRecord.toolId !== "memory.write" ||
+        authoritativeRecord.status !== "executed" ||
+        authoritativeRecord.dryRun !== false ||
+        authoritativeRecord.tenantId !== binding.tenantId
+      ) {
+        continue;
+      }
+      const authoritativeActorId = stringValue(authoritativeRecord.actorId);
+      if (
+        !authoritativeActorId ||
+        authoritativeRecord.actorId !== authoritativeActorId
+      ) {
+        continue;
+      }
+
+      try {
+        const expectedBindings = {
+          executionId,
+          workflowRunId: binding.workflowRunId,
+          planId: binding.planId,
+          planSha256: binding.planSha256,
+          planNodeId,
+          toolId: "memory.write" as const,
+          executingPrincipalType: "system" as const,
+          executingPrincipalId: `workflow:${binding.workflowRunId}`,
+          tenantId: binding.tenantId,
+          actorId: authoritativeActorId,
+        };
+        const authoritativeReceipt = parseEffectReceiptV1(
+          authoritativeRecord.effectReceipt,
+          expectedBindings,
+        );
+        if (
+          !authoritativeReceipt ||
+          authoritativeReceipt.effectMode !== "live" ||
+          authoritativeReceipt.verificationState !== "verified" ||
+          toolInputSha256(authoritativeRecord.input) !==
+            authoritativeReceipt.inputSha256 ||
+          seen.has(authoritativeReceipt.effectReceiptId)
+        ) {
+          continue;
+        }
+        seen.add(authoritativeReceipt.effectReceiptId);
+        receiptIds.push(authoritativeReceipt.effectReceiptId);
+        if (receiptIds.length >= MAX_OUTCOME_REQUIREMENTS) return receiptIds;
+      } catch {
+        // A malformed or cross-bound receipt is not execution evidence.
+      }
+    }
+  }
+
+  return receiptIds;
 }
 
 function dispositionFor(

@@ -145,6 +145,41 @@ strong-verifier slices provide the required live evidence. A malformed stored
 evaluation is ignored at the public boundary and falls back to the truthful
 legacy canonical projection.
 
+### P1.4 effect-receipt canary
+
+The first P1.4 canary adds a separate `EffectReceiptV1` only for a live
+`memory.write` executed as a single-tool plan node by an approved workflow with
+explicit tenant and initiating-actor scope. The memory target is deterministic from the tenant,
+tool execution, persisted execution-time plan and node, input digest, and
+idempotency digest. The receipt binds those identities
+plus the initiating actor, executing principal, and tool-contract digest. It
+records a first-party store-commit acknowledgement and the result of a
+tenant-scoped read-after-write comparison.
+
+The executing intent persists hash-only input, plan, target, idempotency, and
+tool-contract bindings before the side effect. Stale canary intents are not
+collapsed into ordinary failures: a same-key retry reconciles the deterministic
+target and can reclaim the execution only after timeout with the same tenant,
+actor, input, plan, target, idempotency, and tool contract. An unfinished
+cross-release contract mismatch stays pending rather than being relabeled or
+replanned; an immutable receipt finalized under the earlier contract remains
+historical authority.
+
+The receipt and its event projection are strict metadata/hash-only contracts:
+they contain opaque IDs, SHA-256 digests, and closed enums, never raw memory,
+plan, tool input/output, or idempotency keys. Legacy executions, dry runs,
+direct tool calls, system-triggered workflows without an initiating actor, and
+every other tool retain their existing behavior and do not receive this receipt.
+
+The P1.3 evaluator projects the ID only when this canary receipt is live,
+verified, and strictly bound to the approved workflow plus its execution-time
+plan, node, tenant, and tool execution. The current approval timestamp does not
+cryptographically bind that exact plan digest. This additive evidence therefore
+does not satisfy an outcome requirement:
+the workflow contract remains `posthoc` and still cannot project `succeeded`.
+External providers, additional tools, and pre-execution requirement binding
+remain later P1.4 work.
+
 ## Event payloads
 
 Keep a full envelope only on its intended private scoped record or active

@@ -1,3 +1,5 @@
+import type { EffectReceiptV1 } from "@/lib/tools/effect-receipt";
+
 export type ToolRiskLevel = 0 | 1 | 2 | 3;
 
 export type ToolExecutionStatus =
@@ -53,6 +55,8 @@ export type ToolExecutionRecord = {
   approvedBy?: string;
   approvedAt?: string;
   approvalReason?: string;
+  /** Strict metadata-only proof for a supported live side effect. */
+  effectReceipt?: EffectReceiptV1;
   createdAt: string;
   completedAt?: string;
 };

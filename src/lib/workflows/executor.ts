@@ -19,7 +19,11 @@ import {
 } from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
-import { executeGovernedTool } from "@/lib/tools/executor";
+import {
+  EffectReceiptFinalizationError,
+  executeGovernedTool,
+} from "@/lib/tools/executor";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { getGovernedTool } from "@/lib/tools/registry";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import {
@@ -59,6 +63,8 @@ type ToolExecutionSummary = {
   reason?: string;
   result?: unknown;
   costUnits: number;
+  /** Internal containment signal; never persisted in the workflow summary. */
+  effectReceiptFinalized?: boolean;
 };
 
 export type WorkflowExecutionBudget = {
@@ -236,6 +242,7 @@ export async function executeDynamicWorkflowPlan(
       toolCount: node.toolIds.length,
     });
 
+    let finalizedEffectReceipt = false;
     try {
       const result = await executePlanNode({
         detail,
@@ -250,13 +257,29 @@ export async function executeDynamicWorkflowPlan(
         budget,
         executionAuthority,
       });
+      finalizedEffectReceipt = result.toolExecutions.some(
+        (toolExecution) => toolExecution.effectReceiptFinalized === true,
+      );
+      if (finalizedEffectReceipt && result.status !== "completed") {
+        throw new EffectReceiptFinalizationError({
+          cause: new Error(
+            "A later tool decision prevented the receipt-bearing node from completing.",
+          ),
+        });
+      }
+      const persistedToolExecutions = result.toolExecutions.map(
+        ({ effectReceiptFinalized: _effectReceiptFinalized, ...toolExecution }) => {
+          void _effectReceiptFinalized;
+          return toolExecution;
+        },
+      );
       const record = await saveWorkflowPlanNodeExecution({
         ...baseNodeExecutionRecord({ detail, planId: parsedPlan.id, node, existing: runningRecord }),
         status: result.status,
-        toolExecutionIds: result.toolExecutions.map((tool) => tool.id),
+        toolExecutionIds: persistedToolExecutions.map((tool) => tool.id),
         output: {
           ...result.output,
-          toolExecutions: result.toolExecutions,
+          toolExecutions: persistedToolExecutions,
         },
         error: result.error,
         startedAt: runningRecord.startedAt || new Date().toISOString(),
@@ -286,6 +309,41 @@ export async function executeDynamicWorkflowPlan(
         throw options.abortSignal.reason instanceof Error
           ? options.abortSignal.reason
           : new DOMException("Workflow plan execution was aborted.", "AbortError");
+      }
+      if (
+        error instanceof EffectReceiptFinalizationError ||
+        finalizedEffectReceipt
+      ) {
+        try {
+          const pendingRecord = await saveWorkflowPlanNodeExecution({
+            ...baseNodeExecutionRecord({
+              detail,
+              planId: parsedPlan.id,
+              node,
+              existing: runningRecord,
+            }),
+            status: "pending",
+            toolExecutionIds: [],
+            output: undefined,
+            error: undefined,
+            startedAt: undefined,
+            completedAt: undefined,
+          });
+          recordsByNode.set(node.id, pendingRecord);
+          nodeExecutions.push(pendingRecord);
+          hasPendingNodes = true;
+          await appendWorkflowEvent(
+            detail.run.id,
+            "workflow.plan_node.effect_receipt_pending",
+            {
+              planId: parsedPlan.id,
+              nodeId: node.id,
+            },
+          );
+        } catch (pendingError) {
+          throw new EffectReceiptFinalizationError({ cause: pendingError });
+        }
+        break;
       }
       const message = error instanceof Error ? error.message : "Plan node execution failed.";
       const record = await saveWorkflowPlanNodeExecution({
@@ -535,6 +593,19 @@ async function executePlanNode({
             toolId,
           })
         : undefined,
+      effectBinding:
+        toolId === "memory.write" &&
+        node.toolIds.length === 1 &&
+        executionScope?.initiatingActorId?.trim() &&
+        workflowApproved &&
+        !dryRun
+        ? {
+            workflowRunId: detail.run.id,
+            planId,
+            planSha256: canonicalJsonSha256({ id: planId, plan }),
+            planNodeId: node.id,
+          }
+        : undefined,
     });
     return {
       id: execution.record.id,
@@ -546,53 +617,66 @@ async function executePlanNode({
       reason: execution.record.reason,
       result: execution.result,
       costUnits: workflowToolCostUnits(tool, dryRun),
+      effectReceiptFinalized: Boolean(execution.record.effectReceipt),
     };
   };
 
-  if (
-    plannedTools.length > 1 &&
-    plannedTools.every(({ tool }) => isIndependentReadOnlyTool(tool))
-  ) {
-    toolExecutions.push(...await Promise.all(plannedTools.map(executeTool)));
-  } else {
-    for (const plannedTool of plannedTools) {
-      toolExecutions.push(await executeTool(plannedTool));
+  try {
+    if (
+      plannedTools.length > 1 &&
+      plannedTools.every(({ tool }) => isIndependentReadOnlyTool(tool))
+    ) {
+      toolExecutions.push(...await Promise.all(plannedTools.map(executeTool)));
+    } else {
+      for (const plannedTool of plannedTools) {
+        toolExecutions.push(await executeTool(plannedTool));
+      }
     }
+
+    const failed = toolExecutions.find(
+      (tool) => tool.status === "failed" || tool.status === "executing",
+    );
+    const blocked = toolExecutions.find((tool) => tool.status === "blocked");
+    const waitingApproval = toolExecutions.find((tool) => tool.status === "approval_required");
+    const status: WorkflowPlanNodeExecutionStatus = failed
+      ? "failed"
+      : blocked
+        ? "blocked"
+        : waitingApproval
+          ? "waiting_approval"
+          : "completed";
+
+    return {
+      status,
+      output: {
+        artifact: buildNodeArtifact({ detail, node, dependencyRecords, toolExecutions }),
+        acceptanceCriteria: node.acceptanceCriteria,
+        expectedOutputs: node.expectedOutputs,
+        dependencyNodeIds: dependencyRecords.map((record) => record.nodeId),
+        connectorTargets: node.connectorTargets,
+        policy: node.policy,
+        dryRunOnly: toolExecutions.length > 0 && toolExecutions.every((tool) => tool.dryRun),
+      },
+      toolExecutions,
+      error:
+        failed?.reason ||
+        (failed?.status === "executing"
+          ? "A prior execution has no terminal result; the side effect was not replayed."
+          : undefined) ||
+        blocked?.reason ||
+        waitingApproval?.reason,
+    };
+  } catch (error) {
+    if (
+      !(error instanceof EffectReceiptFinalizationError) &&
+      toolExecutions.some(
+        (toolExecution) => toolExecution.effectReceiptFinalized === true,
+      )
+    ) {
+      throw new EffectReceiptFinalizationError({ cause: error });
+    }
+    throw error;
   }
-
-  const failed = toolExecutions.find(
-    (tool) => tool.status === "failed" || tool.status === "executing",
-  );
-  const blocked = toolExecutions.find((tool) => tool.status === "blocked");
-  const waitingApproval = toolExecutions.find((tool) => tool.status === "approval_required");
-  const status: WorkflowPlanNodeExecutionStatus = failed
-    ? "failed"
-    : blocked
-      ? "blocked"
-      : waitingApproval
-        ? "waiting_approval"
-        : "completed";
-
-  return {
-    status,
-    output: {
-      artifact: buildNodeArtifact({ detail, node, dependencyRecords, toolExecutions }),
-      acceptanceCriteria: node.acceptanceCriteria,
-      expectedOutputs: node.expectedOutputs,
-      dependencyNodeIds: dependencyRecords.map((record) => record.nodeId),
-      connectorTargets: node.connectorTargets,
-      policy: node.policy,
-      dryRunOnly: toolExecutions.length > 0 && toolExecutions.every((tool) => tool.dryRun),
-    },
-    toolExecutions,
-    error:
-      failed?.reason ||
-      (failed?.status === "executing"
-        ? "A prior execution has no terminal result; the side effect was not replayed."
-        : undefined) ||
-      blocked?.reason ||
-      waitingApproval?.reason,
-  };
 }
 
 function workflowToolExecutionScope(
@@ -1035,29 +1119,33 @@ function parseToolSummaries(output: Record<string, unknown> | undefined): ToolEx
 
   return output.toolExecutions
     .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
-    .map((item) => ({
-      id: String(item.id || ""),
-      toolId: String(item.toolId || ""),
-      status: String(item.status || "dry_run") as ToolExecutionRecord["status"],
-      dryRun: Boolean(item.dryRun),
-      approvalRequired: Boolean(item.approvalRequired),
-      riskLevel: Number(item.riskLevel || 0),
-      reason: item.reason ? String(item.reason) : undefined,
-      result: item.result,
-      costUnits: Math.max(
-        1,
-        Number(
-          item.costUnits ||
-            (item.dryRun
-              ? 1
-              : String(item.toolId || "").startsWith("web.")
-                ? 4
-                : /^(connector|mcp|openapi)\./.test(String(item.toolId || ""))
-                  ? 5
-                  : 1),
+    .map((item) => {
+      const id = String(item.id || "");
+      const toolId = String(item.toolId || "");
+      return {
+        id,
+        toolId,
+        status: String(item.status || "dry_run") as ToolExecutionRecord["status"],
+        dryRun: Boolean(item.dryRun),
+        approvalRequired: Boolean(item.approvalRequired),
+        riskLevel: Number(item.riskLevel || 0),
+        reason: item.reason ? String(item.reason) : undefined,
+        result: item.result,
+        costUnits: Math.max(
+          1,
+          Number(
+            item.costUnits ||
+              (item.dryRun
+                ? 1
+                : String(item.toolId || "").startsWith("web.")
+                  ? 4
+                  : /^(connector|mcp|openapi)\./.test(String(item.toolId || ""))
+                    ? 5
+                    : 1),
+          ),
         ),
-      ),
-    }));
+      };
+    });
 }
 
 function isReusableNodeExecution(record: WorkflowPlanNodeExecutionRecord) {

@@ -27,7 +27,7 @@ New identities are issued with Asael names:
 Some old strings remain strictly as private compatibility contracts. They are
 not product aliases and must not be shown as the application name:
 
-- physical `omni_*` Postgres objects and immutable migration v1-v34 markers;
+- physical `omni_*` Postgres objects and immutable migration v1-v36 markers;
 - deployed `OMNIAGENT_*` secret names and exact internal worker/browser hosts;
 - cryptographic domains, signed payload types, and wire headers used to read or
   verify existing ciphertext, hashes, receipts, and connector sessions;
