@@ -687,11 +687,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the custom Agent Skill reference integrity migration", () => {
+  it("pins the native client compatibility telemetry migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 51,
-      name: "custom_agent_skill_reference_integrity",
-      checksum: "8c7e3a41d5b69f204a18c7de93f2b605e1468acd7b30f9542d6ce18fa905734b",
+      version: 52,
+      name: "native_client_compatibility_telemetry",
+      checksum: "c266dcc9ae08d4f7cbf195ca1474cf18bf3d572857758a4cd6127250a08d372e",
     });
   });
 

@@ -33,7 +33,7 @@ export function canonicalAuthUserActorFromSecurityContext(
   context: SecurityContext,
 ): CanonicalAuthUserActorV1 | undefined {
   if (
-    context.source !== "session" ||
+    (context.source !== "session" && context.source !== "mobile") ||
     !context.auth ||
     !canonicalAuthUserIdPattern.test(context.auth.userId) ||
     !context.auth.email ||

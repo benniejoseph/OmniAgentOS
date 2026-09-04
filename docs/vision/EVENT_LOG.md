@@ -318,6 +318,14 @@ deletion and RAG cleanup, internal artifacts, recordings, background work,
 portable data, and canonical writes remain exact-owner; a later governed or
 writable identity cutover must append its own typed evidence.
 
+Native client compatibility telemetry emits no domain event. Login, refresh,
+and bootstrap update authentication-session metadata only; the admin adoption
+read deterministically aggregates existing tenant-scoped session evidence and
+is permanently labeled held in this release. It neither grants a capability
+nor changes an Agent, workflow, memory, consent, membership, approval, tool
+effect, or external system. A later governed enrollment or authorization
+cutover requires its own typed decision event and rollback contract.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

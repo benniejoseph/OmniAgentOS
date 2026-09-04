@@ -32,6 +32,16 @@ describe("canonicalAuthUserActorFromSecurityContext", () => {
     expect(Object.isFrozen(actor)).toBe(true);
   });
 
+  it("binds the same authenticated actor for a native bearer context", () => {
+    expect(canonicalAuthUserActorFromSecurityContext({
+      ...sessionContext,
+      source: "mobile",
+    })).toMatchObject({
+      authUserId: userId,
+      actorId: `actor:${userId}`,
+    });
+  });
+
   it.each(["headers", "default", "service"] as const)(
     "does not bind a %s context",
     (source) => {

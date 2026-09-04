@@ -6,6 +6,8 @@ export type MobileDevice = {
   name: string;
   platform: "android" | "ios";
   appVersion?: string;
+  buildNumber?: number;
+  clientContractVersion?: number;
 };
 
 export type MobileSessionRecord = {
@@ -21,6 +23,8 @@ export type MobileSessionRecord = {
   refreshExpiresAt: string;
   createdAt: string;
   updatedAt: string;
+  lastSeenAt?: string;
+  clientAttestedAt?: string;
   revokedAt?: string;
 };
 

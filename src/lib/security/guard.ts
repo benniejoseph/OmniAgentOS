@@ -170,12 +170,16 @@ export function assertTrustedSessionMutation(
   request: Request,
   context?: Pick<SecurityContext, "source">,
 ) {
-  if (
-    safeRequestMethods.has(request.method.toUpperCase()) ||
-    (context && context.source !== "session")
-  ) {
+  if (safeRequestMethods.has(request.method.toUpperCase())) {
     return;
   }
+  if (context?.source === "mobile") {
+    throw new SecurityPolicyError(
+      "Native mutations remain held until capability enrollment is activated.",
+      403,
+    );
+  }
+  if (context && context.source !== "session") return;
 
   const suppliedOrigin = normalizeOrigin(request.headers.get("origin"));
   const expectedOrigin = trustedApplicationOrigin(request);

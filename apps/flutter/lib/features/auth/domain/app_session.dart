@@ -11,8 +11,12 @@ class AppSession {
     final user = json['user'] is Map
         ? Map<String, dynamic>.from(json['user'] as Map)
         : json;
-    final workspace = json['workspace'] is Map
-        ? Map<String, dynamic>.from(json['workspace'] as Map)
+    final workspaceValue = json['tenant'] ?? json['workspace'];
+    final workspace = workspaceValue is Map
+        ? Map<String, dynamic>.from(workspaceValue)
+        : const <String, dynamic>{};
+    final membership = json['membership'] is Map
+        ? Map<String, dynamic>.from(json['membership'] as Map)
         : const <String, dynamic>{};
     return AppSession(
       userId: (user['id'] ?? user['userId'] ?? '').toString(),
@@ -21,7 +25,8 @@ class AppSession {
           .toString(),
       workspaceName: (workspace['name'] ?? json['workspaceName'] ?? 'Asael')
           .toString(),
-      role: (user['role'] ?? json['role'] ?? 'member').toString(),
+      role: (membership['role'] ?? user['role'] ?? json['role'] ?? 'member')
+          .toString(),
     );
   }
 

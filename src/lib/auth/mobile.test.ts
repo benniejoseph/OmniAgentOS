@@ -26,7 +26,14 @@ describe("native mobile authentication", () => {
     const signedIn = await mobile.authenticateMobilePassword({
       email: "mobile@example.com",
       password: "a secure mobile password",
-      device: { id: "ios-device-0001", name: "Work iPhone", platform: "ios", appVersion: "1.0.0" },
+      device: {
+        id: "ios-device-0001",
+        name: "Work iPhone",
+        platform: "ios",
+        appVersion: "1.0.0",
+        buildNumber: 1,
+        clientContractVersion: 1,
+      },
     });
     expect(signedIn).not.toBeNull();
     const accessToken = signedIn!.tokens.accessToken;
@@ -39,6 +46,7 @@ describe("native mobile authentication", () => {
     await expect(security.resolveSecurityContext(request)).resolves.toMatchObject({
       tenantId: "mobile-tenant",
       role: "operator",
+      source: "mobile",
       auth: { userId: signedIn!.identity.user.id, sessionId: signedIn!.identity.session.id },
     });
   });
@@ -54,10 +62,10 @@ describe("native mobile authentication", () => {
       .rejects.toMatchObject({ code: "invalid_refresh_token" });
 
     const rotated = await mobile.rotateMobileRefreshToken(signedIn!.tokens.refreshToken, "ios-device-0001");
-    expect(rotated.refreshToken).not.toBe(signedIn!.tokens.refreshToken);
+    expect(rotated.tokens.refreshToken).not.toBe(signedIn!.tokens.refreshToken);
     await expect(mobile.rotateMobileRefreshToken(signedIn!.tokens.refreshToken, "ios-device-0001"))
       .rejects.toMatchObject({ code: "refresh_token_reuse" });
-    await expect(mobile.rotateMobileRefreshToken(rotated.refreshToken, "ios-device-0001"))
+    await expect(mobile.rotateMobileRefreshToken(rotated.tokens.refreshToken, "ios-device-0001"))
       .rejects.toMatchObject({ code: "invalid_refresh_token" });
   });
 
@@ -69,7 +77,7 @@ describe("native mobile authentication", () => {
       password: "a secure mobile password",
       device: { id: "android-device-1", name: "Work Pixel", platform: "android" },
     });
-    await mobile.revokeMobileSession(signedIn!.tokens.accessToken);
+    await mobile.revokeMobileSession(signedIn!.identity);
     const revoked = new Request("https://example.test/api/projects", { headers: { authorization: `Bearer ${signedIn!.tokens.accessToken}` } });
     await expect(security.resolveSecurityContext(revoked)).rejects.toMatchObject({ status: 401 });
     const malformed = new Request("https://example.test/api/projects", { headers: { authorization: "Bearer malformed" } });

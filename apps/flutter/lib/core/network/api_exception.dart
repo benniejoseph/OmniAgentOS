@@ -5,9 +5,15 @@ class ApiException implements Exception {
 
   factory ApiException.fromDio(DioException error) {
     final data = error.response?.data;
-    final message = data is Map
-        ? (data['message'] ?? data['error'])?.toString()
-        : null;
+    String? message;
+    if (data is Map) {
+      final nestedError = data['error'];
+      if (nestedError is Map) {
+        message = (nestedError['message'] ?? nestedError['code'])?.toString();
+      } else {
+        message = (data['message'] ?? nestedError)?.toString();
+      }
+    }
     return ApiException(
       message ?? 'The command service could not be reached.',
       statusCode: error.response?.statusCode,

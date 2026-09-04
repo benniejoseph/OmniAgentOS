@@ -796,6 +796,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[50],
       up: ensureCustomAgentSkillReferenceIntegrity,
     },
+    {
+      ...databaseSchemaMigrations[51],
+      up: async (sql) => {
+        await ensureTenantIsolationPolicies(sql);
+        await ensureNativeClientCompatibilityTelemetry(sql);
+      },
+    },
   ];
 }
 
@@ -21766,6 +21773,277 @@ async function ensureCustomAgentSkillReferenceIntegrity(sql: SqlClient) {
         )
       ) THEN
         RAISE EXCEPTION 'Custom Agent Skill reference trigger relations have invalid ownership'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureNativeClientCompatibilityTelemetry(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    DECLARE
+      attribute RECORD;
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Native client compatibility migration requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid = 'omni_mobile_sessions'::regclass
+          AND relkind = 'r'
+      ) THEN
+        RAISE EXCEPTION 'Native mobile session relation is missing'
+          USING ERRCODE = '55000';
+      END IF;
+
+      FOR attribute IN
+        SELECT
+          expected.name,
+          expected.type_oid,
+          existing.atttypid
+        FROM (
+          VALUES
+            ('app_build_number'::TEXT, 'integer'::regtype::OID),
+            ('client_contract_version'::TEXT, 'integer'::regtype::OID),
+            ('last_seen_at'::TEXT, 'timestamp with time zone'::regtype::OID),
+            ('client_attested_at'::TEXT, 'timestamp with time zone'::regtype::OID)
+        ) expected(name, type_oid)
+        JOIN pg_attribute existing
+          ON existing.attrelid = 'omni_mobile_sessions'::regclass
+          AND existing.attname = expected.name
+          AND NOT existing.attisdropped
+      LOOP
+        IF attribute.atttypid IS DISTINCT FROM attribute.type_oid THEN
+          RAISE EXCEPTION 'Existing native client compatibility column % has an incompatible type',
+            attribute.name
+            USING ERRCODE = '55000';
+        END IF;
+      END LOOP;
+
+    END
+    $migration$
+  `;
+
+  // Hold native enrollment writers while the additive contract columns and
+  // checks are installed. Legacy app_version values remain untouched.
+  await sql`
+    LOCK TABLE omni_mobile_sessions IN SHARE ROW EXCLUSIVE MODE
+  `;
+  await sql`
+    ALTER TABLE omni_mobile_sessions
+    ADD COLUMN IF NOT EXISTS app_build_number INTEGER
+  `;
+  await sql`
+    ALTER TABLE omni_mobile_sessions
+    ADD COLUMN IF NOT EXISTS client_contract_version INTEGER NOT NULL DEFAULT 0
+  `;
+  await sql`
+    ALTER TABLE omni_mobile_sessions
+    ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ
+  `;
+  await sql`
+    ALTER TABLE omni_mobile_sessions
+    ADD COLUMN IF NOT EXISTS client_attested_at TIMESTAMPTZ
+  `;
+  await sql`
+    ALTER TABLE omni_mobile_sessions
+    ALTER COLUMN app_build_number DROP DEFAULT,
+    ALTER COLUMN app_build_number DROP NOT NULL,
+    ALTER COLUMN client_contract_version SET DEFAULT 0
+  `;
+  await sql`
+    ALTER TABLE omni_mobile_sessions
+    ALTER COLUMN client_contract_version SET NOT NULL,
+    ALTER COLUMN last_seen_at DROP DEFAULT,
+    ALTER COLUMN last_seen_at DROP NOT NULL,
+    ALTER COLUMN client_attested_at DROP DEFAULT,
+    ALTER COLUMN client_attested_at DROP NOT NULL
+  `;
+
+  // These names are owned by this migration. Rebuild them under the table
+  // lock so a same-named weak or partially installed object cannot be
+  // accepted through IF NOT EXISTS on a recovery run.
+  await sql`
+    ALTER TABLE omni_mobile_sessions
+    DROP CONSTRAINT IF EXISTS omni_mobile_sessions_client_attestation_check
+  `;
+  await sql`
+    ALTER TABLE omni_mobile_sessions
+    ADD CONSTRAINT omni_mobile_sessions_client_attestation_check
+    CHECK (
+      (
+        client_contract_version = 0
+        AND app_build_number IS NULL
+        AND client_attested_at IS NULL
+      ) OR (
+        client_contract_version BETWEEN 1 AND 2147483647
+        AND app_build_number IS NOT NULL
+        AND app_build_number BETWEEN 1 AND 2147483647
+        AND platform IS NOT NULL
+        AND platform COLLATE "C" IN ('android', 'ios')
+        AND app_version IS NOT NULL
+        AND app_version = btrim(app_version)
+        AND client_attested_at IS NOT NULL
+        AND app_version COLLATE "C" ~
+          '^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$'
+      )
+    ) NOT VALID
+  `;
+  await sql`
+    ALTER TABLE omni_mobile_sessions
+    VALIDATE CONSTRAINT omni_mobile_sessions_client_attestation_check
+  `;
+
+  await sql`
+    DROP INDEX IF EXISTS omni_mobile_sessions_native_adoption_idx
+  `;
+  await sql`
+    CREATE INDEX omni_mobile_sessions_native_adoption_idx
+    ON omni_mobile_sessions (
+      tenant_id,
+      user_id,
+      device_id,
+      (COALESCE(last_seen_at, updated_at)) DESC,
+      updated_at DESC,
+      id COLLATE "C"
+    )
+    WHERE revoked_at IS NULL
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        LEFT JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid = 'omni_mobile_sessions'::regclass
+          AND attribute.attname = 'app_build_number'
+          AND attribute.atttypid = 'integer'::regtype
+          AND NOT attribute.attnotnull
+          AND NOT attribute.attisdropped
+          AND attribute_default.oid IS NULL
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid = 'omni_mobile_sessions'::regclass
+          AND attribute.attname = 'client_contract_version'
+          AND attribute.atttypid = 'integer'::regtype
+          AND attribute.attnotnull
+          AND NOT attribute.attisdropped
+          AND pg_get_expr(
+            attribute_default.adbin,
+            attribute_default.adrelid
+          ) = '0'
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        LEFT JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid = 'omni_mobile_sessions'::regclass
+          AND attribute.attname = 'last_seen_at'
+          AND attribute.atttypid = 'timestamp with time zone'::regtype
+          AND NOT attribute.attnotnull
+          AND NOT attribute.attisdropped
+          AND attribute_default.oid IS NULL
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        LEFT JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid = 'omni_mobile_sessions'::regclass
+          AND attribute.attname = 'client_attested_at'
+          AND attribute.atttypid = 'timestamp with time zone'::regtype
+          AND NOT attribute.attnotnull
+          AND NOT attribute.attisdropped
+          AND attribute_default.oid IS NULL
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_mobile_sessions
+        WHERE NOT (
+            (
+              client_contract_version = 0
+              AND app_build_number IS NULL
+              AND client_attested_at IS NULL
+            ) OR (
+              client_contract_version BETWEEN 1 AND 2147483647
+              AND app_build_number IS NOT NULL
+              AND app_build_number BETWEEN 1 AND 2147483647
+              AND platform IS NOT NULL
+              AND platform COLLATE "C" IN ('android', 'ios')
+              AND app_version IS NOT NULL
+              AND app_version = btrim(app_version)
+              AND client_attested_at IS NOT NULL
+              AND app_version COLLATE "C" ~
+                '^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$'
+            )
+          )
+      ) THEN
+        RAISE EXCEPTION 'Native client compatibility columns are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (
+        SELECT count(*)
+        FROM pg_constraint constraint_record
+        WHERE conrelid = 'omni_mobile_sessions'::regclass
+          AND conname = 'omni_mobile_sessions_client_attestation_check'
+          AND contype = 'c'
+          AND convalidated
+          AND COALESCE(
+            (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+            TRUE
+          )
+      ) <> 1 OR NOT EXISTS (
+        SELECT 1
+        FROM pg_index
+        WHERE indexrelid =
+            'omni_mobile_sessions_native_adoption_idx'::regclass
+          AND indrelid = 'omni_mobile_sessions'::regclass
+          AND indisvalid
+          AND indisready
+          AND indpred IS NOT NULL
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid = 'omni_mobile_sessions'::regclass
+          AND relowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND relrowsecurity
+          AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid = 'omni_mobile_sessions'::regclass
+          AND polname = 'omni_tenant_isolation'
+          AND polpermissive
+          AND polcmd = '*'
+          AND polroles = ARRAY[0::OID]
+          AND pg_get_expr(polqual, polrelid) =
+            'omni_tenant_visible(tenant_id)'
+          AND pg_get_expr(polwithcheck, polrelid) =
+            'omni_tenant_visible(tenant_id)'
+      ) THEN
+        RAISE EXCEPTION 'Native client compatibility storage boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

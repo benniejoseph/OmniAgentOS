@@ -1153,6 +1153,25 @@ file fallback, portable data, and canonical writes remain exact-owner. This
 does not unblock any canonical action path; those require content-integrity,
 owner-transition, deletion-barrier, and native-adoption gates of their own.
 
+The following foundation repairs native authentication contracts and measures
+their safe rollout without enabling it. Migration v52 preserves every legacy
+free-text app version under contract version zero and adds structured build,
+client-contract, and last-seen fields. Current login/refresh attestations are
+strict, bootstrap returns the server-owned platform minimums, and a
+`read.identity` endpoint exposes only tenant-aggregate latest-device and active
+session-family buckets. The latter prevents a deduplicated percentage from
+hiding an older refreshable legacy family. Flutter now uses the real bootstrap
+route and rotating token shape with a stable secure device ID. Native bearer
+contexts are distinct from browser cookie sessions for origin enforcement but
+retain identical RBAC, RLS, canonical-request, and audit attribution; generic
+native mutations remain explicitly held. Flutter falls back to the prior
+strict request shape on a server rollback, and an unattested refresh resets
+structured compatibility to unknown. The
+evidence state and Agent catalog enrollment remain explicitly held; zero data,
+legacy clients, and future/unknown contracts never imply readiness. No Agent
+list, runtime, ownership, consent, membership, or canonical-write behavior is
+changed by this observation batch.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
