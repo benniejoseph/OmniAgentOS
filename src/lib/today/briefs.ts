@@ -16,6 +16,7 @@ import { listProjects, listProjectTasks } from "@/lib/projects/store";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import { listThreads } from "@/lib/threads/store";
+import { todayActorReadOrder } from "@/lib/today/actor-scope";
 import { listTodayItems } from "@/lib/today/store";
 import { listWorkflowRunSummaries } from "@/lib/workflows/store";
 import type {
@@ -112,7 +113,7 @@ export async function updateTodayPreferences(
   const usePostgres = hasDatabaseUrl();
   const legacyRequestActorId = safeText(options.actorId, 200);
   const requestActorId = usePostgres
-    ? todayPreferenceActorReadOrder(
+    ? todayActorReadOrder(
         options.actorId,
         options.requestActorBinding,
         legacyRequestActorId,
@@ -411,7 +412,7 @@ async function findTodayPreferences(options: {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const legacyActorId = safeText(options.actorId, 200);
-    const actorReadOrder = todayPreferenceActorReadOrder(
+    const actorReadOrder = todayActorReadOrder(
       options.actorId,
       options.requestActorBinding,
       legacyActorId,
@@ -444,37 +445,6 @@ async function findTodayPreferences(options: {
     preferences: sanitizePreferences(preferences),
     persistedActorId: preferences.actorId,
   } : undefined;
-}
-
-/**
- * Keeps this canary's PostgreSQL lookup canonical-first while treating a
- * missing or malformed request binding as an exact-actor read. Returning the
- * exact actor twice lets callers use one fixed query shape in both modes.
- */
-export function todayPreferenceActorReadOrder(
-  actorId: string,
-  binding?: CanonicalRequestActorBindingV1,
-  exactFallbackActorId = actorId,
-): readonly [string, string] {
-  if (
-    !binding ||
-    binding.version !== 1 ||
-    binding.kind !== "auth_user" ||
-    safeText(actorId, 200) !== actorId ||
-    binding.canonicalActorId !== `actor:${binding.authUserId}` ||
-    binding.canonicalActorId === actorId ||
-    !Array.isArray(binding.legacyOwnerActorIds) ||
-    binding.legacyOwnerActorIds.length !== 1 ||
-    binding.legacyOwnerActorIds[0] !== actorId ||
-    !Array.isArray(binding.readableOwnerActorIds) ||
-    binding.readableOwnerActorIds.length !== 2 ||
-    binding.readableOwnerActorIds[0] !== binding.canonicalActorId ||
-    binding.readableOwnerActorIds[1] !== actorId ||
-    safeText(binding.canonicalActorId, 200) !== binding.canonicalActorId
-  ) {
-    return [exactFallbackActorId, exactFallbackActorId];
-  }
-  return [binding.canonicalActorId, actorId];
 }
 
 export async function listTodayPreferencesForTenant(tenantId?: string) {

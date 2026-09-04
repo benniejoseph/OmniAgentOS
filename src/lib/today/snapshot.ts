@@ -6,10 +6,8 @@ import { listMemories } from "@/lib/memory/store";
 import { listProjects, listProjectTasks } from "@/lib/projects/store";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { listThreads } from "@/lib/threads/store";
-import {
-  getTodayBriefBundle,
-  todayPreferenceActorReadOrder,
-} from "@/lib/today/briefs";
+import { todayActorReadOrder } from "@/lib/today/actor-scope";
+import { getTodayBriefBundle } from "@/lib/today/briefs";
 import { loadPostgresTodaySnapshot } from "@/lib/today/postgres-snapshot";
 import { loadCachedTodaySnapshot } from "@/lib/today/snapshot-cache";
 import { listTodayItems } from "@/lib/today/store";
@@ -36,8 +34,8 @@ export async function loadTodaySnapshot({
   now?: Date;
   requestActorBinding?: CanonicalRequestActorBindingV1;
 }): Promise<TodaySnapshot> {
-  const hasCanonicalPreferenceBinding = requestActorBinding
-    ? todayPreferenceActorReadOrder(actorId, requestActorBinding)[0] !== actorId
+  const hasCanonicalTodayBinding = requestActorBinding
+    ? todayActorReadOrder(actorId, requestActorBinding)[0] !== actorId
     : false;
   const readScopedSnapshot = () => runWithDatabaseTenantScope(
     tenantId,
@@ -48,7 +46,7 @@ export async function loadTodaySnapshot({
       requestActorBinding,
     }),
   );
-  if (now || !hasCanonicalPreferenceBinding) {
+  if (now || !hasCanonicalTodayBinding) {
     return readScopedSnapshot();
   }
   return loadCachedTodaySnapshot(
@@ -97,7 +95,7 @@ async function readLocalTodaySnapshot({
   requestActorBinding?: CanonicalRequestActorBindingV1;
 }) {
   const [items, threads, memories, briefBundle, projects] = await Promise.all([
-    listTodayItems(100, { tenantId, actorId }),
+    listTodayItems(100, { tenantId, actorId, requestActorBinding }),
     listThreads(6, { tenantId, actorId }),
     listMemories({ tenantId, limit: 6 }),
     getTodayBriefBundle({ tenantId, actorId, now, requestActorBinding }),

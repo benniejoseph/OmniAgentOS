@@ -999,6 +999,18 @@ does not dual-read any other Today record, enumerate retained prior emails,
 change cache/session/request identity, or begin canonical writes. It therefore
 does not unblock membership epochs or any v43-v49 hold.
 
+The next canary remains request-bound and covers only the Today item collection
+shown on the dashboard plus direct ID-based item edits. Authenticated reads
+merge the canonical and exact-current-email partitions before applying the
+existing global limit, with item ID as the final deterministic ordering key.
+An edit is safe to resolve across those two partitions because item IDs are
+globally unique; it never rewrites the selected row's actor, while the API
+continues to project the current email-shaped request actor. Creation remains
+email-owned. Briefs, notification occurrence state, background enumeration,
+portable export/restore, file fallback, retained aliases, and canonical writes
+remain outside this canary and require separate convergence gates. This slice
+does not unblock membership epochs or any v43-v49 hold.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

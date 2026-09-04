@@ -5,9 +5,11 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import { todayActorReadOrder } from "@/lib/today/actor-scope";
 import type {
   TodayItem,
   TodayItemKind,
@@ -55,29 +57,45 @@ export async function createTodayItem(input: {
 
 export async function listTodayItems(
   limit = 100,
-  options: { tenantId?: string; actorId: string } ,
+  options: {
+    tenantId?: string;
+    actorId: string;
+    requestActorBinding?: CanonicalRequestActorBindingV1;
+  },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const actorId = safeText(options.actorId, 200);
   const bounded = Math.min(Math.max(limit, 1), 250);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const actorReadOrder = todayActorReadOrder(
+      options.actorId,
+      options.requestActorBinding,
+      actorId,
+    );
+    const canonicalActorId = actorReadOrder[0];
+    const exactActorId = actorReadOrder[1];
     const rows = await getSql()`
       SELECT * FROM omni_today_items
-      WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
+      WHERE tenant_id = ${tenantId}
+        AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
       ORDER BY
         CASE status WHEN 'open' THEN 0 ELSE 1 END,
         due_at ASC NULLS LAST,
-        created_at DESC
+        created_at DESC,
+        id ASC
       LIMIT ${bounded}
     `;
-    return rows.map(itemFromRow);
+    return rows.map((row) =>
+      projectTodayItemForRequest(itemFromRow(row), exactActorId),
+    );
   }
   const ledger = await readLedger();
   return ledger.items
     .filter((item) => item.tenantId === tenantId && item.actorId === actorId)
     .sort(compareItems)
-    .slice(0, bounded);
+    .slice(0, bounded)
+    .map((item) => projectTodayItemForRequest(item, actorId));
 }
 
 export async function updateTodayItem(
@@ -88,13 +106,24 @@ export async function updateTodayItem(
     priority?: TodayItemPriority;
     dueAt?: string | null;
   },
-  options: { tenantId?: string; actorId: string },
+  options: {
+    tenantId?: string;
+    actorId: string;
+    requestActorBinding?: CanonicalRequestActorBindingV1;
+  },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const actorId = safeText(options.actorId, 200);
   const now = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const actorReadOrder = todayActorReadOrder(
+      options.actorId,
+      options.requestActorBinding,
+      actorId,
+    );
+    const canonicalActorId = actorReadOrder[0];
+    const exactActorId = actorReadOrder[1];
     const rows = await getSql()`
       UPDATE omni_today_items
       SET title = COALESCE(${input.title ? safeText(input.title, 280) : null}, title),
@@ -103,10 +132,13 @@ export async function updateTodayItem(
           due_at = CASE WHEN ${input.dueAt === null} THEN NULL ELSE COALESCE(${optionalDate(input.dueAt || undefined) || null}, due_at) END,
           completed_at = CASE WHEN ${input.status === "done"} THEN ${now} WHEN ${input.status === "open"} THEN NULL ELSE completed_at END,
           updated_at = ${now}
-      WHERE id = ${id} AND tenant_id = ${tenantId} AND actor_id = ${actorId}
+      WHERE id = ${id} AND tenant_id = ${tenantId}
+        AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
       RETURNING *
     `;
-    return rows[0] ? itemFromRow(rows[0]) : undefined;
+    return rows[0]
+      ? projectTodayItemForRequest(itemFromRow(rows[0]), exactActorId)
+      : undefined;
   }
   let updated: TodayItem | undefined;
   await updateLedger((ledger) => {
@@ -125,7 +157,7 @@ export async function updateTodayItem(
     updated = item;
     return ledger;
   });
-  return updated;
+  return updated ? projectTodayItemForRequest(updated, actorId) : undefined;
 }
 
 function readLedger() {
@@ -156,12 +188,22 @@ function itemFromRow(row: Record<string, unknown>): TodayItem {
   };
 }
 
+function projectTodayItemForRequest(item: TodayItem, requestActorId: string): TodayItem {
+  return { ...item, actorId: requestActorId };
+}
+
 function compareItems(left: TodayItem, right: TodayItem) {
   if (left.status !== right.status) return left.status === "open" ? -1 : 1;
-  if (left.dueAt && right.dueAt) return left.dueAt.localeCompare(right.dueAt);
-  if (left.dueAt) return -1;
-  if (right.dueAt) return 1;
-  return right.createdAt.localeCompare(left.createdAt);
+  if (left.dueAt && right.dueAt) {
+    const dueOrder = left.dueAt.localeCompare(right.dueAt);
+    if (dueOrder !== 0) return dueOrder;
+  } else if (left.dueAt) {
+    return -1;
+  } else if (right.dueAt) {
+    return 1;
+  }
+  return right.createdAt.localeCompare(left.createdAt)
+    || left.id.localeCompare(right.id);
 }
 
 function optionalDate(value?: string) {

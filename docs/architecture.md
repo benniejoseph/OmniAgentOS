@@ -381,6 +381,17 @@ must still use each selected row's persisted actor for ciphertext AAD, hashes,
 approvals, receipts, and event comparisons. The v43 enrollment barrier, v45
 deny hook, and v48-v49 empty/held ledgers remain unchanged.
 
+The second request-bound slice extends that same validated binding only to
+`omni_today_items` dashboard reads and direct ID edits. PostgreSQL reads merge
+the canonical and exact-current-email partitions, apply one deterministic
+status/due/created/ID ordering and then the existing limit. Because item IDs
+are globally unique, a direct edit can select at most one physical row; it
+retains that row's persisted actor and projects the current request actor at
+the API boundary. New items remain email-owned. Brief generation,
+notification workers, portable data flows, schedulers, file fallback,
+retained prior-email aliases, and canonical writes remain exact-only or
+unchanged until their own lifecycle and uniqueness gates are designed.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

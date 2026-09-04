@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { invalidateTodaySnapshot } from "@/lib/today/snapshot-cache";
 import { updateTodayItem } from "@/lib/today/store";
@@ -41,6 +42,7 @@ async function PATCHHandler(
   const item = await updateTodayItem(id, parsed.data, {
     tenantId: context.tenantId,
     actorId: context.actorId,
+    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
   });
   if (item) {
     invalidateTodaySnapshot(context);
