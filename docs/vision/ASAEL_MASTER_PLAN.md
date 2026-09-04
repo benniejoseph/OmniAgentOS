@@ -1126,6 +1126,20 @@ tool authority, hashes, portable data, mutations, and canonical writes also
 remain exact. Canonical Agent enrollment therefore remains dormant until the
 list consumers and runtime identity gates converge together.
 
+The following Agent-list canary is deliberately opt-in. Arsenal requests the
+complete validated canonical/current-email collection with
+`ownerScope=readable`; malformed or reserved IDs, unexpected owners,
+duplicate IDs, and cross-owner slug collisions fail the entire private read.
+Exact custom rows are selectable/manageable and canonical compatibility rows
+are neither. Bare Agent list GET remains exact for Missions, Flutter, and
+legacy installed clients, but now publishes explicit exact actionability.
+Web Mission assignment and Flutter mutation controls have been made
+capability-aware ahead of cutover, including omission of an unchanged
+read-only historical assignee. Canonical Agent enrollment still requires a
+native minimum-version/adoption gate, and runtime identity, Skill/tool
+authority, hashes, portable data, mutations, file fallback, and canonical
+writes remain exact-owner.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

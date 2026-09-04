@@ -45,7 +45,12 @@ import styles from "@/components/missions/mission-workspace.module.css";
 type ViewMode = "board" | "canvas" | "list";
 type BoardColumnId = "inbox" | "waiting" | "ready" | "working" | "needs-you" | "review" | "done";
 type TaskFilter = "all" | "open" | "attention" | "done";
-type AgentOption = { id: string; name: string; role?: string };
+type AgentOption = {
+  id: string;
+  name: string;
+  role?: string;
+  selectable: boolean;
+};
 type BoardComment = { id: string; body: string; authorName?: string; createdAt: string; taskId?: string };
 
 type BaseTask = MissionDetailView["tasks"][number];
@@ -582,6 +587,7 @@ type NewTaskInput = { title: string; instructions: string; definitionOfDone: str
 
 function TaskCreateDialog({ missionTitle, agents, creating, error, onClose, onCreate }: { missionTitle: string; agents: AgentOption[]; creating: boolean; error?: string; onClose: () => void; onCreate: (input: NewTaskInput) => void }) {
   const closeRef = useDialogFocus(onClose);
+  const assignableAgents = agents.filter((agent) => agent.selectable);
   const [title, setTitle] = useState(""); const [instructions, setInstructions] = useState(""); const [definitionOfDone, setDefinitionOfDone] = useState("");
   const [priority, setPriority] = useState<MissionSummaryView["priority"]>("normal"); const [assigneeId, setAssigneeId] = useState(""); const [reviewRequired, setReviewRequired] = useState(true); const [boardStage, setBoardStage] = useState<"inbox" | "ready">("inbox");
   return <div className={styles.dialogBackdrop} onMouseDown={(event) => event.target === event.currentTarget && onClose()}><form className={clsx(styles.dialog, styles.taskCreateDialog)} role="dialog" aria-modal="true" aria-labelledby="new-task-title" onSubmit={(event) => { event.preventDefault(); void onCreate({ title: title.trim(), instructions: instructions.trim(), definitionOfDone: definitionOfDone.trim(), priority, assigneeId, reviewRequired, boardStage }); }}>
@@ -589,7 +595,7 @@ function TaskCreateDialog({ missionTitle, agents, creating, error, onClose, onCr
     <label>Task title<input value={title} onChange={(event) => setTitle(event.currentTarget.value)} maxLength={240} placeholder="What needs to happen?" autoFocus /></label>
     <label>Working instructions<textarea value={instructions} onChange={(event) => setInstructions(event.currentTarget.value)} maxLength={8000} rows={4} placeholder="Useful context, constraints, and boundaries." /></label>
     <label>Definition of done<textarea value={definitionOfDone} onChange={(event) => setDefinitionOfDone(event.currentTarget.value)} maxLength={2000} rows={3} placeholder="The observable outcome and required evidence." /></label>
-    <div className={styles.formGrid}><label>Start in<select value={boardStage} onChange={(event) => setBoardStage(event.currentTarget.value as "inbox" | "ready")}><option value="inbox">Inbox — shape first</option><option value="ready">Ready — clear to start</option></select></label><label>Priority<select value={priority} onChange={(event) => setPriority(event.currentTarget.value as MissionSummaryView["priority"])}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label><label>Assignee<select value={assigneeId} onChange={(event) => setAssigneeId(event.currentTarget.value)}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}{agent.role ? ` · ${agent.role}` : ""}</option>)}</select></label></div>
+    <div className={styles.formGrid}><label>Start in<select value={boardStage} onChange={(event) => setBoardStage(event.currentTarget.value as "inbox" | "ready")}><option value="inbox">Inbox — shape first</option><option value="ready">Ready — clear to start</option></select></label><label>Priority<select value={priority} onChange={(event) => setPriority(event.currentTarget.value as MissionSummaryView["priority"])}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label><label>Assignee<select value={assigneeId} onChange={(event) => setAssigneeId(event.currentTarget.value)}><option value="">Unassigned</option>{assignableAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}{agent.role ? ` · ${agent.role}` : ""}</option>)}</select></label></div>
     <label className={styles.checkLabel}><input type="checkbox" checked={reviewRequired} onChange={(event) => setReviewRequired(event.currentTarget.checked)} /><span><strong>Require review</strong><small>Move to Review before this task can be accepted.</small></span></label>
     {error ? <p className={styles.dialogError} role="alert">{error}</p> : null}
     <footer><button type="button" onClick={onClose}>Cancel</button><button type="submit" disabled={creating || !title.trim() || !definitionOfDone.trim()}>{creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Add task</button></footer>
@@ -603,9 +609,32 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, er
 }) {
   const closeRef = useDialogFocus(onClose);
   const [title, setTitle] = useState(task.title); const [instructions, setInstructions] = useState(task.instructions); const [definitionOfDone, setDefinitionOfDone] = useState(task.definitionOfDone); const [priority, setPriority] = useState(task.priority);
-  const [assigneeId, setAssigneeId] = useState(taskAssigneeId(task) === "unassigned" ? "" : taskAssigneeId(task)); const [reviewRequired, setReviewRequired] = useState(taskReviewRequired(task)); const [blockerReason, setBlockerReason] = useState(taskBlockerReason(task)); const [dependencyIds, setDependencyIds] = useState(task.dependencyIds); const [comment, setComment] = useState(""); const [reviewNote, setReviewNote] = useState("");
+  const originalAssigneeId = taskAssigneeId(task);
+  const [assigneeId, setAssigneeId] = useState(originalAssigneeId === "unassigned" ? "" : originalAssigneeId); const [reviewRequired, setReviewRequired] = useState(taskReviewRequired(task)); const [blockerReason, setBlockerReason] = useState(taskBlockerReason(task)); const [dependencyIds, setDependencyIds] = useState(task.dependencyIds); const [comment, setComment] = useState(""); const [reviewNote, setReviewNote] = useState("");
   const column = boardColumnForTask(task, allTasks); const attempts = attemptsForTask(detail, task.id); const comments = commentsForTask(detail, task); const artifacts = artifactsForTask(detail, task.id).filter((artifact) => !isCommentArtifact(artifact));
-  function save(event: React.FormEvent) { event.preventDefault(); onSave({ title: title.trim(), instructions: instructions.trim(), definitionOfDone: definitionOfDone.trim(), priority, assigneeId: assigneeId || null, reviewRequired, blocker: blockerReason.trim() ? { kind: "needs_input", reason: blockerReason.trim() } : null, dependencyIds }); }
+  const assignmentOptions = agents.filter(
+    (agent) => agent.selectable || agent.id === assigneeId,
+  );
+  function save(event: React.FormEvent) {
+    event.preventDefault();
+    const unchangedReadOnlyAssignee = Boolean(
+      assigneeId &&
+      assigneeId === originalAssigneeId &&
+      agents.find((agent) => agent.id === assigneeId)?.selectable !== true,
+    );
+    onSave({
+      title: title.trim(),
+      instructions: instructions.trim(),
+      definitionOfDone: definitionOfDone.trim(),
+      priority,
+      ...(unchangedReadOnlyAssignee ? {} : { assigneeId: assigneeId || null }),
+      reviewRequired,
+      blocker: blockerReason.trim()
+        ? { kind: "needs_input", reason: blockerReason.trim() }
+        : null,
+      dependencyIds,
+    });
+  }
   function toggleDependency(id: string) { setDependencyIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]); }
   return <div className={styles.drawerBackdrop} onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className={styles.drawer} role="dialog" aria-modal="true" aria-labelledby="task-drawer-title">
     <header className={styles.drawerHeader}><div><p>Task details</p><h2 id="task-drawer-title">{task.title}</h2></div><button ref={closeRef} type="button" onClick={onClose} aria-label="Close task details"><X size={17} /></button></header>
@@ -615,7 +644,7 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, er
       <label>Title<input value={title} onChange={(event) => setTitle(event.currentTarget.value)} maxLength={240} /></label>
       <label>Working instructions<textarea value={instructions} onChange={(event) => setInstructions(event.currentTarget.value)} rows={5} maxLength={8000} /></label>
       <label>Definition of done<textarea value={definitionOfDone} onChange={(event) => setDefinitionOfDone(event.currentTarget.value)} rows={4} maxLength={2000} /></label>
-      <div className={styles.formGrid}><label>Priority<select value={priority} onChange={(event) => setPriority(event.currentTarget.value as BoardTask["priority"])}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label><label>Assignee<select value={assigneeId} onChange={(event) => setAssigneeId(event.currentTarget.value)}><option value="">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label></div>
+      <div className={styles.formGrid}><label>Priority<select value={priority} onChange={(event) => setPriority(event.currentTarget.value as BoardTask["priority"])}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label><label>Assignee<select value={assigneeId} onChange={(event) => setAssigneeId(event.currentTarget.value)}><option value="">Unassigned</option>{assignmentOptions.map((agent) => <option key={agent.id} value={agent.id} disabled={!agent.selectable}>{agent.name}{agent.selectable ? "" : " · read only"}</option>)}</select></label></div>
       <label className={styles.checkLabel}><input type="checkbox" checked={reviewRequired} onChange={(event) => setReviewRequired(event.currentTarget.checked)} /><span><strong>Review required</strong><small>Require evidence acceptance before completion.</small></span></label>
       <label>Blocker or requested input<textarea value={blockerReason} onChange={(event) => setBlockerReason(event.currentTarget.value)} rows={2} maxLength={2000} placeholder="Describe exactly what is needed to continue." /></label>
       <details className={styles.drawerDisclosure} open><summary><span><GitBranch size={14} aria-hidden="true" /> Dependencies</span><b>{dependencyIds.length}</b></summary><div className={styles.dependencyEditor}>{allTasks.filter((candidate) => candidate.id !== task.id).length ? allTasks.filter((candidate) => candidate.id !== task.id).map((candidate) => <label key={candidate.id}><input type="checkbox" checked={dependencyIds.includes(candidate.id)} onChange={() => toggleDependency(candidate.id)} /><span><strong>{candidate.title}</strong><small>{boardColumnLabel(boardColumnForTask(candidate, allTasks))}</small></span></label>) : <p>No other tasks can be linked yet.</p>}</div></details>
@@ -729,8 +758,25 @@ function isHandoffArtifact(artifact: BoardArtifact) { return artifact.kind.toLow
 function artifactPreview(artifact: BoardArtifact) { const metadata = record(artifact.metadata); const data = record(artifact.data); return artifact.preview || stringValue(metadata.preview, metadata.summary, metadata.body, data.preview, data.summary, data.body); }
 
 function agentOptions(payload: Record<string, unknown>): AgentOption[] {
-  const combined = [...(Array.isArray(payload.builtIns) ? payload.builtIns : []), ...(Array.isArray(payload.agents) ? payload.agents : [])];
-  return combined.flatMap((value) => { const item = record(value); const id = stringValue(item.id, item.slug); const name = stringValue(item.name); return id && name ? [{ id, name, role: stringValue(item.role) }] : []; }).filter((agent, index, items) => items.findIndex((item) => item.id === agent.id) === index);
+  const combined = [
+    ...(Array.isArray(payload.builtIns) ? payload.builtIns : []).map((value) => ({ value, builtIn: true })),
+    ...(Array.isArray(payload.agents) ? payload.agents : []).map((value) => ({ value, builtIn: false })),
+  ];
+  return combined.flatMap(({ value, builtIn }) => {
+    const item = record(value);
+    const id = stringValue(item.id, item.slug);
+    const name = stringValue(item.name);
+    return id && name
+      ? [{
+          id,
+          name,
+          role: stringValue(item.role),
+          selectable: builtIn || item.selectable === true,
+        }]
+      : [];
+  }).filter((agent, index, items) =>
+    items.findIndex((item) => item.id === agent.id) === index
+  );
 }
 
 function buildTaskGraph(tasks: BoardTask[], allTasks: BoardTask[]) {

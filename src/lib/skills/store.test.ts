@@ -13,6 +13,7 @@ import {
   getCustomAgentForRequest,
   listAgentSkills,
   listCustomAgents,
+  listCustomAgentsForRequest,
   updateCustomAgent,
 } from "@/lib/skills/store";
 
@@ -117,7 +118,7 @@ describe("agent and skill studio store", () => {
     }]);
   });
 
-  it("keeps request-bound custom Agent detail reads exact in file mode", async () => {
+  it("keeps request-bound custom Agent reads exact in file mode", async () => {
     const actorId = "owner@example.test";
     const authUserId = "11111111-1111-4111-8111-111111111111";
     const canonicalActorId = `actor:${authUserId}`;
@@ -149,6 +150,17 @@ describe("agent and skill studio store", () => {
       ...scope,
       requestActorBinding: binding,
     })).resolves.toBeUndefined();
+    await expect(listCustomAgentsForRequest({
+      ...scope,
+      requestActorBinding: binding,
+    })).resolves.toEqual([
+      expect.objectContaining({
+        id: exact.id,
+        actorId,
+        selectable: true,
+        manageable: true,
+      }),
+    ]);
   });
 });
 

@@ -5,6 +5,9 @@ typedef Json = Map<String, dynamic>;
 List<String> _strings(Object? value) =>
     (value as List? ?? const []).map((e) => e.toString()).toList();
 
+bool _capabilityFlag(Json value, String key, bool fallback) =>
+    !value.containsKey(key) ? fallback : value[key] == true;
+
 class AgentSkill {
   const AgentSkill({
     required this.id,
@@ -33,10 +36,8 @@ class AgentSkill {
     toolIds: _strings(j['toolIds']),
     tags: _strings(j['tags']),
     builtIn: j['builtIn'] == true,
-    selectable: j['selectable'] is bool ? j['selectable'] as bool : true,
-    manageable: j['manageable'] is bool
-        ? j['manageable'] as bool
-        : j['builtIn'] != true,
+    selectable: _capabilityFlag(j, 'selectable', true),
+    manageable: _capabilityFlag(j, 'manageable', j['builtIn'] != true),
   );
 }
 
@@ -66,8 +67,11 @@ class AgentProfile {
     required this.memoryScope,
     required this.skillIds,
     required this.toolIds,
-    this.builtIn = false,
-  });
+    bool builtIn = false,
+    this.selectable = true,
+    bool? manageable,
+  }) : builtIn = builtIn,
+       manageable = manageable ?? !builtIn;
   final String id,
       name,
       role,
@@ -80,7 +84,7 @@ class AgentProfile {
       approvalPolicy,
       memoryScope;
   final List<String> skillIds, toolIds;
-  final bool builtIn;
+  final bool builtIn, selectable, manageable;
   factory AgentProfile.fromJson(Json j, {bool builtIn = false}) => AgentProfile(
     id: '${j['id']}',
     name: '${j['name'] ?? 'Agent'}',
@@ -96,6 +100,8 @@ class AgentProfile {
     skillIds: _strings(j['skillIds']),
     toolIds: _strings(j['toolIds'] ?? j['tools']),
     builtIn: builtIn,
+    selectable: _capabilityFlag(j, 'selectable', true),
+    manageable: _capabilityFlag(j, 'manageable', !builtIn),
   );
 }
 
@@ -162,6 +168,7 @@ class AgentsController extends ChangeNotifier {
   }
 
   Future<void> saveAgent(Json value, {String? id}) async {
+    _requireManageableAgent(id);
     await repository.saveAgent(value, id: id);
     await refresh();
   }
@@ -172,6 +179,7 @@ class AgentsController extends ChangeNotifier {
   }
 
   Future<void> removeAgent(String id) async {
+    _requireManageableAgent(id);
     await repository.deleteAgent(id);
     await refresh();
   }
@@ -179,6 +187,17 @@ class AgentsController extends ChangeNotifier {
   Future<void> removeSkill(String id) async {
     await repository.deleteSkill(id);
     await refresh();
+  }
+
+  void _requireManageableAgent(String? id) {
+    if (!canManage ||
+        (id != null &&
+            !(ledger?.agents.any(
+                  (agent) => agent.id == id && agent.manageable,
+                ) ??
+                false))) {
+      throw StateError('This Agent is read-only.');
+    }
   }
 }
 
@@ -331,7 +350,7 @@ class _AgentsViewState extends State<AgentsView>
                               ],
                             ),
                           ),
-                          if (!a.builtIn && widget.controller.canManage)
+                          if (a.manageable && widget.controller.canManage)
                             PopupMenuButton<String>(
                               onSelected: (v) => v == 'edit'
                                   ? _editAgent(a)
@@ -472,6 +491,7 @@ class _AgentsViewState extends State<AgentsView>
     ),
   );
   Future<void> _editAgent([AgentProfile? a]) async {
+    if (a != null && !a.manageable) return;
     final result = await showDialog<Json>(
       context: context,
       builder: (_) => _AgentDialog(

@@ -299,6 +299,15 @@ capability metadata before local assignment controls. Neither change mutates
 an Agent, Skill, Mission, run, approval, receipt, or external system; later
 list, runtime, or canonical-write cutovers require their own typed evidence.
 
+The opt-in request-readable custom Agent list emits no domain event. It
+projects existing definitions into an inspectable Arsenal catalog and gates
+all assignment and mutation affordances with explicit capability booleans;
+bare list clients and every execution or write path remain exact-owner. The
+Mission UI also omits an unchanged nonselectable historical assignee instead
+of rewriting it. No Agent, task, run, approval, receipt, or external system is
+mutated by the compatibility read itself, so later runtime or canonical-write
+cutovers still require their own typed evidence.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
