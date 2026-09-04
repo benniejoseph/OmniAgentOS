@@ -509,6 +509,17 @@ Canonical Agent enrollment remains blocked on native-version adoption. Agent
 runtime/Skill resolution, mutations, run-contract hashes, portable data,
 file compatibility, and canonical writes remain exact-owner contracts.
 
+The twelfth request-bound slice converges only public Capture asset metadata
+detail. A validated canonical/current-email pair may resolve one globally
+unique, non-internal asset ID without selecting stored content. The response
+projects the current request actor and derives `contentAvailable`, `indexable`,
+and `manageable` from the selected physical owner; canonical compatibility
+rows are metadata-only and the Capture library hides their action controls.
+Byte and download GETs, POST indexing, status changes, deletion, internal
+artifacts, ingestion recovery, recordings and segments, RAG linkage,
+background work, file fallback, portable data, and canonical writes remain
+exact-owner contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

@@ -1,7 +1,9 @@
 import {
   CaptureAssetError,
+  CaptureAssetReadConflictError,
   deleteCaptureAsset,
   getCaptureAsset,
+  getCaptureAssetForRequest,
   getCaptureAssetContent,
   updateCaptureAssetStatus,
 } from "@/lib/capture/assets";
@@ -19,6 +21,7 @@ import {
   projectOperationJobStatus,
 } from "@/lib/operations/job-queue";
 import { deleteKnowledgeDocumentsBySourcePrefix } from "@/lib/rag/store";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { z } from "zod";
 
@@ -32,6 +35,7 @@ const indexAssetSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
   note: z.string().trim().max(20_000).optional(),
 }).strict();
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function GETHandler(request: Request, route: { params: Promise<{ id: string }> }) {
   const { id } = await route.params;
@@ -55,9 +59,14 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
         "x-content-type-options": "nosniff",
       } });
     }
-    const asset = await getCaptureAsset(id, context);
-    if (!asset) return Response.json({ error: "Captured file not found." }, { status: 404 });
-    return Response.json({ asset }, { headers: { "cache-control": "private, no-store" } });
+    const asset = await getCaptureAssetForRequest(id, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestActorBinding:
+        canonicalRequestActorBindingFromSecurityContext(context),
+    });
+    if (!asset) return Response.json({ error: "Captured file not found." }, { status: 404, headers: privateNoStoreHeaders });
+    return Response.json({ asset }, { headers: privateNoStoreHeaders });
   } catch (error) {
     return assetErrorResponse(error);
   }
@@ -176,6 +185,12 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
 }
 
 function assetErrorResponse(error: unknown) {
+  if (error instanceof CaptureAssetReadConflictError) {
+    return Response.json(
+      { error: "Captured file metadata could not be resolved safely." },
+      { status: 409, headers: privateNoStoreHeaders },
+    );
+  }
   if (error instanceof CaptureAssetError) return Response.json({ error: error.message }, { status: error.status });
   return Response.json({ error: error instanceof Error ? error.message : "Captured file request failed." }, { status: 500 });
 }

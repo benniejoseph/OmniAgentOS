@@ -35,6 +35,8 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 - `GET|POST /api/skills` and `GET|PATCH|DELETE /api/skills/:id` manage the Skill catalog. Request reads add `selectable` and `manageable` capability flags: built-ins are selectable but not manageable, exact-owner custom Skills are both, and canonical compatibility rows are read-only and cannot be assigned.
 - `/api/runs` and `/api/runs/:id`: run history, events, and replay/continuation state.
 - `/api/memory`, `/api/memory/graph`, `/api/knowledge`, `/api/ingest`, and `/api/retrieval/plan`.
+- `GET|POST /api/capture` lists or ingests Capture assets. Collection rows add `contentAvailable`, `indexable`, and `manageable`; exact-owner rows are actionable and canonical compatibility rows are metadata-only.
+- `GET|POST|DELETE /api/capture/assets/:id` reads metadata or content, queues indexing, and deletes an asset. Metadata GET may read the validated canonical/current-email pair and returns the same actionability fields. `content=1`, indexing, deletion, and linked knowledge cleanup remain exact-owner operations.
 
 ## Workflows and operations
 

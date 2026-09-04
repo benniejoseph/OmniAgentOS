@@ -42,7 +42,9 @@ vi.mock("@/lib/storage/json", async (importOriginal) => {
 });
 
 import {
+  CaptureAssetReadConflictError,
   getCaptureAsset,
+  getCaptureAssetForRequest,
   listCaptureAssets,
   listInternalCaptureAssets,
 } from "@/lib/capture/assets";
@@ -82,8 +84,20 @@ describe("Postgres Capture asset collection reads", () => {
       actorId,
       requestActorBinding: binding,
     }, 2)).resolves.toEqual([
-      expect.objectContaining({ id: "canonical-asset", actorId }),
-      expect.objectContaining({ id: "email-asset", actorId }),
+      expect.objectContaining({
+        id: "canonical-asset",
+        actorId,
+        contentAvailable: false,
+        indexable: false,
+        manageable: false,
+      }),
+      expect.objectContaining({
+        id: "email-asset",
+        actorId,
+        contentAvailable: true,
+        indexable: true,
+        manageable: true,
+      }),
     ]);
 
     expect(dbMocks.statements).toHaveLength(1);
@@ -139,11 +153,94 @@ describe("Postgres Capture asset collection reads", () => {
       actorId,
       requestActorBinding: binding,
     }, 10)).resolves.toEqual([
-      expect.objectContaining({ id: "email-asset", actorId }),
+      expect.objectContaining({
+        id: "email-asset",
+        actorId,
+        contentAvailable: true,
+        indexable: true,
+        manageable: true,
+      }),
     ]);
 
     expect(dbMocks.ensureDatabaseSchema).not.toHaveBeenCalled();
     expect(dbMocks.sql).not.toHaveBeenCalled();
+  });
+
+  it("resolves request metadata from the owner pair without widening content", async () => {
+    dbMocks.rows.push(assetRow("canonical-asset", canonicalActorId));
+
+    await expect(getCaptureAssetForRequest("canonical-asset", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: binding,
+    })).resolves.toEqual(expect.objectContaining({
+      id: "canonical-asset",
+      actorId,
+      contentAvailable: false,
+      indexable: false,
+      manageable: false,
+    }));
+
+    expect(dbMocks.statements[0].text).toMatch(
+      /WHERE id = \$\d+[\s\S]*?tenant_id = \$\d+[\s\S]*?\(actor_id = \$\d+ OR actor_id = \$\d+\)[\s\S]*?COALESCE\(metadata->>'internalKind', ''\) = ''[\s\S]*?LIMIT 1/,
+    );
+    expect(dbMocks.statements[0].text).not.toContain(" content ");
+    expect(dbMocks.statements[0].params).toEqual([
+      "canonical-asset",
+      "tenant-a",
+      canonicalActorId,
+      actorId,
+    ]);
+  });
+
+  it("keeps request metadata exact for invalid bindings and file fallback", async () => {
+    await getCaptureAssetForRequest("asset-a", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: {
+        ...binding,
+        readableOwnerActorIds: Object.freeze([actorId, canonicalActorId]),
+      },
+    });
+    expect(dbMocks.statements[0].params).toEqual([
+      "asset-a",
+      "tenant-a",
+      actorId,
+      actorId,
+    ]);
+
+    dbMocks.state.databaseEnabled = false;
+    dbMocks.readJsonFile.mockResolvedValue({
+      assets: [
+        fileAsset("canonical-asset", canonicalActorId),
+        fileAsset("email-asset", actorId),
+      ],
+    });
+    await expect(getCaptureAssetForRequest("canonical-asset", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: binding,
+    })).resolves.toBeUndefined();
+    await expect(getCaptureAssetForRequest("email-asset", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: binding,
+    })).resolves.toEqual(expect.objectContaining({
+      id: "email-asset",
+      contentAvailable: true,
+      indexable: true,
+      manageable: true,
+    }));
+  });
+
+  it("fails closed when selected metadata does not match the request owner pair", async () => {
+    dbMocks.rows.push(assetRow("asset-a", "unexpected-owner@example.test"));
+
+    await expect(getCaptureAssetForRequest("asset-a", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: binding,
+    })).rejects.toBeInstanceOf(CaptureAssetReadConflictError);
   });
 
   it("leaves direct and internal Capture asset reads exact", async () => {

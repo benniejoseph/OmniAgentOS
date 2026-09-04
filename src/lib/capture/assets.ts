@@ -13,7 +13,11 @@ import {
 } from "@/lib/security/execution-scope";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
-import type { CaptureAsset, CaptureAssetStatus } from "@/lib/capture/types";
+import type {
+  CaptureAsset,
+  CaptureAssetStatus,
+  RequestCaptureAsset,
+} from "@/lib/capture/types";
 
 type CaptureAssetLedger = {
   assets: Array<CaptureAsset & { contentPath: string }>;
@@ -55,6 +59,13 @@ export class CaptureAssetError extends Error {
   constructor(message: string, public readonly status: 400 | 404 | 413 = 400) {
     super(message);
     this.name = "CaptureAssetError";
+  }
+}
+
+export class CaptureAssetReadConflictError extends Error {
+  constructor(message = "Capture asset ownership is ambiguous.") {
+    super(message);
+    this.name = "CaptureAssetReadConflictError";
   }
 }
 
@@ -179,7 +190,7 @@ export async function listCaptureAssets(
       !optionalString(item.metadata.internalKind)
     )
     .slice(0, boundedLimit)
-    .map(withoutContentPath);
+    .map((asset) => captureAssetForExactFileRequest(withoutContentPath(asset)));
 }
 
 export async function listInternalCaptureAssets(
@@ -238,6 +249,56 @@ export async function getCaptureAsset(id: string, owner: Owner) {
   const ledger = await readJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] });
   const asset = ledger.assets.find((item) => item.id === assetId && item.tenantId === tenantId && item.actorId === actorId);
   return asset ? withoutContentPath(asset) : undefined;
+}
+
+/**
+ * Resolve metadata for an authenticated request without widening any content
+ * or mutation path. Stored bytes, indexing, status changes, and deletion must
+ * continue to call the exact-owner getCaptureAsset/getCaptureAssetContent
+ * helpers instead.
+ */
+export async function getCaptureAssetForRequest(
+  id: string,
+  owner: CaptureAssetListOwner,
+): Promise<RequestCaptureAsset | undefined> {
+  const tenantId = normalizeTenantId(owner.tenantId);
+  const requestActorId = normalizeActorId(owner.actorId);
+  const assetId = normalizeId(id);
+  if (!hasDatabaseUrl()) {
+    const asset = await getCaptureAsset(assetId, {
+      tenantId,
+      actorId: requestActorId,
+    });
+    if (!asset || optionalString(asset.metadata.internalKind)) return undefined;
+    return captureAssetForExactFileRequest(asset);
+  }
+  const [canonicalActorId, exactActorId] = captureActorReadOrder(
+    owner.actorId,
+    owner.requestActorBinding,
+    requestActorId,
+  );
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT id, tenant_id, actor_id, filename, media_type, extension, byte_count,
+      content_sha256, storage_kind, status, extraction_status, ingest_job_id,
+      knowledge_document_id, error, tags, metadata, created_at, updated_at
+    FROM omni_capture_assets
+    WHERE id = ${assetId}
+      AND tenant_id = ${tenantId}
+      AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+      AND COALESCE(metadata->>'internalKind', '') = ''
+    LIMIT 1
+  `;
+  if (!rows[0]) return undefined;
+  const asset = assetFromRow(rows[0]);
+  assertRequestCaptureAssetOwner(
+    asset,
+    assetId,
+    tenantId,
+    canonicalActorId,
+    exactActorId,
+  );
+  return captureAssetForRequest(asset, exactActorId);
 }
 
 /**
@@ -421,8 +482,43 @@ function assetFromRow(row: Record<string, unknown>): CaptureAsset {
 function captureAssetForRequest(
   asset: CaptureAsset,
   requestActorId: string,
-): CaptureAsset {
-  return { ...asset, actorId: requestActorId };
+): RequestCaptureAsset {
+  const exactOwner = asset.actorId === requestActorId;
+  return {
+    ...asset,
+    actorId: requestActorId,
+    contentAvailable: exactOwner,
+    indexable: exactOwner,
+    manageable: exactOwner,
+  };
+}
+
+function captureAssetForExactFileRequest(
+  asset: CaptureAsset,
+): RequestCaptureAsset {
+  return {
+    ...asset,
+    contentAvailable: true,
+    indexable: true,
+    manageable: true,
+  };
+}
+
+function assertRequestCaptureAssetOwner(
+  asset: CaptureAsset,
+  requestedId: string,
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  if (
+    asset.id !== requestedId ||
+    asset.tenantId !== tenantId ||
+    (asset.actorId !== canonicalActorId && asset.actorId !== exactActorId) ||
+    optionalString(asset.metadata.internalKind)
+  ) {
+    throw new CaptureAssetReadConflictError();
+  }
 }
 
 function getAssetLedgerFile() { return getDataPath("capture-assets.json"); }
