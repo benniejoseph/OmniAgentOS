@@ -343,6 +343,14 @@ changes key status, authentication, last-used state, MCP policy, portable
 records, file fallback, or writer identity. Creation, revocation, use, and any
 future canonical-write cutover retain their existing typed-event boundaries.
 
+Converging request-bound model-catalog metadata lists emits no domain event.
+The read verifies and safely projects already-persisted provider metadata from
+the validated canonical/current-email pair, while canonical or unsupported
+identifiers remain nonselectable. It neither opens provider credentials nor
+refreshes a catalog, saves an assignment, changes runtime routing, mutates a
+model lifecycle, or changes writer identity. Those exact-owner operations and
+any later canonical cutover retain their existing typed-event boundaries.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

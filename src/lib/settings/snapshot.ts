@@ -6,7 +6,7 @@ import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-ac
 import {
   getMcpExportConfiguration,
   listModelAssignments,
-  listModelCatalog,
+  listModelCatalogForRequest,
   listProviderConnections,
 } from "@/lib/settings/store";
 import type { SettingsSnapshot } from "@/lib/settings/types";
@@ -19,7 +19,7 @@ export async function getSettingsSnapshot(input: {
   const exactOwner = { tenantId: input.tenantId, actorId: input.actorId };
   const [providers, models, assignments, apiKeys, mcp] = await Promise.all([
     listProviderConnections({ ...exactOwner, includeDeploymentFallback: true }),
-    listModelCatalog(exactOwner),
+    listModelCatalogForRequest(input),
     listModelAssignments(exactOwner),
     listServiceApiKeysForRequest(input),
     getMcpExportConfiguration(exactOwner),

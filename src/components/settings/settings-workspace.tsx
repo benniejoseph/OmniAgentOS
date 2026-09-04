@@ -40,6 +40,7 @@ import {
   type ModelAssignmentScope,
   type ModelCatalogEntry,
   type RedactedProviderConnection,
+  type RequestModelCatalogEntry,
   type ServiceApiScope,
   type SettingsModelProvider,
   type SettingsSnapshot,
@@ -174,7 +175,10 @@ export function SettingsWorkspace() {
       .filter((item) => item.status === "connected" && item.enabled)
       .map((item) => item.provider) || [],
   ).size;
-  const deprecatedModels = snapshot?.models.filter((item) => item.lifecycle === "deprecated" || item.lifecycle === "retiring").length || 0;
+  const deprecatedModels = snapshot?.models.filter((item) =>
+    item.selectable === true &&
+    (item.lifecycle === "deprecated" || item.lifecycle === "retiring")
+  ).length || 0;
   const serviceKeyManageBlocked = permissionMessage(
     session,
     sessionStatus,
@@ -408,27 +412,33 @@ type AssignmentDraft = {
   crossProviderFallbackConsent?: true;
 };
 
-function AssignmentEditor({ scope, models, providers, current, busy, onSave }: { scope: ModelAssignmentScope; models: ModelCatalogEntry[]; providers: RedactedProviderConnection[]; current?: ModelAssignment; busy: boolean; onSave: (value: AssignmentDraft) => Promise<unknown> }) {
-  const defaultProvider = current?.provider || models[0]?.provider || providers[0]?.provider || "openai";
+function AssignmentEditor({ scope, models, providers, current, busy, onSave }: { scope: ModelAssignmentScope; models: RequestModelCatalogEntry[]; providers: RedactedProviderConnection[]; current?: ModelAssignment; busy: boolean; onSave: (value: AssignmentDraft) => Promise<unknown> }) {
+  const selectableModels = models.filter((item) => item.selectable === true);
+  const defaultProvider = current?.provider || selectableModels[0]?.provider || providers[0]?.provider || "openai";
   const [provider, setProvider] = useState<SettingsModelProvider>(defaultProvider);
   const [modelId, setModelId] = useState(current?.modelId || "");
   const [fallbackProvider, setFallbackProvider] = useState<SettingsModelProvider | "">(current?.fallbackProvider || "");
   const [fallbackModelId, setFallbackModelId] = useState(current?.fallbackModelId || "");
   const [consent, setConsent] = useState(Boolean(current?.allowCrossProviderFallback));
-  const providerOptions = [...new Set([...providers.map((item) => item.provider), ...models.map((item) => item.provider)])];
-  const primaryModels = models.filter((item) => item.provider === provider);
-  const fallbackModels = models.filter((item) => item.provider === fallbackProvider);
+  const providerOptions = [...new Set<SettingsModelProvider>([
+    ...providers.map((item) => item.provider),
+    ...selectableModels.map((item) => item.provider),
+    ...(current?.provider ? [current.provider] : []),
+    ...(current?.fallbackProvider ? [current.fallbackProvider] : []),
+  ])];
+  const primaryModels = selectableModels.filter((item) => item.provider === provider);
+  const fallbackModels = selectableModels.filter((item) => item.provider === fallbackProvider);
   const crossesBoundary = Boolean(fallbackProvider && fallbackProvider !== provider);
-  const selectedLifecycle = models.find((item) => item.provider === provider && item.modelId === modelId);
+  const selectedLifecycle = selectableModels.find((item) => item.provider === provider && item.modelId === modelId);
   const details = assignmentLabels[scope];
   return <div className={clsx("py-5", styles.routeRow)}>
     <div className="grid gap-4 xl:grid-cols-[minmax(11rem,.55fr)_minmax(0,1fr)_auto] xl:items-start">
       <div><h3 className="text-sm font-semibold">{details.title}</h3><p className="mt-1 text-xs leading-5 text-muted">{details.description}</p>{current ? <span className={`mt-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${current.runtimeReadiness === "active" ? "text-success" : "text-warning"}`}><CircleDashed size={11} />{current.runtimeReadiness === "active" ? "Runtime active" : "Configuration only"}</span> : null}</div>
       <div className="grid gap-3 sm:grid-cols-2">
         <SettingsField label="Primary provider"><select value={provider} onChange={(event) => { setProvider(event.target.value as SettingsModelProvider); setModelId(""); }}><option value="">Choose provider</option>{providerOptions.map((item) => <option key={item} value={item}>{providerDetails[item].name}</option>)}</select></SettingsField>
-        <SettingsField label="Primary model"><input list={`${scope}-primary-models`} value={modelId} onChange={(event) => setModelId(event.target.value)} placeholder={primaryModels.length ? "Choose or enter a model" : "Enter model ID"} /><datalist id={`${scope}-primary-models`}>{primaryModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField>
+        <SettingsField label="Primary model"><input list={`${scope}-primary-models`} value={modelId} onChange={(event) => setModelId(event.target.value)} maxLength={240} placeholder={primaryModels.length ? "Choose or enter a model" : "Enter model ID"} /><datalist id={`${scope}-primary-models`}>{primaryModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField>
         <SettingsField label="Fallback provider"><select value={fallbackProvider} onChange={(event) => { setFallbackProvider(event.target.value as SettingsModelProvider | ""); setFallbackModelId(""); setConsent(false); }}><option value="">No fallback</option>{providerOptions.map((item) => <option key={item} value={item}>{providerDetails[item].name}</option>)}</select></SettingsField>
-        <SettingsField label="Fallback model"><input list={`${scope}-fallback-models`} value={fallbackModelId} onChange={(event) => setFallbackModelId(event.target.value)} disabled={!fallbackProvider} placeholder={fallbackProvider ? "Choose or enter a model" : "Select provider first"} /><datalist id={`${scope}-fallback-models`}>{fallbackModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField>
+        <SettingsField label="Fallback model"><input list={`${scope}-fallback-models`} value={fallbackModelId} onChange={(event) => setFallbackModelId(event.target.value)} disabled={!fallbackProvider} maxLength={240} placeholder={fallbackProvider ? "Choose or enter a model" : "Select provider first"} /><datalist id={`${scope}-fallback-models`}>{fallbackModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField>
         {selectedLifecycle && (selectedLifecycle.lifecycle === "deprecated" || selectedLifecycle.lifecycle === "retiring") ? <div className="flex items-start gap-2 rounded-md bg-warning/5 p-3 text-xs leading-5 text-warning sm:col-span-2"><AlertCircle size={14} className="mt-0.5 shrink-0" /><span><strong className="block">Model update needed</strong>{selectedLifecycle.lifecycleReason || "This model is no longer current in the provider catalog."}</span></div> : null}
         {crossesBoundary ? <label className="flex items-start gap-2 rounded-md bg-warning/5 p-3 text-xs leading-5 text-muted sm:col-span-2"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} className="mt-1 accent-primary" /><span><strong className="block text-foreground">Allow cross-provider disclosure</strong>On primary failure, this role may send the same task context to {providerDetails[fallbackProvider as SettingsModelProvider].name}.</span></label> : null}
       </div>
@@ -437,12 +447,12 @@ function AssignmentEditor({ scope, models, providers, current, busy, onSave }: {
   </div>;
 }
 
-function ModelCatalog({ models }: { models: ModelCatalogEntry[] }) {
+function ModelCatalog({ models }: { models: RequestModelCatalogEntry[] }) {
   const [expanded, setExpanded] = useState(false);
   const shown = expanded ? models : models.slice(0, 8);
   return <div className={clsx("mt-8", styles.modelCatalog)}>
     <div className="flex items-end justify-between gap-4"><div><h3 className="text-base font-semibold">Discovered models</h3><p className="mt-1 text-xs text-muted">Lifecycle stays unknown unless the provider publishes a reliable state.</p></div>{models.length > 8 ? <button type="button" className="text-xs font-semibold text-primary" onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : `View all ${models.length}`}</button> : null}</div>
-    {shown.length ? <div className="mt-4 overflow-x-auto rounded-lg border border-line"><table className="w-full min-w-[42rem] text-left text-xs"><thead className="bg-surface text-[10px] uppercase tracking-[0.1em] text-muted"><tr><th className="px-4 py-3 font-bold">Model</th><th className="px-4 py-3 font-bold">Provider</th><th className="px-4 py-3 font-bold">Capabilities</th><th className="px-4 py-3 font-bold">Lifecycle</th><th className="px-4 py-3 font-bold">Checked</th></tr></thead><tbody className="divide-y divide-line">{shown.map((model) => <tr key={model.id}><td className="px-4 py-3"><strong className="block font-semibold">{model.displayName}</strong><span className="font-mono text-[10px] text-muted">{model.modelId}</span></td><td className="px-4 py-3 text-muted">{providerDetails[model.provider].name}</td><td className="px-4 py-3 text-muted">{model.capabilities.join(" · ")}</td><td className="px-4 py-3"><LifecyclePill lifecycle={model.lifecycle} /></td><td className="px-4 py-3 text-muted">{model.lifecycleCheckedAt ? formatDate(model.lifecycleCheckedAt) : "Not reported"}</td></tr>)}</tbody></table></div> : <EmptyLine title="No model catalog yet" body="Connect and validate a provider to discover selectable models." />}
+    {shown.length ? <div className="mt-4 overflow-x-auto rounded-lg border border-line"><table className="w-full min-w-[42rem] text-left text-xs"><thead className="bg-surface text-[10px] uppercase tracking-[0.1em] text-muted"><tr><th className="px-4 py-3 font-bold">Model</th><th className="px-4 py-3 font-bold">Provider</th><th className="px-4 py-3 font-bold">Capabilities</th><th className="px-4 py-3 font-bold">Lifecycle</th><th className="px-4 py-3 font-bold">Checked</th></tr></thead><tbody className="divide-y divide-line">{shown.map((model) => <tr key={model.id}><td className="px-4 py-3"><strong className="block font-semibold">{model.displayName}</strong><span className="font-mono text-[10px] text-muted">{model.displayModelId}</span>{model.selectable !== true ? <span className="mt-1 block text-[10px] font-semibold text-muted">Retained catalog · read only</span> : null}</td><td className="px-4 py-3 text-muted">{providerDetails[model.provider].name}</td><td className="px-4 py-3 text-muted">{model.capabilities.join(" · ")}</td><td className="px-4 py-3"><LifecyclePill lifecycle={model.lifecycle} /></td><td className="px-4 py-3 text-muted">{model.lifecycleCheckedAt ? formatDate(model.lifecycleCheckedAt) : "Not reported"}</td></tr>)}</tbody></table></div> : <EmptyLine title="No model catalog yet" body="Connect and validate a provider to discover selectable models." />}
   </div>;
 }
 

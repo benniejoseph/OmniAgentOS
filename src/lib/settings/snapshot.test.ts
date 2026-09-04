@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const snapshotMocks = vi.hoisted(() => ({
   getMcpExportConfiguration: vi.fn(),
   listModelAssignments: vi.fn(),
-  listModelCatalog: vi.fn(),
+  listModelCatalogForRequest: vi.fn(),
   listProviderConnections: vi.fn(),
   listServiceApiKeysForRequest: vi.fn(),
 }));
@@ -34,7 +34,7 @@ vi.mock("@/lib/settings/service-api-keys", () => ({
 vi.mock("@/lib/settings/store", () => ({
   getMcpExportConfiguration: snapshotMocks.getMcpExportConfiguration,
   listModelAssignments: snapshotMocks.listModelAssignments,
-  listModelCatalog: snapshotMocks.listModelCatalog,
+  listModelCatalogForRequest: snapshotMocks.listModelCatalogForRequest,
   listProviderConnections: snapshotMocks.listProviderConnections,
 }));
 
@@ -58,7 +58,7 @@ const input = {
 
 beforeEach(() => {
   snapshotMocks.listProviderConnections.mockReset().mockResolvedValue([]);
-  snapshotMocks.listModelCatalog.mockReset().mockResolvedValue([]);
+  snapshotMocks.listModelCatalogForRequest.mockReset().mockResolvedValue([]);
   snapshotMocks.listModelAssignments.mockReset().mockResolvedValue([]);
   snapshotMocks.listServiceApiKeysForRequest.mockReset().mockResolvedValue([]);
   snapshotMocks.getMcpExportConfiguration.mockReset().mockResolvedValue({
@@ -77,7 +77,7 @@ beforeEach(() => {
 });
 
 describe("settings snapshot owner scopes", () => {
-  it("passes the request binding only to service-key metadata", async () => {
+  it("passes the request binding only to converged metadata lists", async () => {
     await getSettingsSnapshot(input);
 
     const exactOwner = {
@@ -88,7 +88,9 @@ describe("settings snapshot owner scopes", () => {
       ...exactOwner,
       includeDeploymentFallback: true,
     });
-    expect(snapshotMocks.listModelCatalog).toHaveBeenCalledWith(exactOwner);
+    expect(snapshotMocks.listModelCatalogForRequest).toHaveBeenCalledWith(
+      input,
+    );
     expect(snapshotMocks.listModelAssignments).toHaveBeenCalledWith(exactOwner);
     expect(snapshotMocks.getMcpExportConfiguration).toHaveBeenCalledWith(
       exactOwner,
