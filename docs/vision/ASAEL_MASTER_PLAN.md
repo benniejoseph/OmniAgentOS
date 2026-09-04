@@ -887,6 +887,19 @@ database parser. No memory, RAG, graph, API, worker, or export path calls it,
 and serving roles retain no function grant. This closes construction and pool
 leakage hazards without beginning the atomic activation.
 
+Migration v45 adds one held authorization hook whose only result is denial.
+This is intentional: the current schema has no canonical workspace membership,
+general capability-grant ledger, versioned purpose-entitlement catalog, or
+unified agent/system principal registry. Project and mission ownership are
+independent, tenant membership is not workspace membership, OAuth is not
+memory consent, rollout state is not a principal grant, and audit-purpose text
+is not a purpose ID. Later P3.1 batches must create those authorities, reject
+unsupported target combinations, and replace the deny body with a resolver
+that acquires deterministic `FOR SHARE` locks in the same transaction as scope
+installation. Only then may narrowly required roles receive execute permission
+and the enrollment, memory, RAG, trace, graph, export, API, and worker surfaces
+cut over atomically.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

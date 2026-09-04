@@ -766,6 +766,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[43],
       up: ensureMemoryAccessSessionContractShadow,
     },
+    {
+      ...databaseSchemaMigrations[44],
+      up: ensureMemoryAccessAuthorizationDenyHook,
+    },
   ];
 }
 
@@ -11248,6 +11252,200 @@ async function ensureMemoryAccessSessionContractShadow(sql: SqlClient) {
           AND grantee <> current_user
       ) THEN
         RAISE EXCEPTION 'Memory access session functions have serving grants'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureMemoryAccessAuthorizationDenyHook(sql: SqlClient) {
+  // Establish the eventual authorization boundary without fabricating
+  // authority from OAuth grants, rollout state, or free-form purpose text.
+  // The real resolver must replace this body and lock every authoritative
+  // membership, principal, target, purpose, and grant row before activation.
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_access_scope_v1_is_authorized(
+      candidate JSONB
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    VOLATILE
+    STRICT
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT FALSE
+    $function$
+  `;
+
+  // Serving roles cannot call the held hook until its authoritative inputs,
+  // same-transaction locks, installer composition, and all-surface cutover
+  // are complete.
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_memory_access_scope_v1_is_authorized(JSONB)
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name = 'omni_memory_access_scope_v1_is_authorized'
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_memory_access_scope_v1_is_authorized(JSONB) FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `);
+
+  // v45 is an additive, always-deny seam. Abort on any drift that would make
+  // the hook reachable, enroll a v1 memory, or relax the v43 safety barriers.
+  await sql`
+    DO $migration$
+    DECLARE
+      valid_scope JSONB;
+    BEGIN
+      valid_scope := jsonb_build_object(
+        'version', 1,
+        'tenantId', 'tenant:authorization_check',
+        'initiatingActorId', 'actor:authorization_check',
+        'executingPrincipalType', 'user',
+        'executingPrincipalId', 'actor:authorization_check',
+        'workspaceId', NULL,
+        'projectId', NULL,
+        'missionId', NULL,
+        'contextGrantIds', '[]'::JSONB,
+        'capabilityGrantIds', '[]'::JSONB,
+        'purposeId', 'memory:authorization_check',
+        'purpose', 'Memory authorization deny-hook self-check'
+      );
+
+      IF public.omni_memory_access_scope_v1_is_valid(valid_scope)
+        IS DISTINCT FROM TRUE
+      THEN
+        RAISE EXCEPTION 'Memory authorization self-check scope is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF public.omni_memory_access_scope_v1_is_authorized(valid_scope)
+        IS DISTINCT FROM FALSE
+      THEN
+        RAISE EXCEPTION 'Dormant memory authorization hook did not deny'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_memory_access_scope_v1_is_authorized(jsonb)'
+        )
+          AND procedure.prorettype = 'boolean'::regtype
+          AND procedure.provolatile = 'v'
+          AND procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig @> ARRAY['search_path=pg_catalog, public']
+          AND language.lanname = 'sql'
+      ) THEN
+        RAISE EXCEPTION 'Memory authorization hook metadata is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name = 'omni_memory_access_scope_v1_is_authorized'
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Memory authorization hook has serving grants'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_memories_access_enrollment_hold_check'
+          AND conrelid = 'omni_memories'::regclass
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid)
+            = '(access_contract_version = 0)'
+      ) THEN
+        RAISE EXCEPTION 'Memory access enrollment hold is missing or invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM omni_memories
+        WHERE access_contract_version <> 0
+      ) THEN
+        RAISE EXCEPTION 'Memory authorization hook found an enrolled memory'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid = 'omni_memories'::regclass
+          AND relrowsecurity
+          AND relforcerowsecurity
+      ) THEN
+        RAISE EXCEPTION 'Memory authorization hook requires forced RLS'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_memories'::regclass
+          AND tgname = 'omni_memories_access_scope_immutable'
+          AND NOT tgisinternal
+          AND tgenabled = 'O'
+          AND pg_get_triggerdef(oid, TRUE) =
+            'CREATE TRIGGER omni_memories_access_scope_immutable BEFORE UPDATE OF tenant_id, access_contract_version, access_state, owner_actor_id, owner_agent_id, workspace_id, project_id, mission_id, visibility, sensitivity, origin_purpose, allowed_purpose_ids, access_scope_sha256, access_bound_at ON omni_memories FOR EACH ROW EXECUTE FUNCTION omni_reject_bound_memory_access_change()'
+      ) THEN
+        RAISE EXCEPTION 'Memory access immutability trigger is missing or disabled'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid = 'omni_memories'::regclass
+          AND polname = 'omni_memory_access_scope_holdback'
+          AND NOT polpermissive
+          AND polcmd = '*'
+          AND polroles = ARRAY[0::OID]
+          AND polqual IS NOT NULL
+          AND polwithcheck IS NOT NULL
+          AND pg_get_expr(polqual, polrelid) =
+            '((access_contract_version = 0) OR omni_system_scope_enabled())'
+          AND pg_get_expr(polwithcheck, polrelid) =
+            '((access_contract_version = 0) OR omni_system_scope_enabled())'
+      ) THEN
+        RAISE EXCEPTION 'Memory access RLS holdback is missing or invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE COALESCE(pg_get_expr(polqual, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_authorized%'
+          OR COALESCE(pg_get_expr(polwithcheck, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_authorized%'
+      ) THEN
+        RAISE EXCEPTION 'A row policy depends on the dormant authorization hook'
           USING ERRCODE = '55000';
       END IF;
     END

@@ -47,4 +47,6 @@ transaction-local installer. It does not extend `ExecutionScope` v1: the
 canonical memory purpose ID is supplied separately, while the existing
 free-form purpose remains optional audit text. Database function grants,
 membership resolution, row enrollment, and every serving call site remain
-held for one atomic activation.
+held for one atomic activation. Migration v45 adds an ungranted authorization
+hook that always denies until actor, principal, target, purpose, consent, and
+capability authorities can be resolved and locked in that same transaction.
