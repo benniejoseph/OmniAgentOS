@@ -1,8 +1,9 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { skillPatchSchema } from "@/lib/skills/schema";
-import { deleteAgentSkill, getAgentSkill, updateAgentSkill } from "@/lib/skills/store";
+import { deleteAgentSkill, getAgentSkillForRequest, updateAgentSkill } from "@/lib/skills/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -14,8 +15,15 @@ async function GETHandler(request: Request, context: RouteContext<"/api/skills/[
   try { auth = await authorizeRequest({ request, action: "read", resourceType: "agent_skill" }); }
   catch (error) { return forbiddenResponse(error); }
   const { id } = await context.params;
-  const skill = await getAgentSkill(id, { tenantId: auth.tenantId, actorId: auth.actorId });
-  return skill ? Response.json({ skill }) : Response.json({ error: "Skill not found." }, { status: 404 });
+  const skill = await getAgentSkillForRequest(id, {
+    tenantId: auth.tenantId,
+    actorId: auth.actorId,
+    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(auth),
+  });
+  const headers = { "cache-control": "private, no-store" };
+  return skill
+    ? Response.json({ skill }, { headers })
+    : Response.json({ error: "Skill not found." }, { status: 404, headers });
 }
 
 async function PATCHHandler(request: Request, context: RouteContext<"/api/skills/[id]">) {
