@@ -93,6 +93,10 @@ export function missionCollectionIsReadable(contract: unknown): contract is "rea
   return contract === "readable_v1";
 }
 
+export function missionSummaryIsReadable(contract: unknown): contract is "readable_v1" {
+  return contract === "readable_v1";
+}
+
 export function missionSelectionMode(
   mission: Pick<MissionSummaryView, "detailAvailable"> | undefined,
   contract: unknown,
@@ -523,10 +527,10 @@ export function MissionWorkspace({
       let routeMissionMissing = false;
       const routeMissionId = missionIdFromPath(pathname);
       if (missionNeedsDeepExactReproof(nextMissions, routeMissionId)) {
-        const detailRequest = ++detailRequestGeneration.current;
+        const summaryRequest = ++detailRequestGeneration.current;
         try {
-          const detailPayload = await readJson(
-            `/api/missions/${encodeURIComponent(routeMissionId)}`,
+          const summaryPayload = await readJson(
+            `/api/missions/${encodeURIComponent(routeMissionId)}?ownerScope=readable&view=summary`,
             { signal: controller.signal },
           );
           if (!missionRequestIsCurrent({
@@ -536,20 +540,61 @@ export function MissionWorkspace({
             requestGeneration,
           }) || !missionDetailRequestIsCurrent(
             detailRequestGeneration.current,
-            detailRequest,
+            summaryRequest,
           )) return;
-          const normalizedDetail = normalizeMissionDetail(detailPayload, routeMissionId);
-          if (!normalizedDetail || normalizedDetail.mission.detailAvailable !== true) {
-            throw new MissionDetailContractError();
+          if (!missionSummaryIsReadable(
+            record(summaryPayload.requestReadContracts).missionSummary,
+          )) {
+            throw new MissionSummaryContractError();
           }
-          reprovedDetail = normalizedDetail as BoardMissionDetail;
+          const reprovedSummary = normalizeMissionSummary(summaryPayload.mission);
+          if (!reprovedSummary || reprovedSummary.id !== routeMissionId) {
+            throw new MissionSummaryContractError();
+          }
           nextMissions = [
-            normalizedDetail.mission,
+            reprovedSummary,
             ...nextMissions.filter((mission) => mission.id !== routeMissionId),
           ];
+          if (reprovedSummary.detailAvailable === true) {
+            const detailRequest = ++detailRequestGeneration.current;
+            const detailPayload = await readJson(
+              `/api/missions/${encodeURIComponent(routeMissionId)}`,
+              { signal: controller.signal },
+            );
+            if (!missionRequestIsCurrent({
+              currentController: listController.current,
+              requestController: controller,
+              currentGeneration: listGeneration.current,
+              requestGeneration,
+            }) || !missionDetailRequestIsCurrent(
+              detailRequestGeneration.current,
+              detailRequest,
+            )) return;
+            const normalizedDetail = normalizeMissionDetail(
+              detailPayload,
+              routeMissionId,
+            );
+            if (
+              !normalizedDetail ||
+              normalizedDetail.mission.detailAvailable !== true
+            ) {
+              throw new MissionDetailContractError();
+            }
+            reprovedDetail = normalizedDetail as BoardMissionDetail;
+            nextMissions = [
+              normalizedDetail.mission,
+              ...nextMissions.filter((mission) =>
+                mission.id !== routeMissionId
+              ),
+            ];
+          }
         } catch (detailError) {
           if (detailError instanceof ApiRequestError && detailError.status === 404) {
             routeMissionMissing = true;
+            reprovedDetail = undefined;
+            nextMissions = nextMissions.filter((mission) =>
+              mission.id !== routeMissionId
+            );
           } else {
             throw detailError;
           }
@@ -600,7 +645,9 @@ export function MissionWorkspace({
         requestGeneration,
       })) return;
       lastVerifiedOwnerKey.current = undefined;
-      setError(friendlyMessage(loadError, "load"));
+      setError(loadError instanceof MissionSummaryContractError
+        ? "Mission summary returned an unsupported response."
+        : friendlyMessage(loadError, "load"));
     } finally {
       if (missionRequestIsCurrent({
         currentController: listController.current,
@@ -1808,6 +1855,7 @@ function missionEventPollDelay(consecutiveFailures: number) { const failureCount
 
 class ApiRequestError extends Error { constructor(readonly status: number) { super("Request failed"); } }
 class MissionDetailContractError extends Error {}
+class MissionSummaryContractError extends Error {}
 async function readJson(path: string, init?: RequestInit) { const response = await fetch(path, { cache: "no-store", ...init }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new ApiRequestError(response.status); return payload as Record<string, unknown>; }
 function friendlyMessage(error: unknown, operation: "load" | "create" | "update") { if (error instanceof ApiRequestError) { if (error.status === 401) return "Your session has ended. Sign in and try again."; if (error.status === 403) return "You do not have permission to make this change."; if (error.status === 404) return "This mission or task is no longer available."; if (error.status === 409) return "The task changed elsewhere. Refresh it before trying again."; if (error.status === 429) return "The workspace is busy. Wait a moment and try again."; if (error.status >= 500) return "The mission service is temporarily unavailable. Your existing board is still safe."; } if (operation === "load") return "Missions could not be loaded. Check your connection and try again."; if (operation === "create") return "That item could not be created. Review the details and try again."; return "That change could not be saved. Refresh the task and try again."; }
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }

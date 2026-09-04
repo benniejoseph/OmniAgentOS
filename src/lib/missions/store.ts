@@ -342,6 +342,101 @@ export async function listMissionSummariesForRequest(
     .map((summary) => requestMissionSummary(summary, exactActorId));
 }
 
+/**
+ * Resolves one request-readable Mission summary without opening its task,
+ * attempt, artifact, event, or mutation surfaces. The physical row owner is
+ * retained only long enough to derive the public capability flags.
+ */
+export async function getMissionSummaryForRequest(
+  missionId: string,
+  options: MissionRequestOwner,
+): Promise<RequestMissionSummary | undefined> {
+  const id = requestMissionIdentifier(missionId);
+  const owner = normalizeOwner(options);
+
+  if (!hasDatabaseUrl()) {
+    const ledger = await readLedger();
+    assertFileMissionGlobalIds(ledger.missions);
+    const exactMissions = ledger.missions.filter((mission) =>
+      owns(mission, owner)
+    );
+    assertExactFileMissionSourceKeys(exactMissions);
+    const summaries = exactMissions.map(missionPhysicalSummaryFromMission);
+    assertRequestMissionSummaries(
+      summaries,
+      owner.tenantId,
+      owner.actorId,
+      owner.actorId,
+    );
+    const summary = summaries.find((candidate) => candidate.id === id);
+    return summary
+      ? requestMissionSummary(summary, owner.actorId)
+      : undefined;
+  }
+
+  const [canonicalActorId, exactActorId] = missionActorReadOrder(
+    options.actorId,
+    options.requestActorBinding,
+    owner.actorId,
+  );
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT mission.id, mission.tenant_id, mission.actor_id, mission.title,
+      mission.objective, mission.status, mission.priority, mission.source,
+      mission.started_at, mission.terminal_at, mission.created_at,
+      mission.updated_at,
+      EXISTS (
+        SELECT 1
+        FROM omni_missions AS owner_peer
+        WHERE owner_peer.tenant_id = mission.tenant_id
+          AND owner_peer.actor_id IN (${canonicalActorId}, ${exactActorId})
+          AND owner_peer.actor_id COLLATE "C" <>
+            mission.actor_id COLLATE "C"
+          AND owner_peer.source_key = mission.source_key
+          AND owner_peer.source_key COLLATE "C" =
+            mission.source_key COLLATE "C"
+          AND owner_peer.tenant_id COLLATE "C" =
+            ${owner.tenantId}::text COLLATE "C"
+          AND (
+            owner_peer.actor_id COLLATE "C" =
+              ${canonicalActorId}::text COLLATE "C"
+            OR owner_peer.actor_id COLLATE "C" =
+              ${exactActorId}::text COLLATE "C"
+          )
+        LIMIT 1
+      ) AS source_key_collision
+    FROM omni_missions AS mission
+    WHERE mission.id = ${id}
+      AND mission.tenant_id = ${owner.tenantId}
+      AND mission.actor_id IN (${canonicalActorId}, ${exactActorId})
+      AND mission.id COLLATE "C" = ${id}::text COLLATE "C"
+      AND mission.tenant_id COLLATE "C" =
+        ${owner.tenantId}::text COLLATE "C"
+      AND (
+        mission.actor_id COLLATE "C" =
+          ${canonicalActorId}::text COLLATE "C"
+        OR mission.actor_id COLLATE "C" =
+          ${exactActorId}::text COLLATE "C"
+      )
+    ORDER BY mission.actor_id COLLATE "C" ASC
+    LIMIT 2
+  `;
+  if (rows.length > 1) throw new MissionReadConflictError();
+  const summaries = rows.map(missionPhysicalSummaryFromRow);
+  assertRequestMissionSummaries(
+    summaries,
+    owner.tenantId,
+    canonicalActorId,
+    exactActorId,
+  );
+  if (summaries.some((summary) => summary.id !== id)) {
+    throw new MissionReadConflictError();
+  }
+  return summaries[0]
+    ? requestMissionSummary(summaries[0], exactActorId)
+    : undefined;
+}
+
 export async function getMission(
   missionId: string,
   options: MissionOwner,
@@ -1987,6 +2082,15 @@ function assertExactFileMissionSourceKeys(missions: Mission[]) {
       throw new MissionReadConflictError();
     }
     sourceKeys.add(mission.sourceKey);
+  }
+}
+
+function assertFileMissionGlobalIds(missions: Mission[]) {
+  const ids = new Set<string>();
+  for (const mission of missions) {
+    const id = requestMissionIdentifier(mission.id);
+    if (ids.has(id)) throw new MissionReadConflictError();
+    ids.add(id);
   }
 }
 
