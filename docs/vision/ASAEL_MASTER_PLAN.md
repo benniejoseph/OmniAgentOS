@@ -1011,6 +1011,17 @@ portable export/restore, file fallback, retained aliases, and canonical writes
 remain outside this canary and require separate convergence gates. This slice
 does not unblock membership epochs or any v43-v49 hold.
 
+The following canary is a PostgreSQL-only read convergence for conversation
+threads. Authenticated lists merge the canonical and exact-current-email
+partitions before one global `updated_at DESC, id ASC` limit; owner-scoped
+direct-ID reads resolve the parent before exposing turns, thread-linked
+memories, or thread-gated browser activity. Returned thread ownership remains
+email-shaped. Global thread IDs make direct lookup unambiguous, while creation,
+turn appends, agent continuation, workflow attachment, Today projections,
+portable data, file fallback, prior aliases, and canonical writes remain
+unchanged. No action scope, event identity, approval, receipt, or continuation
+is translated, so membership epochs and the v43-v49 holds remain blocked.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

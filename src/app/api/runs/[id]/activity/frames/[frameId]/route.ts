@@ -1,11 +1,14 @@
 import { getRunBrowserFrameContent } from "@/lib/browser/frames";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { getAgentRun } from "@/lib/runs/store";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { getThread } from "@/lib/threads/store";
+import { getOwnedThread } from "@/lib/threads/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
+
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function GETHandler(
   request: Request,
@@ -26,12 +29,22 @@ async function GETHandler(
 
   const run = await getAgentRun(id, { tenantId: auth.tenantId });
   if (!run) {
-    return Response.json({ error: "Browser frame not found." }, { status: 404 });
+    return Response.json(
+      { error: "Browser frame not found." },
+      { status: 404, headers: privateNoStoreHeaders },
+    );
   }
   if (run.threadId) {
-    const thread = await getThread(run.threadId, { tenantId: auth.tenantId });
-    if (!thread || thread.actorId !== auth.actorId) {
-      return Response.json({ error: "Browser frame not found." }, { status: 404 });
+    const thread = await getOwnedThread(run.threadId, {
+      tenantId: auth.tenantId,
+      actorId: auth.actorId,
+      requestActorBinding: canonicalRequestActorBindingFromSecurityContext(auth),
+    });
+    if (!thread) {
+      return Response.json(
+        { error: "Browser frame not found." },
+        { status: 404, headers: privateNoStoreHeaders },
+      );
     }
   }
 
@@ -40,7 +53,10 @@ async function GETHandler(
     actorId: auth.actorId,
   });
   if (!frame) {
-    return Response.json({ error: "Browser frame not found." }, { status: 404 });
+    return Response.json(
+      { error: "Browser frame not found." },
+      { status: 404, headers: privateNoStoreHeaders },
+    );
   }
 
   return new Response(frame.bytes, {

@@ -8,9 +8,10 @@ import {
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
 import { listMemories, listThreadMemories, saveMemory, searchMemories } from "@/lib/memory/store";
 import { embedTexts } from "@/lib/openai/client";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { getThread } from "@/lib/threads/store";
+import { getOwnedThread } from "@/lib/threads/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -27,6 +28,8 @@ const memorySchema = z.object({
   validFrom: z.string().datetime().optional(),
   validTo: z.string().datetime().optional(),
 }).strict();
+
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function GETHandler(request: Request) {
   let context;
@@ -50,20 +53,30 @@ async function GETHandler(request: Request) {
 
   if (requestedThreadId !== null) {
     if (!threadId) {
-      return Response.json({ error: "A threadId is required." }, { status: 400 });
+      return Response.json(
+        { error: "A threadId is required." },
+        { status: 400, headers: privateNoStoreHeaders },
+      );
     }
-    const thread = await getThread(threadId, { tenantId: context.tenantId });
-    if (!thread || thread.actorId !== context.actorId) {
-      return Response.json({ error: "Thread not found." }, { status: 404 });
+    const thread = await getOwnedThread(threadId, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
+    });
+    if (!thread) {
+      return Response.json(
+        { error: "Thread not found." },
+        { status: 404, headers: privateNoStoreHeaders },
+      );
     }
     return Response.json({
       memories: (
-        await listThreadMemories(threadId, {
+        await listThreadMemories(thread.id, {
           tenantId: context.tenantId,
           limit: Math.min(Math.max(limit, 1), 100),
         })
       ).map(publicMemoryRecord),
-    });
+    }, { headers: privateNoStoreHeaders });
   }
 
   if (query) {
