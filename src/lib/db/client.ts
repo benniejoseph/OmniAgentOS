@@ -19440,7 +19440,7 @@ async function ensureCanonicalAuthUserActorIdentifiersShadow(sql: SqlClient) {
           )
           AND NOT constraint_record.condeferrable
           AND NOT constraint_record.condeferred
-          AND NOT constraint_record.connoinherit
+          AND constraint_record.connoinherit
           AND constraint_record.conkey = ARRAY[
             (
               SELECT attnum
@@ -19472,7 +19472,7 @@ async function ensureCanonicalAuthUserActorIdentifiersShadow(sql: SqlClient) {
           )
           AND NOT constraint_record.condeferrable
           AND NOT constraint_record.condeferred
-          AND NOT constraint_record.connoinherit
+          AND constraint_record.connoinherit
           AND constraint_record.confupdtype = 'r'
           AND constraint_record.confdeltype = 'r'
           AND constraint_record.confmatchtype = 's'
