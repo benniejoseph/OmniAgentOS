@@ -118,6 +118,17 @@ the separately validated `_executionScope` attribution envelope, including its
 bounded purpose and grant identifiers. The registry is initially empty, so
 these events do not activate behavior by themselves.
 
+The Drive generation-2 canary adds `source.sync.page.canonical_settled` in the
+same transaction as the page's canonical revisions, tombstones or ordered
+no-op decisions, terminal page items, committed checkpoint, and next encrypted
+cursor. Its allowlisted payload contains only opaque checkpoint, connection,
+source, capability, engine and adapter IDs; authorization, rollout, lifecycle,
+phase and page counters; manifest hashes; and bounded applied/no-op counts. It
+contains no Drive IDs, names, metadata, source content, provider cursors,
+credentials, errors, prompts, or reasoning. Per-item canonical events remain
+the exact receipt-bound evidence; the page event is their compact settlement
+summary and never changes served RAG authority.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

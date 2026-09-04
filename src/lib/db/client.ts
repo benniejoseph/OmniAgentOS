@@ -740,6 +740,13 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[40],
+      up: async (sql) => {
+        await ensureDriveGeneration2RolloutBoundCheckpoints(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
   ];
 }
 
@@ -7165,6 +7172,480 @@ async function ensureTenantCapabilityRollouts(sql: SqlClient) {
     END
     $migration$
   `);
+}
+
+async function ensureDriveGeneration2RolloutBoundCheckpoints(sql: SqlClient) {
+  // This release is the first writer of rollout-bound Drive checkpoints. Refuse
+  // to infer a capability, adapter, or lifecycle revision for pre-existing work.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname =
+          'omni_source_sync_page_checkpoints_rollout_binding_check'
+          AND conrelid = 'omni_source_sync_page_checkpoints'::regclass
+      ) AND EXISTS (
+        SELECT 1
+        FROM omni_source_sync_page_checkpoints checkpoint
+        WHERE checkpoint.rollout_generation > 1
+      ) THEN
+        RAISE EXCEPTION
+          'Cannot bind pre-existing generation-2 source sync checkpoints'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    ALTER TABLE omni_source_sync_page_checkpoints
+    ADD COLUMN IF NOT EXISTS rollout_capability_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_source_sync_page_checkpoints
+    ADD COLUMN IF NOT EXISTS adapter_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_source_sync_page_checkpoints
+    ADD COLUMN IF NOT EXISTS rollout_lifecycle_revision BIGINT
+  `;
+
+  // Generation 1 retains its original uniqueness semantics. Canonical
+  // generations include capability and adapter identity so independently
+  // governed streams cannot collide at the database boundary.
+  await sql`
+    ALTER TABLE omni_source_sync_page_checkpoints
+    DROP CONSTRAINT IF EXISTS omni_source_sync_page_checkpoints_page_key
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_source_sync_page_checkpoints_generation1_page_idx
+    ON omni_source_sync_page_checkpoints (
+      tenant_id,
+      owner_actor_id,
+      connection_id,
+      provider,
+      source_id,
+      authorization_generation,
+      rollout_generation,
+      page_sequence
+    )
+    WHERE rollout_generation = 1
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_source_sync_page_checkpoints_canonical_page_idx
+    ON omni_source_sync_page_checkpoints (
+      tenant_id,
+      owner_actor_id,
+      connection_id,
+      provider,
+      source_id,
+      authorization_generation,
+      rollout_generation,
+      rollout_capability_id,
+      adapter_id,
+      page_sequence
+    )
+    WHERE rollout_generation > 1
+  `;
+  await sql`
+    DROP INDEX IF EXISTS
+      omni_source_sync_page_checkpoints_one_nonterminal_idx
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_source_sync_page_checkpoints_generation1_one_nonterminal_idx
+    ON omni_source_sync_page_checkpoints (
+      tenant_id,
+      owner_actor_id,
+      connection_id,
+      provider,
+      source_id,
+      authorization_generation,
+      rollout_generation
+    )
+    WHERE rollout_generation = 1
+      AND status NOT IN ('committed', 'superseded')
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_source_sync_page_checkpoints_canonical_one_nonterminal_idx
+    ON omni_source_sync_page_checkpoints (
+      tenant_id,
+      owner_actor_id,
+      connection_id,
+      provider,
+      source_id,
+      authorization_generation,
+      rollout_generation,
+      rollout_capability_id,
+      adapter_id
+    )
+    WHERE rollout_generation > 1
+      AND status NOT IN ('committed', 'superseded')
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname =
+          'omni_source_sync_page_checkpoints_rollout_binding_check'
+          AND conrelid = 'omni_source_sync_page_checkpoints'::regclass
+      ) THEN
+        ALTER TABLE omni_source_sync_page_checkpoints
+        ADD CONSTRAINT
+          omni_source_sync_page_checkpoints_rollout_binding_check
+        CHECK (
+          (
+            rollout_generation = 1
+            AND rollout_capability_id IS NULL
+            AND adapter_id IS NULL
+            AND rollout_lifecycle_revision IS NULL
+          )
+          OR (
+            rollout_generation > 1
+            AND rollout_capability_id IS NOT NULL
+            AND adapter_id IS NOT NULL
+            AND omni_source_contract_id_is_valid(rollout_capability_id)
+            AND omni_source_contract_id_is_valid(adapter_id)
+            AND (
+              (
+                status = 'open'
+                AND rollout_lifecycle_revision IS NULL
+              )
+              OR (
+                status <> 'open'
+                AND rollout_lifecycle_revision IS NOT NULL
+                AND rollout_lifecycle_revision BETWEEN 1 AND 9007199254740991
+              )
+            )
+          )
+        ) NOT VALID;
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname =
+          'omni_source_sync_page_checkpoints_rollout_fkey'
+          AND conrelid = 'omni_source_sync_page_checkpoints'::regclass
+      ) THEN
+        ALTER TABLE omni_source_sync_page_checkpoints
+        ADD CONSTRAINT omni_source_sync_page_checkpoints_rollout_fkey
+        FOREIGN KEY (
+          tenant_id,
+          rollout_capability_id,
+          rollout_generation
+        )
+        REFERENCES omni_tenant_capability_rollouts (
+          tenant_id,
+          capability_id,
+          rollout_generation
+        )
+        ON DELETE RESTRICT
+        NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_source_sync_page_checkpoints
+    VALIDATE CONSTRAINT
+      omni_source_sync_page_checkpoints_rollout_binding_check
+  `;
+  await sql`
+    ALTER TABLE omni_source_sync_page_checkpoints
+    VALIDATE CONSTRAINT omni_source_sync_page_checkpoints_rollout_fkey
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname =
+          'omni_source_sync_page_items_rollout_outcome_check'
+          AND conrelid = 'omni_source_sync_page_items'::regclass
+      ) THEN
+        ALTER TABLE omni_source_sync_page_items
+        ADD CONSTRAINT omni_source_sync_page_items_rollout_outcome_check
+        CHECK (
+          (rollout_generation = 1 AND outcome = 'shadow_observed')
+          OR (
+            rollout_generation > 1
+            AND outcome IN ('pending', 'applied', 'noop', 'dead_letter')
+          )
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_source_sync_page_items
+    VALIDATE CONSTRAINT omni_source_sync_page_items_rollout_outcome_check
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_source_sync_checkpoint_rollout()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      active_lifecycle_revision BIGINT;
+      requires_lifecycle_match BOOLEAN;
+      requires_rollout_validation BOOLEAN;
+    BEGIN
+      IF NEW.rollout_generation = 1 THEN
+        RETURN NEW;
+      END IF;
+
+      IF TG_OP = 'INSERT' THEN
+        requires_rollout_validation := TRUE;
+      ELSE
+        requires_rollout_validation :=
+          NEW.status IN ('leased', 'committed')
+          OR (
+            OLD.status = 'open'
+            AND NEW.status = 'dead_letter'
+          );
+      END IF;
+
+      IF requires_rollout_validation THEN
+        SELECT rollout.lifecycle_revision
+        INTO active_lifecycle_revision
+        FROM omni_tenant_capability_rollouts rollout
+        WHERE rollout.tenant_id = NEW.tenant_id
+          AND rollout.capability_id = NEW.rollout_capability_id
+          AND rollout.rollout_generation = NEW.rollout_generation
+          AND rollout.engine_version = NEW.engine_version
+          AND rollout.contract_version_id = NEW.adapter_version_id
+          AND rollout.configuration_sha256 = NEW.adapter_config_sha256
+          AND rollout.mode IN ('canary', 'enabled')
+          AND rollout.status = 'active'
+        FOR SHARE;
+
+        IF NOT FOUND THEN
+          RAISE EXCEPTION
+            'Source sync checkpoint rollout is not active or exact'
+            USING ERRCODE = '23514';
+        END IF;
+
+        requires_lifecycle_match := NEW.status <> 'open';
+        IF requires_lifecycle_match AND
+          NEW.rollout_lifecycle_revision IS DISTINCT FROM
+            active_lifecycle_revision
+        THEN
+          RAISE EXCEPTION
+            'Source sync checkpoint rollout lifecycle is stale'
+            USING ERRCODE = '23514';
+        END IF;
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION
+      omni_protect_source_sync_checkpoint_rollout_binding()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF NEW.rollout_capability_id IS DISTINCT FROM
+          OLD.rollout_capability_id
+        OR NEW.adapter_id IS DISTINCT FROM OLD.adapter_id
+      THEN
+        RAISE EXCEPTION 'Source sync checkpoint rollout binding is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.rollout_lifecycle_revision IS DISTINCT FROM
+          OLD.rollout_lifecycle_revision
+      THEN
+        IF OLD.rollout_lifecycle_revision IS NULL
+          AND NEW.rollout_lifecycle_revision IS NOT NULL
+        THEN
+          IF NOT (
+            OLD.status = 'open'
+            AND (
+              (
+                NEW.status = 'leased'
+                AND NEW.lease_generation = OLD.lease_generation + 1
+              )
+              OR (
+                NEW.status = 'dead_letter'
+                AND NEW.lease_generation = OLD.lease_generation
+              )
+            )
+          ) THEN
+            RAISE EXCEPTION
+              'Source sync rollout lifecycle may bind only on claim or exhaustion'
+              USING ERRCODE = '55000';
+          END IF;
+        ELSIF OLD.rollout_lifecycle_revision IS NOT NULL
+          AND NEW.rollout_lifecycle_revision IS NULL
+        THEN
+          IF NOT (
+            OLD.status IN ('leased', 'observed', 'dead_letter')
+            AND NEW.status = 'open'
+            AND NEW.lease_generation = OLD.lease_generation
+          ) THEN
+            RAISE EXCEPTION
+              'Source sync rollout lifecycle may clear only on reopen'
+              USING ERRCODE = '55000';
+          END IF;
+        ELSIF NOT (
+          OLD.status IN ('leased', 'observed')
+          AND NEW.status = 'leased'
+          AND NEW.lease_generation = OLD.lease_generation + 1
+        ) THEN
+          RAISE EXCEPTION
+            'Source sync rollout lifecycle may change only on a new lease'
+            USING ERRCODE = '55000';
+        END IF;
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION
+      omni_validate_source_sync_page_item_adapter_id()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      checkpoint_adapter_id TEXT;
+    BEGIN
+      IF NEW.rollout_generation = 1 THEN
+        RETURN NEW;
+      END IF;
+
+      SELECT checkpoint.adapter_id
+      INTO checkpoint_adapter_id
+      FROM omni_source_sync_page_checkpoints checkpoint
+      WHERE checkpoint.tenant_id = NEW.tenant_id
+        AND checkpoint.id = NEW.checkpoint_id
+        AND checkpoint.owner_actor_id = NEW.owner_actor_id
+        AND checkpoint.connection_id = NEW.connection_id
+        AND checkpoint.provider = NEW.provider
+        AND checkpoint.source_id = NEW.source_id
+        AND checkpoint.engine_version = NEW.engine_version
+        AND checkpoint.authorization_generation = NEW.authorization_generation
+        AND checkpoint.rollout_generation = NEW.rollout_generation
+        AND checkpoint.page_sequence = NEW.page_sequence
+      FOR UPDATE;
+
+      IF checkpoint_adapter_id IS NULL THEN
+        RAISE EXCEPTION
+          'Generation-2 source sync page item has no checkpoint adapter'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.adapter_output_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM omni_source_adapter_output_receipts receipt
+        WHERE receipt.tenant_id = NEW.tenant_id
+          AND receipt.adapter_output_id = NEW.adapter_output_id
+          AND receipt.adapter_output_sha256 = NEW.adapter_output_sha256
+          AND receipt.adapter_id = checkpoint_adapter_id
+      ) THEN
+        RAISE EXCEPTION
+          'Source sync page receipt adapter does not match its checkpoint'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.source_revision_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM omni_source_revisions source_revision
+        WHERE source_revision.tenant_id = NEW.tenant_id
+          AND source_revision.id = NEW.source_revision_id
+          AND source_revision.source_item_id = NEW.source_item_id
+          AND source_revision.adapter_id = checkpoint_adapter_id
+      ) THEN
+        RAISE EXCEPTION
+          'Source sync page revision adapter does not match its checkpoint'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.source_tombstone_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM omni_source_tombstones tombstone
+        WHERE tombstone.tenant_id = NEW.tenant_id
+          AND tombstone.id = NEW.source_tombstone_id
+          AND tombstone.source_item_id = NEW.source_item_id
+          AND tombstone.adapter_id = checkpoint_adapter_id
+      ) THEN
+        RAISE EXCEPTION
+          'Source sync page tombstone adapter does not match its checkpoint'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname =
+          'omni_source_sync_page_checkpoints_validate_rollout'
+          AND tgrelid = 'omni_source_sync_page_checkpoints'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER
+          omni_source_sync_page_checkpoints_validate_rollout
+        BEFORE INSERT OR UPDATE ON omni_source_sync_page_checkpoints
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_source_sync_checkpoint_rollout();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname =
+          'omni_source_sync_page_checkpoints_protect_rollout_binding'
+          AND tgrelid = 'omni_source_sync_page_checkpoints'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER
+          omni_source_sync_page_checkpoints_protect_rollout_binding
+        BEFORE UPDATE ON omni_source_sync_page_checkpoints
+        FOR EACH ROW
+        EXECUTE FUNCTION
+          omni_protect_source_sync_checkpoint_rollout_binding();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_sync_page_items_validate_adapter_id'
+          AND tgrelid = 'omni_source_sync_page_items'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_sync_page_items_validate_adapter_id
+        BEFORE INSERT OR UPDATE ON omni_source_sync_page_items
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_source_sync_page_item_adapter_id();
+      END IF;
+    END
+    $migration$
+  `;
 }
 
 async function ensureMcpConnectorCredentialVault(sql: SqlClient) {

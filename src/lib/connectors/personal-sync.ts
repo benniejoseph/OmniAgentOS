@@ -1,5 +1,6 @@
 import { refreshOAuthAccess, type OAuthProvider } from "@/lib/connectors/oauth-providers";
 import { getOAuthGrantSecrets, listOAuthGrantsForTenant, saveOAuthGrant, updateOAuthSyncState } from "@/lib/connectors/oauth-store";
+import { observeGoogleDriveCanonicalMetadata } from "@/lib/connectors/google-drive-canonical";
 import { observeGoogleDriveShadow } from "@/lib/connectors/google-drive-shadow";
 import { extractCaptureFile } from "@/lib/capture/files";
 import { ingestTextDocument } from "@/lib/rag/retriever";
@@ -32,8 +33,18 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
   await updateOAuthSyncState({ ...input, status: "syncing" });
   let shadowAccessToken: string | undefined;
   let shadowObservation: Promise<unknown> | undefined;
+  let canonicalObservation: Promise<unknown> | undefined;
   const startDriveShadow = (accessToken: string) =>
     observeGoogleDriveShadow({
+      accessToken,
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      connectionId: secrets.grant.id,
+      authorizationGeneration: secrets.grant.authorizationGeneration,
+      abortSignal: input.abortSignal,
+    }).catch(() => undefined);
+  const startDriveCanonical = (accessToken: string) =>
+    observeGoogleDriveCanonicalMetadata({
       accessToken,
       tenantId: input.tenantId,
       actorId: input.actorId,
@@ -48,6 +59,10 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
     // metadata page can overlap the full legacy fetch without changing its
     // health, cursor, return value, or served RAG behavior.
     shadowObservation = startDriveShadow(accessToken);
+    // Generation 2 is a separately gated, Postgres-only metadata sidecar.
+    // Missing, paused, or mismatched rollout state fails closed inside this
+    // owned promise and cannot alter legacy sync behavior.
+    canonicalObservation = startDriveCanonical(accessToken);
     const cursor = parseCursor(secrets.syncCursor);
     const result = await syncGoogle(
       accessToken,
@@ -93,7 +108,8 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
   } finally {
     if (shadowAccessToken) {
       shadowObservation ||= startDriveShadow(shadowAccessToken);
-      await shadowObservation;
+      canonicalObservation ||= startDriveCanonical(shadowAccessToken);
+      await Promise.all([shadowObservation, canonicalObservation]);
     }
   }
 }
