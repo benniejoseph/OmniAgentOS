@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
@@ -7,6 +8,7 @@ import {
 } from "@/lib/operations/background-jobs";
 import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 
 export const runtime = "nodejs";
 export const POST = withDatabaseRequestScope(POSTHandler);
@@ -50,6 +52,10 @@ async function POSTHandler(request: Request) {
     job = await enqueueKnowledgeIngestJob({
       tenantId: context.tenantId,
       actorId: context.actorId,
+      executionScope: executionScopeFromSecurityContext(context, {
+        correlationId: `knowledge_ingest_${randomUUID()}`,
+        purpose: "knowledge.ingest.api",
+      }),
       idempotencyKey:
         request.headers.get("idempotency-key")?.trim().slice(0, 200) ||
         undefined,

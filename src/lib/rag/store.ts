@@ -9,6 +9,8 @@ import { getDataPath } from "@/lib/storage/paths";
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
+import { normalizeTextForChunking } from "@/lib/rag/chunk";
+import { jsonbSafeTruncate } from "@/lib/rag/text-safety";
 import type {
   KnowledgeChunk,
   KnowledgeDocument,
@@ -17,6 +19,18 @@ import type {
   KnowledgeSourceType,
 } from "@/lib/rag/types";
 import type { MemoryRecord } from "@/lib/memory/types";
+import {
+  sourceAdapterUpsertV1Schema,
+  sourceContractSha256,
+} from "@/lib/sources/contracts";
+import {
+  assertCanonicalAdapterOutputReceipt,
+  mergeCanonicalSourceLedger,
+  persistCanonicalSourceWrite,
+  storedAdapterEnvelopeMatches,
+  type PersistedKnowledgeLineage,
+} from "@/lib/sources/store";
+import type { CanonicalTextSourceWrite } from "@/lib/sources/text-lineage";
 
 type RagSqlClient = ReturnType<typeof getSql>;
 
@@ -34,6 +48,7 @@ type CreateKnowledgeDocumentInput = {
     embedding?: number[];
   }>;
   metadata?: Record<string, unknown>;
+  canonicalSourceWrite?: CanonicalTextSourceWrite;
 };
 
 type SearchKnowledgeOptions = {
@@ -45,22 +60,57 @@ type SearchKnowledgeOptions = {
 
 export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInput) {
   const now = new Date().toISOString();
-  const safeTitle = String(redactSensitive(input.title.trim())).slice(0, 240);
-  const safeContent = String(redactSensitive(input.content)).slice(0, 900_000);
+  const safeTitle = jsonbSafeTruncate(
+    String(redactSensitive(input.title.trim())),
+    240,
+  );
+  const safeContent = jsonbSafeTruncate(
+    String(redactSensitive(input.content)),
+    900_000,
+  );
   const tags = normalizeTags(
     ["rag", ...(input.tags || [])].map((tag) =>
       String(redactSensitive(tag)),
     ),
   );
   const source =
-    String(redactSensitive(input.source?.trim() || "manual")).slice(0, 2_000);
+    jsonbSafeTruncate(
+      String(redactSensitive(input.source?.trim() || "manual")),
+      2_000,
+    );
   const tenantId = normalizeTenantId(input.tenantId);
   const documentId = input.idempotencyKey
     ? knowledgeDocumentId(tenantId, input.idempotencyKey)
     : randomUUID();
+  const canonicalSourceWrite = input.canonicalSourceWrite;
+  if (
+    canonicalSourceWrite &&
+    canonicalSourceWrite.executionScope.tenantId !== tenantId
+  ) {
+    throw new Error(
+      "Canonical source lineage tenant does not match the knowledge document.",
+    );
+  }
+  if (
+    canonicalSourceWrite &&
+    canonicalSourceWrite.evidenceUnitIdsByChunkIndex.length !==
+      input.chunks.length
+  ) {
+    throw new Error(
+      "Canonical source lineage must bind every knowledge chunk to evidence.",
+    );
+  }
   const document: KnowledgeDocument = {
     id: documentId,
     tenantId,
+    ...(canonicalSourceWrite
+      ? {
+          sourceItemId:
+            canonicalSourceWrite.adapterOutput.sourceItem.sourceItemId,
+          sourceRevisionId:
+            canonicalSourceWrite.adapterOutput.sourceRevision.sourceRevisionId,
+        }
+      : {}),
     title: safeTitle,
     source,
     sourceType: input.sourceType || inferSourceType(source),
@@ -73,13 +123,24 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
     updatedAt: now,
   };
   const chunks: KnowledgeChunk[] = input.chunks.map((chunk) => {
-    const safeChunkContent = String(redactSensitive(chunk.content));
+    const safeChunkContent = jsonbSafeTruncate(
+      String(redactSensitive(chunk.content)),
+      900_000,
+    );
     return {
       id: input.idempotencyKey
         ? `${documentId}_chunk_${chunk.index}`
         : randomUUID(),
       tenantId,
       documentId: document.id,
+      ...(canonicalSourceWrite
+        ? {
+            sourceRevisionId:
+              canonicalSourceWrite.adapterOutput.sourceRevision.sourceRevisionId,
+            evidenceUnitId:
+              canonicalSourceWrite.evidenceUnitIdsByChunkIndex[chunk.index],
+          }
+        : {}),
       chunkIndex: chunk.index,
       title:
         input.chunks.length > 1
@@ -100,28 +161,92 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
       updatedAt: now,
     };
   });
-
-  if (hasDatabaseUrl()) {
-    await insertKnowledgeDocumentDb(document, chunks);
-    return { document, chunks };
+  if (canonicalSourceWrite) {
+    assertCanonicalKnowledgeLineage(
+      safeContent,
+      document,
+      chunks,
+      canonicalSourceWrite,
+    );
   }
 
+  if (hasDatabaseUrl()) {
+    const lineage = await insertKnowledgeDocumentDb(
+      document,
+      chunks,
+      canonicalSourceWrite,
+    );
+    return {
+      document: lineage ? document : withoutDocumentLineage(document),
+      chunks: lineage ? chunks : chunks.map(withoutChunkLineage),
+      lineage,
+    };
+  }
+
+  let lineage: PersistedKnowledgeLineage | undefined;
   await updateJsonFile<KnowledgeLedger>(
     getKnowledgeFile(),
     { documents: [], chunks: [] },
-    (ledger) => ({
-      documents: ledger.documents.some((item) => item.id === document.id)
-        ? ledger.documents
-        : [document, ...ledger.documents].slice(0, 100),
-      chunks: [
-        ...chunks.filter(
-          (chunk) => !ledger.chunks.some((item) => item.id === chunk.id),
-        ),
-        ...ledger.chunks,
-      ].slice(0, 1200),
-    }),
+    (ledger) => {
+      const existingDocument = ledger.documents.find(
+        (item) => item.id === document.id,
+      );
+      const inserted = !existingDocument;
+      if (
+        inserted &&
+        chunks.some((chunk) =>
+          ledger.chunks.some((existing) => existing.id === chunk.id),
+        )
+      ) {
+        throw new Error(
+          "Knowledge chunk ID conflicts with an existing stored chunk.",
+        );
+      }
+      if (inserted && canonicalSourceWrite) {
+        ledger.sourceLineage = mergeCanonicalSourceLedger(
+          ledger.sourceLineage,
+          canonicalSourceWrite,
+        );
+        lineage = {
+          sourceItemId:
+            canonicalSourceWrite.adapterOutput.sourceItem.sourceItemId,
+          sourceRevisionId:
+            canonicalSourceWrite.adapterOutput.sourceRevision.sourceRevisionId,
+          evidenceUnitIdsByChunkIndex:
+            canonicalSourceWrite.evidenceUnitIdsByChunkIndex,
+        };
+      } else if (existingDocument) {
+        const existingChunks = ledger.chunks
+          .filter((chunk) => chunk.documentId === existingDocument.id)
+          .sort((left, right) => left.chunkIndex - right.chunkIndex);
+        lineage = recoverFileKnowledgeLineage(
+          ledger,
+          existingDocument,
+          existingChunks,
+          document,
+          chunks,
+          canonicalSourceWrite,
+        );
+      }
+      return {
+        ...ledger,
+        documents: inserted
+          ? [document, ...ledger.documents].slice(0, 100)
+          : ledger.documents,
+        chunks: [
+          ...(inserted ? chunks : []).filter(
+            (chunk) => !ledger.chunks.some((item) => item.id === chunk.id),
+          ),
+          ...ledger.chunks,
+        ].slice(0, 1200),
+      };
+    },
   );
-  return { document, chunks };
+  return {
+    document: lineage ? document : withoutDocumentLineage(document),
+    chunks: lineage ? chunks : chunks.map(withoutChunkLineage),
+    lineage,
+  };
 }
 
 export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: string, options: { tenantId?: string } = {}) {
@@ -138,6 +263,7 @@ export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: st
     return documentId;
   }
   await updateJsonFile<KnowledgeLedger>(getKnowledgeFile(), { documents: [], chunks: [] }, (ledger) => ({
+    ...ledger,
     documents: ledger.documents.filter((document) => document.id !== documentId || normalizeTenantId(document.tenantId) !== tenantId),
     chunks: ledger.chunks.filter((chunk) => chunk.documentId !== documentId || normalizeTenantId(chunk.tenantId) !== tenantId),
   }));
@@ -168,6 +294,7 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
   const ledger = await readKnowledgeLedger();
   const ids = new Set(ledger.documents.filter((document) => normalizeTenantId(document.tenantId) === tenantId && document.source.startsWith(prefix)).map((document) => document.id));
   await updateJsonFile<KnowledgeLedger>(getKnowledgeFile(), { documents: [], chunks: [] }, (current) => ({
+    ...current,
     documents: current.documents.filter((document) => !ids.has(document.id)),
     chunks: current.chunks.filter((chunk) => !ids.has(chunk.documentId)),
   }));
@@ -288,27 +415,15 @@ export async function getKnowledgeStats(options: { tenantId?: string } = {}) {
   };
 }
 
-async function insertKnowledgeDocumentDb(document: KnowledgeDocument, chunks: KnowledgeChunk[]) {
+async function insertKnowledgeDocumentDb(
+  document: KnowledgeDocument,
+  chunks: KnowledgeChunk[],
+  canonicalSourceWrite?: CanonicalTextSourceWrite,
+) {
   await ensureDatabaseSchema();
   const sql = getSql();
-  const chunkPayload = chunks.map((chunk) => ({
-    id: chunk.id,
-    tenant_id: chunk.tenantId,
-    document_id: chunk.documentId,
-    chunk_index: chunk.chunkIndex,
-    title: chunk.title,
-    content: chunk.content,
-    tags: chunk.tags,
-    source: chunk.source,
-    token_estimate: chunk.tokenEstimate,
-    character_count: chunk.characterCount,
-    embedding: chunk.embedding || null,
-    metadata: chunk.metadata,
-    created_at: chunk.createdAt,
-    updated_at: chunk.updatedAt,
-  }));
-  await sql.transaction(async (transaction: RagSqlClient) => {
-    await transaction`
+  const persistence = await sql.transaction(async (transaction: RagSqlClient) => {
+    const insertedDocuments = await transaction`
       INSERT INTO omni_knowledge_documents (
         id, tenant_id, title, source, source_type, tags, content_hash, chunk_count, total_characters, metadata, created_at, updated_at
       )
@@ -318,22 +433,77 @@ async function insertKnowledgeDocumentDb(document: KnowledgeDocument, chunks: Kn
         ${document.createdAt}, ${document.updatedAt}
       )
       ON CONFLICT (id) DO NOTHING
+      RETURNING id
     `;
 
-    if (chunkPayload.length) {
-      await transaction`
+    const documentInserted = insertedDocuments.length === 1;
+    const persistedLineage = documentInserted
+      ? canonicalSourceWrite
+        ? await persistCanonicalSourceWrite(transaction, canonicalSourceWrite, {
+            documentId: document.id,
+          })
+        : undefined
+      : await recoverExistingKnowledgeLineage(
+          transaction,
+          document,
+          chunks,
+          canonicalSourceWrite,
+        );
+    if (documentInserted && persistedLineage) {
+      const boundDocuments = await transaction`
+        UPDATE omni_knowledge_documents
+        SET source_item_id = ${persistedLineage.sourceItemId},
+            source_revision_id = ${persistedLineage.sourceRevisionId}
+        WHERE tenant_id = ${document.tenantId}
+          AND id = ${document.id}
+          AND source_item_id IS NULL
+          AND source_revision_id IS NULL
+        RETURNING id
+      `;
+      if (boundDocuments.length !== 1) {
+        throw new Error(
+          "Knowledge document could not be bound to canonical source lineage.",
+        );
+      }
+    }
+
+    const persistedChunks = persistedLineage ? chunks : chunks.map(withoutChunkLineage);
+    const chunkPayload = persistedChunks.map((chunk) => ({
+      id: chunk.id,
+      tenant_id: chunk.tenantId,
+      document_id: chunk.documentId,
+      source_revision_id: chunk.sourceRevisionId || null,
+      evidence_unit_id: chunk.evidenceUnitId || null,
+      chunk_index: chunk.chunkIndex,
+      title: chunk.title,
+      content: chunk.content,
+      tags: chunk.tags,
+      source: chunk.source,
+      token_estimate: chunk.tokenEstimate,
+      character_count: chunk.characterCount,
+      embedding: chunk.embedding || null,
+      metadata: chunk.metadata,
+      created_at: chunk.createdAt,
+      updated_at: chunk.updatedAt,
+    }));
+
+    if (documentInserted && chunkPayload.length) {
+      const insertedChunks = await transaction`
         INSERT INTO omni_knowledge_chunks (
-          id, tenant_id, document_id, chunk_index, title, content, tags, source, token_estimate,
+          id, tenant_id, document_id, source_revision_id, evidence_unit_id,
+          chunk_index, title, content, tags, source, token_estimate,
           character_count, embedding, metadata, created_at, updated_at
         )
         SELECT
-          id, tenant_id, document_id, chunk_index, title, content, tags, source,
-          token_estimate, character_count, embedding, metadata, created_at,
-          updated_at
-        FROM jsonb_to_recordset(${chunkPayload}::jsonb) AS input(
+          id, tenant_id, document_id, source_revision_id, evidence_unit_id,
+          chunk_index, title, content, tags, source, token_estimate,
+          character_count, embedding, metadata, created_at, updated_at
+        FROM jsonb_to_recordset(${JSON.stringify(chunkPayload)}::jsonb) AS input(
           id text,
           tenant_id text,
           document_id text,
+          source_revision_id text,
+          evidence_unit_id text,
           chunk_index integer,
           title text,
           content text,
@@ -347,10 +517,20 @@ async function insertKnowledgeDocumentDb(document: KnowledgeDocument, chunks: Kn
           updated_at timestamptz
         )
         ON CONFLICT (id) DO NOTHING
+        RETURNING id
       `;
+      if (insertedChunks.length !== chunkPayload.length) {
+        throw new Error(
+          "Knowledge chunks could not be inserted as one complete document.",
+        );
+      }
     }
-  });
-  const vectors = chunks
+    return { lineage: persistedLineage, inserted: documentInserted };
+  }) as {
+    lineage: PersistedKnowledgeLineage | undefined;
+    inserted: boolean;
+  };
+  const vectors = (persistence.inserted ? chunks : [])
     .map((chunk) => {
       const embedding = toVectorLiteral(chunk.embedding);
       return embedding ? { id: chunk.id, embedding } : null;
@@ -374,6 +554,134 @@ async function insertKnowledgeDocumentDb(document: KnowledgeDocument, chunks: Kn
       // pgvector is optional; JSON embeddings still support similarity.
     }
   }
+  return persistence.lineage as PersistedKnowledgeLineage | undefined;
+}
+
+async function recoverExistingKnowledgeLineage(
+  sql: RagSqlClient,
+  requestedDocument: KnowledgeDocument,
+  requestedChunks: readonly KnowledgeChunk[],
+  write?: CanonicalTextSourceWrite,
+) {
+  const documentRows = await sql`
+    SELECT *
+    FROM omni_knowledge_documents
+    WHERE tenant_id = ${requestedDocument.tenantId}
+      AND id = ${requestedDocument.id}
+    LIMIT 1
+  `;
+  if (documentRows.length !== 1) {
+    throw new Error(
+      "Knowledge document ID conflicts outside the active tenant scope.",
+    );
+  }
+  const existingDocument = documentFromRow(documentRows[0]);
+  const chunkRows = await sql`
+    SELECT *
+    FROM omni_knowledge_chunks
+    WHERE tenant_id = ${requestedDocument.tenantId}
+      AND document_id = ${requestedDocument.id}
+    ORDER BY chunk_index ASC
+  `;
+  const existingChunks = chunkRows.map(chunkFromRow);
+  assertStoredKnowledgePayload(
+    existingDocument,
+    existingChunks,
+    requestedDocument,
+    requestedChunks,
+  );
+
+  const hasSourceItem = Boolean(existingDocument.sourceItemId);
+  const hasSourceRevision = Boolean(existingDocument.sourceRevisionId);
+  if (!hasSourceItem && !hasSourceRevision) {
+    if (
+      existingChunks.some(
+        (chunk) => chunk.sourceRevisionId || chunk.evidenceUnitId,
+      )
+    ) {
+      throw new Error("Legacy knowledge document has partial source lineage.");
+    }
+    return undefined;
+  }
+  if (!hasSourceItem || !hasSourceRevision) {
+    throw new Error("Stored knowledge document has partial source lineage.");
+  }
+  if (!write) {
+    throw new Error(
+      "Canonical knowledge document cannot be retried without source lineage.",
+    );
+  }
+
+  const output = sourceAdapterUpsertV1Schema.parse(write.adapterOutput);
+  if (
+    existingDocument.sourceItemId !== output.sourceItem.sourceItemId ||
+    existingDocument.sourceRevisionId !== output.sourceRevision.sourceRevisionId
+  ) {
+    throw new Error(
+      "Knowledge document ID is already bound to different source lineage.",
+    );
+  }
+  assertStoredChunkLineage(existingChunks, requestedChunks, write);
+  await assertCanonicalAdapterOutputReceipt(sql, output);
+
+  const revisionRows = await sql`
+    SELECT source_item_id, source_revision_sha256, tenant_id, connection_id,
+           adapter_output_id, adapter_output_sha256, adapter_operation,
+           adapter_id, adapter_version_id, adapter_config_sha256,
+           adapter_event_key_sha256, adapter_observed_at
+    FROM omni_source_revisions
+    WHERE tenant_id = ${requestedDocument.tenantId}
+      AND id = ${output.sourceRevision.sourceRevisionId}
+    LIMIT 1
+  `;
+  if (
+    revisionRows.length !== 1 ||
+    String(revisionRows[0].source_item_id) !== output.sourceItem.sourceItemId ||
+    String(revisionRows[0].source_revision_sha256) !==
+      output.sourceRevision.sourceRevisionSha256 ||
+    !storedAdapterEnvelopeMatches(revisionRows[0], output)
+  ) {
+    throw new Error(
+      "Stored source revision does not match the canonical adapter output.",
+    );
+  }
+
+  const evidenceIds = [...write.evidenceUnitIdsByChunkIndex];
+  if (evidenceIds.length) {
+    const evidenceRows = await sql`
+      SELECT id, source_revision_id, evidence_unit_sha256,
+             tenant_id, connection_id,
+             adapter_output_id, adapter_output_sha256, adapter_operation,
+             adapter_id, adapter_version_id, adapter_config_sha256,
+             adapter_event_key_sha256, adapter_observed_at
+      FROM omni_evidence_units
+      WHERE tenant_id = ${requestedDocument.tenantId}
+        AND id = ANY(${evidenceIds})
+    `;
+    const evidenceById = new Map(
+      evidenceRows.map((row) => [String(row.id), row]),
+    );
+    for (const evidence of output.evidenceUnits) {
+      const row = evidenceById.get(evidence.evidenceUnitId);
+      if (
+        !row ||
+        String(row.source_revision_id) !== output.sourceRevision.sourceRevisionId ||
+        String(row.evidence_unit_sha256) !== evidence.evidenceUnitSha256 ||
+        !storedAdapterEnvelopeMatches(row, output)
+      ) {
+        throw new Error(
+          "Stored evidence does not match the canonical adapter output.",
+        );
+      }
+    }
+    if (evidenceById.size !== output.evidenceUnits.length) {
+      throw new Error(
+        "Stored canonical evidence set is incomplete or contains conflicts.",
+      );
+    }
+  }
+
+  return expectedKnowledgeLineage(write);
 }
 
 async function searchKnowledgeDb(
@@ -392,6 +700,8 @@ async function searchKnowledgeDb(
       const rows = await getSql()`
         SELECT c.*,
                d.title AS document_title,
+               d.source_item_id AS document_source_item_id,
+               d.source_revision_id AS document_source_revision_id,
                d.source_type AS document_source_type,
                d.content_hash AS document_content_hash,
                d.chunk_count AS document_chunk_count,
@@ -447,6 +757,8 @@ async function searchKnowledgeLexicalDb(query: string, limit: number, tenantId: 
   const rows = await getSql()`
     SELECT c.*,
            d.title AS document_title,
+           d.source_item_id AS document_source_item_id,
+           d.source_revision_id AS document_source_revision_id,
            d.source_type AS document_source_type,
            d.content_hash AS document_content_hash,
            d.chunk_count AS document_chunk_count,
@@ -485,6 +797,8 @@ async function searchKnowledgeJsonEmbeddingDb(
   const rows = await getSql()`
     SELECT c.*,
            d.title AS document_title,
+           d.source_item_id AS document_source_item_id,
+           d.source_revision_id AS document_source_revision_id,
            d.source_type AS document_source_type,
            d.content_hash AS document_content_hash,
            d.chunk_count AS document_chunk_count,
@@ -507,6 +821,8 @@ async function searchKnowledgeJsonEmbeddingDb(
     documentsById.set(chunk.documentId, {
       id: chunk.documentId,
       tenantId,
+      sourceItemId: optionalString(row.document_source_item_id),
+      sourceRevisionId: optionalString(row.document_source_revision_id),
       title: String(row.document_title || ""),
       source: chunk.source,
       sourceType: String(row.document_source_type || "text") as KnowledgeSourceType,
@@ -574,6 +890,8 @@ function knowledgeResultFromRow(row: Record<string, unknown>): KnowledgeSearchRe
     document: {
       id: chunk.documentId,
       tenantId: String(row.tenant_id || row.document_tenant_id || "default"),
+      sourceItemId: optionalString(row.document_source_item_id),
+      sourceRevisionId: optionalString(row.document_source_revision_id),
       title: String(row.document_title || ""),
       source: chunk.source,
       sourceType: String(row.document_source_type || "text") as KnowledgeSourceType,
@@ -597,6 +915,8 @@ function documentFromRow(row: Record<string, unknown>): KnowledgeDocument {
   return sanitizeKnowledgeDocument({
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
+    sourceItemId: optionalString(row.source_item_id),
+    sourceRevisionId: optionalString(row.source_revision_id),
     title: String(row.title || ""),
     source: String(row.source || ""),
     sourceType: String(row.source_type || "text") as KnowledgeSourceType,
@@ -615,6 +935,8 @@ function chunkFromRow(row: Record<string, unknown>): KnowledgeChunk {
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
     documentId: String(row.document_id),
+    sourceRevisionId: optionalString(row.source_revision_id),
+    evidenceUnitId: optionalString(row.evidence_unit_id),
     chunkIndex: Number(row.chunk_index || 0),
     title: String(row.title || ""),
     content: String(row.content || ""),
@@ -654,6 +976,259 @@ function sanitizeKnowledgeChunk(chunk: KnowledgeChunk): KnowledgeChunk {
     source: String(redactSensitive(chunk.source)).slice(0, 2_000),
     metadata: redactSensitive(chunk.metadata) as Record<string, unknown>,
   };
+}
+
+function withoutDocumentLineage(
+  document: KnowledgeDocument,
+): KnowledgeDocument {
+  const {
+    sourceItemId: _sourceItemId,
+    sourceRevisionId: _sourceRevisionId,
+    ...legacyDocument
+  } = document;
+  void _sourceItemId;
+  void _sourceRevisionId;
+  return legacyDocument;
+}
+
+function assertCanonicalKnowledgeLineage(
+  content: string,
+  document: KnowledgeDocument,
+  chunks: readonly KnowledgeChunk[],
+  write: CanonicalTextSourceWrite,
+) {
+  const output = sourceAdapterUpsertV1Schema.parse(write.adapterOutput);
+  const revision = output.sourceRevision;
+  if (
+    document.sourceItemId !== output.sourceItem.sourceItemId ||
+    document.sourceRevisionId !== revision.sourceRevisionId ||
+    document.contentHash !== revision.contentSha256 ||
+    Buffer.byteLength(content, "utf8") !== revision.contentByteLength
+  ) {
+    throw new Error(
+      "Canonical source revision does not exactly match the knowledge document.",
+    );
+  }
+  if (
+    chunks.length !== output.evidenceUnits.length ||
+    chunks.length !== write.evidenceUnitIdsByChunkIndex.length
+  ) {
+    throw new Error(
+      "Canonical source lineage must bind every knowledge chunk exactly once.",
+    );
+  }
+
+  const normalizedContent = normalizeTextForChunking(content);
+  const containerSha256 = hashContent(normalizedContent);
+  const evidenceById = new Map(
+    output.evidenceUnits.map((evidence) => [evidence.evidenceUnitId, evidence]),
+  );
+  const seenIndexes = new Set<number>();
+  const seenEvidence = new Set<string>();
+  for (const chunk of chunks) {
+    if (
+      !Number.isInteger(chunk.chunkIndex) ||
+      chunk.chunkIndex < 0 ||
+      chunk.chunkIndex >= chunks.length ||
+      seenIndexes.has(chunk.chunkIndex)
+    ) {
+      throw new Error(
+        "Canonical knowledge chunks require contiguous zero-based indexes.",
+      );
+    }
+    seenIndexes.add(chunk.chunkIndex);
+    const evidenceUnitId =
+      write.evidenceUnitIdsByChunkIndex[chunk.chunkIndex];
+    const evidence = evidenceById.get(evidenceUnitId);
+    if (!evidence || seenEvidence.has(evidenceUnitId)) {
+      throw new Error(
+        "Canonical knowledge chunks require a one-to-one evidence mapping.",
+      );
+    }
+    seenEvidence.add(evidenceUnitId);
+    if (
+      chunk.sourceRevisionId !== revision.sourceRevisionId ||
+      chunk.evidenceUnitId !== evidenceUnitId ||
+      evidence.evidenceContentSha256 !== hashContent(chunk.content) ||
+      evidence.evidenceByteLength !== Buffer.byteLength(chunk.content, "utf8")
+    ) {
+      throw new Error(
+        "Canonical evidence does not exactly match its knowledge chunk.",
+      );
+    }
+    const locator = evidence.locator;
+    if (
+      locator.kind !== "text_span" ||
+      locator.offsetUnit !== "utf16_code_unit" ||
+      locator.containerLength !== normalizedContent.length ||
+      locator.containerSha256 !== containerSha256 ||
+      normalizedContent.slice(
+        locator.startOffset,
+        locator.endOffsetExclusive,
+      ) !== chunk.content
+    ) {
+      throw new Error(
+        "Canonical evidence locator does not resolve to its knowledge chunk.",
+      );
+    }
+  }
+  if (
+    seenIndexes.size !== chunks.length ||
+    seenEvidence.size !== output.evidenceUnits.length
+  ) {
+    throw new Error(
+      "Canonical knowledge lineage is incomplete or contains duplicate evidence.",
+    );
+  }
+}
+
+function recoverFileKnowledgeLineage(
+  ledger: KnowledgeLedger,
+  existingDocument: KnowledgeDocument,
+  existingChunks: readonly KnowledgeChunk[],
+  requestedDocument: KnowledgeDocument,
+  requestedChunks: readonly KnowledgeChunk[],
+  write?: CanonicalTextSourceWrite,
+): PersistedKnowledgeLineage | undefined {
+  assertStoredKnowledgePayload(
+    existingDocument,
+    existingChunks,
+    requestedDocument,
+    requestedChunks,
+  );
+  const hasSourceItem = Boolean(existingDocument.sourceItemId);
+  const hasSourceRevision = Boolean(existingDocument.sourceRevisionId);
+  if (!hasSourceItem && !hasSourceRevision) return undefined;
+  if (!hasSourceItem || !hasSourceRevision) {
+    throw new Error("Stored knowledge document has partial source lineage.");
+  }
+  if (!write) {
+    throw new Error(
+      "Canonical knowledge document cannot be retried without source lineage.",
+    );
+  }
+
+  const output = sourceAdapterUpsertV1Schema.parse(write.adapterOutput);
+  if (
+    existingDocument.sourceItemId !== output.sourceItem.sourceItemId ||
+    existingDocument.sourceRevisionId !== output.sourceRevision.sourceRevisionId
+  ) {
+    throw new Error(
+      "Knowledge document ID is already bound to different source lineage.",
+    );
+  }
+  assertStoredChunkLineage(existingChunks, requestedChunks, write);
+  const storedOutput = ledger.sourceLineage?.adapterOutputs
+    .map((candidate) => sourceAdapterUpsertV1Schema.parse(candidate))
+    .find((candidate) => candidate.adapterOutputId === output.adapterOutputId);
+  if (
+    !storedOutput ||
+    storedOutput.adapterOutputSha256 !== output.adapterOutputSha256
+  ) {
+    throw new Error(
+      "Stored knowledge lineage does not match the canonical adapter output.",
+    );
+  }
+  return expectedKnowledgeLineage(write);
+}
+
+function assertStoredKnowledgePayload(
+  existingDocument: KnowledgeDocument,
+  existingChunks: readonly KnowledgeChunk[],
+  requestedDocument: KnowledgeDocument,
+  requestedChunks: readonly KnowledgeChunk[],
+) {
+  if (
+    normalizeTenantId(existingDocument.tenantId) !==
+      normalizeTenantId(requestedDocument.tenantId) ||
+    existingDocument.id !== requestedDocument.id ||
+    existingDocument.contentHash !== requestedDocument.contentHash ||
+    existingDocument.chunkCount !== requestedDocument.chunkCount ||
+    existingDocument.totalCharacters !== requestedDocument.totalCharacters ||
+    existingDocument.title !== requestedDocument.title ||
+    existingDocument.source !== requestedDocument.source ||
+    existingDocument.sourceType !== requestedDocument.sourceType ||
+    sourceContractSha256(existingDocument.tags) !==
+      sourceContractSha256(requestedDocument.tags) ||
+    sourceContractSha256(existingDocument.metadata) !==
+      sourceContractSha256(requestedDocument.metadata) ||
+    existingChunks.length !== requestedChunks.length
+  ) {
+    throw new Error(
+      "Knowledge document idempotency key is already bound to different content.",
+    );
+  }
+  const requestedByIndex = new Map(
+    requestedChunks.map((chunk) => [chunk.chunkIndex, chunk]),
+  );
+  for (const existing of existingChunks) {
+    const requested = requestedByIndex.get(existing.chunkIndex);
+    if (
+      !requested ||
+      existing.id !== requested.id ||
+      existing.content !== requested.content ||
+      existing.characterCount !== requested.characterCount ||
+      existing.title !== requested.title ||
+      existing.source !== requested.source ||
+      existing.tokenEstimate !== requested.tokenEstimate ||
+      sourceContractSha256(existing.tags) !==
+        sourceContractSha256(requested.tags) ||
+      sourceContractSha256(existing.metadata) !==
+        sourceContractSha256(requested.metadata)
+    ) {
+      throw new Error(
+        "Knowledge document idempotency key is already bound to different chunks.",
+      );
+    }
+  }
+}
+
+function assertStoredChunkLineage(
+  existingChunks: readonly KnowledgeChunk[],
+  requestedChunks: readonly KnowledgeChunk[],
+  write: CanonicalTextSourceWrite,
+) {
+  const expectedRevisionId = write.adapterOutput.sourceRevision.sourceRevisionId;
+  const requestedByIndex = new Map(
+    requestedChunks.map((chunk) => [chunk.chunkIndex, chunk]),
+  );
+  for (const existing of existingChunks) {
+    const requested = requestedByIndex.get(existing.chunkIndex);
+    const expectedEvidenceId =
+      write.evidenceUnitIdsByChunkIndex[existing.chunkIndex];
+    if (
+      !requested ||
+      existing.sourceRevisionId !== expectedRevisionId ||
+      existing.evidenceUnitId !== expectedEvidenceId ||
+      requested.sourceRevisionId !== expectedRevisionId ||
+      requested.evidenceUnitId !== expectedEvidenceId
+    ) {
+      throw new Error(
+        "Stored knowledge chunks have incomplete or conflicting source lineage.",
+      );
+    }
+  }
+}
+
+function expectedKnowledgeLineage(
+  write: CanonicalTextSourceWrite,
+): PersistedKnowledgeLineage {
+  return {
+    sourceItemId: write.adapterOutput.sourceItem.sourceItemId,
+    sourceRevisionId: write.adapterOutput.sourceRevision.sourceRevisionId,
+    evidenceUnitIdsByChunkIndex: write.evidenceUnitIdsByChunkIndex,
+  };
+}
+
+function withoutChunkLineage(chunk: KnowledgeChunk): KnowledgeChunk {
+  const {
+    sourceRevisionId: _sourceRevisionId,
+    evidenceUnitId: _evidenceUnitId,
+    ...legacyChunk
+  } = chunk;
+  void _sourceRevisionId;
+  void _evidenceUnitId;
+  return legacyChunk;
 }
 
 async function readKnowledgeLedger() {
@@ -748,6 +1323,11 @@ function parseMetadata(value: unknown): Record<string, unknown> {
   }
 
   return {};
+}
+
+function optionalString(value: unknown) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || undefined;
 }
 
 function normalizeDate(value: unknown) {

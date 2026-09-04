@@ -69,6 +69,15 @@ plans, tool input/output, provider data, and idempotency keys are excluded. The
 receipt records a deterministic target, a first-party commit acknowledgement,
 and a tenant-scoped read-after-write result.
 
+The first P2.1 shadow emits `source.revision.shadow_indexed` in the same
+transaction as the canonical source receipt, item, revision, evidence units,
+and new knowledge-document linkage. Its allowlisted payload contains only the
+document/source/adapter/connection IDs, entity and set digests, adapter ID, and
+evidence count. It excludes source text, external provider IDs, locator
+contents, connector payloads, credentials, and arbitrary metadata. This event
+describes only newly enrolled shadow writes; legacy retrieval remains the read
+authority until the later convergence and actor-aware read gates.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

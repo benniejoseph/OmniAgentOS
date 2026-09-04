@@ -19,4 +19,29 @@ describe("chunkText", () => {
     expect(chunks[0].content).toHaveLength(300);
     expect(chunks[1].content.slice(0, 100)).toBe(chunks[0].content.slice(-100));
   });
+
+  it("reports exact spans in normalized extracted text", () => {
+    const input = "  first paragraph  \n\n\n second paragraph ";
+    const normalized = "first paragraph\n\nsecond paragraph";
+    const chunks = chunkText(input, 18, 4);
+
+    for (const chunk of chunks) {
+      expect(
+        normalized.slice(chunk.characterStart, chunk.characterEnd),
+      ).toBe(chunk.content);
+    }
+  });
+
+  it("never splits UTF-16 surrogate pairs at chunk or overlap boundaries", () => {
+    const normalized = `ab😀cd${"x".repeat(12)}😀tail`;
+    const chunks = chunkText(normalized, 5, 2);
+
+    for (const chunk of chunks) {
+      expect(
+        normalized.slice(chunk.characterStart, chunk.characterEnd),
+      ).toBe(chunk.content);
+      expect(chunk.content).not.toMatch(/[\uD800-\uDBFF]$/);
+      expect(chunk.content).not.toMatch(/^[\uDC00-\uDFFF]/);
+    }
+  });
 });
