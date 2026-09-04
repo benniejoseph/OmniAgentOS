@@ -228,5 +228,10 @@
     "version": 46,
     "name": "canonical_auth_user_actor_ids_shadow",
     "checksum": "f817c08c92f511e7ba6e3d83e4ed49262997cec94e61f3dcb55d9d472fdd14b0"
+  },
+  {
+    "version": 47,
+    "name": "memory_access_purpose_catalog",
+    "checksum": "c806f0cab3f355646fc92dc59aeb952ea671d02d0fc529bf9c1b59f5127971e0"
   }
 ]

@@ -176,6 +176,11 @@ frozen projection from already-authenticated in-process context changes no
 authority or durable state, and no serving path calls it. Authorization events
 remain deferred to the later transaction-bound memory cutover.
 
+Migration v47 emits no domain event. It installs immutable global reference
+contracts, not a tenant grant, consent decision, memory access, or lifecycle
+transition. Later purpose entitlement changes and actual memory authorization
+must emit their own typed, metadata-only evidence.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

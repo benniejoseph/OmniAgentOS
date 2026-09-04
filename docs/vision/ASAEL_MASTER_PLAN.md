@@ -923,6 +923,17 @@ email/actor match yields the frozen canonical identity; every non-session,
 synthetic, legacy, or malformed context remains unbound. No serving path calls
 the accessor or memory-scope installer yet.
 
+Migration v47 introduces the first closed purpose vocabulary. Its immutable,
+versioned contracts distinguish direct inspection (`memory.read.v1`), context
+selection (`memory.retrieve.v1`), explicit persistence, correction, forgetting,
+automatic formation, maintenance, and export. Existing API, tool, connector,
+worker, usage, and `ExecutionScope.purpose` strings retain their current
+subsystem-specific semantics and are not mapped or accepted as these IDs;
+historical source `allowed_purpose_ids` also remain untouched. Catalog
+membership grants nothing. A later tenant
+entitlement/consent ledger and the transaction-bound resolver must separately
+authorize a catalog row before any memory operation can use it.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

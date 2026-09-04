@@ -312,6 +312,18 @@ accessor is not stored on `SecurityContext`, has no runtime call site, and does
 not change serialized session/mobile responses, ownership, execution scopes,
 hashes, approvals, or the dormant memory installer.
 
+Migration v47 adds an append-only global memory-purpose vocabulary with eight
+version-1 contracts: read, retrieve, write, correct, forget, formation,
+maintenance, and export. These semantic IDs are distinct from existing
+free-form execution/usage labels and from source-side allowed-purpose strings;
+the migration does not infer, rewrite, or validate either. The catalog is
+owner-only, exposes no serving grant, and has no runtime consumer. A catalog
+row defines vocabulary only: tenant entitlement, consent, RBAC, capability,
+scope membership, approval, and same-transaction authorization remain separate
+requirements before the v45 deny hook can change.
+The ordered migration must run as the stable `omni_schema_version` owner and
+fails before replacing any function when that ownership precondition drifts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.
