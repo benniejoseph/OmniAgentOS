@@ -791,6 +791,19 @@ revision-aware cursor and convergence pilot begins with Drive. Actor-aware
 canonical reads remain blocked on P3.1; no source-lineage read API is exposed
 by this shadow slice.
 
+The first P2.2 slice adds a separate, write-only Google Drive checkpoint
+shadow. It captures a Drive Changes start-page fence before a paginated
+metadata backfill, then advances one transactionally committed page at a time
+into the changes feed. Provider cursors are encrypted at rest; page manifests
+and events retain only opaque IDs, hashes, bounded counts, and closed enums.
+Authorization generations isolate reconnects from token refreshes, fenced
+leases make retries idempotent, and exhausted pages become visible dead
+letters. The legacy combined Gmail, Calendar, and Drive cursor, sync health,
+knowledge writes, and served RAG remain authoritative and unchanged. P2.3 will
+start a new rollout generation, replay Drive from a fresh fence, and apply the
+observed upsert/delete records to canonical revisions and tombstones; this
+shadow generation is not promoted in place.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

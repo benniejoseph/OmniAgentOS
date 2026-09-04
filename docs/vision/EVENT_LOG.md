@@ -78,6 +78,17 @@ contents, connector payloads, credentials, and arbitrary metadata. This event
 describes only newly enrolled shadow writes; legacy retrieval remains the read
 authority until the later convergence and actor-aware read gates.
 
+The first P2.2 checkpoint shadow emits `source.sync.page.shadow_observed` in
+the same Postgres transaction as its immutable Drive page manifest and next
+open checkpoint. `source.sync.page.failed` records a bounded failure category
+and digest when a leased page is released or dead-lettered. Both payloads are
+strict metadata: checkpoint/connection/source/adapter identifiers, engine and
+authorization generations, phase and page counters, hashes, bounded item
+counts, and closed outcome/failure enums. Raw Drive IDs, file metadata,
+provider cursors, content, credentials, and error text are excluded. Local
+file fallback appends these events separately on a best-effort basis and is
+development-only compatibility, not atomic audit storage.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

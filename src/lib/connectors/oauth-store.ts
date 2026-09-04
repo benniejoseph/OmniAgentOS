@@ -5,12 +5,13 @@ import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload"
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 
-export type OAuthGrant = { id: string; tenantId: string; actorId: string; provider: OAuthProvider; scopes: string[]; status: "active" | "revoked"; expiresAt?: string; syncStatus?: "idle" | "syncing" | "healthy" | "error"; syncError?: string; lastSyncedAt?: string; syncedItems?: number; createdAt: string; updatedAt: string };
+export type OAuthGrant = { id: string; tenantId: string; actorId: string; provider: OAuthProvider; scopes: string[]; status: "active" | "revoked"; authorizationGeneration: number; expiresAt?: string; syncStatus?: "idle" | "syncing" | "healthy" | "error"; syncError?: string; lastSyncedAt?: string; syncedItems?: number; createdAt: string; updatedAt: string };
 type InternalGrant = OAuthGrant & { sealedTokens: ReturnType<typeof sealJsonPayload>; syncCursor?: string };
 const filePath = () => getDataPath("oauth-grants.json");
 
-export async function saveOAuthGrant(input: { tenantId: string; actorId: string; provider: OAuthProvider; tokens: Record<string, unknown> }) {
+export async function saveOAuthGrant(input: { tenantId: string; actorId: string; provider: OAuthProvider; tokens: Record<string, unknown>; authorizationMode?: "reauthorize" | "refresh" }) {
   const now = new Date().toISOString();
+  const authorizationMode = input.authorizationMode || "reauthorize";
   const existingSecrets = await getOAuthGrantSecrets(input.tenantId, input.actorId, input.provider).catch(() => undefined);
   const tokens = { ...(existingSecrets?.tokens || {}), ...input.tokens };
   const expiresIn = Number(tokens.expires_in || 0);
@@ -20,15 +21,15 @@ export async function saveOAuthGrant(input: { tenantId: string; actorId: string;
   const sealedTokens = sealJsonPayload(tokens, `oauth-grant:${input.tenantId}:${input.actorId}:${input.provider}`);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`INSERT INTO omni_oauth_grants (id, tenant_id, actor_id, provider, scopes, sealed_tokens, expires_at, status, created_at, updated_at)
-      VALUES (${id}, ${input.tenantId}, ${input.actorId}, ${input.provider}, ${scopes}, ${sealedTokens}::jsonb, ${expiresAt || null}, 'active', ${now}, ${now})
-      ON CONFLICT (tenant_id, actor_id, provider) DO UPDATE SET scopes = EXCLUDED.scopes, sealed_tokens = EXCLUDED.sealed_tokens, expires_at = EXCLUDED.expires_at, status = 'active', updated_at = EXCLUDED.updated_at RETURNING *`;
+    const rows = await getSql()`INSERT INTO omni_oauth_grants (id, tenant_id, actor_id, provider, scopes, sealed_tokens, expires_at, status, authorization_generation, created_at, updated_at)
+      VALUES (${id}, ${input.tenantId}, ${input.actorId}, ${input.provider}, ${scopes}, ${sealedTokens}::jsonb, ${expiresAt || null}, 'active', 1, ${now}, ${now})
+      ON CONFLICT (tenant_id, actor_id, provider) DO UPDATE SET scopes = EXCLUDED.scopes, sealed_tokens = EXCLUDED.sealed_tokens, expires_at = EXCLUDED.expires_at, status = 'active', authorization_generation = CASE WHEN ${authorizationMode} = 'reauthorize' THEN omni_oauth_grants.authorization_generation + 1 ELSE omni_oauth_grants.authorization_generation END, updated_at = EXCLUDED.updated_at RETURNING *`;
     return publicGrant(rows[0]);
   }
   let saved!: InternalGrant;
   await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => {
     const existing = ledger.grants.find((grant) => grant.tenantId === input.tenantId && grant.actorId === input.actorId && grant.provider === input.provider);
-    saved = { id: existing?.id || id, tenantId: input.tenantId, actorId: input.actorId, provider: input.provider, scopes, sealedTokens, syncCursor: existing?.syncCursor, syncStatus: existing?.syncStatus || "idle", syncError: existing?.syncError, lastSyncedAt: existing?.lastSyncedAt, syncedItems: existing?.syncedItems || 0, status: "active", expiresAt, createdAt: existing?.createdAt || now, updatedAt: now };
+    saved = { id: existing?.id || id, tenantId: input.tenantId, actorId: input.actorId, provider: input.provider, scopes, sealedTokens, syncCursor: existing?.syncCursor, syncStatus: existing?.syncStatus || "idle", syncError: existing?.syncError, lastSyncedAt: existing?.lastSyncedAt, syncedItems: existing?.syncedItems || 0, status: "active", authorizationGeneration: existing ? Math.max(1, Number(existing.authorizationGeneration || 1)) + (authorizationMode === "reauthorize" ? 1 : 0) : 1, expiresAt, createdAt: existing?.createdAt || now, updatedAt: now };
     return { grants: [saved, ...ledger.grants.filter((grant) => grant.id !== existing?.id)].slice(0, 100) };
   });
   return stripTokens(saved);
@@ -88,7 +89,7 @@ export async function updateOAuthSyncState(input: { tenantId: string; actorId: s
 }
 
 function stripTokens(grant: InternalGrant): OAuthGrant {
-  return { id: grant.id, tenantId: grant.tenantId, actorId: grant.actorId, provider: grant.provider, scopes: grant.scopes, status: grant.status, expiresAt: grant.expiresAt, syncStatus: grant.syncStatus || "idle", syncError: grant.syncError, lastSyncedAt: grant.lastSyncedAt, syncedItems: grant.syncedItems || 0, createdAt: grant.createdAt, updatedAt: grant.updatedAt };
+  return { id: grant.id, tenantId: grant.tenantId, actorId: grant.actorId, provider: grant.provider, scopes: grant.scopes, status: grant.status, authorizationGeneration: Math.max(1, Number(grant.authorizationGeneration || 1)), expiresAt: grant.expiresAt, syncStatus: grant.syncStatus || "idle", syncError: grant.syncError, lastSyncedAt: grant.lastSyncedAt, syncedItems: grant.syncedItems || 0, createdAt: grant.createdAt, updatedAt: grant.updatedAt };
 }
-function publicGrant(row: Record<string, unknown>): OAuthGrant { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), provider: String(row.provider) as OAuthProvider, scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [], status: String(row.status) as "active" | "revoked", expiresAt: row.expires_at ? new Date(String(row.expires_at)).toISOString() : undefined, syncStatus: String(row.sync_status || "idle") as OAuthGrant["syncStatus"], syncError: row.sync_error ? String(row.sync_error) : undefined, lastSyncedAt: row.last_synced_at ? new Date(String(row.last_synced_at)).toISOString() : undefined, syncedItems: Number(row.synced_items || 0), createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString() }; }
+function publicGrant(row: Record<string, unknown>): OAuthGrant { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), provider: String(row.provider) as OAuthProvider, scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [], status: String(row.status) as "active" | "revoked", authorizationGeneration: Math.max(1, Number(row.authorization_generation || 1)), expiresAt: row.expires_at ? new Date(String(row.expires_at)).toISOString() : undefined, syncStatus: String(row.sync_status || "idle") as OAuthGrant["syncStatus"], syncError: row.sync_error ? String(row.sync_error) : undefined, lastSyncedAt: row.last_synced_at ? new Date(String(row.last_synced_at)).toISOString() : undefined, syncedItems: Number(row.synced_items || 0), createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString() }; }
 function internalGrantFromRow(row: Record<string, unknown>): InternalGrant { return { ...publicGrant(row), sealedTokens: row.sealed_tokens as InternalGrant["sealedTokens"], syncCursor: row.sync_cursor ? String(row.sync_cursor) : undefined }; }

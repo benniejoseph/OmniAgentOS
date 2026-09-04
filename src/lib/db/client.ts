@@ -79,6 +79,7 @@ export const tenantRootPolicyTables = [
   "omni_memories",
   "omni_source_adapter_output_receipts",
   "omni_source_items",
+  "omni_source_sync_page_checkpoints",
   "omni_knowledge_documents",
   "omni_knowledge_chunks",
   "omni_retrieval_traces",
@@ -140,6 +141,7 @@ export const tenantRootPolicyTables = [
 export const tenantChildPolicyTables = [
   "omni_source_revisions",
   "omni_evidence_units",
+  "omni_source_sync_page_items",
   "omni_agent_events",
   "omni_thread_turns",
   "omni_workflow_node_executions",
@@ -711,6 +713,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[36],
       up: async (sql) => {
         await ensureCanonicalSourceLineageShadow(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[37],
+      up: async (sql) => {
+        await ensureDriveSyncV2ShadowCheckpoints(sql);
         await ensureTenantIsolationPolicies(sql);
       },
     },
@@ -4549,6 +4558,948 @@ async function ensureCanonicalSourceLineageShadow(sql: SqlClient) {
           current_schema(),
           grant_record.grantee
         );
+      END LOOP;
+    END
+    $migration$
+  `);
+}
+
+async function ensureDriveSyncV2ShadowCheckpoints(sql: SqlClient) {
+  await ensureOAuthGrants(sql);
+
+  await sql`
+    ALTER TABLE omni_oauth_grants
+    ADD COLUMN IF NOT EXISTS authorization_generation BIGINT
+  `;
+  await sql`
+    UPDATE omni_oauth_grants
+    SET authorization_generation = 1
+    WHERE authorization_generation IS NULL
+       OR authorization_generation < 1
+  `;
+  await sql`
+    ALTER TABLE omni_oauth_grants
+    ALTER COLUMN authorization_generation SET DEFAULT 1
+  `;
+  await sql`
+    ALTER TABLE omni_oauth_grants
+    ALTER COLUMN authorization_generation SET NOT NULL
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_oauth_grants_authorization_generation_check'
+          AND conrelid = 'omni_oauth_grants'::regclass
+      ) THEN
+        ALTER TABLE omni_oauth_grants
+        ADD CONSTRAINT omni_oauth_grants_authorization_generation_check
+        CHECK (authorization_generation >= 1);
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_oauth_grants_connection_scope_key'
+          AND conrelid = 'omni_oauth_grants'::regclass
+      ) THEN
+        ALTER TABLE omni_oauth_grants
+        ADD CONSTRAINT omni_oauth_grants_connection_scope_key
+        UNIQUE (tenant_id, id, actor_id, provider);
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_oauth_grants_authorization_scope_key'
+          AND conrelid = 'omni_oauth_grants'::regclass
+      ) THEN
+        ALTER TABLE omni_oauth_grants
+        ADD CONSTRAINT omni_oauth_grants_authorization_scope_key
+        UNIQUE (
+          tenant_id,
+          id,
+          actor_id,
+          provider,
+          authorization_generation
+        );
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    ALTER TABLE omni_source_adapter_output_receipts
+    DROP CONSTRAINT IF EXISTS omni_source_adapter_output_receipts_schema_check
+  `;
+  await sql`
+    ALTER TABLE omni_source_adapter_output_receipts
+    ADD CONSTRAINT omni_source_adapter_output_receipts_schema_check CHECK (
+      schema_version = 1
+      AND contract_kind = 'source_adapter_output'
+      AND adapter_operation IN ('upsert', 'delete')
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_source_adapter_output_receipts_tenant_output_digest_idx
+    ON omni_source_adapter_output_receipts (
+      tenant_id,
+      adapter_output_id,
+      adapter_output_sha256
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_source_sync_page_checkpoints (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      connection_id TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'google',
+      source_id TEXT NOT NULL DEFAULT 'drive',
+      engine_version TEXT NOT NULL,
+      adapter_version_id TEXT NOT NULL,
+      adapter_config_sha256 TEXT NOT NULL,
+      authorization_generation BIGINT NOT NULL,
+      rollout_generation BIGINT NOT NULL,
+      phase TEXT NOT NULL,
+      page_sequence BIGINT NOT NULL,
+      request_cursor_sealed JSONB,
+      request_cursor_sha256 TEXT,
+      fence_cursor_sha256 TEXT,
+      observed_at TIMESTAMPTZ,
+      manifest_sha256 TEXT,
+      item_count INTEGER,
+      status TEXT NOT NULL DEFAULT 'open',
+      lease_owner_id TEXT,
+      lease_expires_at TIMESTAMPTZ,
+      lease_generation BIGINT NOT NULL DEFAULT 0,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      failure_code TEXT,
+      failure_sha256 TEXT,
+      committed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_source_sync_page_checkpoints_scope_key
+        UNIQUE (
+          tenant_id,
+          id,
+          owner_actor_id,
+          connection_id,
+          provider,
+          source_id,
+          engine_version,
+          authorization_generation,
+          rollout_generation,
+          page_sequence
+        ),
+      CONSTRAINT omni_source_sync_page_checkpoints_page_key
+        UNIQUE (
+          tenant_id,
+          owner_actor_id,
+          connection_id,
+          provider,
+          source_id,
+          authorization_generation,
+          rollout_generation,
+          page_sequence
+        ),
+      CONSTRAINT omni_source_sync_page_checkpoints_oauth_scope_fkey
+        FOREIGN KEY (
+          tenant_id,
+          connection_id,
+          owner_actor_id,
+          provider
+        )
+        REFERENCES omni_oauth_grants (
+          tenant_id,
+          id,
+          actor_id,
+          provider
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_sync_page_checkpoints_schema_check CHECK (
+        schema_version = 1
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_source_check CHECK (
+        provider = 'google'
+        AND source_id = 'drive'
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_required_ids_check CHECK (
+        omni_source_contract_id_is_valid(id)
+        AND omni_source_contract_id_is_valid(tenant_id)
+        AND omni_source_contract_id_is_valid(owner_actor_id)
+        AND omni_source_contract_id_is_valid(connection_id)
+        AND omni_source_contract_id_is_valid(provider)
+        AND omni_source_contract_id_is_valid(source_id)
+        AND omni_source_contract_id_is_valid(engine_version)
+        AND omni_source_contract_id_is_valid(adapter_version_id)
+        AND (
+          lease_owner_id IS NULL
+          OR omni_source_contract_id_is_valid(lease_owner_id)
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_hashes_check CHECK (
+        adapter_config_sha256 ~ '^[0-9a-f]{64}$'
+        AND (
+          request_cursor_sha256 IS NULL
+          OR request_cursor_sha256 ~ '^[0-9a-f]{64}$'
+        )
+        AND (
+          fence_cursor_sha256 IS NULL
+          OR fence_cursor_sha256 ~ '^[0-9a-f]{64}$'
+        )
+        AND (
+          manifest_sha256 IS NULL
+          OR manifest_sha256 ~ '^[0-9a-f]{64}$'
+        )
+        AND (
+          failure_sha256 IS NULL
+          OR failure_sha256 ~ '^[0-9a-f]{64}$'
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_cursor_pair_check CHECK (
+        (
+          request_cursor_sealed IS NULL
+          AND request_cursor_sha256 IS NULL
+          AND fence_cursor_sha256 IS NULL
+        )
+        OR (
+          request_cursor_sealed IS NOT NULL
+          AND (
+            request_cursor_sha256 IS NOT NULL
+            OR fence_cursor_sha256 IS NOT NULL
+          )
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_sealed_cursor_check CHECK (
+        request_cursor_sealed IS NULL
+        OR (
+          jsonb_typeof(request_cursor_sealed) = 'object'
+          AND request_cursor_sealed ?& ARRAY[
+            'version', 'algorithm', 'iv', 'ciphertext', 'tag'
+          ]
+          AND request_cursor_sealed - ARRAY[
+            'version', 'algorithm', 'iv', 'ciphertext', 'tag'
+          ] = '{}'::JSONB
+          AND jsonb_typeof(request_cursor_sealed -> 'version') = 'number'
+          AND request_cursor_sealed ->> 'version' = '1'
+          AND jsonb_typeof(request_cursor_sealed -> 'algorithm') = 'string'
+          AND request_cursor_sealed ->> 'algorithm' = 'aes-256-gcm'
+          AND jsonb_typeof(request_cursor_sealed -> 'iv') = 'string'
+          AND request_cursor_sealed ->> 'iv' ~ '^[A-Za-z0-9_-]{16}$'
+          AND jsonb_typeof(request_cursor_sealed -> 'tag') = 'string'
+          AND request_cursor_sealed ->> 'tag' ~ '^[A-Za-z0-9_-]{22}$'
+          AND jsonb_typeof(request_cursor_sealed -> 'ciphertext') = 'string'
+          AND request_cursor_sealed ->> 'ciphertext' ~ '^[A-Za-z0-9_-]*$'
+          AND char_length(request_cursor_sealed ->> 'ciphertext') <= 32768
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_phase_check CHECK (
+        phase IN ('backfill', 'changes')
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_status_check CHECK (
+        status IN (
+          'open', 'leased', 'observed', 'committed',
+          'dead_letter', 'superseded'
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_counts_check CHECK (
+        authorization_generation >= 1
+        AND rollout_generation >= 1
+        AND page_sequence >= 0
+        AND lease_generation >= 0
+        AND attempts >= 0
+        AND (
+          item_count IS NULL
+          OR item_count BETWEEN 0 AND 1000
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_observation_check CHECK (
+        (
+          observed_at IS NULL
+          AND manifest_sha256 IS NULL
+          AND item_count IS NULL
+        )
+        OR (
+          observed_at IS NOT NULL
+          AND manifest_sha256 IS NOT NULL
+          AND item_count IS NOT NULL
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_lease_check CHECK (
+        (
+          status IN ('leased', 'observed')
+          AND lease_owner_id IS NOT NULL
+          AND lease_expires_at IS NOT NULL
+        )
+        OR (
+          status NOT IN ('leased', 'observed')
+          AND lease_owner_id IS NULL
+          AND lease_expires_at IS NULL
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_failure_check CHECK (
+        (failure_code IS NULL) = (failure_sha256 IS NULL)
+        AND (
+          failure_code IS NULL
+          OR (
+            char_length(failure_code) BETWEEN 1 AND 120
+            AND failure_code ~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+          )
+        )
+        AND (
+          status <> 'dead_letter'
+          OR failure_code IS NOT NULL
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_commit_check CHECK (
+        (
+          status = 'committed'
+          AND committed_at IS NOT NULL
+          AND observed_at IS NOT NULL
+          AND manifest_sha256 IS NOT NULL
+          AND item_count IS NOT NULL
+          AND request_cursor_sealed IS NOT NULL
+          AND fence_cursor_sha256 IS NOT NULL
+        )
+        OR (
+          status <> 'committed'
+          AND committed_at IS NULL
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_checkpoints_timestamps_check CHECK (
+        created_at <= updated_at
+        AND (committed_at IS NULL OR committed_at <= updated_at)
+      )
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_source_sync_page_items (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      checkpoint_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      connection_id TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'google',
+      source_id TEXT NOT NULL DEFAULT 'drive',
+      engine_version TEXT NOT NULL,
+      authorization_generation BIGINT NOT NULL,
+      rollout_generation BIGINT NOT NULL,
+      phase_rank SMALLINT NOT NULL,
+      page_sequence BIGINT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      operation TEXT NOT NULL,
+      provider_item_key_sha256 TEXT NOT NULL,
+      provider_revision_key_sha256 TEXT,
+      adapter_event_key_sha256 TEXT NOT NULL,
+      observed_at TIMESTAMPTZ NOT NULL,
+      manifest_item_sha256 TEXT NOT NULL,
+      outcome TEXT NOT NULL DEFAULT 'shadow_observed',
+      source_item_id TEXT,
+      source_revision_id TEXT,
+      adapter_output_id TEXT,
+      adapter_output_sha256 TEXT,
+      delete_reason_code TEXT,
+      last_known_revision_id TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      error_code TEXT,
+      error_sha256 TEXT,
+      next_retry_at TIMESTAMPTZ,
+      applied_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_source_sync_page_items_checkpoint_ordinal_key
+        UNIQUE (tenant_id, checkpoint_id, ordinal),
+      CONSTRAINT omni_source_sync_page_items_checkpoint_event_key
+        UNIQUE (tenant_id, checkpoint_id, adapter_event_key_sha256),
+      CONSTRAINT omni_source_sync_page_items_checkpoint_fkey
+        FOREIGN KEY (
+          tenant_id,
+          checkpoint_id,
+          owner_actor_id,
+          connection_id,
+          provider,
+          source_id,
+          engine_version,
+          authorization_generation,
+          rollout_generation,
+          page_sequence
+        )
+        REFERENCES omni_source_sync_page_checkpoints (
+          tenant_id,
+          id,
+          owner_actor_id,
+          connection_id,
+          provider,
+          source_id,
+          engine_version,
+          authorization_generation,
+          rollout_generation,
+          page_sequence
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_sync_page_items_adapter_output_fkey
+        FOREIGN KEY (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256
+        )
+        REFERENCES omni_source_adapter_output_receipts (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_sync_page_items_schema_check CHECK (
+        schema_version = 1
+      ),
+      CONSTRAINT omni_source_sync_page_items_source_check CHECK (
+        provider = 'google'
+        AND source_id = 'drive'
+      ),
+      CONSTRAINT omni_source_sync_page_items_required_ids_check CHECK (
+        omni_source_contract_id_is_valid(id)
+        AND omni_source_contract_id_is_valid(tenant_id)
+        AND omni_source_contract_id_is_valid(checkpoint_id)
+        AND omni_source_contract_id_is_valid(owner_actor_id)
+        AND omni_source_contract_id_is_valid(connection_id)
+        AND omni_source_contract_id_is_valid(provider)
+        AND omni_source_contract_id_is_valid(source_id)
+        AND omni_source_contract_id_is_valid(engine_version)
+        AND (
+          source_item_id IS NULL
+          OR omni_source_contract_id_is_valid(source_item_id)
+        )
+        AND (
+          source_revision_id IS NULL
+          OR omni_source_contract_id_is_valid(source_revision_id)
+        )
+        AND (
+          adapter_output_id IS NULL
+          OR omni_source_contract_id_is_valid(adapter_output_id)
+        )
+        AND (
+          last_known_revision_id IS NULL
+          OR omni_source_contract_id_is_valid(last_known_revision_id)
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_items_hashes_check CHECK (
+        provider_item_key_sha256 ~ '^[0-9a-f]{64}$'
+        AND (
+          provider_revision_key_sha256 IS NULL
+          OR provider_revision_key_sha256 ~ '^[0-9a-f]{64}$'
+        )
+        AND adapter_event_key_sha256 ~ '^[0-9a-f]{64}$'
+        AND manifest_item_sha256 ~ '^[0-9a-f]{64}$'
+        AND (
+          adapter_output_sha256 IS NULL
+          OR adapter_output_sha256 ~ '^[0-9a-f]{64}$'
+        )
+        AND (
+          error_sha256 IS NULL
+          OR error_sha256 ~ '^[0-9a-f]{64}$'
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_items_order_check CHECK (
+        authorization_generation >= 1
+        AND rollout_generation >= 1
+        AND phase_rank IN (0, 1)
+        AND page_sequence >= 0
+        AND ordinal BETWEEN 0 AND 999
+        AND attempts >= 0
+      ),
+      CONSTRAINT omni_source_sync_page_items_operation_check CHECK (
+        operation IN ('upsert', 'delete')
+      ),
+      CONSTRAINT omni_source_sync_page_items_outcome_check CHECK (
+        outcome IN (
+          'shadow_observed', 'pending', 'applied', 'noop', 'dead_letter'
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_items_adapter_output_pair_check CHECK (
+        (adapter_output_id IS NULL) = (adapter_output_sha256 IS NULL)
+      ),
+      CONSTRAINT omni_source_sync_page_items_delete_check CHECK (
+        (
+          operation = 'upsert'
+          AND delete_reason_code IS NULL
+          AND last_known_revision_id IS NULL
+        )
+        OR (
+          operation = 'delete'
+          AND (
+            delete_reason_code IS NULL
+            OR delete_reason_code IN (
+              'provider_deleted', 'access_revoked',
+              'connection_removed', 'source_missing'
+            )
+          )
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_items_error_check CHECK (
+        (error_code IS NULL) = (error_sha256 IS NULL)
+        AND (
+          error_code IS NULL
+          OR (
+            char_length(error_code) BETWEEN 1 AND 120
+            AND error_code ~ '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+          )
+        )
+        AND (
+          outcome = 'dead_letter'
+          OR (
+            error_code IS NULL
+            AND next_retry_at IS NULL
+          )
+        )
+        AND (
+          outcome <> 'dead_letter'
+          OR error_code IS NOT NULL
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_items_applied_check CHECK (
+        (
+          outcome = 'applied'
+          AND applied_at IS NOT NULL
+          AND source_item_id IS NOT NULL
+          AND adapter_output_id IS NOT NULL
+          AND (
+            (operation = 'upsert' AND source_revision_id IS NOT NULL)
+            OR (operation = 'delete' AND delete_reason_code IS NOT NULL)
+          )
+        )
+        OR (
+          outcome = 'noop'
+          AND applied_at IS NOT NULL
+          AND source_item_id IS NOT NULL
+        )
+        OR (
+          outcome NOT IN ('applied', 'noop')
+          AND applied_at IS NULL
+        )
+      ),
+      CONSTRAINT omni_source_sync_page_items_timestamps_check CHECK (
+        created_at <= updated_at
+        AND (applied_at IS NULL OR applied_at <= updated_at)
+      )
+    )
+  `;
+
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_source_sync_page_checkpoints_one_nonterminal_idx
+    ON omni_source_sync_page_checkpoints (
+      tenant_id,
+      owner_actor_id,
+      connection_id,
+      provider,
+      source_id,
+      authorization_generation,
+      rollout_generation
+    )
+    WHERE status NOT IN ('committed', 'superseded')
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_sync_page_checkpoints_due_idx
+    ON omni_source_sync_page_checkpoints (
+      tenant_id,
+      status,
+      lease_expires_at,
+      updated_at
+    )
+    WHERE status NOT IN ('committed', 'superseded')
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_sync_page_items_outcome_idx
+    ON omni_source_sync_page_items (
+      tenant_id,
+      checkpoint_id,
+      outcome,
+      ordinal
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_sync_page_items_source_order_idx
+    ON omni_source_sync_page_items (
+      tenant_id,
+      owner_actor_id,
+      connection_id,
+      source_item_id,
+      authorization_generation DESC,
+      rollout_generation DESC,
+      phase_rank DESC,
+      page_sequence DESC,
+      ordinal DESC
+    )
+    WHERE source_item_id IS NOT NULL
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_source_sync_checkpoint_scope()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      PERFORM 1
+      FROM omni_oauth_grants grant_record
+      WHERE grant_record.tenant_id = NEW.tenant_id
+        AND grant_record.id = NEW.connection_id
+        AND grant_record.actor_id = NEW.owner_actor_id
+        AND grant_record.provider = NEW.provider
+        AND grant_record.status = 'active'
+        AND grant_record.authorization_generation =
+          NEW.authorization_generation
+      FOR UPDATE;
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'Source sync checkpoint authorization is stale'
+          USING ERRCODE = '23514';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_source_sync_checkpoint()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      stored_item_count BIGINT;
+      unresolved_item_count BIGINT;
+    BEGIN
+      IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION '% rows cannot be changed with %', TG_TABLE_NAME, TG_OP
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF OLD.status IN ('committed', 'superseded') THEN
+        RAISE EXCEPTION '% terminal rows are immutable', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.id IS DISTINCT FROM OLD.id
+        OR NEW.schema_version IS DISTINCT FROM OLD.schema_version
+        OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+        OR NEW.owner_actor_id IS DISTINCT FROM OLD.owner_actor_id
+        OR NEW.connection_id IS DISTINCT FROM OLD.connection_id
+        OR NEW.provider IS DISTINCT FROM OLD.provider
+        OR NEW.source_id IS DISTINCT FROM OLD.source_id
+        OR NEW.engine_version IS DISTINCT FROM OLD.engine_version
+        OR NEW.adapter_version_id IS DISTINCT FROM OLD.adapter_version_id
+        OR NEW.adapter_config_sha256 IS DISTINCT FROM OLD.adapter_config_sha256
+        OR NEW.authorization_generation IS DISTINCT FROM OLD.authorization_generation
+        OR NEW.rollout_generation IS DISTINCT FROM OLD.rollout_generation
+        OR NEW.phase IS DISTINCT FROM OLD.phase
+        OR NEW.page_sequence IS DISTINCT FROM OLD.page_sequence
+        OR NEW.created_at IS DISTINCT FROM OLD.created_at
+      THEN
+        RAISE EXCEPTION '% identity is immutable', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (OLD.request_cursor_sealed IS NOT NULL AND
+          NEW.request_cursor_sealed IS DISTINCT FROM OLD.request_cursor_sealed)
+        OR (OLD.request_cursor_sha256 IS NOT NULL AND
+          NEW.request_cursor_sha256 IS DISTINCT FROM OLD.request_cursor_sha256)
+        OR (OLD.fence_cursor_sha256 IS NOT NULL AND
+          NEW.fence_cursor_sha256 IS DISTINCT FROM OLD.fence_cursor_sha256)
+        OR (
+          OLD.manifest_sha256 IS NOT NULL
+          AND (
+            NEW.observed_at IS DISTINCT FROM OLD.observed_at
+            OR NEW.manifest_sha256 IS DISTINCT FROM OLD.manifest_sha256
+            OR NEW.item_count IS DISTINCT FROM OLD.item_count
+          )
+        )
+      THEN
+        RAISE EXCEPTION '% initialized cursor or manifest is immutable',
+          TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.lease_generation < OLD.lease_generation
+        OR NEW.attempts < OLD.attempts
+      THEN
+        RAISE EXCEPTION '% counters cannot move backwards', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF OLD.status <> 'committed' AND NEW.status = 'committed' THEN
+        SELECT
+          COUNT(*),
+          COUNT(*) FILTER (
+            WHERE item.outcome IN ('pending', 'dead_letter')
+          )
+        INTO stored_item_count, unresolved_item_count
+        FROM omni_source_sync_page_items item
+        WHERE item.tenant_id = NEW.tenant_id
+          AND item.checkpoint_id = NEW.id
+          AND item.owner_actor_id = NEW.owner_actor_id
+          AND item.connection_id = NEW.connection_id
+          AND item.provider = NEW.provider
+          AND item.source_id = NEW.source_id
+          AND item.engine_version = NEW.engine_version
+          AND item.authorization_generation = NEW.authorization_generation
+          AND item.rollout_generation = NEW.rollout_generation
+          AND item.page_sequence = NEW.page_sequence;
+
+        IF NEW.item_count IS NULL
+          OR stored_item_count <> NEW.item_count
+          OR unresolved_item_count <> 0
+        THEN
+          RAISE EXCEPTION 'Source sync committed page manifest is incomplete'
+            USING ERRCODE = '23514';
+        END IF;
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_source_sync_page_item_binding()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      checkpoint_phase TEXT;
+      checkpoint_status TEXT;
+      expected_phase_rank SMALLINT;
+    BEGIN
+      SELECT checkpoint.phase, checkpoint.status
+      INTO checkpoint_phase, checkpoint_status
+      FROM omni_source_sync_page_checkpoints checkpoint
+      WHERE checkpoint.tenant_id = NEW.tenant_id
+        AND checkpoint.id = NEW.checkpoint_id
+        AND checkpoint.owner_actor_id = NEW.owner_actor_id
+        AND checkpoint.connection_id = NEW.connection_id
+        AND checkpoint.provider = NEW.provider
+        AND checkpoint.source_id = NEW.source_id
+        AND checkpoint.engine_version = NEW.engine_version
+        AND checkpoint.authorization_generation = NEW.authorization_generation
+        AND checkpoint.rollout_generation = NEW.rollout_generation
+        AND checkpoint.page_sequence = NEW.page_sequence
+      FOR UPDATE;
+
+      IF checkpoint_phase = 'backfill' THEN
+        expected_phase_rank := 0;
+      ELSIF checkpoint_phase = 'changes' THEN
+        expected_phase_rank := 1;
+      ELSE
+        expected_phase_rank := -1;
+      END IF;
+
+      IF checkpoint_phase IS NULL
+        OR NEW.phase_rank <> expected_phase_rank
+      THEN
+        RAISE EXCEPTION 'Source sync page item does not match its checkpoint'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF TG_OP = 'INSERT' AND checkpoint_status <> 'leased' THEN
+        RAISE EXCEPTION 'Source sync page items require an active page lease'
+          USING ERRCODE = '55000';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_source_sync_page_item()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION '% rows cannot be changed with %', TG_TABLE_NAME, TG_OP
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF OLD.outcome IN ('shadow_observed', 'applied', 'noop') THEN
+        RAISE EXCEPTION '% terminal outcomes are immutable', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.id IS DISTINCT FROM OLD.id
+        OR NEW.schema_version IS DISTINCT FROM OLD.schema_version
+        OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+        OR NEW.checkpoint_id IS DISTINCT FROM OLD.checkpoint_id
+        OR NEW.owner_actor_id IS DISTINCT FROM OLD.owner_actor_id
+        OR NEW.connection_id IS DISTINCT FROM OLD.connection_id
+        OR NEW.provider IS DISTINCT FROM OLD.provider
+        OR NEW.source_id IS DISTINCT FROM OLD.source_id
+        OR NEW.engine_version IS DISTINCT FROM OLD.engine_version
+        OR NEW.authorization_generation IS DISTINCT FROM OLD.authorization_generation
+        OR NEW.rollout_generation IS DISTINCT FROM OLD.rollout_generation
+        OR NEW.phase_rank IS DISTINCT FROM OLD.phase_rank
+        OR NEW.page_sequence IS DISTINCT FROM OLD.page_sequence
+        OR NEW.ordinal IS DISTINCT FROM OLD.ordinal
+        OR NEW.operation IS DISTINCT FROM OLD.operation
+        OR NEW.provider_item_key_sha256 IS DISTINCT FROM OLD.provider_item_key_sha256
+        OR NEW.provider_revision_key_sha256 IS DISTINCT FROM OLD.provider_revision_key_sha256
+        OR NEW.adapter_event_key_sha256 IS DISTINCT FROM OLD.adapter_event_key_sha256
+        OR NEW.observed_at IS DISTINCT FROM OLD.observed_at
+        OR NEW.manifest_item_sha256 IS DISTINCT FROM OLD.manifest_item_sha256
+        OR NEW.created_at IS DISTINCT FROM OLD.created_at
+      THEN
+        RAISE EXCEPTION '% identity is immutable', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (OLD.source_item_id IS NOT NULL AND
+          NEW.source_item_id IS DISTINCT FROM OLD.source_item_id)
+        OR (OLD.source_revision_id IS NOT NULL AND
+          NEW.source_revision_id IS DISTINCT FROM OLD.source_revision_id)
+        OR (OLD.adapter_output_id IS NOT NULL AND
+          NEW.adapter_output_id IS DISTINCT FROM OLD.adapter_output_id)
+        OR (OLD.adapter_output_sha256 IS NOT NULL AND
+          NEW.adapter_output_sha256 IS DISTINCT FROM OLD.adapter_output_sha256)
+        OR (OLD.delete_reason_code IS NOT NULL AND
+          NEW.delete_reason_code IS DISTINCT FROM OLD.delete_reason_code)
+        OR (OLD.last_known_revision_id IS NOT NULL AND
+          NEW.last_known_revision_id IS DISTINCT FROM OLD.last_known_revision_id)
+      THEN
+        RAISE EXCEPTION '% initialized outcome bindings are immutable',
+          TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.attempts < OLD.attempts THEN
+        RAISE EXCEPTION '% attempts cannot move backwards', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_sync_page_checkpoints_validate_scope'
+          AND tgrelid = 'omni_source_sync_page_checkpoints'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_sync_page_checkpoints_validate_scope
+        BEFORE INSERT ON omni_source_sync_page_checkpoints
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_source_sync_checkpoint_scope();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_sync_page_checkpoints_protect'
+          AND tgrelid = 'omni_source_sync_page_checkpoints'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_sync_page_checkpoints_protect
+        BEFORE UPDATE OR DELETE ON omni_source_sync_page_checkpoints
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_protect_source_sync_checkpoint();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_sync_page_checkpoints_no_truncate'
+          AND tgrelid = 'omni_source_sync_page_checkpoints'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_sync_page_checkpoints_no_truncate
+        BEFORE TRUNCATE ON omni_source_sync_page_checkpoints
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_protect_source_sync_checkpoint();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_sync_page_items_validate_binding'
+          AND tgrelid = 'omni_source_sync_page_items'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_sync_page_items_validate_binding
+        BEFORE INSERT OR UPDATE ON omni_source_sync_page_items
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_source_sync_page_item_binding();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_sync_page_items_protect'
+          AND tgrelid = 'omni_source_sync_page_items'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_sync_page_items_protect
+        BEFORE UPDATE OR DELETE ON omni_source_sync_page_items
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_protect_source_sync_page_item();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_sync_page_items_no_truncate'
+          AND tgrelid = 'omni_source_sync_page_items'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_sync_page_items_no_truncate
+        BEFORE TRUNCATE ON omni_source_sync_page_items
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_protect_source_sync_page_item();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+      grant_mapping RECORD;
+    BEGIN
+      FOR grant_mapping IN
+        SELECT *
+        FROM (VALUES
+          ('omni_source_sync_page_checkpoints', 'omni_oauth_grants'),
+          ('omni_source_sync_page_items', 'omni_source_items')
+        ) AS mappings(target_table, source_table)
+      LOOP
+        FOR grant_record IN
+          SELECT DISTINCT grantee, privilege_type
+          FROM information_schema.table_privileges
+          WHERE table_schema = current_schema()
+            AND table_name = grant_mapping.source_table
+            AND privilege_type IN ('SELECT', 'INSERT', 'UPDATE')
+            AND grantee <> current_user
+            AND grantee <> 'PUBLIC'
+        LOOP
+          EXECUTE format(
+            'GRANT %s ON TABLE %I.%I TO %I',
+            grant_record.privilege_type,
+            current_schema(),
+            grant_mapping.target_table,
+            grant_record.grantee
+          );
+        END LOOP;
       END LOOP;
     END
     $migration$
