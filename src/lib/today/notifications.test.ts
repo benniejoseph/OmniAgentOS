@@ -103,6 +103,49 @@ describe("personal notification center", () => {
     });
   });
 
+  it("keeps request-bound notification reads exact in file mode", async () => {
+    const authUserId = "11111111-1111-4111-8111-111111111111";
+    const actorId = "notification-owner@example.test";
+    const canonicalActorId = `actor:${authUserId}`;
+    const now = new Date("2026-08-25T09:00:00.000Z");
+    for (const ownerActorId of [canonicalActorId, actorId]) {
+      await updateTodayPreferences({
+        timezone: "UTC",
+        quietHoursEnabled: false,
+        notificationsEnabled: true,
+      }, { tenantId: "notification-file-binding", actorId: ownerActorId });
+      await createTodayItem({
+        tenantId: "notification-file-binding",
+        actorId: ownerActorId,
+        title: `Reminder for ${ownerActorId}`,
+        dueAt: "2026-08-25T08:00:00.000Z",
+      });
+      await processDueNotifications({
+        tenantId: "notification-file-binding",
+        actorId: ownerActorId,
+        now,
+      });
+    }
+
+    await expect(listNotifications(10, {
+      tenantId: "notification-file-binding",
+      actorId,
+      requestActorBinding: {
+        version: 1,
+        kind: "auth_user",
+        authUserId,
+        canonicalActorId,
+        legacyOwnerActorIds: Object.freeze([actorId]),
+        readableOwnerActorIds: Object.freeze([canonicalActorId, actorId]),
+      },
+    })).resolves.toEqual([
+      expect.objectContaining({
+        actorId,
+        title: `Reminder for ${actorId}`,
+      }),
+    ]);
+  });
+
   it("completes the underlying Today item from a notification", async () => {
     await updateTodayPreferences({
       timezone: "UTC", quietHoursEnabled: false, notificationsEnabled: true,

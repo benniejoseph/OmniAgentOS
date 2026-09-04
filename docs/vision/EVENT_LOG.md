@@ -242,6 +242,14 @@ scope, artifacts, approvals, receipts, and canonical writes remain unchanged;
 their later identity cutovers must append evidence at the affected governed
 operation boundary.
 
+The interactive personal-notification read canary emits no domain event. It
+does not generate, reconcile, or mutate a notification: it only reads the
+validated canonical/current-email pair, rejects cross-alias occurrence
+duplicates before limiting, and projects the current request actor. Reminder
+workers, occurrence upserts, notification actions, the coupled Today-item
+completion, and canonical writes remain unchanged; their later identity or
+lifecycle cutovers require evidence at the affected mutation boundary.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
