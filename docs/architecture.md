@@ -278,6 +278,16 @@ grants remain revoked and no store calls the installer, so it is intentionally
 unusable by serving roles until membership, consent, and purpose validation
 join the atomic all-surface activation.
 
+Migration v45 adds the authorization call boundary but deliberately implements
+it as an ungranted, always-deny hook. Current tenant membership does not prove
+workspace membership; OAuth grants do not prove memory consent; capability
+rollouts are not principal grants; free-form audit purpose is not a purpose
+entitlement; and agent/system principals do not yet share one durable registry.
+The eventual resolver must live-check and deterministically hold the canonical
+actor, principal, target, purpose, consent, and capability rows in the same
+transaction that installs the memory scope. No policy, store, worker, or API
+calls the v45 hook, and the v43 enrollment and RLS barriers remain unchanged.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

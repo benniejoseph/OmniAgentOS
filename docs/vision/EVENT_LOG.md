@@ -159,6 +159,12 @@ is not a domain mutation, and the installer has no serving-role grant or call
 site. The later activation must emit typed binding/authorization evidence at
 the memory operation boundary rather than logging the session mechanism.
 
+Migration v45 emits no domain event. Its ungranted authorization function is
+an always-deny enforcement seam: it authorizes no actor, principal, target,
+grant, purpose, memory, or operation and has no runtime consumer. Typed memory
+authorization evidence begins only when authoritative records are resolved and
+held in the operation transaction during the later all-surface activation.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
