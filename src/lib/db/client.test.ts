@@ -687,11 +687,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the native client compatibility telemetry migration", () => {
+  it("pins the Capture recording request-read index migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 52,
-      name: "native_client_compatibility_telemetry",
-      checksum: "c266dcc9ae08d4f7cbf195ca1474cf18bf3d572857758a4cd6127250a08d372e",
+      version: 53,
+      name: "capture_recording_request_read_index",
+      checksum: "763a675a5401d9ba91f0ccee618eb023a016cc06d352d07df530c7f3ade284bf",
     });
   });
 

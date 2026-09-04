@@ -27,9 +27,10 @@ type RecordingSummary = {
   startedAt: string;
   completedAt?: string;
   durationMs: number;
-  byteCount: number;
   segmentCount: number;
-  transcript: string;
+  updatedAt: string;
+  detailAvailable: boolean;
+  manageable: boolean;
 };
 
 type RecordingSegment = {
@@ -40,7 +41,14 @@ type RecordingSegment = {
   transcriptionStatus: "pending" | "completed" | "failed";
 };
 
-type RecordingDetail = RecordingSummary & { segments: RecordingSegment[] };
+type RecordingDetail = Omit<
+  RecordingSummary,
+  "detailAvailable" | "manageable"
+> & {
+  byteCount: number;
+  transcript: string;
+  segments: RecordingSegment[];
+};
 
 type RecordingPhase =
   | "idle"
@@ -100,9 +108,12 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
   const loadRecordings = useCallback(async () => {
     setLoadingRecordings(true);
     try {
-      const response = await fetch("/api/capture/recordings?limit=6", {
+      const response = await fetch(
+        "/api/capture/recordings?limit=6&ownerScope=readable",
+        {
         cache: "no-store",
-      });
+        },
+      );
       const payload = (await response.json().catch(() => ({}))) as {
         recordings?: RecordingSummary[];
       };
@@ -170,13 +181,14 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as {
-        recording?: RecordingSummary;
+        recording?: { id: string };
         error?: string;
       };
-      if (!response.ok || !payload.recording?.id) {
+      const createdId = payload.recording?.id;
+      if (!response.ok || !createdId) {
         throw new Error(payload.error || "The recording could not be started.");
       }
-      createdRecordingId = payload.recording.id;
+      createdRecordingId = createdId;
 
       const mimeType = preferredAudioMimeType();
       const recorder = new MediaRecorder(stream, {
@@ -184,7 +196,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
         audioBitsPerSecond: 64_000,
       });
       recorderRef.current = recorder;
-      setRecordingId(payload.recording.id);
+      setRecordingId(createdId);
       setLiveTranscript("");
       setUploadedSegments(0);
       setPendingSegments(0);
@@ -202,7 +214,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
         const index = segmentIndexRef.current++;
         const durationMs = Math.max(1, Date.now() - segmentStartedAtRef.current);
         segmentStartedAtRef.current = Date.now();
-        queueSegment(payload.recording!.id, index, durationMs, event.data);
+        queueSegment(createdId, index, durationMs, event.data);
       };
       recorder.onstop = () => {
         stopResolverRef.current?.();
@@ -301,7 +313,6 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
         headers: { "idempotency-key": crypto.randomUUID() },
       });
       const payload = (await response.json().catch(() => ({}))) as {
-        recording?: RecordingSummary;
         job?: {
           id: string;
           status?: "queued" | "running" | "completed" | "failed" | "canceled";
@@ -522,7 +533,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-sm font-semibold">Recent recordings</p>
-            <p className="mt-1 text-xs text-muted">Stored privately and linked to knowledge.</p>
+            <p className="mt-1 text-xs text-muted">Your recordings and retained history.</p>
           </div>
           {loadingRecordings ? <Loader2 size={16} className="animate-spin text-muted" aria-label="Loading recordings" /> : null}
         </div>
@@ -538,15 +549,20 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
                   </p>
                 </div>
                 <div className="flex shrink-0 gap-1">
-                  <button type="button" onClick={() => void openRecording(recording.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Open ${recording.title}`}>
-                    {loadingDetail ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
-                  </button>
-                  <button type="button" onClick={() => void deleteRecording(recording.id)} className="grid size-9 place-items-center rounded-md text-muted opacity-0 transition hover:bg-danger/10 hover:text-danger group-hover:opacity-100 focus:opacity-100" aria-label={`Delete ${recording.title}`}>
-                    <Trash2 size={14} aria-hidden="true" />
-                  </button>
+                  {recording.detailAvailable === true ? (
+                    <button type="button" onClick={() => void openRecording(recording.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Open ${recording.title}`}>
+                      {loadingDetail ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
+                    </button>
+                  ) : null}
+                  {recording.manageable === true && !disabledReason ? (
+                    <button type="button" onClick={() => void deleteRecording(recording.id)} className="grid size-9 place-items-center rounded-md text-muted opacity-0 transition hover:bg-danger/10 hover:text-danger group-hover:opacity-100 focus:opacity-100" aria-label={`Delete ${recording.title}`}>
+                      <Trash2 size={14} aria-hidden="true" />
+                    </button>
+                  ) : null}
                 </div>
               </div>
               <p className={clsx("mt-2 text-xs font-semibold", recording.status === "failed" ? "text-danger" : recording.status === "ready" ? "text-success" : "text-warning")}>{recordingStatusLabel(recording.status)}</p>
+              {recording.detailAvailable !== true ? <p className="mt-1 text-xs text-muted">Retained history · transcript, audio, and actions remain with its stored owner</p> : null}
             </div>
           )) : <p className="py-5 text-sm leading-6 text-muted">Finished conversations will appear here with their indexing status.</p>}
         </div>

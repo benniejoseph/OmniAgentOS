@@ -585,6 +585,19 @@ File fallback stays exact-owner and applies the same integrity checks. Provider
 credentials, catalog refresh, model assignments, runtime resolution, events,
 portable data, and canonical writes remain exact-owner contracts.
 
+The sixteenth request-bound slice is an opt-in Capture recording-history
+catalog. Migration v53 adds the composite owner/update/ID index. PostgreSQL
+takes at most one bounded page from each validated canonical/current-email
+owner through that index, then globally orders at most two pages by
+`updated_at DESC, id ASC`. The response allowlist omits owner identity,
+transcripts, audio, source linkage, metadata, and knowledge/job linkage; every
+returned scalar is validated and title controls are normalized for display.
+Only rows physically owned by the exact request actor advertise
+`detailAvailable` and `manageable`. File fallback validates its complete exact
+owner set before limiting and never widens. Bare list, detail, segment
+metadata/audio, creation, completion, indexing, updates, deletion, background
+recovery, events, portable data, and canonical writes remain exact-owner.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

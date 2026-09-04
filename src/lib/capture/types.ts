@@ -54,6 +54,19 @@ export type CaptureRecordingDetail = CaptureRecording & {
   segments: CaptureSegment[];
 };
 
+export type RequestCaptureRecordingSummary = {
+  id: string;
+  title: string;
+  status: CaptureRecordingStatus;
+  startedAt: string;
+  completedAt?: string;
+  durationMs: number;
+  segmentCount: number;
+  updatedAt: string;
+  detailAvailable: boolean;
+  manageable: boolean;
+};
+
 export type CaptureAssetStatus = "stored" | "queued" | "indexed" | "unsupported" | "failed";
 
 export type CaptureAsset = {

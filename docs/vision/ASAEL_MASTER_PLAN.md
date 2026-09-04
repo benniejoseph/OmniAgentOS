@@ -1217,6 +1217,19 @@ runtime routing, events, portable data, and canonical writes remain unchanged.
 This read-only slice emits no domain event and does not unblock membership or
 consent holds.
 
+The next request canary adds an opt-in summary catalog for Capture recording
+history. Migration v53 adds an owner/update/ID index; PostgreSQL takes one
+bounded page per validated canonical/current-email owner and globally orders
+only that union before returning safe display identity, status, timing/count
+summaries, and physical-owner-derived
+`detailAvailable`/`manageable` booleans. Each returned row is validated;
+canonical history is visible without exposing its owner, transcript, audio,
+segments, source, metadata, or knowledge/job linkage and without offering an
+action. File fallback validates only its complete exact-owner set. Bare list,
+detail, audio, completion, indexing, mutation, deletion, background recovery,
+portable data, events, and canonical writes stay exact. This read-only slice
+emits no domain event and does not unblock membership or consent holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
