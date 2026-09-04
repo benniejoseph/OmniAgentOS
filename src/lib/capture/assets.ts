@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { captureActorReadOrder } from "@/lib/capture/actor-scope";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
@@ -18,6 +20,9 @@ type CaptureAssetLedger = {
 };
 
 type Owner = { tenantId: string; actorId: string };
+type CaptureAssetListOwner = Owner & {
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+};
 type ScopedOwner = Owner & { executionScope: ExecutionScope };
 type CaptureAssetEventPayload = {
   schemaVersion: 1;
@@ -135,22 +140,36 @@ export async function saveCaptureAsset(input: ScopedOwner & {
   return asset;
 }
 
-export async function listCaptureAssets(owner: Owner, limit = 100) {
+export async function listCaptureAssets(
+  owner: CaptureAssetListOwner,
+  limit = 100,
+) {
   const tenantId = normalizeTenantId(owner.tenantId);
   const actorId = normalizeActorId(owner.actorId);
   const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 100);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const actorReadOrder = captureActorReadOrder(
+      owner.actorId,
+      owner.requestActorBinding,
+      actorId,
+    );
+    const canonicalActorId = actorReadOrder[0];
+    const exactActorId = actorReadOrder[1];
     const rows = await getSql()`
       SELECT id, tenant_id, actor_id, filename, media_type, extension, byte_count,
         content_sha256, storage_kind, status, extraction_status, ingest_job_id,
         knowledge_document_id, error, tags, metadata, created_at, updated_at
       FROM omni_capture_assets
-      WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
+      WHERE tenant_id = ${tenantId}
+        AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
         AND COALESCE(metadata->>'internalKind', '') = ''
-      ORDER BY updated_at DESC LIMIT ${boundedLimit}
+      ORDER BY updated_at DESC, id ASC
+      LIMIT ${boundedLimit}
     `;
-    return rows.map(assetFromRow);
+    return rows.map((row) =>
+      captureAssetForRequest(assetFromRow(row), exactActorId),
+    );
   }
   const ledger = await readJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] });
   return ledger.assets
@@ -397,6 +416,13 @@ function assetFromRow(row: Record<string, unknown>): CaptureAsset {
     error: optionalString(row.error), tags: Array.isArray(row.tags) ? row.tags.map(String) : [], metadata: record(row.metadata),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
+}
+
+function captureAssetForRequest(
+  asset: CaptureAsset,
+  requestActorId: string,
+): CaptureAsset {
+  return { ...asset, actorId: requestActorId };
 }
 
 function getAssetLedgerFile() { return getDataPath("capture-assets.json"); }

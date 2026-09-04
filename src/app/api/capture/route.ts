@@ -9,6 +9,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseBoundedInteger } from "@/lib/http/body";
 import { BackgroundJobIdempotencyConflictError, enqueueKnowledgeIngestJob } from "@/lib/operations/background-jobs";
 import { projectOperationJobStatus } from "@/lib/operations/job-queue";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -24,7 +25,14 @@ async function GETHandler(request: Request) {
     return forbiddenResponse(error);
   }
   const limit = parseBoundedInteger(new URL(request.url).searchParams.get("limit"), 50, { max: 100 });
-  return Response.json({ assets: await listCaptureAssets(context, limit) }, { headers: { "cache-control": "private, no-store" } });
+  return Response.json({
+    assets: await listCaptureAssets({
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestActorBinding:
+        canonicalRequestActorBindingFromSecurityContext(context),
+    }, limit),
+  }, { headers: { "cache-control": "private, no-store" } });
 }
 
 async function POSTHandler(request: Request) {

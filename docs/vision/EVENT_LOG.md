@@ -264,6 +264,15 @@ current request email or omits ownership in Today. It changes no brief
 generation, model call, save, schedule, action, approval, receipt, worker,
 portable record, cache identity, or canonical write.
 
+Converging the authenticated Capture asset collection emits no domain event.
+The read-only request merges only the validated canonical/current-email pair,
+excludes internal artifacts, applies a deterministic global limit, and
+projects the current request actor. It does not read stored bytes or change
+asset detail, download, indexing, status, deletion, ingestion, browser-frame,
+recording, RAG, worker, file-fallback, event, execution-scope, or canonical-
+write behavior; any later action-path identity cutover must emit evidence at
+the affected governed boundary.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
