@@ -335,6 +335,14 @@ knowledge, operate on internal artifacts, or change canonical writer identity;
 those governed boundaries require their own typed evidence when they later
 converge.
 
+Converging request-bound service API-key metadata lists emits no domain event.
+The read selects only redacted fields from the validated
+canonical/current-email pair, projects the request actor, and publishes a
+physical-owner-derived management capability. It never reads a token hash or
+changes key status, authentication, last-used state, MCP policy, portable
+records, file fallback, or writer identity. Creation, revocation, use, and any
+future canonical-write cutover retain their existing typed-event boundaries.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

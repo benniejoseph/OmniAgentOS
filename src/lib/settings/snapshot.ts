@@ -1,7 +1,8 @@
 import { isAuthEnforced, isBootstrapConfigured } from "@/lib/auth/store";
 import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
 import { credentialVaultStatus } from "@/lib/settings/credential-vault";
-import { listServiceApiKeys } from "@/lib/settings/service-api-keys";
+import { listServiceApiKeysForRequest } from "@/lib/settings/service-api-keys";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import {
   getMcpExportConfiguration,
   listModelAssignments,
@@ -13,13 +14,15 @@ import type { SettingsSnapshot } from "@/lib/settings/types";
 export async function getSettingsSnapshot(input: {
   tenantId: string;
   actorId: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 }): Promise<SettingsSnapshot> {
+  const exactOwner = { tenantId: input.tenantId, actorId: input.actorId };
   const [providers, models, assignments, apiKeys, mcp] = await Promise.all([
-    listProviderConnections({ ...input, includeDeploymentFallback: true }),
-    listModelCatalog(input),
-    listModelAssignments(input),
-    listServiceApiKeys(input),
-    getMcpExportConfiguration(input),
+    listProviderConnections({ ...exactOwner, includeDeploymentFallback: true }),
+    listModelCatalog(exactOwner),
+    listModelAssignments(exactOwner),
+    listServiceApiKeysForRequest(input),
+    getMcpExportConfiguration(exactOwner),
   ]);
   return {
     platform: {

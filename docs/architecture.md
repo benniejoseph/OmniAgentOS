@@ -553,6 +553,22 @@ non-manageable; POST indexing, status mutation, deletion, linked knowledge
 cleanup, internal artifacts, recordings, background work, file-fallback
 ownership, portable data, and canonical writes remain exact-owner contracts.
 
+The fourteenth request-bound slice converges only authenticated service API
+key metadata lists. PostgreSQL selects an explicit redacted column set from
+the strictly validated canonical/current-email owner pair, uses indexed
+default-collation predicates only as a candidate superset before authoritative
+binary comparisons, globally orders by creation time and ID, and rejects
+unexpected owners, malformed rows, and duplicate
+IDs, safely normalizes legacy display-name controls, and projects the current
+request actor only after deriving `manageable` from the physical owner.
+Canonical compatibility keys are visible but
+read-only; their saved MCP policy may differ from the exact current-email
+policy shown beside them. The aggregate Settings snapshot passes the binding
+only to this key list. Token hashes, provider credentials, model assignments,
+MCP configuration, creation, revocation, Bearer resolution, last-used writes,
+service-principal reads, file fallback, portable data, events, and canonical
+writes remain exact-owner contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

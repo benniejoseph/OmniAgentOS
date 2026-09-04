@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { PersonalDataControls } from "@/components/settings/personal-data-controls";
+import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import styles from "@/components/settings/settings-workspace.module.css";
 import {
   MODEL_ASSIGNMENT_SCOPES,
@@ -108,6 +109,7 @@ const assignmentLabels: Record<ModelAssignmentScope, { title: string; descriptio
 };
 
 export function SettingsWorkspace() {
+  const { session, status: sessionStatus } = useWorkspaceSession();
   const [section, setSection] = useState<SettingsSection>("overview");
   const [snapshot, setSnapshot] = useState<SettingsSnapshot>();
   const [loading, setLoading] = useState(true);
@@ -173,6 +175,11 @@ export function SettingsWorkspace() {
       .map((item) => item.provider) || [],
   ).size;
   const deprecatedModels = snapshot?.models.filter((item) => item.lifecycle === "deprecated" || item.lifecycle === "retiring").length || 0;
+  const serviceKeyManageBlocked = permissionMessage(
+    session,
+    sessionStatus,
+    "manage.connector",
+  );
 
   return (
     <div className={clsx("workspace-enter mx-auto w-full max-w-[112rem] px-4 pb-16 pt-5 sm:px-6 lg:px-8", styles.shell)}>
@@ -256,7 +263,7 @@ export function SettingsWorkspace() {
             <ModelsSection snapshot={snapshot} busy={busy} onSave={(scope, value) => request(`assignment:${scope}`, "/api/settings/assignments", "PUT", { scope, ...value })} onRefresh={(id) => request(`validate:${id}`, `/api/settings/providers/${id}/validate`, "POST")} />
           ) : null}
           {!loading && snapshot && section === "api" ? (
-            <ApiSection snapshot={snapshot} busy={busy} onRequest={request} onRevealToken={setRevealedToken} />
+            <ApiSection snapshot={snapshot} busy={busy} manageBlocked={serviceKeyManageBlocked} onRequest={request} onRevealToken={setRevealedToken} />
           ) : null}
           {!loading && snapshot && section === "data" ? (
             <DataSection snapshot={snapshot} />
@@ -439,23 +446,23 @@ function ModelCatalog({ models }: { models: ModelCatalogEntry[] }) {
   </div>;
 }
 
-function ApiSection({ snapshot, busy, onRequest, onRevealToken }: { snapshot: SettingsSnapshot; busy?: string; onRequest: <T>(key: string, path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown) => Promise<T | undefined>; onRevealToken: (token: string) => void }) {
+function ApiSection({ snapshot, busy, manageBlocked, onRequest, onRevealToken }: { snapshot: SettingsSnapshot; busy?: string; manageBlocked?: string; onRequest: <T>(key: string, path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown) => Promise<T | undefined>; onRevealToken: (token: string) => void }) {
   return <section className={styles.sectionCanvas}>
     <SectionHeader eyebrow="API & MCP" title="Programmatic access" description="Create scoped service identities and expose Asael through a governed MCP endpoint. Tokens are stored as hashes and cannot be recovered." />
-    <ServiceApiKeys snapshot={snapshot} busy={busy} onRequest={onRequest} onRevealToken={onRevealToken} />
+    <ServiceApiKeys snapshot={snapshot} busy={busy} manageBlocked={manageBlocked} onRequest={onRequest} onRevealToken={onRevealToken} />
     <McpConfiguration config={snapshot.mcp} busy={busy === "mcp:save"} onSave={(config) => onRequest("mcp:save", "/api/settings/mcp", "PUT", config)} />
   </section>;
 }
 
-function ServiceApiKeys({ snapshot, busy, onRequest, onRevealToken }: { snapshot: SettingsSnapshot; busy?: string; onRequest: <T>(key: string, path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown) => Promise<T | undefined>; onRevealToken: (token: string) => void }) {
+function ServiceApiKeys({ snapshot, busy, manageBlocked, onRequest, onRevealToken }: { snapshot: SettingsSnapshot; busy?: string; manageBlocked?: string; onRequest: <T>(key: string, path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown) => Promise<T | undefined>; onRevealToken: (token: string) => void }) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [scopes, setScopes] = useState<ServiceApiScope[]>(["mcp:discover", "mcp:tools:list"]);
   const [expiresAt, setExpiresAt] = useState("");
   return <div className={clsx("mt-6", styles.apiKeys)}>
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><h3 className="text-base font-semibold">Service API keys</h3><p className="mt-1 text-xs leading-5 text-muted">Use a separate key per integration so access can be revoked without interrupting anything else.</p></div><button type="button" className="primary-button shrink-0" onClick={() => setCreating(!creating)}><Plus size={15} />Create key</button></div>
-    {creating ? <form className={clsx("mt-4 rounded-lg bg-surface p-4 ring-1 ring-line", styles.createKeyForm)} onSubmit={(event) => { event.preventDefault(); void onRequest<{ token: string }>("api-key:create", "/api/settings/api-keys", "POST", { name, scopes, expiresAt: expiresAt ? new Date(expiresAt).toISOString() : undefined }).then((result) => { if (result?.token) { onRevealToken(result.token); setCreating(false); setName(""); setExpiresAt(""); } }).catch(() => undefined); }}><div className="grid gap-4 lg:grid-cols-[minmax(12rem,.6fr)_minmax(12rem,.55fr)_minmax(0,1fr)_auto] lg:items-end"><SettingsField label="Key name"><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Claude Desktop" maxLength={120} /></SettingsField><SettingsField label="Expiry (optional)"><input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></SettingsField><fieldset><legend className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-muted">Scopes</legend><div className="flex flex-wrap gap-2">{SERVICE_API_SCOPES.map((scope) => <label key={scope} className={clsx("cursor-pointer rounded-full border px-2.5 py-1 text-[10px] font-semibold transition", scopes.includes(scope) ? "border-primary/40 bg-primary/10 text-primary" : "border-line text-muted hover:text-foreground")}><input type="checkbox" className="sr-only" checked={scopes.includes(scope)} onChange={(event) => setScopes(event.target.checked ? [...scopes, scope] : scopes.filter((item) => item !== scope))} />{scope}</label>)}</div></fieldset><button type="submit" className="primary-button" disabled={!name.trim() || !scopes.length || busy === "api-key:create"}>{busy === "api-key:create" ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}Generate once</button></div></form> : null}
-    <div className={clsx("mt-4 divide-y divide-line border-y border-line", styles.apiKeyList)}>{snapshot.apiKeys.length ? snapshot.apiKeys.map((key) => <div key={key.id} className="grid gap-3 py-4 sm:grid-cols-[minmax(10rem,.55fr)_minmax(0,1fr)_auto] sm:items-center"><div><p className="text-sm font-semibold">{key.name}</p><p className="mt-1 font-mono text-[10px] text-muted">{key.tokenPrefix}••••{key.tokenLastFour}</p></div><div><StatusPill status={key.status === "active" ? "connected" : key.status === "expired" ? "error" : "revoked"} /><p className="mt-1.5 text-[10px] text-muted">{key.scopes.join(" · ")}</p></div><button type="button" className="action-button min-h-9 text-xs text-danger" disabled={key.status !== "active" || Boolean(busy)} onClick={() => { if (window.confirm(`Revoke the ${key.name} API key?`)) void onRequest(`api-key:revoke:${key.id}`, `/api/settings/api-keys/${key.id}`, "DELETE").catch(() => undefined); }}><Trash2 size={13} />Revoke</button></div>) : <EmptyLine title="No service API keys" body="Create a narrow, revocable identity for each client or automation." />}</div>
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><h3 className="text-base font-semibold">Service API keys</h3><p className="mt-1 text-xs leading-5 text-muted">Use a separate key per integration so access can be revoked without interrupting anything else.</p></div><button type="button" className="primary-button shrink-0" disabled={Boolean(manageBlocked)} title={manageBlocked} onClick={() => setCreating(!creating)}><Plus size={15} />Create key</button></div>
+    {creating && !manageBlocked ? <form className={clsx("mt-4 rounded-lg bg-surface p-4 ring-1 ring-line", styles.createKeyForm)} onSubmit={(event) => { event.preventDefault(); void onRequest<{ token: string }>("api-key:create", "/api/settings/api-keys", "POST", { name, scopes, expiresAt: expiresAt ? new Date(expiresAt).toISOString() : undefined }).then((result) => { if (result?.token) { onRevealToken(result.token); setCreating(false); setName(""); setExpiresAt(""); } }).catch(() => undefined); }}><div className="grid gap-4 lg:grid-cols-[minmax(12rem,.6fr)_minmax(12rem,.55fr)_minmax(0,1fr)_auto] lg:items-end"><SettingsField label="Key name"><input required value={name} onChange={(event) => setName(event.target.value)} placeholder="Claude Desktop" maxLength={120} /></SettingsField><SettingsField label="Expiry (optional)"><input type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} /></SettingsField><fieldset><legend className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-muted">Scopes</legend><div className="flex flex-wrap gap-2">{SERVICE_API_SCOPES.map((scope) => <label key={scope} className={clsx("cursor-pointer rounded-full border px-2.5 py-1 text-[10px] font-semibold transition", scopes.includes(scope) ? "border-primary/40 bg-primary/10 text-primary" : "border-line text-muted hover:text-foreground")}><input type="checkbox" className="sr-only" checked={scopes.includes(scope)} onChange={(event) => setScopes(event.target.checked ? [...scopes, scope] : scopes.filter((item) => item !== scope))} />{scope}</label>)}</div></fieldset><button type="submit" className="primary-button" disabled={!name.trim() || !scopes.length || busy === "api-key:create"}>{busy === "api-key:create" ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}Generate once</button></div></form> : null}
+    <div className={clsx("mt-4 divide-y divide-line border-y border-line", styles.apiKeyList)}>{snapshot.apiKeys.length ? snapshot.apiKeys.map((key) => <div key={key.id} className="grid gap-3 py-4 sm:grid-cols-[minmax(10rem,.55fr)_minmax(0,1fr)_auto] sm:items-center"><div><p className="text-sm font-semibold">{key.name}</p><p className="mt-1 font-mono text-[10px] text-muted">{key.tokenPrefix}••••{key.tokenLastFour}</p></div><div><StatusPill status={key.status === "active" ? "connected" : key.status === "expired" ? "error" : "revoked"} /><p className="mt-1.5 text-[10px] text-muted">{key.scopes.join(" · ")}</p>{key.manageable !== true ? <p className="mt-1.5 text-[10px] text-muted">Read-only retained identity · its saved MCP policy may differ from the policy below</p> : manageBlocked ? <p className="mt-1.5 text-[10px] text-muted">Read only in your current role</p> : null}</div>{key.manageable === true ? <button type="button" className="action-button min-h-9 text-xs text-danger" disabled={key.status !== "active" || Boolean(busy) || Boolean(manageBlocked)} title={manageBlocked} onClick={() => { if (window.confirm(`Revoke the ${key.name} API key?`)) void onRequest(`api-key:revoke:${key.id}`, `/api/settings/api-keys/${encodeURIComponent(key.id)}`, "DELETE").catch(() => undefined); }}><Trash2 size={13} />Revoke</button> : <span className="text-xs font-semibold text-muted">Read only</span>}</div>) : <EmptyLine title="No service API keys" body="Create a narrow, revocable identity for each client or automation." />}</div>
   </div>;
 }
 

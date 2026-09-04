@@ -3,15 +3,19 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { settingsErrorResponse } from "@/lib/settings/http";
-import { createServiceApiKey, listServiceApiKeys } from "@/lib/settings/service-api-keys";
+import { createServiceApiKey, listServiceApiKeysForRequest } from "@/lib/settings/service-api-keys";
 import { SERVICE_API_SCOPES } from "@/lib/settings/types";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
 const createSchema = z.object({
-  name: z.string().trim().min(1).max(120),
+  name: z.string().trim().min(1).max(120).refine(
+    (value) => !/[\u0000-\u001f\u007f]/.test(value),
+    "API key name contains unsupported characters.",
+  ),
   scopes: z.array(z.enum(SERVICE_API_SCOPES)).min(1).max(SERVICE_API_SCOPES.length),
   expiresAt: z.string().datetime().optional(),
 }).strict();
@@ -20,7 +24,16 @@ async function GETHandler(request: Request) {
   let context;
   try { context = await authorizeRequest({ request, action: "read", resourceType: "service_api_key" }); }
   catch (error) { return forbiddenResponse(error); }
-  try { return Response.json({ apiKeys: await listServiceApiKeys(context) }, { headers: { "cache-control": "no-store, private" } }); }
+  try {
+    return Response.json({
+      apiKeys: await listServiceApiKeysForRequest({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        requestActorBinding:
+          canonicalRequestActorBindingFromSecurityContext(context),
+      }),
+    }, { headers: { "cache-control": "no-store, private" } });
+  }
   catch (error) { return settingsErrorResponse(error); }
 }
 

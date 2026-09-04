@@ -9,11 +9,14 @@ import {
   getServiceApiKeyRecord,
   insertServiceApiKey,
   listServiceApiKeyRecords,
+  listServiceApiKeyRecordsForRequest,
   updateServiceApiKeyRecord,
 } from "@/lib/settings/store";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import {
   SERVICE_API_SCOPES,
   type RedactedServiceApiKey,
+  type RequestServiceApiKey,
   type ServiceApiKeyPrincipal,
   type ServiceApiScope,
 } from "@/lib/settings/types";
@@ -21,11 +24,13 @@ import {
 export { SERVICE_API_SCOPES } from "@/lib/settings/types";
 export type {
   RedactedServiceApiKey,
+  RequestServiceApiKey,
   ServiceApiKeyPrincipal,
   ServiceApiScope,
 } from "@/lib/settings/types";
 
 const TOKEN_PREFIX = "asael_sk";
+const unsafeServiceApiKeyNamePattern = /[\u0000-\u001f\u007f]/;
 const TOKEN_DIGEST_DOMAINS = {
   asael_sk: "asael:service-api-key:v1\0",
   omni_sk: "omniagent:service-api-key:v1\0",
@@ -47,8 +52,11 @@ export async function createServiceApiKey(input: {
   scopes: ServiceApiScope[];
   expiresAt?: string;
 }): Promise<{ record: RedactedServiceApiKey; token: string }> {
-  const name = input.name.trim().slice(0, 120);
+  const name = input.name.trim();
   if (!name) throw new ServiceApiKeyError("API key name is required.");
+  if (name.length > 120 || unsafeServiceApiKeyNamePattern.test(name)) {
+    throw new ServiceApiKeyError("API key name contains unsupported characters.");
+  }
   const scopes = [...new Set(input.scopes)].filter((scope): scope is ServiceApiScope =>
     SERVICE_API_SCOPES.includes(scope as ServiceApiScope)
   );
@@ -86,9 +94,17 @@ export async function createServiceApiKey(input: {
 
 export async function listServiceApiKeys(input: {
   tenantId: string;
-  actorId?: string;
+  actorId: string;
 }): Promise<RedactedServiceApiKey[]> {
   return (await listServiceApiKeyRecords(input)).map(redactServiceApiKey);
+}
+
+export async function listServiceApiKeysForRequest(input: {
+  tenantId: string;
+  actorId: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+}): Promise<RequestServiceApiKey[]> {
+  return listServiceApiKeyRecordsForRequest(input);
 }
 
 export async function revokeServiceApiKey(input: {
