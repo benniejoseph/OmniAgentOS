@@ -16,11 +16,15 @@ async function GETHandler(request: Request) {
     return forbiddenResponse(error);
   }
   try {
+    const providerOwnerScope = new URL(request.url).searchParams.get("ownerScope") === "readable"
+      ? "readable" as const
+      : undefined;
     return Response.json(await getSettingsSnapshot({
       tenantId: context.tenantId,
       actorId: context.actorId,
       requestActorBinding:
         canonicalRequestActorBindingFromSecurityContext(context),
+      ...(providerOwnerScope ? { providerOwnerScope } : {}),
     }), {
       headers: { "cache-control": "no-store, private" },
     });

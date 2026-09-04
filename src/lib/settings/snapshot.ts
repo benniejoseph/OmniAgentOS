@@ -8,6 +8,7 @@ import {
   listModelAssignments,
   listModelCatalogForRequest,
   listProviderConnections,
+  listProviderConnectionsForRequest,
 } from "@/lib/settings/store";
 import type { SettingsSnapshot } from "@/lib/settings/types";
 
@@ -15,16 +16,39 @@ export async function getSettingsSnapshot(input: {
   tenantId: string;
   actorId: string;
   requestActorBinding?: CanonicalRequestActorBindingV1;
+  providerOwnerScope?: "readable";
 }): Promise<SettingsSnapshot> {
   const exactOwner = { tenantId: input.tenantId, actorId: input.actorId };
+  const requestReadOwner = {
+    ...exactOwner,
+    requestActorBinding: input.requestActorBinding,
+  };
   const [providers, models, assignments, apiKeys, mcp] = await Promise.all([
-    listProviderConnections({ ...exactOwner, includeDeploymentFallback: true }),
-    listModelCatalogForRequest(input),
+    input.providerOwnerScope === "readable"
+      ? listProviderConnectionsForRequest({
+          ...exactOwner,
+          requestActorBinding: requestReadOwner.requestActorBinding,
+          includeDeploymentFallback: true,
+        })
+      : listProviderConnections({
+          ...exactOwner,
+          includeDeploymentFallback: true,
+        }).then((records) => records.map((record) => ({
+          ...record,
+          manageable: record.source === "tenant_vault" &&
+            record.actorId === input.actorId,
+        }))),
+    listModelCatalogForRequest(requestReadOwner),
     listModelAssignments(exactOwner),
-    listServiceApiKeysForRequest(input),
+    listServiceApiKeysForRequest(requestReadOwner),
     getMcpExportConfiguration(exactOwner),
   ]);
   return {
+    requestReadContracts: {
+      providerConnections: input.providerOwnerScope === "readable"
+        ? "readable_v1"
+        : "exact_v1",
+    },
     platform: {
       authEnforced: isAuthEnforced(),
       bootstrapConfigured: isBootstrapConfigured(),

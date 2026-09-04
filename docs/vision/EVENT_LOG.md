@@ -360,6 +360,14 @@ recording, enqueue ingestion, alter knowledge, recover background ownership,
 or change writer identity; those exact-owner operations retain their existing
 scoped event boundaries.
 
+Converging opt-in provider-connection metadata emits no domain event. The read
+selects no credential ciphertext or key identifier, retains the physical owner
+only to derive management and runtime-readiness capabilities, and projects
+canonical history as configuration-only and read-only. It does not open,
+validate, rotate, enable, revoke, refresh, assign, route, or otherwise use a
+credential. Those exact-owner operations and any later canonical-write cutover
+retain their existing governed and typed-event boundaries.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

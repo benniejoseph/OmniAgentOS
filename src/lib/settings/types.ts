@@ -69,6 +69,10 @@ export type RedactedProviderConnection = {
   rotatedAt?: string;
 };
 
+export type RequestProviderConnection = RedactedProviderConnection & {
+  manageable: boolean;
+};
+
 export type ModelLifecycleState =
   | "available"
   | "deprecated"
@@ -154,6 +158,9 @@ export type McpExportConfiguration = {
 };
 
 export type SettingsSnapshot = {
+  requestReadContracts?: {
+    providerConnections: "exact_v1" | "readable_v1";
+  };
   platform: {
     authEnforced: boolean;
     bootstrapConfigured: boolean;
@@ -166,7 +173,7 @@ export type SettingsSnapshot = {
     activeKeyId?: string;
     message: string;
   };
-  providers: RedactedProviderConnection[];
+  providers: RequestProviderConnection[];
   models: RequestModelCatalogEntry[];
   assignments: ModelAssignment[];
   apiKeys: RequestServiceApiKey[];

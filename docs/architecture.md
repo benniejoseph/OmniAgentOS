@@ -598,6 +598,23 @@ owner set before limiting and never widens. Bare list, detail, segment
 metadata/audio, creation, completion, indexing, updates, deletion, background
 recovery, events, portable data, and canonical writes remain exact-owner.
 
+The seventeenth request-bound slice is an opt-in provider-connection metadata
+catalog. PostgreSQL selects only the public connection fields from the
+validated canonical/current-email pair and never selects credential
+ciphertext or key identifiers. It validates owner, provider, status,
+credential version, fingerprint, configured-field allowlists, timestamps, and
+revocation invariants before rejecting duplicate IDs or any cross-owner
+provider collision. Display labels and validation codes are normalized before
+the current request actor is projected. A response-level `readable_v1`
+acknowledgement gates provider-write controls so an older server fails closed
+instead of creating a duplicate hidden owner. Only a physically exact-owner vault
+row is `manageable` and retains active tenant-runtime readiness; canonical
+history is visible as configuration-only and read-only. Deployment fallback
+metadata remains explicitly non-manageable. The legacy provider reader,
+credential opening, validation, rotation, status updates, revocation, catalog
+refresh, assignments, runtime routing, MCP policy, file fallback, portable
+data, events, and canonical writes remain exact-owner contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.
