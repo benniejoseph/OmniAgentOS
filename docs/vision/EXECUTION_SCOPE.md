@@ -50,3 +50,6 @@ membership resolution, row enrollment, and every serving call site remain
 held for one atomic activation. Migration v45 adds an ungranted authorization
 hook that always denies until actor, principal, target, purpose, consent, and
 capability authorities can be resolved and locked in that same transaction.
+Migration v46 and its pure code accessor now define a stable authenticated-user
+actor projection, but `ExecutionScope` v1 still carries the historical actor
+unchanged and does not infer or persist that projection.
