@@ -418,8 +418,11 @@ export async function getNativeClientAdoption(
       }
       continue;
     }
-    const descriptor = {
-      platform: row.platform,
+    const platform = row.platform;
+    const descriptor: Parameters<
+      typeof evaluateNativeClientCompatibility
+    >[0] = {
+      platform,
       appVersion: row.app_version ? String(row.app_version) : undefined,
       buildNumber: optionalPositiveInteger(row.app_build_number),
       clientContractVersion: optionalPositiveInteger(
@@ -435,7 +438,7 @@ export async function getNativeClientAdoption(
     incrementCompatibilityCounts(sessionFamilyCounts, descriptor, status);
     if (Number(row.enrollment_rank) !== 1) continue;
     incrementCompatibilityCounts(deviceCounts, descriptor, status);
-    incrementCompatibilityCounts(byPlatform[row.platform], descriptor, status);
+    incrementCompatibilityCounts(byPlatform[platform], descriptor, status);
   }
 
   const adoptionBasisPoints = deviceCounts.total === 0
