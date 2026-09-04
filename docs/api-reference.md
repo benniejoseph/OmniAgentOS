@@ -39,6 +39,7 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 - `/api/memory`, `/api/memory/graph`, `/api/knowledge`, `/api/ingest`, and `/api/retrieval/plan`.
 - `GET|POST /api/capture` lists or ingests Capture assets. Collection rows add `contentAvailable`, `indexable`, and `manageable`; exact-owner rows are actionable and canonical compatibility rows may be downloaded when their persisted content descriptor is valid, but cannot be indexed, changed, or deleted.
 - `GET|POST|DELETE /api/capture/assets/:id` reads metadata or content, queues indexing, and deletes an asset. Public metadata and `content=1` GETs may read the validated canonical/current-email pair; PostgreSQL content is returned only after its persisted byte count and SHA-256 are verified in the same database read. Canonical compatibility rows remain read-only, while indexing, deletion, status changes, and linked knowledge cleanup stay exact-owner operations.
+- `GET|POST /api/capture/recordings` keeps bare GET and creation exact-owner. `GET /api/capture/recordings?ownerScope=readable` is the web recording-history compatibility catalog: it returns summary fields only, marks exact rows `detailAvailable` and `manageable`, and leaves canonical history read-only. Transcript, audio, segment, completion, indexing, update, and deletion routes remain exact-owner.
 
 ## Workflows and operations
 

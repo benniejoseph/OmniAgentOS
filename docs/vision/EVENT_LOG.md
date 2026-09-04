@@ -351,6 +351,15 @@ refreshes a catalog, saves an assignment, changes runtime routing, mutates a
 model lifecycle, or changes writer identity. Those exact-owner operations and
 any later canonical cutover retain their existing typed-event boundaries.
 
+Converging the opt-in Capture recording-history catalog emits no domain event.
+The request projects only bounded, validated summary metadata from the
+canonical/current-email pair, omits owner identity and all transcript, audio,
+segment, metadata, source, and linked-job content, and derives detail and
+management capabilities from the physical owner. It does not open or change a
+recording, enqueue ingestion, alter knowledge, recover background ownership,
+or change writer identity; those exact-owner operations retain their existing
+scoped event boundaries.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

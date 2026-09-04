@@ -803,6 +803,10 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureNativeClientCompatibilityTelemetry(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[52],
+      up: ensureCaptureRecordingRequestReadIndex,
+    },
   ];
 }
 
@@ -3050,6 +3054,18 @@ async function ensureCaptureRecordings(sql: SqlClient) {
   await sql`
     CREATE INDEX IF NOT EXISTS omni_capture_segments_recording_idx
     ON omni_capture_segments (tenant_id, actor_id, recording_id, segment_index ASC)
+  `;
+}
+
+async function ensureCaptureRecordingRequestReadIndex(sql: SqlClient) {
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_capture_recordings_request_owner_updated_idx
+    ON omni_capture_recordings (
+      tenant_id,
+      actor_id,
+      updated_at DESC,
+      id COLLATE "C" ASC
+    )
   `;
 }
 

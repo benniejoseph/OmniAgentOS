@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { captureActorReadOrder } from "@/lib/capture/actor-scope";
 import {
   ensureDatabaseSchema,
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
@@ -21,6 +23,7 @@ import type {
   CaptureRecordingStatus,
   CaptureSegment,
   CaptureTranscriptionStatus,
+  RequestCaptureRecordingSummary,
 } from "@/lib/capture/types";
 
 export const MAX_CAPTURE_SEGMENT_BYTES = 3 * 1024 * 1024;
@@ -34,7 +37,17 @@ type CaptureLedger = {
 };
 
 type Owner = { tenantId: string; actorId: string };
+type CaptureRecordingListOwner = Owner & {
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+};
 type ScopedOwner = Owner & { executionScope: ExecutionScope };
+type CaptureRecordingPhysicalSummary = Omit<
+  RequestCaptureRecordingSummary,
+  "detailAvailable" | "manageable"
+> & {
+  tenantId: string;
+  actorId: string;
+};
 type CaptureRecordingEventPayload = {
   schemaVersion: 1;
   recordingId: string;
@@ -80,6 +93,13 @@ export class CaptureRecordingError extends Error {
   ) {
     super(message);
     this.name = "CaptureRecordingError";
+  }
+}
+
+export class CaptureRecordingReadConflictError extends Error {
+  constructor(message = "Capture recording ownership is ambiguous.") {
+    super(message);
+    this.name = "CaptureRecordingReadConflictError";
   }
 }
 
@@ -185,6 +205,91 @@ export async function listCaptureRecordings(owner: Owner, limit = 50) {
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, boundedLimit)
     .map((item) => ({ ...item, transcript: item.transcript.slice(0, 4_000) }));
+}
+
+/**
+ * Returns a request-safe recording catalog. The compatibility owner may expose
+ * only summary metadata; transcripts, audio, linked knowledge, and mutations
+ * remain exact-owner operations through their existing routes.
+ */
+export async function listCaptureRecordingsForRequest(
+  owner: CaptureRecordingListOwner,
+  limit = 50,
+): Promise<RequestCaptureRecordingSummary[]> {
+  const tenantId = normalizeTenantId(owner.tenantId);
+  const requestActorId = normalizeActorId(owner.actorId);
+  const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 100);
+  if (!hasDatabaseUrl()) {
+    const ledger = await readCaptureLedger();
+    const summaries = ledger.recordings
+      .filter((item) =>
+        item.tenantId === tenantId && item.actorId === requestActorId
+      )
+      .map(recordingSummaryFromRecording);
+    assertRequestCaptureRecordingSummaries(
+      summaries,
+      tenantId,
+      requestActorId,
+      requestActorId,
+    );
+    return summaries
+      .sort(compareCaptureRecordingSummaries)
+      .slice(0, boundedLimit)
+      .map((summary) =>
+        requestCaptureRecordingSummary(summary, requestActorId)
+      );
+  }
+
+  const [canonicalActorId, exactActorId] = captureActorReadOrder(
+    owner.actorId,
+    owner.requestActorBinding,
+    requestActorId,
+  );
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    WITH canonical_rows AS (
+      SELECT id, tenant_id, actor_id, title, status, started_at, completed_at,
+        duration_ms, segment_count, updated_at
+      FROM omni_capture_recordings
+      WHERE tenant_id = ${tenantId}
+        AND actor_id = ${canonicalActorId}
+        AND tenant_id COLLATE "C" = ${tenantId}::text COLLATE "C"
+        AND actor_id COLLATE "C" = ${canonicalActorId}::text COLLATE "C"
+      ORDER BY updated_at DESC, id COLLATE "C" ASC
+      LIMIT ${boundedLimit}
+    ), exact_rows AS (
+      SELECT id, tenant_id, actor_id, title, status, started_at, completed_at,
+        duration_ms, segment_count, updated_at
+      FROM omni_capture_recordings
+      WHERE ${exactActorId}::text COLLATE "C" <>
+          ${canonicalActorId}::text COLLATE "C"
+        AND tenant_id = ${tenantId}
+        AND actor_id = ${exactActorId}
+        AND tenant_id COLLATE "C" = ${tenantId}::text COLLATE "C"
+        AND actor_id COLLATE "C" = ${exactActorId}::text COLLATE "C"
+      ORDER BY updated_at DESC, id COLLATE "C" ASC
+      LIMIT ${boundedLimit}
+    ), readable AS (
+      SELECT * FROM canonical_rows
+      UNION ALL
+      SELECT * FROM exact_rows
+    )
+    SELECT id, tenant_id, actor_id, title, status, started_at, completed_at,
+      duration_ms, segment_count, updated_at
+    FROM readable
+    ORDER BY updated_at DESC, id COLLATE "C" ASC
+    LIMIT ${boundedLimit}
+  `;
+  const summaries = rows.map(recordingSummaryFromRow);
+  assertRequestCaptureRecordingSummaries(
+    summaries,
+    tenantId,
+    canonicalActorId,
+    exactActorId,
+  );
+  return summaries.map((summary) =>
+    requestCaptureRecordingSummary(summary, exactActorId)
+  );
 }
 
 export async function getCaptureRecording(id: string, owner: Owner): Promise<CaptureRecordingDetail | undefined> {
@@ -770,6 +875,167 @@ function recordingFromRow(row: Record<string, unknown>): CaptureRecording {
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
+}
+
+function recordingSummaryFromRow(
+  row: Record<string, unknown>,
+): CaptureRecordingPhysicalSummary {
+  const status = typeof row.status === "string" ? row.status : "";
+  const durationMs = requestRecordingInteger(
+    row.duration_ms,
+    MAX_CAPTURE_RECORDING_DURATION_MS,
+  );
+  const segmentCount = requestRecordingInteger(
+    row.segment_count,
+    MAX_CAPTURE_SEGMENTS,
+  );
+  if (
+    typeof row.id !== "string" ||
+    !/^[a-zA-Z0-9_-]{1,200}$/.test(row.id) ||
+    typeof row.tenant_id !== "string" ||
+    typeof row.actor_id !== "string" ||
+    typeof row.title !== "string" ||
+    row.title.length < 1 ||
+    row.title.length > 240 ||
+    !isCaptureRecordingStatus(status) ||
+    !row.updated_at
+  ) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    actorId: row.actor_id,
+    title: safeRequestRecordingTitle(row.title),
+    status,
+    startedAt: requestRecordingIso(row.started_at),
+    completedAt: row.completed_at === null || row.completed_at === undefined
+      ? undefined
+      : requestRecordingIso(row.completed_at),
+    durationMs,
+    segmentCount,
+    updatedAt: requestRecordingIso(row.updated_at),
+  };
+}
+
+function recordingSummaryFromRecording(
+  recording: CaptureRecording,
+): CaptureRecordingPhysicalSummary {
+  return recordingSummaryFromRow({
+    id: recording.id,
+    tenant_id: recording.tenantId,
+    actor_id: recording.actorId,
+    title: recording.title,
+    status: recording.status,
+    started_at: recording.startedAt,
+    completed_at: recording.completedAt,
+    duration_ms: recording.durationMs,
+    segment_count: recording.segmentCount,
+    updated_at: recording.updatedAt,
+  });
+}
+
+function requestCaptureRecordingSummary(
+  summary: CaptureRecordingPhysicalSummary,
+  exactActorId: string,
+): RequestCaptureRecordingSummary {
+  const exactOwner = summary.actorId === exactActorId;
+  return {
+    id: summary.id,
+    title: summary.title,
+    status: summary.status,
+    startedAt: summary.startedAt,
+    completedAt: summary.completedAt,
+    durationMs: summary.durationMs,
+    segmentCount: summary.segmentCount,
+    updatedAt: summary.updatedAt,
+    detailAvailable: exactOwner,
+    manageable: exactOwner,
+  };
+}
+
+function assertRequestCaptureRecordingSummaries(
+  summaries: CaptureRecordingPhysicalSummary[],
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  const ids = new Set<string>();
+  for (const summary of summaries) {
+    if (
+      summary.tenantId !== tenantId ||
+      (summary.actorId !== canonicalActorId &&
+        summary.actorId !== exactActorId) ||
+      ids.has(summary.id)
+    ) {
+      throw new CaptureRecordingReadConflictError();
+    }
+    ids.add(summary.id);
+  }
+}
+
+function compareCaptureRecordingSummaries(
+  left: CaptureRecordingPhysicalSummary,
+  right: CaptureRecordingPhysicalSummary,
+) {
+  if (left.updatedAt !== right.updatedAt) {
+    return left.updatedAt > right.updatedAt ? -1 : 1;
+  }
+  if (left.id === right.id) return 0;
+  return left.id < right.id ? -1 : 1;
+}
+
+function isCaptureRecordingStatus(
+  value: string,
+): value is CaptureRecordingStatus {
+  return value === "recording" || value === "processing" ||
+    value === "ready" || value === "failed";
+}
+
+function safeRequestRecordingTitle(value: string) {
+  return value
+    .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240) || "Untitled conversation";
+}
+
+function requestRecordingIso(value: unknown) {
+  if (!(typeof value === "string" || value instanceof Date)) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  const parsed = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  const normalized = parsed.toISOString();
+  if (typeof value === "string" && normalized !== value) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  return normalized;
+}
+
+function requestRecordingInteger(value: unknown, maximum: number) {
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "bigint") {
+    if (value < BigInt(0) || value > BigInt(maximum)) {
+      throw new CaptureRecordingReadConflictError();
+    }
+    parsed = Number(value);
+  } else if (
+    typeof value === "string" &&
+    /^(0|[1-9][0-9]*)$/.test(value)
+  ) {
+    parsed = Number(value);
+  } else {
+    throw new CaptureRecordingReadConflictError();
+  }
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > maximum) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  return parsed;
 }
 
 function segmentFromRow(row: Record<string, unknown>): CaptureSegment {
