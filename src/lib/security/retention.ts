@@ -159,6 +159,16 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
   const securityCutoff = cutoff(policy.securityAuditDays);
 
   const result = await sql.transaction(async (transaction: ReturnType<typeof getSql>) => {
+    if (!tenantId) {
+      // Match the unscoped statement trigger before enumerating any tenant
+      // graph lock set. This prevents a newly created tenant from producing an
+      // A/B inversion between overlapping all-tenant maintenance sweeps.
+      await transaction`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended('memory-graph-lock-order:global', 0)
+        )
+      `;
+    }
     const affectedMemoryTenants = tenantId
       ? await transaction`
           SELECT DISTINCT tenant_id
@@ -167,6 +177,11 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
               SELECT tenant_id
               FROM omni_memories
               WHERE tenant_id = ${tenantId}
+                AND claim_status <> 'forgotten'
+                AND NOT omni_memory_ids_have_deletion_barrier(
+                  tenant_id,
+                  ARRAY[id]
+                )
                 AND (
                   (source = 'agent' AND updated_at < ${episodeMemoryCutoff}::timestamptz)
                   OR
@@ -192,8 +207,15 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
             (
               SELECT tenant_id
               FROM omni_memories
-              WHERE (source = 'agent' AND updated_at < ${episodeMemoryCutoff}::timestamptz)
-                 OR (source = 'consolidator' AND updated_at < ${consolidatedMemoryCutoff}::timestamptz)
+              WHERE claim_status <> 'forgotten'
+                AND NOT omni_memory_ids_have_deletion_barrier(
+                  tenant_id,
+                  ARRAY[id]
+                )
+                AND (
+                  (source = 'agent' AND updated_at < ${episodeMemoryCutoff}::timestamptz)
+                  OR (source = 'consolidator' AND updated_at < ${consolidatedMemoryCutoff}::timestamptz)
+                )
               ORDER BY updated_at ASC
               LIMIT ${batchLimit}
             )
@@ -207,9 +229,102 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
             )
           ) expired_memory_tenants
         `;
-    const affectedMemoryTenantIds = affectedMemoryTenants.map((row) =>
+    const affectedMemoryTenantIds = [...new Set(
+      affectedMemoryTenants.map((row) => String(row.tenant_id)),
+    )].sort();
+    const graphLockTenantRows = tenantId || !affectedMemoryTenantIds.length
+      ? affectedMemoryTenantIds.map((affectedTenantId) => ({
+          tenant_id: affectedTenantId,
+        }))
+      : await transaction`
+          SELECT lock_scope.tenant_id
+          FROM (
+            SELECT DISTINCT memory.tenant_id
+            FROM omni_memories memory
+            WHERE memory.tenant_id IS NOT NULL
+            UNION
+            SELECT pending.tenant_id
+            FROM unnest(${affectedMemoryTenantIds}::text[])
+              AS pending(tenant_id)
+          ) lock_scope
+          ORDER BY lock_scope.tenant_id COLLATE "C"
+        `;
+    const graphLockTenantIds = graphLockTenantRows.map((row) =>
       String(row.tenant_id)
     );
+    // The deletion barrier and graph writers use this same tenant lock. Take
+    // the complete memory-tenant set in canonical order before any subset or
+    // row lock. The unscoped statement trigger later reacquires this same set,
+    // so overlapping all-tenant sweeps cannot invert A/B lock order.
+    for (const affectedTenantId of graphLockTenantIds) {
+      await transaction`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${`memory-graph:${affectedTenantId}`}, 0)
+        )
+      `;
+    }
+    const expiredMemoryRows = tenantId
+      ? await transaction`
+          SELECT id, tenant_id
+          FROM omni_memories
+          WHERE tenant_id = ${tenantId}
+            AND claim_status <> 'forgotten'
+            AND NOT omni_memory_ids_have_deletion_barrier(
+              tenant_id,
+              ARRAY[id]
+            )
+            AND (
+              (source = 'agent' AND updated_at < ${episodeMemoryCutoff}::timestamptz)
+              OR
+              (source = 'consolidator' AND updated_at < ${consolidatedMemoryCutoff}::timestamptz)
+            )
+          ORDER BY updated_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        `
+      : affectedMemoryTenantIds.length
+        ? await transaction`
+            SELECT id, tenant_id
+            FROM omni_memories
+            WHERE tenant_id = ANY(${affectedMemoryTenantIds}::text[])
+              AND claim_status <> 'forgotten'
+              AND NOT omni_memory_ids_have_deletion_barrier(
+                tenant_id,
+                ARRAY[id]
+              )
+              AND (
+                (source = 'agent' AND updated_at < ${episodeMemoryCutoff}::timestamptz)
+                OR
+                (source = 'consolidator' AND updated_at < ${consolidatedMemoryCutoff}::timestamptz)
+              )
+            ORDER BY updated_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          `
+        : [];
+    const expiredTraceRows = tenantId
+      ? await transaction`
+          SELECT id, tenant_id
+          FROM omni_retrieval_traces
+          WHERE tenant_id = ${tenantId}
+            AND created_at < ${retrievalTraceCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        `
+      : affectedMemoryTenantIds.length
+        ? await transaction`
+            SELECT id, tenant_id
+            FROM omni_retrieval_traces
+            WHERE tenant_id = ANY(${affectedMemoryTenantIds}::text[])
+              AND created_at < ${retrievalTraceCutoff}::timestamptz
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          `
+        : [];
+    const expiredMemoryIds = expiredMemoryRows.map((row) => String(row.id));
+    const expiredTraceIds = expiredTraceRows.map((row) => String(row.id));
     if (affectedMemoryTenantIds.length) {
       await transaction`
         INSERT INTO omni_memory_graph_rebuild_queue (
@@ -225,131 +340,107 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
           generation = omni_memory_graph_rebuild_queue.generation + 1
       `;
     }
-    const memoryGraphEdges = tenantId
+    const memoryGraphEdges = affectedMemoryTenantIds.length
       ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_memory_graph_edges
-            WHERE tenant_id = ${tenantId}
-              AND ${affectedMemoryTenants.length > 0}
-            ORDER BY updated_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_memory_graph_edges target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_memory_graph_edges
-            WHERE tenant_id = ANY(${affectedMemoryTenantIds}::text[])
-            ORDER BY updated_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_memory_graph_edges target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const memoryGraphNodes = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_memory_graph_nodes
-            WHERE tenant_id = ${tenantId}
-              AND ${affectedMemoryTenants.length > 0}
-            ORDER BY updated_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_memory_graph_nodes target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_memory_graph_nodes
-            WHERE tenant_id = ANY(${affectedMemoryTenantIds}::text[])
-            ORDER BY updated_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_memory_graph_nodes target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const retrievalTraces = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_retrieval_traces
-            WHERE tenant_id = ${tenantId}
-              AND created_at < ${retrievalTraceCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_retrieval_traces target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_retrieval_traces
-            WHERE created_at < ${retrievalTraceCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_retrieval_traces target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const memories = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_memories
-            WHERE tenant_id = ${tenantId}
-              AND (
-                (source = 'agent' AND updated_at < ${episodeMemoryCutoff}::timestamptz)
-                OR
-                (source = 'consolidator' AND updated_at < ${consolidatedMemoryCutoff}::timestamptz)
+          DELETE FROM omni_memory_graph_edges edge
+          WHERE edge.tenant_id = ANY(${affectedMemoryTenantIds}::text[])
+            AND (
+              edge.memory_ids && ${expiredMemoryIds}::text[]
+              OR edge.trace_ids && ${expiredTraceIds}::text[]
+              OR EXISTS (
+                SELECT 1
+                FROM omni_memory_graph_nodes endpoint
+                WHERE endpoint.tenant_id = edge.tenant_id
+                  AND endpoint.id IN (edge.source_node_id, edge.target_node_id)
+                  AND (
+                    endpoint.memory_ids && ${expiredMemoryIds}::text[]
+                    OR endpoint.trace_ids && ${expiredTraceIds}::text[]
+                  )
               )
-            ORDER BY updated_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_memories target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
+            )
+          RETURNING edge.id
         `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_memories
-            WHERE (source = 'agent' AND updated_at < ${episodeMemoryCutoff}::timestamptz)
-               OR (source = 'consolidator' AND updated_at < ${consolidatedMemoryCutoff}::timestamptz)
-            ORDER BY updated_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_memories target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
+      : [];
+    const memoryGraphNodes = affectedMemoryTenantIds.length
+      ? await transaction`
+          DELETE FROM omni_memory_graph_nodes node
+          WHERE node.tenant_id = ANY(${affectedMemoryTenantIds}::text[])
+            AND (
+              node.memory_ids && ${expiredMemoryIds}::text[]
+              OR node.trace_ids && ${expiredTraceIds}::text[]
+            )
+          RETURNING node.id
+        `
+      : [];
+    const retrievalTraces = affectedMemoryTenantIds.length
+      ? await transaction`
+          DELETE FROM omni_retrieval_traces trace
+          WHERE trace.tenant_id = ANY(${affectedMemoryTenantIds}::text[])
+            AND (
+              trace.id = ANY(${expiredTraceIds}::text[])
+              OR trace.memory_ids && ${expiredMemoryIds}::text[]
+            )
+          RETURNING trace.id
+        `
+      : [];
+    const vectorColumnRows = expiredMemoryIds.length
+      ? await transaction`
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'omni_memories'
+            AND column_name = 'embedding_vector'
+          LIMIT 1
+        `
+      : [];
+    const memories = !expiredMemoryIds.length
+      ? []
+      : vectorColumnRows[0]
+        ? await transaction`
+            UPDATE omni_memories
+            SET title = '[retired]',
+                content = '',
+                tags = '{}'::text[],
+                source = '[retired]',
+                embedding = NULL,
+                embedding_vector = NULL,
+                evidence_refs = '{}'::text[],
+                supersedes_id = NULL,
+                contradiction_of_id = NULL,
+                claim_status = 'superseded',
+                valid_to = COALESCE(valid_to, NOW()),
+                forgotten_at = NULL,
+                updated_at = NOW()
+            WHERE id = ANY(${expiredMemoryIds}::text[])
+              AND claim_status <> 'forgotten'
+              AND NOT omni_memory_ids_have_deletion_barrier(
+                tenant_id,
+                ARRAY[id]
+              )
+            RETURNING id
+          `
+        : await transaction`
+            UPDATE omni_memories
+            SET title = '[retired]',
+                content = '',
+                tags = '{}'::text[],
+                source = '[retired]',
+                embedding = NULL,
+                evidence_refs = '{}'::text[],
+                supersedes_id = NULL,
+                contradiction_of_id = NULL,
+                claim_status = 'superseded',
+                valid_to = COALESCE(valid_to, NOW()),
+                forgotten_at = NULL,
+                updated_at = NOW()
+            WHERE id = ANY(${expiredMemoryIds}::text[])
+              AND claim_status <> 'forgotten'
+              AND NOT omni_memory_ids_have_deletion_barrier(
+                tenant_id,
+                ARRAY[id]
+              )
+            RETURNING id
+          `;
     const expiredAccessRequests = tenantId
       ? await transaction`
           WITH expired AS (

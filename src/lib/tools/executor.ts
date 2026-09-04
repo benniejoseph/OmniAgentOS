@@ -14,11 +14,16 @@ import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/o
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { readResponseTextLimited } from "@/lib/http/body";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
+import {
+  publicMemoryDeletionReceiptV1,
+  type MemoryDeletionReceiptV1,
+} from "@/lib/memory/deletion-receipt";
 import { queueMemoryGraphRebuild } from "@/lib/memory/graph";
 import {
   correctMemory,
-  forgetMemory,
+  forgetMemoryWithReceipt,
   getMemory,
+  getMemoryDeletionReceipt,
   saveMemory,
   saveMemoryWithCommitStatus,
   searchMemories,
@@ -42,6 +47,7 @@ import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
+  executionScopesEqual,
   executionScopeFromSecurityContext,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
@@ -58,6 +64,7 @@ import {
   createToolExecutionRecord,
   getToolExecution,
   getToolExecutionApprovalFingerprint,
+  reclaimStaleMemoryForgetToolExecutionClaim,
   repairFileToolEffectReceiptEvent,
   recoverStaleToolExecutionClaim,
   saveToolExecution,
@@ -227,6 +234,13 @@ class ExecutionClaimLostError extends Error {
   }
 }
 
+class MemoryForgetNotFoundError extends Error {
+  constructor() {
+    super("Memory not found.");
+    this.name = "MemoryForgetNotFoundError";
+  }
+}
+
 export class EffectReceiptFinalizationError extends Error {
   constructor(options?: { cause?: unknown }) {
     super(
@@ -243,6 +257,11 @@ export type GovernedToolEffectBinding = Readonly<{
   planSha256: string;
   planNodeId: string;
 }>;
+
+export type GovernedToolExecutionResult = {
+  record: ToolExecutionRecord;
+  result: unknown;
+};
 
 export class ToolInputValidationError extends Error {
   constructor(message: string) {
@@ -285,7 +304,7 @@ export async function executeGovernedTool({
   executionScope?: ExecutionScope;
   /** Exact persisted execution-plan binding for the P1.4 memory-write canary. */
   effectBinding?: GovernedToolEffectBinding;
-}) {
+}): Promise<GovernedToolExecutionResult> {
   assertRequestedToolExecutionScope(
     executionScope,
     context,
@@ -373,6 +392,34 @@ export async function executeGovernedTool({
   const tool = effectiveForceApproval
     ? { ...registeredTool, approvalRequired: true }
     : registeredTool;
+  if (
+    !dryRun &&
+    tool.id === "memory.forget" &&
+    existingRecord?.status === "executing" &&
+    executionClaimToken &&
+    executionClaimTokenFromRecord(existingRecord) === executionClaimToken
+  ) {
+    const parsedForgetInput = memoryForgetSchema.safeParse(input);
+    if (parsedForgetInput.success) {
+      const scopedForgetRequest = await resolveToolExecutionScopeRequest({
+        record: existingRecord,
+        toolInput: parsedForgetInput.data,
+        requestedScope: executionScope,
+        context,
+        executionClaimToken,
+        mcpSessionScope,
+      });
+      const reconciled = await reconcileExistingMemoryForgetEffect({
+        record: existingRecord,
+        tool,
+        preparedInput: parsedForgetInput.data,
+        executionScope: scopedForgetRequest.executionScope,
+      });
+      if (reconciled) {
+        return { record: reconciled, result: reconciled.output };
+      }
+    }
+  }
   if (existingRecord && executionClaimToken) {
     const reviewedFingerprint =
       getToolExecutionApprovalFingerprint(existingRecord);
@@ -615,14 +662,51 @@ export async function executeGovernedTool({
         }
         throw error;
       }
-      const reconciled = await reconcileExistingMemoryWriteEffect({
+      const reconciled = (await reconcileExistingMemoryWriteEffect({
         record: existing,
         tool,
         preparedInput,
         effectBinding,
         executionScope: scopedRequest.executionScope,
         idempotencyKey,
-      });
+      })) ?? (await reconcileExistingMemoryForgetEffect({
+        record: existing,
+        tool,
+        preparedInput,
+        executionScope: scopedRequest.executionScope,
+      }));
+      if (
+        !reconciled &&
+        existing.status === "executing" &&
+        tool.id === "memory.forget"
+      ) {
+        const replayClaimToken = randomUUID();
+        const reclaimed = await reclaimStaleMemoryForgetToolExecutionClaim(
+          existing,
+          {
+            tenantId: context?.tenantId,
+            claimToken: replayClaimToken,
+          },
+        );
+        if (reclaimed) {
+          return executeGovernedTool({
+            toolId: tool.id,
+            input: preparedInput,
+            dryRun: false,
+            approved: true,
+            context,
+            existingRecord: reclaimed,
+            approvalReason: reclaimed.approvalReason,
+            executionClaimToken: replayClaimToken,
+            abortSignal,
+            idempotencyKey,
+            forceApproval,
+            mcpSessionScope,
+            executionScope,
+            effectBinding,
+          });
+        }
+      }
       const recovered = !reconciled && existing.status === "executing"
         ? await recoverStaleToolExecutionClaim(existing.id, {
             tenantId: context?.tenantId,
@@ -896,6 +980,14 @@ export async function executeGovernedTool({
       approvalReason,
     });
     intent.id = intendedExecutionId;
+    intent.output = {
+      ...parseObject(intent.output),
+      ...sealToolExecutionInput(
+        preparedInput,
+        intent,
+        toolApprovalFingerprint(tool),
+      ),
+    };
     let claim: Awaited<ReturnType<typeof claimIdempotentToolExecution>>;
     try {
       claim = await claimIdempotentToolExecution(intent);
@@ -941,14 +1033,19 @@ export async function executeGovernedTool({
       } catch (error) {
         throw new EffectReceiptFinalizationError({ cause: error });
       }
-      const reconciled = await reconcileExistingMemoryWriteEffect({
+      const reconciled = (await reconcileExistingMemoryWriteEffect({
         record: claim.record,
         tool,
         preparedInput,
         effectBinding,
         executionScope: scopedRequest.executionScope,
         idempotencyKey,
-      });
+      })) ?? (await reconcileExistingMemoryForgetEffect({
+        record: claim.record,
+        tool,
+        preparedInput,
+        executionScope: scopedRequest.executionScope,
+      }));
       const recovered =
         !intendedEffectContext &&
         !reconciled &&
@@ -1024,6 +1121,14 @@ export async function executeGovernedTool({
         },
       },
     });
+    intent.output = {
+      ...parseObject(intent.output),
+      ...sealToolExecutionInput(
+        preparedInput,
+        intent,
+        toolApprovalFingerprint(tool),
+      ),
+    };
     executionRecord = await saveToolExecution(intent);
     activeExecutionClaimToken = claimToken;
     await bindToolScopeIfPresent({
@@ -1096,14 +1201,25 @@ export async function executeGovernedTool({
       ...baseRecord,
       status: "executed" as const,
       output: safeResult,
-      approvalDecision: decision.approvalRequired ? "approved" as const : undefined,
-      approvedBy: decision.approvalRequired ? context?.actorId : undefined,
-      approvedAt: decision.approvalRequired ? new Date().toISOString() : undefined,
-      approvalReason,
+      approvalDecision: executionRecord?.approvalDecision ||
+        (decision.approvalRequired ? "approved" as const : undefined),
+      approvedBy: executionRecord?.approvedBy ||
+        (decision.approvalRequired ? context?.actorId : undefined),
+      approvedAt: executionRecord?.approvedAt ||
+        (decision.approvalRequired ? new Date().toISOString() : undefined),
+      approvalReason: executionRecord?.approvalReason ?? approvalReason,
       effectReceipt,
       completedAt: new Date().toISOString(),
     });
-    const saved = await persistRecord(record);
+    let saved: ToolExecutionRecord;
+    try {
+      saved = await persistRecord(record);
+    } catch (error) {
+      if (tool.id === "memory.forget") {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+      throw error;
+    }
     if (tool.category === "mcp") {
       const frameExecutionScope = scopedRequest.executionScope ||
         (toolRuntimeContext
@@ -1590,6 +1706,108 @@ async function reconcileExistingMemoryWriteEffect(input: {
     throw new EffectReceiptFinalizationError({ cause: error });
   }
   return current;
+}
+
+async function reconcileExistingMemoryForgetEffect(input: {
+  record: ToolExecutionRecord;
+  tool: ToolDefinition;
+  preparedInput: Record<string, unknown>;
+  executionScope?: ExecutionScope;
+}): Promise<ToolExecutionRecord | undefined> {
+  if (
+    input.record.status !== "executing" ||
+    input.tool.id !== "memory.forget" ||
+    !input.executionScope?.initiatingActorId
+  ) {
+    return undefined;
+  }
+  const claimToken = executionClaimTokenFromRecord(input.record);
+  if (!claimToken) return undefined;
+  const { id } = memoryForgetSchema.parse(input.preparedInput);
+
+  let receipt: MemoryDeletionReceiptV1 | null = null;
+  let memory: MemoryRecord | null = null;
+  try {
+    receipt = await getMemoryDeletionReceipt(id, {
+      tenantId: input.executionScope.tenantId,
+    });
+    if (!receipt) return undefined;
+    memory = await getMemory(id, { tenantId: input.executionScope.tenantId });
+    if (!memory) {
+      throw new Error(
+        "Memory deletion receipt is missing its canonical forgotten shell.",
+      );
+    }
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  if (!receipt || !memory) return undefined;
+
+  const deletionDisposition =
+    receipt.attributionKind === "scope_bound" &&
+      receipt.executionScope &&
+      executionScopesEqual(receipt.executionScope, input.executionScope)
+      ? "committed" as const
+      : "already_deleted" as const;
+
+  const result = {
+    forgotten: true,
+    id,
+    record: stripEmbedding(memory),
+    deletionGuarantee: receipt.attributionKind === "scope_bound"
+      ? "scope_bound_receipt"
+      : "legacy_unattributed_receipt",
+    deletionDisposition,
+    deletionReceipt: publicMemoryDeletionReceiptV1(receipt),
+  };
+  const terminalRecord: ToolExecutionRecord = {
+    ...input.record,
+    status: "executed",
+    output: redactSensitive(result),
+    completedAt: new Date().toISOString(),
+  };
+
+  let saved: ToolExecutionRecord | undefined;
+  try {
+    saved = await completeClaimedToolExecution(terminalRecord, claimToken, {
+      executionScope: input.executionScope,
+    });
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  if (saved) return saved;
+
+  let current: ToolExecutionRecord | undefined;
+  try {
+    current = await getToolExecution(input.record.id, {
+      tenantId: input.executionScope.tenantId,
+    });
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  if (
+    current?.status !== "executed" ||
+    !toolOutputHasMemoryDeletionReceipt(current.output, receipt.id)
+  ) {
+    return undefined;
+  }
+  return current;
+}
+
+function toolOutputHasMemoryDeletionReceipt(
+  output: unknown,
+  receiptId: string,
+) {
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return false;
+  }
+  const deletionReceipt = (output as Record<string, unknown>).deletionReceipt;
+  return Boolean(
+    deletionReceipt &&
+    typeof deletionReceipt === "object" &&
+    !Array.isArray(deletionReceipt) &&
+    (deletionReceipt as Record<string, unknown>).id === receiptId,
+  );
 }
 
 function executionClaimTokenFromRecord(record: ToolExecutionRecord) {
@@ -2220,15 +2438,48 @@ async function runTool(
 
   if (tool.id === "memory.forget") {
     const { id } = memoryForgetSchema.parse(parsed);
-    const forgotten = await forgetMemory(id, { tenantId: context?.tenantId });
-    if (!forgotten) {
-      throw new Error("Memory not found.");
+    if (!executionScope) {
+      throw new Error("Governed memory deletion requires an execution scope.");
     }
-    await queueMemoryGraphRebuild({ tenantId: context?.tenantId });
+    if (!executionScope.initiatingActorId) {
+      throw new Error(
+        "Governed memory deletion requires a non-null initiating actor.",
+      );
+    }
+    let result: Awaited<ReturnType<typeof forgetMemoryWithReceipt>>;
+    try {
+      result = await forgetMemoryWithReceipt(id, {
+        tenantId: executionScope.tenantId,
+        executionScope,
+      });
+    } catch (error) {
+      let committedReceipt: MemoryDeletionReceiptV1 | null;
+      try {
+        committedReceipt = await getMemoryDeletionReceipt(id, {
+          tenantId: executionScope.tenantId,
+        });
+      } catch (receiptLookupError) {
+        throw new EffectReceiptFinalizationError({
+          cause: receiptLookupError,
+        });
+      }
+      if (committedReceipt) {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+      throw error;
+    }
+    if (!result) {
+      throw new MemoryForgetNotFoundError();
+    }
     return {
       forgotten: true,
-      id: forgotten.id,
-      record: stripEmbedding(forgotten),
+      id,
+      record: stripEmbedding(result.memory),
+      deletionGuarantee: result.deletionGuarantee,
+      deletionDisposition: result.deletionDisposition,
+      deletionReceipt: result.receipt
+        ? publicMemoryDeletionReceiptV1(result.receipt)
+        : null,
     };
   }
 
@@ -2938,9 +3189,10 @@ function describeSideEffects(toolId: string) {
 
   if (toolId === "memory.forget") {
     return [
-      "irreversibly scrubs the selected memory's title, content, tags, source, and embeddings",
-      "marks the selected memory as forgotten",
-      "queues a memory graph rebuild",
+      "irreversibly scrubs the selected memory, including evidence references and embeddings",
+      "in Postgres, removes retrieval traces and graph rows derived from the selected memory or its descendants",
+      "atomically records a scoped deletion receipt and queues a memory graph rebuild in Postgres",
+      "file-backed compatibility mode performs a best-effort scrub and graph rebuild without a deletion receipt",
     ];
   }
 

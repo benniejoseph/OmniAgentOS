@@ -252,13 +252,24 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
 export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: string, options: { tenantId?: string } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
   const documentId = knowledgeDocumentId(tenantId, idempotencyKey);
-  const forgottenAt = new Date().toISOString();
+  const retiredAt = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await getSql().transaction(async (sql: RagSqlClient) => {
+      await lockKnowledgeMemoryGraph(sql, tenantId);
+      const memoryRows = await sql`
+        SELECT id
+        FROM omni_memories
+        WHERE tenant_id = ${tenantId}
+          AND id LIKE ${documentId + "_memory_%"}
+          AND claim_status <> 'forgotten'
+        ORDER BY id COLLATE "C"
+      `;
+      const memoryIds = memoryRows.map((row) => String(row.id));
+      await invalidateKnowledgeMemoryLineage(sql, tenantId, memoryIds);
       await sql`DELETE FROM omni_knowledge_chunks WHERE tenant_id = ${tenantId} AND document_id = ${documentId}`;
       await sql`DELETE FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND id = ${documentId}`;
-      await sql`UPDATE omni_memories SET title = '[forgotten]', content = '', tags = '{}', source = '[forgotten]', embedding = NULL, claim_status = 'forgotten', forgotten_at = ${forgottenAt}, updated_at = ${forgottenAt} WHERE tenant_id = ${tenantId} AND id LIKE ${documentId + "_memory_%"}`;
+      await retireKnowledgeMemoryRows(sql, tenantId, memoryIds, retiredAt);
     });
     return documentId;
   }
@@ -268,10 +279,14 @@ export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: st
     chunks: ledger.chunks.filter((chunk) => chunk.documentId !== documentId || normalizeTenantId(chunk.tenantId) !== tenantId),
   }));
   await updateJsonFile<MemoryRecord[]>(getDataPath("memory.json"), [], (memories) => memories.map((memory) =>
-    normalizeTenantId(memory.tenantId) === tenantId && memory.id.startsWith(`${documentId}_memory_`)
-      ? { ...memory, title: "[forgotten]", content: "", tags: [], source: "[forgotten]", embedding: undefined, claimStatus: "forgotten", forgottenAt, updatedAt: forgottenAt }
+    normalizeTenantId(memory.tenantId) === tenantId &&
+      memory.id.startsWith(`${documentId}_memory_`) &&
+      memory.claimStatus !== "forgotten"
+      ? { ...memory, title: "[retired]", content: "", tags: [], source: "[retired]", embedding: undefined, evidenceRefs: [], supersedesId: undefined, contradictionOfId: undefined, claimStatus: "superseded", validTo: memory.validTo || retiredAt, forgottenAt: undefined, updatedAt: retiredAt }
       : memory,
   ));
+  const { queueMemoryGraphRebuild } = await import("@/lib/memory/graph");
+  await queueMemoryGraphRebuild({ tenantId });
   return documentId;
 }
 
@@ -279,16 +294,33 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
   const tenantId = normalizeTenantId(options.tenantId);
   const prefix = String(redactSensitive(sourcePrefix)).trim().slice(0, 500);
   if (!prefix) throw new Error("A source prefix is required.");
-  const forgottenAt = new Date().toISOString();
+  const retiredAt = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     return getSql().transaction(async (sql: RagSqlClient) => {
+      await lockKnowledgeMemoryGraph(sql, tenantId);
       const rows = await sql`SELECT id FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND source LIKE ${prefix + "%"}`;
       const ids = rows.map((row) => String(row.id));
-      if (!ids.length) return { documents: 0, memories: 0 };
-      const forgotten = await sql`UPDATE omni_memories SET title = '[forgotten]', content = '', tags = '{}', source = '[forgotten]', embedding = NULL, embedding_vector = NULL, claim_status = 'forgotten', forgotten_at = ${forgottenAt}, updated_at = ${forgottenAt} WHERE tenant_id = ${tenantId} AND source LIKE ${prefix + "%"} RETURNING id`;
-      await sql`DELETE FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND id = ANY(${ids})`;
-      return { documents: ids.length, memories: forgotten.length };
+      const memoryRows = await sql`
+        SELECT id
+        FROM omni_memories
+        WHERE tenant_id = ${tenantId}
+          AND source LIKE ${prefix + "%"}
+          AND claim_status <> 'forgotten'
+        ORDER BY id COLLATE "C"
+      `;
+      const memoryIds = memoryRows.map((row) => String(row.id));
+      await invalidateKnowledgeMemoryLineage(sql, tenantId, memoryIds);
+      if (ids.length) {
+        await sql`DELETE FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND id = ANY(${ids})`;
+      }
+      const retired = await retireKnowledgeMemoryRows(
+        sql,
+        tenantId,
+        memoryIds,
+        retiredAt,
+      );
+      return { documents: ids.length, memories: retired.length };
     });
   }
   const ledger = await readKnowledgeLedger();
@@ -300,11 +332,134 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
   }));
   let memories = 0;
   await updateJsonFile<MemoryRecord[]>(getDataPath("memory.json"), [], (items) => items.map((memory) => {
-    if (normalizeTenantId(memory.tenantId) !== tenantId || !memory.source.startsWith(prefix)) return memory;
+    if (
+      normalizeTenantId(memory.tenantId) !== tenantId ||
+      !memory.source.startsWith(prefix) ||
+      memory.claimStatus === "forgotten"
+    ) return memory;
     memories += 1;
-    return { ...memory, title: "[forgotten]", content: "", tags: [], source: "[forgotten]", embedding: undefined, claimStatus: "forgotten", forgottenAt, updatedAt: forgottenAt };
+    return { ...memory, title: "[retired]", content: "", tags: [], source: "[retired]", embedding: undefined, evidenceRefs: [], supersedesId: undefined, contradictionOfId: undefined, claimStatus: "superseded", validTo: memory.validTo || retiredAt, forgottenAt: undefined, updatedAt: retiredAt };
   }));
+  const { queueMemoryGraphRebuild } = await import("@/lib/memory/graph");
+  await queueMemoryGraphRebuild({ tenantId });
   return { documents: ids.size, memories };
+}
+
+async function lockKnowledgeMemoryGraph(sql: RagSqlClient, tenantId: string) {
+  await sql`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(${`memory-graph:${tenantId}`}, 0)
+    )
+  `;
+}
+
+async function invalidateKnowledgeMemoryLineage(
+  sql: RagSqlClient,
+  tenantId: string,
+  memoryIds: string[],
+) {
+  if (!memoryIds.length) return;
+  await sql`
+    DELETE FROM omni_memory_graph_edges edge
+    WHERE edge.tenant_id = ${tenantId}
+      AND (
+        edge.memory_ids && ${memoryIds}::text[]
+        OR EXISTS (
+          SELECT 1
+          FROM omni_memory_graph_nodes endpoint
+          WHERE endpoint.tenant_id = edge.tenant_id
+            AND endpoint.id IN (edge.source_node_id, edge.target_node_id)
+            AND endpoint.memory_ids && ${memoryIds}::text[]
+        )
+      )
+  `;
+  await sql`
+    DELETE FROM omni_memory_graph_nodes
+    WHERE tenant_id = ${tenantId}
+      AND memory_ids && ${memoryIds}::text[]
+  `;
+  await sql`
+    DELETE FROM omni_retrieval_traces
+    WHERE tenant_id = ${tenantId}
+      AND memory_ids && ${memoryIds}::text[]
+  `;
+  await sql`
+    INSERT INTO omni_memory_graph_rebuild_queue AS rebuild (
+      tenant_id, requested_at, attempts, last_error, updated_at, generation
+    )
+    VALUES (${tenantId}, NOW(), 0, NULL, NOW(), 1)
+    ON CONFLICT (tenant_id) DO UPDATE SET
+      requested_at = NOW(),
+      attempts = 0,
+      last_error = NULL,
+      updated_at = NOW(),
+      generation = rebuild.generation + 1
+  `;
+}
+
+async function retireKnowledgeMemoryRows(
+  sql: RagSqlClient,
+  tenantId: string,
+  memoryIds: string[],
+  retiredAt: string,
+) {
+  if (!memoryIds.length) return [];
+  const vectorColumnRows = await sql`
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'omni_memories'
+      AND column_name = 'embedding_vector'
+    LIMIT 1
+  `;
+  return vectorColumnRows[0]
+    ? sql`
+        UPDATE omni_memories
+        SET title = '[retired]',
+            content = '',
+            tags = '{}'::text[],
+            source = '[retired]',
+            embedding = NULL,
+            embedding_vector = NULL,
+            evidence_refs = '{}'::text[],
+            supersedes_id = NULL,
+            contradiction_of_id = NULL,
+            claim_status = 'superseded',
+            valid_to = COALESCE(valid_to, ${retiredAt}),
+            forgotten_at = NULL,
+            updated_at = ${retiredAt}
+        WHERE tenant_id = ${tenantId}
+          AND id = ANY(${memoryIds}::text[])
+          AND claim_status <> 'forgotten'
+          AND NOT omni_memory_ids_have_deletion_barrier(
+            tenant_id,
+            ARRAY[id]
+          )
+        RETURNING id
+      `
+    : sql`
+        UPDATE omni_memories
+        SET title = '[retired]',
+            content = '',
+            tags = '{}'::text[],
+            source = '[retired]',
+            embedding = NULL,
+            evidence_refs = '{}'::text[],
+            supersedes_id = NULL,
+            contradiction_of_id = NULL,
+            claim_status = 'superseded',
+            valid_to = COALESCE(valid_to, ${retiredAt}),
+            forgotten_at = NULL,
+            updated_at = ${retiredAt}
+        WHERE tenant_id = ${tenantId}
+          AND id = ANY(${memoryIds}::text[])
+          AND claim_status <> 'forgotten'
+          AND NOT omni_memory_ids_have_deletion_barrier(
+            tenant_id,
+            ARRAY[id]
+          )
+        RETURNING id
+      `;
 }
 
 export function knowledgeDocumentId(tenantId: string, idempotencyKey: string) {

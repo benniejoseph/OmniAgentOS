@@ -5,8 +5,22 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
+import { appendScopedDomainEvent } from "@/lib/events/store";
+import {
+  buildMemoryDeletionReceiptV1,
+  canonicalizeMemoryDeletionIds,
+  memoryDeletionContractSha256,
+  parseMemoryDeletionReceiptV1,
+  type MemoryDeletionReceiptV1,
+} from "@/lib/memory/deletion-receipt";
 import { getDataPath } from "@/lib/storage/paths";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  assertExecutionScopeTenant,
+  executionScopesEqual,
+  parsePersistedExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type { MemoryRecord, MemorySearchResult, MemoryType } from "@/lib/memory/types";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
@@ -39,12 +53,7 @@ type TenantScopedOptions = {
   sql?: MemorySqlClient;
 };
 
-type MemorySqlClient = {
-  (
-    strings: TemplateStringsArray,
-    ...params: unknown[]
-  ): Promise<Record<string, unknown>[]>;
-};
+type MemorySqlClient = ReturnType<typeof getSql>;
 
 export async function listMemories(options: TenantScopedOptions = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
@@ -422,21 +431,364 @@ export async function correctMemory(
   return { previous: { ...existing, claimStatus: oldStatus }, corrected };
 }
 
-export async function forgetMemory(id: string, options: { tenantId?: string } = {}) {
+export type ForgetMemoryWithReceiptResult = {
+  memory: MemoryRecord;
+  receipt: MemoryDeletionReceiptV1 | null;
+  deletionGuarantee:
+    | "scope_bound_receipt"
+    | "legacy_unattributed_receipt"
+    | "best_effort";
+  deletionDisposition: "committed" | "already_deleted";
+};
+
+/** Read-only lookup used to reconcile a governed forget after a process loss. */
+export async function getMemoryDeletionReceipt(
+  id: string,
+  options: { tenantId?: string } = {},
+): Promise<MemoryDeletionReceiptV1 | null> {
+  if (!hasDatabaseUrl()) return null;
+  await ensureDatabaseSchema();
+  const tenantId = normalizeTenantId(options.tenantId);
+  return getSql().transaction(async (sql: MemorySqlClient) => {
+    await sql`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${`memory-graph:${tenantId}`}, 0)
+      )
+    `;
+    const rows = await sql`
+      SELECT *
+      FROM omni_memory_deletion_receipts
+      WHERE tenant_id = ${tenantId}
+        AND memory_id = ${id}
+      LIMIT 1
+    `;
+    return rows[0] ? memoryDeletionReceiptFromRow(rows[0]) : null;
+  }) as Promise<MemoryDeletionReceiptV1 | null>;
+}
+
+/**
+ * Compatibility facade. Postgres callers must supply a scope; file-backed
+ * callers retain the historical best-effort return shape.
+ */
+export async function forgetMemory(
+  id: string,
+  options: { tenantId?: string; executionScope?: ExecutionScope } = {},
+) {
+  return (await forgetMemoryWithReceipt(id, options))?.memory || null;
+}
+
+export async function forgetMemoryWithReceipt(
+  id: string,
+  options: { tenantId?: string; executionScope?: ExecutionScope } = {},
+): Promise<ForgetMemoryWithReceiptResult | null> {
   const tenantId = normalizeTenantId(options.tenantId);
   const forgottenAt = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`UPDATE omni_memories SET title = '[forgotten]', content = '', tags = '{}', source = '[forgotten]', embedding = NULL, embedding_vector = NULL, claim_status = 'forgotten', forgotten_at = ${forgottenAt}, updated_at = ${forgottenAt} WHERE id = ${id} AND tenant_id = ${tenantId} RETURNING *`;
-    return rows[0] ? memoryFromRow(rows[0]) : null;
+    const executionScope = parsePersistedExecutionScope(options.executionScope);
+    if (
+      !executionScope ||
+      !options.executionScope ||
+      !executionScopesEqual(executionScope, options.executionScope)
+    ) {
+      throw new Error("Postgres memory deletion requires an exact execution scope.");
+    }
+    assertExecutionScopeTenant(executionScope, tenantId);
+    if (!executionScope.initiatingActorId) {
+      throw new Error("Postgres memory deletion requires a non-null initiating actor.");
+    }
+
+    return getSql().transaction(async (sql: MemorySqlClient) => {
+      await sql`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${`memory-graph:${tenantId}`}, 0)
+        )
+      `;
+      await sql`
+        SELECT pg_advisory_xact_lock(
+          hashtext(${tenantId}),
+          hashtext(${`memory:${id}`})
+        )
+      `;
+
+      const memoryRows = await sql`
+        SELECT *
+        FROM omni_memories
+        WHERE tenant_id = ${tenantId}
+          AND id = ${id}
+        FOR UPDATE
+      `;
+      const receiptRows = await sql`
+        SELECT *
+        FROM omni_memory_deletion_receipts
+        WHERE tenant_id = ${tenantId}
+          AND memory_id = ${id}
+      `;
+      if (receiptRows[0]) {
+        const receipt = memoryDeletionReceiptFromRow(receiptRows[0]);
+        if (!memoryRows[0]) {
+          throw new Error(
+            "Memory deletion receipt is missing its canonical forgotten shell.",
+          );
+        }
+        return {
+          memory: memoryFromRow(memoryRows[0]),
+          receipt,
+          deletionGuarantee: receipt.attributionKind === "scope_bound"
+            ? "scope_bound_receipt" as const
+            : "legacy_unattributed_receipt" as const,
+          deletionDisposition:
+            receipt.attributionKind === "scope_bound" &&
+              receipt.executionScope &&
+              executionScopesEqual(receipt.executionScope, executionScope)
+              ? "committed" as const
+              : "already_deleted" as const,
+        };
+      }
+      if (!memoryRows[0]) {
+        return null;
+      }
+      if (String(memoryRows[0].claim_status) === "forgotten") {
+        throw new Error("Forgotten memory is missing its immutable deletion receipt.");
+      }
+
+      const descendantRows = await sql`
+        WITH RECURSIVE descendants(id) AS (
+          SELECT child.id
+          FROM omni_memories child
+          WHERE child.tenant_id = ${tenantId}
+            AND child.id <> ${id}
+            AND (
+              child.supersedes_id = ${id}
+              OR child.contradiction_of_id = ${id}
+              OR ${`memory:${id}`} = ANY(child.evidence_refs)
+            )
+          UNION
+          SELECT child.id
+          FROM omni_memories child
+          JOIN descendants parent ON (
+            child.supersedes_id = parent.id
+            OR child.contradiction_of_id = parent.id
+            OR ('memory:' || parent.id) = ANY(child.evidence_refs)
+          )
+          WHERE child.tenant_id = ${tenantId}
+            AND child.id <> ${id}
+        )
+        SELECT id
+        FROM descendants
+        ORDER BY id COLLATE "C"
+      `;
+      const descendantMemoryIds = canonicalizeMemoryDeletionIds(
+        descendantRows.map((row) => String(row.id)),
+      );
+      const affectedMemoryIds = canonicalizeMemoryDeletionIds([
+        id,
+        ...descendantMemoryIds,
+      ]);
+
+      const traceRows = await sql`
+        SELECT id
+        FROM omni_retrieval_traces trace
+        WHERE trace.tenant_id = ${tenantId}
+          AND (
+            trace.memory_ids && ${affectedMemoryIds}::text[]
+            OR EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(
+                CASE
+                  WHEN jsonb_typeof(trace.results) = 'array'
+                    THEN trace.results
+                  ELSE '[]'::jsonb
+                END
+              ) result
+              WHERE result ->> 'kind' = 'memory'
+                AND result ->> 'id' = ANY(${affectedMemoryIds}::text[])
+            )
+          )
+        ORDER BY id COLLATE "C"
+      `;
+      const retrievalTraceIds = canonicalizeMemoryDeletionIds(
+        traceRows.map((row) => String(row.id)),
+      );
+
+      const graphNodeRows = await sql`
+        SELECT id
+        FROM omni_memory_graph_nodes node
+        WHERE node.tenant_id = ${tenantId}
+          AND (
+            node.memory_ids && ${affectedMemoryIds}::text[]
+            OR node.trace_ids && ${retrievalTraceIds}::text[]
+          )
+        ORDER BY id COLLATE "C"
+      `;
+      const graphNodeIds = canonicalizeMemoryDeletionIds(
+        graphNodeRows.map((row) => String(row.id)),
+      );
+      const graphEdgeRows = await sql`
+        SELECT id
+        FROM omni_memory_graph_edges edge
+        WHERE edge.tenant_id = ${tenantId}
+          AND (
+            edge.memory_ids && ${affectedMemoryIds}::text[]
+            OR edge.trace_ids && ${retrievalTraceIds}::text[]
+            OR edge.source_node_id = ANY(${graphNodeIds}::text[])
+            OR edge.target_node_id = ANY(${graphNodeIds}::text[])
+          )
+        ORDER BY id COLLATE "C"
+      `;
+      const graphEdgeIds = canonicalizeMemoryDeletionIds(
+        graphEdgeRows.map((row) => String(row.id)),
+      );
+
+      const receipt = buildMemoryDeletionReceiptV1({
+        tenantId,
+        memoryId: id,
+        executionScope,
+        descendantMemoryIds,
+        retrievalTraceIds,
+        graphNodeIds,
+        graphEdgeIds,
+        forgottenAt,
+        createdAt: forgottenAt,
+      });
+      // The receipt trigger verifies and deletes this exact graph/trace
+      // snapshot before NEW becomes visible to the restrictive barrier policy.
+      await insertMemoryDeletionReceipt(receipt, sql);
+      const vectorColumnRows = await sql`
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memories'
+          AND column_name = 'embedding_vector'
+        LIMIT 1
+      `;
+      const forgottenRows = vectorColumnRows[0]
+        ? await sql`
+            UPDATE omni_memories
+            SET title = '[forgotten]',
+                content = '',
+                tags = '{}'::text[],
+                source = '[forgotten]',
+                embedding = NULL,
+                embedding_vector = NULL,
+                evidence_refs = '{}'::text[],
+                supersedes_id = NULL,
+                contradiction_of_id = NULL,
+                claim_status = 'forgotten',
+                forgotten_at = ${receipt.forgottenAt},
+                updated_at = ${receipt.forgottenAt}
+            WHERE id = ${id}
+              AND tenant_id = ${tenantId}
+            RETURNING *
+          `
+        : await sql`
+            UPDATE omni_memories
+            SET title = '[forgotten]',
+                content = '',
+                tags = '{}'::text[],
+                source = '[forgotten]',
+                embedding = NULL,
+                evidence_refs = '{}'::text[],
+                supersedes_id = NULL,
+                contradiction_of_id = NULL,
+                claim_status = 'forgotten',
+                forgotten_at = ${receipt.forgottenAt},
+                updated_at = ${receipt.forgottenAt}
+            WHERE id = ${id}
+              AND tenant_id = ${tenantId}
+            RETURNING *
+          `;
+      if (!forgottenRows[0]) {
+        throw new Error("Memory disappeared during its deletion transaction.");
+      }
+
+      await appendScopedDomainEvent({
+        id: memoryForgottenEventId(tenantId, id),
+        streamId: `memory:${id}`,
+        type: "memory.deletion_barrier.recorded",
+        executionScope,
+        payload: {
+          schemaVersion: receipt.schemaVersion,
+          deletionReceiptId: receipt.id,
+          memoryId: receipt.memoryId,
+          deleteReason: receipt.deleteReason,
+          descendantMemoryCount: receipt.descendantMemoryCount,
+          retrievalTraceCount: receipt.retrievalTraceCount,
+          graphNodeCount: receipt.graphNodeCount,
+          graphEdgeCount: receipt.graphEdgeCount,
+          descendantManifestSha256: receipt.descendantManifestSha256,
+          executionScopeSha256: receipt.executionScopeSha256,
+          receiptSha256: receipt.receiptSha256,
+          status: "barrier_committed",
+          forgottenAt: receipt.forgottenAt,
+        },
+      }, { sql });
+
+      await sql`
+        INSERT INTO omni_memory_graph_rebuild_queue AS rebuild (
+          tenant_id, requested_at, attempts, last_error, updated_at, generation
+        )
+        VALUES (${tenantId}, NOW(), 0, NULL, NOW(), 1)
+        ON CONFLICT (tenant_id) DO UPDATE SET
+          requested_at = NOW(),
+          attempts = 0,
+          last_error = NULL,
+          updated_at = NOW(),
+          generation = rebuild.generation + 1
+      `;
+
+      return {
+        memory: memoryFromRow(forgottenRows[0]),
+        receipt,
+        deletionGuarantee: "scope_bound_receipt" as const,
+        deletionDisposition: "committed" as const,
+      };
+    }) as Promise<ForgetMemoryWithReceiptResult | null>;
   }
   let forgotten: MemoryRecord | null = null;
-  await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) => memories.map((memory) => {
-    if (memory.id !== id || normalizeTenantId(memory.tenantId) !== tenantId) return memory;
-    forgotten = { ...sanitizeMemoryRecord(memory), title: "[forgotten]", content: "", tags: [], source: "[forgotten]", embedding: undefined, claimStatus: "forgotten", forgottenAt, updatedAt: forgottenAt };
-    return forgotten;
-  }));
-  return forgotten;
+  let deletionDisposition: ForgetMemoryWithReceiptResult["deletionDisposition"] =
+    "committed";
+  await updateJsonFile<MemoryRecord[]>(
+    getMemoryFile(),
+    [],
+    (memories) => memories.map((memory) => {
+      if (
+        memory.id !== id ||
+        normalizeTenantId(memory.tenantId) !== tenantId
+      ) {
+        return memory;
+      }
+      const sanitized = sanitizeMemoryRecord(memory);
+      deletionDisposition = sanitized.claimStatus === "forgotten"
+        ? "already_deleted"
+        : "committed";
+      const effectiveForgottenAt = sanitized.forgottenAt || forgottenAt;
+      forgotten = {
+        ...sanitized,
+        title: "[forgotten]",
+        content: "",
+        tags: [],
+        source: "[forgotten]",
+        embedding: undefined,
+        evidenceRefs: [],
+        supersedesId: undefined,
+        contradictionOfId: undefined,
+        claimStatus: "forgotten",
+        forgottenAt: effectiveForgottenAt,
+        updatedAt: effectiveForgottenAt,
+      };
+      return forgotten;
+    }),
+  );
+  if (!forgotten) return null;
+  const { queueMemoryGraphRebuild } = await import("@/lib/memory/graph");
+  await queueMemoryGraphRebuild({ tenantId });
+  return {
+    memory: forgotten,
+    receipt: null,
+    deletionGuarantee: "best_effort",
+    deletionDisposition,
+  };
 }
 
 /**
@@ -665,6 +1017,95 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
     updatedAt: normalizeDate(row.updated_at),
     embedding: parseEmbedding(row.embedding),
   });
+}
+
+function memoryDeletionReceiptFromRow(
+  row: Record<string, unknown>,
+): MemoryDeletionReceiptV1 {
+  return parseMemoryDeletionReceiptV1({
+    schemaVersion: Number(row.schema_version),
+    contractKind: String(row.contract_kind),
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    memoryId: String(row.memory_id),
+    attributionKind: String(row.attribution_kind),
+    initiatingActorId: nullableString(row.initiating_actor_id),
+    executingPrincipalType: nullableString(row.executing_principal_type),
+    executingPrincipalId: nullableString(row.executing_principal_id),
+    correlationId: nullableString(row.correlation_id),
+    causationId: nullableString(row.causation_id),
+    purpose: nullableString(row.purpose),
+    executionScope: row.execution_scope ?? null,
+    executionScopeSha256: nullableString(row.execution_scope_sha256),
+    receiptSha256: nullableString(row.receipt_sha256),
+    deleteReason: String(row.delete_reason),
+    descendantMemoryIds: textArray(row.descendant_memory_ids),
+    retrievalTraceIds: textArray(row.retrieval_trace_ids),
+    graphNodeIds: textArray(row.graph_node_ids),
+    graphEdgeIds: textArray(row.graph_edge_ids),
+    descendantMemoryCount: Number(row.descendant_memory_count),
+    retrievalTraceCount: Number(row.retrieval_trace_count),
+    graphNodeCount: Number(row.graph_node_count),
+    graphEdgeCount: Number(row.graph_edge_count),
+    descendantManifestSha256: nullableString(row.descendant_manifest_sha256),
+    forgottenAt: canonicalTimestamp(row.forgotten_at),
+    createdAt: canonicalTimestamp(row.created_at),
+  });
+}
+
+async function insertMemoryDeletionReceipt(
+  receipt: MemoryDeletionReceiptV1,
+  sql: MemorySqlClient,
+) {
+  await sql`
+    INSERT INTO omni_memory_deletion_receipts (
+      id, schema_version, contract_kind, tenant_id, memory_id,
+      attribution_kind, initiating_actor_id, executing_principal_type,
+      executing_principal_id, correlation_id, causation_id, purpose,
+      execution_scope, execution_scope_sha256, receipt_sha256, delete_reason,
+      descendant_memory_ids, retrieval_trace_ids, graph_node_ids,
+      graph_edge_ids, descendant_memory_count, retrieval_trace_count,
+      graph_node_count, graph_edge_count, descendant_manifest_sha256,
+      forgotten_at, created_at
+    ) VALUES (
+      ${receipt.id}, ${receipt.schemaVersion}, ${receipt.contractKind},
+      ${receipt.tenantId}, ${receipt.memoryId}, ${receipt.attributionKind},
+      ${receipt.initiatingActorId}, ${receipt.executingPrincipalType},
+      ${receipt.executingPrincipalId}, ${receipt.correlationId},
+      ${receipt.causationId}, ${receipt.purpose},
+      ${receipt.executionScope}::jsonb, ${receipt.executionScopeSha256},
+      ${receipt.receiptSha256}, ${receipt.deleteReason},
+      ${receipt.descendantMemoryIds}::text[],
+      ${receipt.retrievalTraceIds}::text[], ${receipt.graphNodeIds}::text[],
+      ${receipt.graphEdgeIds}::text[], ${receipt.descendantMemoryCount},
+      ${receipt.retrievalTraceCount}, ${receipt.graphNodeCount},
+      ${receipt.graphEdgeCount}, ${receipt.descendantManifestSha256},
+      ${receipt.forgottenAt}, ${receipt.createdAt}
+    )
+  `;
+}
+
+function textArray(value: unknown) {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function nullableString(value: unknown) {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function canonicalTimestamp(value: unknown) {
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (!Number.isFinite(date.getTime())) {
+    throw new Error("Memory deletion receipt has an invalid timestamp.");
+  }
+  return date.toISOString();
+}
+
+function memoryForgottenEventId(tenantId: string, memoryId: string) {
+  return `memory_forgotten_${memoryDeletionContractSha256({
+    tenantId,
+    memoryId,
+  }).slice(0, 56)}`;
 }
 
 function sanitizeMemoryRecord(record: MemoryRecord): MemoryRecord {

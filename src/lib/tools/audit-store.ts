@@ -437,6 +437,76 @@ export async function failClaimedToolExecution(input: {
   );
 }
 
+export async function reclaimStaleMemoryForgetToolExecutionClaim(
+  expected: ToolExecutionRecord,
+  options: {
+    tenantId?: string;
+    claimToken: string;
+    staleAfterMs?: number;
+  },
+): Promise<ToolExecutionRecord | undefined> {
+  if (!options.claimToken.trim()) {
+    throw new Error("A memory-forget reclaim requires a claim token.");
+  }
+  const tenantId = normalizeTenantId(options.tenantId || expected.tenantId);
+  const staleAfterMs = Math.max(
+    60_000,
+    options.staleAfterMs || DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
+  );
+  const nextClaim = {
+    token: options.claimToken,
+    claimedAt: new Date().toISOString(),
+  };
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: SqlClient) => {
+      const rows = await sql`
+        SELECT *
+        FROM omni_tool_executions
+        WHERE id = ${expected.id}
+          AND COALESCE(tenant_id, 'default') = ${tenantId}
+        FOR UPDATE
+      `;
+      const reclaimed = rows[0]
+        ? reclaimStaleMemoryForgetExecutionRecord(
+            recordFromRow(rows[0]),
+            expected,
+            nextClaim,
+            staleAfterMs,
+          )
+        : undefined;
+      if (reclaimed) {
+        await writeToolExecutionDb(sql, reclaimed);
+      }
+      return reclaimed;
+    }) as Promise<ToolExecutionRecord | undefined>;
+  }
+
+  let reclaimed: ToolExecutionRecord | undefined;
+  await updateJsonFile<ToolExecutionLedger>(
+    getToolLedgerFile(),
+    { records: [] },
+    (ledger) => {
+      const current = ledger.records.find(
+        (item) =>
+          item.id === expected.id &&
+          normalizeTenantId(item.tenantId) === tenantId,
+      );
+      reclaimed = current
+        ? reclaimStaleMemoryForgetExecutionRecord(
+            current,
+            expected,
+            nextClaim,
+            staleAfterMs,
+          )
+        : undefined;
+      return reclaimed ? replaceLedgerRecord(ledger, reclaimed) : ledger;
+    },
+  );
+  return reclaimed;
+}
+
 export async function recoverStaleToolExecutionClaim(
   id: string,
   options: { tenantId?: string; staleAfterMs?: number } = {},
@@ -509,6 +579,10 @@ export async function recoverStaleToolExecutionClaims(
               OR output ? '__effectTargetId'
               OR output ? '__effectToolContractSha256'
             )
+          )
+          AND NOT (
+            tool_id = 'memory.forget'
+            AND NOT dry_run
           )
           AND CASE
             WHEN output #>> '{__executionClaim,claimedAt}' ~
@@ -657,19 +731,46 @@ export async function getToolExecutionsByIds(
 
 export async function listPendingToolApprovals(limit = 25, options: { tenantId?: string } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const staleClaimCutoff = new Date(
+    Date.now() - DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
+  ).toISOString();
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT
         id, tenant_id, actor_id, tool_id, tool_name, risk_level, status,
-        dry_run, approval_required, input, reason, approval_decision,
+        dry_run, approval_required, input, output, reason, approval_decision,
         approvals, approved_by, approved_at, approval_reason, created_at,
         completed_at
       FROM omni_tool_executions
-      WHERE status = 'approval_required'
-        AND COALESCE(tenant_id, 'default') = ${tenantId}
-      ORDER BY created_at DESC
+      WHERE COALESCE(tenant_id, 'default') = ${tenantId}
+        AND (
+          status = 'approval_required'
+          OR (
+            status = 'executing'
+            AND tool_id = 'memory.forget'
+            AND NOT dry_run
+            AND approval_required
+            AND approval_decision = 'approved'
+            AND actor_id IS NOT NULL
+            AND BTRIM(actor_id) <> ''
+            AND approved_by IS NOT NULL
+            AND BTRIM(approved_by) <> ''
+            AND approved_at IS NOT NULL
+            AND effect_receipt IS NULL
+            AND NULLIF(BTRIM(output #>> '{__executionClaim,token}'), '') IS NOT NULL
+            AND CASE
+              WHEN output #>> '{__executionClaim,claimedAt}' ~
+                '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+              THEN (output #>> '{__executionClaim,claimedAt}')::timestamptz
+              ELSE NULL
+            END <= ${staleClaimCutoff}::timestamptz
+          )
+        )
+      ORDER BY
+        CASE WHEN status = 'executing' THEN 0 ELSE 1 END,
+        created_at DESC
       LIMIT ${limit}
     `;
     return rows.map(recordFromRow).map(sanitizeToolExecutionRecord);
@@ -677,7 +778,20 @@ export async function listPendingToolApprovals(limit = 25, options: { tenantId?:
 
   const ledger = await readToolLedger();
   return ledger.records
-    .filter((record) => record.status === "approval_required" && normalizeTenantId(record.tenantId) === tenantId)
+    .filter(
+      (record) =>
+        normalizeTenantId(record.tenantId) === tenantId &&
+        (
+          record.status === "approval_required" ||
+          isStaleApprovedMemoryForgetExecution(record)
+        ),
+    )
+    .sort(
+      (left, right) =>
+        Number(right.status === "executing") -
+          Number(left.status === "executing") ||
+        Date.parse(right.createdAt) - Date.parse(left.createdAt),
+    )
     .slice(0, limit)
     .map(sanitizeToolExecutionRecord);
 }
@@ -983,6 +1097,19 @@ function applyApprovalClaim(
     claimToken: string;
   },
 ): ToolApprovalClaimResult {
+  if (record.status === "executing") {
+    const reclaimed = reclaimStaleMemoryForgetExecutionRecord(
+      record,
+      record,
+      {
+        token: input.claimToken,
+        claimedAt: new Date().toISOString(),
+      },
+    );
+    return reclaimed
+      ? { outcome: "claimed", record: reclaimed }
+      : { outcome: "conflict", record };
+  }
   if (record.status !== "approval_required") {
     return { outcome: "conflict", record };
   }
@@ -1068,6 +1195,23 @@ function executionClaimFrom(record: ToolExecutionRecord) {
   const token = typeof claim.token === "string" ? claim.token : "";
   const claimedAt = typeof claim.claimedAt === "string" ? claim.claimedAt : "";
   return token && claimedAt ? { token, claimedAt } : undefined;
+}
+
+function isStaleApprovedMemoryForgetExecution(record: ToolExecutionRecord) {
+  const claim = executionClaimFrom(record);
+  const claimedAt = claim ? Date.parse(claim.claimedAt) : Number.NaN;
+  return record.status === "executing" &&
+    record.toolId === "memory.forget" &&
+    !record.dryRun &&
+    record.approvalRequired &&
+    record.approvalDecision === "approved" &&
+    Boolean(record.actorId?.trim()) &&
+    Boolean(record.approvedBy?.trim()) &&
+    Boolean(record.approvedAt) &&
+    record.effectReceipt === undefined &&
+    Boolean(claim?.token.trim()) &&
+    Number.isFinite(claimedAt) &&
+    Date.now() - claimedAt >= DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS;
 }
 
 type EffectExecutionIntentBinding = Readonly<{
@@ -1163,6 +1307,71 @@ function reclaimStaleEffectExecutionRecord(
   } satisfies ToolExecutionRecord;
 }
 
+function reclaimStaleMemoryForgetExecutionRecord(
+  existing: ToolExecutionRecord,
+  expected: ToolExecutionRecord,
+  nextClaim: { token: string; claimedAt: string },
+  staleAfterMs = DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
+) {
+  // Scope binding is an append-only event keyed by this immutable execution
+  // ID. Reclaim changes only the lease-like claim; the executor revalidates
+  // that event before it can replay the irreversible operation.
+  const existingClaim = executionClaimFrom(existing);
+  if (
+    !existingClaim ||
+    !nextClaim.token.trim() ||
+    !Number.isFinite(Date.parse(existingClaim.claimedAt)) ||
+    Date.now() - Date.parse(existingClaim.claimedAt) < staleAfterMs ||
+    existing.id !== expected.id ||
+    normalizeTenantId(existing.tenantId) !==
+      normalizeTenantId(expected.tenantId) ||
+    !existing.actorId ||
+    existing.actorId !== expected.actorId ||
+    existing.toolId !== "memory.forget" ||
+    expected.toolId !== "memory.forget" ||
+    existing.toolName !== expected.toolName ||
+    existing.riskLevel !== expected.riskLevel ||
+    existing.status !== "executing" ||
+    expected.status !== "executing" ||
+    existing.dryRun ||
+    expected.dryRun ||
+    !existing.approvalRequired ||
+    existing.approvalRequired !== expected.approvalRequired ||
+    existing.approvalDecision !== "approved" ||
+    existing.approvalDecision !== expected.approvalDecision ||
+    !existing.approvedBy ||
+    existing.approvedBy !== expected.approvedBy ||
+    !existing.approvedAt ||
+    existing.approvedAt !== expected.approvedAt ||
+    existing.approvalReason !== expected.approvalReason ||
+    existing.reason !== expected.reason ||
+    existing.createdAt !== expected.createdAt ||
+    existing.effectReceipt !== undefined ||
+    expected.effectReceipt !== undefined ||
+    toolInputSha256(existing.input) !== toolInputSha256(expected.input) ||
+    canonicalJsonSha256(existing.approvals || []) !==
+      canonicalJsonSha256(expected.approvals || []) ||
+    canonicalJsonSha256(executionIntentWithoutClaim(existing)) !==
+      canonicalJsonSha256(executionIntentWithoutClaim(expected))
+  ) {
+    return undefined;
+  }
+  return {
+    ...existing,
+    output: {
+      ...executionIntentWithoutClaim(existing),
+      __executionClaim: nextClaim,
+    },
+    completedAt: undefined,
+  } satisfies ToolExecutionRecord;
+}
+
+function executionIntentWithoutClaim(record: ToolExecutionRecord) {
+  const { __executionClaim: _claim, ...intent } = parseObject(record.output);
+  void _claim;
+  return intent;
+}
+
 function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
@@ -1175,6 +1384,7 @@ function recoverStaleExecutionRecord(
   if (
     record.status !== "executing" ||
     isEffectBoundExecutionIntent(record) ||
+    (record.toolId === "memory.forget" && !record.dryRun) ||
     !claim ||
     !Number.isFinite(new Date(claim.claimedAt).getTime()) ||
     Date.now() - new Date(claim.claimedAt).getTime() < staleAfterMs

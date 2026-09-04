@@ -223,6 +223,23 @@ keeps its original IDs, cursor binding, terminal outcomes, and file fallback.
 The legacy Google cursor, sync health, knowledge writes, and served RAG remain
 authoritative during this canary.
 
+Migration v42 begins P2.7 at the existing live `memory.forget` boundary. A
+tenant-and-memory-scoped deletion receipt is a permanent database barrier, not
+a reversible provider tombstone. New forgets require an exact execution scope
+and initiating actor, canonically scrub the memory, invalidate trace and graph
+descendants, append a metadata-only event, and queue a clean graph rebuild in
+one transaction. Existing forgotten rows receive an explicitly unattributed
+legacy barrier rather than an invented actor. Retrieval traces materialize the
+memory IDs behind direct and graph results; graph rows close that lineage over
+their traces. Restrictive row policies hide any mixed derived row containing a
+barriered memory, while write triggers prevent rollbacked binaries, delayed
+traces, graph upserts, imports, or restores from resurrecting it. File mode
+retains best-effort development compatibility and does not claim this
+rollback-proof guarantee. Retention and source-projection cleanup retire and
+scrub derived memories without claiming an explicit user-forget receipt, and
+invalidate their materialized trace/graph rows before retirement. Source-wide
+deletion propagation and the physical scrub worker remain later P2.7 slices.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

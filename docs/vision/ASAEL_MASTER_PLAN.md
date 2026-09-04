@@ -842,6 +842,17 @@ non-canonical outcomes fail closed. The schema still enrolls no tenant and the
 legacy connector remains the production read/write path until a later,
 separately measured read cutover.
 
+The first P2.7 slice hardens the already-live `memory.forget` path before
+expanding deletion to every source. A permanent Postgres receipt, canonical
+scrub, materialized trace/graph memory lineage, restrictive query policies,
+and resurrection guards make the barrier survive an application rollback.
+The receipt and typed event are metadata-only and execution-scope-bound;
+legacy forgotten rows are marked as unattributed instead of being assigned a
+fabricated actor. This is the immediate memory canary, not completion of P2.7:
+knowledge/source/capture propagation, pending-run invalidation, readable
+preview/receipt UX, and the bounded physical scrub worker still follow before
+the phase gate can pass.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
