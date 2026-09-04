@@ -386,10 +386,10 @@ const ROLLOUT_COLUMNS = `
 const legalTransitions: Readonly<
   Record<TenantCapabilityRolloutStatus, readonly TenantCapabilityRolloutStatus[]>
 > = Object.freeze({
-  registered: Object.freeze(["active", "superseded"]),
-  active: Object.freeze(["paused", "superseded"]),
-  paused: Object.freeze(["active", "superseded"]),
-  superseded: Object.freeze([]),
+  registered: ["active", "superseded"] as readonly TenantCapabilityRolloutStatus[],
+  active: ["paused", "superseded"] as readonly TenantCapabilityRolloutStatus[],
+  paused: ["active", "superseded"] as readonly TenantCapabilityRolloutStatus[],
+  superseded: [] as readonly TenantCapabilityRolloutStatus[],
 });
 
 export function isTenantCapabilityRolloutTransitionAllowed(
