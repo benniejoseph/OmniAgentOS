@@ -1022,6 +1022,18 @@ portable data, file fallback, prior aliases, and canonical writes remain
 unchanged. No action scope, event identity, approval, receipt, or continuation
 is translated, so membership epochs and the v43-v49 holds remain blocked.
 
+The next read-only canary covers project list, summary, and direct-detail
+reads. Authenticated PostgreSQL queries merge canonical/current-email owners,
+globally preserve the existing status and update ordering with project ID as
+the final tie-breaker, and project the current request actor. Child tasks and
+artifacts are loaded only after a globally unique, tenant-scoped parent is
+authorized. Creation, PATCH, planning, task operations, autonomous execution,
+artifact feedback, Today/brief projections, portable data, file fallback,
+prior aliases, and canonical writes remain unchanged because project actions
+feed workflow initiating actors and governed effects. This slice changes no
+action scope or event identity and does not unblock membership epochs or the
+v43-v49 holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

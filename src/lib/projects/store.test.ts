@@ -11,6 +11,7 @@ import { getMemory } from "@/lib/memory/store";
 import {
   createProject,
   createProjectTasks,
+  getOwnedProject,
   getProject,
   listProjectArtifacts,
   listProjectSummaries,
@@ -53,6 +54,60 @@ describe("personal projects", () => {
     const project = await createProject({ tenantId: "personal", actorId: "owner", title: "Private goal", objective: "Only the owner can see this." });
     await expect(getProject(project.id, { tenantId: "personal", actorId: "someone-else" })).resolves.toBeUndefined();
     await expect(listProjects(10, { tenantId: "personal", actorId: "someone-else" })).resolves.toEqual([]);
+  });
+
+  it("keeps canonical bindings exact in file mode", async () => {
+    const authUserId = "11111111-1111-4111-8111-111111111111";
+    const actorId = "file-project-owner@example.test";
+    const canonicalActorId = `actor:${authUserId}`;
+    const canonicalProject = await createProject({
+      tenantId: "project-file-binding",
+      actorId: canonicalActorId,
+      title: "Canonical project",
+      objective: "Remain outside the file-mode request scope.",
+    });
+    const emailProject = await createProject({
+      tenantId: "project-file-binding",
+      actorId,
+      title: "Current email project",
+      objective: "Remain visible to the exact file-mode owner.",
+    });
+    const requestActorBinding = {
+      version: 1 as const,
+      kind: "auth_user" as const,
+      authUserId,
+      canonicalActorId,
+      legacyOwnerActorIds: Object.freeze([actorId]),
+      readableOwnerActorIds: Object.freeze([canonicalActorId, actorId]),
+    };
+
+    await expect(listProjects(10, {
+      tenantId: "project-file-binding",
+      actorId,
+      requestActorBinding,
+    })).resolves.toEqual([
+      expect.objectContaining({ id: emailProject.id, actorId }),
+    ]);
+    await expect(listProjectSummaries(10, {
+      tenantId: "project-file-binding",
+      actorId,
+      requestActorBinding,
+    })).resolves.toEqual([
+      expect.objectContaining({ id: emailProject.id, actorId }),
+    ]);
+    await expect(getOwnedProject(canonicalProject.id, {
+      tenantId: "project-file-binding",
+      actorId,
+      requestActorBinding,
+    })).resolves.toBeUndefined();
+    await expect(getOwnedProject(emailProject.id, {
+      tenantId: "project-file-binding",
+      actorId,
+      requestActorBinding,
+    })).resolves.toEqual(expect.objectContaining({
+      id: emailProject.id,
+      actorId,
+    }));
   });
 
   it("returns compact project summaries without embedding task or artifact bodies", async () => {

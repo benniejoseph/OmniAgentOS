@@ -233,6 +233,15 @@ scope, approvals, receipts, portable data, and canonical writes are unchanged;
 any later action-path identity cutover must carry typed evidence at that
 governed boundary.
 
+The request-bound project-read canary emits no domain event because it makes
+no mutation or authorization-policy decision. It selects only the validated
+canonical/current-email owners, projects the current request actor, and
+authorizes a globally unique parent before reading tenant-matched child tasks
+or artifacts. Project creation, edits, planning, task execution, workflow
+scope, artifacts, approvals, receipts, and canonical writes remain unchanged;
+their later identity cutovers must append evidence at the affected governed
+operation boundary.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
