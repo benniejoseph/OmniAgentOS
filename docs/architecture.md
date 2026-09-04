@@ -444,6 +444,16 @@ project the current email and Today omits ownership. Generation, scheduling,
 paid inference, saves, POST/PATCH actions, file fallback, cache identity,
 portable data, prior aliases, and canonical writes remain exact and unchanged.
 
+The eighth request-bound slice converges only the public Capture asset
+collection read. PostgreSQL combines the canonical/current-email partitions,
+filters internal artifacts, orders the complete visible set by update time and
+global asset ID, then applies the caller's limit. Returned actor ownership is
+projected to the current request email. Asset detail and content reads,
+stored bytes, indexing, status changes, deletion, internal artifact access,
+ingestion-job recovery, recordings and segments, RAG linkage, background
+work, file fallback, and canonical writes retain their exact persisted-owner
+contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

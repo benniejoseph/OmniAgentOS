@@ -1070,6 +1070,18 @@ Generation, scheduling, paid model calls, persistence, actions, workers, file
 fallback, cache keys, portable data, retained aliases, and canonical writes
 stay exact. This read canary does not unblock membership epochs or v43-v49.
 
+The next request-read slice is limited to the user-visible Capture asset
+collection. Authenticated PostgreSQL requests merge the canonical and exact
+current-email partitions, exclude internal artifacts, and apply one global
+`updated_at DESC, id ASC` order before the existing limit. Global asset IDs
+make each returned row unambiguous, while the response projects the current
+email-shaped actor. Direct asset lookup and download, stored bytes, indexing,
+status changes, deletion, ingestion-job recovery, internal browser frames,
+recordings and their segments, RAG links, background work, file fallback,
+portable data, retained aliases, and canonical writes remain exact-owner.
+This read-only canary changes no governed effect and does not unblock
+membership epochs or v43-v49.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
