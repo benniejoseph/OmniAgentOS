@@ -424,6 +424,15 @@ email-shaped. Reminder generation, worker enumeration, occurrence upsert,
 read-all, snooze, dismiss, complete, and the coupled Today-item mutation stay
 exact-owner paths, as does file fallback.
 
+The sixth slice does not open a new store. It aligns Today's combined snapshot
+with the already-live thread and project read contracts: recent threads and
+active projects now read the canonical/current-email pair with global
+update-time/ID ordering before their limits. Project task summaries remain
+behind the selected globally unique parent and its exact persisted actor.
+The response still omits owner fields, and the cache remains keyed by tenant
+plus current email. Briefs, memory rows, mutations, background work, portable
+data, file fallback behavior, and canonical writes remain unchanged.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

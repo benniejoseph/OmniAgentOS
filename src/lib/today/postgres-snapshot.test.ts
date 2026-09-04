@@ -148,16 +148,30 @@ describe("Postgres Today snapshot", () => {
       /FROM omni_today_items items[\s\S]*?WHERE items\.tenant_id = \$\d+[\s\S]*?AND \([\s\S]*?items\.actor_id = \$\d+[\s\S]*?OR items\.actor_id = \$\d+[\s\S]*?\)/,
     );
     expect(statement.text).toMatch(
-      /FROM omni_threads threads[\s\S]*?WHERE threads\.tenant_id = \$\d+[\s\S]*?AND threads\.actor_id = \$\d+/,
+      /FROM omni_threads threads[\s\S]*?WHERE threads\.tenant_id = \$\d+[\s\S]*?AND \([\s\S]*?threads\.actor_id = \$\d+[\s\S]*?OR threads\.actor_id = \$\d+[\s\S]*?\)[\s\S]*?ORDER BY threads\.updated_at DESC, threads\.id ASC[\s\S]*?LIMIT 6/,
     );
     expect(statement.text).toMatch(
       /FROM omni_daily_briefs briefs[\s\S]*?WHERE briefs\.tenant_id = \$\d+[\s\S]*?AND briefs\.actor_id = \$\d+/,
     );
     expect(statement.text).toMatch(
-      /FROM omni_projects projects[\s\S]*?WHERE projects\.tenant_id = \$\d+[\s\S]*?AND projects\.actor_id = \$\d+/,
+      /FROM omni_projects projects[\s\S]*?WHERE projects\.tenant_id = \$\d+[\s\S]*?AND \([\s\S]*?projects\.actor_id = \$\d+[\s\S]*?OR projects\.actor_id = \$\d+[\s\S]*?\)[\s\S]*?AND projects\.status = 'active'[\s\S]*?ORDER BY projects\.updated_at DESC, projects\.id ASC[\s\S]*?LIMIT 4/,
     );
     expect(statement.text).toMatch(
-      /FROM omni_project_tasks tasks[\s\S]*?WHERE tasks\.tenant_id = \$\d+[\s\S]*?owner_project\.actor_id = \$\d+/,
+      /active_projects AS MATERIALIZED \([\s\S]*?SELECT[\s\S]*?projects\.actor_id[\s\S]*?FROM omni_projects projects/,
+    );
+    const projectRowsProjection = statement.text.match(
+      /project_rows AS MATERIALIZED \(\s*SELECT([\s\S]*?)FROM active_projects projects/,
+    );
+    expect(projectRowsProjection).not.toBeNull();
+    expect(projectRowsProjection?.[1]).not.toContain("actor_id");
+    expect(statement.text).toMatch(
+      /FROM omni_project_tasks tasks[\s\S]*?WHERE tasks\.tenant_id = \$\d+[\s\S]*?owner_project\.tenant_id = \$\d+[\s\S]*?AND owner_project\.actor_id = projects\.actor_id/,
+    );
+    expect(statement.text).toMatch(
+      /jsonb_agg\([\s\S]*?to_jsonb\(thread_rows\)[\s\S]*?ORDER BY updated_at DESC, id ASC[\s\S]*?\)[\s\S]*?FROM thread_rows/,
+    );
+    expect(statement.text).toMatch(
+      /jsonb_agg\([\s\S]*?to_jsonb\(project_rows\)[\s\S]*?ORDER BY updated_at DESC, id ASC[\s\S]*?\)[\s\S]*?FROM project_rows/,
     );
     expect(statement.params.filter((value) => value === "tenant-a").length)
       .toBeGreaterThanOrEqual(8);
@@ -265,8 +279,34 @@ describe("Postgres Today snapshot", () => {
     expect(dbMocks.statements[1].text).toMatch(
       /FROM omni_today_items items[\s\S]*?items\.actor_id = \$\d+[\s\S]*?OR items\.actor_id = \$\d+/,
     );
+    expectScopeActorPair(
+      dbMocks.statements[1],
+      /FROM omni_threads threads[\s\S]*?threads\.actor_id = \$(\d+)[\s\S]*?OR threads\.actor_id = \$(\d+)/,
+      [canonicalActorId, actorId],
+    );
+    expectScopeActorPair(
+      dbMocks.statements[1],
+      /FROM omni_projects projects[\s\S]*?projects\.actor_id = \$(\d+)[\s\S]*?OR projects\.actor_id = \$(\d+)/,
+      [canonicalActorId, actorId],
+    );
+    expect(dbMocks.statements[1].text).toMatch(
+      /FROM omni_project_tasks tasks[\s\S]*?owner_project\.tenant_id = \$\d+[\s\S]*?owner_project\.actor_id = projects\.actor_id/,
+    );
   });
 });
+
+function expectScopeActorPair(
+  statement: { text: string; params: unknown[] },
+  pattern: RegExp,
+  expected: [string, string],
+) {
+  const match = statement.text.match(pattern);
+  expect(match).not.toBeNull();
+  expect(match && [
+    statement.params[Number(match[1]) - 1],
+    statement.params[Number(match[2]) - 1],
+  ]).toEqual(expected);
+}
 
 function renderStatement(strings: TemplateStringsArray, params: unknown[]) {
   return strings.reduce(

@@ -1047,6 +1047,17 @@ and unchanged. Because this is read-only and fails rather than reconciling
 notification lifecycle state, it does not unblock membership epochs or the
 v43-v49 holds.
 
+Before opening another actor-owned store, the following slice aligns Today's
+combined projection with the proven thread and project canaries. Recent
+threads and active projects read the canonical/current-email pair, apply one
+global `updated_at DESC, id ASC` order before their existing limits, and keep
+project task summaries bound to the selected globally unique parent's exact
+persisted actor. Today emits no owner fields and retains its tenant/current-
+email cache identity. Briefs, memory rows, writes, workers, portable data,
+file fallback semantics, retained aliases, and canonical writes remain
+unchanged. This consistency slice changes no governed operation and does not
+unblock membership epochs or the v43-v49 holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
