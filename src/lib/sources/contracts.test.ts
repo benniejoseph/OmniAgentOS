@@ -7,6 +7,7 @@ import {
   buildSourceAdapterUpsertV1,
   buildSourceItemV1,
   buildSourceRevisionV1,
+  deriveSourceItemIdV1,
   evidenceLocatorV1Schema,
   parseEvidenceUnitV1,
   parseSourceAdapterOutputV1,
@@ -152,6 +153,15 @@ describe("P2.1 source contracts", () => {
       SOURCE_CONTRACT_SCHEMA_VERSION,
     );
     expect(first.sourceItem.sourceItemId).toMatch(/^source_item_[a-f0-9]{56}$/);
+    expect(deriveSourceItemIdV1({
+      tenantId: first.sourceItem.tenantId,
+      ownerActorId: first.sourceItem.ownerActorId,
+      workspaceId: first.sourceItem.workspaceId,
+      projectId: first.sourceItem.projectId,
+      missionId: first.sourceItem.missionId,
+      connectionId: first.sourceItem.connectionId,
+      providerItemKeySha256: first.sourceItem.providerItemKeySha256,
+    })).toBe(first.sourceItem.sourceItemId);
     expect(first.sourceRevision.sourceRevisionId).toMatch(
       /^source_revision_[a-f0-9]{56}$/,
     );

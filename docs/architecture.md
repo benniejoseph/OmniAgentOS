@@ -181,6 +181,23 @@ reauthorization increments it. The legacy personal-source cursor and knowledge
 projection remain the production read/write authority until the later Drive
 revision/tombstone convergence gate.
 
+Migration v39 installs the inactive canonical source convergence foundation.
+Immutable, receipt-bound tombstones preserve delete history, while one
+tenant-and-source-scoped head advances only by the exact authorization,
+rollout, phase, page, and ordinal tuple. Transaction-only mutation APIs bind an
+upsert to the locked current revision or a delete to the same item's locked
+last-known revision, append a metadata-only event atomically, and classify
+older and duplicate observations. A delete for an item that has never been
+enrolled advances an explicit receipt-bound absence head without inventing a
+SourceItem or tombstone, so an older delayed upsert cannot resurrect it.
+Terminal page settlements must resolve to that same receipt, canonical target,
+and five-field head order; a stale settlement must instead prove a strictly
+newer head. Deferred end-state constraints prevent an absence head from
+coexisting with a SourceItem at commit.
+Generation 1 checkpoint rows remain immutable, no Drive rollout is activated
+by this migration, and legacy knowledge writes and served RAG remain the
+production authority.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

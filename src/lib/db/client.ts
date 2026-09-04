@@ -140,6 +140,8 @@ export const tenantRootPolicyTables = [
 
 export const tenantChildPolicyTables = [
   "omni_source_revisions",
+  "omni_source_tombstones",
+  "omni_source_sync_heads",
   "omni_evidence_units",
   "omni_source_sync_page_items",
   "omni_agent_events",
@@ -720,6 +722,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[37],
       up: async (sql) => {
         await ensureDriveSyncV2ShadowCheckpoints(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[38],
+      up: async (sql) => {
+        await ensureCanonicalSourceConvergenceFoundation(sql);
         await ensureTenantIsolationPolicies(sql);
       },
     },
@@ -5500,6 +5509,1352 @@ async function ensureDriveSyncV2ShadowCheckpoints(sql: SqlClient) {
             grant_record.grantee
           );
         END LOOP;
+      END LOOP;
+    END
+    $migration$
+  `);
+}
+
+async function ensureCanonicalSourceConvergenceFoundation(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_source_tombstones (
+      id TEXT NOT NULL,
+      schema_version INTEGER NOT NULL,
+      contract_kind TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      workspace_id TEXT,
+      project_id TEXT,
+      mission_id TEXT,
+      connection_id TEXT NOT NULL,
+      visibility TEXT NOT NULL,
+      sensitivity TEXT NOT NULL,
+      permission_grant_ids TEXT[] NOT NULL,
+      allowed_purpose_ids TEXT[] NOT NULL,
+      retention_policy_id TEXT NOT NULL,
+      retention_expires_at TIMESTAMPTZ,
+      permission_set_sha256 TEXT NOT NULL,
+      purpose_set_sha256 TEXT NOT NULL,
+      source_item_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      provider_item_key_sha256 TEXT NOT NULL,
+      last_known_source_revision_id TEXT,
+      delete_reason TEXT NOT NULL,
+      tombstone_sha256 TEXT NOT NULL,
+      adapter_output_id TEXT NOT NULL,
+      adapter_output_sha256 TEXT NOT NULL,
+      adapter_operation TEXT NOT NULL,
+      adapter_id TEXT NOT NULL,
+      adapter_version_id TEXT NOT NULL,
+      adapter_config_sha256 TEXT NOT NULL,
+      adapter_event_key_sha256 TEXT NOT NULL,
+      adapter_observed_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_source_tombstones_pkey
+        PRIMARY KEY (tenant_id, id),
+      CONSTRAINT omni_source_tombstones_tenant_item_key
+        UNIQUE (tenant_id, id, source_item_id),
+      CONSTRAINT omni_source_tombstones_adapter_output_key
+        UNIQUE (tenant_id, adapter_output_id),
+      CONSTRAINT omni_source_tombstones_source_item_fkey
+        FOREIGN KEY (
+          tenant_id,
+          source_item_id,
+          owner_actor_id,
+          connection_id
+        )
+        REFERENCES omni_source_items (
+          tenant_id,
+          id,
+          owner_actor_id,
+          connection_id
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_tombstones_last_known_revision_fkey
+        FOREIGN KEY (
+          tenant_id,
+          last_known_source_revision_id,
+          source_item_id,
+          owner_actor_id,
+          connection_id
+        )
+        REFERENCES omni_source_revisions (
+          tenant_id,
+          id,
+          source_item_id,
+          owner_actor_id,
+          connection_id
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_tombstones_adapter_output_receipt_fkey
+        FOREIGN KEY (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256,
+          connection_id,
+          adapter_operation,
+          adapter_id,
+          adapter_version_id,
+          adapter_config_sha256,
+          adapter_event_key_sha256,
+          adapter_observed_at
+        )
+        REFERENCES omni_source_adapter_output_receipts (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256,
+          connection_id,
+          adapter_operation,
+          adapter_id,
+          adapter_version_id,
+          adapter_config_sha256,
+          adapter_event_key_sha256,
+          adapter_observed_at
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_tombstones_schema_check CHECK (
+        schema_version = 1
+        AND contract_kind = 'source_tombstone'
+        AND adapter_operation = 'delete'
+      ),
+      CONSTRAINT omni_source_tombstones_source_kind_check CHECK (
+        source_kind IN (
+          'document', 'spreadsheet', 'presentation', 'email',
+          'calendar_event', 'message', 'webpage', 'image', 'audio',
+          'video', 'record', 'file', 'capture'
+        )
+      ),
+      CONSTRAINT omni_source_tombstones_visibility_check CHECK (
+        visibility IN (
+          'agent_private', 'user_private', 'mission_shared',
+          'project_shared', 'workspace_shared'
+        )
+      ),
+      CONSTRAINT omni_source_tombstones_sensitivity_check CHECK (
+        sensitivity IN ('public', 'internal', 'confidential', 'restricted')
+      ),
+      CONSTRAINT omni_source_tombstones_visibility_scope_check CHECK (
+        (visibility <> 'workspace_shared' OR workspace_id IS NOT NULL)
+        AND (visibility <> 'project_shared' OR project_id IS NOT NULL)
+        AND (visibility <> 'mission_shared' OR mission_id IS NOT NULL)
+      ),
+      CONSTRAINT omni_source_tombstones_required_ids_check CHECK (
+        omni_source_contract_id_is_valid(id)
+        AND omni_source_contract_id_is_valid(tenant_id)
+        AND omni_source_contract_id_is_valid(owner_actor_id)
+        AND omni_source_contract_id_is_valid(connection_id)
+        AND omni_source_contract_id_is_valid(source_item_id)
+        AND omni_source_contract_id_is_valid(retention_policy_id)
+        AND omni_source_contract_id_is_valid(adapter_output_id)
+        AND omni_source_contract_id_is_valid(adapter_id)
+        AND omni_source_contract_id_is_valid(adapter_version_id)
+        AND (
+          workspace_id IS NULL
+          OR omni_source_contract_id_is_valid(workspace_id)
+        )
+        AND (
+          project_id IS NULL
+          OR omni_source_contract_id_is_valid(project_id)
+        )
+        AND (
+          mission_id IS NULL
+          OR omni_source_contract_id_is_valid(mission_id)
+        )
+        AND (
+          last_known_source_revision_id IS NULL
+          OR omni_source_contract_id_is_valid(last_known_source_revision_id)
+        )
+      ),
+      CONSTRAINT omni_source_tombstones_grants_check CHECK (
+        omni_source_id_array_is_canonical(permission_grant_ids, 128)
+        AND omni_source_id_array_is_canonical(allowed_purpose_ids, 64)
+      ),
+      CONSTRAINT omni_source_tombstones_hashes_check CHECK (
+        permission_set_sha256 ~ '^[0-9a-f]{64}$'
+        AND purpose_set_sha256 ~ '^[0-9a-f]{64}$'
+        AND provider_item_key_sha256 ~ '^[0-9a-f]{64}$'
+        AND tombstone_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_output_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_config_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_event_key_sha256 ~ '^[0-9a-f]{64}$'
+      ),
+      CONSTRAINT omni_source_tombstones_delete_reason_check CHECK (
+        delete_reason IN (
+          'provider_deleted', 'access_revoked',
+          'connection_removed', 'source_missing'
+        )
+      )
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_source_sync_heads (
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      source_item_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      connection_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      provider_item_key_sha256 TEXT NOT NULL,
+      absence_observed BOOLEAN NOT NULL DEFAULT FALSE,
+      authorization_generation BIGINT NOT NULL,
+      rollout_generation BIGINT NOT NULL,
+      phase_rank SMALLINT NOT NULL,
+      page_sequence BIGINT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      operation TEXT NOT NULL,
+      source_revision_id TEXT,
+      source_tombstone_id TEXT,
+      adapter_output_id TEXT NOT NULL,
+      adapter_output_sha256 TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_source_sync_heads_pkey
+        PRIMARY KEY (tenant_id, source_item_id),
+      CONSTRAINT omni_source_sync_heads_source_revision_fkey
+        FOREIGN KEY (
+          tenant_id,
+          source_revision_id,
+          source_item_id,
+          owner_actor_id,
+          connection_id
+        )
+        REFERENCES omni_source_revisions (
+          tenant_id,
+          id,
+          source_item_id,
+          owner_actor_id,
+          connection_id
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_sync_heads_source_tombstone_fkey
+        FOREIGN KEY (tenant_id, source_tombstone_id, source_item_id)
+        REFERENCES omni_source_tombstones (tenant_id, id, source_item_id)
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_sync_heads_adapter_output_fkey
+        FOREIGN KEY (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256
+        )
+        REFERENCES omni_source_adapter_output_receipts (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_sync_heads_schema_check CHECK (
+        schema_version = 1
+      ),
+      CONSTRAINT omni_source_sync_heads_required_ids_check CHECK (
+        omni_source_contract_id_is_valid(tenant_id)
+        AND omni_source_contract_id_is_valid(source_item_id)
+        AND omni_source_contract_id_is_valid(owner_actor_id)
+        AND omni_source_contract_id_is_valid(connection_id)
+        AND omni_source_contract_id_is_valid(adapter_output_id)
+        AND (
+          source_revision_id IS NULL
+          OR omni_source_contract_id_is_valid(source_revision_id)
+        )
+        AND (
+          source_tombstone_id IS NULL
+          OR omni_source_contract_id_is_valid(source_tombstone_id)
+        )
+      ),
+      CONSTRAINT omni_source_sync_heads_source_kind_check CHECK (
+        source_kind IN (
+          'document', 'spreadsheet', 'presentation', 'email',
+          'calendar_event', 'message', 'webpage', 'image', 'audio',
+          'video', 'record', 'file', 'capture'
+        )
+      ),
+      CONSTRAINT omni_source_sync_heads_hashes_check CHECK (
+        provider_item_key_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_output_sha256 ~ '^[0-9a-f]{64}$'
+      ),
+      CONSTRAINT omni_source_sync_heads_order_check CHECK (
+        authorization_generation BETWEEN 1 AND 9007199254740991
+        AND rollout_generation BETWEEN 1 AND 9007199254740991
+        AND phase_rank IN (0, 1)
+        AND page_sequence BETWEEN 0 AND 9007199254740991
+        AND ordinal BETWEEN 0 AND 999
+      ),
+      CONSTRAINT omni_source_sync_heads_target_check CHECK (
+        (
+          absence_observed
+          AND operation = 'delete'
+          AND source_revision_id IS NULL
+          AND source_tombstone_id IS NULL
+        )
+        OR (
+          NOT absence_observed
+          AND (
+            (
+              operation = 'upsert'
+              AND source_revision_id IS NOT NULL
+              AND source_tombstone_id IS NULL
+            )
+            OR (
+              operation = 'delete'
+              AND source_revision_id IS NULL
+              AND source_tombstone_id IS NOT NULL
+            )
+          )
+        )
+      ),
+      CONSTRAINT omni_source_sync_heads_timestamps_check CHECK (
+        created_at <= updated_at
+      )
+    )
+  `;
+
+  await sql`
+    ALTER TABLE omni_source_sync_page_items
+    ADD COLUMN IF NOT EXISTS source_tombstone_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_source_sync_page_items
+    ADD COLUMN IF NOT EXISTS noop_reason_code TEXT
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_source_sync_page_items_source_item_fkey'
+          AND conrelid = 'omni_source_sync_page_items'::regclass
+      ) THEN
+        ALTER TABLE omni_source_sync_page_items
+        ADD CONSTRAINT omni_source_sync_page_items_source_item_fkey
+        FOREIGN KEY (tenant_id, source_item_id)
+        REFERENCES omni_source_items (tenant_id, id)
+        ON DELETE RESTRICT;
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_source_sync_page_items_source_revision_fkey'
+          AND conrelid = 'omni_source_sync_page_items'::regclass
+      ) THEN
+        ALTER TABLE omni_source_sync_page_items
+        ADD CONSTRAINT omni_source_sync_page_items_source_revision_fkey
+        FOREIGN KEY (tenant_id, source_revision_id, source_item_id)
+        REFERENCES omni_source_revisions (tenant_id, id, source_item_id)
+        ON DELETE RESTRICT;
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_source_sync_page_items_source_tombstone_fkey'
+          AND conrelid = 'omni_source_sync_page_items'::regclass
+      ) THEN
+        ALTER TABLE omni_source_sync_page_items
+        ADD CONSTRAINT omni_source_sync_page_items_source_tombstone_fkey
+        FOREIGN KEY (tenant_id, source_tombstone_id, source_item_id)
+        REFERENCES omni_source_tombstones (tenant_id, id, source_item_id)
+        ON DELETE RESTRICT;
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_source_sync_page_items_convergence_ids_check'
+          AND conrelid = 'omni_source_sync_page_items'::regclass
+      ) THEN
+        ALTER TABLE omni_source_sync_page_items
+        ADD CONSTRAINT omni_source_sync_page_items_convergence_ids_check
+        CHECK (
+          source_tombstone_id IS NULL
+          OR omni_source_contract_id_is_valid(source_tombstone_id)
+        );
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_source_sync_page_items_noop_reason_check'
+          AND conrelid = 'omni_source_sync_page_items'::regclass
+      ) THEN
+        ALTER TABLE omni_source_sync_page_items
+        ADD CONSTRAINT omni_source_sync_page_items_noop_reason_check
+        CHECK (
+          noop_reason_code IS NULL
+          OR noop_reason_code IN ('stale', 'duplicate', 'not_found')
+        );
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    ALTER TABLE omni_source_sync_page_items
+    DROP CONSTRAINT IF EXISTS omni_source_sync_page_items_applied_check
+  `;
+  await sql`
+    ALTER TABLE omni_source_sync_page_items
+    ADD CONSTRAINT omni_source_sync_page_items_applied_check CHECK (
+      (
+        outcome = 'applied'
+        AND applied_at IS NOT NULL
+        AND source_item_id IS NOT NULL
+        AND adapter_output_id IS NOT NULL
+        AND noop_reason_code IS NULL
+        AND (
+          (
+            operation = 'upsert'
+            AND source_revision_id IS NOT NULL
+            AND source_tombstone_id IS NULL
+            AND delete_reason_code IS NULL
+          )
+          OR (
+            operation = 'delete'
+            AND source_revision_id IS NULL
+            AND source_tombstone_id IS NOT NULL
+            AND delete_reason_code IS NOT NULL
+          )
+        )
+      )
+      OR (
+        outcome = 'noop'
+        AND applied_at IS NOT NULL
+        AND source_revision_id IS NULL
+        AND source_tombstone_id IS NULL
+        AND noop_reason_code IS NOT NULL
+        AND (
+          (
+            noop_reason_code = 'stale'
+            AND adapter_output_id IS NULL
+          )
+          OR (
+            noop_reason_code = 'duplicate'
+            AND adapter_output_id IS NOT NULL
+            AND (
+              operation = 'delete'
+              OR source_item_id IS NOT NULL
+            )
+          )
+          OR (
+            noop_reason_code = 'not_found'
+            AND adapter_output_id IS NOT NULL
+            AND operation = 'delete'
+            AND source_item_id IS NULL
+          )
+        )
+      )
+      OR (
+        outcome NOT IN ('applied', 'noop')
+        AND applied_at IS NULL
+        AND source_tombstone_id IS NULL
+        AND noop_reason_code IS NULL
+      )
+    )
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_source_sync_page_item_binding()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      checkpoint_phase TEXT;
+      checkpoint_status TEXT;
+      checkpoint_adapter_version_id TEXT;
+      checkpoint_adapter_config_sha256 TEXT;
+      expected_phase_rank SMALLINT;
+    BEGIN
+      SELECT
+        checkpoint.phase,
+        checkpoint.status,
+        checkpoint.adapter_version_id,
+        checkpoint.adapter_config_sha256
+      INTO
+        checkpoint_phase,
+        checkpoint_status,
+        checkpoint_adapter_version_id,
+        checkpoint_adapter_config_sha256
+      FROM omni_source_sync_page_checkpoints checkpoint
+      WHERE checkpoint.tenant_id = NEW.tenant_id
+        AND checkpoint.id = NEW.checkpoint_id
+        AND checkpoint.owner_actor_id = NEW.owner_actor_id
+        AND checkpoint.connection_id = NEW.connection_id
+        AND checkpoint.provider = NEW.provider
+        AND checkpoint.source_id = NEW.source_id
+        AND checkpoint.engine_version = NEW.engine_version
+        AND checkpoint.authorization_generation = NEW.authorization_generation
+        AND checkpoint.rollout_generation = NEW.rollout_generation
+        AND checkpoint.page_sequence = NEW.page_sequence
+      FOR UPDATE;
+
+      IF checkpoint_phase = 'backfill' THEN
+        expected_phase_rank := 0;
+      ELSIF checkpoint_phase = 'changes' THEN
+        expected_phase_rank := 1;
+      ELSE
+        expected_phase_rank := -1;
+      END IF;
+
+      IF checkpoint_phase IS NULL
+        OR NEW.phase_rank <> expected_phase_rank
+      THEN
+        RAISE EXCEPTION 'Source sync page item does not match its checkpoint'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF TG_OP = 'INSERT' AND checkpoint_status <> 'leased' THEN
+        RAISE EXCEPTION 'Source sync page items require an active page lease'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.adapter_output_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM omni_source_adapter_output_receipts receipt
+          WHERE receipt.tenant_id = NEW.tenant_id
+            AND receipt.connection_id = NEW.connection_id
+            AND receipt.adapter_output_id = NEW.adapter_output_id
+            AND receipt.adapter_output_sha256 = NEW.adapter_output_sha256
+            AND receipt.adapter_operation = NEW.operation
+            AND receipt.adapter_version_id = checkpoint_adapter_version_id
+            AND receipt.adapter_config_sha256 =
+              checkpoint_adapter_config_sha256
+            AND receipt.adapter_event_key_sha256 =
+              NEW.adapter_event_key_sha256
+            AND receipt.adapter_observed_at = NEW.observed_at
+        )
+      THEN
+        RAISE EXCEPTION 'Source sync page receipt binding is incoherent'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.outcome = 'applied' AND NEW.operation = 'upsert' THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM omni_source_revisions source_revision
+          WHERE source_revision.tenant_id = NEW.tenant_id
+            AND source_revision.id = NEW.source_revision_id
+            AND source_revision.source_item_id = NEW.source_item_id
+            AND source_revision.owner_actor_id = NEW.owner_actor_id
+            AND source_revision.connection_id = NEW.connection_id
+            AND source_revision.provider_item_key_sha256 =
+              NEW.provider_item_key_sha256
+            AND source_revision.provider_revision_key_sha256 IS NOT DISTINCT
+              FROM NEW.provider_revision_key_sha256
+            AND source_revision.adapter_output_id = NEW.adapter_output_id
+            AND source_revision.adapter_output_sha256 =
+              NEW.adapter_output_sha256
+            AND source_revision.adapter_operation = 'upsert'
+            AND source_revision.adapter_version_id =
+              checkpoint_adapter_version_id
+            AND source_revision.adapter_config_sha256 =
+              checkpoint_adapter_config_sha256
+            AND source_revision.adapter_event_key_sha256 =
+              NEW.adapter_event_key_sha256
+            AND source_revision.adapter_observed_at = NEW.observed_at
+        ) THEN
+          RAISE EXCEPTION 'Source sync applied revision binding is incoherent'
+            USING ERRCODE = '23514';
+        END IF;
+      ELSIF NEW.outcome = 'applied' AND NEW.operation = 'delete' THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM omni_source_tombstones tombstone
+          WHERE tombstone.tenant_id = NEW.tenant_id
+            AND tombstone.id = NEW.source_tombstone_id
+            AND tombstone.source_item_id = NEW.source_item_id
+            AND tombstone.owner_actor_id = NEW.owner_actor_id
+            AND tombstone.connection_id = NEW.connection_id
+            AND tombstone.provider_item_key_sha256 =
+              NEW.provider_item_key_sha256
+            AND tombstone.last_known_source_revision_id IS NOT DISTINCT FROM
+              NEW.last_known_revision_id
+            AND tombstone.delete_reason = NEW.delete_reason_code
+            AND tombstone.adapter_output_id = NEW.adapter_output_id
+            AND tombstone.adapter_output_sha256 = NEW.adapter_output_sha256
+            AND tombstone.adapter_operation = 'delete'
+            AND tombstone.adapter_version_id = checkpoint_adapter_version_id
+            AND tombstone.adapter_config_sha256 =
+              checkpoint_adapter_config_sha256
+            AND tombstone.adapter_event_key_sha256 =
+              NEW.adapter_event_key_sha256
+            AND tombstone.adapter_observed_at = NEW.observed_at
+        ) THEN
+          RAISE EXCEPTION 'Source sync applied tombstone binding is incoherent'
+            USING ERRCODE = '23514';
+        END IF;
+      END IF;
+
+      IF NEW.outcome = 'applied' THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM omni_source_sync_heads head
+          WHERE head.tenant_id = NEW.tenant_id
+            AND head.source_item_id = NEW.source_item_id
+            AND head.owner_actor_id = NEW.owner_actor_id
+            AND head.connection_id = NEW.connection_id
+            AND head.provider_item_key_sha256 =
+              NEW.provider_item_key_sha256
+            AND head.authorization_generation = NEW.authorization_generation
+            AND head.rollout_generation = NEW.rollout_generation
+            AND head.phase_rank = NEW.phase_rank
+            AND head.page_sequence = NEW.page_sequence
+            AND head.ordinal = NEW.ordinal
+            AND NOT head.absence_observed
+            AND head.operation = NEW.operation
+            AND head.source_revision_id IS NOT DISTINCT FROM
+              NEW.source_revision_id
+            AND head.source_tombstone_id IS NOT DISTINCT FROM
+              NEW.source_tombstone_id
+            AND head.adapter_output_id = NEW.adapter_output_id
+            AND head.adapter_output_sha256 = NEW.adapter_output_sha256
+        ) THEN
+          RAISE EXCEPTION 'Source sync applied head order is incoherent'
+            USING ERRCODE = '23514';
+        END IF;
+      ELSIF NEW.outcome = 'noop'
+        AND NEW.noop_reason_code IN ('duplicate', 'not_found')
+      THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM omni_source_sync_heads head
+          WHERE head.tenant_id = NEW.tenant_id
+            AND head.owner_actor_id = NEW.owner_actor_id
+            AND head.connection_id = NEW.connection_id
+            AND head.provider_item_key_sha256 =
+              NEW.provider_item_key_sha256
+            AND head.authorization_generation = NEW.authorization_generation
+            AND head.rollout_generation = NEW.rollout_generation
+            AND head.phase_rank = NEW.phase_rank
+            AND head.page_sequence = NEW.page_sequence
+            AND head.ordinal = NEW.ordinal
+            AND head.operation = NEW.operation
+            AND head.adapter_output_id = NEW.adapter_output_id
+            AND head.adapter_output_sha256 = NEW.adapter_output_sha256
+            AND (
+              NEW.source_item_id IS NULL
+              OR head.source_item_id = NEW.source_item_id
+            )
+            AND (
+              NEW.source_item_id IS NOT NULL
+              OR head.absence_observed
+            )
+            AND (
+              NEW.noop_reason_code <> 'not_found'
+              OR head.absence_observed
+            )
+        ) THEN
+          RAISE EXCEPTION 'Source sync duplicate or absence head is incoherent'
+            USING ERRCODE = '23514';
+        END IF;
+      ELSIF NEW.outcome = 'noop' AND NEW.noop_reason_code = 'stale' THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM omni_source_sync_heads head
+          WHERE head.tenant_id = NEW.tenant_id
+            AND head.owner_actor_id = NEW.owner_actor_id
+            AND head.connection_id = NEW.connection_id
+            AND head.provider_item_key_sha256 =
+              NEW.provider_item_key_sha256
+            AND (
+              NEW.source_item_id IS NULL
+              OR head.source_item_id = NEW.source_item_id
+            )
+            AND (
+              NEW.source_item_id IS NOT NULL
+              OR head.absence_observed
+            )
+            AND ROW(
+              head.authorization_generation,
+              head.rollout_generation,
+              head.phase_rank,
+              head.page_sequence,
+              head.ordinal
+            ) > ROW(
+              NEW.authorization_generation,
+              NEW.rollout_generation,
+              NEW.phase_rank,
+              NEW.page_sequence,
+              NEW.ordinal
+            )
+        ) THEN
+          RAISE EXCEPTION 'Source sync stale head order is incoherent'
+            USING ERRCODE = '23514';
+        END IF;
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_source_sync_page_item()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION '% rows cannot be changed with %', TG_TABLE_NAME, TG_OP
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF OLD.outcome IN ('shadow_observed', 'applied', 'noop') THEN
+        RAISE EXCEPTION '% terminal outcomes are immutable', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.id IS DISTINCT FROM OLD.id
+        OR NEW.schema_version IS DISTINCT FROM OLD.schema_version
+        OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+        OR NEW.checkpoint_id IS DISTINCT FROM OLD.checkpoint_id
+        OR NEW.owner_actor_id IS DISTINCT FROM OLD.owner_actor_id
+        OR NEW.connection_id IS DISTINCT FROM OLD.connection_id
+        OR NEW.provider IS DISTINCT FROM OLD.provider
+        OR NEW.source_id IS DISTINCT FROM OLD.source_id
+        OR NEW.engine_version IS DISTINCT FROM OLD.engine_version
+        OR NEW.authorization_generation IS DISTINCT FROM OLD.authorization_generation
+        OR NEW.rollout_generation IS DISTINCT FROM OLD.rollout_generation
+        OR NEW.phase_rank IS DISTINCT FROM OLD.phase_rank
+        OR NEW.page_sequence IS DISTINCT FROM OLD.page_sequence
+        OR NEW.ordinal IS DISTINCT FROM OLD.ordinal
+        OR NEW.operation IS DISTINCT FROM OLD.operation
+        OR NEW.provider_item_key_sha256 IS DISTINCT FROM OLD.provider_item_key_sha256
+        OR NEW.provider_revision_key_sha256 IS DISTINCT FROM OLD.provider_revision_key_sha256
+        OR NEW.adapter_event_key_sha256 IS DISTINCT FROM OLD.adapter_event_key_sha256
+        OR NEW.observed_at IS DISTINCT FROM OLD.observed_at
+        OR NEW.manifest_item_sha256 IS DISTINCT FROM OLD.manifest_item_sha256
+        OR NEW.created_at IS DISTINCT FROM OLD.created_at
+      THEN
+        RAISE EXCEPTION '% identity is immutable', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (OLD.source_item_id IS NOT NULL AND
+          NEW.source_item_id IS DISTINCT FROM OLD.source_item_id)
+        OR (OLD.source_revision_id IS NOT NULL AND
+          NEW.source_revision_id IS DISTINCT FROM OLD.source_revision_id)
+        OR (OLD.source_tombstone_id IS NOT NULL AND
+          NEW.source_tombstone_id IS DISTINCT FROM OLD.source_tombstone_id)
+        OR (OLD.adapter_output_id IS NOT NULL AND
+          NEW.adapter_output_id IS DISTINCT FROM OLD.adapter_output_id)
+        OR (OLD.adapter_output_sha256 IS NOT NULL AND
+          NEW.adapter_output_sha256 IS DISTINCT FROM OLD.adapter_output_sha256)
+        OR (OLD.delete_reason_code IS NOT NULL AND
+          NEW.delete_reason_code IS DISTINCT FROM OLD.delete_reason_code)
+        OR (OLD.noop_reason_code IS NOT NULL AND
+          NEW.noop_reason_code IS DISTINCT FROM OLD.noop_reason_code)
+        OR (OLD.last_known_revision_id IS NOT NULL AND
+          NEW.last_known_revision_id IS DISTINCT FROM OLD.last_known_revision_id)
+      THEN
+        RAISE EXCEPTION '% initialized outcome bindings are immutable',
+          TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.attempts < OLD.attempts THEN
+        RAISE EXCEPTION '% attempts cannot move backwards', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_tombstones_tenant_item_created_idx
+    ON omni_source_tombstones (tenant_id, source_item_id, created_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_tombstones_tenant_source_idx
+    ON omni_source_tombstones (
+      tenant_id,
+      owner_actor_id,
+      connection_id,
+      provider_item_key_sha256,
+      created_at DESC
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_tombstones_last_revision_idx
+    ON omni_source_tombstones (tenant_id, last_known_source_revision_id)
+    WHERE last_known_source_revision_id IS NOT NULL
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_tombstones_retention_expiry_idx
+    ON omni_source_tombstones (retention_expires_at)
+    WHERE retention_expires_at IS NOT NULL
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_tombstones_permission_grants_idx
+    ON omni_source_tombstones USING GIN (permission_grant_ids)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_sync_heads_source_order_idx
+    ON omni_source_sync_heads (
+      tenant_id,
+      owner_actor_id,
+      connection_id,
+      authorization_generation DESC,
+      rollout_generation DESC,
+      phase_rank DESC,
+      page_sequence DESC,
+      ordinal DESC
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_sync_heads_provider_item_idx
+    ON omni_source_sync_heads (
+      tenant_id,
+      connection_id,
+      provider_item_key_sha256
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_sync_heads_revision_idx
+    ON omni_source_sync_heads (tenant_id, source_revision_id)
+    WHERE source_revision_id IS NOT NULL
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_sync_heads_tombstone_idx
+    ON omni_source_sync_heads (tenant_id, source_tombstone_id)
+    WHERE source_tombstone_id IS NOT NULL
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_source_sync_page_items_tombstone_idx
+    ON omni_source_sync_page_items (tenant_id, source_tombstone_id)
+    WHERE source_tombstone_id IS NOT NULL
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_lock_source_item_identity()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id),
+        hashtext(NEW.id)
+      );
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_source_head_end_state()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      checked_tenant_id TEXT;
+      checked_source_item_id TEXT;
+      head_absence_observed BOOLEAN;
+      source_item_exists BOOLEAN;
+    BEGIN
+      IF TG_TABLE_NAME = 'omni_source_items' THEN
+        IF TG_OP = 'DELETE' THEN
+          checked_tenant_id := OLD.tenant_id;
+          checked_source_item_id := OLD.id;
+        ELSE
+          checked_tenant_id := NEW.tenant_id;
+          checked_source_item_id := NEW.id;
+        END IF;
+      ELSE
+        IF TG_OP = 'DELETE' THEN
+          checked_tenant_id := OLD.tenant_id;
+          checked_source_item_id := OLD.source_item_id;
+        ELSE
+          checked_tenant_id := NEW.tenant_id;
+          checked_source_item_id := NEW.source_item_id;
+        END IF;
+      END IF;
+
+      SELECT head.absence_observed
+      INTO head_absence_observed
+      FROM omni_source_sync_heads head
+      WHERE head.tenant_id = checked_tenant_id
+        AND head.source_item_id = checked_source_item_id;
+
+      IF NOT FOUND THEN
+        IF TG_OP = 'DELETE' THEN
+          RETURN OLD;
+        END IF;
+        RETURN NEW;
+      END IF;
+
+      SELECT EXISTS (
+        SELECT 1
+        FROM omni_source_items source_item
+        WHERE source_item.tenant_id = checked_tenant_id
+          AND source_item.id = checked_source_item_id
+      )
+      INTO source_item_exists;
+
+      IF head_absence_observed AND source_item_exists THEN
+        RAISE EXCEPTION 'Source absence head cannot coexist with a source item'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NOT head_absence_observed AND NOT source_item_exists THEN
+        RAISE EXCEPTION 'Source convergence head requires its source item'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_source_tombstone_binding()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      PERFORM 1
+      FROM omni_source_items source_item
+      WHERE source_item.tenant_id = NEW.tenant_id
+        AND source_item.id = NEW.source_item_id
+        AND source_item.owner_actor_id = NEW.owner_actor_id
+        AND source_item.workspace_id IS NOT DISTINCT FROM NEW.workspace_id
+        AND source_item.project_id IS NOT DISTINCT FROM NEW.project_id
+        AND source_item.mission_id IS NOT DISTINCT FROM NEW.mission_id
+        AND source_item.connection_id = NEW.connection_id
+        AND source_item.visibility = NEW.visibility
+        AND source_item.sensitivity = NEW.sensitivity
+        AND source_item.permission_grant_ids = NEW.permission_grant_ids
+        AND source_item.allowed_purpose_ids = NEW.allowed_purpose_ids
+        AND source_item.retention_policy_id = NEW.retention_policy_id
+        AND source_item.retention_expires_at IS NOT DISTINCT FROM
+          NEW.retention_expires_at
+        AND source_item.permission_set_sha256 = NEW.permission_set_sha256
+        AND source_item.purpose_set_sha256 = NEW.purpose_set_sha256
+        AND source_item.source_kind = NEW.source_kind
+        AND source_item.provider_item_key_sha256 =
+          NEW.provider_item_key_sha256
+        AND source_item.current_revision_id IS NOT DISTINCT FROM
+          NEW.last_known_source_revision_id
+      FOR KEY SHARE;
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'Source tombstone binding does not match its source item'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.last_known_source_revision_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM omni_source_revisions source_revision
+          WHERE source_revision.tenant_id = NEW.tenant_id
+            AND source_revision.id = NEW.last_known_source_revision_id
+            AND source_revision.source_item_id = NEW.source_item_id
+            AND source_revision.owner_actor_id = NEW.owner_actor_id
+            AND source_revision.workspace_id IS NOT DISTINCT FROM
+              NEW.workspace_id
+            AND source_revision.project_id IS NOT DISTINCT FROM
+              NEW.project_id
+            AND source_revision.mission_id IS NOT DISTINCT FROM
+              NEW.mission_id
+            AND source_revision.connection_id = NEW.connection_id
+            AND source_revision.visibility = NEW.visibility
+            AND source_revision.sensitivity = NEW.sensitivity
+            AND source_revision.permission_grant_ids <@
+              NEW.permission_grant_ids
+            AND source_revision.allowed_purpose_ids <@
+              NEW.allowed_purpose_ids
+            AND source_revision.retention_policy_id =
+              NEW.retention_policy_id
+            AND (
+              NEW.retention_expires_at IS NULL
+              OR (
+                source_revision.retention_expires_at IS NOT NULL
+                AND source_revision.retention_expires_at <=
+                  NEW.retention_expires_at
+              )
+            )
+            AND source_revision.source_kind = NEW.source_kind
+            AND source_revision.provider_item_key_sha256 =
+              NEW.provider_item_key_sha256
+        )
+      THEN
+        RAISE EXCEPTION 'Source tombstone last-known revision is incoherent'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_source_sync_head_binding()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id),
+        hashtext(NEW.source_item_id)
+      );
+
+      IF NEW.absence_observed THEN
+        IF EXISTS (
+          SELECT 1
+          FROM omni_source_items source_item
+          WHERE source_item.tenant_id = NEW.tenant_id
+            AND source_item.id = NEW.source_item_id
+        ) THEN
+          RAISE EXCEPTION 'Source absence head conflicts with a source item'
+            USING ERRCODE = '23514';
+        END IF;
+      ELSE
+        PERFORM 1
+        FROM omni_source_items source_item
+        WHERE source_item.tenant_id = NEW.tenant_id
+          AND source_item.id = NEW.source_item_id
+          AND source_item.owner_actor_id = NEW.owner_actor_id
+          AND source_item.connection_id = NEW.connection_id
+          AND source_item.source_kind = NEW.source_kind
+          AND source_item.provider_item_key_sha256 =
+            NEW.provider_item_key_sha256
+        FOR KEY SHARE;
+
+        IF NOT FOUND THEN
+          RAISE EXCEPTION 'Source sync head does not match its source item'
+            USING ERRCODE = '23514';
+        END IF;
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM omni_source_adapter_output_receipts receipt
+        WHERE receipt.tenant_id = NEW.tenant_id
+          AND receipt.adapter_output_id = NEW.adapter_output_id
+          AND receipt.adapter_output_sha256 = NEW.adapter_output_sha256
+          AND receipt.connection_id = NEW.connection_id
+          AND receipt.adapter_operation = NEW.operation
+      ) THEN
+        RAISE EXCEPTION 'Source sync head adapter receipt is incoherent'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.absence_observed THEN
+        RETURN NEW;
+      END IF;
+
+      IF NEW.operation = 'upsert' THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM omni_source_revisions source_revision
+          WHERE source_revision.tenant_id = NEW.tenant_id
+            AND source_revision.id = NEW.source_revision_id
+            AND source_revision.source_item_id = NEW.source_item_id
+            AND source_revision.owner_actor_id = NEW.owner_actor_id
+            AND source_revision.connection_id = NEW.connection_id
+            AND source_revision.source_kind = NEW.source_kind
+            AND source_revision.provider_item_key_sha256 =
+              NEW.provider_item_key_sha256
+            AND source_revision.adapter_output_id = NEW.adapter_output_id
+            AND source_revision.adapter_output_sha256 =
+              NEW.adapter_output_sha256
+            AND source_revision.adapter_operation = NEW.operation
+            AND source_revision.id = (
+              SELECT current_source_item.current_revision_id
+              FROM omni_source_items current_source_item
+              WHERE current_source_item.tenant_id = NEW.tenant_id
+                AND current_source_item.id = NEW.source_item_id
+            )
+        ) THEN
+          RAISE EXCEPTION 'Source sync head revision target is incoherent'
+            USING ERRCODE = '23514';
+        END IF;
+      ELSIF NEW.operation = 'delete' THEN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM omni_source_tombstones tombstone
+          WHERE tombstone.tenant_id = NEW.tenant_id
+            AND tombstone.id = NEW.source_tombstone_id
+            AND tombstone.source_item_id = NEW.source_item_id
+            AND tombstone.owner_actor_id = NEW.owner_actor_id
+            AND tombstone.connection_id = NEW.connection_id
+            AND tombstone.source_kind = NEW.source_kind
+            AND tombstone.provider_item_key_sha256 =
+              NEW.provider_item_key_sha256
+            AND tombstone.adapter_output_id = NEW.adapter_output_id
+            AND tombstone.adapter_output_sha256 =
+              NEW.adapter_output_sha256
+            AND tombstone.adapter_operation = NEW.operation
+            AND tombstone.last_known_source_revision_id IS NOT DISTINCT FROM (
+              SELECT current_source_item.current_revision_id
+              FROM omni_source_items current_source_item
+              WHERE current_source_item.tenant_id = NEW.tenant_id
+                AND current_source_item.id = NEW.source_item_id
+            )
+        ) THEN
+          RAISE EXCEPTION 'Source sync head tombstone target is incoherent'
+            USING ERRCODE = '23514';
+        END IF;
+      ELSE
+        RAISE EXCEPTION 'Source sync head operation is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_source_sync_head()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION '% rows cannot be changed with %', TG_TABLE_NAME, TG_OP
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.schema_version IS DISTINCT FROM OLD.schema_version
+        OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+        OR NEW.source_item_id IS DISTINCT FROM OLD.source_item_id
+        OR NEW.owner_actor_id IS DISTINCT FROM OLD.owner_actor_id
+        OR NEW.connection_id IS DISTINCT FROM OLD.connection_id
+        OR NEW.source_kind IS DISTINCT FROM OLD.source_kind
+        OR NEW.provider_item_key_sha256 IS DISTINCT FROM
+          OLD.provider_item_key_sha256
+        OR NEW.created_at IS DISTINCT FROM OLD.created_at
+      THEN
+        RAISE EXCEPTION '% identity is immutable', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF ROW(
+        NEW.authorization_generation,
+        NEW.rollout_generation,
+        NEW.phase_rank,
+        NEW.page_sequence,
+        NEW.ordinal
+      ) < ROW(
+        OLD.authorization_generation,
+        OLD.rollout_generation,
+        OLD.phase_rank,
+        OLD.page_sequence,
+        OLD.ordinal
+      ) THEN
+        RAISE EXCEPTION '% order cannot move backwards', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF ROW(
+        NEW.authorization_generation,
+        NEW.rollout_generation,
+        NEW.phase_rank,
+        NEW.page_sequence,
+        NEW.ordinal
+      ) = ROW(
+        OLD.authorization_generation,
+        OLD.rollout_generation,
+        OLD.phase_rank,
+        OLD.page_sequence,
+        OLD.ordinal
+      )
+        AND (
+          NEW.absence_observed IS DISTINCT FROM OLD.absence_observed
+          OR NEW.operation IS DISTINCT FROM OLD.operation
+          OR NEW.source_revision_id IS DISTINCT FROM OLD.source_revision_id
+          OR NEW.source_tombstone_id IS DISTINCT FROM OLD.source_tombstone_id
+          OR NEW.adapter_output_id IS DISTINCT FROM OLD.adapter_output_id
+          OR NEW.adapter_output_sha256 IS DISTINCT FROM
+            OLD.adapter_output_sha256
+        )
+      THEN
+        RAISE EXCEPTION '% equal order is bound to different data',
+          TG_TABLE_NAME
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.updated_at < OLD.updated_at THEN
+        RAISE EXCEPTION '% updated_at cannot move backwards', TG_TABLE_NAME
+          USING ERRCODE = '55000';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_items_lock_insert_identity'
+          AND tgrelid = 'omni_source_items'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_items_lock_insert_identity
+        BEFORE INSERT ON omni_source_items
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_lock_source_item_identity();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_items_validate_head_end_state'
+          AND tgrelid = 'omni_source_items'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE CONSTRAINT TRIGGER omni_source_items_validate_head_end_state
+        AFTER INSERT OR UPDATE OR DELETE ON omni_source_items
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_source_head_end_state();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_tombstones_validate_binding'
+          AND tgrelid = 'omni_source_tombstones'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_tombstones_validate_binding
+        BEFORE INSERT ON omni_source_tombstones
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_source_tombstone_binding();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_tombstones_immutable'
+          AND tgrelid = 'omni_source_tombstones'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_tombstones_immutable
+        BEFORE UPDATE OR DELETE ON omni_source_tombstones
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_reject_immutable_source_lineage_change();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_tombstones_no_truncate'
+          AND tgrelid = 'omni_source_tombstones'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_tombstones_no_truncate
+        BEFORE TRUNCATE ON omni_source_tombstones
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_reject_immutable_source_lineage_change();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_sync_heads_protect'
+          AND tgrelid = 'omni_source_sync_heads'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_sync_heads_protect
+        BEFORE UPDATE OR DELETE ON omni_source_sync_heads
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_protect_source_sync_head();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_sync_heads_validate_end_state'
+          AND tgrelid = 'omni_source_sync_heads'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE CONSTRAINT TRIGGER omni_source_sync_heads_validate_end_state
+        AFTER INSERT OR UPDATE OR DELETE ON omni_source_sync_heads
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_source_head_end_state();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_sync_heads_validate_binding'
+          AND tgrelid = 'omni_source_sync_heads'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_sync_heads_validate_binding
+        BEFORE INSERT OR UPDATE ON omni_source_sync_heads
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_source_sync_head_binding();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_sync_heads_no_truncate'
+          AND tgrelid = 'omni_source_sync_heads'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_sync_heads_no_truncate
+        BEFORE TRUNCATE ON omni_source_sync_heads
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_protect_source_sync_head();
+      END IF;
+    END
+    $migration$
+  `;
+
+  // Tombstones inherit append-only lineage permissions; the mutable head
+  // projection inherits the source-item upsert capabilities. Role names stay
+  // deployment-owned and are discovered from the existing grant boundary.
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee, privilege_type
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_source_revisions'
+          AND privilege_type IN ('SELECT', 'INSERT')
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'GRANT %s ON TABLE %I.omni_source_tombstones TO %I',
+          grant_record.privilege_type,
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+
+      FOR grant_record IN
+        SELECT DISTINCT grantee, privilege_type
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_source_items'
+          AND privilege_type IN ('SELECT', 'INSERT', 'UPDATE')
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'GRANT %s ON TABLE %I.omni_source_sync_heads TO %I',
+          grant_record.privilege_type,
+          current_schema(),
+          grant_record.grantee
+        );
       END LOOP;
     END
     $migration$

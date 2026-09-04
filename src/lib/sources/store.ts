@@ -5,8 +5,10 @@ import {
   parsePersistedExecutionScope,
 } from "@/lib/security/execution-scope";
 import {
+  sourceAdapterOutputV1Schema,
   sourceAdapterUpsertV1Schema,
   sourceContractSha256,
+  type SourceAdapterOutputV1,
   type SourceAdapterUpsertV1,
 } from "@/lib/sources/contracts";
 import type { CanonicalTextSourceWrite } from "@/lib/sources/text-lineage";
@@ -393,9 +395,10 @@ export async function persistCanonicalSourceWrite(
  */
 export async function assertCanonicalAdapterOutputReceipt(
   sql: SourceSqlClient,
-  output: SourceAdapterUpsertV1,
+  output: SourceAdapterOutputV1,
 ) {
   assertCanonicalSourceTransaction(sql);
+  sourceAdapterOutputV1Schema.parse(output);
   await sql`
     SELECT pg_advisory_xact_lock(
       hashtext(${output.tenantId}),
@@ -475,7 +478,7 @@ function assertCanonicalSourceTransaction(sql: SourceSqlClient) {
 
 export function storedAdapterEnvelopeMatches(
   row: StoredAdapterEnvelopeRow,
-  output: SourceAdapterUpsertV1,
+  output: SourceAdapterOutputV1,
 ) {
   return row.tenant_id === output.tenantId &&
     row.connection_id === output.connectionId &&

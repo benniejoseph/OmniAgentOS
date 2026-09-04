@@ -344,6 +344,32 @@ const sourceObservationShape = {
   capturedAt: sourceTimestampSchema,
 };
 
+const sourceItemIdentityV1Schema = z
+  .object({
+    tenantId: sourceContractIdSchema,
+    ownerActorId: sourceContractIdSchema,
+    workspaceId: nullableIdSchema,
+    projectId: nullableIdSchema,
+    missionId: nullableIdSchema,
+    connectionId: sourceContractIdSchema,
+    providerItemKeySha256: sourceContractSha256Schema,
+  })
+  .strict();
+
+export type SourceItemIdentityV1 = z.infer<
+  typeof sourceItemIdentityV1Schema
+>;
+
+/**
+ * Derives the stable SourceItem identity from its complete tenant, actor,
+ * context, connection, and hash-only provider binding. Raw provider IDs are
+ * intentionally outside this boundary.
+ */
+export function deriveSourceItemIdV1(input: SourceItemIdentityV1): string {
+  const value = sourceItemIdentityV1Schema.parse(input);
+  return `source_item_${sourceContractSha256(value).slice(0, 56)}`;
+}
+
 const sourceItemInputSchema = z
   .object({
     ...sourceBindingInputShape,
@@ -865,7 +891,7 @@ function derivedSourceItemId(value: Pick<
   | "connectionId"
   | "providerItemKeySha256"
 >) {
-  return `source_item_${sourceContractSha256({
+  return deriveSourceItemIdV1({
     tenantId: value.tenantId,
     ownerActorId: value.ownerActorId,
     workspaceId: value.workspaceId,
@@ -873,7 +899,7 @@ function derivedSourceItemId(value: Pick<
     missionId: value.missionId,
     connectionId: value.connectionId,
     providerItemKeySha256: value.providerItemKeySha256,
-  }).slice(0, 56)}`;
+  });
 }
 
 type SourceRevisionIdentityInput = Omit<

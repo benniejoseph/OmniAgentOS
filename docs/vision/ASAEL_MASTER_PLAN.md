@@ -804,6 +804,21 @@ start a new rollout generation, replay Drive from a fresh fence, and apply the
 observed upsert/delete records to canonical revisions and tombstones; this
 shadow generation is not promoted in place.
 
+The first P2.3 foundation slice is additive and inactive. It introduces an
+immutable, receipt-bound source tombstone, a single lexicographically ordered
+head per canonical SourceItem, exact page settlement bindings, and
+transaction-only upsert/delete mutation APIs. A mutation advances by
+authorization generation, rollout generation, phase, page, and ordinal; stale
+or duplicate observations cannot replace a newer head. An unknown delete
+creates a receipt-bound absence head but neither a false SourceItem nor a
+tombstone, fencing an older delayed upsert while allowing a genuinely newer
+restore. Revision predecessor and delete last-known-revision checks are made
+while the item is locked, and each canonical-applied or absence-observed event
+is in the same transaction. This slice neither promotes generation 1 nor
+starts a new Drive rollout, changes legacy knowledge writes, or changes served
+RAG. The next P2.3 slice must create a fresh rollout generation and settle its
+own pages through this substrate before any read authority can move.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
