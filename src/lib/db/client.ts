@@ -755,6 +755,13 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[42],
+      up: async (sql) => {
+        await ensureMemoryAccessScopeShadow(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
   ];
 }
 
@@ -6885,6 +6892,7 @@ async function ensureCanonicalSourceConvergenceFoundation(sql: SqlClient) {
           grant_record.grantee
         );
       END LOOP;
+
     END
     $migration$
   `);
@@ -10439,6 +10447,342 @@ async function ensureMemoryDeletionBarriers(sql: SqlClient) {
           current_schema(),
           current_schema(),
           grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `);
+}
+
+async function ensureMemoryAccessScopeShadow(sql: SqlClient) {
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS access_contract_version SMALLINT NOT NULL DEFAULT 0
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS access_state TEXT NOT NULL DEFAULT 'legacy_unattributed'
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS owner_actor_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS owner_agent_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS workspace_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS project_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS mission_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS visibility TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS sensitivity TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS origin_purpose TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS allowed_purpose_ids TEXT[]
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS access_scope_sha256 TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS access_bound_at TIMESTAMPTZ
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_memories_access_contract_check'
+          AND conrelid = 'omni_memories'::regclass
+      ) THEN
+        ALTER TABLE omni_memories
+        ADD CONSTRAINT omni_memories_access_contract_check CHECK (
+          (
+            access_contract_version = 0
+            AND access_state = 'legacy_unattributed'
+            AND owner_actor_id IS NULL
+            AND owner_agent_id IS NULL
+            AND workspace_id IS NULL
+            AND project_id IS NULL
+            AND mission_id IS NULL
+            AND visibility IS NULL
+            AND sensitivity IS NULL
+            AND origin_purpose IS NULL
+            AND allowed_purpose_ids IS NULL
+            AND access_scope_sha256 IS NULL
+            AND access_bound_at IS NULL
+          )
+          OR (
+            access_contract_version = 1
+            AND access_state = 'scope_bound'
+            AND omni_source_contract_id_is_valid(owner_actor_id)
+            AND visibility IS NOT NULL
+            AND visibility IN (
+              'agent_private', 'user_private', 'mission_shared',
+              'project_shared', 'workspace_shared'
+            )
+            AND sensitivity IS NOT NULL
+            AND sensitivity IN (
+              'public', 'internal', 'confidential', 'restricted'
+            )
+            AND NULLIF(BTRIM(origin_purpose), '') IS NOT NULL
+            AND char_length(origin_purpose) <= 500
+            AND allowed_purpose_ids IS NOT NULL
+            AND array_ndims(allowed_purpose_ids) = 1
+            AND array_lower(allowed_purpose_ids, 1) = 1
+            AND cardinality(allowed_purpose_ids) BETWEEN 1 AND 32
+            AND omni_source_id_array_is_canonical(allowed_purpose_ids, 32)
+            AND access_scope_sha256 IS NOT NULL
+            AND access_scope_sha256 ~ '^[0-9a-f]{64}$'
+            AND access_bound_at IS NOT NULL
+            AND (
+              visibility <> 'agent_private'
+              OR omni_source_contract_id_is_valid(owner_agent_id)
+            )
+            AND (
+              visibility <> 'mission_shared'
+              OR omni_source_contract_id_is_valid(mission_id)
+            )
+            AND (
+              visibility <> 'project_shared'
+              OR omni_source_contract_id_is_valid(project_id)
+            )
+            AND (
+              visibility <> 'workspace_shared'
+              OR omni_source_contract_id_is_valid(workspace_id)
+            )
+            AND (
+              owner_agent_id IS NULL
+              OR omni_source_contract_id_is_valid(owner_agent_id)
+            )
+            AND (
+              workspace_id IS NULL
+              OR omni_source_contract_id_is_valid(workspace_id)
+            )
+            AND (
+              project_id IS NULL
+              OR omni_source_contract_id_is_valid(project_id)
+            )
+            AND (
+              mission_id IS NULL
+              OR omni_source_contract_id_is_valid(mission_id)
+            )
+          )
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    VALIDATE CONSTRAINT omni_memories_access_contract_check
+  `;
+
+  // RLS does not constrain the maintenance connection. Keep the access
+  // contract completely dormant until the later atomic runtime cutover drops
+  // this enrollment lock in the same migration that activates every reader.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_memories_access_enrollment_hold_check'
+          AND conrelid = 'omni_memories'::regclass
+      ) THEN
+        ALTER TABLE omni_memories
+        ADD CONSTRAINT omni_memories_access_enrollment_hold_check CHECK (
+          access_contract_version = 0
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    VALIDATE CONSTRAINT omni_memories_access_enrollment_hold_check
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_bound_memory_access_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF OLD.access_contract_version = 1
+        AND ROW(
+          OLD.tenant_id,
+          OLD.access_contract_version,
+          OLD.access_state,
+          OLD.owner_actor_id,
+          OLD.owner_agent_id,
+          OLD.workspace_id,
+          OLD.project_id,
+          OLD.mission_id,
+          OLD.visibility,
+          OLD.sensitivity,
+          OLD.origin_purpose,
+          OLD.allowed_purpose_ids,
+          OLD.access_scope_sha256,
+          OLD.access_bound_at
+        ) IS DISTINCT FROM ROW(
+          NEW.tenant_id,
+          NEW.access_contract_version,
+          NEW.access_state,
+          NEW.owner_actor_id,
+          NEW.owner_agent_id,
+          NEW.workspace_id,
+          NEW.project_id,
+          NEW.mission_id,
+          NEW.visibility,
+          NEW.sensitivity,
+          NEW.origin_purpose,
+          NEW.allowed_purpose_ids,
+          NEW.access_scope_sha256,
+          NEW.access_bound_at
+        )
+      THEN
+        RAISE EXCEPTION 'Bound memory access scope is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_memories_access_scope_immutable'
+          AND tgrelid = 'omni_memories'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memories_access_scope_immutable
+        BEFORE UPDATE OF
+          tenant_id, access_contract_version, access_state, owner_actor_id,
+          owner_agent_id, workspace_id, project_id, mission_id,
+          visibility, sensitivity, origin_purpose, allowed_purpose_ids,
+          access_scope_sha256, access_bound_at
+        ON omni_memories
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_reject_bound_memory_access_change();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memories_access_scope_idx
+    ON omni_memories (
+      tenant_id, visibility, owner_actor_id, owner_agent_id,
+      workspace_id, project_id, mission_id, updated_at DESC
+    )
+    WHERE access_contract_version = 1
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memories_allowed_purposes_idx
+    ON omni_memories USING GIN (allowed_purpose_ids)
+    WHERE access_contract_version = 1
+  `;
+
+  // A v1 access envelope is deliberately inert until every memory, RAG,
+  // graph, export, and worker path enters the same actor-aware database scope.
+  // Rollback binaries continue to create version-0 compatibility rows.
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_access_scope_holdback
+    ON omni_memories
+  `;
+  await sql`
+    CREATE POLICY omni_memory_access_scope_holdback
+    ON omni_memories
+    AS RESTRICTIVE
+    FOR ALL
+    USING (
+      access_contract_version = 0
+      OR omni_system_scope_enabled()
+    )
+    WITH CHECK (
+      access_contract_version = 0
+      OR omni_system_scope_enabled()
+    )
+  `;
+
+  // Default privileges on a newly created table may grant more than the
+  // receipt runtime needs. Triggers already reject mutation; remove the
+  // unnecessary capabilities as a second independent control.
+  await sql.query(`
+    REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+    ON TABLE omni_memory_deletion_receipts
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memory_deletion_receipts'
+          AND privilege_type IN (
+            'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+          )
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ' ||
+          'ON TABLE %I.omni_memory_deletion_receipts FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+
+      -- Table-level revocation does not remove privileges granted directly on
+      -- individual columns. Remove those independent mutation paths too.
+      FOR grant_record IN
+        SELECT DISTINCT grantee, privilege_type, column_name
+        FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memory_deletion_receipts'
+          AND privilege_type IN ('UPDATE', 'REFERENCES')
+          AND grantee <> current_user
+      LOOP
+        EXECUTE format(
+          'REVOKE %s (%I) ON TABLE %I.omni_memory_deletion_receipts FROM %s',
+          grant_record.privilege_type,
+          grant_record.column_name,
+          current_schema(),
+          CASE
+            WHEN grant_record.grantee = 'PUBLIC' THEN 'PUBLIC'
+            ELSE quote_ident(grant_record.grantee)
+          END
         );
       END LOOP;
     END

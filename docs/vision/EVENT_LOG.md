@@ -141,6 +141,13 @@ unattributed migration barriers and do not receive fabricated scoped events.
 This event proves the immediate memory query barrier; it does not claim that
 the later physical descendant scrub SLA has completed.
 
+Migration v43 emits no domain event because its P3.1 access envelope is held
+inactive: historical memories remain explicit version-0 legacy rows and
+the validated enrollment lock prevents any version-1 row, including through
+maintenance paths that bypass RLS. Access-binding
+events begin only with the later atomic actor-aware read/write cutover; no
+owner, shared scope, purpose, or consent grant is inferred during this shadow.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
