@@ -914,6 +914,15 @@ A later collision-audited alias/dual-read migration must preserve those records
 while live request contexts begin carrying the stable actor identity; the v45
 hook and v43 enrollment lock remain closed until that convergence is complete.
 
+The next code-only canary exposes that identity through a pure, fail-closed
+accessor over authenticated session context. It neither adds an enumerable
+context field nor changes the historical email-shaped actor, so browser/mobile
+JSON, ownership queries, execution scopes, approval comparisons, persistence,
+and hashes remain unchanged. Only an exact v46 UUID plus exact authenticated
+email/actor match yields the frozen canonical identity; every non-session,
+synthetic, legacy, or malformed context remains unbound. No serving path calls
+the accessor or memory-scope installer yet.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

@@ -303,6 +303,15 @@ Browser/mobile contexts still expose the historical email-shaped actor, and
 no owner row, OAuth AAD, event, receipt, scope hash, job, continuation, approval
 comparison, or runtime query is rewritten or dual-read in this batch.
 
+The following code canary adds a pure canonical-auth-actor accessor. It returns
+a frozen `actor:<auth-user-id>` projection only when an existing context is an
+authenticated session, its user ID has the exact v46 lowercase UUID shape, and
+its historical actor exactly equals the authenticated email. Header, default,
+service, synthetic, malformed, and mismatched contexts remain unbound. The
+accessor is not stored on `SecurityContext`, has no runtime call site, and does
+not change serialized session/mobile responses, ownership, execution scopes,
+hashes, approvals, or the dormant memory installer.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

@@ -171,6 +171,11 @@ mutation. Existing historical actor strings, execution scopes, events,
 receipts, and hashes remain unchanged; later live alias/ownership convergence
 must emit its own bounded evidence where it changes an operation boundary.
 
+The matching canonical-auth-actor accessor also emits no event. Reading a
+frozen projection from already-authenticated in-process context changes no
+authority or durable state, and no serving path calls it. Authorization events
+remain deferred to the later transaction-bound memory cutover.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
