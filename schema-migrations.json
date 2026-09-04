@@ -238,5 +238,10 @@
     "version": 48,
     "name": "tenant_memory_purpose_entitlements_shadow",
     "checksum": "77423874c373d706a5225915c70c6b522d309dd21ac74603eaf83d1fa48d5fbb"
+  },
+  {
+    "version": 49,
+    "name": "tenant_actor_memory_purpose_consents_shadow",
+    "checksum": "3fc41d23f69dbf6753b5e1a61c2c9248541ff3141661896355a971afd15a1ee4"
   }
 ]

@@ -194,6 +194,16 @@ grantee, subject, consent, or mutation authority. Entitlement events must not
 contain consent text or memory content and do not substitute for actor-consent
 events.
 
+Migration v49 emits no domain event because it creates an empty standing-
+consent schema and records no actor decision. A future lifecycle writer must
+append `memory.purpose_consent.held`, `.granted`, or `.revoked` in the same SQL
+transaction as the row transition, keeping `subjectActorId` distinct from the
+decision actor and including only tenant, purpose, generation, revision, and
+bounded notice/evidence identifiers. Version 1 grants and revocations must be
+self-decisions. Events cannot contain consent text or memory content, and a
+standing-consent event cannot represent an export or forget request. Those
+data-right flows require their own request-bound typed evidence.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

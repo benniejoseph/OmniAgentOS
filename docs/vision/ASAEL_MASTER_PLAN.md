@@ -952,6 +952,22 @@ context/capability grants, and operation policy. Export and forget remain data
 rights that tenant entitlement cannot silently suppress, and maintenance never
 grants system-scope or RLS bypass.
 
+Migration v49 installs only a held standing-consent authority. Its empty
+generation ledger keys one canonical subject actor to one exact v47 purpose,
+requires the subject to make any grant or revocation in version 1, and keeps
+tenant entitlement generations independent from the actor's durable decision.
+It rejects standing `memory.export.v1` and `memory.forget.v1` consent: those
+rights require verified request-bound flows and cannot be disabled by a
+missing tenant entitlement or stored consent row. No membership, administrator
+role, OAuth grant, prior use, legacy purpose, or v48 row is inferred. The grant
+hold, restrictive system-only RLS, owner-only ACL, and zero-row postflight keep
+the ledger unavailable. Activation remains blocked until canonical request
+actors converge, memberships have versioned epochs, informed-notice evidence
+has an authoritative contract, and a narrow writer can live-lock the subject,
+decision actor, active same-tenant membership, purpose, tenant entitlement,
+and consent generation in deterministic order. Revocation cannot require an
+active entitlement, and consent can never grant maintenance/RLS bypass.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
