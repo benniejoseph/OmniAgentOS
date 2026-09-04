@@ -291,6 +291,14 @@ receipt, or external effect. Existing Agent create/update event debt is not
 expanded into this integrity-only slice, and a later execution-identity or
 canonical-write cutover must add typed evidence at its governed boundary.
 
+Converging custom Agent detail GET and enforcing native Skill actionability
+emit no domain event. The request can only reveal one already-authorized
+definition as explicitly actionable or read-only, and Command refuses to
+submit the latter to the exact-owner runtime. Flutter filters response
+capability metadata before local assignment controls. Neither change mutates
+an Agent, Skill, Mission, run, approval, receipt, or external system; later
+list, runtime, or canonical-write cutovers require their own typed evidence.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

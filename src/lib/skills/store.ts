@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { arsenalAgents } from "@/lib/agents/arsenal";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import { skillActorReadOrder } from "@/lib/skills/actor-scope";
 import { builtInSkills } from "@/lib/skills/catalog";
-import type { AgentBuilderLedger, AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
+import type { AgentBuilderLedger, AgentSkill, CustomAgentDefinition, RequestCustomAgentDefinition } from "@/lib/skills/types";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 
 type Scope = { tenantId?: string; actorId: string };
@@ -17,6 +18,13 @@ export class AgentSkillReadConflictError extends Error {
   constructor(message = "Custom skill ownership is ambiguous.") {
     super(message);
     this.name = "AgentSkillReadConflictError";
+  }
+}
+
+export class CustomAgentReadConflictError extends Error {
+  constructor(message = "Custom Agent ownership is ambiguous.") {
+    super(message);
+    this.name = "CustomAgentReadConflictError";
   }
 }
 
@@ -128,6 +136,45 @@ export async function listCustomAgents(options: Scope) {
 }
 
 export async function getCustomAgent(id: string, options: Scope) { return (await listCustomAgents(options)).find((item) => item.id === id); }
+
+export async function getCustomAgentForRequest(
+  id: string,
+  options: RequestReadScope,
+) {
+  if (!isValidCustomAgentRequestId(id) || builtInAgentIds.has(id)) {
+    throw new CustomAgentReadConflictError(
+      "Invalid or reserved IDs cannot resolve custom Agent details.",
+    );
+  }
+  if (!hasDatabaseUrl()) {
+    const agent = await getCustomAgent(id, options);
+    return agent ? customAgentForExactFileRequest(agent) : undefined;
+  }
+  const tenantId = tenant(options.tenantId);
+  const requestActorId = safe(options.actorId, 200);
+  const [canonicalActorId, exactActorId] = skillActorReadOrder(
+    options.actorId,
+    options.requestActorBinding,
+    requestActorId,
+  );
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT * FROM omni_custom_agents
+    WHERE id = ${id} AND tenant_id = ${tenantId}
+      AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+    LIMIT 1
+  `;
+  if (!rows[0]) return undefined;
+  const agent = agentFromRow(rows[0]);
+  assertRequestCustomAgentOwner(
+    agent,
+    id,
+    tenantId,
+    canonicalActorId,
+    exactActorId,
+  );
+  return customAgentForRequest(agent, exactActorId);
+}
 
 export async function createCustomAgent(input: Omit<CustomAgentDefinition, "id" | "tenantId" | "actorId" | "slug" | "createdAt" | "updatedAt">, options: Scope) {
   const desiredSlug = slug(input.name);
@@ -344,6 +391,48 @@ function skillForExactFileRequest(skill: AgentSkill): AgentSkill {
 }
 
 const builtInSkillIds = new Set(builtInSkills.map((skill) => skill.id));
+const builtInAgentIds = new Set(arsenalAgents.map((agent) => agent.id));
+
+function isValidCustomAgentRequestId(id: string) {
+  return /^[a-zA-Z0-9_.:-]{1,120}$/.test(id);
+}
+
+function assertRequestCustomAgentOwner(
+  agent: CustomAgentDefinition,
+  requestedId: string,
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  if (
+    agent.id !== requestedId ||
+    agent.tenantId !== tenantId ||
+    (agent.actorId !== canonicalActorId && agent.actorId !== exactActorId)
+  ) {
+    throw new CustomAgentReadConflictError(
+      "Custom Agent request row validation failed.",
+    );
+  }
+}
+
+function customAgentForRequest(
+  agent: CustomAgentDefinition,
+  requestActorId: string,
+): RequestCustomAgentDefinition {
+  const exactOwner = agent.actorId === requestActorId;
+  return {
+    ...agent,
+    actorId: requestActorId,
+    selectable: exactOwner,
+    manageable: exactOwner,
+  };
+}
+
+function customAgentForExactFileRequest(
+  agent: CustomAgentDefinition,
+): RequestCustomAgentDefinition {
+  return { ...agent, selectable: true, manageable: true };
+}
 
 async function assertAgentSkillAssignmentsWithSql(
   skillIds: string[],

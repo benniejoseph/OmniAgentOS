@@ -15,11 +15,14 @@ class AgentSkill {
     required this.instructions,
     required this.toolIds,
     required this.tags,
-    this.builtIn = false,
-  });
+    bool builtIn = false,
+    this.selectable = true,
+    bool? manageable,
+  }) : builtIn = builtIn,
+       manageable = manageable ?? !builtIn;
   final String id, name, description, category, status, instructions;
   final List<String> toolIds, tags;
-  final bool builtIn;
+  final bool builtIn, selectable, manageable;
   factory AgentSkill.fromJson(Json j) => AgentSkill(
     id: '${j['id']}',
     name: '${j['name'] ?? 'Skill'}',
@@ -30,7 +33,22 @@ class AgentSkill {
     toolIds: _strings(j['toolIds']),
     tags: _strings(j['tags']),
     builtIn: j['builtIn'] == true,
+    selectable: j['selectable'] is bool ? j['selectable'] as bool : true,
+    manageable: j['manageable'] is bool
+        ? j['manageable'] as bool
+        : j['builtIn'] != true,
   );
+}
+
+Set<String> filterSelectableSkillIds(
+  Iterable<AgentSkill> skills,
+  Iterable<String> selectedIds,
+) {
+  final selectableIds = skills
+      .where((skill) => skill.selectable)
+      .map((skill) => skill.id)
+      .toSet();
+  return selectedIds.where(selectableIds.contains).toSet();
 }
 
 class AgentProfile {
@@ -360,7 +378,7 @@ class _AgentsViewState extends State<AgentsView>
                 maxLines: 3,
               ),
               isThreeLine: true,
-              trailing: s.builtIn || !widget.controller.canManage
+              trailing: !s.manageable || !widget.controller.canManage
                   ? _Status(s.status)
                   : PopupMenuButton<String>(
                       onSelected: (v) => v == 'edit'
@@ -602,7 +620,8 @@ class _AgentDialogState extends State<_AgentDialog> {
   late final instructions = TextEditingController(
     text: widget.agent?.instructions,
   );
-  late Set<String> selected = {...?widget.agent?.skillIds};
+  late final List<AgentSkill> selectableSkills;
+  late Set<String> selected;
   String model = 'auto',
       autonomy = 'assist',
       approval = 'risk_based',
@@ -612,6 +631,13 @@ class _AgentDialogState extends State<_AgentDialog> {
   @override
   void initState() {
     super.initState();
+    selectableSkills = widget.skills
+        .where((skill) => skill.selectable)
+        .toList(growable: false);
+    selected = filterSelectableSkillIds(
+      selectableSkills,
+      widget.agent?.skillIds ?? const <String>[],
+    );
     final a = widget.agent;
     if (a != null) {
       model = a.modelPolicy;
@@ -682,7 +708,7 @@ class _AgentDialogState extends State<_AgentDialog> {
                 child: Text('Assigned skills'),
               ),
             ),
-            ...widget.skills.map(
+            ...selectableSkills.map(
               (s) => CheckboxListTile(
                 dense: true,
                 value: selected.contains(s.id),

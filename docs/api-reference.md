@@ -31,7 +31,7 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 ## Agent, memory, and retrieval
 
 - `POST /api/agent`: bounded message array and mode (`orchestrate`, `research`, `execute`, or `learn`); streams SSE events.
-- `GET|POST /api/agents` and `GET|PATCH|DELETE /api/agents/:id` manage custom Agent definitions. Agent creation and updates return `409` when any selected custom Skill is unavailable to the Agent's exact persisted tenant/actor owner.
+- `GET|POST /api/agents` and `GET|PATCH|DELETE /api/agents/:id` manage custom Agent definitions. Detail GET adds `selectable` and `manageable`: exact-owner rows are actionable, while canonical compatibility rows are read-only and cannot enter Command. Agent creation and updates return `409` when any selected custom Skill is unavailable to the Agent's exact persisted tenant/actor owner.
 - `GET|POST /api/skills` and `GET|PATCH|DELETE /api/skills/:id` manage the Skill catalog. Request reads add `selectable` and `manageable` capability flags: built-ins are selectable but not manageable, exact-owner custom Skills are both, and canonical compatibility rows are read-only and cannot be assigned.
 - `/api/runs` and `/api/runs/:id`: run history, events, and replay/continuation state.
 - `/api/memory`, `/api/memory/graph`, `/api/knowledge`, `/api/ingest`, and `/api/retrieval/plan`.

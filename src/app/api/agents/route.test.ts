@@ -9,12 +9,21 @@ const routeMocks = vi.hoisted(() => {
       this.name = "AgentSkillAssignmentError";
     }
   }
+  class CustomAgentReadConflictError extends Error {
+    constructor() {
+      super("Custom Agent ownership is ambiguous.");
+      this.name = "CustomAgentReadConflictError";
+    }
+  }
   return {
     AgentSkillAssignmentError,
+    CustomAgentReadConflictError,
     authorizeRequest: vi.fn(),
+    canonicalRequestActorBindingFromSecurityContext: vi.fn(),
     createCustomAgent: vi.fn(),
     deleteCustomAgent: vi.fn(),
     getCustomAgent: vi.fn(),
+    getCustomAgentForRequest: vi.fn(),
     listCustomAgents: vi.fn(),
     updateCustomAgent: vi.fn(),
   };
@@ -31,16 +40,27 @@ vi.mock("@/lib/security/guard", async (importOriginal) => ({
   authorizeRequest: routeMocks.authorizeRequest,
 }));
 
+vi.mock("@/lib/security/canonical-actor", () => ({
+  canonicalRequestActorBindingFromSecurityContext:
+    routeMocks.canonicalRequestActorBindingFromSecurityContext,
+}));
+
 vi.mock("@/lib/skills/store", () => ({
   AgentSkillAssignmentError: routeMocks.AgentSkillAssignmentError,
+  CustomAgentReadConflictError: routeMocks.CustomAgentReadConflictError,
   createCustomAgent: routeMocks.createCustomAgent,
   deleteCustomAgent: routeMocks.deleteCustomAgent,
   getCustomAgent: routeMocks.getCustomAgent,
+  getCustomAgentForRequest: routeMocks.getCustomAgentForRequest,
   listCustomAgents: routeMocks.listCustomAgents,
   updateCustomAgent: routeMocks.updateCustomAgent,
 }));
 
-import { PATCH as PATCHAgent } from "@/app/api/agents/[id]/route";
+import {
+  DELETE as DELETEAgent,
+  GET as GETAgent,
+  PATCH as PATCHAgent,
+} from "@/app/api/agents/[id]/route";
 import { POST as POSTAgent } from "@/app/api/agents/route";
 
 const context = {
@@ -48,6 +68,23 @@ const context = {
   actorId: "owner@example.test",
   role: "admin" as const,
   source: "session" as const,
+  auth: {
+    userId: "11111111-1111-4111-8111-111111111111",
+    email: "owner@example.test",
+    sessionId: "session-a",
+    tenantName: "Tenant A",
+  },
+};
+const requestActorBinding = {
+  version: 1,
+  kind: "auth_user",
+  authUserId: "11111111-1111-4111-8111-111111111111",
+  canonicalActorId: "actor:11111111-1111-4111-8111-111111111111",
+  legacyOwnerActorIds: [context.actorId],
+  readableOwnerActorIds: [
+    "actor:11111111-1111-4111-8111-111111111111",
+    context.actorId,
+  ],
 };
 const agent = {
   id: "agent-a",
@@ -61,14 +98,81 @@ const agent = {
 
 beforeEach(() => {
   routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
+  routeMocks.canonicalRequestActorBindingFromSecurityContext
+    .mockReset()
+    .mockReturnValue(requestActorBinding);
   routeMocks.createCustomAgent.mockReset().mockResolvedValue(agent);
   routeMocks.deleteCustomAgent.mockReset().mockResolvedValue(true);
   routeMocks.getCustomAgent.mockReset().mockResolvedValue(agent);
+  routeMocks.getCustomAgentForRequest.mockReset().mockResolvedValue({
+    ...agent,
+    selectable: true,
+    manageable: true,
+  });
   routeMocks.listCustomAgents.mockReset().mockResolvedValue([agent]);
   routeMocks.updateCustomAgent.mockReset().mockResolvedValue(agent);
 });
 
 describe("custom Agent Skill integrity route responses", () => {
+  it("binds only the custom Agent detail GET and keeps success and 404 private", async () => {
+    const success = await GETAgent(
+      new Request("http://localhost/api/agents/agent-a"),
+      { params: Promise.resolve({ id: "agent-a" }) },
+    );
+    expect(success.status).toBe(200);
+    expect(success.headers.get("cache-control")).toBe("private, no-store");
+    expect(
+      routeMocks.canonicalRequestActorBindingFromSecurityContext,
+    ).toHaveBeenCalledWith(context);
+    expect(routeMocks.getCustomAgentForRequest).toHaveBeenCalledWith(
+      "agent-a",
+      {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        requestActorBinding,
+      },
+    );
+
+    routeMocks.getCustomAgentForRequest.mockResolvedValueOnce(undefined);
+    const missing = await GETAgent(
+      new Request("http://localhost/api/agents/missing"),
+      { params: Promise.resolve({ id: "missing" }) },
+    );
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("maps a typed custom Agent read conflict to a controlled private response", async () => {
+    routeMocks.getCustomAgentForRequest.mockRejectedValueOnce(
+      new routeMocks.CustomAgentReadConflictError(),
+    );
+    const response = await GETAgent(
+      new Request("http://localhost/api/agents/atlas"),
+      { params: Promise.resolve({ id: "atlas" }) },
+    );
+    expect(response.status).toBe(409);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toEqual({
+      error: "Custom Agent ownership could not be verified.",
+    });
+  });
+
+  it("keeps custom Agent deletion exact and outside the request-read binding", async () => {
+    const response = await DELETEAgent(
+      new Request("http://localhost/api/agents/agent-a", { method: "DELETE" }),
+      { params: Promise.resolve({ id: "agent-a" }) },
+    );
+    expect(response.status).toBe(200);
+    expect(routeMocks.deleteCustomAgent).toHaveBeenCalledWith("agent-a", {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+    });
+    expect(routeMocks.getCustomAgentForRequest).not.toHaveBeenCalled();
+    expect(
+      routeMocks.canonicalRequestActorBindingFromSecurityContext,
+    ).not.toHaveBeenCalled();
+  });
+
   it("maps an invalid Skill assignment on create to a private generic conflict", async () => {
     routeMocks.createCustomAgent.mockRejectedValueOnce(
       new routeMocks.AgentSkillAssignmentError(),
@@ -102,6 +206,16 @@ describe("custom Agent Skill integrity route responses", () => {
     expect(await response.json()).toEqual({
       error: "One or more selected skills are unavailable for this agent.",
     });
+    expect(routeMocks.updateCustomAgent).toHaveBeenCalledWith(
+      "agent-a",
+      { skillIds: ["unavailable-skill"] },
+      { tenantId: context.tenantId, actorId: context.actorId },
+    );
+    expect(routeMocks.getCustomAgent).not.toHaveBeenCalled();
+    expect(routeMocks.getCustomAgentForRequest).not.toHaveBeenCalled();
+    expect(
+      routeMocks.canonicalRequestActorBindingFromSecurityContext,
+    ).not.toHaveBeenCalled();
   });
 
   it("preserves the duplicate-slug conflict response", async () => {
