@@ -403,6 +403,16 @@ turn appends, agent continuation, workflow attachment, Today projections,
 portable data, file fallback, prior aliases, and canonical writes remain on
 their existing exact-owner paths.
 
+The fourth request-bound slice is also read-only and covers Projects list,
+summary, and direct-detail reads. PostgreSQL merges canonical/current-email
+project owners, applies the existing status and update ordering with project
+ID as the deterministic tie-breaker, and projects the request actor. A
+globally unique parent project is authorized before its tenant-matched tasks
+or artifacts are loaded. Project creation, edits, planning, task mutation,
+autonomous execution, artifact feedback, Today/brief projections, portable
+data, file fallback, and canonical writes remain exact-owner paths because
+those operations create workflows, scopes, evidence, and durable effects.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

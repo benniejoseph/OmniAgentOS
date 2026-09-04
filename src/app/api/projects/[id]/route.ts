@@ -2,17 +2,20 @@ import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
-  getProject,
+  getOwnedProject,
   listProjectArtifacts,
   listProjectTasks,
   ProjectTransitionError,
   updateProject,
 } from "@/lib/projects/store";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
+
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 const updateSchema = z.object({
   title: z.string().trim().min(1).max(180).optional(),
@@ -34,15 +37,23 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const scope = { tenantId: context.tenantId, actorId: context.actorId };
-  const project = await getProject(id, scope);
-  if (!project) return Response.json({ error: "Project not found." }, { status: 404 });
+  const project = await getOwnedProject(id, {
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
+  });
+  if (!project) {
+    return Response.json(
+      { error: "Project not found." },
+      { status: 404, headers: privateNoStoreHeaders },
+    );
+  }
   const [tasks, artifacts] = await Promise.all([
-    listProjectTasks(id, { tenantId: context.tenantId, limit: 30 }),
-    listProjectArtifacts(id, { tenantId: context.tenantId, limit: 100 }),
+    listProjectTasks(project.id, { tenantId: context.tenantId, limit: 30 }),
+    listProjectArtifacts(project.id, { tenantId: context.tenantId, limit: 100 }),
   ]);
   return Response.json({ project: { ...project, tasks, artifacts } }, {
-    headers: { "cache-control": "private, no-store" },
+    headers: privateNoStoreHeaders,
   });
 }
 

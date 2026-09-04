@@ -6,6 +6,7 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import type { SupervisorAgentId } from "@/lib/orchestration/supervisor";
+import { projectActorReadOrder } from "@/lib/projects/actor-scope";
 import type {
   PersonalProject,
   ProjectArtifact,
@@ -20,6 +21,7 @@ import type {
   ProjectTaskPriority,
   ProjectTaskStatus,
 } from "@/lib/projects/types";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
@@ -72,39 +74,66 @@ export async function createProject(input: {
 
 export async function listProjects(
   limit = 50,
-  options: { tenantId?: string; actorId: string },
+  options: {
+    tenantId?: string;
+    actorId: string;
+    requestActorBinding?: CanonicalRequestActorBindingV1;
+  },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const actorId = safeText(options.actorId, 200);
   const bounded = Math.min(Math.max(limit, 1), 100);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const actorReadOrder = projectActorReadOrder(
+      options.actorId,
+      options.requestActorBinding,
+      actorId,
+    );
+    const canonicalActorId = actorReadOrder[0];
+    const exactActorId = actorReadOrder[1];
     const rows = await getSql()`
       SELECT * FROM omni_projects
-      WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
+      WHERE tenant_id = ${tenantId}
+        AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
       ORDER BY
         CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END,
-        updated_at DESC
+        updated_at DESC,
+        id ASC
       LIMIT ${bounded}
     `;
-    return rows.map(projectFromRow);
+    return rows.map((row) =>
+      projectForRequest(projectFromRow(row), exactActorId),
+    );
   }
   const ledger = await readLedger();
   return ledger.projects
     .filter((item) => item.tenantId === tenantId && item.actorId === actorId)
     .sort(compareProjects)
-    .slice(0, bounded);
+    .slice(0, bounded)
+    .map((project) => projectForRequest(project, actorId));
 }
 
 export async function listProjectSummaries(
   limit = 50,
-  options: { tenantId?: string; actorId: string },
+  options: {
+    tenantId?: string;
+    actorId: string;
+    requestActorBinding?: CanonicalRequestActorBindingV1;
+  },
 ): Promise<ProjectSummary[]> {
   const tenantId = normalizeTenantId(options.tenantId);
   const actorId = safeText(options.actorId, 200);
   const bounded = Math.min(Math.max(limit, 1), 50);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const actorReadOrder = projectActorReadOrder(
+      options.actorId,
+      options.requestActorBinding,
+      actorId,
+    );
+    const canonicalActorId = actorReadOrder[0];
+    const exactActorId = actorReadOrder[1];
     const rows = await getSql()`
       SELECT projects.*,
         COALESCE(tasks.task_count, 0)::integer AS task_count,
@@ -125,13 +154,17 @@ export async function listProjectSummaries(
         FROM omni_project_artifacts
         WHERE tenant_id = ${tenantId} AND project_id = projects.id
       ) artifacts ON TRUE
-      WHERE projects.tenant_id = ${tenantId} AND projects.actor_id = ${actorId}
+      WHERE projects.tenant_id = ${tenantId}
+        AND (projects.actor_id = ${canonicalActorId} OR projects.actor_id = ${exactActorId})
       ORDER BY
         CASE projects.status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END,
-        projects.updated_at DESC
+        projects.updated_at DESC,
+        projects.id ASC
       LIMIT ${bounded}
     `;
-    return rows.map(projectSummaryFromRow);
+    return rows.map((row) =>
+      projectForRequest(projectSummaryFromRow(row), exactActorId),
+    );
   }
   const ledger = await readLedger();
   return ledger.projects
@@ -142,7 +175,7 @@ export async function listProjectSummaries(
       const tasks = ledger.tasks.filter((task) =>
         task.tenantId === tenantId && task.projectId === project.id
       );
-      return {
+      return projectForRequest({
         ...project,
         taskCount: tasks.length,
         completedTaskCount: tasks.filter((task) => task.status === "done").length,
@@ -150,7 +183,7 @@ export async function listProjectSummaries(
         artifactCount: ledger.artifacts.filter((artifact) =>
           artifact.tenantId === tenantId && artifact.projectId === project.id
         ).length,
-      };
+      }, actorId);
     });
 }
 
@@ -190,6 +223,42 @@ export async function getProject(
   }
   const ledger = await readLedger();
   return ledger.projects.find((item) => item.id === id && item.tenantId === tenantId && item.actorId === actorId);
+}
+
+export async function getOwnedProject(
+  id: string,
+  options: {
+    tenantId?: string;
+    actorId: string;
+    requestActorBinding?: CanonicalRequestActorBindingV1;
+  },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const actorId = safeText(options.actorId, 200);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const actorReadOrder = projectActorReadOrder(
+      options.actorId,
+      options.requestActorBinding,
+      actorId,
+    );
+    const canonicalActorId = actorReadOrder[0];
+    const exactActorId = actorReadOrder[1];
+    const rows = await getSql()`
+      SELECT * FROM omni_projects
+      WHERE id = ${id} AND tenant_id = ${tenantId}
+        AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+      LIMIT 1
+    `;
+    return rows[0]
+      ? projectForRequest(projectFromRow(rows[0]), exactActorId)
+      : undefined;
+  }
+  const ledger = await readLedger();
+  const project = ledger.projects.find((item) =>
+    item.id === id && item.tenantId === tenantId && item.actorId === actorId
+  );
+  return project ? projectForRequest(project, actorId) : undefined;
 }
 
 export async function updateProject(
@@ -786,13 +855,16 @@ function projectSummaryFromRow(row: Record<string, unknown>): ProjectSummary {
     artifactCount: Number(row.artifact_count || 0),
   };
 }
+function projectForRequest<T extends PersonalProject>(project: T, requestActorId: string): T {
+  return { ...project, actorId: requestActorId };
+}
 function taskFromRow(row: Record<string, unknown>): ProjectTask {
   return { id: String(row.id), tenantId: String(row.tenant_id), projectId: String(row.project_id), title: safeText(row.title, 240), detail: safeText(row.detail, 1_000), status: String(row.status) as ProjectTaskStatus, priority: String(row.priority) as ProjectTaskPriority, agentId: String(row.agent_id) as SupervisorAgentId, position: Number(row.position), origin: String(row.origin) === "agent" ? "agent" : "manual", dueAt: optionalDateValue(row.due_at), dependsOn: jsonStringArray(row.dependency_ids), workflowRunId: optionalText(row.workflow_run_id), workflowStatus: optionalText(row.workflow_status) as ProjectTask["workflowStatus"], executionError: optionalText(row.execution_error), dispatchedAt: optionalDateValue(row.dispatched_at), dispatchAttempt: Number(row.dispatch_attempt || 0), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at), completedAt: optionalDateValue(row.completed_at) };
 }
 function artifactFromRow(row: Record<string, unknown>): ProjectArtifact {
   return { id: String(row.id), tenantId: String(row.tenant_id), projectId: String(row.project_id), taskId: String(row.task_id), workflowRunId: String(row.workflow_run_id), agentId: String(row.agent_id) as SupervisorAgentId, status: String(row.status) as ProjectArtifactStatus, title: safeText(row.title, 240), content: safeTextBlock(row.content, 50_000), memoryId: optionalText(row.memory_id), sourceMemoryId: optionalText(row.source_memory_id), verdict: optionalText(row.verdict) as ProjectArtifactVerdict | undefined, lesson: optionalText(row.lesson), reflectionMemoryId: optionalText(row.reflection_memory_id), reviewedAt: optionalDateValue(row.reviewed_at), evidenceRefs: jsonStringArray(row.evidence_refs), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at) };
 }
-function compareProjects(left: PersonalProject, right: PersonalProject) { const order: Record<ProjectStatus, number> = { active: 0, draft: 1, completed: 2, archived: 3 }; return order[left.status] - order[right.status] || right.updatedAt.localeCompare(left.updatedAt); }
+function compareProjects(left: PersonalProject, right: PersonalProject) { const order: Record<ProjectStatus, number> = { active: 0, draft: 1, completed: 2, archived: 3 }; return order[left.status] - order[right.status] || right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id); }
 function optionalDate(value?: string | null) { if (!value) return undefined; const timestamp = Date.parse(value); return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined; }
 function optionalDateValue(value: unknown) { return value ? dateValue(value) : undefined; }
 function dateValue(value: unknown) { return value instanceof Date ? value.toISOString() : String(value); }
