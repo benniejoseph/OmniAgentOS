@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const snapshotMocks = vi.hoisted(() => ({
   getMcpExportConfiguration: vi.fn(),
+  getMcpExportConfigurationForRequest: vi.fn(),
   listModelAssignmentsForRequest: vi.fn(),
   listModelCatalogForRequest: vi.fn(),
   listProviderConnections: vi.fn(),
@@ -34,6 +35,8 @@ vi.mock("@/lib/settings/service-api-keys", () => ({
 
 vi.mock("@/lib/settings/store", () => ({
   getMcpExportConfiguration: snapshotMocks.getMcpExportConfiguration,
+  getMcpExportConfigurationForRequest:
+    snapshotMocks.getMcpExportConfigurationForRequest,
   listModelAssignmentsForRequest:
     snapshotMocks.listModelAssignmentsForRequest,
   listModelCatalogForRequest: snapshotMocks.listModelCatalogForRequest,
@@ -79,6 +82,22 @@ beforeEach(() => {
     createdAt: "2026-09-04T10:00:00.000Z",
     updatedAt: "2026-09-04T10:00:00.000Z",
   });
+  snapshotMocks.getMcpExportConfigurationForRequest
+    .mockReset()
+    .mockResolvedValue({
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      enabled: false,
+      serverName: "Asael",
+      allowedScopes: [],
+      defaultApprovalMode: "governed",
+      exposeResources: false,
+      endpointPath: "/api/mcp",
+      readiness: "disabled",
+      manageable: true,
+      createdAt: "2026-09-04T10:00:00.000Z",
+      updatedAt: "2026-09-04T10:00:00.000Z",
+    });
 });
 
 describe("settings snapshot owner scopes", () => {
@@ -108,12 +127,16 @@ describe("settings snapshot owner scopes", () => {
     expect(snapshotMocks.getMcpExportConfiguration).toHaveBeenCalledWith(
       exactOwner,
     );
+    expect(
+      snapshotMocks.getMcpExportConfigurationForRequest,
+    ).not.toHaveBeenCalled();
     expect(snapshotMocks.listServiceApiKeysForRequest).toHaveBeenCalledWith(
       input,
     );
     expect(snapshot.requestReadContracts).toEqual({
       providerConnections: "readable_v1",
       modelAssignments: "readable_v1",
+      mcpExportConfiguration: "exact_v1",
     });
   });
 
@@ -159,11 +182,13 @@ describe("settings snapshot owner scopes", () => {
     expect(snapshot.requestReadContracts).toEqual({
       providerConnections: "exact_v1",
       modelAssignments: "exact_v1",
+      mcpExportConfiguration: "exact_v1",
     });
     expect(snapshot.assignments.map((assignment) => assignment.manageable)).toEqual([
       true,
       true,
     ]);
+    expect(snapshot.mcp.manageable).toBe(true);
   });
 
   it("can widen assignment metadata without widening provider metadata", async () => {
@@ -181,5 +206,42 @@ describe("settings snapshot owner scopes", () => {
     expect(snapshotMocks.listModelAssignmentsForRequest).toHaveBeenCalledWith(
       input,
     );
+  });
+
+  it("widens MCP metadata only when its independent owner scope is requested", async () => {
+    snapshotMocks.getMcpExportConfigurationForRequest.mockResolvedValue({
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      enabled: true,
+      serverName: "Retained MCP",
+      allowedScopes: ["mcp:discover"],
+      defaultApprovalMode: "governed",
+      exposeResources: false,
+      endpointPath: "/api/mcp",
+      readiness: "ready",
+      manageable: false,
+      createdAt: "2026-09-04T10:00:00.000Z",
+      updatedAt: "2026-09-04T10:00:00.000Z",
+    });
+
+    const snapshot = await getSettingsSnapshot({
+      ...input,
+      mcpOwnerScope: "readable",
+    });
+
+    expect(snapshotMocks.getMcpExportConfigurationForRequest).toHaveBeenCalledWith(
+      input,
+    );
+    expect(snapshotMocks.getMcpExportConfiguration).not.toHaveBeenCalled();
+    expect(snapshot.mcp).toEqual(expect.objectContaining({
+      actorId: input.actorId,
+      serverName: "Retained MCP",
+      manageable: false,
+    }));
+    expect(snapshot.requestReadContracts).toEqual({
+      providerConnections: "exact_v1",
+      modelAssignments: "exact_v1",
+      mcpExportConfiguration: "readable_v1",
+    });
   });
 });

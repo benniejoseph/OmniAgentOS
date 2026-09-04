@@ -1287,6 +1287,22 @@ readiness, portable data, events, and canonical writes remain unchanged. This
 read-only slice emits no domain event and does not unblock membership or
 consent holds.
 
+The next request canary converges only MCP export configuration metadata GETs.
+Literal `ownerScope=readable` requests select an explicit public policy
+allowlist from the validated canonical/current-email pair and reject malformed
+owners, booleans, scopes, approval mode, timestamps, or a policy stored under
+both owners. The projection derives `manageable` from the physical owner before
+publishing the current request actor and acknowledges
+`requestReadContracts.mcpExportConfiguration=readable_v1`. A canonical-only
+policy remains visible for continuity but is rendered outside editable form
+state and does not describe the runtime policy of a current-email service key.
+Settings requires the acknowledgement, exact management capability, and the
+existing role gate before saving. Bare GET, file fallback, PUT/pre-read,
+service-key verification and last-used state, runtime policy loading, scope
+intersection, resource/tool exposure, governed execution, portable data,
+events, and canonical writes stay exact. This read-only slice emits no domain
+event and does not unblock membership or consent holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

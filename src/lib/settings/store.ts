@@ -17,6 +17,7 @@ import {
 } from "@/lib/settings/credential-vault";
 import { modelAssignmentActorReadOrder } from "@/lib/settings/model-assignment-actor-scope";
 import { modelCatalogActorReadOrder } from "@/lib/settings/model-catalog-actor-scope";
+import { mcpExportConfigurationActorReadOrder } from "@/lib/settings/mcp-export-actor-scope";
 import { providerConnectionActorReadOrder } from "@/lib/settings/provider-connection-actor-scope";
 import { serviceApiKeyActorReadOrder } from "@/lib/settings/service-api-key-actor-scope";
 import {
@@ -29,6 +30,7 @@ import {
   type ModelCatalogEntry,
   type ModelLifecycleState,
   type ProviderConnectionStatus,
+  type RequestMcpExportConfiguration,
   type RequestModelAssignment,
   type RedactedProviderConnection,
   type RedactedServiceApiKey,
@@ -81,6 +83,13 @@ export class ModelAssignmentReadConflictError extends SettingsStoreError {
   constructor(message = "Model assignment ownership is ambiguous.") {
     super(message, 409);
     this.name = "ModelAssignmentReadConflictError";
+  }
+}
+
+export class McpExportConfigurationReadConflictError extends SettingsStoreError {
+  constructor(message = "MCP export configuration ownership is ambiguous.") {
+    super(message, 409);
+    this.name = "McpExportConfigurationReadConflictError";
   }
 }
 
@@ -1002,6 +1011,84 @@ export async function getMcpExportConfiguration(input: { tenantId: string; actor
     }
     const ledger = await readLedger();
     return ledger.mcp.find((item) => item.tenantId === input.tenantId && item.actorId === input.actorId) || defaultMcpConfig(input);
+  });
+}
+
+/**
+ * Returns request-displayable MCP export settings without widening the exact
+ * configuration reader used by MCP authentication, runtime, or writes.
+ */
+export async function getMcpExportConfigurationForRequest(input: {
+  tenantId: string;
+  actorId: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+}): Promise<RequestMcpExportConfiguration> {
+  return inTenant(input.tenantId, async () => {
+    if (!hasDatabaseUrl()) {
+      const ledger = await readLedger();
+      const rows = ledger.mcp.filter((item) =>
+        item.tenantId === input.tenantId && item.actorId === input.actorId
+      );
+      if (rows.length > 1) {
+        throw new McpExportConfigurationReadConflictError();
+      }
+      if (!rows[0]) {
+        return requestMcpExportConfiguration(
+          defaultMcpConfig(input),
+          input.actorId,
+        );
+      }
+      const row = mcpConfigLedgerRow(rows[0]);
+      assertRequestMcpExportConfigurationRow(
+        row,
+        input.tenantId,
+        input.actorId,
+        input.actorId,
+      );
+      return requestMcpExportConfiguration(
+        mcpConfigFromRow(row),
+        input.actorId,
+      );
+    }
+
+    const [canonicalActorId, exactActorId] =
+      mcpExportConfigurationActorReadOrder(
+        input.actorId,
+        input.requestActorBinding,
+      );
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT tenant_id, actor_id, enabled, server_name, allowed_scopes,
+        default_approval_mode, expose_resources, created_at, updated_at
+      FROM omni_mcp_export_configurations
+      WHERE tenant_id = ${input.tenantId}
+        AND actor_id IN (${canonicalActorId}, ${exactActorId})
+        AND tenant_id COLLATE "C" = ${input.tenantId}::text COLLATE "C"
+        AND (
+          actor_id COLLATE "C" = ${canonicalActorId}::text COLLATE "C"
+          OR actor_id COLLATE "C" = ${exactActorId}::text COLLATE "C"
+        )
+      ORDER BY actor_id COLLATE "C"
+    `;
+    if (rows.length > 1) {
+      throw new McpExportConfigurationReadConflictError();
+    }
+    if (!rows[0]) {
+      return requestMcpExportConfiguration(
+        defaultMcpConfig(input),
+        exactActorId,
+      );
+    }
+    assertRequestMcpExportConfigurationRow(
+      rows[0],
+      input.tenantId,
+      canonicalActorId,
+      exactActorId,
+    );
+    return requestMcpExportConfiguration(
+      mcpConfigFromRow(rows[0]),
+      exactActorId,
+    );
   });
 }
 
@@ -1934,6 +2021,102 @@ function mcpConfigFromRow(row: Record<string, unknown>): McpExportConfiguration 
     endpointPath: "/api/mcp", readiness: enabled ? "ready" : "disabled",
     createdAt: optionalDate(row.created_at) || new Date().toISOString(), updatedAt: optionalDate(row.updated_at) || new Date().toISOString(),
   };
+}
+
+function requestMcpExportConfiguration(
+  record: McpExportConfiguration,
+  requestActorId: string,
+): RequestMcpExportConfiguration {
+  return {
+    tenantId: record.tenantId,
+    actorId: requestActorId,
+    enabled: record.enabled,
+    serverName: safeMcpServerName(record.serverName),
+    allowedScopes: [...record.allowedScopes],
+    defaultApprovalMode: record.defaultApprovalMode,
+    exposeResources: record.exposeResources,
+    endpointPath: record.endpointPath,
+    readiness: record.readiness,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    manageable: record.actorId === requestActorId,
+  };
+}
+
+function assertRequestMcpExportConfigurationRow(
+  row: Record<string, unknown>,
+  expectedTenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  const tenantId = typeof row.tenant_id === "string" ? row.tenant_id : "";
+  const actorId = typeof row.actor_id === "string" ? row.actor_id : "";
+  const serverName = typeof row.server_name === "string"
+    ? row.server_name
+    : "";
+  const allowedScopes = row.allowed_scopes;
+  const createdAt = mcpConfigurationDateMillis(row.created_at);
+  const updatedAt = mcpConfigurationDateMillis(row.updated_at);
+  if (
+    tenantId !== expectedTenantId ||
+    (actorId !== canonicalActorId && actorId !== exactActorId) ||
+    typeof row.enabled !== "boolean" ||
+    typeof row.server_name !== "string" ||
+    serverName.length === 0 ||
+    serverName !== serverName.trim() ||
+    serverName.length > 120 ||
+    !Array.isArray(allowedScopes) ||
+    allowedScopes.length > SERVICE_API_SCOPES.length ||
+    allowedScopes.some((scope) =>
+      typeof scope !== "string" ||
+      !SERVICE_API_SCOPES.includes(scope as ServiceApiScope)
+    ) ||
+    new Set(allowedScopes).size !== allowedScopes.length ||
+    row.default_approval_mode !== "governed" ||
+    typeof row.expose_resources !== "boolean" ||
+    !isRequiredMcpConfigurationDate(row.created_at) ||
+    !isRequiredMcpConfigurationDate(row.updated_at) ||
+    createdAt > updatedAt
+  ) {
+    throw new McpExportConfigurationReadConflictError(
+      "MCP export configuration could not be resolved safely.",
+    );
+  }
+}
+
+function mcpConfigLedgerRow(record: McpExportConfiguration) {
+  return {
+    tenant_id: record.tenantId,
+    actor_id: record.actorId,
+    enabled: record.enabled,
+    server_name: record.serverName,
+    allowed_scopes: record.allowedScopes,
+    default_approval_mode: record.defaultApprovalMode,
+    expose_resources: record.exposeResources,
+    created_at: record.createdAt,
+    updated_at: record.updatedAt,
+  };
+}
+
+function safeMcpServerName(value: string) {
+  const sanitized = value
+    .replace(/[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return Array.from(sanitized || "Asael").slice(0, 120).join("");
+}
+
+function isRequiredMcpConfigurationDate(value: unknown) {
+  if (value instanceof Date) return Number.isFinite(value.getTime());
+  if (typeof value !== "string") return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function mcpConfigurationDateMillis(value: unknown) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "string") return Date.parse(value);
+  return Number.NaN;
 }
 
 function defaultMcpConfig(input: { tenantId: string; actorId: string }): McpExportConfiguration {
