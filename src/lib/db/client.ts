@@ -788,6 +788,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[48],
       up: ensureTenantActorMemoryPurposeConsents,
     },
+    {
+      ...databaseSchemaMigrations[49],
+      up: ensureCanonicalAuthUserActorIdentifiersShadow,
+    },
   ];
 }
 
@@ -18617,6 +18621,2180 @@ async function ensureTenantActorMemoryPurposeConsents(sql: SqlClient) {
         FROM omni_tenant_memory_purpose_entitlements
       ) THEN
         RAISE EXCEPTION 'Memory purpose entitlement shadow is not empty'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureCanonicalAuthUserActorIdentifiersShadow(sql: SqlClient) {
+  // v50 records exact identity aliases only. It does not authorize a tenant,
+  // change a served request actor, or translate any durable owner or receipt.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier migration requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+    END
+    $migration$
+  `;
+
+  // Freeze every identity, membership, scalar-owner, and JSON-owner surface
+  // before the first audit. SHARE conflicts with ordinary writer locks and is
+  // transaction-held, so both audit passes describe one stable data set.
+  await sql`
+    LOCK TABLE
+      omni_access_requests,
+      omni_agent_events,
+      omni_agent_runs,
+      omni_ai_usage,
+      omni_auth_memberships,
+      omni_auth_users,
+      omni_capture_assets,
+      omni_capture_recordings,
+      omni_capture_segments,
+      omni_custom_agents,
+      omni_custom_skills,
+      omni_daily_briefs,
+      omni_eval_reports,
+      omni_events,
+      omni_evidence_units,
+      omni_incident_events,
+      omni_incidents,
+      omni_mcp_connectors,
+      omni_mcp_export_configurations,
+      omni_memories,
+      omni_memory_deletion_receipts,
+      omni_memory_purpose_catalog,
+      omni_mission_artifacts,
+      omni_mission_attempts,
+      omni_mission_tasks,
+      omni_missions,
+      omni_model_assignments,
+      omni_model_catalog,
+      omni_oauth_grants,
+      omni_observability_events,
+      omni_observability_slo_approval_policies,
+      omni_observability_slo_approval_policy_versions,
+      omni_observability_slo_policy_changes,
+      omni_operation_jobs,
+      omni_personal_notifications,
+      omni_projects,
+      omni_provider_connections,
+      omni_security_audits,
+      omni_service_api_keys,
+      omni_source_items,
+      omni_source_revisions,
+      omni_source_sync_heads,
+      omni_source_sync_page_checkpoints,
+      omni_source_sync_page_items,
+      omni_source_tombstones,
+      omni_tenant_actor_memory_purpose_consents,
+      omni_tenant_capability_rollouts,
+      omni_tenant_memory_purpose_entitlements,
+      omni_threads,
+      omni_today_items,
+      omni_today_preferences,
+      omni_tool_executions,
+      omni_workflow_events,
+      omni_workflow_runs
+    IN SHARE MODE
+  `;
+
+  // Every generated v46 actor is new to the served system. Finding one in a
+  // durable actor position is ambiguous: it could have been supplied by a
+  // header, service, or manual writer, so the migration must not claim it.
+  await sql`
+    DO $migration$
+    DECLARE
+      actor_surface RECORD;
+      collision_found BOOLEAN;
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM omni_auth_users
+        WHERE email IS DISTINCT FROM btrim(email)
+          OR char_length(email) NOT BETWEEN 1 AND 320
+          OR email COLLATE "C" = actor_id COLLATE "C"
+      ) THEN
+        RAISE EXCEPTION 'An auth-user email cannot be recorded as an exact legacy actor identifier'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        WITH identifier_candidates AS (
+          SELECT actor_id AS canonical_actor_id,
+            actor_id AS actor_identifier
+          FROM omni_auth_users
+          UNION ALL
+          SELECT actor_id AS canonical_actor_id,
+            email AS actor_identifier
+          FROM omni_auth_users
+        )
+        SELECT 1
+        FROM identifier_candidates
+        GROUP BY actor_identifier COLLATE "C"
+        HAVING count(DISTINCT canonical_actor_id COLLATE "C") <> 1
+      ) THEN
+        RAISE EXCEPTION 'An auth-user actor identifier maps to multiple canonical actors'
+          USING ERRCODE = '55000';
+      END IF;
+
+      FOR actor_surface IN
+        SELECT *
+        FROM (VALUES
+          ('omni_memories', 'asserted_by'),
+          ('omni_memories', 'owner_actor_id'),
+          ('omni_tool_executions', 'actor_id'),
+          ('omni_tool_executions', 'approved_by'),
+          ('omni_mcp_connectors', 'credential_created_by'),
+          ('omni_mcp_connectors', 'credential_rotated_by'),
+          ('omni_incidents', 'acknowledged_by'),
+          ('omni_incidents', 'resolved_by'),
+          ('omni_incident_events', 'actor_id'),
+          ('omni_eval_reports', 'created_by'),
+          ('omni_security_audits', 'actor_id'),
+          ('omni_observability_events', 'actor_id'),
+          ('omni_events', 'actor_id'),
+          ('omni_observability_slo_policy_changes', 'requested_by'),
+          ('omni_observability_slo_policy_changes', 'reviewed_by'),
+          ('omni_observability_slo_approval_policies', 'updated_by'),
+          ('omni_observability_slo_approval_policy_versions', 'changed_by'),
+          ('omni_oauth_grants', 'actor_id'),
+          ('omni_today_items', 'actor_id'),
+          ('omni_today_preferences', 'actor_id'),
+          ('omni_daily_briefs', 'actor_id'),
+          ('omni_daily_briefs', 'generated_by'),
+          ('omni_personal_notifications', 'actor_id'),
+          ('omni_projects', 'actor_id'),
+          ('omni_capture_assets', 'actor_id'),
+          ('omni_capture_recordings', 'actor_id'),
+          ('omni_capture_segments', 'actor_id'),
+          ('omni_custom_skills', 'actor_id'),
+          ('omni_custom_agents', 'actor_id'),
+          ('omni_missions', 'actor_id'),
+          ('omni_mission_tasks', 'actor_id'),
+          ('omni_mission_attempts', 'actor_id'),
+          ('omni_mission_artifacts', 'actor_id'),
+          ('omni_provider_connections', 'actor_id'),
+          ('omni_model_catalog', 'actor_id'),
+          ('omni_model_assignments', 'actor_id'),
+          ('omni_service_api_keys', 'actor_id'),
+          ('omni_mcp_export_configurations', 'actor_id'),
+          ('omni_source_items', 'owner_actor_id'),
+          ('omni_source_revisions', 'owner_actor_id'),
+          ('omni_evidence_units', 'owner_actor_id'),
+          ('omni_source_sync_page_checkpoints', 'owner_actor_id'),
+          ('omni_source_sync_page_items', 'owner_actor_id'),
+          ('omni_source_tombstones', 'owner_actor_id'),
+          ('omni_source_sync_heads', 'owner_actor_id'),
+          ('omni_tenant_capability_rollouts', 'created_by_actor_id'),
+          ('omni_tenant_capability_rollouts', 'activated_by_actor_id'),
+          ('omni_ai_usage', 'actor_id'),
+          ('omni_threads', 'actor_id'),
+          ('omni_access_requests', 'reviewed_by'),
+          ('omni_memory_deletion_receipts', 'initiating_actor_id'),
+          ('omni_memory_deletion_receipts', 'executing_principal_id'),
+          ('omni_tenant_memory_purpose_entitlements', 'created_by_actor_id'),
+          ('omni_tenant_memory_purpose_entitlements', 'activated_by_actor_id'),
+          ('omni_tenant_memory_purpose_entitlements', 'revoked_by_actor_id'),
+          ('omni_tenant_actor_memory_purpose_consents', 'subject_actor_id'),
+          ('omni_tenant_actor_memory_purpose_consents', 'created_by_actor_id'),
+          ('omni_tenant_actor_memory_purpose_consents', 'granted_by_actor_id'),
+          ('omni_tenant_actor_memory_purpose_consents', 'revoked_by_actor_id')
+        ) AS surface(table_name, column_name)
+      LOOP
+        EXECUTE format(
+          'SELECT EXISTS (' ||
+          'SELECT 1 FROM %I.%I actor_surface ' ||
+          'JOIN %I.omni_auth_users auth_user ' ||
+          'ON auth_user.actor_id COLLATE "C" = ' ||
+          'actor_surface.%I COLLATE "C" ' ||
+          'WHERE actor_surface.%I IS NOT NULL)',
+          current_schema(),
+          actor_surface.table_name,
+          current_schema(),
+          actor_surface.column_name,
+          actor_surface.column_name
+        ) INTO collision_found;
+        IF collision_found THEN
+          RAISE EXCEPTION 'Canonical auth-user actor already appears in %.%',
+            actor_surface.table_name,
+            actor_surface.column_name
+            USING ERRCODE = '55000';
+        END IF;
+      END LOOP;
+
+      IF EXISTS (
+        WITH persisted_json_actors(actor_identifier) AS (
+          SELECT continuation #>> '{context,actorId}'
+          FROM omni_agent_runs
+          WHERE continuation IS NOT NULL
+          UNION ALL
+          SELECT payload ->> 'actorId'
+          FROM omni_operation_jobs
+          UNION ALL
+          SELECT payload #>> '{executionScope,initiatingActorId}'
+          FROM omni_operation_jobs
+          UNION ALL
+          SELECT payload #>> '{executionScope,executingPrincipalId}'
+          FROM omni_operation_jobs
+          UNION ALL
+          SELECT input #>> '{metadata,actorId}'
+          FROM omni_workflow_runs
+          UNION ALL
+          SELECT input #>> '{metadata,executionScope,initiatingActorId}'
+          FROM omni_workflow_runs
+          UNION ALL
+          SELECT input #>> '{metadata,executionScope,executingPrincipalId}'
+          FROM omni_workflow_runs
+          UNION ALL
+          SELECT payload #>> '{_executionScope,initiatingActorId}'
+          FROM omni_events
+          UNION ALL
+          SELECT payload #>> '{_executionScope,executingPrincipalId}'
+          FROM omni_events
+          UNION ALL
+          SELECT payload #>> '{executionScope,initiatingActorId}'
+          FROM omni_agent_events
+          UNION ALL
+          SELECT payload #>> '{executionScope,executingPrincipalId}'
+          FROM omni_agent_events
+          UNION ALL
+          SELECT payload #>> '{executionScope,initiatingActorId}'
+          FROM omni_workflow_events
+          UNION ALL
+          SELECT payload #>> '{executionScope,executingPrincipalId}'
+          FROM omni_workflow_events
+          UNION ALL
+          SELECT execution_scope ->> 'initiatingActorId'
+          FROM omni_ai_usage
+          WHERE execution_scope IS NOT NULL
+          UNION ALL
+          SELECT execution_scope ->> 'executingPrincipalId'
+          FROM omni_ai_usage
+          WHERE execution_scope IS NOT NULL
+          UNION ALL
+          SELECT execution_scope ->> 'initiatingActorId'
+          FROM omni_memory_deletion_receipts
+          WHERE execution_scope IS NOT NULL
+          UNION ALL
+          SELECT execution_scope ->> 'executingPrincipalId'
+          FROM omni_memory_deletion_receipts
+          WHERE execution_scope IS NOT NULL
+          UNION ALL
+          SELECT effect_receipt ->> 'actorId'
+          FROM omni_tool_executions
+          WHERE effect_receipt IS NOT NULL
+          UNION ALL
+          SELECT effect_receipt #>> '{executionScope,initiatingActorId}'
+          FROM omni_tool_executions
+          WHERE effect_receipt IS NOT NULL
+          UNION ALL
+          SELECT approval ->> 'by'
+          FROM omni_tool_executions execution_record
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(execution_record.approvals) = 'array'
+              THEN execution_record.approvals
+              ELSE '[]'::JSONB
+            END
+          ) approval
+          UNION ALL
+          SELECT approval ->> 'by'
+          FROM omni_observability_slo_policy_changes policy_change
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(policy_change.approvals) = 'array'
+              THEN policy_change.approvals
+              ELSE '[]'::JSONB
+            END
+          ) approval
+        )
+        SELECT 1
+        FROM persisted_json_actors persisted
+        JOIN omni_auth_users auth_user
+          ON auth_user.actor_id COLLATE "C" =
+            persisted.actor_identifier COLLATE "C"
+        WHERE persisted.actor_identifier IS NOT NULL
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user actor already appears in a durable JSON contract'
+          USING ERRCODE = '55000';
+      END IF;
+
+      FOR actor_surface IN
+        SELECT *
+        FROM (VALUES
+          ('omni_memories', 'owner_actor_id'),
+          ('omni_oauth_grants', 'actor_id'),
+          ('omni_today_items', 'actor_id'),
+          ('omni_today_preferences', 'actor_id'),
+          ('omni_daily_briefs', 'actor_id'),
+          ('omni_personal_notifications', 'actor_id'),
+          ('omni_projects', 'actor_id'),
+          ('omni_capture_assets', 'actor_id'),
+          ('omni_capture_recordings', 'actor_id'),
+          ('omni_capture_segments', 'actor_id'),
+          ('omni_custom_skills', 'actor_id'),
+          ('omni_custom_agents', 'actor_id'),
+          ('omni_missions', 'actor_id'),
+          ('omni_mission_tasks', 'actor_id'),
+          ('omni_mission_attempts', 'actor_id'),
+          ('omni_mission_artifacts', 'actor_id'),
+          ('omni_provider_connections', 'actor_id'),
+          ('omni_model_catalog', 'actor_id'),
+          ('omni_model_assignments', 'actor_id'),
+          ('omni_service_api_keys', 'actor_id'),
+          ('omni_mcp_export_configurations', 'actor_id'),
+          ('omni_source_items', 'owner_actor_id'),
+          ('omni_source_revisions', 'owner_actor_id'),
+          ('omni_evidence_units', 'owner_actor_id'),
+          ('omni_source_sync_page_checkpoints', 'owner_actor_id'),
+          ('omni_source_sync_page_items', 'owner_actor_id'),
+          ('omni_source_tombstones', 'owner_actor_id'),
+          ('omni_source_sync_heads', 'owner_actor_id'),
+          ('omni_threads', 'actor_id')
+        ) AS surface(table_name, column_name)
+      LOOP
+        EXECUTE format(
+          'SELECT EXISTS (' ||
+          'SELECT 1 FROM %I.%I owned_record ' ||
+          'JOIN %I.omni_auth_users auth_user ' ||
+          'ON auth_user.email COLLATE "C" = ' ||
+          'owned_record.%I COLLATE "C" ' ||
+          'WHERE owned_record.%I IS NOT NULL ' ||
+          'AND NOT EXISTS (' ||
+          'SELECT 1 FROM %I.omni_auth_memberships membership ' ||
+          'WHERE membership.tenant_id = owned_record.tenant_id ' ||
+          'AND membership.user_id = auth_user.id))',
+          current_schema(),
+          actor_surface.table_name,
+          current_schema(),
+          actor_surface.column_name,
+          actor_surface.column_name,
+          current_schema()
+        ) INTO collision_found;
+        IF collision_found THEN
+          RAISE EXCEPTION 'Legacy auth-user ownership lacks a tenant membership in %.%',
+            actor_surface.table_name,
+            actor_surface.column_name
+            USING ERRCODE = '55000';
+        END IF;
+      END LOOP;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_auth_user_actor_identifier_row_is_valid(
+      candidate_schema_version SMALLINT,
+      candidate_actor_identifier TEXT,
+      candidate_canonical_actor_id TEXT,
+      candidate_identifier_kind TEXT
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    STRICT
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$SELECT candidate_schema_version = 1 AND candidate_actor_identifier = btrim(candidate_actor_identifier) AND char_length(candidate_actor_identifier) BETWEEN 1 AND 320 AND public.omni_source_contract_id_is_valid(candidate_canonical_actor_id) AND ((candidate_identifier_kind = 'canonical' AND candidate_actor_identifier = candidate_canonical_actor_id) OR (candidate_identifier_kind = 'legacy_email' AND candidate_actor_identifier <> candidate_canonical_actor_id))$function$
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_auth_user_actor_identifiers (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      actor_identifier TEXT COLLATE "C" NOT NULL,
+      canonical_actor_id TEXT COLLATE "C" NOT NULL,
+      identifier_kind TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_auth_user_actor_identifiers_pkey
+        PRIMARY KEY (actor_identifier),
+      CONSTRAINT omni_auth_user_actor_identifiers_canonical_actor_fk
+        FOREIGN KEY (canonical_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_auth_user_actor_identifiers_contract_check CHECK (
+        omni_auth_user_actor_identifier_row_is_valid(
+          schema_version,
+          actor_identifier,
+          canonical_actor_id,
+          identifier_kind
+        )
+      )
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_auth_user_actor_identifiers_canonical_self_key
+    ON omni_auth_user_actor_identifiers (canonical_actor_id)
+    WHERE identifier_kind = 'canonical'
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS
+      omni_auth_user_actor_identifiers_canonical_lookup_idx
+    ON omni_auth_user_actor_identifiers (
+      canonical_actor_id,
+      identifier_kind,
+      actor_identifier
+    )
+  `;
+
+  await sql`
+    INSERT INTO omni_auth_user_actor_identifiers (
+      schema_version,
+      actor_identifier,
+      canonical_actor_id,
+      identifier_kind
+    )
+    SELECT 1, actor_id, actor_id, 'canonical'
+    FROM omni_auth_users
+    ON CONFLICT (actor_identifier) DO NOTHING
+  `;
+  await sql`
+    INSERT INTO omni_auth_user_actor_identifiers (
+      schema_version,
+      actor_identifier,
+      canonical_actor_id,
+      identifier_kind
+    )
+    SELECT 1, email, actor_id, 'legacy_email'
+    FROM omni_auth_users
+    ON CONFLICT (actor_identifier) DO NOTHING
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_register_auth_user_actor_identifiers()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF TG_RELID IS DISTINCT FROM 'public.omni_auth_users'::regclass
+        OR TG_WHEN IS DISTINCT FROM 'AFTER'
+        OR TG_LEVEL IS DISTINCT FROM 'ROW'
+        OR TG_OP NOT IN ('INSERT', 'UPDATE')
+      THEN
+        RAISE EXCEPTION 'Canonical actor identifier registrar has an invalid trigger context'
+          USING ERRCODE = '55000';
+      END IF;
+
+      INSERT INTO public.omni_auth_user_actor_identifiers (
+        schema_version,
+        actor_identifier,
+        canonical_actor_id,
+        identifier_kind
+      ) VALUES (1, NEW.actor_id, NEW.actor_id, 'canonical')
+      ON CONFLICT (actor_identifier) DO NOTHING;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM public.omni_auth_user_actor_identifiers identifier
+        WHERE identifier.actor_identifier = NEW.actor_id COLLATE "C"
+          AND identifier.canonical_actor_id = NEW.actor_id COLLATE "C"
+          AND identifier.identifier_kind = 'canonical'
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier collides with another auth user'
+          USING ERRCODE = '55000';
+      END IF;
+
+      INSERT INTO public.omni_auth_user_actor_identifiers (
+        schema_version,
+        actor_identifier,
+        canonical_actor_id,
+        identifier_kind
+      ) VALUES (1, NEW.email, NEW.actor_id, 'legacy_email')
+      ON CONFLICT (actor_identifier) DO NOTHING;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM public.omni_auth_user_actor_identifiers identifier
+        WHERE identifier.actor_identifier = NEW.email COLLATE "C"
+          AND identifier.canonical_actor_id = NEW.actor_id COLLATE "C"
+          AND identifier.identifier_kind = 'legacy_email'
+      ) THEN
+        RAISE EXCEPTION 'Legacy actor identifier collides with another auth user'
+          USING ERRCODE = '55000';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_auth_user_actor_identifier_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$BEGIN RAISE EXCEPTION 'Canonical auth-user actor identifiers are append-only' USING ERRCODE = '55000'; END$function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_auth_users'::regclass
+          AND tgname = 'omni_auth_users_register_actor_identifiers'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_auth_users_register_actor_identifiers
+        AFTER INSERT OR UPDATE OF email ON omni_auth_users
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_register_auth_user_actor_identifiers();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_auth_user_actor_identifiers'::regclass
+          AND tgname = 'omni_auth_user_actor_identifiers_immutable'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_auth_user_actor_identifiers_immutable
+        BEFORE UPDATE OR DELETE ON omni_auth_user_actor_identifiers
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_reject_auth_user_actor_identifier_change();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_auth_user_actor_identifiers'::regclass
+          AND tgname = 'omni_auth_user_actor_identifiers_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_auth_user_actor_identifiers_no_truncate
+        BEFORE TRUNCATE ON omni_auth_user_actor_identifiers
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_reject_auth_user_actor_identifier_change();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql.query(`
+    REVOKE ALL
+    ON TABLE omni_auth_user_actor_identifiers
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_auth_user_actor_identifier_row_is_valid(
+      SMALLINT,
+      TEXT,
+      TEXT,
+      TEXT
+    )
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_register_auth_user_actor_identifiers()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_reject_auth_user_actor_identifier_change()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_auth_user_actor_identifiers'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON TABLE ' ||
+          '%I.omni_auth_user_actor_identifiers FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+
+      FOR grant_record IN
+        SELECT DISTINCT grantee, privilege_type, column_name
+        FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_auth_user_actor_identifiers'
+          AND grantee <> current_user
+      LOOP
+        EXECUTE format(
+          'REVOKE %s (%I) ON TABLE ' ||
+          '%I.omni_auth_user_actor_identifiers FROM %s',
+          grant_record.privilege_type,
+          grant_record.column_name,
+          current_schema(),
+          CASE
+            WHEN grant_record.grantee = 'PUBLIC' THEN 'PUBLIC'
+            ELSE quote_ident(grant_record.grantee)
+          END
+        );
+      END LOOP;
+
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_auth_user_actor_identifier_row_is_valid',
+            'omni_register_auth_user_actor_identifiers',
+            'omni_reject_auth_user_actor_identifier_change'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_auth_user_actor_identifier_row_is_valid(' ||
+          'SMALLINT, TEXT, TEXT, TEXT) FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_register_auth_user_actor_identifiers() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_reject_auth_user_actor_identifier_change() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `);
+
+  await sql`
+    DO $migration$
+    DECLARE
+      actor_surface RECORD;
+      collision_found BOOLEAN;
+      valid_scope JSONB;
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class relation
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE relation.oid =
+            'omni_auth_user_actor_identifiers'::regclass
+          AND namespace.nspname = current_schema()
+          AND relation.relkind = 'r'
+          AND relation.relpersistence = 'p'
+          AND NOT relation.relispartition
+          AND NOT EXISTS (
+            SELECT 1
+            FROM pg_inherits inheritance
+            WHERE inheritance.inhrelid = relation.oid
+              OR inheritance.inhparent = relation.oid
+          )
+          AND relation.relowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND NOT relation.relrowsecurity
+          AND NOT relation.relforcerowsecurity
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier relation is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM (
+          SELECT
+            array_agg(attribute.attname ORDER BY attribute.attnum) AS names,
+            bool_and(attribute.attnotnull) AS all_not_null,
+            bool_and(attribute.attgenerated = '') AS none_generated,
+            count(*) AS column_count
+          FROM pg_attribute attribute
+          WHERE attribute.attrelid =
+              'omni_auth_user_actor_identifiers'::regclass
+            AND attribute.attnum > 0
+            AND NOT attribute.attisdropped
+        ) columns
+        WHERE columns.names::TEXT[] = ARRAY[
+            'schema_version', 'actor_identifier', 'canonical_actor_id',
+            'identifier_kind', 'created_at'
+          ]
+          AND columns.all_not_null
+          AND columns.none_generated
+          AND columns.column_count = 5
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE attrelid = 'omni_auth_user_actor_identifiers'::regclass
+          AND attname = 'schema_version'
+          AND atttypid = 'smallint'::regtype
+          AND atttypmod = -1
+          AND NOT attisdropped
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE attrelid = 'omni_auth_user_actor_identifiers'::regclass
+          AND attname IN ('actor_identifier', 'canonical_actor_id')
+          AND atttypid = 'text'::regtype
+          AND atttypmod = -1
+          AND attcollation = '"C"'::regcollation
+          AND NOT attisdropped
+        GROUP BY attrelid
+        HAVING count(*) = 2
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE attrelid = 'omni_auth_user_actor_identifiers'::regclass
+          AND attname = 'identifier_kind'
+          AND atttypid = 'text'::regtype
+          AND atttypmod = -1
+          AND attcollation = (
+            SELECT typcollation
+            FROM pg_type
+            WHERE oid = 'text'::regtype
+          )
+          AND NOT attisdropped
+      ) OR (
+        SELECT count(*)
+        FROM pg_attrdef
+        WHERE adrelid =
+          'omni_auth_user_actor_identifiers'::regclass
+      ) <> 2 OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid =
+            'omni_auth_user_actor_identifiers'::regclass
+          AND attribute.attname = 'schema_version'
+          AND pg_get_expr(
+            attribute_default.adbin,
+            attribute_default.adrelid
+          ) IN ('1', '1::smallint', '(1)::smallint')
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid =
+            'omni_auth_user_actor_identifiers'::regclass
+          AND attribute.attname = 'created_at'
+          AND attribute.atttypid = 'timestamp with time zone'::regtype
+          AND attribute.atttypmod = -1
+          AND NOT attribute.attisdropped
+          AND pg_get_expr(
+            attribute_default.adbin,
+            attribute_default.adrelid
+          ) = 'now()'
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier columns are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (
+        SELECT count(*)
+        FROM pg_constraint
+        WHERE conrelid =
+          'omni_auth_user_actor_identifiers'::regclass
+          AND contype <> 'n'
+      ) <> 3 OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_record
+        JOIN pg_index index_record
+          ON index_record.indexrelid = constraint_record.conindid
+        WHERE constraint_record.conname =
+            'omni_auth_user_actor_identifiers_pkey'
+          AND constraint_record.conrelid =
+            'omni_auth_user_actor_identifiers'::regclass
+          AND constraint_record.contype = 'p'
+          AND constraint_record.convalidated
+          AND COALESCE(
+            (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+            TRUE
+          )
+          AND NOT constraint_record.condeferrable
+          AND NOT constraint_record.condeferred
+          AND NOT constraint_record.connoinherit
+          AND constraint_record.conkey = ARRAY[
+            (
+              SELECT attnum
+              FROM pg_attribute
+              WHERE attrelid =
+                  'omni_auth_user_actor_identifiers'::regclass
+                AND attname = 'actor_identifier'
+                AND NOT attisdropped
+            )
+          ]::SMALLINT[]
+          AND index_record.indisprimary
+          AND index_record.indisunique
+          AND index_record.indisvalid
+          AND index_record.indisready
+          AND index_record.indimmediate
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_record
+        WHERE constraint_record.conname =
+            'omni_auth_user_actor_identifiers_canonical_actor_fk'
+          AND constraint_record.conrelid =
+            'omni_auth_user_actor_identifiers'::regclass
+          AND constraint_record.confrelid = 'omni_auth_users'::regclass
+          AND constraint_record.contype = 'f'
+          AND constraint_record.convalidated
+          AND COALESCE(
+            (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+            TRUE
+          )
+          AND NOT constraint_record.condeferrable
+          AND NOT constraint_record.condeferred
+          AND NOT constraint_record.connoinherit
+          AND constraint_record.confupdtype = 'r'
+          AND constraint_record.confdeltype = 'r'
+          AND constraint_record.confmatchtype = 's'
+          AND constraint_record.conkey = ARRAY[
+            (
+              SELECT attnum
+              FROM pg_attribute
+              WHERE attrelid =
+                  'omni_auth_user_actor_identifiers'::regclass
+                AND attname = 'canonical_actor_id'
+                AND NOT attisdropped
+            )
+          ]::SMALLINT[]
+          AND constraint_record.confkey = ARRAY[
+            (
+              SELECT attnum
+              FROM pg_attribute
+              WHERE attrelid = 'omni_auth_users'::regclass
+                AND attname = 'actor_id'
+                AND NOT attisdropped
+            )
+          ]::SMALLINT[]
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_record
+        WHERE constraint_record.conname =
+            'omni_auth_user_actor_identifiers_contract_check'
+          AND constraint_record.conrelid =
+            'omni_auth_user_actor_identifiers'::regclass
+          AND constraint_record.contype = 'c'
+          AND constraint_record.convalidated
+          AND COALESCE(
+            (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+            TRUE
+          )
+          AND NOT constraint_record.condeferrable
+          AND NOT constraint_record.condeferred
+          AND NOT constraint_record.connoinherit
+          AND constraint_record.conkey = ARRAY[
+            (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid =
+                  'omni_auth_user_actor_identifiers'::regclass
+                AND attname = 'schema_version'
+                AND NOT attisdropped
+            ),
+            (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid =
+                  'omni_auth_user_actor_identifiers'::regclass
+                AND attname = 'actor_identifier'
+                AND NOT attisdropped
+            ),
+            (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid =
+                  'omni_auth_user_actor_identifiers'::regclass
+                AND attname = 'canonical_actor_id'
+                AND NOT attisdropped
+            ),
+            (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid =
+                  'omni_auth_user_actor_identifiers'::regclass
+                AND attname = 'identifier_kind'
+                AND NOT attisdropped
+            )
+          ]::SMALLINT[]
+          AND pg_get_expr(
+            constraint_record.conbin,
+            constraint_record.conrelid
+          ) =
+            'omni_auth_user_actor_identifier_row_is_valid(schema_version, actor_identifier, canonical_actor_id, identifier_kind)'
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier constraints are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (
+        SELECT count(*)
+        FROM pg_index
+        WHERE indrelid =
+          'omni_auth_user_actor_identifiers'::regclass
+      ) <> 3 OR EXISTS (
+        SELECT 1
+        FROM (
+          VALUES
+            (
+              'omni_auth_user_actor_identifiers_pkey',
+              ARRAY['actor_identifier']::TEXT[],
+              TRUE,
+              TRUE,
+              NULL::TEXT
+            ),
+            (
+              'omni_auth_user_actor_identifiers_canonical_self_key',
+              ARRAY['canonical_actor_id']::TEXT[],
+              TRUE,
+              FALSE,
+              '(identifier_kind = ''canonical''::text)'
+            ),
+            (
+              'omni_auth_user_actor_identifiers_canonical_lookup_idx',
+              ARRAY[
+                'canonical_actor_id',
+                'identifier_kind',
+                'actor_identifier'
+              ]::TEXT[],
+              FALSE,
+              FALSE,
+              NULL::TEXT
+            )
+        ) expected(
+          index_name,
+          column_names,
+          is_unique,
+          is_primary,
+          predicate_expression
+        )
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM pg_index index_record
+          JOIN pg_class index_relation
+            ON index_relation.oid = index_record.indexrelid
+          JOIN pg_namespace index_namespace
+            ON index_namespace.oid = index_relation.relnamespace
+          JOIN pg_am access_method
+            ON access_method.oid = index_relation.relam
+          WHERE index_record.indexrelid = to_regclass(
+              format('%I.%I', current_schema(), expected.index_name)
+            )
+            AND index_record.indrelid =
+              'omni_auth_user_actor_identifiers'::regclass
+            AND index_relation.relname = expected.index_name
+            AND index_namespace.nspname = current_schema()
+            AND index_relation.relkind = 'i'
+            AND index_relation.relpersistence = 'p'
+            AND index_relation.relowner = (
+              SELECT relowner
+              FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+            AND access_method.amname = 'btree'
+            AND index_record.indisunique = expected.is_unique
+            AND index_record.indisprimary = expected.is_primary
+            AND index_record.indisvalid
+            AND index_record.indisready
+            AND index_record.indislive
+            AND index_record.indimmediate
+            AND NOT index_record.indisclustered
+            AND NOT index_record.indisreplident
+            AND NOT index_record.indisexclusion
+            AND NOT COALESCE(
+              (to_jsonb(index_record) ->> 'indnullsnotdistinct')::BOOLEAN,
+              FALSE
+            )
+            AND index_record.indnatts =
+              cardinality(expected.column_names)
+            AND index_record.indnkeyatts =
+              cardinality(expected.column_names)
+            AND index_record.indexprs IS NULL
+            AND (
+              SELECT array_agg(
+                operator_class ORDER BY ordinal_position
+              )
+              FROM unnest(index_record.indclass)
+                WITH ORDINALITY AS operator_classes(
+                  operator_class,
+                  ordinal_position
+                )
+            ) = array_fill(
+              (
+                SELECT operator_class.oid
+                FROM pg_opclass operator_class
+                WHERE operator_class.opcname = 'text_ops'
+                  AND operator_class.opcnamespace =
+                    'pg_catalog'::REGNAMESPACE
+                  AND operator_class.opcmethod = access_method.oid
+              ),
+              ARRAY[cardinality(expected.column_names)]
+            )
+            AND (
+              SELECT array_agg(
+                collation_oid ORDER BY ordinal_position
+              )
+              FROM unnest(index_record.indcollation)
+                WITH ORDINALITY AS collations(
+                  collation_oid,
+                  ordinal_position
+                )
+            ) = (
+              SELECT array_agg(
+                attribute.attcollation ORDER BY expected_column.ordinality
+              )
+              FROM unnest(expected.column_names)
+                WITH ORDINALITY AS expected_column(
+                  column_name,
+                  ordinality
+                )
+              JOIN pg_attribute attribute
+                ON attribute.attrelid =
+                  'omni_auth_user_actor_identifiers'::regclass
+                AND attribute.attname = expected_column.column_name
+                AND NOT attribute.attisdropped
+            )
+            AND (
+              SELECT array_agg(
+                index_option ORDER BY ordinal_position
+              )
+              FROM unnest(index_record.indoption)
+                WITH ORDINALITY AS index_options(
+                  index_option,
+                  ordinal_position
+                )
+            ) = array_fill(
+              0::SMALLINT,
+              ARRAY[cardinality(expected.column_names)]
+            )
+            AND (
+              SELECT array_agg(
+                key_attribute ORDER BY ordinal_position
+              )
+              FROM unnest(index_record.indkey)
+                WITH ORDINALITY AS key_columns(
+                  key_attribute,
+                  ordinal_position
+                )
+            ) = (
+              SELECT array_agg(
+                attribute.attnum ORDER BY expected_column.ordinality
+              )
+              FROM unnest(expected.column_names)
+                WITH ORDINALITY AS expected_column(
+                  column_name,
+                  ordinality
+                )
+              JOIN pg_attribute attribute
+                ON attribute.attrelid =
+                  'omni_auth_user_actor_identifiers'::regclass
+                AND attribute.attname = expected_column.column_name
+                AND NOT attribute.attisdropped
+            )
+            AND (
+              (
+                expected.predicate_expression IS NULL
+                AND index_record.indpred IS NULL
+              )
+              OR pg_get_expr(
+                index_record.indpred,
+                index_record.indrelid
+              ) = expected.predicate_expression
+            )
+        )
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier indexes are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_auth_users auth_user
+        LEFT JOIN omni_auth_user_actor_identifiers canonical_identifier
+          ON canonical_identifier.actor_identifier =
+            auth_user.actor_id COLLATE "C"
+          AND canonical_identifier.canonical_actor_id =
+            auth_user.actor_id COLLATE "C"
+          AND canonical_identifier.identifier_kind = 'canonical'
+        LEFT JOIN omni_auth_user_actor_identifiers legacy_identifier
+          ON legacy_identifier.actor_identifier = auth_user.email COLLATE "C"
+          AND legacy_identifier.canonical_actor_id =
+            auth_user.actor_id COLLATE "C"
+          AND legacy_identifier.identifier_kind = 'legacy_email'
+        WHERE canonical_identifier.actor_identifier IS NULL
+          OR legacy_identifier.actor_identifier IS NULL
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_auth_user_actor_identifiers identifier
+        WHERE NOT omni_auth_user_actor_identifier_row_is_valid(
+          identifier.schema_version,
+          identifier.actor_identifier,
+          identifier.canonical_actor_id,
+          identifier.identifier_kind
+        )
+      ) OR (
+        SELECT count(*)
+        FROM omni_auth_users
+      ) IS DISTINCT FROM (
+        SELECT count(*)
+        FROM omni_auth_user_actor_identifiers
+        WHERE identifier_kind = 'canonical'
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier mappings are incomplete or invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT public.omni_auth_user_actor_identifier_row_is_valid(
+        1::SMALLINT,
+        'actor:00000000-0000-4000-8000-000000000001',
+        'actor:00000000-0000-4000-8000-000000000001',
+        'canonical'
+      ) OR NOT public.omni_auth_user_actor_identifier_row_is_valid(
+        1::SMALLINT,
+        'person+history@example.test',
+        'actor:00000000-0000-4000-8000-000000000001',
+        'legacy_email'
+      ) OR public.omni_auth_user_actor_identifier_row_is_valid(
+        1::SMALLINT,
+        'person+history@example.test',
+        'actor:00000000-0000-4000-8000-000000000001',
+        'canonical'
+      ) OR public.omni_auth_user_actor_identifier_row_is_valid(
+        2::SMALLINT,
+        'actor:00000000-0000-4000-8000-000000000001',
+        'actor:00000000-0000-4000-8000-000000000001',
+        'canonical'
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier validator is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (
+        SELECT count(*)
+        FROM pg_proc procedure
+        JOIN pg_namespace namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = current_schema()
+          AND procedure.proname IN (
+            'omni_auth_user_actor_identifier_row_is_valid',
+            'omni_register_auth_user_actor_identifiers',
+            'omni_reject_auth_user_actor_identifier_change'
+          )
+      ) <> 3 OR EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_namespace namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = current_schema()
+          AND procedure.proname IN (
+            'omni_auth_user_actor_identifier_row_is_valid',
+            'omni_register_auth_user_actor_identifiers',
+            'omni_reject_auth_user_actor_identifier_change'
+          )
+          AND procedure.oid NOT IN (
+            to_regprocedure(
+              'public.omni_auth_user_actor_identifier_row_is_valid(smallint,text,text,text)'
+            ),
+            to_regprocedure(
+              'public.omni_register_auth_user_actor_identifiers()'
+            ),
+            to_regprocedure(
+              'public.omni_reject_auth_user_actor_identifier_change()'
+            )
+          )
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_auth_user_actor_identifier_row_is_valid(smallint,text,text,text)'
+        )
+          AND procedure.prokind = 'f'
+          AND NOT procedure.proretset
+          AND procedure.proparallel = 'u'
+          AND procedure.pronargdefaults = 0
+          AND procedure.provariadic = 0::OID
+          AND procedure.prorettype = 'boolean'::regtype
+          AND procedure.provolatile = 'i'
+          AND procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'sql'
+          AND procedure.prosrc =
+            $expected$SELECT candidate_schema_version = 1 AND candidate_actor_identifier = btrim(candidate_actor_identifier) AND char_length(candidate_actor_identifier) BETWEEN 1 AND 320 AND public.omni_source_contract_id_is_valid(candidate_canonical_actor_id) AND ((candidate_identifier_kind = 'canonical' AND candidate_actor_identifier = candidate_canonical_actor_id) OR (candidate_identifier_kind = 'legacy_email' AND candidate_actor_identifier <> candidate_canonical_actor_id))$expected$
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_register_auth_user_actor_identifiers()'
+        )
+          AND procedure.prokind = 'f'
+          AND NOT procedure.proretset
+          AND procedure.proparallel = 'u'
+          AND procedure.pronargdefaults = 0
+          AND procedure.provariadic = 0::OID
+          AND procedure.prorettype = 'trigger'::regtype
+          AND procedure.provolatile = 'v'
+          AND NOT procedure.proisstrict
+          AND procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'plpgsql'
+          AND procedure.prosrc = $expected$
+    BEGIN
+      IF TG_RELID IS DISTINCT FROM 'public.omni_auth_users'::regclass
+        OR TG_WHEN IS DISTINCT FROM 'AFTER'
+        OR TG_LEVEL IS DISTINCT FROM 'ROW'
+        OR TG_OP NOT IN ('INSERT', 'UPDATE')
+      THEN
+        RAISE EXCEPTION 'Canonical actor identifier registrar has an invalid trigger context'
+          USING ERRCODE = '55000';
+      END IF;
+
+      INSERT INTO public.omni_auth_user_actor_identifiers (
+        schema_version,
+        actor_identifier,
+        canonical_actor_id,
+        identifier_kind
+      ) VALUES (1, NEW.actor_id, NEW.actor_id, 'canonical')
+      ON CONFLICT (actor_identifier) DO NOTHING;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM public.omni_auth_user_actor_identifiers identifier
+        WHERE identifier.actor_identifier = NEW.actor_id COLLATE "C"
+          AND identifier.canonical_actor_id = NEW.actor_id COLLATE "C"
+          AND identifier.identifier_kind = 'canonical'
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier collides with another auth user'
+          USING ERRCODE = '55000';
+      END IF;
+
+      INSERT INTO public.omni_auth_user_actor_identifiers (
+        schema_version,
+        actor_identifier,
+        canonical_actor_id,
+        identifier_kind
+      ) VALUES (1, NEW.email, NEW.actor_id, 'legacy_email')
+      ON CONFLICT (actor_identifier) DO NOTHING;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM public.omni_auth_user_actor_identifiers identifier
+        WHERE identifier.actor_identifier = NEW.email COLLATE "C"
+          AND identifier.canonical_actor_id = NEW.actor_id COLLATE "C"
+          AND identifier.identifier_kind = 'legacy_email'
+      ) THEN
+        RAISE EXCEPTION 'Legacy actor identifier collides with another auth user'
+          USING ERRCODE = '55000';
+      END IF;
+
+      RETURN NEW;
+    END
+    $expected$
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_reject_auth_user_actor_identifier_change()'
+        )
+          AND procedure.prokind = 'f'
+          AND NOT procedure.proretset
+          AND procedure.proparallel = 'u'
+          AND procedure.pronargdefaults = 0
+          AND procedure.provariadic = 0::OID
+          AND procedure.prorettype = 'trigger'::regtype
+          AND procedure.provolatile = 'v'
+          AND NOT procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'plpgsql'
+          AND procedure.prosrc =
+            $expected$BEGIN RAISE EXCEPTION 'Canonical auth-user actor identifiers are append-only' USING ERRCODE = '55000'; END$expected$
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier functions are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (
+        SELECT count(*)
+        FROM pg_trigger
+        WHERE tgrelid =
+          'omni_auth_user_actor_identifiers'::regclass
+          AND NOT tgisinternal
+      ) <> 2 OR (
+        SELECT count(*)
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_auth_users'::regclass
+          AND NOT tgisinternal
+      ) <> 3 OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'omni_auth_users'::regclass
+          AND trigger_record.tgname =
+            'omni_auth_users_actor_identity_immutable'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_reject_auth_user_identity_change()'
+          )
+          AND trigger_record.tgtype = 27
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND COALESCE(
+            (to_jsonb(trigger_record) ->> 'tgparentid')::OID,
+            0::OID
+          ) = 0::OID
+          AND trigger_record.tgattr::TEXT = (
+            SELECT attnum::TEXT
+            FROM pg_attribute
+            WHERE attrelid = 'omni_auth_users'::regclass
+              AND attname = 'id'
+              AND NOT attisdropped
+          )
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'omni_auth_users'::regclass
+          AND trigger_record.tgname =
+            'omni_auth_users_actor_identity_no_truncate'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_reject_auth_user_identity_change()'
+          )
+          AND trigger_record.tgtype = 34
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND COALESCE(
+            (to_jsonb(trigger_record) ->> 'tgparentid')::OID,
+            0::OID
+          ) = 0::OID
+          AND trigger_record.tgattr::TEXT = ''
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'omni_auth_users'::regclass
+          AND trigger_record.tgname =
+            'omni_auth_users_register_actor_identifiers'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_register_auth_user_actor_identifiers()'
+          )
+          AND trigger_record.tgtype = 21
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND COALESCE(
+            (to_jsonb(trigger_record) ->> 'tgparentid')::OID,
+            0::OID
+          ) = 0::OID
+          AND trigger_record.tgattr::TEXT = (
+            SELECT attnum::TEXT
+            FROM pg_attribute
+            WHERE attrelid = 'omni_auth_users'::regclass
+              AND attname = 'email'
+              AND NOT attisdropped
+          )
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid =
+            'omni_auth_user_actor_identifiers'::regclass
+          AND trigger_record.tgname =
+            'omni_auth_user_actor_identifiers_immutable'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_reject_auth_user_actor_identifier_change()'
+          )
+          AND trigger_record.tgtype = 27
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND COALESCE(
+            (to_jsonb(trigger_record) ->> 'tgparentid')::OID,
+            0::OID
+          ) = 0::OID
+          AND trigger_record.tgattr::TEXT = ''
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid =
+            'omni_auth_user_actor_identifiers'::regclass
+          AND trigger_record.tgname =
+            'omni_auth_user_actor_identifiers_no_truncate'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_reject_auth_user_actor_identifier_change()'
+          )
+          AND trigger_record.tgtype = 34
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND COALESCE(
+            (to_jsonb(trigger_record) ->> 'tgparentid')::OID,
+            0::OID
+          ) = 0::OID
+          AND trigger_record.tgattr::TEXT = ''
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier triggers are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM pg_class relation
+        CROSS JOIN LATERAL aclexplode(
+          COALESCE(
+            relation.relacl,
+            acldefault('r', relation.relowner)
+          )
+        ) privilege
+        WHERE relation.oid =
+            'omni_auth_user_actor_identifiers'::regclass
+          AND privilege.grantee <> relation.relowner
+      ) OR EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        JOIN pg_class relation ON relation.oid = attribute.attrelid
+        CROSS JOIN LATERAL aclexplode(attribute.attacl) privilege
+        WHERE attribute.attrelid =
+            'omni_auth_user_actor_identifiers'::regclass
+          AND attribute.attnum > 0
+          AND NOT attribute.attisdropped
+          AND privilege.grantee <> relation.relowner
+      ) OR EXISTS (
+        SELECT 1
+        FROM (
+          VALUES
+            (to_regprocedure(
+              'public.omni_auth_user_actor_identifier_row_is_valid(smallint,text,text,text)'
+            )),
+            (to_regprocedure(
+              'public.omni_register_auth_user_actor_identifiers()'
+            )),
+            (to_regprocedure(
+              'public.omni_reject_auth_user_actor_identifier_change()'
+            ))
+        ) expected(procedure_oid)
+        JOIN pg_proc procedure ON procedure.oid = expected.procedure_oid
+        CROSS JOIN LATERAL aclexplode(
+          COALESCE(
+            procedure.proacl,
+            acldefault('f', procedure.proowner)
+          )
+        ) privilege
+        WHERE privilege.grantee <> procedure.proowner
+      ) THEN
+        RAISE EXCEPTION 'Canonical actor identifier shadow is exposed to a serving role'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_auth_users
+        WHERE email IS DISTINCT FROM btrim(email)
+          OR char_length(email) NOT BETWEEN 1 AND 320
+          OR email COLLATE "C" = actor_id COLLATE "C"
+      ) OR EXISTS (
+        WITH identifier_candidates AS (
+          SELECT actor_id AS canonical_actor_id,
+            actor_id AS actor_identifier
+          FROM omni_auth_users
+          UNION ALL
+          SELECT actor_id AS canonical_actor_id,
+            email AS actor_identifier
+          FROM omni_auth_users
+        )
+        SELECT 1
+        FROM identifier_candidates
+        GROUP BY actor_identifier COLLATE "C"
+        HAVING count(DISTINCT canonical_actor_id COLLATE "C") <> 1
+      ) THEN
+        RAISE EXCEPTION 'Auth-user actor identifier collision audit changed during migration'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        WITH persisted_json_actors(actor_identifier) AS (
+          SELECT continuation #>> '{context,actorId}'
+          FROM omni_agent_runs
+          WHERE continuation IS NOT NULL
+          UNION ALL
+          SELECT payload ->> 'actorId'
+          FROM omni_operation_jobs
+          UNION ALL
+          SELECT payload #>> '{executionScope,initiatingActorId}'
+          FROM omni_operation_jobs
+          UNION ALL
+          SELECT payload #>> '{executionScope,executingPrincipalId}'
+          FROM omni_operation_jobs
+          UNION ALL
+          SELECT input #>> '{metadata,actorId}'
+          FROM omni_workflow_runs
+          UNION ALL
+          SELECT input #>> '{metadata,executionScope,initiatingActorId}'
+          FROM omni_workflow_runs
+          UNION ALL
+          SELECT input #>> '{metadata,executionScope,executingPrincipalId}'
+          FROM omni_workflow_runs
+          UNION ALL
+          SELECT payload #>> '{_executionScope,initiatingActorId}'
+          FROM omni_events
+          UNION ALL
+          SELECT payload #>> '{_executionScope,executingPrincipalId}'
+          FROM omni_events
+          UNION ALL
+          SELECT payload #>> '{executionScope,initiatingActorId}'
+          FROM omni_agent_events
+          UNION ALL
+          SELECT payload #>> '{executionScope,executingPrincipalId}'
+          FROM omni_agent_events
+          UNION ALL
+          SELECT payload #>> '{executionScope,initiatingActorId}'
+          FROM omni_workflow_events
+          UNION ALL
+          SELECT payload #>> '{executionScope,executingPrincipalId}'
+          FROM omni_workflow_events
+          UNION ALL
+          SELECT execution_scope ->> 'initiatingActorId'
+          FROM omni_ai_usage
+          WHERE execution_scope IS NOT NULL
+          UNION ALL
+          SELECT execution_scope ->> 'executingPrincipalId'
+          FROM omni_ai_usage
+          WHERE execution_scope IS NOT NULL
+          UNION ALL
+          SELECT execution_scope ->> 'initiatingActorId'
+          FROM omni_memory_deletion_receipts
+          WHERE execution_scope IS NOT NULL
+          UNION ALL
+          SELECT execution_scope ->> 'executingPrincipalId'
+          FROM omni_memory_deletion_receipts
+          WHERE execution_scope IS NOT NULL
+          UNION ALL
+          SELECT effect_receipt ->> 'actorId'
+          FROM omni_tool_executions
+          WHERE effect_receipt IS NOT NULL
+          UNION ALL
+          SELECT effect_receipt #>> '{executionScope,initiatingActorId}'
+          FROM omni_tool_executions
+          WHERE effect_receipt IS NOT NULL
+          UNION ALL
+          SELECT approval ->> 'by'
+          FROM omni_tool_executions execution_record
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(execution_record.approvals) = 'array'
+              THEN execution_record.approvals
+              ELSE '[]'::JSONB
+            END
+          ) approval
+          UNION ALL
+          SELECT approval ->> 'by'
+          FROM omni_observability_slo_policy_changes policy_change
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(policy_change.approvals) = 'array'
+              THEN policy_change.approvals
+              ELSE '[]'::JSONB
+            END
+          ) approval
+        )
+        SELECT 1
+        FROM persisted_json_actors persisted
+        JOIN omni_auth_users auth_user
+          ON auth_user.actor_id COLLATE "C" =
+            persisted.actor_identifier COLLATE "C"
+        WHERE persisted.actor_identifier IS NOT NULL
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user actor appeared in a durable JSON contract during migration'
+          USING ERRCODE = '55000';
+      END IF;
+
+      FOR actor_surface IN
+        SELECT *
+        FROM (VALUES
+          ('omni_memories', 'asserted_by'),
+          ('omni_memories', 'owner_actor_id'),
+          ('omni_tool_executions', 'actor_id'),
+          ('omni_tool_executions', 'approved_by'),
+          ('omni_mcp_connectors', 'credential_created_by'),
+          ('omni_mcp_connectors', 'credential_rotated_by'),
+          ('omni_incidents', 'acknowledged_by'),
+          ('omni_incidents', 'resolved_by'),
+          ('omni_incident_events', 'actor_id'),
+          ('omni_eval_reports', 'created_by'),
+          ('omni_security_audits', 'actor_id'),
+          ('omni_observability_events', 'actor_id'),
+          ('omni_events', 'actor_id'),
+          ('omni_observability_slo_policy_changes', 'requested_by'),
+          ('omni_observability_slo_policy_changes', 'reviewed_by'),
+          ('omni_observability_slo_approval_policies', 'updated_by'),
+          ('omni_observability_slo_approval_policy_versions', 'changed_by'),
+          ('omni_oauth_grants', 'actor_id'),
+          ('omni_today_items', 'actor_id'),
+          ('omni_today_preferences', 'actor_id'),
+          ('omni_daily_briefs', 'actor_id'),
+          ('omni_daily_briefs', 'generated_by'),
+          ('omni_personal_notifications', 'actor_id'),
+          ('omni_projects', 'actor_id'),
+          ('omni_capture_assets', 'actor_id'),
+          ('omni_capture_recordings', 'actor_id'),
+          ('omni_capture_segments', 'actor_id'),
+          ('omni_custom_skills', 'actor_id'),
+          ('omni_custom_agents', 'actor_id'),
+          ('omni_missions', 'actor_id'),
+          ('omni_mission_tasks', 'actor_id'),
+          ('omni_mission_attempts', 'actor_id'),
+          ('omni_mission_artifacts', 'actor_id'),
+          ('omni_provider_connections', 'actor_id'),
+          ('omni_model_catalog', 'actor_id'),
+          ('omni_model_assignments', 'actor_id'),
+          ('omni_service_api_keys', 'actor_id'),
+          ('omni_mcp_export_configurations', 'actor_id'),
+          ('omni_source_items', 'owner_actor_id'),
+          ('omni_source_revisions', 'owner_actor_id'),
+          ('omni_evidence_units', 'owner_actor_id'),
+          ('omni_source_sync_page_checkpoints', 'owner_actor_id'),
+          ('omni_source_sync_page_items', 'owner_actor_id'),
+          ('omni_source_tombstones', 'owner_actor_id'),
+          ('omni_source_sync_heads', 'owner_actor_id'),
+          ('omni_tenant_capability_rollouts', 'created_by_actor_id'),
+          ('omni_tenant_capability_rollouts', 'activated_by_actor_id'),
+          ('omni_ai_usage', 'actor_id'),
+          ('omni_threads', 'actor_id'),
+          ('omni_access_requests', 'reviewed_by'),
+          ('omni_memory_deletion_receipts', 'initiating_actor_id'),
+          ('omni_memory_deletion_receipts', 'executing_principal_id'),
+          ('omni_tenant_memory_purpose_entitlements', 'created_by_actor_id'),
+          ('omni_tenant_memory_purpose_entitlements', 'activated_by_actor_id'),
+          ('omni_tenant_memory_purpose_entitlements', 'revoked_by_actor_id'),
+          ('omni_tenant_actor_memory_purpose_consents', 'subject_actor_id'),
+          ('omni_tenant_actor_memory_purpose_consents', 'created_by_actor_id'),
+          ('omni_tenant_actor_memory_purpose_consents', 'granted_by_actor_id'),
+          ('omni_tenant_actor_memory_purpose_consents', 'revoked_by_actor_id')
+        ) AS surface(table_name, column_name)
+      LOOP
+        EXECUTE format(
+          'SELECT EXISTS (' ||
+          'SELECT 1 FROM %I.%I actor_surface ' ||
+          'JOIN %I.omni_auth_users auth_user ' ||
+          'ON auth_user.actor_id COLLATE "C" = ' ||
+          'actor_surface.%I COLLATE "C" ' ||
+          'WHERE actor_surface.%I IS NOT NULL)',
+          current_schema(),
+          actor_surface.table_name,
+          current_schema(),
+          actor_surface.column_name,
+          actor_surface.column_name
+        ) INTO collision_found;
+        IF collision_found THEN
+          RAISE EXCEPTION 'Canonical auth-user actor appeared during migration in %.%',
+            actor_surface.table_name,
+            actor_surface.column_name
+            USING ERRCODE = '55000';
+        END IF;
+      END LOOP;
+
+      FOR actor_surface IN
+        SELECT *
+        FROM (VALUES
+          ('omni_memories', 'owner_actor_id'),
+          ('omni_oauth_grants', 'actor_id'),
+          ('omni_today_items', 'actor_id'),
+          ('omni_today_preferences', 'actor_id'),
+          ('omni_daily_briefs', 'actor_id'),
+          ('omni_personal_notifications', 'actor_id'),
+          ('omni_projects', 'actor_id'),
+          ('omni_capture_assets', 'actor_id'),
+          ('omni_capture_recordings', 'actor_id'),
+          ('omni_capture_segments', 'actor_id'),
+          ('omni_custom_skills', 'actor_id'),
+          ('omni_custom_agents', 'actor_id'),
+          ('omni_missions', 'actor_id'),
+          ('omni_mission_tasks', 'actor_id'),
+          ('omni_mission_attempts', 'actor_id'),
+          ('omni_mission_artifacts', 'actor_id'),
+          ('omni_provider_connections', 'actor_id'),
+          ('omni_model_catalog', 'actor_id'),
+          ('omni_model_assignments', 'actor_id'),
+          ('omni_service_api_keys', 'actor_id'),
+          ('omni_mcp_export_configurations', 'actor_id'),
+          ('omni_source_items', 'owner_actor_id'),
+          ('omni_source_revisions', 'owner_actor_id'),
+          ('omni_evidence_units', 'owner_actor_id'),
+          ('omni_source_sync_page_checkpoints', 'owner_actor_id'),
+          ('omni_source_sync_page_items', 'owner_actor_id'),
+          ('omni_source_tombstones', 'owner_actor_id'),
+          ('omni_source_sync_heads', 'owner_actor_id'),
+          ('omni_threads', 'actor_id')
+        ) AS surface(table_name, column_name)
+      LOOP
+        EXECUTE format(
+          'SELECT EXISTS (' ||
+          'SELECT 1 FROM %I.%I owned_record ' ||
+          'JOIN %I.omni_auth_users auth_user ' ||
+          'ON auth_user.email COLLATE "C" = ' ||
+          'owned_record.%I COLLATE "C" ' ||
+          'WHERE owned_record.%I IS NOT NULL ' ||
+          'AND NOT EXISTS (' ||
+          'SELECT 1 FROM %I.omni_auth_memberships membership ' ||
+          'WHERE membership.tenant_id = owned_record.tenant_id ' ||
+          'AND membership.user_id = auth_user.id))',
+          current_schema(),
+          actor_surface.table_name,
+          current_schema(),
+          actor_surface.column_name,
+          actor_surface.column_name,
+          current_schema()
+        ) INTO collision_found;
+        IF collision_found THEN
+          RAISE EXCEPTION 'Legacy auth-user ownership lost its tenant membership during migration in %.%',
+            actor_surface.table_name,
+            actor_surface.column_name
+            USING ERRCODE = '55000';
+        END IF;
+      END LOOP;
+
+      valid_scope := jsonb_build_object(
+        'version', 1,
+        'tenantId', 'tenant:actor_identifier_check',
+        'initiatingActorId', 'actor:actor_identifier_check',
+        'executingPrincipalType', 'user',
+        'executingPrincipalId', 'actor:actor_identifier_check',
+        'workspaceId', NULL,
+        'projectId', NULL,
+        'missionId', NULL,
+        'contextGrantIds', '[]'::JSONB,
+        'capabilityGrantIds', '[]'::JSONB,
+        'purposeId', 'memory.read.v1',
+        'purpose', 'Canonical actor identifier self-check'
+      );
+      IF public.omni_memory_access_scope_v1_is_valid(valid_scope)
+        IS DISTINCT FROM TRUE
+        OR public.omni_memory_access_scope_v1_is_authorized(valid_scope)
+          IS DISTINCT FROM FALSE
+      THEN
+        RAISE EXCEPTION 'Dormant memory authorization boundary changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name = 'omni_memory_access_scope_v1_is_authorized'
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_memories_access_enrollment_hold_check'
+          AND conrelid = 'omni_memories'::regclass
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid) =
+            '(access_contract_version = 0)'
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_memories
+        WHERE access_contract_version <> 0
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_tenant_memory_purpose_entitlements
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_tenant_actor_memory_purpose_consents
+      ) THEN
+        RAISE EXCEPTION 'A held memory authority changed during actor alias installation'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_memory_access_scope_v1_is_authorized(jsonb)'
+        )
+          AND procedure.prokind = 'f'
+          AND NOT procedure.proretset
+          AND procedure.prorettype = 'boolean'::regtype
+          AND procedure.provolatile = 'v'
+          AND procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proparallel = 'u'
+          AND procedure.pronargdefaults = 0
+          AND procedure.provariadic = 0::OID
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'sql'
+          AND btrim(regexp_replace(
+            procedure.prosrc,
+            '[[:space:]]+',
+            ' ',
+            'g'
+          )) = 'SELECT FALSE'
+      ) OR EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE COALESCE(pg_get_expr(polqual, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_authorized%'
+          OR COALESCE(pg_get_expr(polwithcheck, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_authorized%'
+      ) THEN
+        RAISE EXCEPTION 'Dormant memory authorization hook is no longer closed'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid = 'omni_memories'::regclass
+          AND relrowsecurity
+          AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_record
+        WHERE constraint_record.conname =
+            'omni_memories_access_enrollment_hold_check'
+          AND constraint_record.conrelid = 'omni_memories'::regclass
+          AND constraint_record.contype = 'c'
+          AND constraint_record.convalidated
+          AND COALESCE(
+            (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+            TRUE
+          )
+          AND NOT constraint_record.connoinherit
+          AND pg_get_expr(
+            constraint_record.conbin,
+            constraint_record.conrelid
+          ) = '(access_contract_version = 0)'
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_memories'::regclass
+          AND tgname = 'omni_memories_access_scope_immutable'
+          AND NOT tgisinternal
+          AND tgenabled = 'O'
+          AND pg_get_triggerdef(oid, TRUE) =
+            'CREATE TRIGGER omni_memories_access_scope_immutable BEFORE UPDATE OF tenant_id, access_contract_version, access_state, owner_actor_id, owner_agent_id, workspace_id, project_id, mission_id, visibility, sensitivity, origin_purpose, allowed_purpose_ids, access_scope_sha256, access_bound_at ON omni_memories FOR EACH ROW EXECUTE FUNCTION omni_reject_bound_memory_access_change()'
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid = 'omni_memories'::regclass
+          AND polname = 'omni_memory_access_scope_holdback'
+          AND NOT polpermissive
+          AND polcmd = '*'
+          AND polroles = ARRAY[0::OID]
+          AND pg_get_expr(polqual, polrelid) =
+            '((access_contract_version = 0) OR omni_system_scope_enabled())'
+          AND pg_get_expr(polwithcheck, polrelid) =
+            '((access_contract_version = 0) OR omni_system_scope_enabled())'
+      ) THEN
+        RAISE EXCEPTION 'Memory access enrollment floor changed during actor alias installation'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid = 'omni_auth_users'::regclass
+          AND attribute.attname = 'actor_id'
+          AND attribute.atttypid = 'text'::regtype
+          AND attribute.attnotnull
+          AND attribute.attgenerated = 's'
+          AND pg_get_expr(
+            attribute_default.adbin,
+            attribute_default.adrelid
+          ) = '(''actor:''::text || id)'
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_auth_users
+        WHERE actor_id IS DISTINCT FROM 'actor:' || id
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_auth_users'
+          AND privilege_type IN ('DELETE', 'TRUNCATE')
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identity floor changed during actor alias installation'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (
+        SELECT count(*)
+        FROM omni_memory_purpose_catalog
+      ) <> 8 OR EXISTS (
+        SELECT 1
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memory_purpose_catalog'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memory_purpose_catalog'
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Memory purpose catalog floor changed during actor alias installation'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid =
+            'omni_tenant_memory_purpose_entitlements'::regclass
+          AND relowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND relrowsecurity
+          AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_record
+        WHERE constraint_record.conname =
+            'omni_memory_purpose_entitlements_activation_hold_check'
+          AND constraint_record.conrelid =
+            'omni_tenant_memory_purpose_entitlements'::regclass
+          AND constraint_record.contype = 'c'
+          AND constraint_record.convalidated
+          AND COALESCE(
+            (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+            TRUE
+          )
+          AND NOT constraint_record.connoinherit
+          AND pg_get_expr(
+            constraint_record.conbin,
+            constraint_record.conrelid
+          ) = '(state <> ''active''::text)'
+      ) OR (
+        SELECT count(*)
+        FROM pg_policy
+        WHERE polrelid =
+          'omni_tenant_memory_purpose_entitlements'::regclass
+      ) <> 2 OR NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid =
+            'omni_tenant_memory_purpose_entitlements'::regclass
+          AND polname = 'omni_tenant_isolation'
+          AND polpermissive
+          AND polcmd = '*'
+          AND polroles = ARRAY[0::OID]
+          AND pg_get_expr(polqual, polrelid) =
+            'omni_tenant_visible(tenant_id)'
+          AND pg_get_expr(polwithcheck, polrelid) =
+            'omni_tenant_visible(tenant_id)'
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid =
+            'omni_tenant_memory_purpose_entitlements'::regclass
+          AND polname = 'omni_memory_purpose_entitlement_holdback'
+          AND NOT polpermissive
+          AND polcmd = '*'
+          AND polroles = ARRAY[0::OID]
+          AND pg_get_expr(polqual, polrelid) =
+            'omni_system_scope_enabled()'
+          AND pg_get_expr(polwithcheck, polrelid) =
+            'omni_system_scope_enabled()'
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_memory_purpose_entitlements'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_memory_purpose_entitlements'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_memory_purpose_entitlement_row_is_valid',
+            'omni_validate_memory_purpose_entitlement_insert',
+            'omni_protect_memory_purpose_entitlement'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_tenant_memory_purpose_entitlements
+      ) THEN
+        RAISE EXCEPTION 'Memory purpose entitlement floor changed during actor alias installation'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid =
+            'omni_tenant_actor_memory_purpose_consents'::regclass
+          AND relowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND relrowsecurity
+          AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_record
+        WHERE constraint_record.conname =
+            'omni_actor_memory_purpose_consents_grant_hold_check'
+          AND constraint_record.conrelid =
+            'omni_tenant_actor_memory_purpose_consents'::regclass
+          AND constraint_record.contype = 'c'
+          AND constraint_record.convalidated
+          AND COALESCE(
+            (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+            TRUE
+          )
+          AND NOT constraint_record.connoinherit
+          AND pg_get_expr(
+            constraint_record.conbin,
+            constraint_record.conrelid
+          ) = '(state <> ''granted''::text)'
+      ) OR (
+        SELECT count(*)
+        FROM pg_policy
+        WHERE polrelid =
+          'omni_tenant_actor_memory_purpose_consents'::regclass
+      ) <> 2 OR NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid =
+            'omni_tenant_actor_memory_purpose_consents'::regclass
+          AND polname = 'omni_tenant_isolation'
+          AND polpermissive
+          AND polcmd = '*'
+          AND polroles = ARRAY[0::OID]
+          AND pg_get_expr(polqual, polrelid) =
+            'omni_tenant_visible(tenant_id)'
+          AND pg_get_expr(polwithcheck, polrelid) =
+            'omni_tenant_visible(tenant_id)'
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid =
+            'omni_tenant_actor_memory_purpose_consents'::regclass
+          AND polname = 'omni_actor_memory_purpose_consent_holdback'
+          AND NOT polpermissive
+          AND polcmd = '*'
+          AND polroles = ARRAY[0::OID]
+          AND pg_get_expr(polqual, polrelid) =
+            'omni_system_scope_enabled()'
+          AND pg_get_expr(polwithcheck, polrelid) =
+            'omni_system_scope_enabled()'
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_actor_memory_purpose_consents'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_actor_memory_purpose_consents'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_actor_memory_purpose_consent_row_is_valid',
+            'omni_validate_actor_memory_purpose_consent_insert',
+            'omni_protect_actor_memory_purpose_consent'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_tenant_actor_memory_purpose_consents
+      ) THEN
+        RAISE EXCEPTION 'Actor memory purpose consent floor changed during actor alias installation'
           USING ERRCODE = '55000';
       END IF;
     END

@@ -354,6 +354,25 @@ live user, same-tenant membership, tenant entitlement, and consent rows must
 then be locked separately in the operation transaction. Revocation must never
 depend on a currently active tenant entitlement.
 
+Migration v50 adds an owner-only, append-only auth-user actor-identifier
+shadow. It records each v46 canonical actor as a self identifier and each exact
+current auth email as the initial legacy identifier, while an auth-user trigger
+appends aliases for new users and later email changes without deleting or
+reassigning earlier values. Before installation it rejects ambiguous aliases,
+any generated canonical actor already present on audited durable actor
+surfaces, and email-shaped tenant ownership that lacks the corresponding
+auth-user membership. The global registry remains outside tenant RLS for the
+same pre-tenant identity-discovery reason as `omni_auth_users`, but it grants
+no serving role access and authorizes nothing.
+
+The matching code canary exposes a deep-frozen, canonical-first request
+binding with the exact historical email fallback. It has no runtime call site:
+sessions and APIs still serve the email-shaped actor, and no query or write is
+dual-read or translated. A later store-by-store cutover must use the physical
+row's persisted actor for ciphertext AAD, hashes, approvals, receipts, and
+event comparisons. The v43 enrollment barrier, v45 deny hook, and v48-v49
+empty/held ledgers remain unchanged.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

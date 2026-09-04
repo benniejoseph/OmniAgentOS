@@ -243,5 +243,10 @@
     "version": 49,
     "name": "tenant_actor_memory_purpose_consents_shadow",
     "checksum": "3fc41d23f69dbf6753b5e1a61c2c9248541ff3141661896355a971afd15a1ee4"
+  },
+  {
+    "version": 50,
+    "name": "canonical_auth_user_actor_identifiers_shadow",
+    "checksum": "2412dac8ca599e00a0b2d6018e2cf06e39aaa581700996669547ead89e2c0b2a"
   }
 ]
