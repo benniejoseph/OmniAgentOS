@@ -308,6 +308,16 @@ of rewriting it. No Agent, task, run, approval, receipt, or external system is
 mutated by the compatibility read itself, so later runtime or canonical-write
 cutovers still require their own typed evidence.
 
+Converging public Capture asset metadata detail emits no domain event. The
+request reads no stored content and makes no mutation or authorization-policy
+decision: it selects one non-internal row from the validated
+canonical/current-email pair, projects the current actor, and publishes
+owner-derived actionability. The library withholds download and deletion when
+those booleans are not explicitly true. Byte access, indexing, status changes,
+deletion and RAG cleanup, internal artifacts, recordings, background work,
+portable data, and canonical writes remain exact-owner; a later governed or
+writable identity cutover must append its own typed evidence.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

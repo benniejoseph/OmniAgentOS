@@ -1140,6 +1140,19 @@ native minimum-version/adoption gate, and runtime identity, Skill/tool
 authority, hashes, portable data, mutations, file fallback, and canonical
 writes remain exact-owner.
 
+The next request canary covers public Capture asset metadata detail only.
+PostgreSQL may resolve one globally unique, non-internal asset ID from the
+validated canonical/current-email pair, without selecting the stored bytes.
+The response projects the current request email and explicitly marks whether
+content, indexing, and management actions are available from the row's
+physical owner. The Capture library trusts only those booleans, so canonical
+compatibility rows remain inspectable metadata without offering download or
+deletion. Content GET, POST indexing, status mutation, DELETE and linked RAG
+cleanup, browser-frame/internal artifacts, ingestion recovery, recordings,
+file fallback, portable data, and canonical writes remain exact-owner. This
+does not unblock any canonical action path; those require content-integrity,
+owner-transition, deletion-barrier, and native-adoption gates of their own.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

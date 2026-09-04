@@ -76,3 +76,9 @@ export type CaptureAsset = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type RequestCaptureAsset = CaptureAsset & {
+  contentAvailable: boolean;
+  indexable: boolean;
+  manageable: boolean;
+};
