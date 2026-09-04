@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), fetch: vi.fn(),
+  getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), observeDrive: vi.fn(), fetch: vi.fn(),
 }));
 vi.mock("@/lib/connectors/oauth-store", () => ({
   getOAuthGrantSecrets: mocks.getSecrets,
@@ -11,6 +11,9 @@ vi.mock("@/lib/connectors/oauth-store", () => ({
 vi.mock("@/lib/connectors/oauth-providers", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/connectors/oauth-providers")>(),
   refreshOAuthAccess: mocks.refresh,
+}));
+vi.mock("@/lib/connectors/google-drive-shadow", () => ({
+  observeGoogleDriveShadow: mocks.observeDrive,
 }));
 vi.mock("@/lib/rag/retriever", () => ({ ingestTextDocument: mocks.ingest }));
 vi.mock("@/lib/rag/store", () => ({ deleteKnowledgeDocumentByIdempotencyKey: mocks.remove }));
@@ -22,11 +25,21 @@ describe("personal OAuth synchronization", () => {
     vi.clearAllMocks();
     vi.stubGlobal("fetch", mocks.fetch);
     mocks.getSecrets.mockResolvedValue({
-      grant: { expiresAt: new Date(Date.now() + 3600_000).toISOString(), scopes: [] },
+      grant: {
+        id: "google-grant",
+        tenantId: "personal",
+        actorId: "owner",
+        provider: "google",
+        status: "active",
+        authorizationGeneration: 1,
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        scopes: [],
+      },
       tokens: { access_token: "access" },
       syncCursor: undefined,
     });
     mocks.updateState.mockResolvedValue({ syncStatus: "healthy" });
+    mocks.observeDrive.mockResolvedValue({ status: "shadow_observed" });
     mocks.ingest.mockResolvedValue({}); mocks.remove.mockResolvedValue("removed");
   });
 

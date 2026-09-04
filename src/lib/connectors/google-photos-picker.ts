@@ -316,6 +316,7 @@ async function googlePhotosAccessToken(identity: PickerIdentity) {
       actorId: identity.actorId,
       provider: "google",
       tokens: refreshed,
+      authorizationMode: "refresh",
     });
     return String(refreshed.access_token);
   } catch {

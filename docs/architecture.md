@@ -173,6 +173,14 @@ tool record and appends `tool.effect_receipt.recorded` in the same transaction.
 The local JSON fallback performs a separate best-effort event append after the
 record update and is suitable only for development compatibility.
 
+Migration v38 introduces the additive Google Drive v2 checkpoint shadow. Each
+OAuth authorization generation owns an independent encrypted-cursor stream
+with fenced leases, immutable hash-only page manifests, bounded retries, and
+dead-letter state. A token refresh keeps the generation; an explicit
+reauthorization increments it. The legacy personal-source cursor and knowledge
+projection remain the production read/write authority until the later Drive
+revision/tombstone convergence gate.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

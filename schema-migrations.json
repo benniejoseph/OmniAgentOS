@@ -183,5 +183,10 @@
     "version": 37,
     "name": "canonical_source_lineage_shadow",
     "checksum": "e4f2fb2a515016fe87dd5260179a6b6e2b9918210d1e92e538ca2f77bee4761c"
+  },
+  {
+    "version": 38,
+    "name": "drive_sync_v2_shadow_checkpoints",
+    "checksum": "094a9fc1c26a1be9de63a1901c274e4956e449ba2ff3cb64bbaa5c4bd3f5ecee"
   }
 ]

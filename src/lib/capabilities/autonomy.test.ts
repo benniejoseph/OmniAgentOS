@@ -329,6 +329,7 @@ function googleGrant(overrides: Partial<OAuthGrant> = {}): OAuthGrant {
       "https://www.googleapis.com/auth/drive.readonly",
     ],
     status: "active",
+    authorizationGeneration: 1,
     syncStatus: "healthy",
     createdAt: now,
     updatedAt: now,

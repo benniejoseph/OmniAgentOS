@@ -1,5 +1,6 @@
 import { refreshOAuthAccess, type OAuthProvider } from "@/lib/connectors/oauth-providers";
 import { getOAuthGrantSecrets, listOAuthGrantsForTenant, saveOAuthGrant, updateOAuthSyncState } from "@/lib/connectors/oauth-store";
+import { observeGoogleDriveShadow } from "@/lib/connectors/google-drive-shadow";
 import { extractCaptureFile } from "@/lib/capture/files";
 import { ingestTextDocument } from "@/lib/rag/retriever";
 import { deleteKnowledgeDocumentByIdempotencyKey } from "@/lib/rag/store";
@@ -29,8 +30,24 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
   const secrets = await getOAuthGrantSecrets(input.tenantId, input.actorId, input.provider);
   if (!secrets) throw new Error("Connected source not found.");
   await updateOAuthSyncState({ ...input, status: "syncing" });
+  let shadowAccessToken: string | undefined;
+  let shadowObservation: Promise<unknown> | undefined;
+  const startDriveShadow = (accessToken: string) =>
+    observeGoogleDriveShadow({
+      accessToken,
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      connectionId: secrets.grant.id,
+      authorizationGeneration: secrets.grant.authorizationGeneration,
+      abortSignal: input.abortSignal,
+    }).catch(() => undefined);
   try {
     const accessToken = await activeAccessToken(input, secrets.tokens, secrets.grant.expiresAt);
+    shadowAccessToken = accessToken;
+    // This promise owns and suppresses all shadow failures, so the bounded
+    // metadata page can overlap the full legacy fetch without changing its
+    // health, cursor, return value, or served RAG behavior.
+    shadowObservation = startDriveShadow(accessToken);
     const cursor = parseCursor(secrets.syncCursor);
     const result = await syncGoogle(
       accessToken,
@@ -73,6 +90,11 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
   } catch (error) {
     await updateOAuthSyncState({ ...input, status: "error", error: error instanceof Error ? error.message : "Sync failed." });
     throw error;
+  } finally {
+    if (shadowAccessToken) {
+      shadowObservation ||= startDriveShadow(shadowAccessToken);
+      await shadowObservation;
+    }
   }
 }
 
@@ -82,7 +104,11 @@ async function activeAccessToken(input: { tenantId: string; actorId: string; pro
   const refreshToken = typeof tokens.refresh_token === "string" ? tokens.refresh_token : "";
   if (!refreshToken) throw new Error("Connected source access expired. Reconnect it to continue syncing.");
   const refreshed = await refreshOAuthAccess(input.provider, refreshToken);
-  await saveOAuthGrant({ ...input, tokens: refreshed });
+  await saveOAuthGrant({
+    ...input,
+    tokens: refreshed,
+    authorizationMode: "refresh",
+  });
   return String(refreshed.access_token);
 }
 
