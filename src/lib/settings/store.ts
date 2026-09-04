@@ -15,10 +15,12 @@ import {
   sealCredentialBundle,
   type SealedCredentialPayload,
 } from "@/lib/settings/credential-vault";
+import { modelAssignmentActorReadOrder } from "@/lib/settings/model-assignment-actor-scope";
 import { modelCatalogActorReadOrder } from "@/lib/settings/model-catalog-actor-scope";
 import { providerConnectionActorReadOrder } from "@/lib/settings/provider-connection-actor-scope";
 import { serviceApiKeyActorReadOrder } from "@/lib/settings/service-api-key-actor-scope";
 import {
+  MODEL_ASSIGNMENT_SCOPES,
   MODEL_PROVIDERS,
   SERVICE_API_SCOPES,
   type McpExportConfiguration,
@@ -27,6 +29,7 @@ import {
   type ModelCatalogEntry,
   type ModelLifecycleState,
   type ProviderConnectionStatus,
+  type RequestModelAssignment,
   type RedactedProviderConnection,
   type RedactedServiceApiKey,
   type RequestModelCatalogEntry,
@@ -71,6 +74,13 @@ export class SettingsStoreError extends Error {
   ) {
     super(message);
     this.name = "SettingsStoreError";
+  }
+}
+
+export class ModelAssignmentReadConflictError extends SettingsStoreError {
+  constructor(message = "Model assignment ownership is ambiguous.") {
+    super(message, 409);
+    this.name = "ModelAssignmentReadConflictError";
   }
 }
 
@@ -674,6 +684,84 @@ export async function listModelAssignments(input: { tenantId: string; actorId: s
         runtimeReadiness: assignmentRuntimeReadiness(item.scope),
         runtimeNote: assignmentRuntimeNote(item.scope),
       }));
+  });
+}
+
+/**
+ * Returns display-only request metadata. Runtime resolution and every mutation
+ * continue to use the exact-owner listModelAssignments contract above.
+ */
+export async function listModelAssignmentsForRequest(input: {
+  tenantId: string;
+  actorId: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+}): Promise<RequestModelAssignment[]> {
+  return inTenant(input.tenantId, async () => {
+    if (!hasDatabaseUrl()) {
+      const ledger = await readLedger();
+      const records = ledger.assignments
+        .filter((item) =>
+          item.tenantId === input.tenantId && item.actorId === input.actorId
+        )
+        .map((record) => {
+          const row = modelAssignmentLedgerRow(record);
+          assertRequestModelAssignmentRow(
+            row,
+            input.tenantId,
+            input.actorId,
+            input.actorId,
+            "ledger",
+          );
+          return assignmentFromRow(row);
+        });
+      assertRequestModelAssignmentRecords(
+        records,
+        input.tenantId,
+        input.actorId,
+        input.actorId,
+      );
+      return records
+        .sort(compareModelAssignmentRecords)
+        .map((record) => requestModelAssignment(record, input.actorId));
+    }
+
+    const [canonicalActorId, exactActorId] = modelAssignmentActorReadOrder(
+      input.actorId,
+      input.requestActorBinding,
+    );
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT id, tenant_id, actor_id, scope, provider, model_id,
+        fallback_provider, fallback_model_id, allow_cross_provider_fallback,
+        runtime_readiness, created_at, updated_at
+      FROM omni_model_assignments
+      WHERE tenant_id = ${input.tenantId}
+        AND actor_id IN (${canonicalActorId}, ${exactActorId})
+        AND tenant_id COLLATE "C" = ${input.tenantId}::text COLLATE "C"
+        AND (
+          actor_id COLLATE "C" = ${canonicalActorId}::text COLLATE "C"
+          OR actor_id COLLATE "C" = ${exactActorId}::text COLLATE "C"
+        )
+      ORDER BY scope COLLATE "C", id COLLATE "C"
+    `;
+    const records = rows.map((row) => {
+      assertRequestModelAssignmentRow(
+        row,
+        input.tenantId,
+        canonicalActorId,
+        exactActorId,
+      );
+      return assignmentFromRow(row);
+    });
+    assertRequestModelAssignmentRecords(
+      records,
+      input.tenantId,
+      canonicalActorId,
+      exactActorId,
+    );
+    return records.map((record) =>
+      requestModelAssignment(record, exactActorId)
+    );
   });
 }
 
@@ -1503,6 +1591,161 @@ function isOptionalText(value: unknown) {
   return value === null ||
     value === undefined ||
     typeof value === "string";
+}
+
+function requestModelAssignment(
+  record: ModelAssignment,
+  requestActorId: string,
+): RequestModelAssignment {
+  const manageable = record.actorId === requestActorId;
+  return {
+    id: record.id,
+    tenantId: record.tenantId,
+    actorId: requestActorId,
+    scope: record.scope,
+    provider: record.provider,
+    modelId: record.modelId,
+    displayModelId: safeAssignmentModelIdentifier(record.modelId),
+    fallbackProvider: record.fallbackProvider,
+    fallbackModelId: record.fallbackModelId,
+    displayFallbackModelId: record.fallbackModelId
+      ? safeAssignmentModelIdentifier(record.fallbackModelId)
+      : undefined,
+    allowCrossProviderFallback: record.allowCrossProviderFallback,
+    runtimeReadiness: manageable
+      ? assignmentRuntimeReadiness(record.scope)
+      : "configuration_only",
+    runtimeNote: manageable
+      ? assignmentRuntimeNote(record.scope)
+      : "Compatibility history is visible for review only. This saved route is not active for the current request actor and cannot be managed.",
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    manageable,
+  };
+}
+
+function assertRequestModelAssignmentRow(
+  row: Record<string, unknown>,
+  expectedTenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+  storage: "postgres" | "ledger" = "postgres",
+) {
+  const id = typeof row.id === "string" ? row.id : "";
+  const tenantId = typeof row.tenant_id === "string" ? row.tenant_id : "";
+  const actorId = typeof row.actor_id === "string" ? row.actor_id : "";
+  const scope = typeof row.scope === "string" ? row.scope : "";
+  const provider = typeof row.provider === "string" ? row.provider : "";
+  const fallbackProvider = row.fallback_provider;
+  const fallbackModelId = row.fallback_model_id;
+  const hasNoFallback = fallbackProvider === null && fallbackModelId === null;
+  const hasValidFallback = typeof fallbackProvider === "string" &&
+    MODEL_PROVIDERS.includes(fallbackProvider as SettingsModelProvider) &&
+    isValidAssignmentModelId(fallbackModelId);
+  const expectedCrossProviderConsent = hasValidFallback &&
+    fallbackProvider !== provider;
+  const expectedStoredReadiness = storage === "ledger" &&
+      MODEL_ASSIGNMENT_SCOPES.includes(scope as ModelAssignmentScope)
+    ? assignmentRuntimeReadiness(scope as ModelAssignmentScope)
+    : "configuration_only";
+  if (
+    !uuidPattern.test(id) ||
+    tenantId !== expectedTenantId ||
+    (actorId !== canonicalActorId && actorId !== exactActorId) ||
+    !MODEL_ASSIGNMENT_SCOPES.includes(scope as ModelAssignmentScope) ||
+    !MODEL_PROVIDERS.includes(provider as SettingsModelProvider) ||
+    !isValidAssignmentModelId(row.model_id) ||
+    (!hasNoFallback && !hasValidFallback) ||
+    typeof row.allow_cross_provider_fallback !== "boolean" ||
+    row.allow_cross_provider_fallback !== expectedCrossProviderConsent ||
+    row.runtime_readiness !== expectedStoredReadiness ||
+    !isValidAssignmentDate(row.created_at) ||
+    !isValidAssignmentDate(row.updated_at) ||
+    assignmentDateMillis(row.created_at) > assignmentDateMillis(row.updated_at)
+  ) {
+    throw new ModelAssignmentReadConflictError(
+      "Model assignment metadata could not be resolved safely.",
+    );
+  }
+}
+
+function assertRequestModelAssignmentRecords(
+  records: ModelAssignment[],
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  const ids = new Set<string>();
+  const scopes = new Set<ModelAssignmentScope>();
+  for (const record of records) {
+    if (
+      record.tenantId !== tenantId ||
+      (record.actorId !== canonicalActorId && record.actorId !== exactActorId) ||
+      ids.has(record.id) ||
+      scopes.has(record.scope)
+    ) {
+      throw new ModelAssignmentReadConflictError(
+        "Model assignment metadata could not be resolved safely.",
+      );
+    }
+    ids.add(record.id);
+    scopes.add(record.scope);
+  }
+}
+
+function modelAssignmentLedgerRow(record: ModelAssignment) {
+  return {
+    id: record.id,
+    tenant_id: record.tenantId,
+    actor_id: record.actorId,
+    scope: record.scope,
+    provider: record.provider,
+    model_id: record.modelId,
+    fallback_provider: record.fallbackProvider ?? null,
+    fallback_model_id: record.fallbackModelId ?? null,
+    allow_cross_provider_fallback: record.allowCrossProviderFallback,
+    runtime_readiness: record.runtimeReadiness,
+    created_at: record.createdAt,
+    updated_at: record.updatedAt,
+  };
+}
+
+function compareModelAssignmentRecords(
+  left: ModelAssignment,
+  right: ModelAssignment,
+) {
+  if (left.scope !== right.scope) return left.scope < right.scope ? -1 : 1;
+  if (left.id === right.id) return 0;
+  return left.id < right.id ? -1 : 1;
+}
+
+function isValidAssignmentModelId(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 240 &&
+    value.trim() === value;
+}
+
+function safeAssignmentModelIdentifier(value: string) {
+  const sanitized = value
+    .replace(/[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g, "�")
+    .trim();
+  return Array.from(sanitized || "Unsupported model identifier")
+    .slice(0, 240)
+    .join("");
+}
+
+function isValidAssignmentDate(value: unknown) {
+  if (!(typeof value === "string" || value instanceof Date)) return false;
+  const parsed = value instanceof Date
+    ? new Date(value.getTime())
+    : new Date(value);
+  return !Number.isNaN(parsed.getTime());
+}
+
+function assignmentDateMillis(value: unknown) {
+  if (value instanceof Date) return value.getTime();
+  return typeof value === "string" ? Date.parse(value) : Number.NaN;
 }
 
 function assignmentFromRow(row: Record<string, unknown>): ModelAssignment {

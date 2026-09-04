@@ -16,7 +16,7 @@ async function GETHandler(request: Request) {
     return forbiddenResponse(error);
   }
   try {
-    const providerOwnerScope = new URL(request.url).searchParams.get("ownerScope") === "readable"
+    const readableOwnerScope = new URL(request.url).searchParams.get("ownerScope") === "readable"
       ? "readable" as const
       : undefined;
     return Response.json(await getSettingsSnapshot({
@@ -24,7 +24,12 @@ async function GETHandler(request: Request) {
       actorId: context.actorId,
       requestActorBinding:
         canonicalRequestActorBindingFromSecurityContext(context),
-      ...(providerOwnerScope ? { providerOwnerScope } : {}),
+      ...(readableOwnerScope
+        ? {
+            providerOwnerScope: readableOwnerScope,
+            modelAssignmentOwnerScope: readableOwnerScope,
+          }
+        : {}),
     }), {
       headers: { "cache-control": "no-store, private" },
     });

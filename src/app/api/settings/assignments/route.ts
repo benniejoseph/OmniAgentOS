@@ -1,9 +1,13 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { settingsErrorResponse } from "@/lib/settings/http";
-import { listModelAssignments, saveModelAssignment } from "@/lib/settings/store";
+import {
+  listModelAssignmentsForRequest,
+  saveModelAssignment,
+} from "@/lib/settings/store";
 import { MODEL_ASSIGNMENT_SCOPES, MODEL_PROVIDERS } from "@/lib/settings/types";
 
 export const runtime = "nodejs";
@@ -23,7 +27,28 @@ async function GETHandler(request: Request) {
   let context;
   try { context = await authorizeRequest({ request, action: "read", resourceType: "model_assignment" }); }
   catch (error) { return forbiddenResponse(error); }
-  try { return Response.json({ assignments: await listModelAssignments(context) }); }
+  try {
+    const readable = new URL(request.url).searchParams.get("ownerScope") === "readable";
+    const exactOwner = {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+    };
+    const assignments = readable
+      ? await listModelAssignmentsForRequest({
+          ...exactOwner,
+          requestActorBinding:
+            canonicalRequestActorBindingFromSecurityContext(context),
+        })
+      : await listModelAssignmentsForRequest(exactOwner);
+    return Response.json({
+      assignments,
+      requestReadContracts: {
+        modelAssignments: readable ? "readable_v1" : "exact_v1",
+      },
+    }, {
+      headers: { "cache-control": "no-store, private" },
+    });
+  }
   catch (error) { return settingsErrorResponse(error); }
 }
 

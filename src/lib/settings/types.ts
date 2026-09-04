@@ -115,6 +115,12 @@ export type ModelAssignment = {
   updatedAt: string;
 };
 
+export type RequestModelAssignment = ModelAssignment & {
+  displayModelId: string;
+  displayFallbackModelId?: string;
+  manageable: boolean;
+};
+
 export type RedactedServiceApiKey = {
   id: string;
   tenantId: string;
@@ -160,6 +166,7 @@ export type McpExportConfiguration = {
 export type SettingsSnapshot = {
   requestReadContracts?: {
     providerConnections: "exact_v1" | "readable_v1";
+    modelAssignments: "exact_v1" | "readable_v1";
   };
   platform: {
     authEnforced: boolean;
@@ -175,7 +182,7 @@ export type SettingsSnapshot = {
   };
   providers: RequestProviderConnection[];
   models: RequestModelCatalogEntry[];
-  assignments: ModelAssignment[];
+  assignments: RequestModelAssignment[];
   apiKeys: RequestServiceApiKey[];
   mcp: McpExportConfiguration;
   runtime: {
