@@ -89,6 +89,23 @@ provider cursors, content, credentials, and error text are excluded. Local
 file fallback appends these events separately on a best-effort basis and is
 development-only compatibility, not atomic audit storage.
 
+The P2.3 convergence foundation defines
+`source.revision.canonical_applied` and
+`source.tombstone.canonical_applied`, plus
+`source.absence.canonical_observed` for a receipt-bound delete observation
+whose deterministic source identity has never been enrolled. A
+transaction-only mutation appends one of these events only after its receipt,
+immutable revision or tombstone when applicable, and ordered source head have
+advanced together. Its deterministic event ID binds the adapter receipt and
+five-field sync order. Payloads contain only opaque source, revision,
+tombstone, connection, adapter, and receipt IDs; SHA-256 digests; bounded
+counts; order counters; and closed operation/delete/no-op enums. They exclude
+provider IDs, source metadata or content, evidence contents, cursors,
+credentials, errors, prompts, and private reasoning. Stale and duplicate
+observations append no new event. An absence observation creates neither a
+SourceItem nor a tombstone, but fences older delayed upserts. The foundation
+batch has no active Drive caller and does not change served RAG.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

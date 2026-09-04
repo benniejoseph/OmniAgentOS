@@ -188,5 +188,10 @@
     "version": 38,
     "name": "drive_sync_v2_shadow_checkpoints",
     "checksum": "094a9fc1c26a1be9de63a1901c274e4956e449ba2ff3cb64bbaa5c4bd3f5ecee"
+  },
+  {
+    "version": 39,
+    "name": "canonical_source_convergence_foundation",
+    "checksum": "3819ceedfe6ec2ad9b416da12ef063000ae9182dc602ffd9fc32e6f4728f1eb0"
   }
 ]
