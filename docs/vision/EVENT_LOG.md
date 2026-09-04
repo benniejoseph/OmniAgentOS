@@ -300,12 +300,12 @@ an Agent, Skill, Mission, run, approval, receipt, or external system; later
 list, runtime, or canonical-write cutovers require their own typed evidence.
 
 The opt-in request-readable custom Agent list emits no domain event. It
-projects existing definitions into an inspectable Arsenal catalog and gates
-all assignment and mutation affordances with explicit capability booleans;
-bare list clients and every execution or write path remain exact-owner. The
-Mission UI also omits an unchanged nonselectable historical assignee instead
-of rewriting it. No Agent, task, run, approval, receipt, or external system is
-mutated by the compatibility read itself, so later runtime or canonical-write
+projects existing definitions into inspectable Arsenal and web Mission
+catalogs and gates all assignment and mutation affordances with explicit
+capability booleans; bare list clients and every execution or write path
+remain exact-owner. The Mission UI also omits an unchanged nonselectable
+historical assignee instead of rewriting it. No Agent, task, run, approval,
+receipt, or external system is mutated by the compatibility read itself, so later runtime or canonical-write
 cutovers still require their own typed evidence.
 
 Converging public Capture asset metadata detail emits no domain event. The
