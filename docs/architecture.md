@@ -198,6 +198,16 @@ Generation 1 checkpoint rows remain immutable, no Drive rollout is activated
 by this migration, and legacy knowledge writes and served RAG remain the
 production authority.
 
+Migration v40 adds the inactive tenant capability-rollout registry used to
+gate later engine cutovers. A capability has at most one current generation;
+its engine, contract, configuration digest, mode, creator, and generation are
+immutable, while only explicit registered/active/paused/superseded transitions
+are allowed. A monotonic lifecycle revision gives each transition and event a
+stable identity. Generations increase monotonically under a
+tenant-and-capability lock, superseded rows cannot be changed or deleted, and
+forced RLS preserves tenant isolation. The migration seeds no rollout and
+changes no runtime or read authority.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

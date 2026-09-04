@@ -193,5 +193,10 @@
     "version": 39,
     "name": "canonical_source_convergence_foundation",
     "checksum": "3819ceedfe6ec2ad9b416da12ef063000ae9182dc602ffd9fc32e6f4728f1eb0"
+  },
+  {
+    "version": 40,
+    "name": "tenant_capability_rollout_generations",
+    "checksum": "957d5546e31c266847c0ad00f380f1bf12f54024cbada52f2ca7216be1508d70"
   }
 ]
