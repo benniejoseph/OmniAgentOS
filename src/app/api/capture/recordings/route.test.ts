@@ -1,6 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RequestCaptureRecordingSummary } from "@/lib/capture/types";
 
 const routeMocks = vi.hoisted(() => {
+  class CaptureRecordingError extends Error {
+    constructor(
+      message: string,
+      readonly status: 400 | 404 | 409 | 413 = 400,
+      readonly code = "capture_recording_error",
+    ) {
+      super(message);
+      this.name = "CaptureRecordingError";
+    }
+  }
   class CaptureRecordingReadConflictError extends Error {
     constructor() {
       super("Capture recording ownership is ambiguous.");
@@ -8,6 +19,7 @@ const routeMocks = vi.hoisted(() => {
     }
   }
   return {
+    CaptureRecordingError,
     CaptureRecordingReadConflictError,
     authorizeRequest: vi.fn(),
     canonicalRequestActorBindingFromSecurityContext: vi.fn(),
@@ -40,6 +52,7 @@ vi.mock("@/lib/capture/execution-scope", () => ({
 }));
 
 vi.mock("@/lib/capture/recordings", () => ({
+  CaptureRecordingError: routeMocks.CaptureRecordingError,
   CaptureRecordingReadConflictError:
     routeMocks.CaptureRecordingReadConflictError,
   createCaptureRecording: routeMocks.createCaptureRecording,
@@ -73,6 +86,18 @@ const requestActorBinding = {
     context.actorId,
   ],
 };
+const readableSummary: RequestCaptureRecordingSummary = {
+  id: "recording-a",
+  title: "Retained recording",
+  status: "ready",
+  startedAt: "2026-09-05T10:00:00.000Z",
+  durationMs: 1_000,
+  segmentCount: 1,
+  updatedAt: "2026-09-05T10:01:00.000Z",
+  metadataDetailAvailable: true,
+  detailAvailable: false,
+  manageable: false,
+};
 
 beforeEach(() => {
   routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
@@ -97,6 +122,10 @@ describe("Capture recording collection route", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(routeMocks.listCaptureRecordings).toHaveBeenCalledWith(context, 6);
+    await expect(response.json()).resolves.toEqual({
+      recordings: [],
+      requestReadContracts: { captureRecordings: "exact_v1" },
+    });
     expect(routeMocks.listCaptureRecordingsForRequest).not.toHaveBeenCalled();
     expect(
       routeMocks.canonicalRequestActorBindingFromSecurityContext,
@@ -104,11 +133,18 @@ describe("Capture recording collection route", () => {
   });
 
   it("binds only the opt-in summary collection to the readable owner pair", async () => {
+    routeMocks.listCaptureRecordingsForRequest.mockResolvedValue([
+      readableSummary,
+    ]);
     const response = await GET(new Request(
       "http://localhost/api/capture/recordings?limit=6&ownerScope=readable",
     ));
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
+    await expect(response.json()).resolves.toEqual({
+      recordings: [readableSummary],
+      requestReadContracts: { captureRecordings: "readable_v1" },
+    });
     expect(
       routeMocks.canonicalRequestActorBindingFromSecurityContext,
     ).toHaveBeenCalledWith(context);
@@ -118,6 +154,22 @@ describe("Capture recording collection route", () => {
       requestActorBinding,
     }, 6);
     expect(routeMocks.listCaptureRecordings).not.toHaveBeenCalled();
+  });
+
+  it("does not widen a similar unsupported owner scope", async () => {
+    const response = await GET(new Request(
+      "http://localhost/api/capture/recordings?ownerScope=Readable",
+    ));
+
+    await expect(response.json()).resolves.toEqual({
+      recordings: [],
+      requestReadContracts: { captureRecordings: "exact_v1" },
+    });
+    expect(routeMocks.listCaptureRecordings).toHaveBeenCalledWith(context, 50);
+    expect(routeMocks.listCaptureRecordingsForRequest).not.toHaveBeenCalled();
+    expect(
+      routeMocks.canonicalRequestActorBindingFromSecurityContext,
+    ).not.toHaveBeenCalled();
   });
 
   it("maps a summary integrity failure to a private controlled response", async () => {
@@ -132,6 +184,68 @@ describe("Capture recording collection route", () => {
     expect(await response.json()).toEqual({
       error: "Capture recording history could not be verified.",
     });
+  });
+
+  it("preserves the existing controlled conflict for a bare collection read", async () => {
+    routeMocks.listCaptureRecordings.mockRejectedValueOnce(
+      new routeMocks.CaptureRecordingReadConflictError(),
+    );
+
+    const response = await GET(new Request(
+      "http://localhost/api/capture/recordings",
+    ));
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    await expect(response.json()).resolves.toEqual({
+      error: "Capture recording history could not be verified.",
+    });
+    expect(routeMocks.listCaptureRecordingsForRequest).not.toHaveBeenCalled();
+  });
+
+  it("preserves typed capture errors on the readable collection", async () => {
+    routeMocks.listCaptureRecordingsForRequest.mockRejectedValueOnce(
+      new routeMocks.CaptureRecordingError(
+        "Capture recording identifier is invalid.",
+        400,
+        "invalid_capture_recording",
+      ),
+    );
+    const response = await GET(new Request(
+      "http://localhost/api/capture/recordings?ownerScope=readable",
+    ));
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    await expect(response.json()).resolves.toEqual({
+      error: "Capture recording identifier is invalid.",
+      code: "invalid_capture_recording",
+    });
+  });
+
+  it("logs only the error class for an unexpected readable failure", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    routeMocks.listCaptureRecordingsForRequest.mockRejectedValueOnce(
+      new Error("sensitive database detail"),
+    );
+
+    const response = await GET(new Request(
+      "http://localhost/api/capture/recordings?ownerScope=readable",
+    ));
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    await expect(response.json()).resolves.toEqual({
+      error: "Capture recording history is temporarily unavailable.",
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "Capture recording history read failed.",
+      "Error",
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(
+      "sensitive database detail",
+    );
+    consoleError.mockRestore();
   });
 
   it("never derives a request-read binding for recording creation", async () => {

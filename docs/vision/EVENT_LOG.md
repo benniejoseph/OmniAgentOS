@@ -396,6 +396,16 @@ scopes, expose a resource or tool, execute governed work, or change writer
 identity. Those exact-owner operations and any later canonical-write cutover
 retain their existing scoped event and governed-action boundaries.
 
+Converging request-bound Capture recording metadata detail emits no domain
+event. The read validates and projects an already-persisted parent and bounded
+segment metadata snapshot, retains physical ownership only for integrity and
+capability derivation, and never selects transcript, audio, hashes,
+transcription diagnostics, arbitrary metadata, source linkage, or linked
+knowledge/job identifiers. It does not complete, transcribe, index, update,
+delete, recover, or otherwise operate on a recording, nor does it change writer
+identity. Those exact-owner operations and any later canonical-write cutover
+retain their existing scoped event and governed-action boundaries.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

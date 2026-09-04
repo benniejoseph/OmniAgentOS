@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  CaptureRecordingError,
   CaptureRecordingReadConflictError,
   createCaptureRecording,
   listCaptureRecordings,
@@ -43,15 +44,16 @@ async function GETHandler(request: Request) {
             canonicalRequestActorBindingFromSecurityContext(context),
         }, limit)
         : await listCaptureRecordings(context, limit),
+      requestReadContracts: {
+        captureRecordings: readableOwnerScope ? "readable_v1" : "exact_v1",
+      },
     }, { headers: privateNoStoreHeaders });
   } catch (error) {
-    if (error instanceof CaptureRecordingReadConflictError) {
-      return Response.json(
-        { error: "Capture recording history could not be verified." },
-        { status: 409, headers: privateNoStoreHeaders },
-      );
-    }
-    throw error;
+    if (
+      !readableOwnerScope &&
+      !(error instanceof CaptureRecordingReadConflictError)
+    ) throw error;
+    return captureRecordingCollectionReadErrorResponse(error);
   }
 }
 
@@ -84,4 +86,27 @@ async function POSTHandler(request: Request) {
     status: 201,
     headers: { location: `/api/capture/recordings/${recording.id}`, "cache-control": "private, no-store" },
   });
+}
+
+function captureRecordingCollectionReadErrorResponse(error: unknown) {
+  if (error instanceof CaptureRecordingReadConflictError) {
+    return Response.json(
+      { error: "Capture recording history could not be verified." },
+      { status: 409, headers: privateNoStoreHeaders },
+    );
+  }
+  if (error instanceof CaptureRecordingError) {
+    return Response.json(
+      { error: error.message, code: error.code },
+      { status: error.status, headers: privateNoStoreHeaders },
+    );
+  }
+  console.error(
+    "Capture recording history read failed.",
+    error instanceof Error ? error.name : "UnknownError",
+  );
+  return Response.json(
+    { error: "Capture recording history is temporarily unavailable." },
+    { status: 503, headers: privateNoStoreHeaders },
+  );
 }

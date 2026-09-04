@@ -664,6 +664,26 @@ pre-read, service-key authentication, last-used writes, effective scope
 intersection, MCP resource/tool exposure, governed execution, portable data,
 events, and canonical writes remain exact-owner contracts.
 
+The twenty-first request-bound slice extends the opt-in Capture recording
+catalog to public recording and segment metadata detail. PostgreSQL reads the
+verified parent and a bounded child set in one statement using explicit public
+columns, preserves each physical owner as an integrity fact, and rejects
+duplicate parents, mixed child ownership, malformed lifecycle state,
+impossible pending transcription after recording completion, chronology and
+aggregate mismatches, or duplicate/unordered segment indexes. Valid bounded
+indexes may contain gaps because capture writes do not require contiguity.
+Transcript text, audio bytes and hashes, transcription errors/models, arbitrary
+metadata, source identifiers, and linked knowledge/job identifiers are never
+selected. The response projects a request-safe public shape without tenant or
+actor identifiers and derives transcript, audio, and mutation capabilities
+only from exact physical ownership. Capture
+requires the collection and detail `readable_v1` acknowledgements, clears
+stale actionability before refresh, and renders retained metadata in a
+read-only view with no exact-content or mutation affordance. Bare detail GET,
+file fallback compatibility, transcript/audio routes, creation, completion,
+indexing, mutation, deletion, background recovery, portable data, events, and
+canonical writes remain exact-owner contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.
