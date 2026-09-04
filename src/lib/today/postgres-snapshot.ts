@@ -171,8 +171,11 @@ export async function loadPostgresTodaySnapshot({
         FROM omni_threads threads
         CROSS JOIN runtime_settings
         WHERE threads.tenant_id = ${safeTenantId}
-          AND threads.actor_id = ${safeActorId}
-        ORDER BY threads.updated_at DESC
+          AND (
+            threads.actor_id = ${canonicalActorId}
+            OR threads.actor_id = ${exactActorId}
+          )
+        ORDER BY threads.updated_at DESC, threads.id ASC
         LIMIT 6
       ),
       memory_rows AS MATERIALIZED (
@@ -211,6 +214,7 @@ export async function loadPostgresTodaySnapshot({
       active_projects AS MATERIALIZED (
         SELECT
           projects.id,
+          projects.actor_id,
           projects.title,
           projects.objective,
           projects.target_date,
@@ -218,9 +222,12 @@ export async function loadPostgresTodaySnapshot({
         FROM omni_projects projects
         CROSS JOIN runtime_settings
         WHERE projects.tenant_id = ${safeTenantId}
-          AND projects.actor_id = ${safeActorId}
+          AND (
+            projects.actor_id = ${canonicalActorId}
+            OR projects.actor_id = ${exactActorId}
+          )
           AND projects.status = 'active'
-        ORDER BY projects.updated_at DESC
+        ORDER BY projects.updated_at DESC, projects.id ASC
         LIMIT 4
       ),
       project_rows AS MATERIALIZED (
@@ -252,7 +259,7 @@ export async function loadPostgresTodaySnapshot({
                 FROM omni_projects owner_project
                 WHERE owner_project.id = tasks.project_id
                   AND owner_project.tenant_id = ${safeTenantId}
-                  AND owner_project.actor_id = ${safeActorId}
+                  AND owner_project.actor_id = projects.actor_id
               )
             ORDER BY tasks.position ASC, tasks.created_at ASC
             LIMIT 500
@@ -269,7 +276,10 @@ export async function loadPostgresTodaySnapshot({
           FROM item_rows
         ), '[]'::jsonb) AS items,
         COALESCE((
-          SELECT jsonb_agg(to_jsonb(thread_rows) ORDER BY updated_at DESC)
+          SELECT jsonb_agg(
+            to_jsonb(thread_rows)
+            ORDER BY updated_at DESC, id ASC
+          )
           FROM thread_rows
         ), '[]'::jsonb) AS threads,
         COALESCE((
@@ -285,7 +295,10 @@ export async function loadPostgresTodaySnapshot({
           FROM brief_rows
         ), '[]'::jsonb) AS briefs,
         COALESCE((
-          SELECT jsonb_agg(to_jsonb(project_rows) ORDER BY updated_at DESC)
+          SELECT jsonb_agg(
+            to_jsonb(project_rows)
+            ORDER BY updated_at DESC, id ASC
+          )
           FROM project_rows
         ), '[]'::jsonb) AS projects
       FROM runtime_settings

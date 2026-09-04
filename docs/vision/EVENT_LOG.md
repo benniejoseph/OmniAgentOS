@@ -250,6 +250,13 @@ workers, occurrence upserts, notification actions, the coupled Today-item
 completion, and canonical writes remain unchanged; their later identity or
 lifecycle cutovers require evidence at the affected mutation boundary.
 
+Aligning Today's recent-thread and active-project projection with their
+existing request-bound read canaries emits no domain event. The change only
+selects the validated canonical/current-email pair, preserves deterministic
+global limits, and binds project child summaries to the selected physical
+parent. It exposes no owner field and changes no mutation, execution scope,
+approval, receipt, worker, cache identity, or canonical write.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

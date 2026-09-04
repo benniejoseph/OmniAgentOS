@@ -96,10 +96,10 @@ async function readLocalTodaySnapshot({
 }) {
   const [items, threads, memories, briefBundle, projects] = await Promise.all([
     listTodayItems(100, { tenantId, actorId, requestActorBinding }),
-    listThreads(6, { tenantId, actorId }),
+    listThreads(6, { tenantId, actorId, requestActorBinding }),
     listMemories({ tenantId, limit: 6 }),
     getTodayBriefBundle({ tenantId, actorId, now, requestActorBinding }),
-    listProjects(6, { tenantId, actorId }),
+    listProjects(6, { tenantId, actorId, requestActorBinding }),
   ]);
   const activeProjects = projects
     .filter((project) => project.status === "active")
