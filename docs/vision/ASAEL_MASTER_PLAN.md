@@ -1131,12 +1131,12 @@ complete validated canonical/current-email collection with
 `ownerScope=readable`; malformed or reserved IDs, unexpected owners,
 duplicate IDs, and cross-owner slug collisions fail the entire private read.
 Exact custom rows are selectable/manageable and canonical compatibility rows
-are neither. Bare Agent list GET remains exact for Missions, Flutter, and
-legacy installed clients, but now publishes explicit exact actionability.
-Web Mission assignment and Flutter mutation controls have been made
-capability-aware ahead of cutover, including omission of an unchanged
-read-only historical assignee. Canonical Agent enrollment still requires a
-native minimum-version/adoption gate, and runtime identity, Skill/tool
+are neither. Arsenal and the web Mission workspace opt into this request-bound
+catalog; bare Agent list GET remains exact for Flutter and legacy installed
+clients and publishes explicit exact actionability. Web Mission assignment
+and Flutter mutation controls are capability-aware, including omission of an
+unchanged read-only historical assignee. Canonical Agent enrollment still
+requires a native minimum-version/adoption gate, and runtime identity, Skill/tool
 authority, hashes, portable data, mutations, file fallback, and canonical
 writes remain exact-owner.
 

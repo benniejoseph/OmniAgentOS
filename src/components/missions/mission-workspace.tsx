@@ -213,7 +213,7 @@ export function MissionWorkspace({
     const controller = new AbortController();
     async function loadAgents() {
       try {
-        const payload = await readJson("/api/agents", { signal: controller.signal });
+        const payload = await readJson("/api/agents?ownerScope=readable", { signal: controller.signal });
         if (!controller.signal.aborted) setAgents(agentOptions(payload));
       } catch {
         // Assignment remains optional when the agent catalog is unavailable.
