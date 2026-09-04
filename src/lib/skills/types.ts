@@ -16,6 +16,8 @@ export type AgentSkill = {
   tags: string[];
   knowledgeTags: string[];
   builtIn?: boolean;
+  selectable?: boolean;
+  manageable?: boolean;
   createdAt: string;
   updatedAt: string;
 };

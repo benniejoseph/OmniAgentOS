@@ -88,10 +88,26 @@ describe("Postgres custom Skill request reads", () => {
       requestActorBinding: binding,
     });
 
-    expect(skills.slice(0, builtInSkills.length)).toEqual(builtInSkills);
+    expect(skills.slice(0, builtInSkills.length)).toEqual(
+      builtInSkills.map((skill) => ({
+        ...skill,
+        selectable: true,
+        manageable: false,
+      })),
+    );
     expect(skills.slice(builtInSkills.length)).toEqual([
-      expect.objectContaining({ id: "canonical-skill", actorId }),
-      expect.objectContaining({ id: "email-skill", actorId }),
+      expect.objectContaining({
+        id: "canonical-skill",
+        actorId,
+        selectable: false,
+        manageable: false,
+      }),
+      expect.objectContaining({
+        id: "email-skill",
+        actorId,
+        selectable: true,
+        manageable: true,
+      }),
     ]);
     expect(dbMocks.statements).toHaveLength(1);
     expect(dbMocks.statements[0].text).toMatch(
@@ -143,12 +159,16 @@ describe("Postgres custom Skill request reads", () => {
     }, false)).rejects.toThrow(/owner validation failed/i);
   });
 
-  it("returns built-in details unchanged without reading custom storage", async () => {
+  it("marks built-in details selectable but not manageable without reading custom storage", async () => {
     await expect(getAgentSkillForRequest(builtInSkills[0].id, {
       tenantId: "tenant-a",
       actorId,
       requestActorBinding: binding,
-    })).resolves.toBe(builtInSkills[0]);
+    })).resolves.toEqual({
+      ...builtInSkills[0],
+      selectable: true,
+      manageable: false,
+    });
     expect(dbMocks.ensureDatabaseSchema).not.toHaveBeenCalled();
     expect(dbMocks.sql).not.toHaveBeenCalled();
   });
@@ -167,6 +187,8 @@ describe("Postgres custom Skill request reads", () => {
       tenantId: "tenant-a",
       actorId,
       slug: "canonical-detail",
+      selectable: false,
+      manageable: false,
     }));
     expect(dbMocks.statements[0].text).not.toMatch(/\bLIMIT\b/);
   });
@@ -196,7 +218,13 @@ describe("Postgres custom Skill request reads", () => {
   });
 
   it("keeps exact helpers and file fallback outside request convergence", async () => {
-    await listAgentSkills({ tenantId: "tenant-a", actorId }, false);
+    dbMocks.rows.push(skillRow("exact-skill", actorId, "exact-skill"));
+    const exactSkills = await listAgentSkills(
+      { tenantId: "tenant-a", actorId },
+      false,
+    );
+    expect(exactSkills[0]).not.toHaveProperty("selectable");
+    expect(exactSkills[0]).not.toHaveProperty("manageable");
     expect(dbMocks.statements[0].text).not.toContain(" OR actor_id = ");
     expect(dbMocks.statements[0].params).toEqual(["tenant-a", actorId]);
 
@@ -218,7 +246,12 @@ describe("Postgres custom Skill request reads", () => {
       actorId,
       requestActorBinding: binding,
     }, false)).resolves.toEqual([
-      expect.objectContaining({ id: "email-file-skill", actorId }),
+      expect.objectContaining({
+        id: "email-file-skill",
+        actorId,
+        selectable: true,
+        manageable: true,
+      }),
     ]);
     await expect(getAgentSkillForRequest("canonical-file-skill", {
       tenantId: "tenant-a",

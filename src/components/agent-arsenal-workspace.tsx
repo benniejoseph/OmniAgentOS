@@ -155,7 +155,7 @@ export function AgentArsenalWorkspace() {
   }
   async function removeSkill(skill: AgentSkill) {
     if (
-      skill.builtIn ||
+      !skill.manageable ||
       !window.confirm(
         `Delete ${skill.name}? It will be removed from custom agents.`,
       )
@@ -427,7 +427,7 @@ export function AgentArsenalWorkspace() {
                 </small>
               </div>
               <div className="skill-studio-actions">
-                {!skill.builtIn ? (
+                {skill.manageable ? (
                   <>
                     <button
                       type="button"
@@ -444,9 +444,9 @@ export function AgentArsenalWorkspace() {
                       <Trash2 size={14} />
                     </button>
                   </>
-                ) : (
+                ) : skill.builtIn ? (
                   <Check size={15} aria-label="Built in" />
-                )}
+                ) : null}
               </div>
             </article>
           ))}
@@ -513,7 +513,9 @@ function BuilderDialog({
     existingAgent?.instructions || existingSkill?.instructions || "",
   );
   const [selectedSkills, setSelectedSkills] = useState(
-    existingAgent?.skillIds || [],
+    (existingAgent?.skillIds || []).filter((id) =>
+      skills.some((skill) => skill.id === id && skill.selectable),
+    ),
   );
   const [selectedTools, setSelectedTools] = useState(
     existingAgent?.toolIds || existingSkill?.toolIds || [],
@@ -622,7 +624,11 @@ function BuilderDialog({
           request,
         );
         if (!payload.skill) throw new Error("The saved skill was not returned.");
-        await onSaved({ kind: "skill", skill: payload.skill, message });
+        await onSaved({
+          kind: "skill",
+          skill: skillAfterExactWrite(payload.skill),
+          message,
+        });
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Save failed.");
@@ -809,7 +815,9 @@ function BuilderDialog({
                 <legend>Skills</legend>
                 <div className="builder-choice-grid">
                   {skills
-                    .filter((skill) => skill.status === "active")
+                    .filter((skill) =>
+                      skill.status === "active" && skill.selectable
+                    )
                     .map((skill) => (
                       <Choice
                         key={skill.id}
@@ -899,6 +907,9 @@ function toggle(values: string[], value: string) {
   return values.includes(value)
     ? values.filter((item) => item !== value)
     : [...values, value];
+}
+function skillAfterExactWrite(skill: AgentSkill): AgentSkill {
+  return { ...skill, selectable: true, manageable: true };
 }
 function RosterButton({
   agent,

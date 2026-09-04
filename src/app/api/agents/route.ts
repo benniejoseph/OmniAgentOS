@@ -3,7 +3,11 @@ import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { customAgentInputSchema } from "@/lib/skills/schema";
-import { createCustomAgent, listCustomAgents } from "@/lib/skills/store";
+import {
+  AgentSkillAssignmentError,
+  createCustomAgent,
+  listCustomAgents,
+} from "@/lib/skills/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -28,7 +32,20 @@ async function POSTHandler(request: Request) {
     const agent = await createCustomAgent(parsed.data, { tenantId: context.tenantId, actorId: context.actorId });
     return Response.json({ agent }, { status: 201 });
   } catch (error) {
-    const duplicate = error instanceof Error && /unique|duplicate/i.test(error.message);
-    return Response.json({ error: duplicate ? "An agent with this name already exists." : "Agent creation failed." }, { status: duplicate ? 409 : 500 });
+    if (error instanceof AgentSkillAssignmentError) {
+      return Response.json(
+        { error: "One or more selected skills are unavailable for this agent." },
+        { status: 409, headers: { "cache-control": "private, no-store" } },
+      );
+    }
+    const duplicate = error instanceof Error &&
+      /unique|duplicate|already exists/i.test(error.message);
+    return Response.json(
+      { error: duplicate ? "An agent with this name already exists." : "Agent creation failed." },
+      {
+        status: duplicate ? 409 : 500,
+        headers: { "cache-control": "private, no-store" },
+      },
+    );
   }
 }

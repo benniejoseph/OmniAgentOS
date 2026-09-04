@@ -78,6 +78,8 @@ const customSkill = {
   toolIds: [],
   tags: [],
   knowledgeTags: [],
+  selectable: true,
+  manageable: true,
   createdAt: "2026-09-04T10:00:00.000Z",
   updatedAt: "2026-09-04T12:00:00.000Z",
 };

@@ -687,6 +687,14 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
+  it("pins the custom Agent Skill reference integrity migration", () => {
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 51,
+      name: "custom_agent_skill_reference_integrity",
+      checksum: "8c7e3a41d5b69f204a18c7de93f2b605e1468acd7b30f9542d6ce18fa905734b",
+    });
+  });
+
   it("declares unique, strictly increasing versions", () => {
     const versions = databaseSchemaMigrations.map((migration) => migration.version);
     expect(versions).toEqual([...versions].sort((left, right) => left - right));

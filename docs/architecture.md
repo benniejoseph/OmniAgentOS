@@ -465,6 +465,22 @@ custom Skills remain empty. Canonical Skill enrollment is blocked until
 custom-Agent writes enforce same-persisted-owner Skill references and the UI
 cannot offer a cross-owner Skill as actionable.
 
+Migration v51 closes that activation gate without changing Agent execution or
+ownership. Every custom Agent create/update now resolves its final normalized
+custom Skill IDs inside the same transaction, locks those Skills in a stable
+binary order, and accepts only the Agent's exact persisted tenant and actor;
+built-in IDs remain the only catalog exception. Database triggers enforce the
+same invariant for direct writers, reserve built-in IDs from the custom Skill
+namespace, make custom Skill reference identity immutable, and prevent a
+referenced Skill from being deleted without first removing the Agent edge.
+Skill truncation is rejected, unsafe serving-role trigger/truncate grants are
+removed, and direct Skill deletion is accepted only at read-committed
+isolation so its lock-and-recheck protocol cannot observe a stale snapshot.
+Request projections mark exact-owner custom Skills as selectable/manageable,
+canonical compatibility rows as read-only/non-selectable, and built-ins as
+selectable/non-manageable. Custom Agent reads, runtime selection, hashes,
+portable data, and canonical writes remain exact-owner contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.
