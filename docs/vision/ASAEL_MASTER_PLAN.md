@@ -1186,6 +1186,21 @@ work, file-fallback ownership, portable data, and canonical writes remain
 unchanged. This read-only slice emits no domain event and does not unblock
 membership epochs or any memory-consent hold.
 
+The following request canary converges only redacted service API-key metadata
+lists. Authenticated PostgreSQL reads select the complete validated
+canonical/current-email pair in one globally ordered query without selecting
+token hashes, reject malformed or duplicate rows and unexpected owners, then
+normalize legacy display-name controls and project the current request actor
+while exposing physical-owner-derived `manageable`. Canonical compatibility
+keys are inspectable but cannot be
+revoked, and their stored MCP scope may differ from the exact-owner MCP policy
+shown in Settings. The aggregate Settings read does not pass the compatibility
+binding to providers, model assignments, or MCP configuration. Creation,
+revocation, Bearer verification, last-used updates, service principals, file
+fallback, portable data, events, and canonical writes remain unchanged. This
+read-only slice emits no domain event and does not unblock membership epochs
+or any consent hold.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

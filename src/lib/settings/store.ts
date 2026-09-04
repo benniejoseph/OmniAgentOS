@@ -8,12 +8,14 @@ import {
 import { appendDomainEventSafely } from "@/lib/events/store";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import {
   credentialBinding,
   openCredentialBundle,
   sealCredentialBundle,
   type SealedCredentialPayload,
 } from "@/lib/settings/credential-vault";
+import { serviceApiKeyActorReadOrder } from "@/lib/settings/service-api-key-actor-scope";
 import {
   SERVICE_API_SCOPES,
   type McpExportConfiguration,
@@ -23,6 +25,7 @@ import {
   type ProviderConnectionStatus,
   type RedactedProviderConnection,
   type RedactedServiceApiKey,
+  type RequestServiceApiKey,
   type ServiceApiScope,
   type SettingsModelProvider,
 } from "@/lib/settings/types";
@@ -580,19 +583,70 @@ export async function saveModelAssignment(input: {
   });
 }
 
-export async function listServiceApiKeyRecords(input: { tenantId: string; actorId?: string }) {
+export async function listServiceApiKeyRecords(input: { tenantId: string; actorId: string }) {
   return inTenant(input.tenantId, async () => {
     if (hasDatabaseUrl()) {
       await ensureDatabaseSchema();
-      const rows = input.actorId
-        ? await getSql()`SELECT * FROM omni_service_api_keys WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} ORDER BY created_at DESC`
-        : await getSql()`SELECT * FROM omni_service_api_keys WHERE tenant_id = ${input.tenantId} ORDER BY created_at DESC`;
+      const rows = await getSql()`
+        SELECT * FROM omni_service_api_keys
+        WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId}
+        ORDER BY created_at DESC, id ASC
+      `;
       return rows.map(serviceKeyFromRow);
     }
     const ledger = await readLedger();
     return ledger.apiKeys
-      .filter((item) => item.tenantId === input.tenantId && (!input.actorId || item.actorId === input.actorId))
-      .map(effectiveServiceKeyStatus);
+      .filter((item) => item.tenantId === input.tenantId && item.actorId === input.actorId)
+      .map((item) => effectiveServiceKeyStatus(item));
+  });
+}
+
+export async function listServiceApiKeyRecordsForRequest(input: {
+  tenantId: string;
+  actorId: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+}): Promise<RequestServiceApiKey[]> {
+  return inTenant(input.tenantId, async () => {
+    if (!hasDatabaseUrl()) {
+      const ledger = await readLedger();
+      return ledger.apiKeys
+        .filter((item) =>
+          item.tenantId === input.tenantId && item.actorId === input.actorId
+        )
+        .map((item) => effectiveServiceKeyStatus(item))
+        .map((record) => requestServiceApiKey(record, input.actorId));
+    }
+    const [canonicalActorId, exactActorId] = serviceApiKeyActorReadOrder(
+      input.actorId,
+      input.requestActorBinding,
+      input.actorId,
+    );
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT id, tenant_id, actor_id, name, token_prefix, token_last_four,
+        scopes, status, expires_at, last_used_at, revoked_at, created_at,
+        updated_at
+      FROM omni_service_api_keys
+      WHERE tenant_id = ${input.tenantId}
+        AND actor_id IN (${canonicalActorId}, ${exactActorId})
+        AND tenant_id COLLATE "C" = ${input.tenantId}::text COLLATE "C"
+        AND (
+          actor_id COLLATE "C" = ${canonicalActorId}::text COLLATE "C"
+          OR actor_id COLLATE "C" = ${exactActorId}::text COLLATE "C"
+        )
+      ORDER BY created_at DESC, id COLLATE "C" ASC
+    `;
+    const records = rows.map((row) => {
+      assertRequestServiceApiKeyRow(row, input.tenantId);
+      return redactedServiceKeyFromRow(row);
+    });
+    assertRequestServiceApiKeyRecords(
+      records,
+      input.tenantId,
+      canonicalActorId,
+      exactActorId,
+    );
+    return records.map((record) => requestServiceApiKey(record, exactActorId));
   });
 }
 
@@ -891,11 +945,20 @@ function assignmentRuntimeNote(scope: ModelAssignmentScope) {
 }
 
 function serviceKeyFromRow(row: Record<string, unknown>): InternalServiceApiKey {
+  return {
+    ...redactedServiceKeyFromRow(row),
+    tokenHash: String(row.token_hash),
+  };
+}
+
+function redactedServiceKeyFromRow(
+  row: Record<string, unknown>,
+): RedactedServiceApiKey {
   const expiresAt = optionalDate(row.expires_at);
   const storedStatus = String(row.status) as RedactedServiceApiKey["status"];
   return {
     id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id),
-    name: String(row.name), tokenHash: String(row.token_hash), tokenPrefix: String(row.token_prefix),
+    name: String(row.name), tokenPrefix: String(row.token_prefix),
     tokenLastFour: String(row.token_last_four),
     scopes: (Array.isArray(row.scopes) ? row.scopes : []).filter((item): item is ServiceApiScope => SERVICE_API_SCOPES.includes(String(item) as ServiceApiScope)),
     status: storedStatus === "active" && expiresAt && Date.parse(expiresAt) <= Date.now() ? "expired" : storedStatus,
@@ -904,10 +967,130 @@ function serviceKeyFromRow(row: Record<string, unknown>): InternalServiceApiKey 
   };
 }
 
-function effectiveServiceKeyStatus(record: InternalServiceApiKey): InternalServiceApiKey {
+function effectiveServiceKeyStatus(
+  record: InternalServiceApiKey,
+): InternalServiceApiKey;
+function effectiveServiceKeyStatus(
+  record: RedactedServiceApiKey,
+): RedactedServiceApiKey;
+function effectiveServiceKeyStatus(
+  record: RedactedServiceApiKey,
+): RedactedServiceApiKey {
   return record.status === "active" && record.expiresAt && Date.parse(record.expiresAt) <= Date.now()
     ? { ...record, status: "expired" }
     : record;
+}
+
+function requestServiceApiKey(
+  record: RedactedServiceApiKey,
+  requestActorId: string,
+): RequestServiceApiKey {
+  return {
+    id: record.id,
+    tenantId: record.tenantId,
+    actorId: requestActorId,
+    name: safeServiceApiKeyDisplayName(record.name),
+    tokenPrefix: record.tokenPrefix,
+    tokenLastFour: record.tokenLastFour,
+    scopes: [...record.scopes],
+    status: record.status,
+    expiresAt: record.expiresAt,
+    lastUsedAt: record.lastUsedAt,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    revokedAt: record.revokedAt,
+    manageable: record.actorId === requestActorId,
+  };
+}
+
+function assertRequestServiceApiKeyRow(
+  row: Record<string, unknown>,
+  expectedTenantId: string,
+) {
+  const id = String(row.id || "");
+  const tenantId = String(row.tenant_id || "");
+  const name = String(row.name || "");
+  const tokenPrefix = String(row.token_prefix || "");
+  const tokenLastFour = String(row.token_last_four || "");
+  const scopes = row.scopes;
+  const status = String(row.status || "");
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) ||
+    tenantId !== expectedTenantId ||
+    !name ||
+    name !== name.trim() ||
+    name.length > 120 ||
+    !isExpectedServiceKeyPreview(tokenPrefix, tenantId, id) ||
+    !/^[A-Za-z0-9_-]{4}$/.test(tokenLastFour) ||
+    !Array.isArray(scopes) ||
+    scopes.length < 1 ||
+    scopes.length > SERVICE_API_SCOPES.length ||
+    scopes.some((scope) =>
+      typeof scope !== "string" ||
+      !SERVICE_API_SCOPES.includes(scope as ServiceApiScope)
+    ) ||
+    new Set(scopes).size !== scopes.length ||
+    (status !== "active" && status !== "revoked") ||
+    !isRequiredDate(row.created_at) ||
+    !isRequiredDate(row.updated_at) ||
+    !isOptionalDate(row.expires_at) ||
+    !isOptionalDate(row.last_used_at) ||
+    !isOptionalDate(row.revoked_at)
+  ) {
+    throw new SettingsStoreError(
+      "Service API key metadata could not be resolved safely.",
+      409,
+    );
+  }
+}
+
+function safeServiceApiKeyDisplayName(name: string) {
+  const sanitized = name.replace(/[\u0000-\u001f\u007f]/g, "�").trim();
+  return sanitized || "Unnamed service key";
+}
+
+function isExpectedServiceKeyPreview(
+  tokenPrefix: string,
+  tenantId: string,
+  keyId: string,
+) {
+  const tenantSegment = Buffer.from(tenantId, "utf8")
+    .toString("base64url")
+    .slice(0, 10);
+  const suffix = keyId.slice(0, 8);
+  return tokenPrefix === `asael_sk_${tenantSegment}…${suffix}` ||
+    tokenPrefix === `omni_sk_${tenantSegment}…${suffix}`;
+}
+
+function assertRequestServiceApiKeyRecords(
+  records: RedactedServiceApiKey[],
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  const ids = new Set<string>();
+  for (const record of records) {
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(record.id) ||
+      record.tenantId !== tenantId ||
+      (record.actorId !== canonicalActorId && record.actorId !== exactActorId) ||
+      ids.has(record.id)
+    ) {
+      throw new SettingsStoreError(
+        "Service API key metadata could not be resolved safely.",
+        409,
+      );
+    }
+    ids.add(record.id);
+  }
+}
+
+function isRequiredDate(value: unknown) {
+  return Boolean(value) && Boolean(optionalDate(value));
+}
+
+function isOptionalDate(value: unknown) {
+  return value === null || value === undefined || Boolean(optionalDate(value));
 }
 
 function mcpConfigFromRow(row: Record<string, unknown>): McpExportConfiguration {

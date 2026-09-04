@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { RedactedServiceApiKey } from "@/lib/settings/types";
+import type {
+  RedactedServiceApiKey,
+  RequestServiceApiKey,
+} from "@/lib/settings/types";
 
 type StoredServiceApiKey = RedactedServiceApiKey & { tokenHash: string };
 
@@ -11,6 +14,9 @@ const storeMocks = vi.hoisted(() => ({
   ),
   insertServiceApiKey: vi.fn(async (record: StoredServiceApiKey) => record),
   listServiceApiKeyRecords: vi.fn(async () => [] as StoredServiceApiKey[]),
+  listServiceApiKeyRecordsForRequest: vi.fn(
+    async () => [] as RequestServiceApiKey[],
+  ),
   updateServiceApiKeyRecord: vi.fn(
     async (_input: {
       tenantId: string;
@@ -30,6 +36,7 @@ vi.mock("@/lib/events/store", () => eventMocks);
 
 import {
   createServiceApiKey,
+  listServiceApiKeysForRequest,
   resolveServiceApiKeyToken,
 } from "@/lib/settings/service-api-keys";
 
@@ -43,6 +50,7 @@ describe("service API key identity compatibility", () => {
       async (record: StoredServiceApiKey) => record,
     );
     storeMocks.listServiceApiKeyRecords.mockReset();
+    storeMocks.listServiceApiKeyRecordsForRequest.mockReset();
     storeMocks.updateServiceApiKeyRecord.mockReset();
     eventMocks.appendDomainEventSafely.mockReset();
   });
@@ -79,6 +87,16 @@ describe("service API key identity compatibility", () => {
     });
   });
 
+  it("rejects control characters in service-key names before persistence", async () => {
+    await expect(createServiceApiKey({
+      tenantId,
+      actorId,
+      name: "Automation\nkey",
+      scopes: ["mcp:discover"],
+    })).rejects.toThrow("unsupported characters");
+    expect(storeMocks.insertServiceApiKey).not.toHaveBeenCalled();
+  });
+
   it("continues to verify omni_sk keys with the legacy digest domain", async () => {
     const keyId = "123e4567-e89b-12d3-a456-426614174000";
     const tenantSegment = Buffer.from(tenantId, "utf8").toString("base64url");
@@ -112,6 +130,38 @@ describe("service API key identity compatibility", () => {
       tenantId,
       keyId,
     });
+  });
+
+  it("returns only the request-safe key projection", async () => {
+    const requestRecord: RequestServiceApiKey = {
+      id: "123e4567-e89b-42d3-a456-426614174000",
+      tenantId,
+      actorId,
+      name: "Read-only key",
+      tokenPrefix: "asael_sk_dGVuYW50LW…123e4567",
+      tokenLastFour: "abcd",
+      scopes: ["mcp:discover"],
+      status: "active",
+      createdAt: "2026-09-04T10:00:00.000Z",
+      updatedAt: "2026-09-04T10:00:00.000Z",
+      manageable: false,
+    };
+    storeMocks.listServiceApiKeyRecordsForRequest.mockResolvedValue([
+      requestRecord,
+    ]);
+
+    const input = {
+      tenantId,
+      actorId,
+      requestActorBinding: undefined,
+    };
+    await expect(listServiceApiKeysForRequest(input)).resolves.toEqual([
+      requestRecord,
+    ]);
+    expect(storeMocks.listServiceApiKeyRecordsForRequest).toHaveBeenCalledWith(
+      input,
+    );
+    expect(JSON.stringify(requestRecord)).not.toContain("tokenHash");
   });
 });
 

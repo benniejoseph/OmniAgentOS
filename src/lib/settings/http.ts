@@ -12,12 +12,12 @@ export function settingsErrorResponse(error: unknown) {
   ) {
     return Response.json(
       { error: error.name, message: error.message, ...("code" in error ? { code: error.code } : {}) },
-      { status: error.status },
+      { status: error.status, headers: { "cache-control": "no-store, private" } },
     );
   }
   console.error("Settings operation failed.", error instanceof Error ? error.name : "UnknownError");
   return Response.json(
     { error: "Settings operation failed", message: "The settings operation could not be completed safely." },
-    { status: 500 },
+    { status: 500, headers: { "cache-control": "no-store, private" } },
   );
 }

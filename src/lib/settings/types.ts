@@ -122,6 +122,10 @@ export type RedactedServiceApiKey = {
   revokedAt?: string;
 };
 
+export type RequestServiceApiKey = RedactedServiceApiKey & {
+  manageable: boolean;
+};
+
 export type ServiceApiKeyPrincipal = {
   keyId: string;
   tenantId: string;
@@ -160,7 +164,7 @@ export type SettingsSnapshot = {
   providers: RedactedProviderConnection[];
   models: ModelCatalogEntry[];
   assignments: ModelAssignment[];
-  apiKeys: RedactedServiceApiKey[];
+  apiKeys: RequestServiceApiKey[];
   mcp: McpExportConfiguration;
   runtime: {
     tenantAssignmentsConsumed: boolean;

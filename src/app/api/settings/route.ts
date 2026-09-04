@@ -2,6 +2,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { settingsErrorResponse } from "@/lib/settings/http";
 import { getSettingsSnapshot } from "@/lib/settings/snapshot";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,7 +16,12 @@ async function GETHandler(request: Request) {
     return forbiddenResponse(error);
   }
   try {
-    return Response.json(await getSettingsSnapshot(context), {
+    return Response.json(await getSettingsSnapshot({
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestActorBinding:
+        canonicalRequestActorBindingFromSecurityContext(context),
+    }), {
       headers: { "cache-control": "no-store, private" },
     });
   } catch (error) {
