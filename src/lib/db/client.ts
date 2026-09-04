@@ -77,6 +77,7 @@ const VERCEL_DATABASE_POOL_IDLE_TIMEOUT_SECONDS = 0;
 
 export const tenantRootPolicyTables = [
   "omni_memories",
+  "omni_memory_deletion_receipts",
   "omni_source_adapter_output_receipts",
   "omni_source_items",
   "omni_source_sync_page_checkpoints",
@@ -747,6 +748,13 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[41],
+      up: async (sql) => {
+        await ensureMemoryDeletionBarriers(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
   ];
 }
 
@@ -1361,6 +1369,12 @@ async function withReservedDatabaseTransaction<T>(
   return withReservedDatabaseConnection(pg, async (reserved) => {
     await reserved.unsafe("BEGIN");
     try {
+      // The deletion barrier relies on a fresh statement snapshot after a
+      // writer waits for the tenant graph lock. Pin managed transactions to
+      // READ COMMITTED before applyDatabaseScope performs its first SELECT;
+      // inherited REPEATABLE READ/SERIALIZABLE defaults could otherwise retain
+      // a pre-forget snapshot and resurrect descendant lineage.
+      await reserved.unsafe("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
       const result = await operation(reserved);
       await reserved.unsafe("COMMIT");
       return result;
@@ -8412,6 +8426,2024 @@ async function normalizeLegacyJsonbStorage(sql: SqlClient) {
       AND jsonb_typeof(payload -> 1) = 'object'
       AND payload -> 1 ? '__rerunRequested'
   `;
+}
+
+async function ensureMemoryDeletionBarriers(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_memory_deletion_receipts (
+      id TEXT NOT NULL,
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      contract_kind TEXT NOT NULL DEFAULT 'memory_deletion',
+      tenant_id TEXT NOT NULL,
+      memory_id TEXT NOT NULL,
+      attribution_kind TEXT NOT NULL,
+      initiating_actor_id TEXT,
+      executing_principal_type TEXT,
+      executing_principal_id TEXT,
+      correlation_id TEXT,
+      causation_id TEXT,
+      purpose TEXT,
+      execution_scope JSONB,
+      execution_scope_sha256 TEXT,
+      receipt_sha256 TEXT,
+      delete_reason TEXT NOT NULL,
+      descendant_memory_ids TEXT[] NOT NULL DEFAULT '{}',
+      retrieval_trace_ids TEXT[] NOT NULL DEFAULT '{}',
+      graph_node_ids TEXT[] NOT NULL DEFAULT '{}',
+      graph_edge_ids TEXT[] NOT NULL DEFAULT '{}',
+      descendant_memory_count INTEGER NOT NULL DEFAULT 0,
+      retrieval_trace_count INTEGER NOT NULL DEFAULT 0,
+      graph_node_count INTEGER NOT NULL DEFAULT 0,
+      graph_edge_count INTEGER NOT NULL DEFAULT 0,
+      descendant_manifest_sha256 TEXT,
+      forgotten_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_memory_deletion_receipts_pkey
+        PRIMARY KEY (tenant_id, id),
+      CONSTRAINT omni_memory_deletion_receipts_memory_key
+        UNIQUE (tenant_id, memory_id),
+      CONSTRAINT omni_memory_deletion_receipts_hash_key
+        UNIQUE (tenant_id, receipt_sha256),
+      CONSTRAINT omni_memory_deletion_receipts_contract_check CHECK (
+        schema_version = 1
+        AND contract_kind = 'memory_deletion'
+        AND char_length(id) BETWEEN 1 AND 240
+        AND char_length(tenant_id) BETWEEN 1 AND 240
+        AND char_length(memory_id) BETWEEN 1 AND 240
+      ),
+      CONSTRAINT omni_memory_deletion_receipts_counts_check CHECK (
+        descendant_memory_count = cardinality(descendant_memory_ids)
+        AND retrieval_trace_count = cardinality(retrieval_trace_ids)
+        AND graph_node_count = cardinality(graph_node_ids)
+        AND graph_edge_count = cardinality(graph_edge_ids)
+      ),
+      CONSTRAINT omni_memory_deletion_receipts_attribution_check CHECK (
+        (
+          attribution_kind = 'scope_bound'
+          AND initiating_actor_id IS NOT NULL
+          AND initiating_actor_id <> ''
+          AND executing_principal_type IS NOT NULL
+          AND executing_principal_type IN ('user', 'agent', 'system')
+          AND correlation_id IS NOT NULL
+          AND correlation_id <> ''
+          AND purpose IS NOT NULL
+          AND purpose <> ''
+          AND execution_scope IS NOT NULL
+          AND jsonb_typeof(execution_scope) = 'object'
+          AND execution_scope ->> 'version' = '1'
+          AND execution_scope ->> 'tenantId' = tenant_id
+          AND execution_scope ->> 'initiatingActorId' = initiating_actor_id
+          AND execution_scope ->> 'executingPrincipalType' =
+            executing_principal_type
+          AND (execution_scope ->> 'executingPrincipalId')
+            IS NOT DISTINCT FROM executing_principal_id
+          AND execution_scope ->> 'correlationId' = correlation_id
+          AND (execution_scope ->> 'causationId')
+            IS NOT DISTINCT FROM causation_id
+          AND execution_scope ->> 'purpose' = purpose
+          AND execution_scope_sha256 IS NOT NULL
+          AND execution_scope_sha256 ~ '^[0-9a-f]{64}$'
+          AND receipt_sha256 IS NOT NULL
+          AND receipt_sha256 ~ '^[0-9a-f]{64}$'
+          AND descendant_manifest_sha256 IS NOT NULL
+          AND descendant_manifest_sha256 ~ '^[0-9a-f]{64}$'
+          AND delete_reason = 'explicit_forget'
+        )
+        OR (
+          attribution_kind = 'legacy_unattributed'
+          AND initiating_actor_id IS NULL
+          AND executing_principal_type IS NULL
+          AND executing_principal_id IS NULL
+          AND correlation_id IS NULL
+          AND causation_id IS NULL
+          AND purpose IS NULL
+          AND execution_scope IS NULL
+          AND execution_scope_sha256 IS NULL
+          AND receipt_sha256 IS NULL
+          AND descendant_manifest_sha256 IS NULL
+          AND delete_reason = 'legacy_unattributed'
+        )
+      )
+    )
+  `;
+
+  await sql`
+    ALTER TABLE omni_retrieval_traces
+    ADD COLUMN IF NOT EXISTS memory_ids TEXT[]
+  `;
+  // Re-running this idempotent migration must be able to recompute historical
+  // closure. DDL is transactional, so the committed barrier is never absent.
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_deletion_barrier
+    ON omni_memories
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_deletion_barrier
+    ON omni_retrieval_traces
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_deletion_barrier
+    ON omni_memory_graph_nodes
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_deletion_barrier
+    ON omni_memory_graph_edges
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_retrieval_traces_memory_lineage
+    ON omni_retrieval_traces
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_retrieval_traces_validate_deletion_barrier
+    ON omni_retrieval_traces
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_retrieval_traces_graph_lock
+    ON omni_retrieval_traces
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memory_graph_nodes_memory_lineage
+    ON omni_memory_graph_nodes
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memory_graph_nodes_validate_deletion_barrier
+    ON omni_memory_graph_nodes
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memory_graph_nodes_graph_lock
+    ON omni_memory_graph_nodes
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memory_graph_edges_memory_lineage
+    ON omni_memory_graph_edges
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memory_graph_edges_validate_deletion_barrier
+    ON omni_memory_graph_edges
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memory_graph_edges_graph_lock
+    ON omni_memory_graph_edges
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memories_graph_lock
+    ON omni_memories
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memories_deletion_barrier
+    ON omni_memories
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memories_validate_canonical_forget
+    ON omni_memories
+  `;
+
+  // Receipts require a stable forget timestamp. Establish only that field
+  // before computing legacy lineage so outbound references remain available
+  // to the conservative descendant manifest.
+  await sql`
+    UPDATE omni_memories
+    SET forgotten_at = COALESCE(updated_at, created_at, NOW()),
+        updated_at = COALESCE(updated_at, created_at, NOW())
+    WHERE claim_status = 'forgotten'
+      AND forgotten_at IS NULL
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_direct_trace_memory_ids(trace_results JSONB)
+    RETURNS TEXT[]
+    LANGUAGE SQL
+    IMMUTABLE
+    AS $function$
+      SELECT COALESCE(
+        ARRAY_AGG(
+          DISTINCT (result ->> 'id') COLLATE "C"
+          ORDER BY (result ->> 'id') COLLATE "C"
+        ),
+        '{}'::TEXT[]
+      )
+      FROM jsonb_array_elements(
+        CASE
+          WHEN jsonb_typeof(trace_results) = 'array' THEN trace_results
+          ELSE '[]'::JSONB
+        END
+      ) result
+      WHERE result ->> 'kind' = 'memory'
+        AND NULLIF(BTRIM(result ->> 'id'), '') IS NOT NULL
+    $function$
+  `;
+
+  // Existing lineage must not cross a tenant boundary. Missing legacy targets
+  // are possible because the old retention sweep physically deleted memories;
+  // clear only those dangling pointers before the permanent barrier is active.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM omni_memories child
+        CROSS JOIN LATERAL (
+          SELECT child.supersedes_id AS memory_id
+          UNION ALL
+          SELECT child.contradiction_of_id AS memory_id
+          UNION ALL
+          SELECT substring(evidence_ref FROM 8) AS memory_id
+          FROM unnest(COALESCE(child.evidence_refs, '{}'::TEXT[])) evidence_ref
+          WHERE evidence_ref LIKE 'memory:%'
+            AND char_length(evidence_ref) > 7
+        ) reference
+        WHERE reference.memory_id IS NOT NULL
+          AND reference.memory_id <> child.id
+          AND EXISTS (
+            SELECT 1
+            FROM omni_memories target
+            WHERE target.id = reference.memory_id
+              AND target.tenant_id <> child.tenant_id
+          )
+      ) THEN
+        RAISE EXCEPTION
+          'Cannot install memory deletion barriers over cross-tenant memory lineage'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_retrieval_traces trace
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE
+            WHEN jsonb_typeof(trace.results) = 'array' THEN trace.results
+            ELSE '[]'::JSONB
+          END
+        ) result
+        JOIN omni_memories memory ON memory.id = result ->> 'id'
+        WHERE result ->> 'kind' = 'memory'
+          AND memory.tenant_id <> trace.tenant_id
+      ) THEN
+        RAISE EXCEPTION
+          'Cannot install memory deletion barriers over cross-tenant trace lineage'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_memory_graph_nodes node
+        CROSS JOIN LATERAL unnest(node.memory_ids) memory_id
+        JOIN omni_memories memory ON memory.id = memory_id
+        WHERE memory.tenant_id <> node.tenant_id
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_memory_graph_edges edge
+        CROSS JOIN LATERAL unnest(edge.memory_ids) memory_id
+        JOIN omni_memories memory ON memory.id = memory_id
+        WHERE memory.tenant_id <> edge.tenant_id
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_memory_graph_edges edge
+        WHERE EXISTS (
+          SELECT 1
+          FROM omni_memory_graph_nodes source_node
+          WHERE source_node.id = edge.source_node_id
+            AND source_node.tenant_id <> edge.tenant_id
+        ) OR EXISTS (
+          SELECT 1
+          FROM omni_memory_graph_nodes target_node
+          WHERE target_node.id = edge.target_node_id
+            AND target_node.tenant_id <> edge.tenant_id
+        )
+      ) THEN
+        RAISE EXCEPTION
+          'Cannot install memory deletion barriers over cross-tenant graph lineage'
+          USING ERRCODE = '23514';
+      END IF;
+    END
+    $migration$
+  `;
+
+  // Older partial graph cleanup could leave an edge whose endpoint is gone.
+  // Cross-tenant endpoints were rejected above; remove only globally missing
+  // endpoint rows so deterministic rebuilds cannot collide with hidden debris.
+  await sql`
+    DELETE FROM omni_memory_graph_edges edge
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM omni_memory_graph_nodes source_node
+      WHERE source_node.id = edge.source_node_id
+    ) OR NOT EXISTS (
+      SELECT 1
+      FROM omni_memory_graph_nodes target_node
+      WHERE target_node.id = edge.target_node_id
+    )
+  `;
+
+  await sql`
+    UPDATE omni_memories child
+    SET supersedes_id = CASE
+          WHEN child.supersedes_id IS NULL
+            OR child.supersedes_id = child.id
+            OR EXISTS (
+              SELECT 1
+              FROM omni_memories target
+              WHERE target.tenant_id = child.tenant_id
+                AND target.id = child.supersedes_id
+            )
+          THEN child.supersedes_id
+          ELSE NULL
+        END,
+        contradiction_of_id = CASE
+          WHEN child.contradiction_of_id IS NULL
+            OR child.contradiction_of_id = child.id
+            OR EXISTS (
+              SELECT 1
+              FROM omni_memories target
+              WHERE target.tenant_id = child.tenant_id
+                AND target.id = child.contradiction_of_id
+            )
+          THEN child.contradiction_of_id
+          ELSE NULL
+        END,
+        evidence_refs = ARRAY(
+          SELECT evidence_ref
+          FROM unnest(COALESCE(child.evidence_refs, '{}'::TEXT[]))
+            WITH ORDINALITY AS reference(evidence_ref, position)
+          WHERE reference.evidence_ref NOT LIKE 'memory:%'
+            OR char_length(reference.evidence_ref) <= 7
+            OR substring(reference.evidence_ref FROM 8) = child.id
+            OR EXISTS (
+              SELECT 1
+              FROM omni_memories target
+              WHERE target.tenant_id = child.tenant_id
+                AND target.id = substring(reference.evidence_ref FROM 8)
+            )
+          ORDER BY reference.position
+        )
+    WHERE (
+      child.supersedes_id IS NOT NULL
+      AND child.supersedes_id <> child.id
+      AND NOT EXISTS (
+        SELECT 1
+        FROM omni_memories target
+        WHERE target.tenant_id = child.tenant_id
+          AND target.id = child.supersedes_id
+      )
+    ) OR (
+      child.contradiction_of_id IS NOT NULL
+      AND child.contradiction_of_id <> child.id
+      AND NOT EXISTS (
+        SELECT 1
+        FROM omni_memories target
+        WHERE target.tenant_id = child.tenant_id
+          AND target.id = child.contradiction_of_id
+      )
+    ) OR EXISTS (
+      SELECT 1
+      FROM unnest(COALESCE(child.evidence_refs, '{}'::TEXT[])) evidence_ref
+      WHERE evidence_ref LIKE 'memory:%'
+        AND char_length(evidence_ref) > 7
+        AND substring(evidence_ref FROM 8) <> child.id
+        AND NOT EXISTS (
+          SELECT 1
+          FROM omni_memories target
+          WHERE target.tenant_id = child.tenant_id
+            AND target.id = substring(evidence_ref FROM 8)
+        )
+    )
+  `;
+
+  // Seed direct trace lineage. Malformed results and unresolved graph result
+  // references conservatively inherit every known memory id in their tenant.
+  await sql`
+    UPDATE omni_retrieval_traces trace
+    SET memory_ids = CASE
+      WHEN jsonb_typeof(trace.results) <> 'array'
+        OR EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(trace.results) = 'array'
+                THEN trace.results
+              ELSE '[]'::JSONB
+            END
+          ) result
+          WHERE jsonb_typeof(result) <> 'object'
+            OR COALESCE(result ->> 'kind', '') NOT IN (
+              'memory', 'knowledge', 'graph'
+            )
+            OR NULLIF(BTRIM(result ->> 'id'), '') IS NULL
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(trace.results) = 'array'
+                THEN trace.results
+              ELSE '[]'::JSONB
+            END
+          ) result
+          WHERE result ->> 'kind' = 'graph'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM omni_memory_graph_nodes node
+              WHERE node.id = result ->> 'id'
+                AND node.tenant_id = trace.tenant_id
+            )
+        )
+      THEN ARRAY(
+        SELECT lineage.memory_id
+        FROM (
+          SELECT memory.id COLLATE "C" AS memory_id
+          FROM omni_memories memory
+          WHERE memory.tenant_id = trace.tenant_id
+          UNION
+          SELECT unnest(
+            omni_direct_trace_memory_ids(trace.results)
+          ) COLLATE "C"
+        ) lineage
+        ORDER BY lineage.memory_id COLLATE "C"
+      )
+      ELSE omni_direct_trace_memory_ids(trace.results)
+    END
+  `;
+
+  // Materialize the trace/graph closure to a fixed point. Existing graph
+  // rows can derive from traces and traces can cite graph nodes, so one pass
+  // is insufficient. Missing legacy trace references conservatively taint a
+  // graph row with every known memory id in its tenant.
+  await sql`
+    DO $migration$
+    DECLARE
+      changed_rows INTEGER;
+      total_changed INTEGER;
+      pass INTEGER := 0;
+    BEGIN
+      LOOP
+        pass := pass + 1;
+        total_changed := 0;
+
+        WITH closure AS (
+          SELECT trace.id,
+                 ARRAY_AGG(
+                   DISTINCT lineage.memory_id COLLATE "C"
+                   ORDER BY lineage.memory_id COLLATE "C"
+                 )
+                   AS memory_ids
+          FROM omni_retrieval_traces trace
+          CROSS JOIN LATERAL (
+            SELECT unnest(COALESCE(trace.memory_ids, '{}'::TEXT[])) AS memory_id
+            UNION ALL
+            SELECT unnest(node.memory_ids) AS memory_id
+            FROM jsonb_array_elements(
+              CASE
+                WHEN jsonb_typeof(trace.results) = 'array'
+                  THEN trace.results
+                ELSE '[]'::JSONB
+              END
+            ) result
+            JOIN omni_memory_graph_nodes node
+              ON node.id = result ->> 'id'
+             AND node.tenant_id = trace.tenant_id
+            WHERE result ->> 'kind' = 'graph'
+          ) lineage
+          GROUP BY trace.id
+        )
+        UPDATE omni_retrieval_traces trace
+        SET memory_ids = closure.memory_ids
+        FROM closure
+        WHERE trace.id = closure.id
+          AND trace.memory_ids IS DISTINCT FROM closure.memory_ids;
+        GET DIAGNOSTICS changed_rows = ROW_COUNT;
+        total_changed := total_changed + changed_rows;
+
+        WITH closure AS (
+          SELECT node.id,
+                 ARRAY_AGG(
+                   DISTINCT lineage.memory_id COLLATE "C"
+                   ORDER BY lineage.memory_id COLLATE "C"
+                 )
+                   AS memory_ids
+          FROM omni_memory_graph_nodes node
+          CROSS JOIN LATERAL (
+            SELECT unnest(node.memory_ids) AS memory_id
+            UNION ALL
+            SELECT unnest(trace.memory_ids) AS memory_id
+            FROM omni_retrieval_traces trace
+            WHERE trace.tenant_id = node.tenant_id
+              AND trace.id = ANY(node.trace_ids)
+            UNION ALL
+            SELECT memory.id AS memory_id
+            FROM omni_memories memory
+            WHERE memory.tenant_id = node.tenant_id
+              AND EXISTS (
+                SELECT 1
+                FROM unnest(node.trace_ids) trace_id
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM omni_retrieval_traces trace
+                  WHERE trace.id = trace_id
+                    AND trace.tenant_id = node.tenant_id
+                )
+              )
+          ) lineage
+          GROUP BY node.id
+        )
+        UPDATE omni_memory_graph_nodes node
+        SET memory_ids = closure.memory_ids
+        FROM closure
+        WHERE node.id = closure.id
+          AND node.memory_ids IS DISTINCT FROM closure.memory_ids;
+        GET DIAGNOSTICS changed_rows = ROW_COUNT;
+        total_changed := total_changed + changed_rows;
+
+        WITH closure AS (
+          SELECT edge.id,
+                 ARRAY_AGG(
+                   DISTINCT lineage.memory_id COLLATE "C"
+                   ORDER BY lineage.memory_id COLLATE "C"
+                 )
+                   AS memory_ids
+          FROM omni_memory_graph_edges edge
+          CROSS JOIN LATERAL (
+            SELECT unnest(edge.memory_ids) AS memory_id
+            UNION ALL
+            SELECT unnest(trace.memory_ids) AS memory_id
+            FROM omni_retrieval_traces trace
+            WHERE trace.tenant_id = edge.tenant_id
+              AND trace.id = ANY(edge.trace_ids)
+            UNION ALL
+            SELECT unnest(endpoint.memory_ids) AS memory_id
+            FROM omni_memory_graph_nodes endpoint
+            WHERE endpoint.tenant_id = edge.tenant_id
+              AND endpoint.id = ANY(
+                ARRAY[edge.source_node_id, edge.target_node_id]
+              )
+            UNION ALL
+            SELECT memory.id AS memory_id
+            FROM omni_memories memory
+            WHERE memory.tenant_id = edge.tenant_id
+              AND EXISTS (
+                SELECT 1
+                FROM unnest(edge.trace_ids) trace_id
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM omni_retrieval_traces trace
+                  WHERE trace.id = trace_id
+                    AND trace.tenant_id = edge.tenant_id
+                )
+              )
+          ) lineage
+          GROUP BY edge.id
+        )
+        UPDATE omni_memory_graph_edges edge
+        SET memory_ids = closure.memory_ids
+        FROM closure
+        WHERE edge.id = closure.id
+          AND edge.memory_ids IS DISTINCT FROM closure.memory_ids;
+        GET DIAGNOSTICS changed_rows = ROW_COUNT;
+        total_changed := total_changed + changed_rows;
+
+        EXIT WHEN total_changed = 0;
+        IF pass >= 128 THEN
+          RAISE EXCEPTION
+            'Memory deletion lineage closure did not converge after 128 passes'
+            USING ERRCODE = '54000';
+        END IF;
+      END LOOP;
+    END
+    $migration$
+  `;
+
+  await sql`
+    UPDATE omni_retrieval_traces
+    SET memory_ids = '{}'::TEXT[]
+    WHERE memory_ids IS NULL
+  `;
+  await sql`
+    ALTER TABLE omni_retrieval_traces
+    ALTER COLUMN memory_ids SET DEFAULT '{}'::TEXT[]
+  `;
+  await sql`
+    ALTER TABLE omni_retrieval_traces
+    ALTER COLUMN memory_ids SET NOT NULL
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_retrieval_traces_memory_ids_idx
+    ON omni_retrieval_traces USING GIN (memory_ids)
+  `;
+
+  // Existing forgotten rows predate execution-scope binding. Preserve that
+  // fact explicitly while recording the conservative descendant manifest;
+  // never synthesize an actor, scope, correlation id, or authenticated hash.
+  await sql`
+    WITH RECURSIVE lineage AS (
+      SELECT root.tenant_id COLLATE "C" AS tenant_id,
+             root.id COLLATE "C" AS root_memory_id,
+             root.id COLLATE "C" AS current_memory_id
+      FROM omni_memories root
+      WHERE root.claim_status = 'forgotten'
+      UNION
+      SELECT lineage.tenant_id,
+             lineage.root_memory_id,
+             child.id
+      FROM lineage
+      JOIN omni_memories child
+        ON child.tenant_id = lineage.tenant_id
+       AND (
+         child.supersedes_id = lineage.current_memory_id
+         OR child.contradiction_of_id = lineage.current_memory_id
+         OR ('memory:' || lineage.current_memory_id) = ANY(child.evidence_refs)
+       )
+    ),
+    manifests AS (
+      SELECT root.tenant_id,
+             root.id AS memory_id,
+             root.forgotten_at,
+             ARRAY(
+               SELECT descendant.current_memory_id
+               FROM lineage descendant
+               WHERE descendant.tenant_id = root.tenant_id
+                 AND descendant.root_memory_id = root.id
+                 AND descendant.current_memory_id <> root.id
+               ORDER BY descendant.current_memory_id COLLATE "C"
+             ) AS descendant_memory_ids,
+             ARRAY(
+               SELECT trace.id
+               FROM omni_retrieval_traces trace
+               WHERE trace.tenant_id = root.tenant_id
+                 AND trace.memory_ids && ARRAY(
+                   SELECT blocked.current_memory_id
+                   FROM lineage blocked
+                   WHERE blocked.tenant_id = root.tenant_id
+                     AND blocked.root_memory_id = root.id
+                 )
+               ORDER BY trace.id COLLATE "C"
+             ) AS retrieval_trace_ids,
+             ARRAY(
+               SELECT node.id
+               FROM omni_memory_graph_nodes node
+               WHERE node.tenant_id = root.tenant_id
+                 AND node.memory_ids && ARRAY(
+                   SELECT blocked.current_memory_id
+                   FROM lineage blocked
+                   WHERE blocked.tenant_id = root.tenant_id
+                     AND blocked.root_memory_id = root.id
+                 )
+               ORDER BY node.id COLLATE "C"
+             ) AS graph_node_ids,
+             ARRAY(
+               SELECT edge.id
+               FROM omni_memory_graph_edges edge
+               WHERE edge.tenant_id = root.tenant_id
+                 AND edge.memory_ids && ARRAY(
+                   SELECT blocked.current_memory_id
+                   FROM lineage blocked
+                   WHERE blocked.tenant_id = root.tenant_id
+                     AND blocked.root_memory_id = root.id
+                 )
+               ORDER BY edge.id COLLATE "C"
+             ) AS graph_edge_ids
+      FROM omni_memories root
+      WHERE root.claim_status = 'forgotten'
+    )
+    INSERT INTO omni_memory_deletion_receipts (
+      id, schema_version, contract_kind, tenant_id, memory_id,
+      attribution_kind, initiating_actor_id, executing_principal_type,
+      executing_principal_id, correlation_id, causation_id, purpose,
+      execution_scope, execution_scope_sha256, receipt_sha256, delete_reason,
+      descendant_memory_ids, retrieval_trace_ids, graph_node_ids,
+      graph_edge_ids, descendant_memory_count, retrieval_trace_count,
+      graph_node_count, graph_edge_count, descendant_manifest_sha256,
+      forgotten_at
+    )
+    SELECT 'legacy:' || md5(manifest.tenant_id || ':' || manifest.memory_id),
+           1,
+           'memory_deletion',
+           manifest.tenant_id,
+           manifest.memory_id,
+           'legacy_unattributed',
+           NULL,
+           NULL,
+           NULL,
+           NULL,
+           NULL,
+           NULL,
+           NULL,
+           NULL,
+           NULL,
+           'legacy_unattributed',
+           manifest.descendant_memory_ids,
+           manifest.retrieval_trace_ids,
+           manifest.graph_node_ids,
+           manifest.graph_edge_ids,
+           cardinality(manifest.descendant_memory_ids),
+           cardinality(manifest.retrieval_trace_ids),
+           cardinality(manifest.graph_node_ids),
+           cardinality(manifest.graph_edge_ids),
+           NULL,
+           manifest.forgotten_at
+    FROM manifests manifest
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM omni_memory_deletion_receipts receipt
+      WHERE receipt.tenant_id = manifest.tenant_id
+        AND receipt.memory_id = manifest.memory_id
+    )
+    ON CONFLICT (tenant_id, memory_id) DO NOTHING
+  `;
+
+  // Remove every derived row captured by a legacy receipt before clearing the
+  // root's outbound references. Keeping these hidden rows would make later
+  // deterministic graph upserts collide with an immutable deletion barrier.
+  await sql`
+    DELETE FROM omni_memory_graph_edges edge
+    USING omni_memory_deletion_receipts receipt
+    WHERE edge.tenant_id = receipt.tenant_id
+      AND edge.id = ANY(receipt.graph_edge_ids)
+  `;
+  await sql`
+    DELETE FROM omni_memory_graph_nodes node
+    USING omni_memory_deletion_receipts receipt
+    WHERE node.tenant_id = receipt.tenant_id
+      AND node.id = ANY(receipt.graph_node_ids)
+  `;
+  await sql`
+    DELETE FROM omni_retrieval_traces trace
+    USING omni_memory_deletion_receipts receipt
+    WHERE trace.tenant_id = receipt.tenant_id
+      AND trace.id = ANY(receipt.retrieval_trace_ids)
+  `;
+  await sql`
+    INSERT INTO omni_memory_graph_rebuild_queue AS rebuild (
+      tenant_id, requested_at, attempts, last_error, updated_at, generation
+    )
+    SELECT DISTINCT receipt.tenant_id, NOW(), 0, NULL, NOW(), 1
+    FROM omni_memory_deletion_receipts receipt
+    ON CONFLICT (tenant_id) DO UPDATE SET
+      requested_at = NOW(),
+      attempts = 0,
+      last_error = NULL,
+      updated_at = NOW(),
+      generation = rebuild.generation + 1
+  `;
+
+  // Capture legacy lineage in the immutable receipt before clearing the
+  // forgotten shell's outbound references, then enforce the same canonical
+  // scrub required for newly governed forgets.
+  await sql`
+    UPDATE omni_memories
+    SET title = '[forgotten]',
+        content = '',
+        tags = '{}'::TEXT[],
+        source = '[forgotten]',
+        embedding = NULL,
+        evidence_refs = '{}'::TEXT[],
+        supersedes_id = NULL,
+        contradiction_of_id = NULL,
+        forgotten_at = COALESCE(forgotten_at, updated_at, created_at, NOW()),
+        updated_at = COALESCE(forgotten_at, updated_at, created_at, NOW())
+    WHERE claim_status = 'forgotten'
+      AND (
+        title <> '[forgotten]'
+        OR content <> ''
+        OR cardinality(tags) <> 0
+        OR source <> '[forgotten]'
+        OR embedding IS NOT NULL
+        OR cardinality(evidence_refs) <> 0
+        OR supersedes_id IS NOT NULL
+        OR contradiction_of_id IS NOT NULL
+        OR forgotten_at IS NULL
+      )
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memories'
+          AND column_name = 'embedding_vector'
+      ) THEN
+        EXECUTE
+          'UPDATE omni_memories SET embedding_vector = NULL ' ||
+          'WHERE claim_status = ''forgotten'' AND embedding_vector IS NOT NULL';
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_deletion_ids_are_canonical(ids TEXT[])
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    AS $function$
+      SELECT COALESCE(ids, '{}'::TEXT[]) = ARRAY(
+        SELECT DISTINCT id COLLATE "C"
+        FROM unnest(COALESCE(ids, '{}'::TEXT[])) id
+        WHERE NULLIF(BTRIM(id), '') IS NOT NULL
+        ORDER BY id COLLATE "C"
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_ids_have_deletion_barrier(
+      row_tenant_id TEXT,
+      row_memory_ids TEXT[]
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    AS $function$
+      SELECT EXISTS (
+        SELECT 1
+        FROM omni_memory_deletion_receipts receipt
+        WHERE receipt.tenant_id = row_tenant_id
+          AND (
+            ARRAY[receipt.memory_id] || receipt.descendant_memory_ids
+          ) && COALESCE(row_memory_ids, '{}'::TEXT[])
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_immutable_memory_deletion_receipt()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Memory deletion receipts are immutable'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_memory_delete()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION
+        'Memory rows are permanent shells; use the governed canonical forget path'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_lock_memory_graph_for_statement()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      active_tenant_id TEXT;
+    BEGIN
+      active_tenant_id := NULLIF(
+        current_setting('omni.tenant_id', true),
+        ''
+      );
+      IF active_tenant_id IS NOT NULL THEN
+        PERFORM pg_advisory_xact_lock(
+          hashtextextended('memory-graph:' || active_tenant_id, 0)
+        );
+      ELSE
+        -- Serialize every unscoped/system lock-set enumeration. Tenant rows can
+        -- appear between statements, so a mutable full-set scan alone cannot
+        -- establish a global A/B ordering across concurrent maintenance work.
+        PERFORM pg_advisory_xact_lock(
+          hashtextextended('memory-graph-lock-order:global', 0)
+        );
+        -- Owner/system maintenance may span tenants. Lock the existing tenant
+        -- graph domains in canonical order before PostgreSQL acquires any row
+        -- locks; this preserves graph->row ordering against explicit forgets.
+        FOR active_tenant_id IN EXECUTE format(
+          'SELECT DISTINCT tenant_id COLLATE "C" FROM %I.%I ' ||
+          'WHERE tenant_id IS NOT NULL ' ||
+          'ORDER BY tenant_id COLLATE "C"',
+          TG_TABLE_SCHEMA,
+          TG_TABLE_NAME
+        )
+        LOOP
+          PERFORM pg_advisory_xact_lock(
+            hashtextextended('memory-graph:' || active_tenant_id, 0)
+          );
+        END LOOP;
+      END IF;
+      RETURN NULL;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_memory_deletion_receipt()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      memory omni_memories%ROWTYPE;
+      expected_descendant_memory_ids TEXT[];
+      blocked_memory_ids TEXT[];
+      expected_retrieval_trace_ids TEXT[];
+      expected_graph_node_ids TEXT[];
+      expected_graph_edge_ids TEXT[];
+      deleted_row_count INTEGER;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtextextended('memory-graph:' || NEW.tenant_id, 0)
+      );
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id),
+        hashtext('memory:' || NEW.memory_id)
+      );
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_memory_deletion_receipts receipt
+        WHERE receipt.tenant_id = NEW.tenant_id
+          AND receipt.memory_id = NEW.memory_id
+      ) THEN
+        RETURN NEW;
+      END IF;
+
+      IF NEW.attribution_kind <> 'scope_bound' THEN
+        RAISE EXCEPTION
+          'Only scope-bound memory deletion receipts may be created after migration'
+          USING ERRCODE = '23514';
+      END IF;
+
+      SELECT stored_memory.*
+      INTO memory
+      FROM omni_memories stored_memory
+      WHERE stored_memory.tenant_id = NEW.tenant_id
+        AND stored_memory.id = NEW.memory_id
+      FOR KEY SHARE;
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'Memory deletion receipt target does not exist'
+          USING ERRCODE = '23503';
+      END IF;
+
+      IF NOT omni_memory_deletion_ids_are_canonical(NEW.descendant_memory_ids)
+        OR NOT omni_memory_deletion_ids_are_canonical(NEW.retrieval_trace_ids)
+        OR NOT omni_memory_deletion_ids_are_canonical(NEW.graph_node_ids)
+        OR NOT omni_memory_deletion_ids_are_canonical(NEW.graph_edge_ids)
+        OR NEW.memory_id COLLATE "C" = ANY(NEW.descendant_memory_ids)
+      THEN
+        RAISE EXCEPTION 'Memory deletion receipt manifest ids are not canonical'
+          USING ERRCODE = '23514';
+      END IF;
+
+      WITH RECURSIVE lineage AS (
+        SELECT NEW.memory_id COLLATE "C" AS current_memory_id
+        UNION
+        SELECT child.id
+        FROM lineage
+        JOIN omni_memories child
+          ON child.tenant_id = NEW.tenant_id
+         AND (
+           child.supersedes_id = lineage.current_memory_id
+           OR child.contradiction_of_id = lineage.current_memory_id
+           OR ('memory:' || lineage.current_memory_id) = ANY(child.evidence_refs)
+         )
+      )
+      SELECT ARRAY_AGG(
+               current_memory_id COLLATE "C"
+               ORDER BY current_memory_id COLLATE "C"
+             )
+               FILTER (WHERE current_memory_id <> NEW.memory_id),
+             ARRAY_AGG(
+               current_memory_id COLLATE "C"
+               ORDER BY current_memory_id COLLATE "C"
+             )
+      INTO expected_descendant_memory_ids, blocked_memory_ids
+      FROM lineage;
+
+      expected_descendant_memory_ids := COALESCE(
+        expected_descendant_memory_ids,
+        '{}'::TEXT[]
+      );
+      blocked_memory_ids := COALESCE(
+        blocked_memory_ids,
+        ARRAY[NEW.memory_id]
+      );
+
+      IF NEW.descendant_memory_ids IS DISTINCT FROM
+           expected_descendant_memory_ids
+      THEN
+        RAISE EXCEPTION 'Memory deletion receipt descendant closure is stale'
+          USING ERRCODE = '40001';
+      END IF;
+
+      SELECT COALESCE(
+        ARRAY_AGG(trace.id COLLATE "C" ORDER BY trace.id COLLATE "C"),
+        '{}'::TEXT[]
+      )
+      INTO expected_retrieval_trace_ids
+      FROM omni_retrieval_traces trace
+      WHERE trace.tenant_id = NEW.tenant_id
+        AND (
+          trace.memory_ids && blocked_memory_ids
+          OR EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(
+              CASE
+                WHEN jsonb_typeof(trace.results) = 'array'
+                  THEN trace.results
+                ELSE '[]'::JSONB
+              END
+            ) result
+            WHERE result ->> 'kind' = 'memory'
+              AND result ->> 'id' = ANY(blocked_memory_ids)
+          )
+        );
+
+      SELECT COALESCE(
+        ARRAY_AGG(node.id COLLATE "C" ORDER BY node.id COLLATE "C"),
+        '{}'::TEXT[]
+      )
+      INTO expected_graph_node_ids
+      FROM omni_memory_graph_nodes node
+      WHERE node.tenant_id = NEW.tenant_id
+        AND (
+          node.memory_ids && blocked_memory_ids
+          OR node.trace_ids && expected_retrieval_trace_ids
+        );
+
+      SELECT COALESCE(
+        ARRAY_AGG(edge.id COLLATE "C" ORDER BY edge.id COLLATE "C"),
+        '{}'::TEXT[]
+      )
+      INTO expected_graph_edge_ids
+      FROM omni_memory_graph_edges edge
+      WHERE edge.tenant_id = NEW.tenant_id
+        AND (
+          edge.memory_ids && blocked_memory_ids
+          OR edge.trace_ids && expected_retrieval_trace_ids
+          OR edge.source_node_id = ANY(expected_graph_node_ids)
+          OR edge.target_node_id = ANY(expected_graph_node_ids)
+        );
+
+      IF NEW.retrieval_trace_ids IS DISTINCT FROM expected_retrieval_trace_ids
+        OR NEW.graph_node_ids IS DISTINCT FROM expected_graph_node_ids
+        OR NEW.graph_edge_ids IS DISTINCT FROM expected_graph_edge_ids
+      THEN
+        RAISE EXCEPTION 'Memory deletion receipt derived lineage is stale'
+          USING ERRCODE = '40001';
+      END IF;
+
+      -- Delete the exact validated manifest before NEW becomes visible. Once
+      -- the receipt exists, restrictive SELECT policies intentionally hide
+      -- these rows and an invoker-side DELETE could otherwise affect zero.
+      DELETE FROM omni_memory_graph_edges edge
+      WHERE edge.tenant_id = NEW.tenant_id
+        AND edge.id = ANY(NEW.graph_edge_ids);
+      GET DIAGNOSTICS deleted_row_count = ROW_COUNT;
+      IF deleted_row_count <> NEW.graph_edge_count THEN
+        RAISE EXCEPTION 'Memory deletion graph-edge manifest changed'
+          USING ERRCODE = '40001';
+      END IF;
+
+      DELETE FROM omni_memory_graph_nodes node
+      WHERE node.tenant_id = NEW.tenant_id
+        AND node.id = ANY(NEW.graph_node_ids);
+      GET DIAGNOSTICS deleted_row_count = ROW_COUNT;
+      IF deleted_row_count <> NEW.graph_node_count THEN
+        RAISE EXCEPTION 'Memory deletion graph-node manifest changed'
+          USING ERRCODE = '40001';
+      END IF;
+
+      DELETE FROM omni_retrieval_traces trace
+      WHERE trace.tenant_id = NEW.tenant_id
+        AND trace.id = ANY(NEW.retrieval_trace_ids);
+      GET DIAGNOSTICS deleted_row_count = ROW_COUNT;
+      IF deleted_row_count <> NEW.retrieval_trace_count THEN
+        RAISE EXCEPTION 'Memory deletion trace manifest changed'
+          USING ERRCODE = '40001';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_enforce_memory_deletion_barrier()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      referenced_memory_ids TEXT[];
+      locked_memory_id TEXT;
+      canonical_forget BOOLEAN := FALSE;
+    BEGIN
+      -- Every memory mutation participates in the tenant graph lock before
+      -- taking narrower memory locks. This serializes new transitive lineage
+      -- with receipt closure snapshots and keeps lock order deterministic.
+      PERFORM pg_advisory_xact_lock(
+        hashtextextended('memory-graph:' || NEW.tenant_id, 0)
+      );
+
+      IF TG_OP = 'UPDATE'
+        AND (
+          NEW.id IS DISTINCT FROM OLD.id
+          OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+        )
+      THEN
+        RAISE EXCEPTION 'Memory tenant and id are immutable'
+          USING ERRCODE = '23514';
+      END IF;
+
+      referenced_memory_ids := ARRAY[
+        NEW.id,
+        NEW.supersedes_id,
+        NEW.contradiction_of_id
+      ] || ARRAY(
+        SELECT substring(evidence_ref FROM 8)
+        FROM unnest(COALESCE(NEW.evidence_refs, '{}'::TEXT[])) evidence_ref
+        WHERE evidence_ref LIKE 'memory:%'
+          AND char_length(evidence_ref) > 7
+      );
+      referenced_memory_ids := array_remove(referenced_memory_ids, NULL);
+
+      FOR locked_memory_id IN
+        SELECT DISTINCT memory_id COLLATE "C" AS memory_id
+        FROM unnest(referenced_memory_ids) memory_id
+        ORDER BY memory_id COLLATE "C"
+      LOOP
+        PERFORM pg_advisory_xact_lock(
+          hashtext(NEW.tenant_id),
+          hashtext('memory:' || locked_memory_id)
+        );
+      END LOOP;
+
+      IF TG_OP = 'UPDATE'
+        AND OLD.claim_status <> 'forgotten'
+        AND NEW.claim_status = 'forgotten'
+        AND NEW.title = '[forgotten]'
+        AND NEW.content = ''
+        AND cardinality(NEW.tags) = 0
+        AND NEW.source = '[forgotten]'
+        AND NEW.embedding IS NULL
+        AND cardinality(NEW.evidence_refs) = 0
+        AND NEW.supersedes_id IS NULL
+        AND NEW.contradiction_of_id IS NULL
+        AND NEW.forgotten_at IS NOT NULL
+        AND COALESCE(
+          to_jsonb(NEW) -> 'embedding_vector',
+          'null'::JSONB
+        ) = 'null'::JSONB
+        AND EXISTS (
+          SELECT 1
+          FROM omni_memory_deletion_receipts receipt
+          WHERE receipt.tenant_id = NEW.tenant_id
+            AND receipt.memory_id = NEW.id
+            AND receipt.forgotten_at = NEW.forgotten_at
+        )
+      THEN
+        canonical_forget := TRUE;
+      END IF;
+
+      IF omni_memory_ids_have_deletion_barrier(
+        NEW.tenant_id,
+        referenced_memory_ids
+      ) AND NOT canonical_forget THEN
+        RAISE EXCEPTION 'Memory write intersects a permanent deletion barrier'
+          USING ERRCODE = '55000';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_canonical_memory_forget()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      final_memory omni_memories%ROWTYPE;
+      final_referenced_memory_ids TEXT[];
+      canonical_shell BOOLEAN := FALSE;
+      canonical_forget BOOLEAN := FALSE;
+    BEGIN
+      -- Prefer the final stored row when it remains selectable. A row that a
+      -- concurrently committed barrier now hides from RLS must still be
+      -- rejected, so retain the queued NEW image as the fail-closed fallback.
+      final_memory := NEW;
+      SELECT stored_memory.*
+      INTO final_memory
+      FROM omni_memories stored_memory
+      WHERE stored_memory.tenant_id = NEW.tenant_id
+        AND stored_memory.id = NEW.id;
+
+      IF NOT FOUND THEN
+        final_memory := NEW;
+      END IF;
+
+      final_referenced_memory_ids := ARRAY[
+        final_memory.id,
+        final_memory.supersedes_id,
+        final_memory.contradiction_of_id
+      ] || ARRAY(
+        SELECT substring(evidence_ref FROM 8)
+        FROM unnest(
+          COALESCE(final_memory.evidence_refs, '{}'::TEXT[])
+        ) evidence_ref
+        WHERE evidence_ref LIKE 'memory:%'
+          AND char_length(evidence_ref) > 7
+      );
+      final_referenced_memory_ids := array_remove(
+        final_referenced_memory_ids,
+        NULL
+      );
+
+      IF EXISTS (
+        SELECT 1
+        FROM unnest(final_referenced_memory_ids) reference(memory_id)
+        WHERE reference.memory_id <> final_memory.id
+          AND NOT EXISTS (
+            SELECT 1
+            FROM omni_memories target
+            WHERE target.tenant_id = final_memory.tenant_id
+              AND target.id = reference.memory_id
+          )
+      ) THEN
+        RAISE EXCEPTION
+          'Memory lineage references an unknown or cross-tenant memory'
+          USING ERRCODE = '23503';
+      END IF;
+
+      canonical_shell := COALESCE(
+        final_memory.claim_status = 'forgotten'
+        AND final_memory.title = '[forgotten]'
+        AND final_memory.content = ''
+        AND cardinality(final_memory.tags) = 0
+        AND final_memory.source = '[forgotten]'
+        AND final_memory.embedding IS NULL
+        AND cardinality(final_memory.evidence_refs) = 0
+        AND final_memory.supersedes_id IS NULL
+        AND final_memory.contradiction_of_id IS NULL
+        AND final_memory.forgotten_at IS NOT NULL
+        AND COALESCE(
+          to_jsonb(final_memory) -> 'embedding_vector',
+          'null'::JSONB
+        ) = 'null'::JSONB,
+        FALSE
+      );
+      canonical_forget := canonical_shell AND EXISTS (
+        SELECT 1
+        FROM omni_memory_deletion_receipts receipt
+        WHERE receipt.tenant_id = final_memory.tenant_id
+          AND receipt.memory_id = final_memory.id
+          AND receipt.forgotten_at = final_memory.forgotten_at
+      );
+
+      IF omni_memory_ids_have_deletion_barrier(
+        final_memory.tenant_id,
+        final_referenced_memory_ids
+      ) AND NOT canonical_forget THEN
+        RAISE EXCEPTION
+          'Final memory state intersects a permanent deletion barrier'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF final_memory.claim_status <> 'forgotten' THEN
+        RETURN NEW;
+      END IF;
+
+      IF NOT canonical_shell THEN
+        RAISE EXCEPTION 'Forgotten memory is not canonically scrubbed'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NOT canonical_forget THEN
+        RAISE EXCEPTION 'Forgotten memory is missing its deletion receipt'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_derived_memory_barrier()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      -- The BEFORE lineage trigger can wait behind a concurrent forget after
+      -- its statement snapshot was chosen. Re-check from this deferred trigger
+      -- so the transaction observes the committed receipt before it can finish.
+      IF omni_memory_ids_have_deletion_barrier(
+        NEW.tenant_id,
+        COALESCE(NEW.memory_ids, '{}'::TEXT[])
+      ) THEN
+        RAISE EXCEPTION
+          'Final derived memory row intersects a permanent deletion barrier'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_memory_deletion_receipt_end_state()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM omni_memories memory
+        WHERE memory.tenant_id = NEW.tenant_id
+          AND memory.id = NEW.memory_id
+          AND memory.claim_status = 'forgotten'
+          AND memory.title = '[forgotten]'
+          AND memory.content = ''
+          AND cardinality(memory.tags) = 0
+          AND memory.source = '[forgotten]'
+          AND memory.embedding IS NULL
+          AND cardinality(memory.evidence_refs) = 0
+          AND memory.supersedes_id IS NULL
+          AND memory.contradiction_of_id IS NULL
+          AND memory.forgotten_at = NEW.forgotten_at
+          AND COALESCE(
+            to_jsonb(memory) -> 'embedding_vector',
+            'null'::JSONB
+          ) = 'null'::JSONB
+      ) THEN
+        RAISE EXCEPTION 'Memory deletion receipt did not commit a canonical forget'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_retrieval_traces trace
+        WHERE trace.tenant_id = NEW.tenant_id
+          AND trace.id = ANY(NEW.retrieval_trace_ids)
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_memory_graph_nodes node
+        WHERE node.tenant_id = NEW.tenant_id
+          AND node.id = ANY(NEW.graph_node_ids)
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_memory_graph_edges edge
+        WHERE edge.tenant_id = NEW.tenant_id
+          AND edge.id = ANY(NEW.graph_edge_ids)
+      ) THEN
+        RAISE EXCEPTION
+          'Memory deletion receipt retained rows from its derived manifest'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql.query(`
+    REVOKE ALL ON FUNCTION
+      omni_validate_memory_deletion_receipt_end_state()
+    FROM PUBLIC
+  `);
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_materialize_trace_memory_lineage()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      graph_reference_count INTEGER;
+      resolved_graph_count INTEGER;
+      direct_memory_ids TEXT[];
+      materialized_memory_ids TEXT[];
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtextextended('memory-graph:' || NEW.tenant_id, 0)
+      );
+
+      IF jsonb_typeof(NEW.results) <> 'array'
+        OR EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(NEW.results) = 'array'
+                THEN NEW.results
+              ELSE '[]'::JSONB
+            END
+          ) result
+          WHERE jsonb_typeof(result) <> 'object'
+            OR COALESCE(result ->> 'kind', '') NOT IN (
+              'memory', 'knowledge', 'graph'
+            )
+            OR NULLIF(BTRIM(result ->> 'id'), '') IS NULL
+        )
+      THEN
+        RAISE EXCEPTION 'Retrieval trace results have invalid lineage'
+          USING ERRCODE = '23514';
+      END IF;
+
+      direct_memory_ids := omni_direct_trace_memory_ids(NEW.results);
+      IF EXISTS (
+        SELECT 1
+        FROM unnest(direct_memory_ids) memory_id
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM omni_memories memory
+          WHERE memory.id = memory_id
+            AND memory.tenant_id = NEW.tenant_id
+        )
+      ) THEN
+        RAISE EXCEPTION 'Retrieval trace references an unknown tenant memory'
+          USING ERRCODE = '23503';
+      END IF;
+
+      SELECT COUNT(DISTINCT (result ->> 'id') COLLATE "C")
+      INTO graph_reference_count
+      FROM jsonb_array_elements(NEW.results) result
+      WHERE result ->> 'kind' = 'graph';
+
+      SELECT COUNT(DISTINCT node.id COLLATE "C")
+      INTO resolved_graph_count
+      FROM jsonb_array_elements(NEW.results) result
+      JOIN omni_memory_graph_nodes node
+        ON node.id = result ->> 'id'
+       AND node.tenant_id = NEW.tenant_id
+      WHERE result ->> 'kind' = 'graph';
+
+      IF graph_reference_count <> resolved_graph_count THEN
+        RAISE EXCEPTION 'Retrieval trace references an unknown tenant graph node'
+          USING ERRCODE = '23503';
+      END IF;
+
+      SELECT COALESCE(
+        ARRAY_AGG(
+          DISTINCT lineage.memory_id COLLATE "C"
+          ORDER BY lineage.memory_id COLLATE "C"
+        ),
+        '{}'::TEXT[]
+      )
+      INTO materialized_memory_ids
+      FROM (
+        SELECT unnest(direct_memory_ids) AS memory_id
+        UNION ALL
+        SELECT unnest(node.memory_ids) AS memory_id
+        FROM jsonb_array_elements(NEW.results) result
+        JOIN omni_memory_graph_nodes node
+          ON node.id = result ->> 'id'
+         AND node.tenant_id = NEW.tenant_id
+        WHERE result ->> 'kind' = 'graph'
+      ) lineage;
+
+      IF omni_memory_ids_have_deletion_barrier(
+        NEW.tenant_id,
+        materialized_memory_ids
+      ) THEN
+        RAISE EXCEPTION 'Retrieval trace intersects a permanent deletion barrier'
+          USING ERRCODE = '55000';
+      END IF;
+
+      NEW.memory_ids := materialized_memory_ids;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_materialize_graph_memory_lineage()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      trace_reference_count INTEGER;
+      resolved_trace_count INTEGER;
+      endpoint_reference_count INTEGER;
+      resolved_endpoint_count INTEGER;
+      materialized_memory_ids TEXT[];
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtextextended('memory-graph:' || NEW.tenant_id, 0)
+      );
+
+      IF EXISTS (
+        SELECT 1
+        FROM unnest(COALESCE(NEW.memory_ids, '{}'::TEXT[])) memory_id
+        WHERE NULLIF(BTRIM(memory_id), '') IS NULL
+          OR NOT EXISTS (
+            SELECT 1
+            FROM omni_memories memory
+            WHERE memory.id = memory_id
+              AND memory.tenant_id = NEW.tenant_id
+          )
+      ) THEN
+        RAISE EXCEPTION 'Memory graph row references an unknown tenant memory'
+          USING ERRCODE = '23503';
+      END IF;
+
+      SELECT COUNT(DISTINCT trace_id COLLATE "C")
+      INTO trace_reference_count
+      FROM unnest(COALESCE(NEW.trace_ids, '{}'::TEXT[])) trace_id;
+
+      SELECT COUNT(DISTINCT trace.id COLLATE "C")
+      INTO resolved_trace_count
+      FROM omni_retrieval_traces trace
+      WHERE trace.tenant_id = NEW.tenant_id
+        AND trace.id = ANY(COALESCE(NEW.trace_ids, '{}'::TEXT[]));
+
+      IF trace_reference_count <> resolved_trace_count THEN
+        RAISE EXCEPTION 'Memory graph row references an unknown tenant trace'
+          USING ERRCODE = '23503';
+      END IF;
+
+      IF TG_TABLE_NAME = 'omni_memory_graph_edges' THEN
+        SELECT COUNT(DISTINCT endpoint_id COLLATE "C")
+        INTO endpoint_reference_count
+        FROM unnest(
+          ARRAY[NEW.source_node_id, NEW.target_node_id]
+        ) endpoint_id;
+
+        SELECT COUNT(DISTINCT endpoint.id COLLATE "C")
+        INTO resolved_endpoint_count
+        FROM omni_memory_graph_nodes endpoint
+        WHERE endpoint.tenant_id = NEW.tenant_id
+          AND endpoint.id = ANY(
+            ARRAY[NEW.source_node_id, NEW.target_node_id]
+          );
+
+        IF endpoint_reference_count <> resolved_endpoint_count THEN
+          RAISE EXCEPTION
+            'Memory graph edge references an unknown or cross-tenant endpoint'
+            USING ERRCODE = '23503';
+        END IF;
+      END IF;
+
+      SELECT COALESCE(
+        ARRAY_AGG(
+          DISTINCT lineage.memory_id COLLATE "C"
+          ORDER BY lineage.memory_id COLLATE "C"
+        ),
+        '{}'::TEXT[]
+      )
+      INTO materialized_memory_ids
+      FROM (
+        SELECT unnest(COALESCE(NEW.memory_ids, '{}'::TEXT[])) AS memory_id
+        UNION ALL
+        SELECT unnest(trace.memory_ids) AS memory_id
+        FROM omni_retrieval_traces trace
+        WHERE trace.tenant_id = NEW.tenant_id
+          AND trace.id = ANY(COALESCE(NEW.trace_ids, '{}'::TEXT[]))
+      ) lineage;
+
+      IF TG_TABLE_NAME = 'omni_memory_graph_edges' THEN
+        SELECT COALESCE(
+          ARRAY_AGG(
+            DISTINCT lineage.memory_id COLLATE "C"
+            ORDER BY lineage.memory_id COLLATE "C"
+          ),
+          '{}'::TEXT[]
+        )
+        INTO materialized_memory_ids
+        FROM (
+          SELECT unnest(materialized_memory_ids) AS memory_id
+          UNION ALL
+          SELECT unnest(endpoint.memory_ids) AS memory_id
+          FROM omni_memory_graph_nodes endpoint
+          WHERE endpoint.tenant_id = NEW.tenant_id
+            AND endpoint.id = ANY(
+              ARRAY[NEW.source_node_id, NEW.target_node_id]
+            )
+        ) lineage;
+      END IF;
+
+      IF omni_memory_ids_have_deletion_barrier(
+        NEW.tenant_id,
+        materialized_memory_ids
+      ) THEN
+        RAISE EXCEPTION 'Memory graph row intersects a permanent deletion barrier'
+          USING ERRCODE = '55000';
+      END IF;
+
+      NEW.memory_ids := materialized_memory_ids;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memory_deletion_receipts_validate'
+          AND tgrelid = 'omni_memory_deletion_receipts'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memory_deletion_receipts_validate
+        BEFORE INSERT ON omni_memory_deletion_receipts
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_memory_deletion_receipt();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memory_deletion_receipts_immutable'
+          AND tgrelid = 'omni_memory_deletion_receipts'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memory_deletion_receipts_immutable
+        BEFORE UPDATE OR DELETE ON omni_memory_deletion_receipts
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_reject_immutable_memory_deletion_receipt();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memory_deletion_receipts_no_truncate'
+          AND tgrelid = 'omni_memory_deletion_receipts'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memory_deletion_receipts_no_truncate
+        BEFORE TRUNCATE ON omni_memory_deletion_receipts
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_reject_immutable_memory_deletion_receipt();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memory_deletion_receipts_validate_end_state'
+          AND tgrelid = 'omni_memory_deletion_receipts'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE CONSTRAINT TRIGGER
+          omni_memory_deletion_receipts_validate_end_state
+        AFTER INSERT ON omni_memory_deletion_receipts
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_memory_deletion_receipt_end_state();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memories_graph_lock'
+          AND tgrelid = 'omni_memories'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memories_graph_lock
+        BEFORE INSERT OR UPDATE ON omni_memories
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_lock_memory_graph_for_statement();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memories_deletion_barrier'
+          AND tgrelid = 'omni_memories'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memories_deletion_barrier
+        BEFORE INSERT OR UPDATE ON omni_memories
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_enforce_memory_deletion_barrier();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memories_no_delete'
+          AND tgrelid = 'omni_memories'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memories_no_delete
+        BEFORE DELETE ON omni_memories
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_reject_memory_delete();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memories_no_truncate'
+          AND tgrelid = 'omni_memories'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memories_no_truncate
+        BEFORE TRUNCATE ON omni_memories
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_reject_memory_delete();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memories_validate_canonical_forget'
+          AND tgrelid = 'omni_memories'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE CONSTRAINT TRIGGER omni_memories_validate_canonical_forget
+        AFTER INSERT OR UPDATE ON omni_memories
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_canonical_memory_forget();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_retrieval_traces_memory_lineage'
+          AND tgrelid = 'omni_retrieval_traces'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_retrieval_traces_memory_lineage
+        BEFORE INSERT OR UPDATE OF tenant_id, results, memory_ids
+        ON omni_retrieval_traces
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_materialize_trace_memory_lineage();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_retrieval_traces_graph_lock'
+          AND tgrelid = 'omni_retrieval_traces'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_retrieval_traces_graph_lock
+        BEFORE INSERT OR UPDATE ON omni_retrieval_traces
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_lock_memory_graph_for_statement();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_retrieval_traces_validate_deletion_barrier'
+          AND tgrelid = 'omni_retrieval_traces'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE CONSTRAINT TRIGGER
+          omni_retrieval_traces_validate_deletion_barrier
+        AFTER INSERT OR UPDATE ON omni_retrieval_traces
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_derived_memory_barrier();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memory_graph_nodes_memory_lineage'
+          AND tgrelid = 'omni_memory_graph_nodes'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memory_graph_nodes_memory_lineage
+        BEFORE INSERT OR UPDATE OF tenant_id, memory_ids, trace_ids
+        ON omni_memory_graph_nodes
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_materialize_graph_memory_lineage();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memory_graph_nodes_graph_lock'
+          AND tgrelid = 'omni_memory_graph_nodes'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memory_graph_nodes_graph_lock
+        BEFORE INSERT OR UPDATE ON omni_memory_graph_nodes
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_lock_memory_graph_for_statement();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memory_graph_nodes_validate_deletion_barrier'
+          AND tgrelid = 'omni_memory_graph_nodes'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE CONSTRAINT TRIGGER
+          omni_memory_graph_nodes_validate_deletion_barrier
+        AFTER INSERT OR UPDATE ON omni_memory_graph_nodes
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_derived_memory_barrier();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memory_graph_edges_memory_lineage'
+          AND tgrelid = 'omni_memory_graph_edges'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memory_graph_edges_memory_lineage
+        BEFORE INSERT OR UPDATE OF tenant_id, source_node_id, target_node_id,
+          memory_ids, trace_ids
+        ON omni_memory_graph_edges
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_materialize_graph_memory_lineage();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memory_graph_edges_graph_lock'
+          AND tgrelid = 'omni_memory_graph_edges'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memory_graph_edges_graph_lock
+        BEFORE INSERT OR UPDATE ON omni_memory_graph_edges
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_lock_memory_graph_for_statement();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'omni_memory_graph_edges_validate_deletion_barrier'
+          AND tgrelid = 'omni_memory_graph_edges'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE CONSTRAINT TRIGGER
+          omni_memory_graph_edges_validate_deletion_barrier
+        AFTER INSERT OR UPDATE ON omni_memory_graph_edges
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_derived_memory_barrier();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_deletion_receipts_actor_created_idx
+    ON omni_memory_deletion_receipts (
+      tenant_id, initiating_actor_id, created_at DESC
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_deletion_receipts_descendants_idx
+    ON omni_memory_deletion_receipts USING GIN (descendant_memory_ids)
+  `;
+
+  await sql`
+    ALTER TABLE omni_memory_deletion_receipts ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_memory_deletion_receipts FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_retrieval_traces ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_retrieval_traces FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_memory_graph_nodes ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_memory_graph_nodes FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_memory_graph_edges ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_memory_graph_edges FORCE ROW LEVEL SECURITY
+  `;
+
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_deletion_barrier
+    ON omni_memories
+  `;
+  await sql`
+    CREATE POLICY omni_memory_deletion_barrier
+    ON omni_memories
+    AS RESTRICTIVE
+    FOR SELECT
+    USING (
+      NOT omni_memory_ids_have_deletion_barrier(tenant_id, ARRAY[id])
+      OR EXISTS (
+        SELECT 1
+        FROM omni_memory_deletion_receipts pending_receipt
+        WHERE pending_receipt.tenant_id = omni_memories.tenant_id
+          AND pending_receipt.memory_id = omni_memories.id
+      )
+      OR (
+        claim_status = 'forgotten'
+        AND title = '[forgotten]'
+        AND content = ''
+        AND cardinality(tags) = 0
+        AND source = '[forgotten]'
+        AND embedding IS NULL
+        AND cardinality(evidence_refs) = 0
+        AND supersedes_id IS NULL
+        AND contradiction_of_id IS NULL
+        AND forgotten_at IS NOT NULL
+        AND COALESCE(
+          to_jsonb(omni_memories) -> 'embedding_vector',
+          'null'::JSONB
+        ) = 'null'::JSONB
+      )
+    )
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_deletion_barrier
+    ON omni_retrieval_traces
+  `;
+  await sql`
+    CREATE POLICY omni_memory_deletion_barrier
+    ON omni_retrieval_traces
+    AS RESTRICTIVE
+    FOR SELECT
+    USING (
+      NOT omni_memory_ids_have_deletion_barrier(tenant_id, memory_ids)
+    )
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_deletion_barrier
+    ON omni_memory_graph_nodes
+  `;
+  await sql`
+    CREATE POLICY omni_memory_deletion_barrier
+    ON omni_memory_graph_nodes
+    AS RESTRICTIVE
+    FOR SELECT
+    USING (
+      NOT omni_memory_ids_have_deletion_barrier(tenant_id, memory_ids)
+    )
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_deletion_barrier
+    ON omni_memory_graph_edges
+  `;
+  await sql`
+    CREATE POLICY omni_memory_deletion_barrier
+    ON omni_memory_graph_edges
+    AS RESTRICTIVE
+    FOR SELECT
+    USING (
+      NOT omni_memory_ids_have_deletion_barrier(tenant_id, memory_ids)
+      AND EXISTS (
+        SELECT 1
+        FROM omni_memory_graph_nodes source_endpoint
+        WHERE source_endpoint.tenant_id = omni_memory_graph_edges.tenant_id
+          AND source_endpoint.id = omni_memory_graph_edges.source_node_id
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM omni_memory_graph_nodes target_endpoint
+        WHERE target_endpoint.tenant_id = omni_memory_graph_edges.tenant_id
+          AND target_endpoint.id = omni_memory_graph_edges.target_node_id
+      )
+    )
+  `;
+
+  await sql.query(`
+    REVOKE ALL ON TABLE omni_memory_deletion_receipts FROM PUBLIC
+  `);
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee, privilege_type
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memories'
+          AND privilege_type IN ('SELECT', 'INSERT')
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'GRANT %s ON TABLE %I.omni_memory_deletion_receipts TO %I',
+          grant_record.privilege_type,
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+
+      -- A serving role capable of the full memory mutation boundary must also
+      -- be able to invalidate tenant-scoped derived rows in the same forget
+      -- transaction. Read-only and partial roles receive no new capability.
+      FOR grant_record IN
+        SELECT grantee
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memories'
+          AND privilege_type IN ('SELECT', 'INSERT', 'UPDATE')
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+        GROUP BY grantee
+        HAVING COUNT(DISTINCT privilege_type) = 3
+      LOOP
+        EXECUTE format(
+          'GRANT DELETE ON TABLE %I.omni_retrieval_traces, ' ||
+          '%I.omni_memory_graph_edges, %I.omni_memory_graph_nodes TO %I',
+          current_schema(),
+          current_schema(),
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `);
 }
 
 // ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@ export type ApprovalQueueItem =
       kind: "tool";
       id: string;
       title: string;
-      status: "approval_required";
+      status: "approval_required" | "reconciliation_required";
       canonicalStatus: CanonicalStatusProjection;
       riskLevel: number;
       requestedBy?: string;
@@ -98,19 +98,28 @@ export async function getApprovalQueue(limit = 25, options: { tenantId?: string 
   const workflowApprovalItems = workflowApprovals.map((run) =>
     workflowApprovalToQueueItem(run, workflowPlans.get(run.id) || null),
   );
+  const reconciliationCount = toolApprovals.filter(
+    isMemoryForgetReconciliationRecord,
+  ).length;
   const items = [
     ...toolApprovals.map(toolApprovalToQueueItem),
     ...workflowApprovalItems,
     ...sloPolicyChanges.map((change) =>
       sloPolicyChangeToQueueItem(change, sloApprovalPolicy.breakGlass),
     ),
-  ].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+  ].sort(
+    (left, right) =>
+      Number(right.status === "reconciliation_required") -
+        Number(left.status === "reconciliation_required") ||
+      Date.parse(right.createdAt) - Date.parse(left.createdAt),
+  );
 
   return {
     items: items.slice(0, limit),
     stats: {
       total: items.length,
       tools: toolApprovals.length,
+      reconciliations: reconciliationCount,
       workflows: workflowApprovals.length,
       sloPolicies: sloPolicyChanges.length,
     },
@@ -187,16 +196,24 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
 }
 
 function toolApprovalToQueueItem(record: ToolExecutionRecord): ApprovalQueueItem {
+  const reconciliationRequired = isMemoryForgetReconciliationRecord(record);
+  const canonicalStatus = canonicalStatusForApproval("approval_required");
   return {
     kind: "tool",
     id: record.id,
     title: record.toolName,
-    status: "approval_required",
-    canonicalStatus: canonicalStatusForApproval("approval_required"),
+    status: reconciliationRequired
+      ? "reconciliation_required"
+      : "approval_required",
+    canonicalStatus: reconciliationRequired
+      ? { ...canonicalStatus, sourceStatus: "reconciliation_required" }
+      : canonicalStatus,
     riskLevel: record.riskLevel,
     requestedBy: record.actorId,
     tenantId: record.tenantId,
-    reason: record.reason,
+    reason: reconciliationRequired
+      ? "Approval is already recorded, but the deletion outcome was not finalized before its execution claim expired. Reconcile the immutable receipt or safely replay the same bound request."
+      : record.reason,
     createdAt: record.createdAt,
     input: redactSensitive(record.input) as Record<string, unknown>,
     record: {
@@ -205,6 +222,14 @@ function toolApprovalToQueueItem(record: ToolExecutionRecord): ApprovalQueueItem
       output: redactSensitive(record.output),
     },
   };
+}
+
+function isMemoryForgetReconciliationRecord(record: ToolExecutionRecord) {
+  return record.status === "executing" &&
+    record.toolId === "memory.forget" &&
+    !record.dryRun &&
+    record.approvalRequired &&
+    record.approvalDecision === "approved";
 }
 
 function workflowApprovalToQueueItem(

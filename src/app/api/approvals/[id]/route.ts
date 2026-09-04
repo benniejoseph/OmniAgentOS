@@ -46,6 +46,10 @@ const approvalDecisionSchema = z.object({
   ticket: z.string().max(120).optional(),
 }).strict();
 
+const legacyMemoryForgetRecoveryInputSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+}).strict();
+
 async function POSTHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
@@ -210,7 +214,12 @@ async function POSTHandler(
     return Response.json({ error: "Tool approval record not found." }, { status: 404 });
   }
 
-  if (record.status !== "approval_required") {
+  const retryingMemoryForget =
+    parsed.data.decision === "approve" &&
+    record.status === "executing" &&
+    record.toolId === "memory.forget" &&
+    !record.dryRun;
+  if (record.status !== "approval_required" && !retryingMemoryForget) {
     const recovered = record.status === "executing"
       ? await recoverStaleToolExecutionClaim(record.id, { tenantId: securityContext.tenantId })
       : undefined;
@@ -350,20 +359,40 @@ async function POSTHandler(
   try {
     approvedInput = openToolExecutionInput(claim.record);
   } catch {
-    const failed = await failClaimedToolExecution({
-      record: claim.record,
-      claimToken,
-      reason:
-        "Approved execution payload is missing or failed integrity verification. Submit the action again.",
-    });
-    return Response.json(
-      {
-        error:
-          "The approved action could not be verified and was not executed. Submit the action again.",
-        record: failed ? publicToolExecution(failed) : undefined,
-      },
-      { status: 409 },
-    );
+    const rawInternalOutput = claim.record.output;
+    const internalOutput =
+      rawInternalOutput &&
+      typeof rawInternalOutput === "object" &&
+      !Array.isArray(rawInternalOutput)
+        ? rawInternalOutput as Record<string, unknown>
+        : {};
+    const legacyForgetInput =
+      retryingMemoryForget &&
+      !Object.prototype.hasOwnProperty.call(internalOutput, "__sealedInput")
+        ? legacyMemoryForgetRecoveryInputSchema.safeParse(claim.record.input)
+        : undefined;
+    if (legacyForgetInput?.success) {
+      // Pre-barrier stale forgets were persisted before approved inputs were
+      // sealed. The executor may use this exact bound input only to reconcile
+      // an existing receipt; the absent approval fingerprint prevents replay
+      // when no receipt exists. A present-but-invalid seal remains fail-closed.
+      approvedInput = legacyForgetInput.data;
+    } else {
+      const failed = await failClaimedToolExecution({
+        record: claim.record,
+        claimToken,
+        reason:
+          "Approved execution payload is missing or failed integrity verification. Submit the action again.",
+      });
+      return Response.json(
+        {
+          error:
+            "The approved action could not be verified and was not executed. Submit the action again.",
+          record: failed ? publicToolExecution(failed) : undefined,
+        },
+        { status: 409 },
+      );
+    }
   }
 
   const waitingRun = await findAgentRunWaitingForToolApproval(

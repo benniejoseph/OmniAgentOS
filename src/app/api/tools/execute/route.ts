@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import type { SecurityContext } from "@/lib/security/types";
 import { publicToolExecution } from "@/lib/tools/audit-store";
@@ -52,13 +54,21 @@ async function POSTHandler(request: Request) {
     return forbiddenResponse(error);
   }
 
+  const dryRun = parsed.data.dryRun ?? true;
+  const executionScope = dryRun
+    ? undefined
+    : executionScopeFromSecurityContext(context, {
+        correlationId: `tool-api:${randomUUID()}`,
+        purpose: `api.tools.execute:${parsed.data.toolId}`,
+      });
   let result: Awaited<ReturnType<typeof executeGovernedTool>>;
   try {
     result = await executeGovernedTool({
       toolId: parsed.data.toolId,
       input: parsed.data.input,
-      dryRun: parsed.data.dryRun ?? true,
+      dryRun,
       context,
+      executionScope,
     });
   } catch (error) {
     if (error instanceof ToolInputValidationError) {

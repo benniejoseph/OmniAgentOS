@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { publicMemoryDeletionReceiptV1 } from "@/lib/memory/deletion-receipt";
 import { queueMemoryGraphRebuild } from "@/lib/memory/graph";
-import { correctMemory, forgetMemory, getMemory } from "@/lib/memory/store";
+import { correctMemory, forgetMemoryWithReceipt, getMemory } from "@/lib/memory/store";
 import { embedTexts } from "@/lib/openai/client";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -61,10 +64,25 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
   const { id } = await route.params;
   let context;
   try { context = await authorize(request, id, "write.memory"); } catch (error) { return forbiddenResponse(error); }
-  const memory = await forgetMemory(id, { tenantId: context.tenantId });
-  if (!memory) return Response.json({ error: "Memory not found." }, { status: 404 });
-  await queueMemoryGraphRebuild({ tenantId: context.tenantId });
-  return Response.json({ forgotten: true, id });
+  const result = await forgetMemoryWithReceipt(id, {
+    tenantId: context.tenantId,
+    executionScope: executionScopeFromSecurityContext(context, {
+      correlationId: `memory_forget_${randomUUID()}`,
+      purpose: "memory.forget.api",
+    }),
+  });
+  if (!result) return Response.json({ error: "Memory not found." }, { status: 404 });
+  return Response.json({
+    forgotten: true,
+    id,
+    deletionGuarantee: result.deletionGuarantee,
+    deletionDisposition: result.deletionDisposition,
+    deletionReceipt: result.receipt
+      ? publicMemoryDeletionReceiptV1(result.receipt)
+      : null,
+  }, {
+    headers: { "cache-control": "private, no-store" },
+  });
 }
 
 function publicMemory<T extends { embedding?: number[] }>(memory: T) {

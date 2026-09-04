@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
@@ -8,6 +9,7 @@ import {
   McpAccessError,
 } from "@/lib/mcp/auth";
 import type { ServiceApiScope } from "@/lib/settings/service-api-keys";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import {
   executeGovernedTool,
@@ -245,6 +247,10 @@ async function executeMcpReadTool({
           dryRun: false,
           context,
           abortSignal,
+          executionScope: executionScopeFromSecurityContext(context, {
+            correlationId: `mcp:${randomUUID()}`,
+            purpose: `mcp.tools.execute:${toolId}`,
+          }),
         }),
     );
     const payload = {

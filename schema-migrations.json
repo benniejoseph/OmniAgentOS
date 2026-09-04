@@ -203,5 +203,10 @@
     "version": 41,
     "name": "drive_generation2_rollout_bound_checkpoints",
     "checksum": "ad6ccb4a8b483fa8da52fab714d439a60fbb56746776fe1fb4cc71c92650b92b"
+  },
+  {
+    "version": 42,
+    "name": "memory_deletion_barriers",
+    "checksum": "6b9553a6c18714c1b0ac85fce68675b04e00efa661dab9bccdadb5730812b86f"
   }
 ]

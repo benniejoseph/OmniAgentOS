@@ -129,6 +129,18 @@ credentials, errors, prompts, or reasoning. Per-item canonical events remain
 the exact receipt-bound evidence; the page event is their compact settlement
 summary and never changes served RAG authority.
 
+The first P2.7 canary adds `memory.deletion_barrier.recorded` in the same
+Postgres transaction as the canonical memory scrub, immutable deletion
+receipt, derived trace/graph invalidation, and graph rebuild request. Its
+allowlisted payload contains only opaque receipt and memory IDs,
+execution-scope, receipt, and lineage-manifest SHA-256 digests, bounded
+invalidated-row counts, and closed reason/status enums. It never contains the
+forgotten title, content, tags, source, embedding, retrieved text, graph prose,
+prompt, or model reasoning. Legacy forgotten rows are protected by explicit
+unattributed migration barriers and do not receive fabricated scoped events.
+This event proves the immediate memory query barrier; it does not claim that
+the later physical descendant scrub SLA has completed.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

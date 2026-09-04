@@ -34,7 +34,13 @@ type ApprovalItem = {
 
 type QueueResponse = {
   items: ApprovalItem[];
-  stats: { total: number; tools: number; workflows: number; sloPolicies: number };
+  stats: {
+    total: number;
+    tools: number;
+    reconciliations: number;
+    workflows: number;
+    sloPolicies: number;
+  };
 };
 
 type TrustProfile = {
@@ -192,6 +198,7 @@ export function ApprovalsWorkspace() {
     }
     setDecisionInFlight(`${item.id}:${decision}`);
     setError(undefined);
+    const reconciliationRequired = isReconciliationItem(item);
     try {
       const response = await fetch(`/api/approvals/${item.id}`, {
         method: "POST",
@@ -199,7 +206,9 @@ export function ApprovalsWorkspace() {
         body: JSON.stringify({
           kind: item.kind,
           decision,
-          reason: reasons[item.id] || undefined,
+          reason: reconciliationRequired
+            ? undefined
+            : reasons[item.id] || undefined,
           breakGlass:
             item.kind === "slo_policy" && decision === "approve"
               ? Boolean(breakGlassSelections[item.id])
@@ -238,15 +247,19 @@ export function ApprovalsWorkspace() {
       setLastDecision({
         message:
         executionRecord?.status === "failed"
-          ? `Approval recorded for ${item.title}, but execution failed${
+          ? `${reconciliationRequired ? "Reconciliation finished" : "Approval recorded"} for ${item.title}, but execution failed${
               executionRecord.reason ? `: ${executionRecord.reason}` : "."
             }${resumeNote}`
+          : reconciliationRequired
+            ? stillPending
+              ? `Reconciliation is in progress for ${item.title}.${resumeNote}`
+              : `Reconciled and continued: ${item.title}.${resumeNote}`
           : stillPending
           ? `Approval recorded for ${item.title}. ${
               quorum?.message ||
               `${approvalProgress?.approvals || 0}/${approvalProgress?.required || 1} required approvals are recorded.`
             }`
-          : `${decision === "approve" ? "Approved and released" : "Rejected"}: ${item.title}.${resumeNote}`,
+            : `${decision === "approve" ? "Approved and released" : "Rejected"}: ${item.title}.${resumeNote}`,
         tone:
           executionRecord?.status === "failed"
             ? "danger"
@@ -328,9 +341,15 @@ export function ApprovalsWorkspace() {
     (queue?.stats.total || 0) +
     (accessQueue?.stats.pending || 0) +
     (accessQueue?.stats.provisioning || 0);
+  const pendingToolApprovals = queue
+    ? Math.max(0, queue.stats.tools - (queue.stats.reconciliations || 0))
+    : 0;
   const pendingBreakdown = [
     queue
-      ? `${queue.stats.tools} tool ${queue.stats.tools === 1 ? "call" : "calls"}`
+      ? `${pendingToolApprovals} tool ${pendingToolApprovals === 1 ? "approval" : "approvals"}`
+      : undefined,
+    queue?.stats.reconciliations
+      ? `${queue.stats.reconciliations} deletion ${queue.stats.reconciliations === 1 ? "reconciliation" : "reconciliations"}`
       : undefined,
     queue
       ? `${queue.stats.workflows} ${queue.stats.workflows === 1 ? "workflow" : "workflows"}`
@@ -490,7 +509,7 @@ export function ApprovalsWorkspace() {
         <section className="mt-6 space-y-4" aria-labelledby="action-approval-heading" data-daybook="section">
           <div>
             <h2 id="action-approval-heading" className="text-base font-semibold">Agent and workflow actions</h2>
-            <p className="text-sm text-muted">Nothing executes until an authorized operator approves it.</p>
+            <p className="text-sm text-muted">Review new approvals and safely reconcile previously approved actions with unresolved outcomes.</p>
           </div>
           {state === "ready" && !items.length ? (
             <div className="rounded-lg border border-dashed border-line p-6 text-center text-sm text-muted">
@@ -655,7 +674,8 @@ function ApprovalCard({
   onDecide: (decision: "approve" | "reject") => void;
   inFlight?: string;
 }) {
-  const progress = approvalProgress(item);
+  const reconciliationRequired = isReconciliationItem(item);
+  const progress = reconciliationRequired ? undefined : approvalProgress(item);
   const approvalPolicy = recordValue(item.input?.approvalPolicy);
   const breakGlassPolicy = recordValue(item.input?.breakGlassPolicy);
   const attestationRequired =
@@ -665,15 +685,17 @@ function ApprovalCard({
     item.kind === "slo_policy" &&
     Boolean(approvalPolicy.breakGlassAllowed) &&
     Boolean(breakGlassPolicy.enabled);
-  const approvalBlockedReason = blockedApprovalReason(
-    item,
-    approverRole,
-    approverId,
-    {
-      breakGlass,
-      breakGlassPolicy,
-    },
-  );
+  const approvalBlockedReason = reconciliationRequired
+    ? undefined
+    : blockedApprovalReason(
+        item,
+        approverRole,
+        approverId,
+        {
+          breakGlass,
+          breakGlassPolicy,
+        },
+      );
   const reasonMinimum = breakGlass
     ? Number(breakGlassPolicy.reasonMinLength || 0)
     : attestationRequired
@@ -697,6 +719,11 @@ function ApprovalCard({
             <h2 className="text-base font-semibold">{item.title}</h2>
             <span className="rounded-md border border-line bg-background px-2 py-0.5 font-mono text-xs text-muted">{kindLabel(item.kind)}</span>
             <span className={clsx("rounded-md px-2 py-0.5 font-mono text-xs", riskPill(item.riskLevel))}>risk {item.riskLevel}</span>
+            {reconciliationRequired ? (
+              <span className="rounded-md border border-warning/40 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
+                reconciliation required
+              </span>
+            ) : null}
           </div>
           <p className="mt-1 text-xs text-muted">
             Requested {formatTime(item.createdAt)}
@@ -705,7 +732,7 @@ function ApprovalCard({
         </div>
       </div>
 
-      {trust ? <TrackRecord trust={trust} threshold={threshold} enabled={trustEnabled} /> : null}
+      {trust && !reconciliationRequired ? <TrackRecord trust={trust} threshold={threshold} enabled={trustEnabled} /> : null}
       {progress ? (
         <p className="mt-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
           {progress.have}/{progress.need} distinct approvals recorded. This
@@ -714,19 +741,28 @@ function ApprovalCard({
       ) : null}
 
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <ConsentFact label="If you approve" value={whatWillHappen(item)} />
-        <ConsentFact label="Reversibility" value={reversibility(item.riskLevel)} />
+        <ConsentFact label={reconciliationRequired ? "If you continue" : "If you approve"} value={whatWillHappen(item)} />
+        <ConsentFact
+          label={reconciliationRequired ? "Authority" : "Reversibility"}
+          value={
+            reconciliationRequired
+              ? "No new approval is granted. The original tenant, actor, input, and approval bindings remain unchanged."
+              : reversibility(item.riskLevel)
+          }
+        />
         <ConsentFact label="Why it is waiting" value={item.reason || "This action requires human approval by policy."} />
       </div>
 
       {item.input && Object.keys(item.input).length ? (
         <details className="mt-4 rounded-md border border-line bg-background p-3">
-          <summary className="cursor-pointer text-sm font-medium">Exact inputs (secrets redacted)</summary>
+          <summary className="cursor-pointer text-sm font-medium">
+            {reconciliationRequired ? "Bound inputs" : "Exact inputs"} (secrets redacted)
+          </summary>
           <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-xs text-muted">{JSON.stringify(item.input, null, 2)}</pre>
         </details>
       ) : null}
 
-      {breakGlassAvailable ? (
+      {!reconciliationRequired && breakGlassAvailable ? (
         <div className="mt-4 rounded-md border border-danger/40 bg-danger/10 p-3">
           <label className="flex items-start gap-3 text-sm font-medium">
             <input
@@ -757,59 +793,82 @@ function ApprovalCard({
         </div>
       ) : null}
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <input
-          value={reason}
-          onChange={(event) => onReason(event.target.value)}
-          placeholder={
-            breakGlass
-              ? `Required emergency rationale (${reasonMinimum}+ characters)`
-              : attestationRequired
-                ? "Required approval attestation (12+ characters)"
-                : "Optional decision note (recorded in the audit trail)"
-          }
-          className="min-h-11 min-w-0 flex-1 rounded-md border border-line bg-background px-3 text-sm placeholder:text-muted"
-          aria-label={
-            breakGlass
-              ? "Required break-glass rationale"
-              : attestationRequired
-                ? "Required approval attestation"
-                : "Decision reason"
-          }
-        />
-        <button type="button" onClick={() => onDecide("reject")} disabled={Boolean(inFlight)} className="action-button">
-          {inFlight === "reject" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <X size={14} aria-hidden="true" />}
-          Reject
-        </button>
-        <button
-          type="button"
-          onClick={() => onDecide("approve")}
-          disabled={
-            Boolean(inFlight) ||
-            Boolean(approvalBlockedReason) ||
-            Boolean(approvalFormBlockedReason)
-          }
-          title={approvalBlockedReason || approvalFormBlockedReason}
-          className="primary-button"
-        >
-          {inFlight === "approve" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
-          {breakGlass
-            ? "Emergency approve"
-            : progress && progress.have + 1 < progress.need
-            ? `Record approval ${Math.min(progress.have + 1, progress.need)} of ${progress.need}`
-            : "Approve and run"}
-        </button>
-      </div>
-      {approvalBlockedReason || approvalFormBlockedReason ? (
-        <p className="mt-2 text-xs leading-5 text-muted">
-          {approvalBlockedReason || approvalFormBlockedReason}
-        </p>
-      ) : null}
+      {reconciliationRequired ? (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-warning/40 bg-warning/10 p-3">
+          <p className="max-w-3xl text-sm leading-5 text-muted">
+            Approval is already recorded. This verifies the immutable deletion
+            receipt first and replays only the same bound request if needed.
+          </p>
+          <button
+            type="button"
+            onClick={() => onDecide("approve")}
+            disabled={Boolean(inFlight)}
+            className="primary-button"
+          >
+            {inFlight === "approve" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
+            Reconcile and continue
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <input
+              value={reason}
+              onChange={(event) => onReason(event.target.value)}
+              placeholder={
+                breakGlass
+                  ? `Required emergency rationale (${reasonMinimum}+ characters)`
+                  : attestationRequired
+                    ? "Required approval attestation (12+ characters)"
+                    : "Optional decision note (recorded in the audit trail)"
+              }
+              className="min-h-11 min-w-0 flex-1 rounded-md border border-line bg-background px-3 text-sm placeholder:text-muted"
+              aria-label={
+                breakGlass
+                  ? "Required break-glass rationale"
+                  : attestationRequired
+                    ? "Required approval attestation"
+                    : "Decision reason"
+              }
+            />
+            <button type="button" onClick={() => onDecide("reject")} disabled={Boolean(inFlight)} className="action-button">
+              {inFlight === "reject" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <X size={14} aria-hidden="true" />}
+              Reject
+            </button>
+            <button
+              type="button"
+              onClick={() => onDecide("approve")}
+              disabled={
+                Boolean(inFlight) ||
+                Boolean(approvalBlockedReason) ||
+                Boolean(approvalFormBlockedReason)
+              }
+              title={approvalBlockedReason || approvalFormBlockedReason}
+              className="primary-button"
+            >
+              {inFlight === "approve" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
+              {breakGlass
+                ? "Emergency approve"
+                : progress && progress.have + 1 < progress.need
+                ? `Record approval ${Math.min(progress.have + 1, progress.need)} of ${progress.need}`
+                : "Approve and run"}
+            </button>
+          </div>
+          {approvalBlockedReason || approvalFormBlockedReason ? (
+            <p className="mt-2 text-xs leading-5 text-muted">
+              {approvalBlockedReason || approvalFormBlockedReason}
+            </p>
+          ) : null}
+        </>
+      )}
     </article>
   );
 }
 
 function approvalProgress(item: ApprovalItem) {
+  if (isReconciliationItem(item)) {
+    return undefined;
+  }
   if (item.kind === "tool" && item.riskLevel >= 3) {
     const approvers = new Set(
       (item.record?.approvals || [])
@@ -842,6 +901,9 @@ function blockedApprovalReason(
     breakGlassPolicy?: JsonRecord;
   } = {},
 ) {
+  if (isReconciliationItem(item)) {
+    return undefined;
+  }
   if (
     approverId &&
     item.record?.approvals?.some(
@@ -979,7 +1041,16 @@ function kindLabel(kind: ApprovalItem["kind"]) {
   return kind === "workflow" ? "workflow gate" : "SLO policy";
 }
 
+function isReconciliationItem(item: ApprovalItem) {
+  return item.kind === "tool" &&
+    item.status === "reconciliation_required" &&
+    item.record?.toolId === "memory.forget";
+}
+
 function whatWillHappen(item: ApprovalItem) {
+  if (isReconciliationItem(item)) {
+    return "The system checks the immutable deletion receipt first. If deletion already committed, it finalizes the existing audit record; otherwise it safely replays only the same tenant-, actor-, input-, and approval-bound request.";
+  }
   if (item.kind === "tool") {
     return `The ${item.title} tool executes for real with the inputs below, and the output is recorded in the tool audit ledger.`;
   }
