@@ -268,6 +268,16 @@ permission on all three shadow functions is revoked from serving roles. The
 validated v43 enrollment constraint and restrictive RLS holdback remain
 unchanged, so this migration changes neither a served result nor a write.
 
+The following P3.1 code canary mirrors that envelope in a strict, deep-frozen
+TypeScript contract and provides a single-assignment transaction-local
+installer. It requires the existing transaction callback, independently
+supplied canonical purpose data, an ordinary tenant database scope, an empty
+memory-scope setting, database validation before the write, and a database
+postflight after it. It cannot open or nest a transaction. The v44 function
+grants remain revoked and no store calls the installer, so it is intentionally
+unusable by serving roles until membership, consent, and purpose validation
+join the atomic all-surface activation.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

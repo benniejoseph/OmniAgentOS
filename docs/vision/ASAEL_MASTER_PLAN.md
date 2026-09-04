@@ -877,6 +877,16 @@ scope target and grant before entry, grant only the required database roles,
 and switch memory plus every derived/read/export path together before it drops
 the enrollment lock.
 
+The following P3.1 code canary adds the matching strict TypeScript envelope
+and a held transaction-local installer. The adapter copies named attribution
+only. Callers must provide the canonical purpose ID and optional audit purpose
+separately, and no workspace/project/mission membership is inferred. The
+installer accepts only an existing transaction callback, rejects maintenance
+and nested scope, validates before setting the local GUC, and postflights the
+database parser. No memory, RAG, graph, API, worker, or export path calls it,
+and serving roles retain no function grant. This closes construction and pool
+leakage hazards without beginning the atomic activation.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
