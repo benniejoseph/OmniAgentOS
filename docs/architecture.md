@@ -208,6 +208,21 @@ tenant-and-capability lock, superseded rows cannot be changed or deleted, and
 forced RLS preserves tenant isolation. The migration seeds no rollout and
 changes no runtime or read authority.
 
+Migration v41 binds canonical Drive checkpoints to that control plane. Every
+generation-2 checkpoint carries an immutable capability and adapter identity,
+and each lease records the exact rollout lifecycle revision that admitted it.
+Claim, fence pinning, and settlement recheck the active tenant rollout in the
+same transaction, so pause/resume cannot revive pre-pause work. A small Drive
+page is fetched outside the transaction, then its hash-only manifest,
+receipt-bound revisions or tombstones, ordered heads, closed item outcomes,
+next encrypted cursor, and metadata-only completion event settle atomically.
+Canonical page and nonterminal uniqueness includes capability and adapter
+identity, while generation 1 retains its original uniqueness contract.
+Generation 2 is Postgres-only and cannot use `shadow_observed`; generation 1
+keeps its original IDs, cursor binding, terminal outcomes, and file fallback.
+The legacy Google cursor, sync health, knowledge writes, and served RAG remain
+authoritative during this canary.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

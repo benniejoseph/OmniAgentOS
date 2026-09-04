@@ -829,6 +829,19 @@ is enrolled by the schema migration. Drive generation 2 must be registered and
 activated explicitly before its first checkpoint can be claimed, while existing
 generation-1 shadow rows remain historical and unchanged.
 
+The next P2.3 slice implements that generation-2 path without promoting the
+shadow stream. Its immutable configuration binds a small-page Drive metadata
+adapter, fixed personal-source scope and retention policy, zero retained
+content/evidence semantics, and explicit legacy-RAG read authority. Checkpoint
+admission is tied to the exact active tenant rollout; every lease also pins the
+rollout lifecycle revision so emergency pause/resume invalidates in-flight
+work. Each fetched page settles its pending manifest items, canonical
+revision/tombstone/absence heads, next cursor, and compact event in one
+transaction. File mode, missing or mismatched rollout state, stale OAuth, and
+non-canonical outcomes fail closed. The schema still enrolls no tenant and the
+legacy connector remains the production read/write path until a later,
+separately measured read cutover.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
