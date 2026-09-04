@@ -340,6 +340,20 @@ entitlement-management authority. It must never infer that authority from an
 actor foreign key or generic administrator role, and it must append the typed
 event in the same transaction after those checks converge.
 
+Migration v49 adds the separate, empty standing-consent ledger for a canonical
+subject actor and one exact memory purpose. Each generation begins held, a
+grant can only be made by the subject in contract version 1, revocation is
+terminal, and a later grant requires the next generation. Export and forget
+are deliberately rejected because those are verified request-bound data
+rights, not standing permissions that a tenant can suppress. The table is
+owner-only, forced through tenant RLS, protected by a system-only holdback,
+and constrained to contain no granted row. It has no runtime reader, writer,
+event, inference, or backfill. Before activation, a later contract must bind
+the subject to a versioned membership epoch and informed-notice evidence;
+live user, same-tenant membership, tenant entitlement, and consent rows must
+then be locked separately in the operation transaction. Revocation must never
+depend on a currently active tenant entitlement.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.
