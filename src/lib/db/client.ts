@@ -22,6 +22,7 @@ type SqlClient = {
   query: (text: string, params?: unknown[]) => Promise<SqlRow[]>;
   unsafe: (text: string, params?: unknown[]) => Promise<SqlRow[]>;
   transaction: (queriesOrFn: unknown, opts?: unknown) => Promise<unknown>;
+  readonly transactionScoped: boolean;
 };
 
 type DatabaseScope =
@@ -76,6 +77,8 @@ const VERCEL_DATABASE_POOL_IDLE_TIMEOUT_SECONDS = 0;
 
 export const tenantRootPolicyTables = [
   "omni_memories",
+  "omni_source_adapter_output_receipts",
+  "omni_source_items",
   "omni_knowledge_documents",
   "omni_knowledge_chunks",
   "omni_retrieval_traces",
@@ -135,6 +138,8 @@ export const tenantRootPolicyTables = [
 ] as const;
 
 export const tenantChildPolicyTables = [
+  "omni_source_revisions",
+  "omni_evidence_units",
   "omni_agent_events",
   "omni_thread_turns",
   "omni_workflow_node_executions",
@@ -702,6 +707,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[35],
       up: ensureGovernedToolEffectReceipts,
     },
+    {
+      ...databaseSchemaMigrations[36],
+      up: async (sql) => {
+        await ensureCanonicalSourceLineageShadow(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
   ];
 }
 
@@ -751,7 +763,7 @@ export async function migrateDatabaseSchema(
           ? Math.min(Math.max(configuredTimeout, 30_000), 3_600_000)
           : 600_000;
         await tx`SELECT set_config('statement_timeout', ${String(statementTimeoutMs)}, true)`;
-        const sql = wrapPg(tx);
+        const sql = wrapPg(tx, true);
         // Every version check and migration happens under one transaction-scoped
         // advisory lock, including upgrades from the legacy timestamp-only marker.
         await tx`SELECT pg_advisory_xact_lock(271828182)`;
@@ -837,7 +849,7 @@ export async function migrateDatabaseSchema(
           await setMigrationDatabaseRole(tx);
           await tx`SELECT set_config('omni.system_scope', 'true', true)`;
           await tx`SELECT set_config('omni.system_reason', 'optional vector schema maintenance', true)`;
-          await ensureVectorSchema(wrapPg(tx));
+          await ensureVectorSchema(wrapPg(tx, true));
         });
       } catch (error) {
         if (process.env.OMNIAGENT_LOG_PGVECTOR_FAILURES === "true") {
@@ -1212,7 +1224,7 @@ function databaseSslConfiguration(databaseUrl: string, label: string) {
 
 // Wraps a postgres.Sql instance (or transaction-scoped sql) into our SqlClient
 // shape, adding the .query() alias expected by helpers throughout this file.
-function wrapPg(pg: AnyPg): SqlClient {
+function wrapPg(pg: AnyPg, transactionScoped = false): SqlClient {
   const client = ((strings: TemplateStringsArray, ...params: unknown[]) =>
     pg(strings, ...params)) as unknown as SqlClient;
 
@@ -1225,6 +1237,10 @@ function wrapPg(pg: AnyPg): SqlClient {
   client.transaction = () => {
     throw new Error("Use getSql().transaction() for external transactions.");
   };
+  Object.defineProperty(client, "transactionScoped", {
+    value: transactionScoped,
+    enumerable: false,
+  });
 
   return client;
 }
@@ -1268,6 +1284,11 @@ function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): Sq
       (sql: AnyPg) => sql.unsafe(text, params ?? []),
       isDatabaseMutation(text),
     );
+
+  Object.defineProperty(scoped, "transactionScoped", {
+    value: scopeAlreadyApplied,
+    enumerable: false,
+  });
 
   // Only callback transactions are safe here. Promise arrays begin executing
   // before pg.begin can apply tenant scope and therefore cannot be atomic.
@@ -3257,6 +3278,1281 @@ async function ensureGovernedToolEffectReceipts(sql: SqlClient) {
     ALTER TABLE omni_tool_executions
     ADD COLUMN IF NOT EXISTS effect_receipt JSONB
   `;
+}
+
+async function ensureCanonicalSourceLineageShadow(sql: SqlClient) {
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_source_contract_id_is_valid(value TEXT)
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    AS $function$
+      SELECT value IS NOT NULL
+        AND value = btrim(value)
+        AND char_length(value) BETWEEN 1 AND 240
+        AND value ~ '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_source_id_array_is_canonical(
+      values_to_check TEXT[],
+      maximum_entries INTEGER
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    AS $function$
+      SELECT values_to_check IS NOT NULL
+        AND maximum_entries > 0
+        AND cardinality(values_to_check) BETWEEN 1 AND maximum_entries
+        AND NOT EXISTS (
+          SELECT 1
+          FROM (
+            SELECT
+              value,
+              lag(value) OVER (ORDER BY ordinal_position) AS previous_value
+            FROM unnest(values_to_check)
+              WITH ORDINALITY AS entry(value, ordinal_position)
+          ) ordered_values
+          WHERE NOT omni_source_contract_id_is_valid(value)
+            OR (
+              previous_value IS NOT NULL
+              AND value COLLATE "C" <= previous_value COLLATE "C"
+            )
+        )
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_jsonb_safe_integer(
+      value_to_check JSONB,
+      minimum_value BIGINT
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    AS $function$
+      SELECT CASE
+        WHEN jsonb_typeof(value_to_check) IS DISTINCT FROM 'number' THEN FALSE
+        WHEN value_to_check #>> '{}' !~ '^(0|[1-9][0-9]*)$' THEN FALSE
+        ELSE (value_to_check #>> '{}')::NUMERIC
+          BETWEEN minimum_value AND 9007199254740991
+      END
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_jsonb_safe_integer_value(
+      value_to_check JSONB
+    )
+    RETURNS NUMERIC
+    LANGUAGE SQL
+    IMMUTABLE
+    AS $function$
+      SELECT CASE
+        WHEN omni_jsonb_safe_integer(value_to_check, 0)
+          THEN (value_to_check #>> '{}')::NUMERIC
+        ELSE NULL
+      END
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_evidence_locator_v1_is_allowlisted(
+      locator_value JSONB
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    AS $function$
+      SELECT CASE
+        WHEN jsonb_typeof(locator_value) <> 'object' THEN FALSE
+        WHEN locator_value ->> 'kind' = 'text_span' THEN
+          locator_value ?& ARRAY[
+            'kind', 'offsetUnit', 'startOffset', 'endOffsetExclusive',
+            'containerLength', 'containerSha256'
+          ]
+          AND locator_value - ARRAY[
+            'kind', 'offsetUnit', 'startOffset', 'endOffsetExclusive',
+            'containerLength', 'containerSha256'
+          ] = '{}'::JSONB
+          AND locator_value ->> 'offsetUnit' IN (
+            'unicode_code_point', 'utf16_code_unit', 'utf8_byte'
+          )
+          AND omni_jsonb_safe_integer(locator_value -> 'startOffset', 0)
+          AND omni_jsonb_safe_integer(locator_value -> 'endOffsetExclusive', 1)
+          AND omni_jsonb_safe_integer(locator_value -> 'containerLength', 1)
+          AND omni_jsonb_safe_integer_value(
+            locator_value -> 'endOffsetExclusive'
+          ) > omni_jsonb_safe_integer_value(locator_value -> 'startOffset')
+          AND omni_jsonb_safe_integer_value(
+            locator_value -> 'endOffsetExclusive'
+          ) <= omni_jsonb_safe_integer_value(locator_value -> 'containerLength')
+          AND locator_value ->> 'containerSha256' ~ '^[0-9a-f]{64}$'
+        WHEN locator_value ->> 'kind' = 'page' THEN
+          locator_value ?& ARRAY['kind', 'pageNumber', 'pageCount']
+          AND locator_value - ARRAY['kind', 'pageNumber', 'pageCount'] = '{}'::JSONB
+          AND omni_jsonb_safe_integer(locator_value -> 'pageNumber', 1)
+          AND (
+            locator_value -> 'pageCount' = 'null'::JSONB
+            OR (
+              omni_jsonb_safe_integer(locator_value -> 'pageCount', 1)
+              AND omni_jsonb_safe_integer_value(
+                locator_value -> 'pageNumber'
+              ) <= omni_jsonb_safe_integer_value(locator_value -> 'pageCount')
+            )
+          )
+        WHEN locator_value ->> 'kind' = 'sheet_range' THEN
+          locator_value ?& ARRAY[
+            'kind', 'sheetKeySha256', 'startRow', 'endRowExclusive',
+            'startColumn', 'endColumnExclusive', 'sheetRowCount',
+            'sheetColumnCount'
+          ]
+          AND locator_value - ARRAY[
+            'kind', 'sheetKeySha256', 'startRow', 'endRowExclusive',
+            'startColumn', 'endColumnExclusive', 'sheetRowCount',
+            'sheetColumnCount'
+          ] = '{}'::JSONB
+          AND locator_value ->> 'sheetKeySha256' ~ '^[0-9a-f]{64}$'
+          AND omni_jsonb_safe_integer(locator_value -> 'startRow', 1)
+          AND omni_jsonb_safe_integer(locator_value -> 'endRowExclusive', 1)
+          AND omni_jsonb_safe_integer(locator_value -> 'startColumn', 1)
+          AND omni_jsonb_safe_integer(locator_value -> 'endColumnExclusive', 1)
+          AND omni_jsonb_safe_integer_value(
+            locator_value -> 'endRowExclusive'
+          ) > omni_jsonb_safe_integer_value(locator_value -> 'startRow')
+          AND omni_jsonb_safe_integer_value(
+            locator_value -> 'endColumnExclusive'
+          ) > omni_jsonb_safe_integer_value(locator_value -> 'startColumn')
+          AND (
+            locator_value -> 'sheetRowCount' = 'null'::JSONB
+            OR (
+              omni_jsonb_safe_integer(locator_value -> 'sheetRowCount', 1)
+              AND omni_jsonb_safe_integer_value(
+                locator_value -> 'endRowExclusive'
+              ) <= omni_jsonb_safe_integer_value(
+                locator_value -> 'sheetRowCount'
+              ) + 1
+            )
+          )
+          AND (
+            locator_value -> 'sheetColumnCount' = 'null'::JSONB
+            OR (
+              omni_jsonb_safe_integer(locator_value -> 'sheetColumnCount', 1)
+              AND omni_jsonb_safe_integer_value(
+                locator_value -> 'endColumnExclusive'
+              ) <= omni_jsonb_safe_integer_value(
+                locator_value -> 'sheetColumnCount'
+              ) + 1
+            )
+          )
+        WHEN locator_value ->> 'kind' = 'slide' THEN
+          locator_value ?& ARRAY[
+            'kind', 'slideNumber', 'slideCount', 'elementKeySha256'
+          ]
+          AND locator_value - ARRAY[
+            'kind', 'slideNumber', 'slideCount', 'elementKeySha256'
+          ] = '{}'::JSONB
+          AND omni_jsonb_safe_integer(locator_value -> 'slideNumber', 1)
+          AND (
+            locator_value -> 'slideCount' = 'null'::JSONB
+            OR (
+              omni_jsonb_safe_integer(locator_value -> 'slideCount', 1)
+              AND omni_jsonb_safe_integer_value(
+                locator_value -> 'slideNumber'
+              ) <= omni_jsonb_safe_integer_value(locator_value -> 'slideCount')
+            )
+          )
+          AND (
+            locator_value -> 'elementKeySha256' = 'null'::JSONB
+            OR locator_value ->> 'elementKeySha256' ~ '^[0-9a-f]{64}$'
+          )
+        WHEN locator_value ->> 'kind' = 'email_section' THEN
+          locator_value ?& ARRAY[
+            'kind', 'section', 'sectionIndex', 'partKeySha256'
+          ]
+          AND locator_value - ARRAY[
+            'kind', 'section', 'sectionIndex', 'partKeySha256'
+          ] = '{}'::JSONB
+          AND locator_value ->> 'section' IN (
+            'headers', 'subject', 'body', 'attachment'
+          )
+          AND omni_jsonb_safe_integer(locator_value -> 'sectionIndex', 0)
+          AND (
+            locator_value -> 'partKeySha256' = 'null'::JSONB
+            OR locator_value ->> 'partKeySha256' ~ '^[0-9a-f]{64}$'
+          )
+        WHEN locator_value ->> 'kind' = 'image_region' THEN
+          locator_value ?& ARRAY[
+            'kind', 'coordinateUnit', 'x', 'y', 'width', 'height',
+            'imageWidth', 'imageHeight'
+          ]
+          AND locator_value - ARRAY[
+            'kind', 'coordinateUnit', 'x', 'y', 'width', 'height',
+            'imageWidth', 'imageHeight'
+          ] = '{}'::JSONB
+          AND locator_value ->> 'coordinateUnit' = 'pixel'
+          AND omni_jsonb_safe_integer(locator_value -> 'x', 0)
+          AND omni_jsonb_safe_integer(locator_value -> 'y', 0)
+          AND omni_jsonb_safe_integer(locator_value -> 'width', 1)
+          AND omni_jsonb_safe_integer(locator_value -> 'height', 1)
+          AND omni_jsonb_safe_integer(locator_value -> 'imageWidth', 1)
+          AND omni_jsonb_safe_integer(locator_value -> 'imageHeight', 1)
+          AND omni_jsonb_safe_integer_value(locator_value -> 'x')
+            + omni_jsonb_safe_integer_value(locator_value -> 'width')
+            <= omni_jsonb_safe_integer_value(locator_value -> 'imageWidth')
+          AND omni_jsonb_safe_integer_value(locator_value -> 'y')
+            + omni_jsonb_safe_integer_value(locator_value -> 'height')
+            <= omni_jsonb_safe_integer_value(locator_value -> 'imageHeight')
+        WHEN locator_value ->> 'kind' = 'media_time_range' THEN
+          locator_value ?& ARRAY[
+            'kind', 'mediaKind', 'startMilliseconds',
+            'endMillisecondsExclusive', 'durationMilliseconds'
+          ]
+          AND locator_value - ARRAY[
+            'kind', 'mediaKind', 'startMilliseconds',
+            'endMillisecondsExclusive', 'durationMilliseconds'
+          ] = '{}'::JSONB
+          AND locator_value ->> 'mediaKind' IN ('audio', 'video')
+          AND omni_jsonb_safe_integer(
+            locator_value -> 'startMilliseconds',
+            0
+          )
+          AND omni_jsonb_safe_integer(
+            locator_value -> 'endMillisecondsExclusive',
+            1
+          )
+          AND omni_jsonb_safe_integer(
+            locator_value -> 'durationMilliseconds',
+            1
+          )
+          AND omni_jsonb_safe_integer_value(
+            locator_value -> 'endMillisecondsExclusive'
+          ) > omni_jsonb_safe_integer_value(
+            locator_value -> 'startMilliseconds'
+          )
+          AND omni_jsonb_safe_integer_value(
+            locator_value -> 'endMillisecondsExclusive'
+          ) <= omni_jsonb_safe_integer_value(
+            locator_value -> 'durationMilliseconds'
+          )
+        ELSE FALSE
+      END
+    $function$
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_source_adapter_output_receipts (
+      schema_version INTEGER NOT NULL,
+      contract_kind TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      connection_id TEXT NOT NULL,
+      adapter_output_id TEXT NOT NULL,
+      adapter_output_sha256 TEXT NOT NULL,
+      adapter_operation TEXT NOT NULL,
+      adapter_id TEXT NOT NULL,
+      adapter_version_id TEXT NOT NULL,
+      adapter_config_sha256 TEXT NOT NULL,
+      adapter_event_key_sha256 TEXT NOT NULL,
+      adapter_observed_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_source_adapter_output_receipts_pkey
+        PRIMARY KEY (tenant_id, adapter_output_id),
+      CONSTRAINT omni_source_adapter_output_receipts_envelope_key
+        UNIQUE (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256,
+          connection_id,
+          adapter_operation,
+          adapter_id,
+          adapter_version_id,
+          adapter_config_sha256,
+          adapter_event_key_sha256,
+          adapter_observed_at
+        ),
+      CONSTRAINT omni_source_adapter_output_receipts_schema_check CHECK (
+        schema_version = 1
+        AND contract_kind = 'source_adapter_output'
+        AND adapter_operation = 'upsert'
+      ),
+      CONSTRAINT omni_source_adapter_output_receipts_required_ids_check CHECK (
+        omni_source_contract_id_is_valid(tenant_id)
+        AND omni_source_contract_id_is_valid(connection_id)
+        AND omni_source_contract_id_is_valid(adapter_output_id)
+        AND omni_source_contract_id_is_valid(adapter_id)
+        AND omni_source_contract_id_is_valid(adapter_version_id)
+      ),
+      CONSTRAINT omni_source_adapter_output_receipts_hashes_check CHECK (
+        adapter_output_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_config_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_event_key_sha256 ~ '^[0-9a-f]{64}$'
+      )
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_source_items (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      contract_kind TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      workspace_id TEXT,
+      project_id TEXT,
+      mission_id TEXT,
+      connection_id TEXT NOT NULL,
+      visibility TEXT NOT NULL,
+      sensitivity TEXT NOT NULL,
+      permission_grant_ids TEXT[] NOT NULL,
+      allowed_purpose_ids TEXT[] NOT NULL,
+      retention_policy_id TEXT NOT NULL,
+      retention_expires_at TIMESTAMPTZ,
+      permission_set_sha256 TEXT NOT NULL,
+      purpose_set_sha256 TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      provider_item_key_sha256 TEXT NOT NULL,
+      metadata_sha256 TEXT NOT NULL,
+      source_created_at TIMESTAMPTZ,
+      source_updated_at TIMESTAMPTZ,
+      captured_at TIMESTAMPTZ NOT NULL,
+      extractor_id TEXT NOT NULL,
+      extractor_version_id TEXT NOT NULL,
+      extractor_config_sha256 TEXT NOT NULL,
+      model_version_id TEXT,
+      source_item_sha256 TEXT NOT NULL,
+      current_revision_id TEXT,
+      adapter_output_id TEXT NOT NULL,
+      adapter_output_sha256 TEXT NOT NULL,
+      adapter_operation TEXT NOT NULL,
+      adapter_id TEXT NOT NULL,
+      adapter_version_id TEXT NOT NULL,
+      adapter_config_sha256 TEXT NOT NULL,
+      adapter_event_key_sha256 TEXT NOT NULL,
+      adapter_observed_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_source_items_tenant_id_id_key
+        UNIQUE (tenant_id, id),
+      CONSTRAINT omni_source_items_tenant_scope_key
+        UNIQUE (tenant_id, id, owner_actor_id, connection_id),
+      CONSTRAINT omni_source_items_adapter_output_receipt_fkey
+        FOREIGN KEY (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256,
+          connection_id,
+          adapter_operation,
+          adapter_id,
+          adapter_version_id,
+          adapter_config_sha256,
+          adapter_event_key_sha256,
+          adapter_observed_at
+        )
+        REFERENCES omni_source_adapter_output_receipts (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256,
+          connection_id,
+          adapter_operation,
+          adapter_id,
+          adapter_version_id,
+          adapter_config_sha256,
+          adapter_event_key_sha256,
+          adapter_observed_at
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_items_schema_check CHECK (
+        schema_version = 1
+        AND contract_kind = 'source_item'
+        AND adapter_operation = 'upsert'
+      ),
+      CONSTRAINT omni_source_items_source_kind_check CHECK (
+        source_kind IN (
+          'document', 'spreadsheet', 'presentation', 'email',
+          'calendar_event', 'message', 'webpage', 'image', 'audio',
+          'video', 'record', 'file', 'capture'
+        )
+      ),
+      CONSTRAINT omni_source_items_visibility_check CHECK (
+        visibility IN (
+          'agent_private', 'user_private', 'mission_shared',
+          'project_shared', 'workspace_shared'
+        )
+      ),
+      CONSTRAINT omni_source_items_sensitivity_check CHECK (
+        sensitivity IN ('public', 'internal', 'confidential', 'restricted')
+      ),
+      CONSTRAINT omni_source_items_visibility_scope_check CHECK (
+        (visibility <> 'workspace_shared' OR workspace_id IS NOT NULL)
+        AND (visibility <> 'project_shared' OR project_id IS NOT NULL)
+        AND (visibility <> 'mission_shared' OR mission_id IS NOT NULL)
+      ),
+      CONSTRAINT omni_source_items_required_ids_check CHECK (
+        omni_source_contract_id_is_valid(id)
+        AND omni_source_contract_id_is_valid(tenant_id)
+        AND omni_source_contract_id_is_valid(owner_actor_id)
+        AND omni_source_contract_id_is_valid(connection_id)
+        AND omni_source_contract_id_is_valid(retention_policy_id)
+        AND omni_source_contract_id_is_valid(extractor_id)
+        AND omni_source_contract_id_is_valid(extractor_version_id)
+        AND omni_source_contract_id_is_valid(adapter_output_id)
+        AND omni_source_contract_id_is_valid(adapter_id)
+        AND omni_source_contract_id_is_valid(adapter_version_id)
+        AND (
+          workspace_id IS NULL
+          OR omni_source_contract_id_is_valid(workspace_id)
+        )
+        AND (
+          project_id IS NULL
+          OR omni_source_contract_id_is_valid(project_id)
+        )
+        AND (
+          mission_id IS NULL
+          OR omni_source_contract_id_is_valid(mission_id)
+        )
+        AND (
+          model_version_id IS NULL
+          OR omni_source_contract_id_is_valid(model_version_id)
+        )
+        AND (
+          current_revision_id IS NULL
+          OR omni_source_contract_id_is_valid(current_revision_id)
+        )
+      ),
+      CONSTRAINT omni_source_items_grants_check CHECK (
+        omni_source_id_array_is_canonical(permission_grant_ids, 128)
+        AND omni_source_id_array_is_canonical(allowed_purpose_ids, 64)
+      ),
+      CONSTRAINT omni_source_items_hashes_check CHECK (
+        permission_set_sha256 ~ '^[0-9a-f]{64}$'
+        AND purpose_set_sha256 ~ '^[0-9a-f]{64}$'
+        AND provider_item_key_sha256 ~ '^[0-9a-f]{64}$'
+        AND metadata_sha256 ~ '^[0-9a-f]{64}$'
+        AND extractor_config_sha256 ~ '^[0-9a-f]{64}$'
+        AND source_item_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_output_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_config_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_event_key_sha256 ~ '^[0-9a-f]{64}$'
+      ),
+      CONSTRAINT omni_source_items_source_timestamps_check CHECK (
+        source_created_at IS NULL
+        OR source_updated_at IS NULL
+        OR source_created_at <= source_updated_at
+      )
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_source_revisions (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      contract_kind TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      source_item_id TEXT NOT NULL,
+      previous_source_revision_id TEXT,
+      owner_actor_id TEXT NOT NULL,
+      workspace_id TEXT,
+      project_id TEXT,
+      mission_id TEXT,
+      connection_id TEXT NOT NULL,
+      visibility TEXT NOT NULL,
+      sensitivity TEXT NOT NULL,
+      permission_grant_ids TEXT[] NOT NULL,
+      allowed_purpose_ids TEXT[] NOT NULL,
+      retention_policy_id TEXT NOT NULL,
+      retention_expires_at TIMESTAMPTZ,
+      permission_set_sha256 TEXT NOT NULL,
+      purpose_set_sha256 TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      provider_item_key_sha256 TEXT NOT NULL,
+      provider_revision_key_sha256 TEXT NOT NULL,
+      content_sha256 TEXT NOT NULL,
+      content_byte_length BIGINT NOT NULL,
+      media_type TEXT NOT NULL,
+      metadata_sha256 TEXT NOT NULL,
+      source_created_at TIMESTAMPTZ,
+      source_updated_at TIMESTAMPTZ,
+      captured_at TIMESTAMPTZ NOT NULL,
+      extractor_id TEXT NOT NULL,
+      extractor_version_id TEXT NOT NULL,
+      extractor_config_sha256 TEXT NOT NULL,
+      model_version_id TEXT,
+      source_revision_sha256 TEXT NOT NULL,
+      adapter_output_id TEXT NOT NULL,
+      adapter_output_sha256 TEXT NOT NULL,
+      adapter_operation TEXT NOT NULL,
+      adapter_id TEXT NOT NULL,
+      adapter_version_id TEXT NOT NULL,
+      adapter_config_sha256 TEXT NOT NULL,
+      adapter_event_key_sha256 TEXT NOT NULL,
+      adapter_observed_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_source_revisions_tenant_id_id_key
+        UNIQUE (tenant_id, id),
+      CONSTRAINT omni_source_revisions_tenant_item_key
+        UNIQUE (tenant_id, id, source_item_id),
+      CONSTRAINT omni_source_revisions_tenant_scope_key
+        UNIQUE (
+          tenant_id,
+          id,
+          source_item_id,
+          owner_actor_id,
+          connection_id
+        ),
+      CONSTRAINT omni_source_revisions_adapter_output_receipt_fkey
+        FOREIGN KEY (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256,
+          connection_id,
+          adapter_operation,
+          adapter_id,
+          adapter_version_id,
+          adapter_config_sha256,
+          adapter_event_key_sha256,
+          adapter_observed_at
+        )
+        REFERENCES omni_source_adapter_output_receipts (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256,
+          connection_id,
+          adapter_operation,
+          adapter_id,
+          adapter_version_id,
+          adapter_config_sha256,
+          adapter_event_key_sha256,
+          adapter_observed_at
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_revisions_source_item_fkey
+        FOREIGN KEY (tenant_id, source_item_id, owner_actor_id, connection_id)
+        REFERENCES omni_source_items (
+          tenant_id,
+          id,
+          owner_actor_id,
+          connection_id
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_source_revisions_previous_revision_fkey
+        FOREIGN KEY (tenant_id, previous_source_revision_id, source_item_id)
+        REFERENCES omni_source_revisions (tenant_id, id, source_item_id)
+        ON DELETE RESTRICT
+        DEFERRABLE INITIALLY DEFERRED,
+      CONSTRAINT omni_source_revisions_schema_check CHECK (
+        schema_version = 1
+        AND contract_kind = 'source_revision'
+        AND adapter_operation = 'upsert'
+      ),
+      CONSTRAINT omni_source_revisions_source_kind_check CHECK (
+        source_kind IN (
+          'document', 'spreadsheet', 'presentation', 'email',
+          'calendar_event', 'message', 'webpage', 'image', 'audio',
+          'video', 'record', 'file', 'capture'
+        )
+      ),
+      CONSTRAINT omni_source_revisions_visibility_check CHECK (
+        visibility IN (
+          'agent_private', 'user_private', 'mission_shared',
+          'project_shared', 'workspace_shared'
+        )
+      ),
+      CONSTRAINT omni_source_revisions_sensitivity_check CHECK (
+        sensitivity IN ('public', 'internal', 'confidential', 'restricted')
+      ),
+      CONSTRAINT omni_source_revisions_visibility_scope_check CHECK (
+        (visibility <> 'workspace_shared' OR workspace_id IS NOT NULL)
+        AND (visibility <> 'project_shared' OR project_id IS NOT NULL)
+        AND (visibility <> 'mission_shared' OR mission_id IS NOT NULL)
+      ),
+      CONSTRAINT omni_source_revisions_required_ids_check CHECK (
+        omni_source_contract_id_is_valid(id)
+        AND omni_source_contract_id_is_valid(tenant_id)
+        AND omni_source_contract_id_is_valid(source_item_id)
+        AND omni_source_contract_id_is_valid(owner_actor_id)
+        AND omni_source_contract_id_is_valid(connection_id)
+        AND omni_source_contract_id_is_valid(retention_policy_id)
+        AND omni_source_contract_id_is_valid(extractor_id)
+        AND omni_source_contract_id_is_valid(extractor_version_id)
+        AND omni_source_contract_id_is_valid(adapter_output_id)
+        AND omni_source_contract_id_is_valid(adapter_id)
+        AND omni_source_contract_id_is_valid(adapter_version_id)
+        AND (
+          previous_source_revision_id IS NULL
+          OR omni_source_contract_id_is_valid(previous_source_revision_id)
+        )
+        AND (
+          workspace_id IS NULL
+          OR omni_source_contract_id_is_valid(workspace_id)
+        )
+        AND (
+          project_id IS NULL
+          OR omni_source_contract_id_is_valid(project_id)
+        )
+        AND (
+          mission_id IS NULL
+          OR omni_source_contract_id_is_valid(mission_id)
+        )
+        AND (
+          model_version_id IS NULL
+          OR omni_source_contract_id_is_valid(model_version_id)
+        )
+      ),
+      CONSTRAINT omni_source_revisions_grants_check CHECK (
+        omni_source_id_array_is_canonical(permission_grant_ids, 128)
+        AND omni_source_id_array_is_canonical(allowed_purpose_ids, 64)
+      ),
+      CONSTRAINT omni_source_revisions_hashes_check CHECK (
+        permission_set_sha256 ~ '^[0-9a-f]{64}$'
+        AND purpose_set_sha256 ~ '^[0-9a-f]{64}$'
+        AND provider_item_key_sha256 ~ '^[0-9a-f]{64}$'
+        AND provider_revision_key_sha256 ~ '^[0-9a-f]{64}$'
+        AND content_sha256 ~ '^[0-9a-f]{64}$'
+        AND metadata_sha256 ~ '^[0-9a-f]{64}$'
+        AND extractor_config_sha256 ~ '^[0-9a-f]{64}$'
+        AND source_revision_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_output_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_config_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_event_key_sha256 ~ '^[0-9a-f]{64}$'
+      ),
+      CONSTRAINT omni_source_revisions_content_length_check
+        CHECK (content_byte_length BETWEEN 0 AND 9007199254740991),
+      CONSTRAINT omni_source_revisions_previous_revision_check CHECK (
+        previous_source_revision_id IS NULL
+        OR previous_source_revision_id <> id
+      ),
+      CONSTRAINT omni_source_revisions_media_type_check CHECK (
+        char_length(media_type) BETWEEN 3 AND 160
+        AND media_type ~* '^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$'
+      ),
+      CONSTRAINT omni_source_revisions_source_timestamps_check CHECK (
+        source_created_at IS NULL
+        OR source_updated_at IS NULL
+        OR source_created_at <= source_updated_at
+      )
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_evidence_units (
+      id TEXT PRIMARY KEY,
+      schema_version INTEGER NOT NULL,
+      contract_kind TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      source_item_id TEXT NOT NULL,
+      source_revision_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      workspace_id TEXT,
+      project_id TEXT,
+      mission_id TEXT,
+      connection_id TEXT NOT NULL,
+      visibility TEXT NOT NULL,
+      sensitivity TEXT NOT NULL,
+      permission_grant_ids TEXT[] NOT NULL,
+      allowed_purpose_ids TEXT[] NOT NULL,
+      retention_policy_id TEXT NOT NULL,
+      retention_expires_at TIMESTAMPTZ,
+      permission_set_sha256 TEXT NOT NULL,
+      purpose_set_sha256 TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      provider_item_key_sha256 TEXT NOT NULL,
+      evidence_content_sha256 TEXT NOT NULL,
+      evidence_byte_length BIGINT NOT NULL,
+      locator JSONB NOT NULL,
+      locator_sha256 TEXT NOT NULL,
+      source_created_at TIMESTAMPTZ,
+      source_updated_at TIMESTAMPTZ,
+      captured_at TIMESTAMPTZ NOT NULL,
+      extracted_at TIMESTAMPTZ NOT NULL,
+      extractor_id TEXT NOT NULL,
+      extractor_version_id TEXT NOT NULL,
+      extractor_config_sha256 TEXT NOT NULL,
+      model_version_id TEXT,
+      evidence_unit_sha256 TEXT NOT NULL,
+      adapter_output_id TEXT NOT NULL,
+      adapter_output_sha256 TEXT NOT NULL,
+      adapter_operation TEXT NOT NULL,
+      adapter_id TEXT NOT NULL,
+      adapter_version_id TEXT NOT NULL,
+      adapter_config_sha256 TEXT NOT NULL,
+      adapter_event_key_sha256 TEXT NOT NULL,
+      adapter_observed_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_evidence_units_tenant_id_id_key
+        UNIQUE (tenant_id, id),
+      CONSTRAINT omni_evidence_units_tenant_revision_key
+        UNIQUE (tenant_id, id, source_revision_id),
+      CONSTRAINT omni_evidence_units_adapter_output_receipt_fkey
+        FOREIGN KEY (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256,
+          connection_id,
+          adapter_operation,
+          adapter_id,
+          adapter_version_id,
+          adapter_config_sha256,
+          adapter_event_key_sha256,
+          adapter_observed_at
+        )
+        REFERENCES omni_source_adapter_output_receipts (
+          tenant_id,
+          adapter_output_id,
+          adapter_output_sha256,
+          connection_id,
+          adapter_operation,
+          adapter_id,
+          adapter_version_id,
+          adapter_config_sha256,
+          adapter_event_key_sha256,
+          adapter_observed_at
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_evidence_units_revision_fkey
+        FOREIGN KEY (
+          tenant_id,
+          source_revision_id,
+          source_item_id,
+          owner_actor_id,
+          connection_id
+        )
+        REFERENCES omni_source_revisions (
+          tenant_id,
+          id,
+          source_item_id,
+          owner_actor_id,
+          connection_id
+        )
+        ON DELETE RESTRICT,
+      CONSTRAINT omni_evidence_units_schema_check CHECK (
+        schema_version = 1
+        AND contract_kind = 'evidence_unit'
+        AND adapter_operation = 'upsert'
+      ),
+      CONSTRAINT omni_evidence_units_source_kind_check CHECK (
+        source_kind IN (
+          'document', 'spreadsheet', 'presentation', 'email',
+          'calendar_event', 'message', 'webpage', 'image', 'audio',
+          'video', 'record', 'file', 'capture'
+        )
+      ),
+      CONSTRAINT omni_evidence_units_visibility_check CHECK (
+        visibility IN (
+          'agent_private', 'user_private', 'mission_shared',
+          'project_shared', 'workspace_shared'
+        )
+      ),
+      CONSTRAINT omni_evidence_units_sensitivity_check CHECK (
+        sensitivity IN ('public', 'internal', 'confidential', 'restricted')
+      ),
+      CONSTRAINT omni_evidence_units_visibility_scope_check CHECK (
+        (visibility <> 'workspace_shared' OR workspace_id IS NOT NULL)
+        AND (visibility <> 'project_shared' OR project_id IS NOT NULL)
+        AND (visibility <> 'mission_shared' OR mission_id IS NOT NULL)
+      ),
+      CONSTRAINT omni_evidence_units_required_ids_check CHECK (
+        omni_source_contract_id_is_valid(id)
+        AND omni_source_contract_id_is_valid(tenant_id)
+        AND omni_source_contract_id_is_valid(source_item_id)
+        AND omni_source_contract_id_is_valid(source_revision_id)
+        AND omni_source_contract_id_is_valid(owner_actor_id)
+        AND omni_source_contract_id_is_valid(connection_id)
+        AND omni_source_contract_id_is_valid(retention_policy_id)
+        AND omni_source_contract_id_is_valid(extractor_id)
+        AND omni_source_contract_id_is_valid(extractor_version_id)
+        AND omni_source_contract_id_is_valid(adapter_output_id)
+        AND omni_source_contract_id_is_valid(adapter_id)
+        AND omni_source_contract_id_is_valid(adapter_version_id)
+        AND (
+          workspace_id IS NULL
+          OR omni_source_contract_id_is_valid(workspace_id)
+        )
+        AND (
+          project_id IS NULL
+          OR omni_source_contract_id_is_valid(project_id)
+        )
+        AND (
+          mission_id IS NULL
+          OR omni_source_contract_id_is_valid(mission_id)
+        )
+        AND (
+          model_version_id IS NULL
+          OR omni_source_contract_id_is_valid(model_version_id)
+        )
+      ),
+      CONSTRAINT omni_evidence_units_grants_check CHECK (
+        omni_source_id_array_is_canonical(permission_grant_ids, 128)
+        AND omni_source_id_array_is_canonical(allowed_purpose_ids, 64)
+      ),
+      CONSTRAINT omni_evidence_units_hashes_check CHECK (
+        permission_set_sha256 ~ '^[0-9a-f]{64}$'
+        AND purpose_set_sha256 ~ '^[0-9a-f]{64}$'
+        AND provider_item_key_sha256 ~ '^[0-9a-f]{64}$'
+        AND evidence_content_sha256 ~ '^[0-9a-f]{64}$'
+        AND locator_sha256 ~ '^[0-9a-f]{64}$'
+        AND extractor_config_sha256 ~ '^[0-9a-f]{64}$'
+        AND evidence_unit_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_output_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_config_sha256 ~ '^[0-9a-f]{64}$'
+        AND adapter_event_key_sha256 ~ '^[0-9a-f]{64}$'
+      ),
+      CONSTRAINT omni_evidence_units_content_length_check
+        CHECK (evidence_byte_length BETWEEN 0 AND 9007199254740991),
+      CONSTRAINT omni_evidence_units_locator_check
+        CHECK (omni_evidence_locator_v1_is_allowlisted(locator)),
+      CONSTRAINT omni_evidence_units_source_timestamps_check CHECK (
+        source_created_at IS NULL
+        OR source_updated_at IS NULL
+        OR source_created_at <= source_updated_at
+      )
+    )
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_source_items_current_revision_fkey'
+          AND conrelid = 'omni_source_items'::regclass
+      ) THEN
+        ALTER TABLE omni_source_items
+        ADD CONSTRAINT omni_source_items_current_revision_fkey
+        FOREIGN KEY (tenant_id, current_revision_id, id)
+        REFERENCES omni_source_revisions (tenant_id, id, source_item_id)
+        ON DELETE RESTRICT
+        DEFERRABLE INITIALLY DEFERRED;
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_source_revision_binding()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM omni_source_items source_item
+        WHERE source_item.tenant_id = NEW.tenant_id
+          AND source_item.id = NEW.source_item_id
+          AND source_item.owner_actor_id = NEW.owner_actor_id
+          AND source_item.workspace_id IS NOT DISTINCT FROM NEW.workspace_id
+          AND source_item.project_id IS NOT DISTINCT FROM NEW.project_id
+          AND source_item.mission_id IS NOT DISTINCT FROM NEW.mission_id
+          AND source_item.connection_id = NEW.connection_id
+          AND source_item.visibility = NEW.visibility
+          AND source_item.sensitivity = NEW.sensitivity
+          AND source_item.source_kind = NEW.source_kind
+          AND source_item.provider_item_key_sha256 = NEW.provider_item_key_sha256
+          AND source_item.source_created_at IS NOT DISTINCT FROM NEW.source_created_at
+          AND source_item.source_updated_at IS NOT DISTINCT FROM NEW.source_updated_at
+          AND source_item.captured_at = NEW.captured_at
+          AND NEW.permission_grant_ids <@ source_item.permission_grant_ids
+          AND NEW.allowed_purpose_ids <@ source_item.allowed_purpose_ids
+          AND NEW.retention_policy_id = source_item.retention_policy_id
+          AND (
+            source_item.retention_expires_at IS NULL
+            OR (
+              NEW.retention_expires_at IS NOT NULL
+              AND NEW.retention_expires_at <= source_item.retention_expires_at
+            )
+          )
+      ) THEN
+        RAISE EXCEPTION 'Source revision binding does not match its source item'
+          USING ERRCODE = '23514';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_evidence_unit_binding()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM omni_source_revisions source_revision
+        WHERE source_revision.tenant_id = NEW.tenant_id
+          AND source_revision.id = NEW.source_revision_id
+          AND source_revision.source_item_id = NEW.source_item_id
+          AND source_revision.owner_actor_id = NEW.owner_actor_id
+          AND source_revision.workspace_id IS NOT DISTINCT FROM NEW.workspace_id
+          AND source_revision.project_id IS NOT DISTINCT FROM NEW.project_id
+          AND source_revision.mission_id IS NOT DISTINCT FROM NEW.mission_id
+          AND source_revision.connection_id = NEW.connection_id
+          AND source_revision.visibility = NEW.visibility
+          AND source_revision.sensitivity = NEW.sensitivity
+          AND source_revision.source_kind = NEW.source_kind
+          AND source_revision.provider_item_key_sha256 = NEW.provider_item_key_sha256
+          AND source_revision.source_created_at IS NOT DISTINCT FROM NEW.source_created_at
+          AND source_revision.source_updated_at IS NOT DISTINCT FROM NEW.source_updated_at
+          AND source_revision.captured_at = NEW.captured_at
+          AND source_revision.adapter_output_id = NEW.adapter_output_id
+          AND source_revision.adapter_output_sha256 = NEW.adapter_output_sha256
+          AND source_revision.adapter_id = NEW.adapter_id
+          AND source_revision.adapter_version_id = NEW.adapter_version_id
+          AND source_revision.adapter_config_sha256 = NEW.adapter_config_sha256
+          AND source_revision.adapter_event_key_sha256 = NEW.adapter_event_key_sha256
+          AND source_revision.adapter_observed_at = NEW.adapter_observed_at
+          AND NEW.permission_grant_ids <@ source_revision.permission_grant_ids
+          AND NEW.allowed_purpose_ids <@ source_revision.allowed_purpose_ids
+          AND NEW.retention_policy_id = source_revision.retention_policy_id
+          AND (
+            source_revision.retention_expires_at IS NULL
+            OR (
+              NEW.retention_expires_at IS NOT NULL
+              AND NEW.retention_expires_at <= source_revision.retention_expires_at
+            )
+          )
+      ) THEN
+        RAISE EXCEPTION 'Evidence unit binding does not match its source revision'
+          USING ERRCODE = '23514';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_revisions_validate_binding'
+          AND tgrelid = 'omni_source_revisions'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_revisions_validate_binding
+        BEFORE INSERT ON omni_source_revisions
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_source_revision_binding();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_evidence_units_validate_binding'
+          AND tgrelid = 'omni_evidence_units'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_evidence_units_validate_binding
+        BEFORE INSERT ON omni_evidence_units
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_evidence_unit_binding();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    ALTER TABLE omni_knowledge_documents
+    ADD COLUMN IF NOT EXISTS source_item_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_knowledge_documents
+    ADD COLUMN IF NOT EXISTS source_revision_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_knowledge_chunks
+    ADD COLUMN IF NOT EXISTS source_revision_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_knowledge_chunks
+    ADD COLUMN IF NOT EXISTS evidence_unit_id TEXT
+  `;
+
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_knowledge_documents_tenant_id_id_idx
+    ON omni_knowledge_documents (tenant_id, id)
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_knowledge_documents_tenant_revision_idx
+    ON omni_knowledge_documents (tenant_id, id, source_revision_id)
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_knowledge_documents_lineage_pair_check'
+          AND conrelid = 'omni_knowledge_documents'::regclass
+      ) THEN
+        ALTER TABLE omni_knowledge_documents
+        ADD CONSTRAINT omni_knowledge_documents_lineage_pair_check
+        CHECK (
+          (source_item_id IS NULL AND source_revision_id IS NULL)
+          OR (source_item_id IS NOT NULL AND source_revision_id IS NOT NULL)
+        );
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_knowledge_documents_source_revision_fkey'
+          AND conrelid = 'omni_knowledge_documents'::regclass
+      ) THEN
+        ALTER TABLE omni_knowledge_documents
+        ADD CONSTRAINT omni_knowledge_documents_source_revision_fkey
+        FOREIGN KEY (tenant_id, source_revision_id, source_item_id)
+        REFERENCES omni_source_revisions (tenant_id, id, source_item_id)
+        ON DELETE RESTRICT;
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_knowledge_chunks_lineage_pair_check'
+          AND conrelid = 'omni_knowledge_chunks'::regclass
+      ) THEN
+        ALTER TABLE omni_knowledge_chunks
+        ADD CONSTRAINT omni_knowledge_chunks_lineage_pair_check
+        CHECK (
+          (source_revision_id IS NULL AND evidence_unit_id IS NULL)
+          OR (source_revision_id IS NOT NULL AND evidence_unit_id IS NOT NULL)
+        );
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_knowledge_chunks_tenant_document_fkey'
+          AND conrelid = 'omni_knowledge_chunks'::regclass
+      ) THEN
+        ALTER TABLE omni_knowledge_chunks
+        ADD CONSTRAINT omni_knowledge_chunks_tenant_document_fkey
+        FOREIGN KEY (tenant_id, document_id)
+        REFERENCES omni_knowledge_documents (tenant_id, id)
+        ON DELETE CASCADE;
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_knowledge_chunks_document_revision_fkey'
+          AND conrelid = 'omni_knowledge_chunks'::regclass
+      ) THEN
+        ALTER TABLE omni_knowledge_chunks
+        ADD CONSTRAINT omni_knowledge_chunks_document_revision_fkey
+        FOREIGN KEY (tenant_id, document_id, source_revision_id)
+        REFERENCES omni_knowledge_documents (tenant_id, id, source_revision_id)
+        ON DELETE CASCADE;
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_knowledge_chunks_evidence_revision_fkey'
+          AND conrelid = 'omni_knowledge_chunks'::regclass
+      ) THEN
+        ALTER TABLE omni_knowledge_chunks
+        ADD CONSTRAINT omni_knowledge_chunks_evidence_revision_fkey
+        FOREIGN KEY (tenant_id, evidence_unit_id, source_revision_id)
+        REFERENCES omni_evidence_units (tenant_id, id, source_revision_id)
+        ON DELETE RESTRICT;
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_immutable_source_lineage_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION '% rows are immutable; % is not permitted',
+        TG_TABLE_NAME,
+        TG_OP
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_adapter_output_receipt_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION '% rows are immutable; % is not permitted',
+        TG_TABLE_NAME,
+        TG_OP
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_adapter_output_receipts_immutable'
+          AND tgrelid = 'omni_source_adapter_output_receipts'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_adapter_output_receipts_immutable
+        BEFORE UPDATE OR DELETE ON omni_source_adapter_output_receipts
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_reject_adapter_output_receipt_change();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_adapter_output_receipts_no_truncate'
+          AND tgrelid = 'omni_source_adapter_output_receipts'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_adapter_output_receipts_no_truncate
+        BEFORE TRUNCATE ON omni_source_adapter_output_receipts
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_reject_adapter_output_receipt_change();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_revisions_immutable'
+          AND tgrelid = 'omni_source_revisions'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_revisions_immutable
+        BEFORE UPDATE OR DELETE ON omni_source_revisions
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_reject_immutable_source_lineage_change();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_source_revisions_no_truncate'
+          AND tgrelid = 'omni_source_revisions'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_source_revisions_no_truncate
+        BEFORE TRUNCATE ON omni_source_revisions
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_reject_immutable_source_lineage_change();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_evidence_units_immutable'
+          AND tgrelid = 'omni_evidence_units'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_evidence_units_immutable
+        BEFORE UPDATE OR DELETE ON omni_evidence_units
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_reject_immutable_source_lineage_change();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_evidence_units_no_truncate'
+          AND tgrelid = 'omni_evidence_units'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_evidence_units_no_truncate
+        BEFORE TRUNCATE ON omni_evidence_units
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_reject_immutable_source_lineage_change();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_items_tenant_actor_updated_idx ON omni_source_items (tenant_id, owner_actor_id, updated_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_items_tenant_scope_idx ON omni_source_items (tenant_id, workspace_id, project_id, mission_id)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_items_tenant_provider_key_idx ON omni_source_items (tenant_id, connection_id, provider_item_key_sha256)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_items_tenant_current_revision_idx ON omni_source_items (tenant_id, current_revision_id) WHERE current_revision_id IS NOT NULL`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_items_tenant_adapter_output_idx ON omni_source_items (tenant_id, adapter_output_id)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_items_retention_expiry_idx ON omni_source_items (retention_expires_at) WHERE retention_expires_at IS NOT NULL`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_revisions_tenant_item_captured_idx ON omni_source_revisions (tenant_id, source_item_id, captured_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_revisions_tenant_content_hash_idx ON omni_source_revisions (tenant_id, content_sha256)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_revisions_tenant_provider_revision_idx ON omni_source_revisions (tenant_id, source_item_id, provider_revision_key_sha256)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_revisions_tenant_previous_idx ON omni_source_revisions (tenant_id, previous_source_revision_id) WHERE previous_source_revision_id IS NOT NULL`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_revisions_tenant_adapter_output_idx ON omni_source_revisions (tenant_id, adapter_output_id)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_source_revisions_retention_expiry_idx ON omni_source_revisions (retention_expires_at) WHERE retention_expires_at IS NOT NULL`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_evidence_units_tenant_revision_locator_idx ON omni_evidence_units (tenant_id, source_revision_id, locator_sha256)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_evidence_units_tenant_content_hash_idx ON omni_evidence_units (tenant_id, evidence_content_sha256)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_evidence_units_tenant_adapter_output_idx ON omni_evidence_units (tenant_id, adapter_output_id)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_evidence_units_permission_grants_idx ON omni_evidence_units USING GIN (permission_grant_ids)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_evidence_units_retention_expiry_idx ON omni_evidence_units (retention_expires_at) WHERE retention_expires_at IS NOT NULL`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_documents_tenant_source_revision_idx ON omni_knowledge_documents (tenant_id, source_revision_id) WHERE source_revision_id IS NOT NULL`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_tenant_source_revision_idx ON omni_knowledge_chunks (tenant_id, source_revision_id) WHERE source_revision_id IS NOT NULL`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_knowledge_chunks_tenant_evidence_unit_idx ON omni_knowledge_chunks (tenant_id, evidence_unit_id) WHERE evidence_unit_id IS NOT NULL`;
+
+  // New lineage tables inherit only the DML capabilities already granted on
+  // the existing knowledge-document boundary. This keeps dedicated runtime,
+  // maintenance, and backup roles working without hard-coding role names.
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+      target_table TEXT;
+    BEGIN
+      FOREACH target_table IN ARRAY ARRAY[
+        'omni_source_adapter_output_receipts',
+        'omni_source_revisions',
+        'omni_evidence_units'
+      ] LOOP
+        FOR grant_record IN
+          SELECT DISTINCT grantee, privilege_type
+          FROM information_schema.table_privileges
+          WHERE table_schema = current_schema()
+            AND table_name = 'omni_knowledge_documents'
+            AND privilege_type IN ('SELECT', 'INSERT')
+            AND grantee <> current_user
+            AND grantee <> 'PUBLIC'
+        LOOP
+          EXECUTE format(
+            'GRANT %s ON TABLE %I.%I TO %I',
+            grant_record.privilege_type,
+            current_schema(),
+            target_table,
+            grant_record.grantee
+          );
+        END LOOP;
+      END LOOP;
+
+      FOR grant_record IN
+        SELECT DISTINCT grantee, privilege_type
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_knowledge_documents'
+          AND privilege_type IN ('SELECT', 'INSERT', 'UPDATE')
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'GRANT %s ON TABLE %I.omni_source_items TO %I',
+          grant_record.privilege_type,
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `);
 }
 
 async function ensureMcpConnectorCredentialVault(sql: SqlClient) {

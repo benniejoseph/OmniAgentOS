@@ -178,5 +178,10 @@
     "version": 36,
     "name": "governed_memory_write_effect_receipts",
     "checksum": "d5669e132cae6e06a0f4b537edbd2cae66d0efa5b23c5ee53662a0a78bd9c1ab"
+  },
+  {
+    "version": 37,
+    "name": "canonical_source_lineage_shadow",
+    "checksum": "e4f2fb2a515016fe87dd5260179a6b6e2b9918210d1e92e538ca2f77bee4761c"
   }
 ]

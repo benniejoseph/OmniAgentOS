@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { listOAuthGrants } from "@/lib/connectors/oauth-store";
 import { saveMemories, listMemories } from "@/lib/memory/store";
 import type { MemoryRecord } from "@/lib/memory/types";
@@ -8,6 +8,7 @@ import { listKnowledgeChunks, listKnowledgeDocuments } from "@/lib/rag/store";
 import { appendThreadTurn, createThread, listThreads, listThreadTurns } from "@/lib/threads/store";
 import { createTodayItem, listTodayItems, updateTodayItem } from "@/lib/today/store";
 import { createAgentSkill, createCustomAgent, listAgentSkills, listCustomAgents } from "@/lib/skills/store";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 export type PortableArchive = Awaited<ReturnType<typeof createPortableArchive>>;
 
@@ -65,6 +66,14 @@ export async function createPortableArchive(input: { tenantId: string; actorId: 
 
 export async function restorePortableArchive(archive: unknown, input: { tenantId: string; actorId: string; abortSignal?: AbortSignal }) {
   const data = asArchive(archive);
+  const sourceExecutionScope = createExecutionScope({
+    tenantId: input.tenantId,
+    initiatingActorId: input.actorId,
+    executingPrincipalType: "user",
+    executingPrincipalId: input.actorId,
+    correlationId: `portable_restore_${randomUUID()}`,
+    purpose: "portable.knowledge.restore",
+  });
   let knowledge = 0;
   for (const item of data.knowledge.slice(0, 5_000)) {
     input.abortSignal?.throwIfAborted();
@@ -85,6 +94,18 @@ export async function restorePortableArchive(archive: unknown, input: { tenantId
         operation: "embedding",
         purpose: "portable.knowledge.restore",
         credentialSource: "deployment_environment",
+      },
+      sourceLineage: {
+        executionScope: sourceExecutionScope,
+        connectionId: "first_party.portable_restore",
+        adapterId: "asael.portable_restore",
+        adapterVersionId: "1",
+        externalItemId:
+          item.id || digest(`${item.source}:${item.title}:${item.content}`),
+        providerRevisionId: item.id || null,
+        sourceKind: portableSourceKind(item.sourceType),
+        sourceUpdatedAt: item.updatedAt,
+        capturedAt: item.updatedAt || data.exportedAt,
       },
     });
     knowledge += 1;
@@ -118,12 +139,22 @@ export async function restorePortableArchive(archive: unknown, input: { tenantId
   return { knowledge, memories: memoryInputs.length, threads: data.threads.length, turns, today: data.today.length, projects: data.projects.length, skills: data.skills.length, agents: data.agents.length };
 }
 
+function portableSourceKind(value: ReturnType<typeof sourceType>) {
+  if (value === "url") return "webpage" as const;
+  if (value === "file") return "file" as const;
+  if (value === "api") return "record" as const;
+  return "document" as const;
+}
+
 function asArchive(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Archive must be a JSON object.");
   const archive = value as Record<string, unknown>;
   if (archive.format !== "asael-portable-archive" || archive.version !== 1) throw new Error("This is not a supported Asael portable archive.");
+  const exportedAt = optionalDate(archive.exportedAt);
+  if (!exportedAt) throw new Error("Portable archive is missing a valid export timestamp.");
   return {
-    knowledge: array(archive.knowledge).map((item) => { const row = record(item); return { id: text(row.id, 200), title: text(row.title, 240) || "Restored knowledge", content: text(row.content, 900_000), source: text(row.source, 2_000), sourceType: sourceType(row.sourceType), tags: array(row.tags).map((tag) => text(tag, 100)).filter(Boolean).slice(0, 50) }; }),
+    exportedAt,
+    knowledge: array(archive.knowledge).map((item) => { const row = record(item); return { id: text(row.id, 200), title: text(row.title, 240) || "Restored knowledge", content: text(row.content, 900_000), source: text(row.source, 2_000), sourceType: sourceType(row.sourceType), tags: array(row.tags).map((tag) => text(tag, 100)).filter(Boolean).slice(0, 50), updatedAt: optionalDate(row.updatedAt) }; }),
     memories: array(archive.memories).map((item) => { const row = record(item); return { id: text(row.id, 200), title: text(row.title, 240) || "Restored memory", content: text(row.content, 200_000), type: memoryType(row.type), tags: array(row.tags).map((tag) => text(tag, 100)).filter(Boolean).slice(0, 50), scope: memoryScope(row.scope), source: text(row.source, 2_000), importance: number(row.importance, 0.5), confidence: number(row.confidence, 0.7), claimStatus: claimStatus(row.claimStatus), assertedBy: assertedBy(row.assertedBy), evidenceRefs: array(row.evidenceRefs).map((ref) => text(ref, 500)).filter(Boolean).slice(0, 100), validFrom: optionalDate(row.validFrom), validTo: optionalDate(row.validTo), supersedesId: text(row.supersedesId, 200) || undefined, contradictionOfId: text(row.contradictionOfId, 200) || undefined }; }),
     threads: array(archive.threads).map((item) => { const row = record(item); return { title: text(row.title, 90) || "Restored conversation", mode: mode(row.mode), turns: array(row.turns).map((turn) => { const value = record(turn); return { role: value.role === "assistant" ? "assistant" as const : "user" as const, content: text(value.content, 40_000) }; }).filter((turn) => turn.content) }; }),
     today: array(archive.today).map((item) => { const row = record(item); return { title: text(row.title, 280), kind: row.kind === "reminder" ? "reminder" as const : "task" as const, priority: priority(row.priority), status: row.status === "done" ? "done" as const : "open" as const, dueAt: optionalDate(row.dueAt) }; }).filter((item) => item.title),

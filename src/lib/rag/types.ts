@@ -3,6 +3,10 @@ export type KnowledgeSourceType = "text" | "url" | "file" | "api" | "manual";
 export type KnowledgeDocument = {
   id: string;
   tenantId?: string;
+  /** Present only for documents enrolled in canonical source lineage. */
+  sourceItemId?: string;
+  /** Present only for documents enrolled in canonical source lineage. */
+  sourceRevisionId?: string;
   title: string;
   source: string;
   sourceType: KnowledgeSourceType;
@@ -19,6 +23,10 @@ export type KnowledgeChunk = {
   id: string;
   tenantId?: string;
   documentId: string;
+  /** Present only for chunks enrolled in canonical source lineage. */
+  sourceRevisionId?: string;
+  /** Exact canonical evidence unit for this chunk. */
+  evidenceUnitId?: string;
   chunkIndex: number;
   title: string;
   content: string;
@@ -45,6 +53,7 @@ export type KnowledgeSearchResult = {
 export type KnowledgeLedger = {
   documents: KnowledgeDocument[];
   chunks: KnowledgeChunk[];
+  sourceLineage?: import("@/lib/sources/store").CanonicalSourceLedger;
 };
 
 export type RetrievalMode = "direct" | "memory_first" | "local" | "global" | "hybrid";

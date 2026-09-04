@@ -1,12 +1,17 @@
 import { embedTexts } from "@/lib/openai/client";
-import { chunkText } from "@/lib/rag/chunk";
+import { chunkText, normalizeTextForChunking } from "@/lib/rag/chunk";
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
 import { saveMemories, searchMemories } from "@/lib/memory/store";
 import type { MemorySearchResult } from "@/lib/memory/types";
 import { createKnowledgeDocument, searchKnowledge } from "@/lib/rag/store";
-import { jsonbSafeText } from "@/lib/rag/text-safety";
+import { jsonbSafeText, jsonbSafeTruncate } from "@/lib/rag/text-safety";
 import type { KnowledgeSearchResult, KnowledgeSourceType } from "@/lib/rag/types";
 import { redactSensitive } from "@/lib/security/context";
+import { sourceContractSha256 } from "@/lib/sources/contracts";
+import {
+  buildCanonicalTextSourceWrite,
+  type TextSourceLineageInput,
+} from "@/lib/sources/text-lineage";
 import type { AiUsageScope } from "@/lib/usage/types";
 
 export async function ingestTextDocument({
@@ -21,6 +26,7 @@ export async function ingestTextDocument({
   evidenceRefs = [],
   abortSignal,
   usageScope,
+  sourceLineage,
 }: {
   idempotencyKey?: string;
   tenantId?: string;
@@ -33,21 +39,38 @@ export async function ingestTextDocument({
   evidenceRefs?: string[];
   abortSignal?: AbortSignal;
   usageScope?: AiUsageScope;
+  sourceLineage?: TextSourceLineageInput;
 }) {
-  const safeTitle = jsonbSafeText(String(redactSensitive(title)).slice(0, 240));
-  const safeContent = jsonbSafeText(
-    String(redactSensitive(content)).slice(0, 900_000),
+  const safeTitle = jsonbSafeTruncate(String(redactSensitive(title)), 240);
+  const safeContent = jsonbSafeTruncate(
+    String(redactSensitive(content)),
+    900_000,
   );
-  const safeSource = jsonbSafeText(
-    String(redactSensitive(source)).slice(0, 2_000),
+  const safeSource = jsonbSafeTruncate(
+    String(redactSensitive(source)),
+    2_000,
   );
   const safeTags = tags
-    .map((tag) => jsonbSafeText(String(redactSensitive(tag))))
+    .map((tag) => jsonbSafeTruncate(String(redactSensitive(tag)), 80))
     .slice(0, 50);
   const chunks = chunkText(safeContent).map((chunk) => ({
     ...chunk,
     content: jsonbSafeText(chunk.content),
   }));
+  const canonicalSourceWrite = sourceLineage
+    ? buildCanonicalTextSourceWrite({
+        lineage: sourceLineage,
+        content: safeContent,
+        normalizedContent: normalizeTextForChunking(safeContent),
+        chunks,
+        revisionMetadata: {
+          titleSha256: sourceContractSha256(safeTitle),
+          sourceSha256: sourceContractSha256(safeSource),
+          sourceType,
+          tagsSha256: sourceContractSha256([...safeTags].sort()),
+        },
+      })
+    : undefined;
   const embeddings = await embedKnowledgeTexts(
     chunks.map((chunk) => chunk.content),
     abortSignal,
@@ -63,6 +86,7 @@ export async function ingestTextDocument({
     sourceType,
     tags: safeTags,
     metadata,
+    canonicalSourceWrite,
     chunks: chunks.map((chunk) => ({
       ...chunk,
       embedding: embeddings?.[chunk.index],
@@ -89,6 +113,11 @@ export async function ingestTextDocument({
       assertedBy: "import",
       evidenceRefs: [
         `knowledge:${knowledge.document.id}`,
+        ...(knowledge.lineage?.evidenceUnitIdsByChunkIndex[chunk.index]
+          ? [
+              `evidence:${knowledge.lineage.evidenceUnitIdsByChunkIndex[chunk.index]}`,
+            ]
+          : []),
         ...evidenceRefs.map((reference) => String(redactSensitive(reference)).trim().slice(0, 500)).filter(Boolean),
       ],
       embedding: embeddings?.[chunk.index],
@@ -124,6 +153,9 @@ export async function retrieveContext(
   limit = 8,
   options: { tenantId?: string; usageScope?: AiUsageScope } = {},
 ) {
+  // P2.1 writes canonical actor ownership only as a shadow lineage. Retrieval
+  // deliberately remains on the legacy tenant-scoped index until P3.1 adds
+  // actor/visibility/grant enforcement to every read path before cutover.
   const safeQuery = String(redactSensitive(query));
   const queryEmbedding = (await embedTexts([safeQuery], undefined, options.usageScope))?.[0];
   const [memoryResults, knowledgeResults] = await Promise.all([

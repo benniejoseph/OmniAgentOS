@@ -558,6 +558,12 @@ async function executeBackgroundOperation(
     const parsed = knowledgeIngestJobRequestSchema.parse(request);
     const captureTarget = captureIngestTarget(parsed);
     const actorId = await resolveKnowledgeIngestActorId(job, parsed);
+    const persistedExecutionScope = parsePersistedExecutionScope(
+      job.payload.executionScope,
+    );
+    const sourceExecutionScope = actorId && (captureTarget || persistedExecutionScope)
+      ? knowledgeIngestSourceExecutionScope(job, actorId, Boolean(captureTarget))
+      : undefined;
     const captureExecutionScope = actorId && captureTarget
       ? captureIngestMutationExecutionScope(job, actorId)
       : undefined;
@@ -573,12 +579,37 @@ async function executeBackgroundOperation(
           sourceStreamId: `operation-job:${job.id}`,
           operation: "embedding" as const,
           purpose: "knowledge.ingest.background",
-          correlationId: captureExecutionScope?.correlationId || job.id,
-          causationId: captureExecutionScope?.causationId || undefined,
-          executionScope: captureExecutionScope,
+          correlationId: sourceExecutionScope?.correlationId || job.id,
+          causationId: sourceExecutionScope?.causationId || undefined,
+          executionScope: sourceExecutionScope,
           credentialSource: "deployment_environment" as const,
         },
       } : {}),
+      ...(sourceExecutionScope && actorId
+        ? {
+            sourceLineage: {
+              executionScope: sourceExecutionScope,
+              connectionId: captureTarget
+                ? "first_party.capture"
+                : "first_party.ingest_api",
+              adapterId: captureTarget
+                ? "asael.capture"
+                : "asael.ingest_api",
+              adapterVersionId: "1",
+              externalItemId:
+                (captureTarget?.assetId
+                  ? `asset:${captureTarget.assetId}`
+                  : captureTarget?.recordingId
+                    ? `recording:${captureTarget.recordingId}`
+                    : `job:${job.id}`),
+              providerRevisionId: job.id,
+              capturedAt: job.createdAt,
+              sourceKind: captureTarget
+                ? "capture" as const
+                : canonicalSourceKind(parsed.sourceType),
+            },
+          }
+        : {}),
     });
     if (actorId && captureExecutionScope) {
       try {
@@ -822,6 +853,40 @@ function captureIngestMutationExecutionScope(
   });
 }
 
+function knowledgeIngestSourceExecutionScope(
+  job: OperationJobRecord,
+  actorId: string,
+  captureSource: boolean,
+) {
+  const persisted = parsePersistedExecutionScope(job.payload.executionScope);
+  if (persisted) {
+    assertExecutionScopeTenant(persisted, job.tenantId);
+    if (persisted.initiatingActorId !== actorId) {
+      throw new Error("Knowledge ingest job scope does not match its stored owner.");
+    }
+    return deriveExecutionScope(persisted, {
+      executingPrincipalType: "system",
+      executingPrincipalId: "background-operations-worker",
+      causationId: job.id,
+      purpose: captureSource
+        ? "capture.ingest.source.index"
+        : persisted.purpose,
+    });
+  }
+
+  return createExecutionScope({
+    tenantId: job.tenantId,
+    initiatingActorId: actorId,
+    executingPrincipalType: "system",
+    executingPrincipalId: "background-operations-worker",
+    correlationId: job.id,
+    causationId: job.id,
+    purpose: captureSource
+      ? "capture.ingest.source.index.legacy"
+      : "knowledge.ingest.background.legacy",
+  });
+}
+
 function captureIngestTarget(request: KnowledgeIngestJobRequest) {
   const metadata = request.metadata || {};
   if (
@@ -837,6 +902,15 @@ function captureIngestTarget(request: KnowledgeIngestJobRequest) {
     return { assetId: undefined, recordingId: metadata.captureRecordingId };
   }
   return undefined;
+}
+
+function canonicalSourceKind(
+  sourceType: KnowledgeIngestJobRequest["sourceType"],
+) {
+  if (sourceType === "url") return "webpage" as const;
+  if (sourceType === "file") return "file" as const;
+  if (sourceType === "api") return "record" as const;
+  return "document" as const;
 }
 
 function stableStringify(value: unknown): string {

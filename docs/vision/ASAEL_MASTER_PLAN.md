@@ -778,6 +778,19 @@ canary receipt as additive evidence, but its contract stays `posthoc` and
 cannot project `succeeded`; external effects and broader requirement binding
 remain future P1.4 work.
 
+The first P2.1 slice is an additive, write-only lineage shadow for newly
+accepted API, Capture, portable-restore, and governed knowledge-tool text. It
+introduces strict metadata-only `SourceItem`, immutable `SourceRevision`,
+`EvidenceUnit`, and adapter-output receipt contracts; binds each new knowledge
+passage to an exact UTF-16 text-span locator; and leaves legacy retrieval and
+ranking authoritative. Provider identifiers and content remain in their
+existing scoped stores while lineage retains only opaque IDs, hashes, counts,
+timestamps, and grants. Existing unlineaged documents remain readable, and the
+Google personal-source adapters stay on their legacy path until the P2.2/P2.3
+revision-aware cursor and convergence pilot begins with Drive. Actor-aware
+canonical reads remain blocked on P3.1; no source-lineage read API is exposed
+by this shadow slice.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

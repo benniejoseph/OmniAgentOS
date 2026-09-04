@@ -51,6 +51,7 @@ import { ingestTextDocument } from "@/lib/rag/retriever";
 import { searchKnowledge } from "@/lib/rag/store";
 import { listAgentRuns } from "@/lib/runs/store";
 import { publicAgentRun } from "@/lib/runs/public";
+import { sourceContractSha256 } from "@/lib/sources/contracts";
 import {
   completeClaimedToolExecution,
   claimIdempotentToolExecution,
@@ -1071,6 +1072,7 @@ export async function executeGovernedTool({
         mcpSessionScope,
         scopedRequest.binding?.executionScope || executionScope,
         effectContext?.targetId,
+        executionRecord?.createdAt,
       );
     } catch (error) {
       if (effectContext) {
@@ -2083,6 +2085,7 @@ async function runTool(
   mcpSessionScope?: McpSessionScope,
   executionScope?: ExecutionScope,
   effectTargetId?: string,
+  executionObservedAt?: string,
 ) {
   const parsed = parseInput(tool, input);
   const aiUsageScope = (
@@ -2240,6 +2243,26 @@ async function runTool(
       sourceType: "manual",
       tags: safeValue.tags || ["tool-execution"],
       usageScope: aiUsageScope("embedding", "tool.knowledge.ingest"),
+      ...(executionScope?.initiatingActorId && executionObservedAt
+        ? {
+            sourceLineage: {
+              executionScope,
+              connectionId: "first_party.knowledge_tool",
+              adapterId: "asael.knowledge_tool",
+              adapterVersionId: "1",
+              externalItemId:
+                idempotencyKey ||
+                effectTargetId ||
+                `knowledge_tool_${sourceContractSha256({
+                  title: safeValue.title,
+                  content: safeValue.content,
+                  source: safeValue.source || "tool-executor",
+                })}`,
+              sourceKind: "document" as const,
+              capturedAt: executionObservedAt,
+            },
+          }
+        : {}),
     });
     return {
       document: result.document,
