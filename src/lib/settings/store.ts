@@ -15,16 +15,20 @@ import {
   sealCredentialBundle,
   type SealedCredentialPayload,
 } from "@/lib/settings/credential-vault";
+import { modelCatalogActorReadOrder } from "@/lib/settings/model-catalog-actor-scope";
 import { serviceApiKeyActorReadOrder } from "@/lib/settings/service-api-key-actor-scope";
 import {
+  MODEL_PROVIDERS,
   SERVICE_API_SCOPES,
   type McpExportConfiguration,
   type ModelAssignment,
   type ModelAssignmentScope,
   type ModelCatalogEntry,
+  type ModelLifecycleState,
   type ProviderConnectionStatus,
   type RedactedProviderConnection,
   type RedactedServiceApiKey,
+  type RequestModelCatalogEntry,
   type RequestServiceApiKey,
   type ServiceApiScope,
   type SettingsModelProvider,
@@ -396,6 +400,80 @@ export async function listModelCatalog(input: { tenantId: string; actorId: strin
   });
 }
 
+export async function listModelCatalogForRequest(input: {
+  tenantId: string;
+  actorId: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+}): Promise<RequestModelCatalogEntry[]> {
+  return inTenant(input.tenantId, async () => {
+    if (!hasDatabaseUrl()) {
+      const ledger = await readLedger();
+      const records = ledger.models
+        .filter((item) =>
+          item.tenantId === input.tenantId && item.actorId === input.actorId
+        )
+        .map((record) => {
+          const row = modelCatalogLedgerRow(record);
+          assertRequestModelCatalogRow(
+            row,
+            input.tenantId,
+            input.actorId,
+            input.actorId,
+          );
+          return modelFromRow(row);
+        });
+      assertRequestModelCatalogRecords(
+        records,
+        input.tenantId,
+        input.actorId,
+        input.actorId,
+      );
+      return records.map((record) =>
+        requestModelCatalogEntry(record, input.actorId)
+      );
+    }
+    const [canonicalActorId, exactActorId] = modelCatalogActorReadOrder(
+      input.actorId,
+      input.requestActorBinding,
+      input.actorId,
+    );
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT id, tenant_id, actor_id, provider, model_id, display_name,
+        capabilities, lifecycle, lifecycle_reason, lifecycle_checked_at,
+        discovered_at, updated_at
+      FROM omni_model_catalog
+      WHERE tenant_id = ${input.tenantId}
+        AND actor_id IN (${canonicalActorId}, ${exactActorId})
+        AND tenant_id COLLATE "C" = ${input.tenantId}::text COLLATE "C"
+        AND (
+          actor_id COLLATE "C" = ${canonicalActorId}::text COLLATE "C"
+          OR actor_id COLLATE "C" = ${exactActorId}::text COLLATE "C"
+        )
+      ORDER BY provider COLLATE "C", display_name COLLATE "C",
+        model_id COLLATE "C", id COLLATE "C"
+    `;
+    const records = rows.map((row) => {
+      assertRequestModelCatalogRow(
+        row,
+        input.tenantId,
+        canonicalActorId,
+        exactActorId,
+      );
+      return modelFromRow(row);
+    });
+    assertRequestModelCatalogRecords(
+      records,
+      input.tenantId,
+      canonicalActorId,
+      exactActorId,
+    );
+    return records.map((record) =>
+      requestModelCatalogEntry(record, exactActorId)
+    );
+  });
+}
+
 export async function saveModelCatalog(input: {
   tenantId: string;
   actorId: string;
@@ -409,7 +487,12 @@ export async function saveModelCatalog(input: {
     );
     const records: ModelCatalogEntry[] = input.models.map((model) => ({
       ...model,
-      id: createHash("sha256").update(`${input.tenantId}\0${input.actorId}\0${input.provider}\0${model.modelId}`).digest("hex"),
+      id: modelCatalogRecordId(
+        input.tenantId,
+        input.actorId,
+        input.provider,
+        model.modelId,
+      ),
       tenantId: input.tenantId,
       actorId: input.actorId,
       provider: input.provider,
@@ -915,6 +998,182 @@ function modelFromRow(row: Record<string, unknown>): ModelCatalogEntry {
     discoveredAt: optionalDate(row.discovered_at) || new Date().toISOString(),
     updatedAt: optionalDate(row.updated_at) || new Date().toISOString(),
   };
+}
+
+function requestModelCatalogEntry(
+  record: ModelCatalogEntry,
+  requestActorId: string,
+): RequestModelCatalogEntry {
+  const identifierIsSelectable = isSafeModelCatalogIdentifier(record.modelId);
+  const displayModelId = identifierIsSelectable
+    ? record.modelId
+    : safeModelCatalogDisplayText(
+        record.modelId,
+        "Unsupported model identifier",
+        512,
+      );
+  return {
+    id: record.id,
+    tenantId: record.tenantId,
+    actorId: requestActorId,
+    provider: record.provider,
+    modelId: record.modelId,
+    displayModelId,
+    displayName: safeModelCatalogDisplayText(
+      record.displayName,
+      displayModelId,
+      512,
+    ),
+    capabilities: Array.isArray(record.capabilities)
+      ? [...new Set(record.capabilities
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => safeModelCatalogDisplayText(item, "", 80))
+        .filter(Boolean))]
+        .slice(0, 32)
+      : [],
+    lifecycle: record.lifecycle,
+    lifecycleReason: record.lifecycleReason
+      ? safeModelCatalogDisplayText(record.lifecycleReason, "", 1_000) || undefined
+      : undefined,
+    lifecycleCheckedAt: record.lifecycleCheckedAt,
+    discoveredAt: record.discoveredAt,
+    updatedAt: record.updatedAt,
+    selectable: record.actorId === requestActorId && identifierIsSelectable,
+  };
+}
+
+function assertRequestModelCatalogRow(
+  row: Record<string, unknown>,
+  expectedTenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  const id = typeof row.id === "string" ? row.id : "";
+  const tenantId = typeof row.tenant_id === "string" ? row.tenant_id : "";
+  const actorId = typeof row.actor_id === "string" ? row.actor_id : "";
+  const provider = typeof row.provider === "string" ? row.provider : "";
+  const modelId = typeof row.model_id === "string" ? row.model_id : "";
+  const capabilities = row.capabilities;
+  const lifecycle = typeof row.lifecycle === "string" ? row.lifecycle : "";
+  const lifecycleReason = row.lifecycle_reason;
+  const providerIsKnown = MODEL_PROVIDERS.includes(
+    provider as SettingsModelProvider,
+  );
+  const lifecycleIsKnown = modelLifecycleStates.includes(
+    lifecycle as ModelLifecycleState,
+  );
+  if (
+    !/^[0-9a-f]{64}$/.test(id) ||
+    tenantId !== expectedTenantId ||
+    (actorId !== canonicalActorId && actorId !== exactActorId) ||
+    !providerIsKnown ||
+    typeof row.model_id !== "string" ||
+    typeof row.display_name !== "string" ||
+    !Array.isArray(capabilities) ||
+    capabilities.some((capability) =>
+      typeof capability !== "string"
+    ) ||
+    !lifecycleIsKnown ||
+    !isOptionalText(lifecycleReason) ||
+    !isOptionalDate(row.lifecycle_checked_at) ||
+    !isRequiredDate(row.discovered_at) ||
+    !isRequiredDate(row.updated_at) ||
+    id !== modelCatalogRecordId(
+      tenantId,
+      actorId,
+      provider as SettingsModelProvider,
+      modelId,
+    )
+  ) {
+    throw new SettingsStoreError(
+      "Model catalog metadata could not be resolved safely.",
+      409,
+    );
+  }
+}
+
+function assertRequestModelCatalogRecords(
+  records: ModelCatalogEntry[],
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  const ids = new Set<string>();
+  const semanticOwners = new Map<string, string>();
+  for (const record of records) {
+    const semanticKey = `${record.provider}\0${record.modelId}`;
+    const priorOwner = semanticOwners.get(semanticKey);
+    if (
+      record.tenantId !== tenantId ||
+      (record.actorId !== canonicalActorId && record.actorId !== exactActorId) ||
+      ids.has(record.id) ||
+      priorOwner !== undefined
+    ) {
+      throw new SettingsStoreError(
+        "Model catalog metadata could not be resolved safely.",
+        409,
+      );
+    }
+    ids.add(record.id);
+    semanticOwners.set(semanticKey, record.actorId);
+  }
+}
+
+const modelLifecycleStates: readonly ModelLifecycleState[] = [
+  "available",
+  "deprecated",
+  "retiring",
+  "unknown",
+];
+
+function modelCatalogRecordId(
+  tenantId: string,
+  actorId: string,
+  provider: SettingsModelProvider,
+  modelId: string,
+) {
+  return createHash("sha256")
+    .update(`${tenantId}\0${actorId}\0${provider}\0${modelId}`)
+    .digest("hex");
+}
+
+function safeModelCatalogDisplayText(
+  value: string,
+  fallback: string,
+  maxLength: number,
+) {
+  const sanitized = value.replace(/[\u0000-\u001f\u007f]/g, "�").trim();
+  return (sanitized || fallback).slice(0, maxLength);
+}
+
+function isSafeModelCatalogIdentifier(value: string) {
+  return value.length > 0 &&
+    value.length <= 240 &&
+    value === value.trim() &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function modelCatalogLedgerRow(record: ModelCatalogEntry) {
+  return {
+    id: record.id,
+    tenant_id: record.tenantId,
+    actor_id: record.actorId,
+    provider: record.provider,
+    model_id: record.modelId,
+    display_name: record.displayName,
+    capabilities: record.capabilities,
+    lifecycle: record.lifecycle,
+    lifecycle_reason: record.lifecycleReason,
+    lifecycle_checked_at: record.lifecycleCheckedAt,
+    discovered_at: record.discoveredAt,
+    updated_at: record.updatedAt,
+  };
+}
+
+function isOptionalText(value: unknown) {
+  return value === null ||
+    value === undefined ||
+    typeof value === "string";
 }
 
 function assignmentFromRow(row: Record<string, unknown>): ModelAssignment {

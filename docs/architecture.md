@@ -558,16 +558,32 @@ key metadata lists. PostgreSQL selects an explicit redacted column set from
 the strictly validated canonical/current-email owner pair, uses indexed
 default-collation predicates only as a candidate superset before authoritative
 binary comparisons, globally orders by creation time and ID, and rejects
-unexpected owners, malformed rows, and duplicate
-IDs, safely normalizes legacy display-name controls, and projects the current
-request actor only after deriving `manageable` from the physical owner.
-Canonical compatibility keys are visible but
-read-only; their saved MCP policy may differ from the exact current-email
-policy shown beside them. The aggregate Settings snapshot passes the binding
+unexpected owners, malformed rows, and duplicate IDs, safely normalizes legacy
+display-name controls, and projects the current request actor only after
+deriving `manageable` from the physical owner.
+Canonical compatibility keys are visible but read-only; their saved MCP
+policy may differ from the exact current-email policy shown beside them. The
+aggregate Settings snapshot passes the binding
 only to this key list. Token hashes, provider credentials, model assignments,
 MCP configuration, creation, revocation, Bearer resolution, last-used writes,
 service-principal reads, file fallback, portable data, events, and canonical
 writes remain exact-owner contracts.
+
+The fifteenth request-bound slice converges only authenticated model-catalog
+metadata lists. PostgreSQL selects explicit non-credential columns from the
+validated canonical/current-email pair, uses indexed candidate predicates
+before authoritative binary comparisons, verifies each deterministic
+tenant/physical-actor/provider/model hash, rejects unexpected owners,
+duplicate IDs, and cross-owner provider/model collisions, and globally orders
+the collection. Provider-controlled display fields are allowlisted and safely
+normalized; the persisted model identifier remains available as identity while
+`displayModelId` is safe to render. Only exact-owner identifiers that satisfy
+the assignment API's 240-character cap and the projection's trimmed,
+control-free safety rule are `selectable`; canonical and unsupported rows
+remain visible but read-only.
+File fallback stays exact-owner and applies the same integrity checks. Provider
+credentials, catalog refresh, model assignments, runtime resolution, events,
+portable data, and canonical writes remain exact-owner contracts.
 
 The ledgers have different mutation semantics:
 

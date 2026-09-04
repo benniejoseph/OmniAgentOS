@@ -90,6 +90,11 @@ export type ModelCatalogEntry = {
   updatedAt: string;
 };
 
+export type RequestModelCatalogEntry = ModelCatalogEntry & {
+  displayModelId: string;
+  selectable: boolean;
+};
+
 export type ModelAssignment = {
   id: string;
   tenantId: string;
@@ -162,7 +167,7 @@ export type SettingsSnapshot = {
     message: string;
   };
   providers: RedactedProviderConnection[];
-  models: ModelCatalogEntry[];
+  models: RequestModelCatalogEntry[];
   assignments: ModelAssignment[];
   apiKeys: RequestServiceApiKey[];
   mcp: McpExportConfiguration;

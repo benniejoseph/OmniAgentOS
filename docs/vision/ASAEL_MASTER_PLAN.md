@@ -1201,6 +1201,22 @@ fallback, portable data, events, and canonical writes remain unchanged. This
 read-only slice emits no domain event and does not unblock membership epochs
 or any consent hold.
 
+The next request canary converges only model-catalog metadata lists.
+Authenticated PostgreSQL reads select explicit non-credential fields from the
+validated canonical/current-email owners, retain index-compatible candidate
+predicates before binary checks, validate the deterministic ID against the
+physical owner and raw model identifier, reject duplicate or cross-owner
+semantic collisions, and project the request actor. External display fields
+are safely normalized, `displayModelId` is the render-safe identifier, and
+`selectable` is true only for an exact-owner identifier accepted by the
+assignment input contract. Canonical and unsupported entries remain
+inspectable but cannot populate assignment defaults, provider options,
+datalists, or lifecycle warnings. File fallback remains exact-owner and uses
+the same integrity checks. Provider credentials, refresh, assignments,
+runtime routing, events, portable data, and canonical writes remain unchanged.
+This read-only slice emits no domain event and does not unblock membership or
+consent holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
