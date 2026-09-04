@@ -153,6 +153,12 @@ fail-closed parser for a future transaction-local memory access envelope, but
 does not create an envelope, activate a policy, enroll a memory, or infer the
 canonical purpose ID that the active contract will require.
 
+The matching P3.1 TypeScript contract and held transaction-local installer
+also emit no domain event. Parsing or installing a database session envelope
+is not a domain mutation, and the installer has no serving-role grant or call
+site. The later activation must emit typed binding/authorization evidence at
+the memory operation boundary rather than logging the session mechanism.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

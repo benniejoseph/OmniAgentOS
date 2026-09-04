@@ -41,3 +41,10 @@ connector execution policy, capture limits, approval behavior, or UI status.
 The P0.2 versioned run-contract envelope and P0.4 canonical status adapter are
 present in shadow mode: they add scoped metadata events and a compatibility
 projection without reinterpreting existing store state, controls, or UI status.
+
+P3.1 now also has a held database-memory envelope constructor and
+transaction-local installer. It does not extend `ExecutionScope` v1: the
+canonical memory purpose ID is supplied separately, while the existing
+free-form purpose remains optional audit text. Database function grants,
+membership resolution, row enrollment, and every serving call site remain
+held for one atomic activation.
