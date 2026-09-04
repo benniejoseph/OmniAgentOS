@@ -176,6 +176,59 @@ describe("tool approval claims (file mode)", () => {
     });
   });
 
+  it("preserves and narrowly reclaims stale governed memory effects", async () => {
+    const store = await import("@/lib/tools/audit-store");
+    const effectBinding = {
+      __effectIdempotencyKeySha256: "1".repeat(64),
+      __effectInputSha256: "2".repeat(64),
+      __effectPlanSha256: "3".repeat(64),
+      __effectTargetId: `memory_effect_${"4".repeat(56)}`,
+      __effectToolContractSha256: "5".repeat(64),
+    };
+    const intent: ToolExecutionRecord = {
+      ...pendingRecord("idem_stale_memory_effect", 1),
+      toolId: "memory.write",
+      toolName: "Write memory",
+      status: "executing",
+      dryRun: false,
+      approvalRequired: false,
+      input: { title: "Stable", content: "Deterministic" },
+      output: {
+        ...effectBinding,
+        __executionClaim: {
+          token: "stale-effect-token",
+          claimedAt: new Date(Date.now() - 6 * 60_000).toISOString(),
+        },
+      },
+    };
+    await expect(store.claimIdempotentToolExecution(intent)).resolves.toMatchObject({
+      outcome: "claimed",
+    });
+    await expect(store.recoverStaleToolExecutionClaim(intent.id, {
+      tenantId: intent.tenantId,
+      staleAfterMs: 60_000,
+    })).resolves.toBeUndefined();
+
+    const reclaimed = await store.claimIdempotentToolExecution({
+      ...intent,
+      output: {
+        ...effectBinding,
+        __executionClaim: {
+          token: "replacement-effect-token",
+          claimedAt: new Date().toISOString(),
+        },
+      },
+    });
+    expect(reclaimed).toMatchObject({
+      outcome: "claimed",
+      record: { status: "executing" },
+    });
+    expect(reclaimed.record.output).toMatchObject({
+      __executionClaim: { token: "replacement-effect-token" },
+      ...effectBinding,
+    });
+  });
+
   it("does not honor an approval record without a durable claim", async () => {
     const store = await import("@/lib/tools/audit-store");
     const { executeGovernedTool } = await import("@/lib/tools/executor");

@@ -60,6 +60,23 @@ acceptance-criterion text, tool data, model output, errors, or private
 reasoning. The result record is the durable shadow source in this slice;
 transactional workflow state/event writes remain P1.1 work.
 
+The first P1.4 canary adds `tool.effect_receipt.recorded` only when an approved,
+tenant-and-initiating-actor-bound workflow executes live `memory.write` as a
+single-tool plan node. Its allowlisted payload
+contains opaque receipt, execution, scope, workflow, plan, node, and target
+IDs; SHA-256 bindings; and acknowledgement/verification enums. Raw memory,
+plans, tool input/output, provider data, and idempotency keys are excluded. The
+receipt records a deterministic target, a first-party commit acknowledgement,
+and a tenant-scoped read-after-write result.
+
+In Postgres, the receipt on `omni_tool_executions` and its typed event append
+commit in one transaction. File fallback updates the tool ledger before a
+separate best-effort event append and remains a development compatibility
+path, not an atomic audit guarantee. Legacy records, dry runs, and other tools
+remain unchanged. P1.3 can project the ID of a strictly bound, verified canary
+receipt as additive evidence, while its evaluation remains `posthoc` and
+cannot emit `succeeded`; full P1.4 remains open.
+
 ## Event shape
 
 ```ts

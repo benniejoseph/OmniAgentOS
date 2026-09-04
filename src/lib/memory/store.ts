@@ -143,10 +143,26 @@ function memoryRecordFromInput(
 }
 
 export async function saveMemory(input: CreateMemoryInput) {
-  return (await saveMemories([input]))[0];
+  return (await saveMemoryWithCommitStatus(input)).record;
 }
 
 export async function saveMemories(inputs: CreateMemoryInput[]) {
+  return (await saveMemoriesWithCommitStatus(inputs)).map((result) => result.record);
+}
+
+/**
+ * Narrow first-party acknowledgement used by governed effect receipts. The
+ * existing saveMemory API intentionally keeps its historical return shape.
+ */
+export async function saveMemoryWithCommitStatus(input: CreateMemoryInput) {
+  const result = (await saveMemoriesWithCommitStatus([input]))[0];
+  if (!result) {
+    throw new Error("Memory persistence did not return a result.");
+  }
+  return result;
+}
+
+async function saveMemoriesWithCommitStatus(inputs: CreateMemoryInput[]) {
   if (!inputs.length) {
     return [];
   }
@@ -237,7 +253,13 @@ export async function saveMemories(inputs: CreateMemoryInput[]) {
       throw new Error("Memory idempotency key collided with another tenant.");
     }
     const byId = new Map(
-      rows.map((row) => [String(row.id), memoryFromRow(row)]),
+      rows.map((row) => [
+        String(row.id),
+        {
+          record: memoryFromRow(row),
+          inserted: Boolean(row._inserted),
+        },
+      ] as const),
     );
     const insertedVectors = rows
       .filter((row) => Boolean(row._inserted))
@@ -266,15 +288,18 @@ export async function saveMemories(inputs: CreateMemoryInput[]) {
       }
     }
     return records.map((record) => {
-      const saved = byId.get(record.id);
-      if (!saved) {
+      const result = byId.get(record.id);
+      if (!result) {
         throw new Error("Bulk memory persistence did not return a saved row.");
       }
-      return saved;
+      return result;
     });
   }
 
-  const savedById = new Map<string, MemoryRecord>();
+  const savedById = new Map<
+    string,
+    { record: MemoryRecord; inserted: boolean }
+  >();
   await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) => {
     const next = [...memories];
     for (const record of records) {
@@ -285,15 +310,21 @@ export async function saveMemories(inputs: CreateMemoryInput[]) {
             "Memory idempotency key collided with another tenant.",
           );
         }
-        savedById.set(record.id, existing);
+        savedById.set(record.id, { record: existing, inserted: false });
         continue;
       }
       next.unshift(record);
-      savedById.set(record.id, record);
+      savedById.set(record.id, { record, inserted: true });
     }
     return next;
   });
-  return records.map((record) => savedById.get(record.id) as MemoryRecord);
+  return records.map((record) => {
+    const result = savedById.get(record.id);
+    if (!result) {
+      throw new Error("Memory persistence did not return a saved row.");
+    }
+    return result;
+  });
 }
 
 export async function searchMemories(
@@ -620,7 +651,7 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
     tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
     scope: String(row.scope || "workspace") as MemoryRecord["scope"],
     source: String(row.source || "database"),
-    importance: Number(row.importance || 0.5),
+    importance: Number(row.importance ?? 0.5),
     confidence: Number(row.confidence ?? 0.7),
     claimStatus: normalizeClaimStatus(row.claim_status),
     assertedBy: normalizeAssertedBy(row.asserted_by),

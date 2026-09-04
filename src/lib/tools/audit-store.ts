@@ -1,20 +1,34 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   ensureDatabaseSchema,
   getDatabaseTenantContext,
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
+import { appendScopedDomainEvent } from "@/lib/events/store";
 import { redactSensitive } from "@/lib/security/context";
+import type { ExecutionScope } from "@/lib/security/execution-scope";
 import {
   openJsonPayload,
   sealJsonPayload,
 } from "@/lib/security/sealed-payload";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
+import {
+  buildEffectReceiptEventPayloadV1,
+  canonicalJsonSha256,
+  memoryEffectTargetIdV1,
+  parseEffectReceiptV1,
+  type EffectReceiptV1,
+} from "@/lib/tools/effect-receipt";
+import { toolInputSha256 } from "@/lib/tools/execution-scope";
+import { toolApprovalFingerprint } from "@/lib/tools/fingerprint";
+import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM, type ToolExecutionLedger, type ToolExecutionRecord } from "@/lib/tools/types";
 
 type SqlClient = ReturnType<typeof getSql>;
+
+const DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS = 5 * 60_000;
 
 export type ToolApprovalClaimResult = {
   outcome: "not_found" | "conflict" | "pending" | "claimed";
@@ -37,24 +51,36 @@ export function createToolExecutionRecord(
 }
 
 export async function saveToolExecution(record: ToolExecutionRecord) {
+  if (record.effectReceipt !== undefined) {
+    throw new Error(
+      "Effect receipts may only be attached while finalizing a claimed execution.",
+    );
+  }
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await writeToolExecutionDb(getSql(), record);
     return record;
   }
 
-  await updateJsonFile<ToolExecutionLedger>(getToolLedgerFile(), { records: [] }, (ledger) => ({
-    records: trimToolExecutionRecords([
-      record,
-      ...ledger.records.filter((item) => item.id !== record.id),
-    ]),
-  }));
+  await updateJsonFile<ToolExecutionLedger>(getToolLedgerFile(), { records: [] }, (ledger) => {
+    const existing = ledger.records.find((item) => item.id === record.id);
+    const nextRecord = preserveImmutableEffectReceipt(existing, record);
+    return {
+      records: trimToolExecutionRecords([
+        nextRecord,
+        ...ledger.records.filter((item) => item.id !== record.id),
+      ]),
+    };
+  });
   return record;
 }
 
 export async function claimIdempotentToolExecution(
   record: ToolExecutionRecord,
 ): Promise<IdempotentToolExecutionClaimResult> {
+  if (record.effectReceipt !== undefined) {
+    throw new Error("An execution claim cannot begin with an effect receipt.");
+  }
   const tenantId = normalizeTenantId(record.tenantId);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -64,7 +90,7 @@ export async function claimIdempotentToolExecution(
           id, tool_id, tool_name, risk_level, status, dry_run,
           approval_required, tenant_id, actor_id, input, output, reason,
           approval_decision, approvals, approved_by, approved_at,
-          approval_reason, created_at, completed_at
+          approval_reason, effect_receipt, created_at, completed_at
         )
         VALUES (
           ${record.id}, ${record.toolId}, ${record.toolName},
@@ -75,7 +101,8 @@ export async function claimIdempotentToolExecution(
           ${record.reason || null}, ${record.approvalDecision || null},
           ${record.approvals || null}::jsonb,
           ${record.approvedBy || null}, ${record.approvedAt || null},
-          ${record.approvalReason || null}, ${record.createdAt},
+          ${record.approvalReason || null}, ${record.effectReceipt || null}::jsonb,
+          ${record.createdAt},
           ${record.completedAt || null}
         )
         ON CONFLICT (id) DO NOTHING
@@ -100,9 +127,18 @@ export async function claimIdempotentToolExecution(
           "Idempotent tool execution key collided with another tenant.",
         );
       }
+      const existing = recordFromRow(rows[0]);
+      const reclaimed = reclaimStaleEffectExecutionRecord(existing, record);
+      if (reclaimed) {
+        await writeToolExecutionDb(sql, reclaimed);
+        return {
+          outcome: "claimed" as const,
+          record: reclaimed,
+        };
+      }
       return {
         outcome: "existing" as const,
-        record: recordFromRow(rows[0]),
+        record: existing,
       };
     }) as Promise<IdempotentToolExecutionClaimResult>;
   }
@@ -118,6 +154,11 @@ export async function claimIdempotentToolExecution(
           throw new Error(
             "Idempotent tool execution key collided with another tenant.",
           );
+        }
+        const reclaimed = reclaimStaleEffectExecutionRecord(existing, record);
+        if (reclaimed) {
+          result = { outcome: "claimed", record: reclaimed };
+          return replaceLedgerRecord(ledger, reclaimed);
         }
         result = { outcome: "existing", record: existing };
         return ledger;
@@ -254,8 +295,13 @@ export async function rejectPendingToolExecution(input: {
 export async function completeClaimedToolExecution(
   record: ToolExecutionRecord,
   claimToken: string,
+  options: { executionScope?: ExecutionScope } = {},
 ): Promise<ToolExecutionRecord | undefined> {
   const tenantId = normalizeTenantId(record.tenantId);
+  const effectReceipt = parseRecordEffectReceipt(record);
+  if (effectReceipt && !options.executionScope) {
+    throw new Error("Governed tool effect receipts require an execution scope.");
+  }
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -271,7 +317,24 @@ export async function completeClaimedToolExecution(
       if (!current || !hasExecutionClaim(current, claimToken)) {
         return undefined;
       }
-      await writeToolExecutionDb(sql, record);
+      if (effectReceipt && options.executionScope) {
+        assertEffectReceiptFinalization({
+          receipt: effectReceipt,
+          current,
+          terminal: record,
+          executionScope: options.executionScope,
+        });
+      }
+      await writeToolExecutionDb(sql, record, {
+        finalizeEffectReceipt: Boolean(effectReceipt),
+      });
+      if (effectReceipt && options.executionScope) {
+        await appendToolEffectReceiptEvent(
+          effectReceipt,
+          options.executionScope,
+          sql,
+        );
+      }
       return record;
     }) as Promise<ToolExecutionRecord | undefined>;
   }
@@ -284,9 +347,28 @@ export async function completeClaimedToolExecution(
     if (!current || !hasExecutionClaim(current, claimToken)) {
       return ledger;
     }
-    completed = record;
-    return replaceLedgerRecord(ledger, record);
+    if (effectReceipt && options.executionScope) {
+      assertEffectReceiptFinalization({
+        receipt: effectReceipt,
+        current,
+        terminal: record,
+        executionScope: options.executionScope,
+      });
+    }
+    completed = preserveImmutableEffectReceipt(current, record, {
+      finalizeEffectReceipt: Boolean(effectReceipt),
+    });
+    return replaceLedgerRecord(ledger, completed);
   });
+  if (completed && effectReceipt && options.executionScope) {
+    try {
+      await appendToolEffectReceiptEvent(effectReceipt, options.executionScope);
+    } catch {
+      // File mode cannot atomically update two ledgers. The authoritative
+      // receipt is already durable; a same-key retry repairs this event.
+      console.error("Tool effect receipt event append failed in file mode.");
+    }
+  }
   return completed;
 }
 
@@ -360,7 +442,10 @@ export async function recoverStaleToolExecutionClaim(
   options: { tenantId?: string; staleAfterMs?: number } = {},
 ): Promise<ToolExecutionRecord | undefined> {
   const tenantId = normalizeTenantId(options.tenantId);
-  const staleAfterMs = Math.max(60_000, options.staleAfterMs || 5 * 60_000);
+  const staleAfterMs = Math.max(
+    60_000,
+    options.staleAfterMs || DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
+  );
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -399,7 +484,10 @@ export async function recoverStaleToolExecutionClaims(
   options: { tenantId?: string; staleAfterMs?: number; limit?: number } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
-  const staleAfterMs = Math.max(60_000, options.staleAfterMs || 5 * 60_000);
+  const staleAfterMs = Math.max(
+    60_000,
+    options.staleAfterMs || DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
+  );
   const limit = Math.min(Math.max(options.limit || 25, 1), 100);
 
   if (hasDatabaseUrl()) {
@@ -411,6 +499,17 @@ export async function recoverStaleToolExecutionClaims(
         FROM omni_tool_executions
         WHERE status = 'executing'
           AND COALESCE(tenant_id, 'default') = ${tenantId}
+          AND NOT (
+            tool_id = 'memory.write'
+            AND NOT dry_run
+            AND (
+              output ? '__effectIdempotencyKeySha256'
+              OR output ? '__effectInputSha256'
+              OR output ? '__effectPlanSha256'
+              OR output ? '__effectTargetId'
+              OR output ? '__effectToolContractSha256'
+            )
+          )
           AND CASE
             WHEN output #>> '{__executionClaim,claimedAt}' ~
               '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
@@ -511,8 +610,8 @@ export async function getToolExecution(id: string, options: { tenantId?: string 
 /**
  * Internal, tenant-scoped lookup for run projections. Unlike the public list
  * helpers, this deliberately retains execution input long enough for a
- * projection to derive an allowlisted receipt; callers must never return the
- * raw records to a client.
+ * projection to validate an allowlisted receipt; callers must never return
+ * the raw records to a client.
  */
 export async function getToolExecutionsByIds(
   ids: readonly string[],
@@ -634,25 +733,238 @@ export async function getToolExecutionStats(options: { tenantId?: string } = {})
 }
 
 export function publicToolExecution(record: ToolExecutionRecord) {
+  const effectReceipt = parseRecordEffectReceipt(record);
   const sanitized = redactSensitive(record) as ToolExecutionRecord;
+  const publicRecord = effectReceipt
+    ? { ...omitEffectReceipt(sanitized), effectReceipt }
+    : omitEffectReceipt(sanitized);
   if (
-    sanitized.output &&
-    typeof sanitized.output === "object" &&
-    !Array.isArray(sanitized.output)
+    publicRecord.output &&
+    typeof publicRecord.output === "object" &&
+    !Array.isArray(publicRecord.output)
   ) {
     const publicOutput = {
-      ...(sanitized.output as Record<string, unknown>),
+      ...(publicRecord.output as Record<string, unknown>),
     };
     delete publicOutput.__executionClaim;
     delete publicOutput.__approvalFingerprint;
     delete publicOutput.__sealedInput;
     delete publicOutput.__idempotencyKeyHash;
-    return { ...sanitized, output: publicOutput };
+    delete publicOutput.__effectIdempotencyKeySha256;
+    delete publicOutput.__effectInputSha256;
+    delete publicOutput.__effectPlanSha256;
+    delete publicOutput.__effectTargetId;
+    delete publicOutput.__effectToolContractSha256;
+    return { ...publicRecord, output: publicOutput };
   }
-  return sanitized;
+  return publicRecord;
 }
 
 const sanitizeToolExecutionRecord = publicToolExecution;
+
+function parseStoredEffectReceipt(
+  value: unknown,
+  bindings: {
+    executionId: string;
+    tenantId: string;
+    actorId?: string;
+    toolId: string;
+  },
+): EffectReceiptV1 | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (bindings.toolId !== "memory.write") {
+    throw new Error("Only memory.write may carry a v1 effect receipt.");
+  }
+  return parseEffectReceiptV1(value, {
+    executionId: bindings.executionId,
+    tenantId: bindings.tenantId,
+    ...(bindings.actorId ? { actorId: bindings.actorId } : {}),
+    toolId: "memory.write",
+  });
+}
+
+function parseRecordEffectReceipt(
+  record: ToolExecutionRecord,
+): EffectReceiptV1 | undefined {
+  const receipt = parseStoredEffectReceipt(record.effectReceipt, {
+    executionId: record.id,
+    tenantId: normalizeTenantId(record.tenantId),
+    actorId: record.actorId,
+    toolId: record.toolId,
+  });
+  if (!receipt) return undefined;
+  if (
+    record.status !== "executed" ||
+    record.dryRun ||
+    !record.tenantId?.trim() ||
+    !record.actorId?.trim()
+  ) {
+    throw new Error(
+      "An effect receipt requires an executed live record with explicit tenant and actor scope.",
+    );
+  }
+  return receipt;
+}
+
+function omitEffectReceipt(record: ToolExecutionRecord): ToolExecutionRecord {
+  const { effectReceipt: _effectReceipt, ...legacyRecord } = record;
+  void _effectReceipt;
+  return legacyRecord;
+}
+
+function assertEffectReceiptFinalization(input: {
+  receipt: EffectReceiptV1;
+  current: ToolExecutionRecord;
+  terminal: ToolExecutionRecord;
+  executionScope: ExecutionScope;
+}) {
+  const { receipt, current, terminal, executionScope } = input;
+  const actorId = executionScope.initiatingActorId;
+  if (!actorId) {
+    throw new Error("Effect-receipt finalization requires a bound actor.");
+  }
+  const validated = parseEffectReceiptV1(receipt, {
+    executionId: current.id,
+    tenantId: executionScope.tenantId,
+    actorId,
+    executingPrincipalType: "system",
+    executingPrincipalId: `workflow:${receipt.workflowRunId}`,
+    toolId: "memory.write",
+  });
+  if (!validated) throw new Error("Effect receipt is missing.");
+  if (
+    normalizeTenantId(current.tenantId) !== validated.tenantId ||
+    current.actorId !== validated.actorId ||
+    current.toolId !== validated.toolId ||
+    terminal.id !== current.id ||
+    normalizeTenantId(terminal.tenantId) !== validated.tenantId ||
+    terminal.actorId !== validated.actorId ||
+    terminal.toolId !== validated.toolId
+  ) {
+    throw new Error(
+      "Effect-receipt finalization does not match the claimed tool execution.",
+    );
+  }
+  const expectedCausationId = `workflow.tool:${createHash("sha256")
+    .update([
+      validated.workflowRunId,
+      validated.planId,
+      validated.planNodeId,
+      validated.toolId,
+    ].join("\0"))
+    .digest("hex")}`;
+  if (
+    executionScope.executingPrincipalType !== "system" ||
+    executionScope.executingPrincipalId !== validated.executingPrincipalId ||
+    executionScope.causationId !== expectedCausationId
+  ) {
+    throw new Error(
+      "Effect-receipt workflow bindings do not match the execution scope.",
+    );
+  }
+  if (
+    toolInputSha256(current.input) !== validated.inputSha256 ||
+    toolInputSha256(terminal.input) !== validated.inputSha256
+  ) {
+    throw new Error("Effect-receipt input does not match the claimed input.");
+  }
+  const claimedIdempotencySha256 =
+    parseObject(current.output).__effectIdempotencyKeySha256;
+  const claimedInputSha256 = parseObject(current.output).__effectInputSha256;
+  const claimedPlanSha256 = parseObject(current.output).__effectPlanSha256;
+  const claimedTargetId = parseObject(current.output).__effectTargetId;
+  const claimedToolContractSha256 =
+    parseObject(current.output).__effectToolContractSha256;
+  if (
+    claimedIdempotencySha256 !== validated.idempotencyKeySha256 ||
+    claimedInputSha256 !== validated.inputSha256 ||
+    claimedPlanSha256 !== validated.planSha256 ||
+    claimedTargetId !== validated.targetId ||
+    claimedToolContractSha256 !== validated.toolContractSha256
+  ) {
+    throw new Error(
+      "Effect-receipt identity was not fully bound before execution.",
+    );
+  }
+  const tool = getGovernedTool(validated.toolId);
+  const expectedToolContractSha256 = tool
+    ? canonicalJsonSha256({
+        approvalFingerprint: toolApprovalFingerprint(tool),
+      })
+    : undefined;
+  if (expectedToolContractSha256 !== validated.toolContractSha256) {
+    throw new Error(
+      "Effect-receipt tool contract does not match the executing release.",
+    );
+  }
+  const expectedTargetId = memoryEffectTargetIdV1({
+    tenantId: validated.tenantId,
+    executionId: validated.executionId,
+    workflowRunId: validated.workflowRunId,
+    planId: validated.planId,
+    planSha256: validated.planSha256,
+    planNodeId: validated.planNodeId,
+    inputSha256: validated.inputSha256,
+    idempotencyKeySha256: validated.idempotencyKeySha256,
+  });
+  if (validated.targetId !== expectedTargetId) {
+    throw new Error(
+      "Effect-receipt target does not match its deterministic execution binding.",
+    );
+  }
+}
+
+async function appendToolEffectReceiptEvent(
+  receipt: EffectReceiptV1,
+  executionScope: ExecutionScope,
+  sql?: SqlClient,
+) {
+  if (
+    !executionScope.initiatingActorId ||
+    executionScope.executingPrincipalType !== "system" ||
+    !executionScope.executingPrincipalId
+  ) {
+    throw new Error(
+      "Effect-receipt events require a bound actor and system principal.",
+    );
+  }
+  const validated = parseEffectReceiptV1(receipt, {
+    executionId: receipt.executionId,
+    tenantId: executionScope.tenantId,
+    actorId: executionScope.initiatingActorId,
+    executingPrincipalType: executionScope.executingPrincipalType,
+    executingPrincipalId: executionScope.executingPrincipalId,
+    toolId: "memory.write",
+  });
+  if (!validated) {
+    throw new Error("Effect-receipt event is missing its receipt.");
+  }
+  await appendScopedDomainEvent({
+    id: `tool.effect_receipt:${validated.effectReceiptId}`,
+    streamId: `tool_execution:${validated.executionId}`,
+    type: "tool.effect_receipt.recorded",
+    executionScope,
+    payload: buildEffectReceiptEventPayloadV1(validated),
+  }, sql ? { sql } : {});
+}
+
+export async function repairFileToolEffectReceiptEvent(
+  record: ToolExecutionRecord,
+  executionScope?: ExecutionScope,
+) {
+  const receipt = parseRecordEffectReceipt(record);
+  if (!receipt || hasDatabaseUrl()) return;
+  if (!executionScope) {
+    throw new Error("Effect-receipt event repair requires an execution scope.");
+  }
+  try {
+    await appendToolEffectReceiptEvent(receipt, executionScope);
+  } catch {
+    console.error("Tool effect receipt event repair failed in file mode.");
+  }
+}
 
 async function readToolLedger() {
   return readJsonFile<ToolExecutionLedger>(getToolLedgerFile(), { records: [] });
@@ -758,6 +1070,103 @@ function executionClaimFrom(record: ToolExecutionRecord) {
   return token && claimedAt ? { token, claimedAt } : undefined;
 }
 
+type EffectExecutionIntentBinding = Readonly<{
+  idempotencyKeySha256: string;
+  inputSha256: string;
+  planSha256: string;
+  targetId: string;
+  toolContractSha256: string;
+}>;
+
+function effectExecutionIntentBindingFrom(
+  record: ToolExecutionRecord,
+): EffectExecutionIntentBinding | undefined {
+  if (
+    record.toolId !== "memory.write" ||
+    record.status !== "executing" ||
+    record.dryRun ||
+    record.effectReceipt !== undefined
+  ) {
+    return undefined;
+  }
+  const output = parseObject(record.output);
+  const binding = {
+    idempotencyKeySha256: output.__effectIdempotencyKeySha256,
+    inputSha256: output.__effectInputSha256,
+    planSha256: output.__effectPlanSha256,
+    targetId: output.__effectTargetId,
+    toolContractSha256: output.__effectToolContractSha256,
+  };
+  if (
+    !isSha256(binding.idempotencyKeySha256) ||
+    !isSha256(binding.inputSha256) ||
+    !isSha256(binding.planSha256) ||
+    typeof binding.targetId !== "string" ||
+    !binding.targetId.startsWith("memory_effect_") ||
+    !isSha256(binding.toolContractSha256)
+  ) {
+    return undefined;
+  }
+  return binding as EffectExecutionIntentBinding;
+}
+
+function isEffectBoundExecutionIntent(record: ToolExecutionRecord) {
+  const output = parseObject(record.output);
+  return record.toolId === "memory.write" &&
+    record.status === "executing" &&
+    !record.dryRun &&
+    [
+      "__effectIdempotencyKeySha256",
+      "__effectInputSha256",
+      "__effectPlanSha256",
+      "__effectTargetId",
+      "__effectToolContractSha256",
+    ].some((key) => Object.hasOwn(output, key));
+}
+
+function reclaimStaleEffectExecutionRecord(
+  existing: ToolExecutionRecord,
+  proposed: ToolExecutionRecord,
+  staleAfterMs = DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
+) {
+  const existingClaim = executionClaimFrom(existing);
+  const proposedClaim = executionClaimFrom(proposed);
+  const existingBinding = effectExecutionIntentBindingFrom(existing);
+  const proposedBinding = effectExecutionIntentBindingFrom(proposed);
+  if (
+    !existingClaim ||
+    !proposedClaim ||
+    !existingBinding ||
+    !proposedBinding ||
+    !Number.isFinite(Date.parse(existingClaim.claimedAt)) ||
+    Date.now() - Date.parse(existingClaim.claimedAt) < staleAfterMs ||
+    normalizeTenantId(existing.tenantId) !== normalizeTenantId(proposed.tenantId) ||
+    existing.actorId !== proposed.actorId ||
+    existing.toolId !== proposed.toolId ||
+    existing.riskLevel !== proposed.riskLevel ||
+    toolInputSha256(existing.input) !== toolInputSha256(proposed.input) ||
+    canonicalJsonSha256(existingBinding) !== canonicalJsonSha256(proposedBinding)
+  ) {
+    return undefined;
+  }
+  return {
+    ...existing,
+    output: {
+      ...parseObject(existing.output),
+      __executionClaim: {
+        token: proposedClaim.token,
+        claimedAt: proposedClaim.claimedAt,
+      },
+    },
+    reason: proposed.reason,
+    completedAt: undefined,
+  } satisfies ToolExecutionRecord;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
 function recoverStaleExecutionRecord(
   record: ToolExecutionRecord,
   staleAfterMs: number,
@@ -765,6 +1174,7 @@ function recoverStaleExecutionRecord(
   const claim = executionClaimFrom(record);
   if (
     record.status !== "executing" ||
+    isEffectBoundExecutionIntent(record) ||
     !claim ||
     !Number.isFinite(new Date(claim.claimedAt).getTime()) ||
     Date.now() - new Date(claim.claimedAt).getTime() < staleAfterMs
@@ -799,6 +1209,40 @@ function replaceLedgerRecord(ledger: ToolExecutionLedger, record: ToolExecutionR
   };
 }
 
+function preserveImmutableEffectReceipt(
+  existing: ToolExecutionRecord | undefined,
+  next: ToolExecutionRecord,
+  options: { finalizeEffectReceipt?: boolean } = {},
+) {
+  const existingReceipt = existing
+    ? parseRecordEffectReceipt(existing)
+    : undefined;
+  const nextReceipt = parseRecordEffectReceipt(next);
+  if (nextReceipt && !options.finalizeEffectReceipt) {
+    throw new Error(
+      "A generic tool-execution write cannot attach an effect receipt.",
+    );
+  }
+  if (!existingReceipt) return next;
+  if (!options.finalizeEffectReceipt) {
+    throw new Error(
+      "A generic tool-execution write cannot mutate a receipt-bearing record.",
+    );
+  }
+  if (
+    nextReceipt &&
+    nextReceipt.receiptSha256 !== existingReceipt.receiptSha256
+  ) {
+    throw new Error("A persisted effect receipt is immutable.");
+  }
+  if (next.status !== "executed" || next.dryRun) {
+    throw new Error(
+      "A tool execution carrying an effect receipt must remain a live executed record.",
+    );
+  }
+  return { ...next, effectReceipt: existingReceipt };
+}
+
 function trimToolExecutionRecords(records: ToolExecutionRecord[]) {
   const durable = records.filter(
     (record) => record.status === "approval_required" || record.status === "executing",
@@ -809,12 +1253,22 @@ function trimToolExecutionRecords(records: ToolExecutionRecord[]) {
   return [...durable, ...terminal.slice(0, Math.max(0, 250 - durable.length))];
 }
 
-async function writeToolExecutionDb(sql: SqlClient, record: ToolExecutionRecord) {
-  await sql`
+async function writeToolExecutionDb(
+  sql: SqlClient,
+  record: ToolExecutionRecord,
+  options: { finalizeEffectReceipt?: boolean } = {},
+) {
+  const effectReceipt = parseRecordEffectReceipt(record);
+  if (effectReceipt && !options.finalizeEffectReceipt) {
+    throw new Error(
+      "A generic tool-execution write cannot attach an effect receipt.",
+    );
+  }
+  const rows = await sql`
     INSERT INTO omni_tool_executions (
       id, tool_id, tool_name, risk_level, status, dry_run, approval_required,
       tenant_id, actor_id, input, output, reason, approval_decision, approvals, approved_by,
-      approved_at, approval_reason, created_at, completed_at
+      approved_at, approval_reason, effect_receipt, created_at, completed_at
     )
     VALUES (
       ${record.id}, ${record.toolId}, ${record.toolName}, ${record.riskLevel}, ${record.status},
@@ -822,7 +1276,8 @@ async function writeToolExecutionDb(sql: SqlClient, record: ToolExecutionRecord)
       ${record.input}::jsonb, ${record.output ?? null}::jsonb,
       ${record.reason || null}, ${record.approvalDecision || null},
       ${record.approvals || null}::jsonb, ${record.approvedBy || null},
-      ${record.approvedAt || null}, ${record.approvalReason || null}, ${record.createdAt},
+      ${record.approvedAt || null}, ${record.approvalReason || null},
+      ${record.effectReceipt || null}::jsonb, ${record.createdAt},
       ${record.completedAt || null}
     )
     ON CONFLICT (id) DO UPDATE SET
@@ -842,12 +1297,31 @@ async function writeToolExecutionDb(sql: SqlClient, record: ToolExecutionRecord)
       approved_by = EXCLUDED.approved_by,
       approved_at = EXCLUDED.approved_at,
       approval_reason = EXCLUDED.approval_reason,
+      effect_receipt = CASE
+        WHEN ${options.finalizeEffectReceipt === true}
+          THEN EXCLUDED.effect_receipt
+        ELSE omni_tool_executions.effect_receipt
+      END,
       completed_at = EXCLUDED.completed_at
+    WHERE omni_tool_executions.effect_receipt IS NULL
+      OR (
+        ${options.finalizeEffectReceipt === true}
+        AND
+        EXCLUDED.status = 'executed'
+        AND NOT EXCLUDED.dry_run
+        AND omni_tool_executions.effect_receipt = EXCLUDED.effect_receipt
+      )
+    RETURNING id
   `;
+  if (!rows[0]) {
+    throw new Error(
+      "The tool-execution update would replace, erase, or invalidate an immutable effect receipt.",
+    );
+  }
 }
 
 function recordFromRow(row: Record<string, unknown>): ToolExecutionRecord {
-  return {
+  const record: ToolExecutionRecord = {
     id: String(row.id),
     tenantId: row.tenant_id ? String(row.tenant_id) : undefined,
     actorId: row.actor_id ? String(row.actor_id) : undefined,
@@ -868,6 +1342,20 @@ function recordFromRow(row: Record<string, unknown>): ToolExecutionRecord {
     createdAt: normalizeDate(row.created_at),
     completedAt: row.completed_at ? normalizeDate(row.completed_at) : undefined,
   };
+  const effectReceipt = parseStoredEffectReceipt(
+    row.effect_receipt === null ? undefined : row.effect_receipt,
+    {
+      executionId: record.id,
+      tenantId: normalizeTenantId(record.tenantId),
+      actorId: record.actorId,
+      toolId: record.toolId,
+    },
+  );
+  return preserveImmutableEffectReceipt(
+    undefined,
+    effectReceipt ? { ...record, effectReceipt } : record,
+    { finalizeEffectReceipt: Boolean(effectReceipt) },
+  );
 }
 
 function parseObject(value: unknown): Record<string, unknown> {

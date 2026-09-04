@@ -747,7 +747,8 @@ The first safe delivery sequence is intentionally narrow:
 1. P0.1 `ExecutionScope` and ownership inventory, with no read change.
 2. P0.2/P0.4 versioned run contracts and truthful status vocabulary in shadow mode.
 3. P1.3 terminal receipt v2 for workflows, initially display-only beside legacy status.
-4. P1.4 effect receipts for one reversible first-party action.
+4. P1.4 effect receipts for approved, tenant-and-actor-bound workflow
+   `memory.write` as the first reversible first-party canary.
 5. P2.1 canonical source revisions and evidence units.
 6. P2.2/P2.3 Google Drive sync v2 as the first convergent adapter.
 7. P2.7 lineage tombstone and deletion barrier.
@@ -762,6 +763,20 @@ completion persists a validated outcome evaluation, public reads display its
 canonical outcome beside legacy status, and existing workflow controls remain
 unchanged. Strong effect verification and broader terminal-path convergence
 continue in P1.4 and later P1.3 expansion slices.
+
+The first P1.4 canary is also additive and does not complete the phase. Only
+live `memory.write` from a single-tool plan node in an approved workflow with
+explicit tenant and initiating-actor scope receives a deterministic target and a strict
+metadata/hash-only effect receipt. It records
+a first-party commit acknowledgement and tenant-scoped read-after-write, then
+persists the receipt on the tool record with a typed event atomically in
+Postgres. Migration v36 adds that storage; the file fallback is a non-atomic,
+best-effort development path. Legacy records, system-triggered workflows
+without an initiating actor, dry runs, direct calls, and other tools are
+unchanged. P1.3 may surface the ID of a strictly bound, verified
+canary receipt as additive evidence, but its contract stays `posthoc` and
+cannot project `succeeded`; external effects and broader requirement binding
+remain future P1.4 work.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 

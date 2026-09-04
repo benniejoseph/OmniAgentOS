@@ -10,6 +10,9 @@ import {
   type RuntimeModelResolution,
 } from "@/lib/settings/runtime-models";
 import { appendThreadTurn } from "@/lib/threads/store";
+import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
+import { EffectReceiptFinalizationError } from "@/lib/tools/executor";
+import type { ToolExecutionRecord } from "@/lib/tools/types";
 import {
   buildWorkflowSpecialistContext,
   inspectWorkflowSpecialistDependencies,
@@ -17,6 +20,7 @@ import {
 import { executeDynamicWorkflowPlan, parseWorkflowPlanOutput } from "@/lib/workflows/executor";
 import {
   buildWorkflowOutcomeEvaluationV1,
+  workflowOutcomeEffectReceiptCandidateExecutionIds,
   workflowOutcomeEventPayloadV1,
 } from "@/lib/workflows/outcome-evaluator";
 import {
@@ -400,6 +404,55 @@ export async function tickWorkflowRun(
         await appendWorkflowEvent(detail.run.id, "step.interrupted", { stepKey, attempt });
       }
       return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+    }
+    if (error instanceof EffectReceiptFinalizationError) {
+      if (current.run.status !== "running") {
+        return current;
+      }
+      const resetStep = await updateWorkflowStepForRunFence(
+        detail.run.id,
+        stepKey,
+        {
+          status: "pending",
+          attempt: step.attempt,
+          startedAt: undefined,
+          completedAt: undefined,
+          error: undefined,
+        },
+        {
+          tenantId: detail.run.tenantId,
+          expectedRunUpdatedAt: runFence,
+        },
+      );
+      if (!resetStep) {
+        return getWorkflowRunDetail(runId, {
+          tenantId: options.tenantId,
+        }) as Promise<WorkflowRunDetail>;
+      }
+      const requeued = await transitionWorkflowRun(
+        detail.run.id,
+        ["running"],
+        {
+          status: "queued",
+          currentStep: stepKey,
+          error:
+            "A governed effect is awaiting receipt reconciliation on its existing execution.",
+        },
+        {
+          tenantId: detail.run.tenantId,
+          expectedUpdatedAt: runFence,
+        },
+      );
+      if (requeued) {
+        await appendWorkflowEvent(
+          detail.run.id,
+          "workflow.effect_receipt.reconciliation_queued",
+          { stepKey },
+        );
+      }
+      return getWorkflowRunDetail(runId, {
+        tenantId: options.tenantId,
+      }) as Promise<WorkflowRunDetail>;
     }
     if (current.run.status !== "running") {
       return current;
@@ -1131,10 +1184,26 @@ async function completeWorkflow(
   };
   let outcomeEventPayload: Record<string, unknown> | undefined;
   if (detail) {
+    let authoritativeToolExecutions: ToolExecutionRecord[] = [];
+    const effectReceiptCandidateIds =
+      workflowOutcomeEffectReceiptCandidateExecutionIds(detail);
+    if (detail.run.tenantId && effectReceiptCandidateIds.length) {
+      try {
+        authoritativeToolExecutions = await getToolExecutionsByIds(
+          effectReceiptCandidateIds,
+          { tenantId: detail.run.tenantId },
+        );
+      } catch {
+        // Receipt authority is additive. Failure to load it cannot make an
+        // embedded workflow summary count as effect evidence.
+        console.error("Workflow effect receipt authority lookup failed.");
+      }
+    }
     try {
       const outcomeEvaluation = buildWorkflowOutcomeEvaluationV1({
         detail,
         result,
+        authoritativeToolExecutions,
       });
       result.outcomeEvaluation = outcomeEvaluation;
       outcomeEventPayload = workflowOutcomeEventPayloadV1(outcomeEvaluation);

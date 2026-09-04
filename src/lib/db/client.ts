@@ -698,6 +698,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[34],
       up: ensureAsaelCanonicalIdentity,
     },
+    {
+      ...databaseSchemaMigrations[35],
+      up: ensureGovernedToolEffectReceipts,
+    },
   ];
 }
 
@@ -1860,6 +1864,7 @@ async function runTableMigrations(sql: SqlClient) {
       approved_by TEXT,
       approved_at TIMESTAMPTZ,
       approval_reason TEXT,
+      effect_receipt JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       completed_at TIMESTAMPTZ
     )
@@ -1871,6 +1876,7 @@ async function runTableMigrations(sql: SqlClient) {
   await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`;
   await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS approval_reason TEXT`;
   await sql`ALTER TABLE omni_tool_executions ADD COLUMN IF NOT EXISTS approvals JSONB`;
+  await ensureGovernedToolEffectReceipts(sql);
   await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_tool_id_idx ON omni_tool_executions (tool_id)`;
   await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_status_idx ON omni_tool_executions (status)`;
   await sql`CREATE INDEX IF NOT EXISTS omni_tool_executions_created_at_idx ON omni_tool_executions (created_at DESC)`;
@@ -3243,6 +3249,13 @@ async function ensureAsaelCanonicalIdentity(sql: SqlClient) {
     SET server_name = 'Asael',
         updated_at = NOW()
     WHERE server_name = 'OmniAgent'
+  `;
+}
+
+async function ensureGovernedToolEffectReceipts(sql: SqlClient) {
+  await sql`
+    ALTER TABLE omni_tool_executions
+    ADD COLUMN IF NOT EXISTS effect_receipt JSONB
   `;
 }
 
