@@ -42,9 +42,7 @@ type SearchMemoryGraphOptions = {
   nodeLimit?: number;
 };
 
-type GraphSqlClient = {
-  (strings: TemplateStringsArray, ...params: unknown[]): Promise<Record<string, unknown>[]>;
-};
+type GraphSqlClient = ReturnType<typeof getSql>;
 
 type TraceSeed = {
   id: string;

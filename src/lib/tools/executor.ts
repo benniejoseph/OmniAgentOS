@@ -981,7 +981,7 @@ export async function executeGovernedTool({
     });
     intent.id = intendedExecutionId;
     intent.output = {
-      ...parseObject(intent.output),
+      ...asObjectRecord(intent.output),
       ...sealToolExecutionInput(
         preparedInput,
         intent,
@@ -1122,7 +1122,7 @@ export async function executeGovernedTool({
       },
     });
     intent.output = {
-      ...parseObject(intent.output),
+      ...asObjectRecord(intent.output),
       ...sealToolExecutionInput(
         preparedInput,
         intent,
@@ -1808,6 +1808,12 @@ function toolOutputHasMemoryDeletionReceipt(
     !Array.isArray(deletionReceipt) &&
     (deletionReceipt as Record<string, unknown>).id === receiptId,
   );
+}
+
+function asObjectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function executionClaimTokenFromRecord(record: ToolExecutionRecord) {
