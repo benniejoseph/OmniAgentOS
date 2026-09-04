@@ -148,6 +148,11 @@ maintenance paths that bypass RLS. Access-binding
 events begin only with the later atomic actor-aware read/write cutover; no
 owner, shared scope, purpose, or consent grant is inferred during this shadow.
 
+Migration v44 also emits no domain event. It installs an ungranted,
+fail-closed parser for a future transaction-local memory access envelope, but
+does not create an envelope, activate a policy, enroll a memory, or infer the
+canonical purpose ID that the active contract will require.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

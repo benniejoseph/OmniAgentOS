@@ -255,6 +255,19 @@ update, delete, truncate, references, and trigger privileges from non-owner
 deletion-receipt grantees; immutable receipt triggers remain the independent
 enforcement boundary.
 
+Migration v44 installs the still-dormant database-session half of that
+contract. One bounded JSON envelope carries an exact version, tenant, actor,
+named user, agent, or actor-bound system principal, optional
+workspace/project/mission, canonical context and capability grants, a distinct
+canonical purpose ID, and optional audit-purpose text. The purpose ID is never
+inferred from the existing free-form
+`ExecutionScope.purpose`. Its stable parser returns null for an absent,
+malformed, over-sized, system-scoped, tenant-mismatched, or non-canonical
+envelope. The setting has no runtime writer and no policy consumes it; execute
+permission on all three shadow functions is revoked from serving roles. The
+validated v43 enrollment constraint and restrictive RLS holdback remain
+unchanged, so this migration changes neither a served result nor a write.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

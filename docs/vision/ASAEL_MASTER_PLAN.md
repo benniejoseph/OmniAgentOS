@@ -860,10 +860,22 @@ infer ownership from the coarse historical `scope` label and does not expose
 the new fields through runtime records. Version-1 envelopes are constrained to
 the five declared visibility values, but a validated enrollment lock forbids
 all version-1 rows until the atomic cutover; a restrictive all-command RLS
-policy provides a second ordinary-role holdback. The next P3.1 batch must add the
-actor/principal/scope/purpose database session contract and atomically cover
+policy provides a second ordinary-role holdback. A later activation P3.1 batch
+must add the actor/principal/scope/purpose runtime writer and atomically cover
 memory, served RAG, mixed retrieval traces, graph, APIs, workers, and portable
 data before any tenant can enroll a version-1 row.
+
+Migration v44 installs only the fail-closed parser and exact JSON shape for
+that future database session contract. It requires a canonical `purposeId`
+separate from optional audit-purpose text, canonical context/capability grant
+sets, an explicit actor, and an explicit user, agent, or actor-bound system
+principal. A system principal in this envelope remains ordinary attributed
+work and never enables the separate maintenance/RLS-bypass scope. No runtime
+path can set or execute the parser, and v43 still forbids all version-1 rows.
+The activation batch must add the transaction-local writer, validate every
+scope target and grant before entry, grant only the required database roles,
+and switch memory plus every derived/read/export path together before it drops
+the enrollment lock.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
