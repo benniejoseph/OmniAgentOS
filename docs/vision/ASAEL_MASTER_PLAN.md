@@ -986,6 +986,19 @@ behavior need explicit gates before the live request actor can flip.
 Membership epochs remain blocked until those slices and the final runtime
 convergence are complete, while all v43-v49 holds stay intact.
 
+The first read-convergence canary is deliberately limited to
+`omni_today_preferences`, a scalar owner row with no ciphertext, hash,
+approval, receipt, child graph, or domain event. Authenticated browser and
+mobile requests may inspect only the canonical actor and exact current email
+when it fits the store's existing 200-character actor contract; zero matches
+retain the legacy email default-write behavior, one match keeps
+its physical actor on update, and two matches fail closed before mutation.
+User-facing projections retain the request's email-shaped actor. The
+one-statement Today projection enforces the same cardinality rule. This
+does not dual-read any other Today record, enumerate retained prior emails,
+change cache/session/request identity, or begin canonical writes. It therefore
+does not unblock membership epochs or any v43-v49 hold.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

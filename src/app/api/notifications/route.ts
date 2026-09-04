@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
   getNotificationCenter,
@@ -26,6 +27,7 @@ async function GETHandler(request: Request) {
     // Reminder generation is owned by the scheduled workflow worker. Keep the
     // interactive inbox read side-effect free and off the dashboard critical path.
     processDue: false,
+    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
   });
   return Response.json(center, { headers: { "cache-control": "private, no-store" } });
 }

@@ -9,6 +9,7 @@ import {
 } from "@/lib/db/client";
 import { listMemories } from "@/lib/memory/store";
 import { createStructuredResponse } from "@/lib/openai/client";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { listAgentRunSummaries } from "@/lib/runs/store";
 import { listProjects, listProjectTasks } from "@/lib/projects/store";
@@ -66,28 +67,32 @@ const jsonSchema = {
   },
 } as const;
 
-export async function getTodayPreferences(options: {
+type TodayPreferenceRequestOptions = {
   tenantId?: string;
   actorId: string;
-}) {
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+};
+
+type StoredTodayPreferences = {
+  preferences: TodayPreferences;
+  persistedActorId: string;
+};
+
+export async function getTodayPreferences(options: TodayPreferenceRequestOptions) {
   const tenantId = normalizeTenantId(options.tenantId);
-  const actorId = safeText(options.actorId, 200);
-  if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    const rows = await getSql()`
-      SELECT * FROM omni_today_preferences
-      WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
-      LIMIT 1
-    `;
-    if (rows[0]) return preferencesFromRow(rows[0]);
-  } else {
-    const ledger = await readBriefLedger();
-    const existing = ledger.preferences.find((item) =>
-      item.tenantId === tenantId && item.actorId === actorId
-    );
-    if (existing) return sanitizePreferences(existing);
+  const existing = await findTodayPreferences({
+    tenantId,
+    actorId: options.actorId,
+    requestActorBinding: options.requestActorBinding,
+  });
+  if (existing) {
+    return projectTodayPreferencesForRequest(existing.preferences, options.actorId);
   }
-  return updateTodayPreferences({}, { tenantId, actorId });
+  return updateTodayPreferences({}, {
+    tenantId,
+    actorId: options.actorId,
+    requestActorBinding: options.requestActorBinding,
+  });
 }
 
 export async function updateTodayPreferences(
@@ -101,27 +106,41 @@ export async function updateTodayPreferences(
     | "quietHoursStart"
     | "quietHoursEnd"
   >>,
-  options: { tenantId?: string; actorId: string },
+  options: TodayPreferenceRequestOptions,
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
-  const actorId = safeText(options.actorId, 200);
-  const current = await findTodayPreferences({ tenantId, actorId });
+  const usePostgres = hasDatabaseUrl();
+  const legacyRequestActorId = safeText(options.actorId, 200);
+  const requestActorId = usePostgres
+    ? todayPreferenceActorReadOrder(
+        options.actorId,
+        options.requestActorBinding,
+        legacyRequestActorId,
+      )[1]
+    : legacyRequestActorId;
+  const current = await findTodayPreferences({
+    tenantId,
+    actorId: options.actorId,
+    requestActorBinding: options.requestActorBinding,
+  });
+  const persistedActorId = current?.persistedActorId ?? requestActorId;
+  const currentPreferences = current?.preferences;
   const now = new Date().toISOString();
   const preferences = sanitizePreferences({
     tenantId,
-    actorId,
-    briefEnabled: input.briefEnabled ?? current?.briefEnabled ?? true,
-    briefTime: input.briefTime ?? current?.briefTime ?? "08:00",
-    timezone: input.timezone ?? current?.timezone ?? defaultTimezone(),
-    reminderLeadMinutes: input.reminderLeadMinutes ?? current?.reminderLeadMinutes ?? 30,
-    notificationsEnabled: input.notificationsEnabled ?? current?.notificationsEnabled ?? true,
-    quietHoursEnabled: input.quietHoursEnabled ?? current?.quietHoursEnabled ?? true,
-    quietHoursStart: input.quietHoursStart ?? current?.quietHoursStart ?? "22:00",
-    quietHoursEnd: input.quietHoursEnd ?? current?.quietHoursEnd ?? "07:00",
-    createdAt: current?.createdAt || now,
+    actorId: persistedActorId,
+    briefEnabled: input.briefEnabled ?? currentPreferences?.briefEnabled ?? true,
+    briefTime: input.briefTime ?? currentPreferences?.briefTime ?? "08:00",
+    timezone: input.timezone ?? currentPreferences?.timezone ?? defaultTimezone(),
+    reminderLeadMinutes: input.reminderLeadMinutes ?? currentPreferences?.reminderLeadMinutes ?? 30,
+    notificationsEnabled: input.notificationsEnabled ?? currentPreferences?.notificationsEnabled ?? true,
+    quietHoursEnabled: input.quietHoursEnabled ?? currentPreferences?.quietHoursEnabled ?? true,
+    quietHoursStart: input.quietHoursStart ?? currentPreferences?.quietHoursStart ?? "22:00",
+    quietHoursEnd: input.quietHoursEnd ?? currentPreferences?.quietHoursEnd ?? "07:00",
+    createdAt: currentPreferences?.createdAt || now,
     updatedAt: now,
   });
-  if (hasDatabaseUrl()) {
+  if (usePostgres) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       INSERT INTO omni_today_preferences (
@@ -129,7 +148,7 @@ export async function updateTodayPreferences(
         reminder_lead_minutes, notifications_enabled, quiet_hours_enabled,
         quiet_hours_start, quiet_hours_end, created_at, updated_at
       ) VALUES (
-        ${tenantId}, ${actorId}, ${preferences.briefEnabled}, ${preferences.briefTime},
+        ${tenantId}, ${persistedActorId}, ${preferences.briefEnabled}, ${preferences.briefTime},
         ${preferences.timezone}, ${preferences.reminderLeadMinutes},
         ${preferences.notificationsEnabled}, ${preferences.quietHoursEnabled},
         ${preferences.quietHoursStart}, ${preferences.quietHoursEnd},
@@ -147,15 +166,18 @@ export async function updateTodayPreferences(
         updated_at = EXCLUDED.updated_at
       RETURNING *
     `;
-    return preferencesFromRow(rows[0]);
+    return projectTodayPreferencesForRequest(
+      preferencesFromRow(rows[0]),
+      requestActorId,
+    );
   }
   await updateBriefLedger((ledger) => {
     const rest = ledger.preferences.filter((item) =>
-      item.tenantId !== tenantId || item.actorId !== actorId
+      item.tenantId !== tenantId || item.actorId !== preferences.actorId
     );
     return { ...ledger, preferences: [preferences, ...rest] };
   });
-  return preferences;
+  return projectTodayPreferencesForRequest(preferences, requestActorId);
 }
 
 export async function getDailyBrief(options: {
@@ -184,10 +206,19 @@ export async function getTodayBriefBundle(options: {
   tenantId?: string;
   actorId: string;
   now?: Date;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 }) {
-  const preferences = await getTodayPreferences(options);
+  const preferences = await getTodayPreferences({
+    tenantId: options.tenantId,
+    actorId: options.actorId,
+    requestActorBinding: options.requestActorBinding,
+  });
   const localDate = localScheduleParts(options.now || new Date(), preferences.timezone).date;
-  const brief = await getDailyBrief({ ...options, localDate });
+  const brief = await getDailyBrief({
+    tenantId: options.tenantId,
+    actorId: options.actorId,
+    localDate,
+  });
   return {
     preferences,
     brief,
@@ -201,20 +232,25 @@ export async function generateDailyBrief(options: {
   actorId: string;
   now?: Date;
   force?: boolean;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 }) {
   const now = options.now || new Date();
-  const preferences = await getTodayPreferences(options);
+  const ownerScope = { tenantId: options.tenantId, actorId: options.actorId };
+  const preferences = await getTodayPreferences({
+    ...ownerScope,
+    requestActorBinding: options.requestActorBinding,
+  });
   const localDate = localScheduleParts(now, preferences.timezone).date;
-  const existing = await getDailyBrief({ ...options, localDate });
+  const existing = await getDailyBrief({ ...ownerScope, localDate });
   if (existing && !options.force) return existing;
 
   const [items, memories, threads, runs, workflows, projects] = await Promise.all([
-    listTodayItems(60, options),
+    listTodayItems(60, ownerScope),
     listMemories({ tenantId: options.tenantId, limit: 12 }),
-    listThreads(8, options),
+    listThreads(8, ownerScope),
     listAgentRunSummaries(8, { tenantId: options.tenantId }),
     listWorkflowRunSummaries(8, { tenantId: options.tenantId }),
-    listProjects(8, { tenantId: options.tenantId, actorId: options.actorId }),
+    listProjects(8, ownerScope),
   ]);
   const openItems = items.filter((item) => item.status === "open");
   const activeStatuses = new Set(["running", "queued", "pending", "waiting_approval", "paused"]);
@@ -367,14 +403,78 @@ export function localScheduleParts(date: Date, timezone: string) {
   };
 }
 
-async function findTodayPreferences(options: { tenantId: string; actorId: string }) {
+async function findTodayPreferences(options: {
+  tenantId: string;
+  actorId: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+}): Promise<StoredTodayPreferences | undefined> {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`SELECT * FROM omni_today_preferences WHERE tenant_id = ${options.tenantId} AND actor_id = ${options.actorId} LIMIT 1`;
-    return rows[0] ? preferencesFromRow(rows[0]) : undefined;
+    const legacyActorId = safeText(options.actorId, 200);
+    const actorReadOrder = todayPreferenceActorReadOrder(
+      options.actorId,
+      options.requestActorBinding,
+      legacyActorId,
+    );
+    const canonicalActorId = actorReadOrder[0];
+    const exactActorId = actorReadOrder[1];
+    const rows = await getSql()`
+      SELECT * FROM omni_today_preferences
+      WHERE tenant_id = ${options.tenantId}
+        AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+      ORDER BY
+        CASE WHEN actor_id = ${canonicalActorId} THEN 0 ELSE 1 END,
+        actor_id ASC
+      LIMIT 2
+    `;
+    if (rows.length > 1) {
+      throw new Error("Today preferences resolved to multiple physical rows.");
+    }
+    return rows[0] ? {
+      preferences: preferencesFromRow(rows[0]),
+      persistedActorId: String(rows[0].actor_id),
+    } : undefined;
   }
   const ledger = await readBriefLedger();
-  return ledger.preferences.find((item) => item.tenantId === options.tenantId && item.actorId === options.actorId);
+  const legacyActorId = safeText(options.actorId, 200);
+  const preferences = ledger.preferences.find((item) =>
+    item.tenantId === options.tenantId && item.actorId === legacyActorId
+  );
+  return preferences ? {
+    preferences: sanitizePreferences(preferences),
+    persistedActorId: preferences.actorId,
+  } : undefined;
+}
+
+/**
+ * Keeps this canary's PostgreSQL lookup canonical-first while treating a
+ * missing or malformed request binding as an exact-actor read. Returning the
+ * exact actor twice lets callers use one fixed query shape in both modes.
+ */
+export function todayPreferenceActorReadOrder(
+  actorId: string,
+  binding?: CanonicalRequestActorBindingV1,
+  exactFallbackActorId = actorId,
+): readonly [string, string] {
+  if (
+    !binding ||
+    binding.version !== 1 ||
+    binding.kind !== "auth_user" ||
+    safeText(actorId, 200) !== actorId ||
+    binding.canonicalActorId !== `actor:${binding.authUserId}` ||
+    binding.canonicalActorId === actorId ||
+    !Array.isArray(binding.legacyOwnerActorIds) ||
+    binding.legacyOwnerActorIds.length !== 1 ||
+    binding.legacyOwnerActorIds[0] !== actorId ||
+    !Array.isArray(binding.readableOwnerActorIds) ||
+    binding.readableOwnerActorIds.length !== 2 ||
+    binding.readableOwnerActorIds[0] !== binding.canonicalActorId ||
+    binding.readableOwnerActorIds[1] !== actorId ||
+    safeText(binding.canonicalActorId, 200) !== binding.canonicalActorId
+  ) {
+    return [exactFallbackActorId, exactFallbackActorId];
+  }
+  return [binding.canonicalActorId, actorId];
 }
 
 export async function listTodayPreferencesForTenant(tenantId?: string) {
@@ -464,6 +564,16 @@ function preferencesFromRow(row: Record<string, unknown>): TodayPreferences {
     createdAt: dateValue(row.created_at),
     updatedAt: dateValue(row.updated_at),
   });
+}
+
+function projectTodayPreferencesForRequest(
+  preferences: TodayPreferences,
+  requestActorId: string,
+): TodayPreferences {
+  return {
+    ...preferences,
+    actorId: safeText(requestActorId, 200),
+  };
 }
 
 function briefFromRow(row: Record<string, unknown>): DailyBrief {

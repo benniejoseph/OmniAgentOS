@@ -5,6 +5,7 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
@@ -26,19 +27,29 @@ export async function getNotificationCenter(options: {
   actorId: string;
   now?: Date;
   processDue?: boolean;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 }) {
   const now = options.now || new Date();
+  const ownerScope = { tenantId: options.tenantId, actorId: options.actorId };
+  const preferenceScope = {
+    ...ownerScope,
+    requestActorBinding: options.requestActorBinding,
+  };
   let preferences: TodayPreferences;
   let notifications: PersonalNotification[];
   if (options.processDue === false) {
     [preferences, notifications] = await Promise.all([
-      getTodayPreferences(options),
-      listNotifications(60, options),
+      getTodayPreferences(preferenceScope),
+      listNotifications(60, ownerScope),
     ]);
   } else {
-    preferences = await getTodayPreferences(options);
-    await processDueNotifications({ ...options, now });
-    notifications = await listNotifications(60, options);
+    preferences = await getTodayPreferences(preferenceScope);
+    await processDueNotifications({
+      ...ownerScope,
+      now,
+      requestActorBinding: options.requestActorBinding,
+    });
+    notifications = await listNotifications(60, ownerScope);
   }
   return {
     generatedAt: now.toISOString(),
@@ -54,19 +65,25 @@ export async function processDueNotifications(options: {
   actorId?: string;
   now?: Date;
   limit?: number;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 }) {
   const now = options.now || new Date();
   const preferences = options.actorId
-    ? [await getTodayPreferences({ tenantId: options.tenantId, actorId: options.actorId })]
+    ? [await getTodayPreferences({
+        tenantId: options.tenantId,
+        actorId: options.actorId,
+        requestActorBinding: options.requestActorBinding,
+      })]
     : await listTodayPreferencesForTenant(options.tenantId);
   const generated: PersonalNotification[] = [];
   const limit = Math.min(Math.max(options.limit || 20, 1), 100);
 
   for (const preference of preferences) {
     if (!preference.notificationsEnabled || isQuietHoursActive(preference, now)) continue;
+    const ownerActorId = options.actorId ?? preference.actorId;
     const items = await listTodayItems(100, {
       tenantId: preference.tenantId,
-      actorId: preference.actorId,
+      actorId: ownerActorId,
     });
     for (const item of items) {
       if (generated.length >= limit) return generated;
@@ -75,7 +92,7 @@ export async function processDueNotifications(options: {
       if (!Number.isFinite(dueAt) || dueAt > now.getTime() + preference.reminderLeadMinutes * 60_000) continue;
       generated.push(await upsertNotification({
         tenantId: preference.tenantId,
-        actorId: preference.actorId,
+        actorId: ownerActorId,
         title: item.title,
         sourceId: item.id,
         occurrenceKey: item.dueAt,

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
   generateDailyBrief,
@@ -39,6 +40,7 @@ async function GETHandler(request: Request) {
   const bundle = await getTodayBriefBundle({
     tenantId: context.tenantId,
     actorId: context.actorId,
+    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
   });
   return Response.json(bundle, { headers: { "cache-control": "private, no-store" } });
 }
@@ -56,6 +58,7 @@ async function POSTHandler(request: Request) {
     tenantId: context.tenantId,
     actorId: context.actorId,
     force: parsed.force,
+    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
   });
   invalidateTodaySnapshot(context);
   return Response.json({ brief });
@@ -73,6 +76,7 @@ async function PATCHHandler(request: Request) {
   const preferences = await updateTodayPreferences(parsed, {
     tenantId: context.tenantId,
     actorId: context.actorId,
+    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
   });
   invalidateTodaySnapshot(context);
   return Response.json({ preferences });

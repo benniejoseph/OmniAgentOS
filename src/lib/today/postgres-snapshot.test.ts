@@ -47,6 +47,7 @@ beforeEach(() => {
 describe("Postgres Today snapshot", () => {
   it("hydrates the owner projection through one scoped transaction and aggregate statement", async () => {
     dbMocks.rows.push({
+      preference_match_count: 1,
       items: [
         {
           id: "item-open",
@@ -193,6 +194,7 @@ describe("Postgres Today snapshot", () => {
 
   it("uses safe read defaults when the aggregate contains malformed optional data", async () => {
     dbMocks.rows.push({
+      preference_match_count: 0,
       items: [],
       threads: [],
       memories: [],
@@ -236,6 +238,30 @@ describe("Postgres Today snapshot", () => {
       actorId: "owner-missing",
       now: new Date("2026-08-26T09:00:00.000Z"),
     })).rejects.toThrow("Today snapshot aggregate returned no row.");
+  });
+
+  it("fails closed when canonical and legacy preference rows both match", async () => {
+    const authUserId = "11111111-1111-4111-8111-111111111111";
+    const actorId = "owner@example.com";
+    const canonicalActorId = `actor:${authUserId}`;
+    dbMocks.rows.push({ preference_match_count: 2 });
+
+    await expect(loadPostgresTodaySnapshot({
+      tenantId: "tenant-collision",
+      actorId,
+      now: new Date("2026-08-26T09:00:00.000Z"),
+      requestActorBinding: {
+        version: 1,
+        kind: "auth_user",
+        authUserId,
+        canonicalActorId,
+        legacyOwnerActorIds: Object.freeze([actorId]),
+        readableOwnerActorIds: Object.freeze([canonicalActorId, actorId]),
+      },
+    })).rejects.toThrow("Today preferences resolved to multiple physical rows.");
+
+    expect(dbMocks.statements[1].params).toContain(canonicalActorId);
+    expect(dbMocks.statements[1].params).toContain(actorId);
   });
 });
 
