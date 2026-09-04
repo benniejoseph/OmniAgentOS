@@ -109,13 +109,21 @@ export async function getTenantIsolationReport(tenantId: string): Promise<Tenant
       `,
       expectedTables,
     );
+    // information_schema hides columns when the caller intentionally has no
+    // table privilege. Read the non-sensitive system catalogs so owner-only
+    // tenant authorities are still represented without widening their ACLs.
     const columnRows = await sql.query(
       `
-        SELECT table_name
-        FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND column_name = 'tenant_id'
-          AND table_name IN (${placeholders})
+        SELECT relation.relname AS table_name
+        FROM pg_attribute attribute
+        JOIN pg_class relation ON relation.oid = attribute.attrelid
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = current_schema()
+          AND relation.relkind = 'r'
+          AND relation.relname IN (${placeholders})
+          AND attribute.attname = 'tenant_id'
+          AND attribute.attnum > 0
+          AND NOT attribute.attisdropped
       `,
       expectedTables,
     );

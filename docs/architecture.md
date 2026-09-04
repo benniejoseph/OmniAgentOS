@@ -354,6 +354,19 @@ live user, same-tenant membership, tenant entitlement, and consent rows must
 then be locked separately in the operation transaction. Revocation must never
 depend on a currently active tenant entitlement.
 
+Migration v54 adds a separate, empty membership-epoch authority for one
+canonical subject actor inside one tenant. Epochs are monotonic, begin held,
+have terminal revocation, and are protected by an activation constraint,
+forced tenant RLS, a restrictive system-only policy, and owner-only ACLs. The
+migration does not infer an epoch from the mutable legacy membership row,
+because the bootstrap upsert lacks authoritative decision attribution and
+typed evidence. It does not alter current membership columns, writers, roles,
+sessions, request authorization, file fallback, the v45 deny hook, or the
+v48-v49 ledgers. A later informed-notice contract must bind its evidence and
+this exact epoch into the still-empty consent row in one migration before a
+consent grant writer is designed; live authorization must still lock the user,
+current same-tenant membership, epoch, entitlement, and consent separately.
+
 Migration v50 adds an owner-only, append-only auth-user actor-identifier
 shadow. It records each v46 canonical actor as a self identifier and each exact
 current auth email as the initial legacy identifier, while an auth-user trigger
