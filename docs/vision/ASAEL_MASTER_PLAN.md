@@ -1268,6 +1268,25 @@ appearing canonical scope deliberately fails the next complete readable GET;
 widening a write to hide that collision is outside this canary. This read-only
 slice emits no domain event and does not unblock membership or consent holds.
 
+The following request canary converges only OAuth connection metadata GETs.
+The literal `ownerScope=readable` path selects an explicit non-secret column
+allowlist from the validated canonical/current-email pair; it never fetches
+sealed token payloads or sync cursors. Tenant, physical owner, provider,
+active-state, scope, authorization-generation, sync-state, counter, and date
+integrity are checked before cross-owner provider collisions fail closed. The
+response projects the current request actor, sanitizes provider-derived error
+text, derives `manageable` from physical ownership, and acknowledges
+`requestReadContracts.oauthGrants=readable_v1`. Capture and Integrations trust
+that acknowledgement and exact management flag, alongside their existing
+role gate, before offering connect, reconnect, sync, Photos, removal, or
+disconnect actions; this also prevents reconnect from creating a duplicate
+email-owned grant beside retained canonical history. Bare GET and file fallback
+stay exact. Token opening, scheduled and manual sync internals, refresh,
+authorization state and callback, save, revoke, Photos sessions, autonomy,
+readiness, portable data, events, and canonical writes remain unchanged. This
+read-only slice emits no domain event and does not unblock membership or
+consent holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

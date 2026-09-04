@@ -1470,7 +1470,7 @@ test("every navigation destination renders a focused page without horizontal ove
 
 test("integrations reveals Google status while slower catalogs continue loading", async ({ page }) => {
   await signIn(page);
-  await page.route("**/api/oauth", (route) =>
+  await page.route(/\/api\/oauth(?:\?.*)?$/, (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -1496,10 +1496,12 @@ test("integrations reveals Google status while slower catalogs continue loading"
             status: "active",
             syncStatus: "healthy",
             syncedItems: 3,
+            manageable: true,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           },
         ],
+        requestReadContracts: { oauthGrants: "readable_v1" },
       }),
     }),
   );

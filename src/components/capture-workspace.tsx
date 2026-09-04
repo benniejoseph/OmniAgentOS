@@ -89,6 +89,9 @@ export function CaptureWorkspace() {
   const [knowledgeStats, setKnowledgeStats] = useState<KnowledgeStats>();
   const [oauthProviders, setOAuthProviders] = useState<OAuthProviderItem[]>([]);
   const [oauthGrants, setOAuthGrants] = useState<OAuthGrantItem[]>([]);
+  const [oauthReadContract, setOauthReadContract] = useState<
+    "exact_v1" | "readable_v1"
+  >();
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
   const [loadError, setLoadError] = useState<string>();
   const [offlinePending, setOfflinePending] = useState(0);
@@ -101,38 +104,55 @@ export function CaptureWorkspace() {
   const inputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const completedJobRef = useRef<string | undefined>(undefined);
+  const workspaceLoadControllerRef = useRef<AbortController | null>(null);
   const captureBlocked = permissionMessage(session, status, "write.memory");
   const visualBlocked = permissionMessage(session, status, "run.agent");
 
   const loadWorkspace = useCallback(async () => {
     if (status !== "ready" || !session) return;
+    workspaceLoadControllerRef.current?.abort();
+    const controller = new AbortController();
+    workspaceLoadControllerRef.current = controller;
     setLoadingWorkspace(true);
     setLoadError(undefined);
+    setOauthReadContract(undefined);
     const results = await Promise.allSettled([
-      fetch("/api/knowledge?limit=30", { cache: "no-store" }).then(async (response) => {
+      fetch("/api/knowledge?limit=30", { cache: "no-store", signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error("Knowledge library could not be loaded.");
         const payload = await response.json() as { documents?: DocumentItem[]; stats?: KnowledgeStats };
+        if (controller.signal.aborted) return;
         setDocuments(Array.isArray(payload.documents) ? payload.documents : []);
         setKnowledgeStats(payload.stats);
       }),
-      fetch("/api/capture?limit=30", { cache: "no-store" }).then(async (response) => {
+      fetch("/api/capture?limit=30", { cache: "no-store", signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error("Original files could not be loaded.");
         const payload = await response.json() as { assets?: CaptureAsset[] };
+        if (controller.signal.aborted) return;
         setAssets(Array.isArray(payload.assets) ? payload.assets : []);
       }),
-      fetch("/api/oauth", { cache: "no-store" }).then(async (response) => {
+      fetch("/api/oauth?ownerScope=readable", { cache: "no-store", signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error("Connected sources could not be loaded.");
-        const payload = await response.json() as { providers?: OAuthProviderItem[]; grants?: OAuthGrantItem[] };
+        const payload = await response.json() as {
+          providers?: OAuthProviderItem[];
+          grants?: OAuthGrantItem[];
+          requestReadContracts?: {
+            oauthGrants?: "exact_v1" | "readable_v1";
+          };
+        };
+        if (controller.signal.aborted) return;
         setOAuthProviders(Array.isArray(payload.providers) ? payload.providers : []);
         setOAuthGrants(Array.isArray(payload.grants) ? payload.grants : []);
+        setOauthReadContract(payload.requestReadContracts?.oauthGrants);
       }),
-      fetch("/api/capabilities?view=settings", { cache: "no-store" }).then(async (response) => {
+      fetch("/api/capabilities?view=settings", { cache: "no-store", signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error("Media capabilities could not be loaded.");
         const payload = await response.json() as { geminiConfigured?: boolean; googleModels?: { image?: string } };
+        if (controller.signal.aborted) return;
         setGeminiConfigured(Boolean(payload.geminiConfigured));
         setGeminiImageModel(payload.googleModels?.image);
       }),
     ]);
+    if (controller.signal.aborted) return;
     if (results.every((result) => result.status === "rejected")) {
       setLoadError("Capture data is temporarily unavailable. Your unsaved draft has not been changed.");
     }
@@ -141,7 +161,10 @@ export function CaptureWorkspace() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadWorkspace(), 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      workspaceLoadControllerRef.current?.abort();
+    };
   }, [loadWorkspace]);
 
   useEffect(() => {
@@ -377,7 +400,15 @@ export function CaptureWorkspace() {
         </aside>
       </section>
 
-      <ConnectedSources providers={oauthProviders} grants={oauthGrants} loading={loadingWorkspace} onRefresh={loadWorkspace} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} />
+      <ConnectedSources
+        providers={oauthProviders}
+        grants={oauthGrants}
+        requestReadContract={oauthReadContract}
+        disabledReason={captureBlocked}
+        loading={loadingWorkspace}
+        onRefresh={loadWorkspace}
+        onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }}
+      />
 
       <VisualStudio configured={geminiConfigured} model={geminiImageModel} disabledReason={visualBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onAssetsChanged={loadWorkspace} />
 

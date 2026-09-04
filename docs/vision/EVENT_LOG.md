@@ -377,6 +377,16 @@ catalog, change MCP authority, or change writer identity. Those exact-owner
 operations and any later canonical-write cutover retain their existing
 governed and typed-event boundaries.
 
+Converging request-bound OAuth connection metadata emits no domain event. The
+read selects only public connection fields from the validated
+canonical/current-email pair, never selects sealed tokens or sync cursors,
+projects the request actor, and publishes a physical-owner-derived management
+capability. It does not authorize, open, refresh, save, sync, revoke, or use a
+provider token; operate a Photos session; remove imported data; change source
+lineage; or change writer identity. Those exact-owner operations and any later
+canonical-write cutover retain their existing scoped event and governed-action
+boundaries.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
