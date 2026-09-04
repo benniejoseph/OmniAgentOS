@@ -1,10 +1,12 @@
 import {
+  CaptureAssetContentIntegrityError,
   CaptureAssetError,
   CaptureAssetReadConflictError,
   deleteCaptureAsset,
   getCaptureAsset,
   getCaptureAssetForRequest,
   getCaptureAssetContent,
+  getCaptureAssetContentForRequest,
   updateCaptureAssetStatus,
 } from "@/lib/capture/assets";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
@@ -39,6 +41,8 @@ const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function GETHandler(request: Request, route: { params: Promise<{ id: string }> }) {
   const { id } = await route.params;
+  const requestUrl = new URL(request.url);
+  const contentRequested = requestUrl.searchParams.get("content") === "1";
   let context;
   try {
     context = await authorizeRequest({ request, action: "read", resourceType: "capture_asset", resourceId: id });
@@ -46,13 +50,19 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
     return forbiddenResponse(error);
   }
   try {
-    if (new URL(request.url).searchParams.get("content") === "1") {
-      const { asset, bytes } = await getCaptureAssetContent(id, context);
-      const requestedDownload = new URL(request.url).searchParams.get("download") === "1";
+    const requestActorBinding =
+      canonicalRequestActorBindingFromSecurityContext(context);
+    if (contentRequested) {
+      const { asset, bytes } = await getCaptureAssetContentForRequest(id, {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        requestActorBinding,
+      });
+      const requestedDownload = requestUrl.searchParams.get("download") === "1";
       const disposition = requestedDownload || !safeInlineMediaType(asset.mediaType) ? "attachment" : "inline";
       return new Response(bytes, { headers: {
         "content-type": asset.mediaType,
-        "content-length": String(asset.byteCount),
+        "content-length": String(bytes.byteLength),
         "content-disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(asset.filename)}`,
         "etag": `"${asset.contentSha256}"`,
         "cache-control": "private, no-store",
@@ -62,13 +72,12 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
     const asset = await getCaptureAssetForRequest(id, {
       tenantId: context.tenantId,
       actorId: context.actorId,
-      requestActorBinding:
-        canonicalRequestActorBindingFromSecurityContext(context),
+      requestActorBinding,
     });
     if (!asset) return Response.json({ error: "Captured file not found." }, { status: 404, headers: privateNoStoreHeaders });
     return Response.json({ asset }, { headers: privateNoStoreHeaders });
   } catch (error) {
-    return assetErrorResponse(error);
+    return assetErrorResponse(error, contentRequested ? "content" : "metadata");
   }
 }
 
@@ -87,7 +96,7 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
   );
   try {
     const asset = await getCaptureAsset(id, context);
-    if (!asset) return Response.json({ error: "Captured file not found." }, { status: 404 });
+    if (!asset) return Response.json({ error: "Captured file not found." }, { status: 404, headers: privateNoStoreHeaders });
     await cancelIngestJob(asset.ingestJobId, context.tenantId);
     const forgotten = await deleteKnowledgeDocumentsBySourcePrefix(`capture:asset:${asset.id}`, { tenantId: context.tenantId });
     await deleteCaptureAsset(id, { ...context, executionScope });
@@ -117,7 +126,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     return jsonBodyErrorResponse(error);
   }
   const parsed = indexAssetSchema.safeParse(body);
-  if (!parsed.success) return Response.json({ error: "Invalid indexing details.", details: parsed.error.flatten() }, { status: 400 });
+  if (!parsed.success) return Response.json({ error: "Invalid indexing details.", details: parsed.error.flatten() }, { status: 400, headers: privateNoStoreHeaders });
   try {
     const { asset, bytes } = await getCaptureAssetContent(id, context);
     if (asset.ingestJobId && asset.status === "queued") {
@@ -170,7 +179,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     const updated = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, { status: "queued", extractionStatus: "completed", ingestJobId: job.id });
     return Response.json({ asset: updated, job: projectOperationJobStatus(job) }, { status: 202, headers: { location: `/api/operations/jobs/${job.id}`, "retry-after": "2", "cache-control": "private, no-store" } });
   } catch (error) {
-    if (error instanceof BackgroundJobIdempotencyConflictError) return Response.json({ error: error.message }, { status: 409 });
+    if (error instanceof BackgroundJobIdempotencyConflictError) return Response.json({ error: error.message }, { status: 409, headers: privateNoStoreHeaders });
     if (error instanceof CaptureFileError) {
       const existing = await getCaptureAsset(id, context);
       const asset = existing ? await updateCaptureAssetStatus(id, { ...context, executionScope }, {
@@ -184,15 +193,36 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   }
 }
 
-function assetErrorResponse(error: unknown) {
-  if (error instanceof CaptureAssetReadConflictError) {
+function assetErrorResponse(
+  error: unknown,
+  readKind: "metadata" | "content" = "metadata",
+) {
+  if (error instanceof CaptureAssetContentIntegrityError) {
     return Response.json(
-      { error: "Captured file metadata could not be resolved safely." },
+      { error: "Captured file content could not be verified safely." },
       { status: 409, headers: privateNoStoreHeaders },
     );
   }
-  if (error instanceof CaptureAssetError) return Response.json({ error: error.message }, { status: error.status });
-  return Response.json({ error: error instanceof Error ? error.message : "Captured file request failed." }, { status: 500 });
+  if (error instanceof CaptureAssetReadConflictError) {
+    return Response.json(
+      {
+        error: readKind === "content"
+          ? "Captured file content could not be resolved safely."
+          : "Captured file metadata could not be resolved safely.",
+      },
+      { status: 409, headers: privateNoStoreHeaders },
+    );
+  }
+  if (error instanceof CaptureAssetError) {
+    return Response.json(
+      { error: error.message },
+      { status: error.status, headers: privateNoStoreHeaders },
+    );
+  }
+  return Response.json(
+    { error: "Captured file request failed." },
+    { status: 500, headers: privateNoStoreHeaders },
+  );
 }
 
 function safeInlineMediaType(mediaType: string) {

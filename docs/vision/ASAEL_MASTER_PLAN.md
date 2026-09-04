@@ -1172,6 +1172,20 @@ legacy clients, and future/unknown contracts never imply readiness. No Agent
 list, runtime, ownership, consent, membership, or canonical-write behavior is
 changed by this observation batch.
 
+The next request canary extends public Capture access from metadata to verified
+content only. A single PostgreSQL statement resolves a globally unique,
+non-internal asset and its bytes from the validated canonical/current-email
+pair while retaining the selected physical actor as an internal integrity
+fact. The response is allowed only when storage kind, positive bounded byte
+count, safe header metadata, and SHA-256 all match the stored record;
+corruption or an unexpected projection fails closed without emitting bytes.
+Canonical compatibility rows are downloadable but remain explicitly
+non-indexable and non-manageable. POST indexing, status mutation, DELETE and
+linked RAG cleanup, internal artifacts, recordings and segments, background
+work, file-fallback ownership, portable data, and canonical writes remain
+unchanged. This read-only slice emits no domain event and does not unblock
+membership epochs or any memory-consent hold.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

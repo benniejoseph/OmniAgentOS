@@ -37,8 +37,8 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 - `GET|POST /api/skills` and `GET|PATCH|DELETE /api/skills/:id` manage the Skill catalog. Request reads add `selectable` and `manageable` capability flags: built-ins are selectable but not manageable, exact-owner custom Skills are both, and canonical compatibility rows are read-only and cannot be assigned.
 - `/api/runs` and `/api/runs/:id`: run history, events, and replay/continuation state.
 - `/api/memory`, `/api/memory/graph`, `/api/knowledge`, `/api/ingest`, and `/api/retrieval/plan`.
-- `GET|POST /api/capture` lists or ingests Capture assets. Collection rows add `contentAvailable`, `indexable`, and `manageable`; exact-owner rows are actionable and canonical compatibility rows are metadata-only.
-- `GET|POST|DELETE /api/capture/assets/:id` reads metadata or content, queues indexing, and deletes an asset. Metadata GET may read the validated canonical/current-email pair and returns the same actionability fields. `content=1`, indexing, deletion, and linked knowledge cleanup remain exact-owner operations.
+- `GET|POST /api/capture` lists or ingests Capture assets. Collection rows add `contentAvailable`, `indexable`, and `manageable`; exact-owner rows are actionable and canonical compatibility rows may be downloaded when their persisted content descriptor is valid, but cannot be indexed, changed, or deleted.
+- `GET|POST|DELETE /api/capture/assets/:id` reads metadata or content, queues indexing, and deletes an asset. Public metadata and `content=1` GETs may read the validated canonical/current-email pair; PostgreSQL content is returned only after its persisted byte count and SHA-256 are verified in the same database read. Canonical compatibility rows remain read-only, while indexing, deletion, status changes, and linked knowledge cleanup stay exact-owner operations.
 
 ## Workflows and operations
 

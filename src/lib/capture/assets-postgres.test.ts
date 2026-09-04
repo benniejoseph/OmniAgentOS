@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 
 const dbMocks = vi.hoisted(() => {
@@ -42,8 +43,10 @@ vi.mock("@/lib/storage/json", async (importOriginal) => {
 });
 
 import {
+  CaptureAssetContentIntegrityError,
   CaptureAssetReadConflictError,
   getCaptureAsset,
+  getCaptureAssetContentForRequest,
   getCaptureAssetForRequest,
   listCaptureAssets,
   listInternalCaptureAssets,
@@ -87,7 +90,7 @@ describe("Postgres Capture asset collection reads", () => {
       expect.objectContaining({
         id: "canonical-asset",
         actorId,
-        contentAvailable: false,
+        contentAvailable: true,
         indexable: false,
         manageable: false,
       }),
@@ -176,7 +179,7 @@ describe("Postgres Capture asset collection reads", () => {
     })).resolves.toEqual(expect.objectContaining({
       id: "canonical-asset",
       actorId,
-      contentAvailable: false,
+      contentAvailable: true,
       indexable: false,
       manageable: false,
     }));
@@ -243,6 +246,121 @@ describe("Postgres Capture asset collection reads", () => {
     })).rejects.toBeInstanceOf(CaptureAssetReadConflictError);
   });
 
+  it("returns request-bound bytes only after owner and digest verification", async () => {
+    const content = Buffer.from("verified capture bytes");
+    dbMocks.rows.push(assetContentRow(
+      "canonical-asset",
+      canonicalActorId,
+      content,
+    ));
+
+    await expect(getCaptureAssetContentForRequest("canonical-asset", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: binding,
+    })).resolves.toEqual({
+      asset: expect.objectContaining({
+        id: "canonical-asset",
+        actorId,
+        contentAvailable: true,
+        indexable: false,
+        manageable: false,
+      }),
+      bytes: content,
+    });
+
+    expect(dbMocks.statements[0].text).toMatch(
+      /CASE[\s\S]*?byte_count BETWEEN 1 AND \$\d+[\s\S]*?octet_length\(content\) = byte_count[\s\S]*?THEN content[\s\S]*?FROM omni_capture_assets[\s\S]*?id = \$\d+[\s\S]*?tenant_id = \$\d+[\s\S]*?\(actor_id = \$\d+ OR actor_id = \$\d+\)[\s\S]*?jsonb_typeof\(metadata\) = 'object'[\s\S]*?COALESCE\(metadata->>'internalKind', ''\) = ''[\s\S]*?LIMIT 2/,
+    );
+    expect(dbMocks.statements[0].params).toEqual([
+      20 * 1024 * 1024,
+      "canonical-asset",
+      "tenant-a",
+      canonicalActorId,
+      actorId,
+    ]);
+  });
+
+  it("fails closed when request-bound content length or digest is invalid", async () => {
+    const content = Buffer.from("tampered capture bytes");
+    dbMocks.rows.push({
+      ...assetContentRow("canonical-asset", canonicalActorId, content),
+      byte_count: content.byteLength + 1,
+    });
+
+    await expect(getCaptureAssetContentForRequest("canonical-asset", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: binding,
+    })).rejects.toBeInstanceOf(CaptureAssetContentIntegrityError);
+
+    dbMocks.rows.splice(0, 1, {
+      ...assetContentRow("canonical-asset", canonicalActorId, content),
+      content_sha256: "0".repeat(64),
+    });
+    await expect(getCaptureAssetContentForRequest("canonical-asset", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: binding,
+    })).rejects.toBeInstanceOf(CaptureAssetContentIntegrityError);
+
+    dbMocks.rows.splice(0, 1, {
+      ...assetContentRow("canonical-asset", canonicalActorId, content),
+      byte_count: 20 * 1024 * 1024 + 1,
+    });
+    await expect(getCaptureAssetContentForRequest("canonical-asset", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: binding,
+    })).rejects.toBeInstanceOf(CaptureAssetContentIntegrityError);
+
+    dbMocks.rows.splice(0, 1, {
+      ...assetContentRow("canonical-asset", canonicalActorId, content),
+      content: null,
+    });
+    await expect(getCaptureAssetContentForRequest("canonical-asset", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: binding,
+    })).rejects.toBeInstanceOf(CaptureAssetContentIntegrityError);
+  });
+
+  it("fails closed when a content row escapes the requested owner pair", async () => {
+    dbMocks.rows.push(assetContentRow(
+      "asset-a",
+      "unexpected-owner@example.test",
+      Buffer.from("unexpected owner bytes"),
+    ));
+
+    await expect(getCaptureAssetContentForRequest("asset-a", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: binding,
+    })).rejects.toBeInstanceOf(CaptureAssetReadConflictError);
+  });
+
+  it("falls back to the exact actor for a malformed content-read binding", async () => {
+    const content = Buffer.from("exact fallback bytes");
+    dbMocks.rows.push(assetContentRow("email-asset", actorId, content));
+
+    await getCaptureAssetContentForRequest("email-asset", {
+      tenantId: "tenant-a",
+      actorId,
+      requestActorBinding: {
+        ...binding,
+        readableOwnerActorIds: Object.freeze([actorId, canonicalActorId]),
+      },
+    });
+
+    expect(dbMocks.statements[0].params).toEqual([
+      20 * 1024 * 1024,
+      "email-asset",
+      "tenant-a",
+      actorId,
+      actorId,
+    ]);
+  });
+
   it("leaves direct and internal Capture asset reads exact", async () => {
     await getCaptureAsset("asset-a", {
       tenantId: "tenant-a",
@@ -288,6 +406,19 @@ function assetRow(id: string, ownerActorId: string) {
     metadata: {},
     created_at: "2026-09-04T10:00:00.000Z",
     updated_at: "2026-09-04T12:00:00.000Z",
+  };
+}
+
+function assetContentRow(
+  id: string,
+  ownerActorId: string,
+  content: Buffer,
+) {
+  return {
+    ...assetRow(id, ownerActorId),
+    byte_count: content.byteLength,
+    content_sha256: createHash("sha256").update(content).digest("hex"),
+    content,
   };
 }
 
