@@ -324,6 +324,22 @@ requirements before the v45 deny hook can change.
 The ordered migration must run as the stable `omni_schema_version` owner and
 fails before replacing any function when that ownership precondition drifts.
 
+Migration v48 adds an empty, tenant-scoped, generation-based purpose-
+entitlement ledger. A held row can later become active or revoked, an active
+row can only become revoked, and re-enablement requires a higher generation.
+The table is owner-only, forced through tenant RLS, protected by an additional
+system-only holdback, and constrained to contain no active row. Tenant purpose
+eligibility is necessary but never sufficient: it is not actor consent,
+membership, RBAC, a target grant, approval, OAuth scope, or a maintenance
+bypass. Its actor columns prove attribution only; they do not identify the
+grantee or subject and do not prove consent or mutation authority. This batch
+seeds no row, exposes no writer or reader, changes no v45 decision, and emits
+no event. Before future lifecycle DML, the writer must live-lock an active
+canonical user, that user's active same-tenant membership, and a distinct
+entitlement-management authority. It must never infer that authority from an
+actor foreign key or generic administrator role, and it must append the typed
+event in the same transaction after those checks converge.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

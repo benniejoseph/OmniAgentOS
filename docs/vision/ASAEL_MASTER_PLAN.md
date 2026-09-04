@@ -934,6 +934,24 @@ membership grants nothing. A later tenant
 entitlement/consent ledger and the transaction-bound resolver must separately
 authorize a catalog row before any memory operation can use it.
 
+Migration v48 installs only the tenant-entitlement half of that authority. Its
+empty generation ledger supports held, active, and terminally revoked tenant
+purpose eligibility, but a validated activation constraint and a restrictive
+system-only RLS policy keep every generation inactive and unavailable to
+serving roles. No legacy purpose, catalog row, membership, OAuth grant, rollout,
+or administrator is inferred into an entitlement. Actor consent remains a
+separate authority. Entitlement actor columns record attribution only, not the
+grantee, subject, consent, or mutation authority. Before future lifecycle DML,
+the writer must live-lock an active canonical user, an active same-tenant
+membership, and a distinct entitlement-management authority; an actor foreign
+key or generic administrator role cannot satisfy that authority. Activation
+must then atomically record typed evidence with the canonical decision actor.
+The later resolver must still live-lock the active user and membership,
+principal, target membership, tenant entitlement, actor consent,
+context/capability grants, and operation policy. Export and forget remain data
+rights that tenant entitlement cannot silently suppress, and maintenance never
+grants system-scope or RLS bypass.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

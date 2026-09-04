@@ -181,6 +181,19 @@ contracts, not a tenant grant, consent decision, memory access, or lifecycle
 transition. Later purpose entitlement changes and actual memory authorization
 must emit their own typed, metadata-only evidence.
 
+Migration v48 also emits no domain event because it creates an empty, held
+tenant-entitlement schema and no tenant decision. No lifecycle writer exists
+while scoped events still carry the historical email-shaped actor. A future
+writer must append `memory.purpose_entitlement.held`, `.activated`, or
+`.revoked` in the same SQL transaction as the row transition, with tenant,
+purpose, generation, revision, canonical decision actor, and bounded evidence
+identifiers only. Before that DML it must live-lock the active canonical user,
+the active same-tenant membership, and a distinct entitlement-management
+authority. Entitlement actor columns and events prove attribution, not the
+grantee, subject, consent, or mutation authority. Entitlement events must not
+contain consent text or memory content and do not substitute for actor-consent
+events.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
