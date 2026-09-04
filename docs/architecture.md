@@ -240,6 +240,21 @@ scrub derived memories without claiming an explicit user-forget receipt, and
 invalidate their materialized trace/graph rows before retirement. Source-wide
 deletion propagation and the physical scrub worker remain later P2.7 slices.
 
+Migration v43 begins the P3.1 memory-access foundation without changing a
+served read or write. Existing and rollback-created memories remain explicit
+version-0 `legacy_unattributed` rows; owner, agent, workspace, project,
+mission, visibility, sensitivity, and purpose fields stay null rather than
+being inferred. Future version-1 envelopes must use the closed visibility and
+sensitivity vocabularies, bind an owner and the visibility-specific scope, and
+carry canonical allowed-purpose IDs plus a contract hash. A validated
+enrollment constraint forbids every version-1 row, including maintenance
+writes that bypass RLS, until memory, RAG, graph, export, and worker paths
+enter one actor-aware database scope together. A restrictive all-command RLS
+policy is a second holdback for ordinary roles. The same migration removes unnecessary
+update, delete, truncate, references, and trigger privileges from non-owner
+deletion-receipt grantees; immutable receipt triggers remain the independent
+enforcement boundary.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

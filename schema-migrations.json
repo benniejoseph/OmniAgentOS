@@ -208,5 +208,10 @@
     "version": 42,
     "name": "memory_deletion_barriers",
     "checksum": "6b9553a6c18714c1b0ac85fce68675b04e00efa661dab9bccdadb5730812b86f"
+  },
+  {
+    "version": 43,
+    "name": "memory_access_scope_shadow",
+    "checksum": "561bf380b53a4dbd56966265de7122433eddcf49295d26df289ed48148f91117"
   }
 ]

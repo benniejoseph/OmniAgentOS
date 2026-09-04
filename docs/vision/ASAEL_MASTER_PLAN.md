@@ -853,6 +853,18 @@ knowledge/source/capture propagation, pending-run invalidation, readable
 preview/receipt UX, and the bounded physical scrub worker still follow before
 the phase gate can pass.
 
+The first P3.1 slice is a dormant access-envelope shadow. Migration v43 adds
+nullable actor, agent, workspace, project, mission, visibility, sensitivity,
+and purpose fields beside an explicit version-0 legacy marker. It does not
+infer ownership from the coarse historical `scope` label and does not expose
+the new fields through runtime records. Version-1 envelopes are constrained to
+the five declared visibility values, but a validated enrollment lock forbids
+all version-1 rows until the atomic cutover; a restrictive all-command RLS
+policy provides a second ordinary-role holdback. The next P3.1 batch must add the
+actor/principal/scope/purpose database session contract and atomically cover
+memory, served RAG, mixed retrieval traces, graph, APIs, workers, and portable
+data before any tenant can enroll a version-1 row.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
