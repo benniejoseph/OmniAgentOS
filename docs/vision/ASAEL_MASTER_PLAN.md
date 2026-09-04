@@ -1303,6 +1303,24 @@ intersection, resource/tool exposure, governed execution, portable data,
 events, and canonical writes stay exact. This read-only slice emits no domain
 event and does not unblock membership or consent holds.
 
+The following request canary extends Capture recording continuity from the
+summary catalog to one public metadata-detail snapshot. The literal
+`ownerScope=readable` route selects only the recording's safe display fields
+and bounded segment timing, size, MIME, status, and date fields from the
+validated canonical/current-email pair. It never selects transcript text,
+audio, hashes, transcription diagnostics, arbitrary metadata, source linkage,
+or knowledge/job linkage. Parent and child ownership, lifecycle, chronology,
+unique ordered indexes, and count/byte/duration aggregates must all verify;
+segment index gaps remain valid because the existing writer permits them. The
+projection acknowledges `requestReadContracts.captureRecordingDetail=readable_v1`
+and exposes transcript, audio, and mutation capabilities only for exact-owner
+records. Capture requires both list and detail acknowledgements, aborts stale
+loads, and gives retained history a separate read-only metadata presentation.
+Bare detail, file fallback compatibility, content routes, completion,
+indexing, mutations, background recovery, portable data, events, and canonical
+writes stay exact. This read-only slice emits no domain event and does not
+unblock membership or consent holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

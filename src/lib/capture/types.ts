@@ -63,7 +63,40 @@ export type RequestCaptureRecordingSummary = {
   durationMs: number;
   segmentCount: number;
   updatedAt: string;
+  metadataDetailAvailable: boolean;
   detailAvailable: boolean;
+  manageable: boolean;
+};
+
+export type RequestCaptureSegmentSummary = {
+  id: string;
+  segmentIndex: number;
+  mimeType: string;
+  durationMs: number;
+  byteCount: number;
+  transcriptionStatus: CaptureTranscriptionStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RequestCaptureRecordingMetadataDetail = {
+  id: string;
+  title: string;
+  status: CaptureRecordingStatus;
+  language: string;
+  tags: string[];
+  startedAt: string;
+  completedAt?: string;
+  durationMs: number;
+  byteCount: number;
+  segmentCount: number;
+  createdAt: string;
+  updatedAt: string;
+  segments: RequestCaptureSegmentSummary[];
+  metadataAvailable: boolean;
+  segmentMetadataAvailable: boolean;
+  transcriptAvailable: boolean;
+  audioAvailable: boolean;
   manageable: boolean;
 };
 

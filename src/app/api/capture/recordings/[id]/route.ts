@@ -1,8 +1,10 @@
 import { z } from "zod";
 import {
   CaptureRecordingError,
+  CaptureRecordingReadConflictError,
   deleteCaptureRecording,
   getCaptureRecording,
+  getCaptureRecordingMetadataForRequest,
   updateCaptureRecording,
 } from "@/lib/capture/recordings";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
@@ -10,12 +12,14 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { deleteKnowledgeDocumentsBySourcePrefix } from "@/lib/rag/store";
 import { cancelOperationJobByDedupeKey, getOperationJob } from "@/lib/operations/job-queue";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
 export const DELETE = withDatabaseRequestScope(DELETEHandler);
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 const updateRecordingSchema = z.object({
   title: z.string().trim().min(1).max(240).optional(),
@@ -31,12 +35,38 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const readableOwnerScope =
+    new URL(request.url).searchParams.get("ownerScope") === "readable";
   try {
-    const recording = await getCaptureRecording(id, context);
-    if (!recording) return Response.json({ error: "Recording not found." }, { status: 404 });
-    return Response.json({ recording }, { headers: { "cache-control": "private, no-store" } });
+    const recording = readableOwnerScope
+      ? await getCaptureRecordingMetadataForRequest(id, {
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          requestActorBinding:
+            canonicalRequestActorBindingFromSecurityContext(context),
+        })
+      : await getCaptureRecording(id, context);
+    if (!recording) {
+      return Response.json(
+        { error: "Recording not found." },
+        {
+          status: 404,
+          ...(readableOwnerScope ? { headers: privateNoStoreHeaders } : {}),
+        },
+      );
+    }
+    return Response.json({
+      recording,
+      requestReadContracts: {
+        captureRecordingDetail: readableOwnerScope
+          ? "readable_v1"
+          : "exact_v1",
+      },
+    }, { headers: privateNoStoreHeaders });
   } catch (error) {
-    return captureErrorResponse(error);
+    return readableOwnerScope
+      ? captureRecordingMetadataReadErrorResponse(error)
+      : captureErrorResponse(error);
   }
 }
 
@@ -105,4 +135,27 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
 function captureErrorResponse(error: unknown) {
   if (error instanceof CaptureRecordingError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
   return Response.json({ error: error instanceof Error ? error.message : "Capture recording request failed." }, { status: 500 });
+}
+
+function captureRecordingMetadataReadErrorResponse(error: unknown) {
+  if (error instanceof CaptureRecordingReadConflictError) {
+    return Response.json(
+      { error: "Capture recording metadata could not be resolved safely." },
+      { status: 409, headers: privateNoStoreHeaders },
+    );
+  }
+  if (error instanceof CaptureRecordingError) {
+    return Response.json(
+      { error: error.message, code: error.code },
+      { status: error.status, headers: privateNoStoreHeaders },
+    );
+  }
+  console.error(
+    "Capture recording metadata read failed.",
+    error instanceof Error ? error.name : "UnknownError",
+  );
+  return Response.json(
+    { error: "Capture recording metadata is temporarily unavailable." },
+    { status: 503, headers: privateNoStoreHeaders },
+  );
 }

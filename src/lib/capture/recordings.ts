@@ -23,7 +23,9 @@ import type {
   CaptureRecordingStatus,
   CaptureSegment,
   CaptureTranscriptionStatus,
+  RequestCaptureRecordingMetadataDetail,
   RequestCaptureRecordingSummary,
+  RequestCaptureSegmentSummary,
 } from "@/lib/capture/types";
 
 export const MAX_CAPTURE_SEGMENT_BYTES = 3 * 1024 * 1024;
@@ -43,10 +45,28 @@ type CaptureRecordingListOwner = Owner & {
 type ScopedOwner = Owner & { executionScope: ExecutionScope };
 type CaptureRecordingPhysicalSummary = Omit<
   RequestCaptureRecordingSummary,
-  "detailAvailable" | "manageable"
+  "metadataDetailAvailable" | "detailAvailable" | "manageable"
 > & {
   tenantId: string;
   actorId: string;
+};
+type CaptureSegmentPhysicalSummary = RequestCaptureSegmentSummary & {
+  tenantId: string;
+  actorId: string;
+  recordingId: string;
+};
+type CaptureRecordingPhysicalMetadataDetail = Omit<
+  RequestCaptureRecordingMetadataDetail,
+  | "segments"
+  | "metadataAvailable"
+  | "segmentMetadataAvailable"
+  | "transcriptAvailable"
+  | "audioAvailable"
+  | "manageable"
+> & {
+  tenantId: string;
+  actorId: string;
+  segments: CaptureSegmentPhysicalSummary[];
 };
 type CaptureRecordingEventPayload = {
   schemaVersion: 1;
@@ -289,6 +309,158 @@ export async function listCaptureRecordingsForRequest(
   );
   return summaries.map((summary) =>
     requestCaptureRecordingSummary(summary, exactActorId)
+  );
+}
+
+/**
+ * Returns a request-readable metadata snapshot for one recording. Transcript,
+ * audio, hashes, ingestion state, and mutation authority remain on the exact
+ * recording paths below.
+ */
+export async function getCaptureRecordingMetadataForRequest(
+  id: string,
+  owner: CaptureRecordingListOwner,
+): Promise<RequestCaptureRecordingMetadataDetail | undefined> {
+  const tenantId = normalizeTenantId(owner.tenantId);
+  const requestActorId = normalizeActorId(owner.actorId);
+  const recordingId = normalizeId(id);
+  if (!hasDatabaseUrl()) {
+    const ledger = await readCaptureLedger();
+    const recordingsWithId = ledger.recordings.filter((recording) =>
+      recording.id === recordingId
+    );
+    const exactRecordings = recordingsWithId.filter((recording) =>
+      recording.tenantId === tenantId && recording.actorId === requestActorId
+    );
+    if (!exactRecordings.length) return undefined;
+    if (recordingsWithId.length !== 1 || exactRecordings.length !== 1) {
+      throw new CaptureRecordingReadConflictError();
+    }
+    const physical = recordingMetadataDetailFromRecording(
+      exactRecordings[0],
+      ledger.segments.filter((segment) =>
+        segment.recordingId === recordingId
+      ),
+    );
+    assertRequestCaptureRecordingMetadataDetail(
+      physical,
+      recordingId,
+      tenantId,
+      requestActorId,
+      requestActorId,
+    );
+    return requestCaptureRecordingMetadataDetail(physical, requestActorId);
+  }
+
+  const [canonicalActorId, exactActorId] = captureActorReadOrder(
+    owner.actorId,
+    owner.requestActorBinding,
+    requestActorId,
+  );
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    WITH readable_parent AS (
+      SELECT id AS recording_id, tenant_id AS recording_tenant_id,
+        actor_id AS recording_actor_id, title, status, language, tags,
+        started_at, completed_at, duration_ms AS recording_duration_ms,
+        byte_count AS recording_byte_count, segment_count,
+        created_at AS recording_created_at,
+        updated_at AS recording_updated_at
+      FROM omni_capture_recordings
+      WHERE id = ${recordingId}
+        AND tenant_id = ${tenantId}
+        AND actor_id IN (${canonicalActorId}, ${exactActorId})
+        AND id COLLATE "C" = ${recordingId}::text COLLATE "C"
+        AND tenant_id COLLATE "C" = ${tenantId}::text COLLATE "C"
+        AND (
+          actor_id COLLATE "C" = ${canonicalActorId}::text COLLATE "C"
+          OR actor_id COLLATE "C" = ${exactActorId}::text COLLATE "C"
+        )
+      ORDER BY actor_id COLLATE "C"
+      LIMIT 2
+    ), bounded_segments AS (
+      SELECT segment.id AS segment_id,
+        segment.tenant_id AS segment_tenant_id,
+        segment.actor_id AS segment_actor_id,
+        segment.recording_id AS segment_recording_id,
+        segment.segment_index, segment.mime_type,
+        segment.duration_ms AS segment_duration_ms,
+        segment.byte_count AS segment_byte_count,
+        segment.transcription_status,
+        segment.created_at AS segment_created_at,
+        segment.updated_at AS segment_updated_at
+      FROM omni_capture_segments AS segment
+      INNER JOIN readable_parent AS parent
+        ON segment.recording_id = parent.recording_id
+        AND segment.tenant_id = parent.recording_tenant_id
+      WHERE segment.recording_id = ${recordingId}
+        AND segment.tenant_id = ${tenantId}
+        AND segment.recording_id COLLATE "C" =
+          ${recordingId}::text COLLATE "C"
+        AND segment.tenant_id COLLATE "C" =
+          ${tenantId}::text COLLATE "C"
+      ORDER BY segment.segment_index ASC, segment.id COLLATE "C" ASC
+      LIMIT ${MAX_CAPTURE_SEGMENTS + 1}
+    ), snapshot_rows AS (
+      SELECT 0 AS row_order, -1 AS segment_order,
+        'recording'::text AS row_kind,
+        parent.recording_id, parent.recording_tenant_id,
+        parent.recording_actor_id, parent.title, parent.status,
+        parent.language, parent.tags, parent.started_at,
+        parent.completed_at, parent.recording_duration_ms,
+        parent.recording_byte_count, parent.segment_count,
+        parent.recording_created_at, parent.recording_updated_at,
+        NULL::text AS segment_id, NULL::text AS segment_tenant_id,
+        NULL::text AS segment_actor_id,
+        NULL::text AS segment_recording_id,
+        NULL::integer AS segment_index, NULL::text AS mime_type,
+        NULL::integer AS segment_duration_ms,
+        NULL::integer AS segment_byte_count,
+        NULL::text AS transcription_status,
+        NULL::timestamptz AS segment_created_at,
+        NULL::timestamptz AS segment_updated_at
+      FROM readable_parent AS parent
+      UNION ALL
+      SELECT 1 AS row_order, segment.segment_index AS segment_order,
+        'segment'::text AS row_kind,
+        NULL::text AS recording_id,
+        NULL::text AS recording_tenant_id,
+        NULL::text AS recording_actor_id, NULL::text AS title,
+        NULL::text AS status, NULL::text AS language,
+        NULL::text[] AS tags, NULL::timestamptz AS started_at,
+        NULL::timestamptz AS completed_at,
+        NULL::bigint AS recording_duration_ms,
+        NULL::bigint AS recording_byte_count,
+        NULL::integer AS segment_count,
+        NULL::timestamptz AS recording_created_at,
+        NULL::timestamptz AS recording_updated_at,
+        segment.segment_id, segment.segment_tenant_id,
+        segment.segment_actor_id, segment.segment_recording_id,
+        segment.segment_index, segment.mime_type,
+        segment.segment_duration_ms, segment.segment_byte_count,
+        segment.transcription_status, segment.segment_created_at,
+        segment.segment_updated_at
+      FROM bounded_segments AS segment
+    )
+    SELECT row_kind, recording_id, recording_tenant_id,
+      recording_actor_id, title, status, language, tags, started_at,
+      completed_at, recording_duration_ms, recording_byte_count,
+      segment_count, recording_created_at, recording_updated_at,
+      segment_id, segment_tenant_id, segment_actor_id,
+      segment_recording_id, segment_index, mime_type,
+      segment_duration_ms, segment_byte_count, transcription_status,
+      segment_created_at, segment_updated_at
+    FROM snapshot_rows
+    ORDER BY row_order ASC, segment_order ASC,
+      COALESCE(recording_id, segment_id) COLLATE "C" ASC
+    LIMIT ${MAX_CAPTURE_SEGMENTS + 2}
+  `;
+  return requestCaptureRecordingMetadataSnapshot(
+    rows,
+    recordingId,
+    tenantId,
+    canonicalActorId,
+    exactActorId,
   );
 }
 
@@ -949,6 +1121,7 @@ function requestCaptureRecordingSummary(
     durationMs: summary.durationMs,
     segmentCount: summary.segmentCount,
     updatedAt: summary.updatedAt,
+    metadataDetailAvailable: true,
     detailAvailable: exactOwner,
     manageable: exactOwner,
   };
@@ -972,6 +1145,396 @@ function assertRequestCaptureRecordingSummaries(
     }
     ids.add(summary.id);
   }
+}
+
+function requestCaptureRecordingMetadataSnapshot(
+  rows: Record<string, unknown>[],
+  recordingId: string,
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+): RequestCaptureRecordingMetadataDetail | undefined {
+  if (rows.length > MAX_CAPTURE_SEGMENTS + 2) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  const parentRows: Record<string, unknown>[] = [];
+  const segmentRows: Record<string, unknown>[] = [];
+  for (const row of rows) {
+    if (row.row_kind === "recording") {
+      parentRows.push(row);
+    } else if (row.row_kind === "segment") {
+      segmentRows.push(row);
+    } else {
+      throw new CaptureRecordingReadConflictError();
+    }
+  }
+  if (!parentRows.length) {
+    if (segmentRows.length) throw new CaptureRecordingReadConflictError();
+    return undefined;
+  }
+  if (parentRows.length !== 1 || segmentRows.length > MAX_CAPTURE_SEGMENTS) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  const segments = segmentRows
+    .map(segmentMetadataSummaryFromRequestRow)
+    .sort(compareCaptureSegmentSummaries);
+  const physical = recordingMetadataDetailFromRequestRow(
+    parentRows[0],
+    segments,
+  );
+  assertRequestCaptureRecordingMetadataDetail(
+    physical,
+    recordingId,
+    tenantId,
+    canonicalActorId,
+    exactActorId,
+  );
+  return requestCaptureRecordingMetadataDetail(physical, exactActorId);
+}
+
+function recordingMetadataDetailFromRequestRow(
+  row: Record<string, unknown>,
+  segments: CaptureSegmentPhysicalSummary[],
+) {
+  return recordingMetadataDetailFromValues({
+    id: row.recording_id,
+    tenantId: row.recording_tenant_id,
+    actorId: row.recording_actor_id,
+    title: row.title,
+    status: row.status,
+    language: row.language,
+    tags: row.tags,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    durationMs: row.recording_duration_ms,
+    byteCount: row.recording_byte_count,
+    segmentCount: row.segment_count,
+    createdAt: row.recording_created_at,
+    updatedAt: row.recording_updated_at,
+  }, segments);
+}
+
+function recordingMetadataDetailFromRecording(
+  recording: CaptureRecording,
+  segments: CaptureLedger["segments"],
+) {
+  return recordingMetadataDetailFromValues({
+    id: recording.id,
+    tenantId: recording.tenantId,
+    actorId: recording.actorId,
+    title: recording.title,
+    status: recording.status,
+    language: recording.language,
+    tags: recording.tags,
+    startedAt: recording.startedAt,
+    completedAt: recording.completedAt,
+    durationMs: recording.durationMs,
+    byteCount: recording.byteCount,
+    segmentCount: recording.segmentCount,
+    createdAt: recording.createdAt,
+    updatedAt: recording.updatedAt,
+  }, segments.map(segmentMetadataSummaryFromSegment)
+    .sort(compareCaptureSegmentSummaries));
+}
+
+function recordingMetadataDetailFromValues(
+  values: {
+    id: unknown;
+    tenantId: unknown;
+    actorId: unknown;
+    title: unknown;
+    status: unknown;
+    language: unknown;
+    tags: unknown;
+    startedAt: unknown;
+    completedAt: unknown;
+    durationMs: unknown;
+    byteCount: unknown;
+    segmentCount: unknown;
+    createdAt: unknown;
+    updatedAt: unknown;
+  },
+  segments: CaptureSegmentPhysicalSummary[],
+): CaptureRecordingPhysicalMetadataDetail {
+  const status = typeof values.status === "string" ? values.status : "";
+  const startedAt = requestRecordingIso(values.startedAt);
+  const completedAt = values.completedAt === null ||
+      values.completedAt === undefined
+    ? undefined
+    : requestRecordingIso(values.completedAt);
+  const createdAt = requestRecordingIso(values.createdAt);
+  const updatedAt = requestRecordingIso(values.updatedAt);
+  if (
+    typeof values.tenantId !== "string" ||
+    typeof values.actorId !== "string" ||
+    typeof values.title !== "string" ||
+    values.title.length < 1 ||
+    values.title.length > 240 ||
+    !isCaptureRecordingStatus(status) ||
+    (status === "recording") !== (completedAt === undefined) ||
+    createdAt > startedAt ||
+    startedAt > updatedAt ||
+    (completedAt !== undefined &&
+      (completedAt < startedAt || completedAt > updatedAt))
+  ) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  return {
+    id: requestCaptureIdentifier(values.id),
+    tenantId: values.tenantId,
+    actorId: values.actorId,
+    title: safeRequestRecordingTitle(values.title),
+    status,
+    language: requestCaptureLanguage(values.language),
+    tags: requestCaptureTags(values.tags),
+    startedAt,
+    completedAt,
+    durationMs: requestRecordingInteger(
+      values.durationMs,
+      MAX_CAPTURE_RECORDING_DURATION_MS,
+    ),
+    byteCount: requestRecordingInteger(
+      values.byteCount,
+      MAX_CAPTURE_RECORDING_BYTES,
+    ),
+    segmentCount: requestRecordingInteger(
+      values.segmentCount,
+      MAX_CAPTURE_SEGMENTS,
+    ),
+    createdAt,
+    updatedAt,
+    segments,
+  };
+}
+
+function segmentMetadataSummaryFromRequestRow(
+  row: Record<string, unknown>,
+) {
+  return segmentMetadataSummaryFromValues({
+    id: row.segment_id,
+    tenantId: row.segment_tenant_id,
+    actorId: row.segment_actor_id,
+    recordingId: row.segment_recording_id,
+    segmentIndex: row.segment_index,
+    mimeType: row.mime_type,
+    durationMs: row.segment_duration_ms,
+    byteCount: row.segment_byte_count,
+    transcriptionStatus: row.transcription_status,
+    createdAt: row.segment_created_at,
+    updatedAt: row.segment_updated_at,
+  });
+}
+
+function segmentMetadataSummaryFromSegment(
+  segment: CaptureLedger["segments"][number],
+) {
+  return segmentMetadataSummaryFromValues({
+    id: segment.id,
+    tenantId: segment.tenantId,
+    actorId: segment.actorId,
+    recordingId: segment.recordingId,
+    segmentIndex: segment.segmentIndex,
+    mimeType: segment.mimeType,
+    durationMs: segment.durationMs,
+    byteCount: segment.byteCount,
+    transcriptionStatus: segment.transcriptionStatus,
+    createdAt: segment.createdAt,
+    updatedAt: segment.updatedAt,
+  });
+}
+
+function segmentMetadataSummaryFromValues(values: {
+  id: unknown;
+  tenantId: unknown;
+  actorId: unknown;
+  recordingId: unknown;
+  segmentIndex: unknown;
+  mimeType: unknown;
+  durationMs: unknown;
+  byteCount: unknown;
+  transcriptionStatus: unknown;
+  createdAt: unknown;
+  updatedAt: unknown;
+}): CaptureSegmentPhysicalSummary {
+  const createdAt = requestRecordingIso(values.createdAt);
+  const updatedAt = requestRecordingIso(values.updatedAt);
+  if (
+    typeof values.tenantId !== "string" ||
+    typeof values.actorId !== "string" ||
+    typeof values.mimeType !== "string" ||
+    values.mimeType.length > 120 ||
+    !/^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/.test(
+      values.mimeType,
+    ) ||
+    !isCaptureTranscriptionStatus(values.transcriptionStatus) ||
+    createdAt > updatedAt
+  ) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  return {
+    id: requestCaptureIdentifier(values.id),
+    tenantId: values.tenantId,
+    actorId: values.actorId,
+    recordingId: requestCaptureIdentifier(values.recordingId),
+    segmentIndex: requestRecordingInteger(
+      values.segmentIndex,
+      MAX_CAPTURE_SEGMENTS - 1,
+    ),
+    mimeType: values.mimeType,
+    durationMs: requestRecordingInteger(
+      values.durationMs,
+      10 * 60 * 1_000,
+    ),
+    byteCount: requestRecordingInteger(
+      values.byteCount,
+      MAX_CAPTURE_SEGMENT_BYTES,
+      1,
+    ),
+    transcriptionStatus: values.transcriptionStatus,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function assertRequestCaptureRecordingMetadataDetail(
+  detail: CaptureRecordingPhysicalMetadataDetail,
+  recordingId: string,
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  if (
+    detail.id !== recordingId ||
+    detail.tenantId !== tenantId ||
+    (detail.actorId !== canonicalActorId && detail.actorId !== exactActorId) ||
+    detail.segments.length !== detail.segmentCount ||
+    detail.segments.length > MAX_CAPTURE_SEGMENTS ||
+    (detail.status !== "recording" && detail.segments.some((segment) =>
+      segment.transcriptionStatus === "pending"
+    ))
+  ) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  const ids = new Set<string>();
+  let previousSegmentIndex = -1;
+  let byteCount = 0;
+  let durationMs = 0;
+  for (const segment of detail.segments) {
+    if (
+      segment.tenantId !== detail.tenantId ||
+      segment.actorId !== detail.actorId ||
+      segment.recordingId !== detail.id ||
+      segment.segmentIndex <= previousSegmentIndex ||
+      ids.has(segment.id) ||
+      segment.createdAt < detail.startedAt ||
+      segment.createdAt > detail.updatedAt ||
+      (detail.completedAt !== undefined &&
+        segment.createdAt > detail.completedAt)
+    ) {
+      throw new CaptureRecordingReadConflictError();
+    }
+    previousSegmentIndex = segment.segmentIndex;
+    ids.add(segment.id);
+    byteCount += segment.byteCount;
+    durationMs += segment.durationMs;
+  }
+  if (byteCount !== detail.byteCount || durationMs !== detail.durationMs) {
+    throw new CaptureRecordingReadConflictError();
+  }
+}
+
+function requestCaptureRecordingMetadataDetail(
+  detail: CaptureRecordingPhysicalMetadataDetail,
+  exactActorId: string,
+): RequestCaptureRecordingMetadataDetail {
+  const exactOwner = detail.actorId === exactActorId;
+  return {
+    id: detail.id,
+    title: detail.title,
+    status: detail.status,
+    language: detail.language,
+    tags: [...detail.tags],
+    startedAt: detail.startedAt,
+    completedAt: detail.completedAt,
+    durationMs: detail.durationMs,
+    byteCount: detail.byteCount,
+    segmentCount: detail.segmentCount,
+    createdAt: detail.createdAt,
+    updatedAt: detail.updatedAt,
+    segments: detail.segments.map((segment) => ({
+      id: segment.id,
+      segmentIndex: segment.segmentIndex,
+      mimeType: segment.mimeType,
+      durationMs: segment.durationMs,
+      byteCount: segment.byteCount,
+      transcriptionStatus: segment.transcriptionStatus,
+      createdAt: segment.createdAt,
+      updatedAt: segment.updatedAt,
+    })),
+    metadataAvailable: true,
+    segmentMetadataAvailable: true,
+    transcriptAvailable: exactOwner,
+    audioAvailable: exactOwner,
+    manageable: exactOwner,
+  };
+}
+
+function compareCaptureSegmentSummaries(
+  left: CaptureSegmentPhysicalSummary,
+  right: CaptureSegmentPhysicalSummary,
+) {
+  if (left.segmentIndex !== right.segmentIndex) {
+    return left.segmentIndex - right.segmentIndex;
+  }
+  if (left.id === right.id) return 0;
+  return left.id < right.id ? -1 : 1;
+}
+
+function requestCaptureIdentifier(value: unknown) {
+  if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(value)) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  return value;
+}
+
+function requestCaptureLanguage(value: unknown) {
+  if (
+    typeof value !== "string" ||
+    value.length > 35 ||
+    value.trim() !== value ||
+    !/^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$/.test(value)
+  ) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  return value;
+}
+
+function requestCaptureTags(value: unknown) {
+  if (!Array.isArray(value) || value.length > 50) {
+    throw new CaptureRecordingReadConflictError();
+  }
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of value) {
+    if (
+      typeof tag !== "string" ||
+      tag.length < 1 ||
+      tag.length > 80 ||
+      !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(tag) ||
+      seen.has(tag)
+    ) {
+      throw new CaptureRecordingReadConflictError();
+    }
+    seen.add(tag);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+function isCaptureTranscriptionStatus(
+  value: unknown,
+): value is CaptureTranscriptionStatus {
+  return value === "pending" || value === "completed" || value === "failed";
 }
 
 function compareCaptureRecordingSummaries(
@@ -1015,12 +1578,16 @@ function requestRecordingIso(value: unknown) {
   return normalized;
 }
 
-function requestRecordingInteger(value: unknown, maximum: number) {
+function requestRecordingInteger(
+  value: unknown,
+  maximum: number,
+  minimum = 0,
+) {
   let parsed: number;
   if (typeof value === "number") {
     parsed = value;
   } else if (typeof value === "bigint") {
-    if (value < BigInt(0) || value > BigInt(maximum)) {
+    if (value < BigInt(minimum) || value > BigInt(maximum)) {
       throw new CaptureRecordingReadConflictError();
     }
     parsed = Number(value);
@@ -1032,7 +1599,11 @@ function requestRecordingInteger(value: unknown, maximum: number) {
   } else {
     throw new CaptureRecordingReadConflictError();
   }
-  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > maximum) {
+  if (
+    !Number.isSafeInteger(parsed) ||
+    parsed < minimum ||
+    parsed > maximum
+  ) {
     throw new CaptureRecordingReadConflictError();
   }
   return parsed;
