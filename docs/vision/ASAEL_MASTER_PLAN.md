@@ -968,6 +968,24 @@ decision actor, active same-tenant membership, purpose, tenant entitlement,
 and consent generation in deterministic order. Revocation cannot require an
 active entitlement, and consent can never grant maintenance/RLS bypass.
 
+Migration v50 installs the identity-alias foundation only. Its owner-only,
+append-only registry maps each exact v46 canonical actor and every observed
+auth email alias to one auth user, after failing on ambiguous identifiers,
+generated canonical actors already present in durable contracts, or
+email-shaped tenant ownership without matching membership. An auth-user
+trigger records new aliases without mutating history. A deep-frozen code
+binding orders the canonical actor before the exact legacy email, but no
+serving path consumes it and request/session/API behavior does not change.
+
+Canonical convergence must proceed later as separately gated, store-specific
+dual-read slices. Each slice must collision-audit its complete scalar and JSON
+surface, select at most one physical row, and retain that row's persisted actor
+for ciphertext AAD, hashes, approvals, receipts, and event comparisons; it
+must not bulk-rewrite history. Approval identity equivalence and write
+behavior need explicit gates before the live request actor can flip.
+Membership epochs remain blocked until those slices and the final runtime
+convergence are complete, while all v43-v49 holds stay intact.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
