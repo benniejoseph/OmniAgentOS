@@ -163,10 +163,15 @@ export type McpExportConfiguration = {
   updatedAt: string;
 };
 
+export type RequestMcpExportConfiguration = McpExportConfiguration & {
+  manageable: boolean;
+};
+
 export type SettingsSnapshot = {
   requestReadContracts?: {
     providerConnections: "exact_v1" | "readable_v1";
     modelAssignments: "exact_v1" | "readable_v1";
+    mcpExportConfiguration: "exact_v1" | "readable_v1";
   };
   platform: {
     authEnforced: boolean;
@@ -184,7 +189,7 @@ export type SettingsSnapshot = {
   models: RequestModelCatalogEntry[];
   assignments: RequestModelAssignment[];
   apiKeys: RequestServiceApiKey[];
-  mcp: McpExportConfiguration;
+  mcp: RequestMcpExportConfiguration;
   runtime: {
     tenantAssignmentsConsumed: boolean;
     activeScopes: ModelAssignmentScope[];

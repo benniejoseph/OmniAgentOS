@@ -650,6 +650,20 @@ sync, refresh, authorization state/callback, save, revoke, Photos sessions,
 autonomy/readiness, portable data, source lineage, events, and canonical writes
 remain exact-owner contracts.
 
+The twentieth request-bound slice converges only browser-visible MCP export
+configuration metadata. A literal `ownerScope=readable` GET selects the public
+policy allowlist from the validated canonical/current-email pair, rejects
+malformed policy or timestamps and any two-owner collision, retains physical
+ownership long enough to derive `manageable`, and then projects the current
+request actor. A canonical policy is continuity metadata only: Settings renders
+it outside form state and exposes no save control. The UI requires the
+independent `requestReadContracts.mcpExportConfiguration=readable_v1`
+acknowledgement, exact management capability, and `manage.connector` role
+before mounting or submitting the editor. Bare GET, file fallback, PUT and its
+pre-read, service-key authentication, last-used writes, effective scope
+intersection, MCP resource/tool exposure, governed execution, portable data,
+events, and canonical writes remain exact-owner contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

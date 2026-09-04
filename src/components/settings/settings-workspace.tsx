@@ -27,7 +27,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { PersonalDataControls } from "@/components/settings/personal-data-controls";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import styles from "@/components/settings/settings-workspace.module.css";
@@ -109,32 +109,151 @@ const assignmentLabels: Record<ModelAssignmentScope, { title: string; descriptio
   audio: { title: "Voice & audio", description: "Transcription and speech work" },
 };
 
+export type McpConfigurationGate = {
+  loading: boolean;
+  snapshotFresh: boolean;
+  requestReadContract?: "exact_v1" | "readable_v1";
+  manageable?: boolean;
+  permissionBlocked?: string;
+};
+
+type McpConfigurationDraft = Pick<
+  McpExportConfiguration,
+  "enabled" | "serverName" | "allowedScopes" | "exposeResources"
+>;
+
+export type SettingsLoadResult = "success" | "failure" | "superseded";
+
+export function settingsLoadNeedsVerificationWarning(
+  result: SettingsLoadResult,
+) {
+  return result === "failure";
+}
+
+export function settingsRequestResultIsCurrent(
+  requestGeneration: number,
+  currentGeneration: number,
+) {
+  return requestGeneration === currentGeneration;
+}
+
+export function settingsLoadMayClearLoading(input: {
+  controllerCurrent: boolean;
+  requestGeneration?: number;
+  currentRequestGeneration: number;
+}) {
+  return input.controllerCurrent &&
+    (input.requestGeneration === undefined ||
+      settingsRequestResultIsCurrent(
+        input.requestGeneration,
+        input.currentRequestGeneration,
+      ));
+}
+
+export function mcpConfigurationActionBlocked(
+  gate: McpConfigurationGate,
+) {
+  if (gate.loading || !gate.snapshotFresh) {
+    return "MCP policy is not current. Wait for settings to finish refreshing.";
+  }
+  if (gate.requestReadContract !== "readable_v1") {
+    return "MCP policy ownership metadata could not be verified. Refresh after the current release is active.";
+  }
+  if (gate.manageable !== true) {
+    return "This retained MCP policy is read only.";
+  }
+  return gate.permissionBlocked;
+}
+
+export function mcpConfigurationIsEditable(gate: McpConfigurationGate) {
+  return mcpConfigurationActionBlocked(gate) === undefined;
+}
+
+export function mcpContinuityMetadata(config: Pick<
+  McpExportConfiguration,
+  "enabled" | "readiness" | "serverName" | "allowedScopes" | "exposeResources"
+>) {
+  return [
+    { label: "Status", value: config.enabled ? "Enabled" : "Disabled" },
+    { label: "Readiness", value: config.readiness === "ready" ? "Ready" : "Disabled" },
+    { label: "Server name", value: config.serverName },
+    {
+      label: "Maximum scopes",
+      value: config.allowedScopes.length
+        ? config.allowedScopes.join(" · ")
+        : "No client scopes recorded",
+    },
+    {
+      label: "Resources",
+      value: config.exposeResources ? "Exposed" : "Not exposed",
+    },
+  ];
+}
+
 export function SettingsWorkspace() {
   const { session, status: sessionStatus } = useWorkspaceSession();
   const [section, setSection] = useState<SettingsSection>("overview");
   const [snapshot, setSnapshot] = useState<SettingsSnapshot>();
   const [loading, setLoading] = useState(true);
+  const [snapshotFresh, setSnapshotFresh] = useState(false);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>();
   const [rotateConnection, setRotateConnection] = useState<RequestProviderConnection>();
   const [revealedToken, setRevealedToken] = useState<string>();
+  const loadControllerRef = useRef<AbortController | null>(null);
+  const requestGenerationRef = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (
+    requestGeneration?: number,
+  ): Promise<SettingsLoadResult> => {
+    loadControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
+    const superseded = () =>
+      controller.signal.aborted ||
+      loadControllerRef.current !== controller ||
+      (requestGeneration !== undefined &&
+        !settingsRequestResultIsCurrent(
+          requestGeneration,
+          requestGenerationRef.current,
+        ));
     setLoading(true);
+    setSnapshotFresh(false);
     setError(undefined);
     try {
-      const response = await fetch("/api/settings?ownerScope=readable", { cache: "no-store" });
+      const response = await fetch("/api/settings?ownerScope=readable", {
+        cache: "no-store",
+        signal: controller.signal,
+      });
       const body = await response.json() as SettingsSnapshot & { message?: string };
+      if (superseded()) {
+        return "superseded";
+      }
       if (!response.ok) throw new Error(body.message || "Settings could not be loaded.");
       setSnapshot(body);
-      return true;
+      setSnapshotFresh(true);
+      return "success";
     } catch (loadError) {
+      if (superseded()) {
+        return "superseded";
+      }
       setSnapshot(undefined);
+      setSnapshotFresh(false);
       setError(loadError instanceof Error ? loadError.message : "Settings could not be loaded.");
-      return false;
+      return "failure";
     } finally {
-      setLoading(false);
+      const controllerCurrent = loadControllerRef.current === controller;
+      if (controllerCurrent) {
+        loadControllerRef.current = null;
+      }
+      if (settingsLoadMayClearLoading({
+        controllerCurrent,
+        requestGeneration,
+        currentRequestGeneration: requestGenerationRef.current,
+      })) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -142,7 +261,12 @@ export function SettingsWorkspace() {
     const initialLoad = window.setTimeout(() => {
       void load();
     }, 0);
-    return () => window.clearTimeout(initialLoad);
+    return () => {
+      window.clearTimeout(initialLoad);
+      requestGenerationRef.current += 1;
+      loadControllerRef.current?.abort();
+      loadControllerRef.current = null;
+    };
   }, [load]);
 
   const request = useCallback(async <T,>(
@@ -151,6 +275,12 @@ export function SettingsWorkspace() {
     method: "POST" | "PUT" | "PATCH" | "DELETE",
     body?: unknown,
   ) => {
+    const requestGeneration = requestGenerationRef.current + 1;
+    requestGenerationRef.current = requestGeneration;
+    const isCurrentRequest = () => settingsRequestResultIsCurrent(
+      requestGeneration,
+      requestGenerationRef.current,
+    );
     setBusy(key);
     setError(undefined);
     try {
@@ -161,18 +291,21 @@ export function SettingsWorkspace() {
       });
       const payload = await response.json().catch(() => ({})) as T & { message?: string; error?: string };
       if (!response.ok) throw new Error(payload.message || payload.error || "The change could not be saved.");
-      const refreshed = await load();
-      if (!refreshed) {
+      if (!isCurrentRequest()) return payload;
+      const refreshed = await load(requestGeneration);
+      if (isCurrentRequest() && settingsLoadNeedsVerificationWarning(refreshed)) {
         setError("The change was saved, but current settings could not be verified. Refresh before making another change.");
       }
       return payload;
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : "The change could not be saved.";
-      await load();
-      setError(message);
+      if (isCurrentRequest()) {
+        await load(requestGeneration);
+        if (isCurrentRequest()) setError(message);
+      }
       throw requestError;
     } finally {
-      setBusy(undefined);
+      if (isCurrentRequest()) setBusy(undefined);
     }
   }, [load]);
 
@@ -198,6 +331,14 @@ export function SettingsWorkspace() {
     sessionStatus,
     "manage.connector",
   );
+  const mcpConfigurationGate: McpConfigurationGate = {
+    loading,
+    snapshotFresh,
+    requestReadContract: snapshot?.requestReadContracts
+      ?.mcpExportConfiguration,
+    manageable: snapshot?.mcp.manageable,
+    permissionBlocked: serviceKeyManageBlocked,
+  };
   const providerManageBlocked = permissionMessage(
     session,
     sessionStatus,
@@ -349,7 +490,29 @@ export function SettingsWorkspace() {
             }} />
           ) : null}
           {!loading && snapshot && section === "api" ? (
-            <ApiSection snapshot={snapshot} busy={busy} manageBlocked={serviceKeyManageBlocked} onRequest={request} onRevealToken={setRevealedToken} />
+            <ApiSection
+              snapshot={snapshot}
+              busy={busy}
+              manageBlocked={serviceKeyManageBlocked}
+              mcpGate={mcpConfigurationGate}
+              onRequest={request}
+              onSaveMcp={(config) => {
+                const blocked = mcpConfigurationActionBlocked(
+                  mcpConfigurationGate,
+                );
+                if (blocked) {
+                  setError(blocked);
+                  return Promise.reject(new Error(blocked));
+                }
+                return request(
+                  "mcp:save",
+                  "/api/settings/mcp",
+                  "PUT",
+                  config,
+                );
+              }}
+              onRevealToken={setRevealedToken}
+            />
           ) : null}
           {!loading && snapshot && section === "data" ? (
             <DataSection snapshot={snapshot} />
@@ -589,12 +752,20 @@ function ModelCatalog({ models }: { models: RequestModelCatalogEntry[] }) {
   </div>;
 }
 
-function ApiSection({ snapshot, busy, manageBlocked, onRequest, onRevealToken }: { snapshot: SettingsSnapshot; busy?: string; manageBlocked?: string; onRequest: <T>(key: string, path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown) => Promise<T | undefined>; onRevealToken: (token: string) => void }) {
+function ApiSection({ snapshot, busy, manageBlocked, mcpGate, onRequest, onSaveMcp, onRevealToken }: { snapshot: SettingsSnapshot; busy?: string; manageBlocked?: string; mcpGate: McpConfigurationGate; onRequest: <T>(key: string, path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown) => Promise<T | undefined>; onSaveMcp: (config: McpConfigurationDraft) => Promise<unknown>; onRevealToken: (token: string) => void }) {
   return <section className={styles.sectionCanvas}>
     <SectionHeader eyebrow="API & MCP" title="Programmatic access" description="Create scoped service identities and expose Asael through a governed MCP endpoint. Tokens are stored as hashes and cannot be recovered." />
     <ServiceApiKeys snapshot={snapshot} busy={busy} manageBlocked={manageBlocked} onRequest={onRequest} onRevealToken={onRevealToken} />
-    <McpConfiguration config={snapshot.mcp} busy={busy === "mcp:save"} onSave={(config) => onRequest("mcp:save", "/api/settings/mcp", "PUT", config)} />
+    <McpConfigurationSurface config={snapshot.mcp} gate={mcpGate} busy={busy === "mcp:save"} onSave={onSaveMcp} />
   </section>;
+}
+
+export function McpConfigurationSurface({ config, gate, busy, onSave }: { config: SettingsSnapshot["mcp"]; gate: McpConfigurationGate; busy: boolean; onSave: (config: McpConfigurationDraft) => Promise<unknown> }) {
+  const editable = mcpConfigurationIsEditable(gate);
+  const blockedReason = mcpConfigurationActionBlocked(gate);
+  return editable
+    ? <McpConfiguration key={config.updatedAt} config={config} busy={busy} onSave={onSave} />
+    : <RetainedMcpConfiguration config={config} blockedReason={blockedReason} />;
 }
 
 function ServiceApiKeys({ snapshot, busy, manageBlocked, onRequest, onRevealToken }: { snapshot: SettingsSnapshot; busy?: string; manageBlocked?: string; onRequest: <T>(key: string, path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown) => Promise<T | undefined>; onRevealToken: (token: string) => void }) {
@@ -609,7 +780,7 @@ function ServiceApiKeys({ snapshot, busy, manageBlocked, onRequest, onRevealToke
   </div>;
 }
 
-function McpConfiguration({ config, busy, onSave }: { config: McpExportConfiguration; busy: boolean; onSave: (config: Pick<McpExportConfiguration, "enabled" | "serverName" | "allowedScopes" | "exposeResources">) => Promise<unknown> }) {
+function McpConfiguration({ config, busy, onSave }: { config: McpExportConfiguration; busy: boolean; onSave: (config: McpConfigurationDraft) => Promise<unknown> }) {
   const [enabled, setEnabled] = useState(config.enabled);
   const [serverName, setServerName] = useState(config.serverName);
   const [allowedScopes, setAllowedScopes] = useState(config.allowedScopes);
@@ -620,6 +791,27 @@ function McpConfiguration({ config, busy, onSave }: { config: McpExportConfigura
       <div className="space-y-4"><SettingsField label="Server name"><input value={serverName} onChange={(event) => setServerName(event.target.value)} maxLength={120} /></SettingsField><ToggleRow title="Enable MCP endpoint" description="Service-key authentication is still required." checked={enabled} onChange={setEnabled} /><ToggleRow title="Expose resources" description="Allow configured read-only resources in addition to tools." checked={exposeResources} onChange={setExposeResources} /></div>
       <div><p className="text-[10px] font-bold uppercase tracking-[0.1em] text-muted">Maximum scopes clients may receive</p><div className="mt-2 grid gap-2 sm:grid-cols-2">{SERVICE_API_SCOPES.map((scope) => <label key={scope} className="flex items-center gap-2 rounded-md border border-line bg-background px-3 py-2 text-xs"><input type="checkbox" className="accent-primary" checked={allowedScopes.includes(scope)} onChange={(event) => setAllowedScopes(event.target.checked ? [...allowedScopes, scope] : allowedScopes.filter((item) => item !== scope))} /><span>{scope}</span></label>)}</div></div>
       <div className="flex flex-col gap-3 border-t border-line pt-4 lg:col-span-2 sm:flex-row sm:items-center sm:justify-between"><p className="flex items-center gap-2 text-xs text-muted"><ShieldCheck size={15} className="text-success" />Approval mode is permanently governed; MCP cannot bypass tool policy.</p><button type="button" className="primary-button" disabled={busy || !serverName.trim()} onClick={() => void onSave({ enabled, serverName, allowedScopes, exposeResources }).catch(() => undefined)}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}Save MCP policy</button></div>
+    </div>
+  </div>;
+}
+
+function RetainedMcpConfiguration({ config, blockedReason }: { config: McpExportConfiguration & { manageable?: boolean }; blockedReason?: string }) {
+  const retained = config.manageable !== true;
+  return <div className={clsx("mt-9 border-t border-line pt-7", styles.mcpSection)}>
+    <div className="flex items-start gap-3">
+      <span className="grid size-10 shrink-0 place-items-center rounded-md bg-surface-raised text-muted"><LockKeyhole size={18} /></span>
+      <div>
+        <div className="flex flex-wrap items-center gap-2"><h3 className="text-base font-semibold">{retained ? "Retained MCP policy" : "Asael MCP server"}</h3><span className="rounded-full bg-surface-raised px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-muted">Read only</span></div>
+        <p className="mt-1 max-w-2xl text-xs leading-5 text-muted">{retained ? "This stable-identity policy remains visible for continuity, cannot be edited from this session, and may still govern service keys owned by the retained identity." : "This policy remains visible for continuity but cannot be edited from this session while current ownership and permissions are verified."}</p>
+      </div>
+    </div>
+    <div className={clsx("mt-5 rounded-lg bg-surface p-5 ring-1 ring-line", styles.mcpPanel)}>
+      <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {mcpContinuityMetadata(config).map((item) => <div key={item.label}><dt className="text-[10px] font-bold uppercase tracking-[0.1em] text-muted">{item.label}</dt><dd className="mt-1 break-words text-sm font-semibold">{item.value}</dd></div>)}
+      </dl>
+      <div className="mt-5 border-t border-line pt-4">
+        <p className="flex items-start gap-2 text-xs leading-5 text-muted"><ShieldCheck size={15} className="mt-0.5 shrink-0 text-success" /><span>Approval mode remains governed. {blockedReason || "This MCP policy cannot be edited from the current session."}</span></p>
+      </div>
     </div>
   </div>;
 }

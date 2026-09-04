@@ -387,6 +387,15 @@ lineage; or change writer identity. Those exact-owner operations and any later
 canonical-write cutover retain their existing scoped event and governed-action
 boundaries.
 
+Converging request-bound MCP export configuration metadata emits no domain
+event. The read validates and projects an already-persisted public policy,
+retains physical ownership only to derive a management capability, and renders
+canonical continuity outside writable form state. It does not save or activate
+a policy, authenticate a service key, update last-used state, widen effective
+scopes, expose a resource or tool, execute governed work, or change writer
+identity. Those exact-owner operations and any later canonical-write cutover
+retain their existing scoped event and governed-action boundaries.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

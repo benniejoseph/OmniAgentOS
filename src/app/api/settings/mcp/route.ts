@@ -1,9 +1,15 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { settingsErrorResponse } from "@/lib/settings/http";
-import { getMcpExportConfiguration, saveMcpExportConfiguration } from "@/lib/settings/store";
+import {
+  getMcpExportConfiguration,
+  getMcpExportConfigurationForRequest,
+  McpExportConfigurationReadConflictError,
+  saveMcpExportConfiguration,
+} from "@/lib/settings/store";
 import { SERVICE_API_SCOPES } from "@/lib/settings/types";
 
 export const runtime = "nodejs";
@@ -21,8 +27,30 @@ async function GETHandler(request: Request) {
   let context;
   try { context = await authorizeRequest({ request, action: "read", resourceType: "mcp_export" }); }
   catch (error) { return forbiddenResponse(error); }
-  try { return Response.json({ mcp: await getMcpExportConfiguration(context) }); }
-  catch (error) { return settingsErrorResponse(error); }
+  const readable = new URL(request.url).searchParams.get("ownerScope") === "readable";
+  try {
+    const exactOwner = { tenantId: context.tenantId, actorId: context.actorId };
+    const mcp = readable
+      ? await getMcpExportConfigurationForRequest({
+          ...exactOwner,
+          requestActorBinding:
+            canonicalRequestActorBindingFromSecurityContext(context),
+        })
+      : {
+          ...(await getMcpExportConfiguration(exactOwner)),
+          manageable: true,
+        };
+    return Response.json({
+      mcp,
+      requestReadContracts: {
+        mcpExportConfiguration: readable ? "readable_v1" : "exact_v1",
+      },
+    }, { headers: { "cache-control": "no-store, private" } });
+  } catch (error) {
+    return readable
+      ? mcpConfigurationReadErrorResponse(error)
+      : settingsErrorResponse(error);
+  }
 }
 
 async function PUTHandler(request: Request) {
@@ -36,4 +64,25 @@ async function PUTHandler(request: Request) {
   } catch (error) { return forbiddenResponse(error); }
   try { return Response.json({ mcp: await saveMcpExportConfiguration({ ...context, ...parsed.data }) }); }
   catch (error) { return settingsErrorResponse(error); }
+}
+
+function mcpConfigurationReadErrorResponse(error: unknown) {
+  const conflict = error instanceof McpExportConfigurationReadConflictError;
+  if (!conflict) {
+    console.error(
+      "MCP export configuration metadata read failed.",
+      error instanceof Error ? error.name : "UnknownError",
+    );
+  }
+  return Response.json(
+    {
+      error: conflict
+        ? "MCP export configuration metadata could not be resolved safely."
+        : "MCP export configuration is temporarily unavailable.",
+    },
+    {
+      status: conflict ? 409 : 503,
+      headers: { "cache-control": "no-store, private" },
+    },
+  );
 }
