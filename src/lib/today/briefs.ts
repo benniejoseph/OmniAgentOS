@@ -38,6 +38,49 @@ const briefSchema = z.object({
   }).strict()).max(3),
 }).strict();
 
+const briefSourceCountsSchema = z.object({
+  items: z.number().int().nonnegative().max(1_000_000),
+  memories: z.number().int().nonnegative().max(1_000_000),
+  threads: z.number().int().nonnegative().max(1_000_000),
+  activeWork: z.number().int().nonnegative().max(1_000_000),
+  projects: z.number().int().nonnegative().max(1_000_000),
+}).strict();
+
+const storedExactText = (max: number) => z.string().refine((value) => {
+  if (!value || value.startsWith(" ") || value.endsWith(" ")) return false;
+  let length = 0;
+  for (const _character of value) {
+    length += 1;
+    if (length > max) return false;
+  }
+  return true;
+});
+
+const storedCanonicalInstant = z.string()
+  .datetime()
+  .refine((value) => normalizedInstant(value) === value);
+
+const storedBriefContentSchema = z.object({
+  id: storedExactText(200),
+  tenantId: storedExactText(120),
+  actorId: storedExactText(200),
+  localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  summary: storedExactText(600),
+  focus: z.array(z.object({
+    title: storedExactText(180),
+    reason: storedExactText(240),
+  }).strict()).max(5),
+  watchouts: z.array(storedExactText(240)).max(4),
+  resurfaced: z.array(z.object({
+    title: storedExactText(180),
+    context: storedExactText(240),
+  }).strict()).max(3),
+  generatedBy: z.enum(["ai", "system"]),
+  model: storedExactText(200).nullable().optional(),
+  sourceCounts: briefSourceCountsSchema,
+  generatedAt: storedCanonicalInstant,
+}).strict();
+
 const jsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -77,6 +120,13 @@ type TodayPreferenceRequestOptions = {
 type StoredTodayPreferences = {
   preferences: TodayPreferences;
   persistedActorId: string;
+};
+
+type TodayBriefBundle = {
+  preferences: TodayPreferences;
+  brief: DailyBrief | undefined;
+  localDate: string;
+  generationDue: boolean;
 };
 
 export async function getTodayPreferences(options: TodayPreferenceRequestOptions) {
@@ -208,7 +258,10 @@ export async function getTodayBriefBundle(options: {
   actorId: string;
   now?: Date;
   requestActorBinding?: CanonicalRequestActorBindingV1;
-}) {
+}): Promise<TodayBriefBundle> {
+  if (hasDatabaseUrl()) {
+    return getPostgresTodayBriefBundle(options);
+  }
   const preferences = await getTodayPreferences({
     tenantId: options.tenantId,
     actorId: options.actorId,
@@ -226,6 +279,211 @@ export async function getTodayBriefBundle(options: {
     localDate,
     generationDue: isBriefGenerationDue(preferences, options.now || new Date()) && !brief,
   };
+}
+
+async function getPostgresTodayBriefBundle(options: {
+  tenantId?: string;
+  actorId: string;
+  now?: Date;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+}): Promise<TodayBriefBundle> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const requestActorId = safeText(options.actorId, 200);
+  const [canonicalActorId, exactActorId] = todayActorReadOrder(
+    options.actorId,
+    options.requestActorBinding,
+    requestActorId,
+  );
+  const now = options.now || new Date();
+  const wallClock = new Date().toISOString();
+
+  await ensureDatabaseSchema();
+  const result = await getSql().transaction(
+    async (sql: ReturnType<typeof getSql>) => {
+      let preferenceRows = await readRequestPreferenceRows(sql, {
+        tenantId,
+        canonicalActorId,
+        exactActorId,
+      });
+      if (preferenceRows.length > 1) {
+        throw new Error("Today preferences resolved to multiple physical rows.");
+      }
+
+      let storedPreferences = preferenceRows[0]
+        ? preferencesFromRow(preferenceRows[0])
+        : sanitizePreferences({
+            tenantId,
+            actorId: exactActorId,
+            briefEnabled: true,
+            briefTime: "08:00",
+            timezone: defaultTimezone(),
+            reminderLeadMinutes: 30,
+            notificationsEnabled: true,
+            quietHoursEnabled: true,
+            quietHoursStart: "22:00",
+            quietHoursEnd: "07:00",
+            createdAt: wallClock,
+            updatedAt: wallClock,
+          });
+      let localDate = localScheduleParts(now, storedPreferences.timezone).date;
+      let brief = await readRequestDailyBrief(sql, {
+        tenantId,
+        canonicalActorId,
+        exactActorId,
+        requestActorId,
+        localDate,
+      });
+
+      if (preferenceRows.length === 0) {
+        await sql`
+          INSERT INTO omni_today_preferences (
+            tenant_id, actor_id, brief_enabled, brief_time, timezone,
+            reminder_lead_minutes, notifications_enabled, quiet_hours_enabled,
+            quiet_hours_start, quiet_hours_end, created_at, updated_at
+          ) VALUES (
+            ${tenantId}, ${exactActorId}, ${storedPreferences.briefEnabled},
+            ${storedPreferences.briefTime}, ${storedPreferences.timezone},
+            ${storedPreferences.reminderLeadMinutes},
+            ${storedPreferences.notificationsEnabled},
+            ${storedPreferences.quietHoursEnabled},
+            ${storedPreferences.quietHoursStart},
+            ${storedPreferences.quietHoursEnd},
+            ${storedPreferences.createdAt}, ${storedPreferences.updatedAt}
+          )
+          ON CONFLICT (tenant_id, actor_id) DO UPDATE
+            SET updated_at = omni_today_preferences.updated_at
+        `;
+        preferenceRows = await readRequestPreferenceRows(sql, {
+          tenantId,
+          canonicalActorId,
+          exactActorId,
+        });
+        if (preferenceRows.length !== 1) {
+          throw new Error("Today preferences did not settle to one physical row.");
+        }
+        storedPreferences = preferencesFromRow(preferenceRows[0]);
+        localDate = localScheduleParts(now, storedPreferences.timezone).date;
+        brief = await readRequestDailyBrief(sql, {
+          tenantId,
+          canonicalActorId,
+          exactActorId,
+          requestActorId,
+          localDate,
+        });
+      }
+
+      const preferences = projectTodayPreferencesForRequest(
+        storedPreferences,
+        requestActorId,
+      );
+      return {
+        preferences,
+        brief,
+        localDate,
+        generationDue: isBriefGenerationDue(preferences, now) && !brief,
+      };
+    },
+  );
+  return result as TodayBriefBundle;
+}
+
+async function readRequestPreferenceRows(
+  sql: ReturnType<typeof getSql>,
+  options: {
+    tenantId: string;
+    canonicalActorId: string;
+    exactActorId: string;
+  },
+) {
+  return sql`
+    SELECT * FROM omni_today_preferences
+    WHERE tenant_id = ${options.tenantId}
+      AND (
+        actor_id = ${options.canonicalActorId}
+        OR actor_id = ${options.exactActorId}
+      )
+    ORDER BY
+      CASE WHEN actor_id = ${options.canonicalActorId} THEN 0 ELSE 1 END,
+      actor_id ASC
+    LIMIT 2
+  `;
+}
+
+async function readRequestDailyBrief(
+  sql: ReturnType<typeof getSql>,
+  options: {
+    tenantId: string;
+    canonicalActorId: string;
+    exactActorId: string;
+    requestActorId: string;
+    localDate: string;
+  },
+) {
+  const rows = await sql`
+    SELECT
+      briefs.*,
+      CASE
+        WHEN
+          jsonb_typeof(briefs.source_counts) = 'object'
+          AND briefs.source_counts ?& ARRAY[
+            'items', 'memories', 'threads', 'activeWork', 'projects'
+          ]::text[]
+          AND CASE
+            WHEN jsonb_typeof(briefs.source_counts) = 'object'
+              THEN briefs.source_counts - ARRAY[
+                'items', 'memories', 'threads', 'activeWork', 'projects'
+              ]::text[] = '{}'::jsonb
+            ELSE FALSE
+          END
+          AND NOT EXISTS (
+            SELECT 1
+            FROM jsonb_each(
+              CASE
+                WHEN jsonb_typeof(briefs.source_counts) = 'object'
+                  THEN briefs.source_counts
+                ELSE '{}'::jsonb
+              END
+            ) AS count_entry(key, value)
+            WHERE CASE
+              WHEN jsonb_typeof(count_entry.value) = 'number'
+                THEN
+                  (count_entry.value::text)::numeric < 0
+                  OR (count_entry.value::text)::numeric > 1000000
+                  OR (count_entry.value::text)::numeric
+                    <> trunc((count_entry.value::text)::numeric)
+              ELSE TRUE
+            END
+          )
+          AND briefs.content -> 'sourceCounts' = briefs.source_counts
+        THEN TRUE
+        ELSE FALSE
+      END AS source_counts_are_valid
+    FROM omni_daily_briefs briefs
+    WHERE briefs.tenant_id = ${options.tenantId}
+      AND (
+        briefs.actor_id = ${options.canonicalActorId}
+        OR briefs.actor_id = ${options.exactActorId}
+      )
+      AND briefs.local_date = ${options.localDate}
+    ORDER BY
+      CASE WHEN briefs.actor_id = ${options.canonicalActorId} THEN 0 ELSE 1 END,
+      briefs.actor_id ASC,
+      briefs.generated_at DESC,
+      briefs.id ASC
+    LIMIT 2
+  `;
+  if (rows.length > 1) {
+    throw new Error("Daily brief resolved to multiple physical rows for one local date.");
+  }
+  return rows[0]
+    ? requestReadableBriefFromRow(rows[0], {
+        tenantId: options.tenantId,
+        requestActorId: options.requestActorId,
+        canonicalActorId: options.canonicalActorId,
+        exactActorId: options.exactActorId,
+        localDate: options.localDate,
+      })
+    : undefined;
 }
 
 export async function generateDailyBrief(options: {
@@ -546,6 +804,100 @@ function projectTodayPreferencesForRequest(
   };
 }
 
+function requestReadableBriefFromRow(
+  row: Record<string, unknown>,
+  context: {
+    tenantId: string;
+    requestActorId: string;
+    canonicalActorId: string;
+    exactActorId: string;
+    localDate: string;
+  },
+): DailyBrief {
+  const rowId = String(row.id || "");
+  const rowTenantId = String(row.tenant_id || "");
+  const rowActorId = String(row.actor_id || "");
+  const rowLocalDate = String(row.local_date || "");
+  const readableActors = new Set([
+    context.canonicalActorId,
+    context.exactActorId,
+  ]);
+  if (
+    !rowId ||
+    rowTenantId !== context.tenantId ||
+    !readableActors.has(rowActorId) ||
+    rowLocalDate !== context.localDate
+  ) {
+    throw new Error("Daily brief row escaped its request owner scope.");
+  }
+
+  const contentValue = parseStoredJsonValue(row.content);
+  const content = contentValue &&
+      typeof contentValue === "object" &&
+      !Array.isArray(contentValue)
+    ? contentValue as Record<string, unknown>
+    : undefined;
+  const parsedContent = storedBriefContentSchema.safeParse(content);
+  const parsedSourceCounts = briefSourceCountsSchema.safeParse(
+    parseStoredJsonValue(row.source_counts),
+  );
+  const generatedBy = row.generated_by === "ai" || row.generated_by === "system"
+    ? row.generated_by
+    : undefined;
+  const model = row.model === null || row.model === undefined
+    ? undefined
+    : String(row.model);
+  const generatedAt = normalizedInstant(row.generated_at);
+  if (
+    !content ||
+    !parsedContent.success ||
+    !parsedSourceCounts.success ||
+    row.source_counts_are_valid !== true ||
+    !generatedBy ||
+    !generatedAt ||
+    content.id !== rowId ||
+    content.tenantId !== rowTenantId ||
+    content.actorId !== rowActorId ||
+    content.localDate !== rowLocalDate ||
+    content.generatedBy !== generatedBy ||
+    (content.model === null || content.model === undefined
+      ? undefined
+      : String(content.model)) !== model ||
+    normalizedInstant(content.generatedAt) !== generatedAt ||
+    !sameSourceCounts(
+      parsedContent.data.sourceCounts,
+      parsedSourceCounts.data,
+    )
+  ) {
+    throw new Error("Daily brief content does not match its physical row.");
+  }
+
+  return {
+    id: rowId,
+    tenantId: rowTenantId,
+    actorId: context.requestActorId,
+    localDate: rowLocalDate,
+    summary: projectTodayBriefText(parsedContent.data.summary, 600),
+    focus: parsedContent.data.focus.map((item) => ({
+      title: projectTodayBriefText(item.title, 180),
+      reason: projectTodayBriefText(item.reason, 240),
+    })),
+    watchouts: parsedContent.data.watchouts.map((item) =>
+      projectTodayBriefText(item, 240)
+    ),
+    resurfaced: parsedContent.data.resurfaced.map((item) => ({
+      title: projectTodayBriefText(item.title, 180),
+      context: projectTodayBriefText(item.context, 240),
+    })),
+    generatedBy,
+    model: model
+      ? projectTodayBriefText(model, 200) || undefined
+      : undefined,
+    sourceCounts: parsedSourceCounts.data,
+    generatedAt,
+  };
+}
+
 function briefFromRow(row: Record<string, unknown>): DailyBrief {
   const content = typeof row.content === "string" ? JSON.parse(row.content) : row.content;
   const parsed = content && typeof content === "object" ? content as Partial<DailyBrief> : {};
@@ -622,3 +974,38 @@ function normalizeTenantId(value?: string) {
 }
 function dateValue(value: unknown) { return value instanceof Date ? value.toISOString() : String(value); }
 function capitalize(value: string) { return value ? `${value[0].toUpperCase()}${value.slice(1)}` : value; }
+
+function parseStoredJsonValue(value: unknown) {
+  if (typeof value !== "string") return value;
+  if (value.length > 2_000_000) return undefined;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizedInstant(value: unknown) {
+  const date = value instanceof Date ? value : new Date(String(value || ""));
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+function projectTodayBriefText(value: unknown, max: number) {
+  return String(redactSensitive(String(value ?? "")))
+    .trim()
+    .slice(0, max)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
+function sameSourceCounts(
+  left: DailyBrief["sourceCounts"],
+  right: DailyBrief["sourceCounts"],
+) {
+  return left.items === right.items &&
+    left.memories === right.memories &&
+    left.threads === right.threads &&
+    left.activeWork === right.activeWork &&
+    left.projects === right.projects;
+}

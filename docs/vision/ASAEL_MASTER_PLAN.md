@@ -1058,6 +1058,18 @@ file fallback semantics, retained aliases, and canonical writes remain
 unchanged. This consistency slice changes no governed operation and does not
 unblock membership epochs or the v43-v49 holds.
 
+The following request-read slice converges daily briefs without changing their
+writer identity. The brief endpoint and Today projection treat canonical and
+current-email records as one local-date namespace, reject cross-alias date
+collisions, and strictly validate the duplicated scalar/JSON ownership and
+generation envelope. Validation occurs inside the same transaction as the
+legacy default-preference behavior, so ambiguity or malformed stored content
+rolls that write back. The selected physical actor remains an integrity fact;
+the direct response projects the current email and Today exposes no actor.
+Generation, scheduling, paid model calls, persistence, actions, workers, file
+fallback, cache keys, portable data, retained aliases, and canonical writes
+stay exact. This read canary does not unblock membership epochs or v43-v49.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

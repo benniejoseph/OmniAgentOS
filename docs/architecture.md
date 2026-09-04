@@ -433,6 +433,17 @@ The response still omits owner fields, and the cache remains keyed by tenant
 plus current email. Briefs, memory rows, mutations, background work, portable
 data, file fallback behavior, and canonical writes remain unchanged.
 
+The seventh slice converges daily-brief reads only for authenticated request
+bundles and Today's PostgreSQL projection. A canonical/current-email pair is
+read as one logical local-date namespace: two physical rows for the same date,
+or a stored JSON envelope that disagrees with its scalar tenant, actor, ID,
+date, generation metadata, or source counts, fails closed inside the database
+transaction. Any default-preference insertion is therefore rolled back with
+the failed read. Owner fields stay internal to validation; direct responses
+project the current email and Today omits ownership. Generation, scheduling,
+paid inference, saves, POST/PATCH actions, file fallback, cache identity,
+portable data, prior aliases, and canonical writes remain exact and unchanged.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

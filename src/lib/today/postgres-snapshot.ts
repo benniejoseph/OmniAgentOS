@@ -49,14 +49,14 @@ export async function loadPostgresTodaySnapshot({
   const statementTimeoutMs = configuredStatementTimeoutMs();
 
   await ensureDatabaseSchema();
-  const rows = await getSql().transaction(
+  const aggregate = await getSql().transaction(
     async (sql: ReturnType<typeof getSql>) => {
       await sql`
         SELECT
           set_config('statement_timeout', ${String(statementTimeoutMs)}, true),
           set_config('lock_timeout', ${String(Math.min(statementTimeoutMs, 1_000))}, true)
       `;
-      return sql`
+      const rows = await sql`
       WITH runtime_settings AS MATERIALIZED (
         SELECT 1 AS ready
       ),
@@ -112,6 +112,187 @@ export async function loadPostgresTodaySnapshot({
         ORDER BY matched.preference_rank ASC, matched.actor_id ASC
         LIMIT 1
       ),
+      matched_brief_rows AS MATERIALIZED (
+        SELECT
+          briefs.id,
+          briefs.tenant_id,
+          briefs.actor_id,
+          briefs.local_date,
+          briefs.content,
+          briefs.generated_by,
+          briefs.model,
+          briefs.source_counts,
+          briefs.generated_at,
+          CASE
+            WHEN
+              jsonb_typeof(briefs.content) = 'object'
+              AND briefs.id = btrim(briefs.id)
+              AND char_length(briefs.id) BETWEEN 1 AND 200
+              AND briefs.content ?& ARRAY[
+                'id', 'tenantId', 'actorId', 'localDate', 'summary',
+                'focus', 'watchouts', 'resurfaced', 'generatedBy',
+                'sourceCounts', 'generatedAt'
+              ]::text[]
+              AND CASE
+                WHEN jsonb_typeof(briefs.content) = 'object'
+                  THEN briefs.content - ARRAY[
+                    'id', 'tenantId', 'actorId', 'localDate', 'summary',
+                    'focus', 'watchouts', 'resurfaced', 'generatedBy',
+                    'model', 'sourceCounts', 'generatedAt'
+                  ]::text[] = '{}'::jsonb
+                ELSE FALSE
+              END
+              AND jsonb_typeof(briefs.content -> 'id') = 'string'
+              AND briefs.content ->> 'id' = briefs.id
+              AND jsonb_typeof(briefs.content -> 'tenantId') = 'string'
+              AND briefs.content ->> 'tenantId' = briefs.tenant_id
+              AND jsonb_typeof(briefs.content -> 'actorId') = 'string'
+              AND briefs.content ->> 'actorId' = briefs.actor_id
+              AND jsonb_typeof(briefs.content -> 'localDate') = 'string'
+              AND briefs.content ->> 'localDate' = briefs.local_date
+              AND jsonb_typeof(briefs.content -> 'summary') = 'string'
+              AND briefs.content ->> 'summary' = btrim(briefs.content ->> 'summary')
+              AND char_length(briefs.content ->> 'summary') BETWEEN 1 AND 600
+              AND CASE
+                WHEN jsonb_typeof(briefs.content -> 'focus') = 'array'
+                  THEN jsonb_array_length(briefs.content -> 'focus') <= 5
+                    AND NOT EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(briefs.content -> 'focus') AS focus_entry(value)
+                      WHERE CASE
+                        WHEN jsonb_typeof(focus_entry.value) = 'object'
+                          THEN
+                            NOT (focus_entry.value ?& ARRAY['title', 'reason']::text[])
+                            OR focus_entry.value - ARRAY['title', 'reason']::text[] <> '{}'::jsonb
+                            OR jsonb_typeof(focus_entry.value -> 'title') <> 'string'
+                            OR focus_entry.value ->> 'title' IS DISTINCT FROM btrim(focus_entry.value ->> 'title')
+                            OR char_length(focus_entry.value ->> 'title') NOT BETWEEN 1 AND 180
+                            OR jsonb_typeof(focus_entry.value -> 'reason') <> 'string'
+                            OR focus_entry.value ->> 'reason' IS DISTINCT FROM btrim(focus_entry.value ->> 'reason')
+                            OR char_length(focus_entry.value ->> 'reason') NOT BETWEEN 1 AND 240
+                        ELSE TRUE
+                      END
+                    )
+                ELSE FALSE
+              END
+              AND CASE
+                WHEN jsonb_typeof(briefs.content -> 'watchouts') = 'array'
+                  THEN jsonb_array_length(briefs.content -> 'watchouts') <= 4
+                    AND NOT EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(briefs.content -> 'watchouts') AS watchout_entry(value)
+                      WHERE
+                        jsonb_typeof(watchout_entry.value) <> 'string'
+                        OR watchout_entry.value #>> '{}' IS DISTINCT FROM btrim(watchout_entry.value #>> '{}')
+                        OR char_length(watchout_entry.value #>> '{}') NOT BETWEEN 1 AND 240
+                    )
+                ELSE FALSE
+              END
+              AND CASE
+                WHEN jsonb_typeof(briefs.content -> 'resurfaced') = 'array'
+                  THEN jsonb_array_length(briefs.content -> 'resurfaced') <= 3
+                    AND NOT EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(briefs.content -> 'resurfaced') AS resurfaced_entry(value)
+                      WHERE CASE
+                        WHEN jsonb_typeof(resurfaced_entry.value) = 'object'
+                          THEN
+                            NOT (resurfaced_entry.value ?& ARRAY['title', 'context']::text[])
+                            OR resurfaced_entry.value - ARRAY['title', 'context']::text[] <> '{}'::jsonb
+                            OR jsonb_typeof(resurfaced_entry.value -> 'title') <> 'string'
+                            OR resurfaced_entry.value ->> 'title' IS DISTINCT FROM btrim(resurfaced_entry.value ->> 'title')
+                            OR char_length(resurfaced_entry.value ->> 'title') NOT BETWEEN 1 AND 180
+                            OR jsonb_typeof(resurfaced_entry.value -> 'context') <> 'string'
+                            OR resurfaced_entry.value ->> 'context' IS DISTINCT FROM btrim(resurfaced_entry.value ->> 'context')
+                            OR char_length(resurfaced_entry.value ->> 'context') NOT BETWEEN 1 AND 240
+                        ELSE TRUE
+                      END
+                    )
+                ELSE FALSE
+              END
+              AND briefs.generated_by IN ('ai', 'system')
+              AND jsonb_typeof(briefs.content -> 'generatedBy') = 'string'
+              AND briefs.content ->> 'generatedBy' = briefs.generated_by
+              AND CASE
+                WHEN briefs.model IS NULL
+                  THEN (
+                    NOT (briefs.content ? 'model')
+                    OR briefs.content -> 'model' = 'null'::jsonb
+                  )
+                ELSE
+                  jsonb_typeof(briefs.content -> 'model') = 'string'
+                  AND briefs.content ->> 'model' = briefs.model
+                  AND briefs.model = btrim(briefs.model)
+                  AND char_length(briefs.model) BETWEEN 1 AND 200
+              END
+              AND jsonb_typeof(briefs.source_counts) = 'object'
+              AND briefs.source_counts ?& ARRAY[
+                'items', 'memories', 'threads', 'activeWork', 'projects'
+              ]::text[]
+              AND CASE
+                WHEN jsonb_typeof(briefs.source_counts) = 'object'
+                  THEN briefs.source_counts - ARRAY[
+                    'items', 'memories', 'threads', 'activeWork', 'projects'
+                  ]::text[] = '{}'::jsonb
+                ELSE FALSE
+              END
+              AND NOT EXISTS (
+                SELECT 1
+                FROM jsonb_each(
+                  CASE
+                    WHEN jsonb_typeof(briefs.source_counts) = 'object'
+                      THEN briefs.source_counts
+                    ELSE '{}'::jsonb
+                  END
+                ) AS count_entry(key, value)
+                WHERE CASE
+                  WHEN jsonb_typeof(count_entry.value) = 'number'
+                    THEN
+                      (count_entry.value::text)::numeric < 0
+                      OR (count_entry.value::text)::numeric > 1000000
+                      OR (count_entry.value::text)::numeric
+                        <> trunc((count_entry.value::text)::numeric)
+                  ELSE TRUE
+                END
+              )
+              AND briefs.content -> 'sourceCounts' = briefs.source_counts
+              AND jsonb_typeof(briefs.content -> 'generatedAt') = 'string'
+              AND briefs.content ->> 'generatedAt'
+                ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$'
+              AND isfinite(briefs.generated_at)
+              AND EXTRACT(
+                YEAR FROM (briefs.generated_at AT TIME ZONE 'UTC')
+              ) BETWEEN 1 AND 9999
+              AND briefs.content ->> 'generatedAt' = to_char(
+                briefs.generated_at AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+              )
+            THEN TRUE
+            ELSE FALSE
+          END AS content_is_valid
+        FROM omni_daily_briefs briefs
+        CROSS JOIN runtime_settings
+        WHERE briefs.tenant_id = ${safeTenantId}
+          AND (
+            briefs.actor_id = ${canonicalActorId}
+            OR briefs.actor_id = ${exactActorId}
+          )
+          AND briefs.local_date IN (${yesterday}, ${utcToday}, ${tomorrow})
+      ),
+      brief_guard_state AS MATERIALIZED (
+        SELECT
+          EXISTS (
+            SELECT 1
+            FROM matched_brief_rows matched
+            GROUP BY matched.local_date
+            HAVING COUNT(DISTINCT matched.actor_id COLLATE "C") > 1
+          ) AS brief_owner_collision,
+          EXISTS (
+            SELECT 1
+            FROM matched_brief_rows matched
+            WHERE matched.content_is_valid IS DISTINCT FROM TRUE
+          ) AS brief_content_malformed
+      ),
       inserted_preferences AS (
         INSERT INTO omni_today_preferences (
           tenant_id, actor_id, brief_enabled, brief_time, timezone,
@@ -123,7 +304,10 @@ export async function loadPostgresTodaySnapshot({
           30, TRUE, TRUE, '22:00', '07:00', ${wallClockIso}, ${wallClockIso}
         FROM runtime_settings
         CROSS JOIN preference_match_state state
+        CROSS JOIN brief_guard_state brief_guard
         WHERE state.preference_match_count = 0
+          AND NOT brief_guard.brief_owner_collision
+          AND NOT brief_guard.brief_content_malformed
           AND NOT EXISTS (SELECT 1 FROM existing_preferences)
         ON CONFLICT (tenant_id, actor_id) DO UPDATE
           SET updated_at = omni_today_preferences.updated_at
@@ -203,12 +387,11 @@ export async function loadPostgresTodaySnapshot({
           briefs.model,
           briefs.source_counts,
           briefs.generated_at
-        FROM omni_daily_briefs briefs
-        CROSS JOIN runtime_settings
-        WHERE briefs.tenant_id = ${safeTenantId}
-          AND briefs.actor_id = ${safeActorId}
-          AND briefs.local_date IN (${yesterday}, ${utcToday}, ${tomorrow})
-        ORDER BY briefs.local_date ASC, briefs.generated_at DESC
+        FROM matched_brief_rows briefs
+        CROSS JOIN brief_guard_state brief_guard
+        WHERE NOT brief_guard.brief_owner_collision
+          AND NOT brief_guard.brief_content_malformed
+        ORDER BY briefs.local_date ASC, briefs.generated_at DESC, briefs.id ASC
         LIMIT 3
       ),
       active_projects AS MATERIALIZED (
@@ -268,6 +451,8 @@ export async function loadPostgresTodaySnapshot({
       )
       SELECT
         (SELECT preference_match_count FROM preference_match_state) AS preference_match_count,
+        (SELECT brief_owner_collision FROM brief_guard_state) AS brief_owner_collision,
+        (SELECT brief_content_malformed FROM brief_guard_state) AS brief_content_malformed,
         COALESCE((
           SELECT jsonb_agg(
             to_jsonb(item_rows) - 'status_rank'
@@ -290,7 +475,7 @@ export async function loadPostgresTodaySnapshot({
         COALESCE((
           SELECT jsonb_agg(
             to_jsonb(brief_rows)
-            ORDER BY local_date ASC, generated_at DESC
+            ORDER BY local_date ASC, generated_at DESC, id ASC
           )
           FROM brief_rows
         ), '[]'::jsonb) AS briefs,
@@ -303,10 +488,10 @@ export async function loadPostgresTodaySnapshot({
         ), '[]'::jsonb) AS projects
       FROM runtime_settings
     `;
+      return requireAggregateRow((rows as Record<string, unknown>[])[0]);
     },
-  ) as Record<string, unknown>[];
+  ) as Record<string, unknown>;
 
-  const aggregate = requireAggregateRow(rows[0]);
   return projectSnapshot(aggregate, {
     tenantId: safeTenantId,
     actorId: safeActorId,
@@ -332,6 +517,18 @@ function requireAggregateRow(row: Record<string, unknown> | undefined) {
   }
   if (preferenceMatchCount > 1) {
     throw new Error("Today preferences resolved to multiple physical rows.");
+  }
+  if (
+    typeof row.brief_owner_collision !== "boolean" ||
+    typeof row.brief_content_malformed !== "boolean"
+  ) {
+    throw new Error("Today snapshot aggregate returned an invalid daily brief guard state.");
+  }
+  if (row.brief_owner_collision) {
+    throw new Error("Daily briefs resolved to multiple physical rows for one local date.");
+  }
+  if (row.brief_content_malformed) {
+    throw new Error("Today snapshot encountered malformed daily brief content.");
   }
   for (const field of ["items", "threads", "memories", "briefs", "projects"] as const) {
     if (!Array.isArray(parseJsonValue(row[field]))) {

@@ -257,6 +257,13 @@ global limits, and binds project child summaries to the selected physical
 parent. It exposes no owner field and changes no mutation, execution scope,
 approval, receipt, worker, cache identity, or canonical write.
 
+Converging authenticated daily-brief reads emits no domain event. The read
+transaction rejects same-date alias collisions and malformed scalar/JSON
+envelopes before it can commit a default preference, then either projects the
+current request email or omits ownership in Today. It changes no brief
+generation, model call, save, schedule, action, approval, receipt, worker,
+portable record, cache identity, or canonical write.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
