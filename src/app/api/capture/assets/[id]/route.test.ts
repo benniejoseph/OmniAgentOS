@@ -13,7 +13,14 @@ const routeMocks = vi.hoisted(() => {
       this.name = "CaptureAssetReadConflictError";
     }
   }
+  class CaptureAssetContentIntegrityError extends Error {
+    constructor(message = "Capture asset content failed integrity validation.") {
+      super(message);
+      this.name = "CaptureAssetContentIntegrityError";
+    }
+  }
   return {
+    CaptureAssetContentIntegrityError,
     CaptureAssetError,
     CaptureAssetReadConflictError,
     authorizeRequest: vi.fn(),
@@ -21,6 +28,7 @@ const routeMocks = vi.hoisted(() => {
     getCaptureAsset: vi.fn(),
     getCaptureAssetForRequest: vi.fn(),
     getCaptureAssetContent: vi.fn(),
+    getCaptureAssetContentForRequest: vi.fn(),
   };
 });
 
@@ -41,12 +49,16 @@ vi.mock("@/lib/security/canonical-actor", () => ({
 }));
 
 vi.mock("@/lib/capture/assets", () => ({
+  CaptureAssetContentIntegrityError:
+    routeMocks.CaptureAssetContentIntegrityError,
   CaptureAssetError: routeMocks.CaptureAssetError,
   CaptureAssetReadConflictError: routeMocks.CaptureAssetReadConflictError,
   deleteCaptureAsset: vi.fn(),
   getCaptureAsset: routeMocks.getCaptureAsset,
   getCaptureAssetForRequest: routeMocks.getCaptureAssetForRequest,
   getCaptureAssetContent: routeMocks.getCaptureAssetContent,
+  getCaptureAssetContentForRequest:
+    routeMocks.getCaptureAssetContentForRequest,
   updateCaptureAssetStatus: vi.fn(),
 }));
 
@@ -135,10 +147,14 @@ beforeEach(() => {
     asset,
     bytes: Buffer.from("test"),
   });
+  routeMocks.getCaptureAssetContentForRequest.mockReset().mockResolvedValue({
+    asset,
+    bytes: Buffer.from("test"),
+  });
 });
 
 describe("request-bound Capture asset detail route", () => {
-  it("uses the authenticated owner binding only for metadata", async () => {
+  it("uses the authenticated owner binding for metadata", async () => {
     const response = await GET(
       new Request("http://localhost/api/capture/assets/asset-a"),
       { params: Promise.resolve({ id: "asset-a" }) },
@@ -158,21 +174,29 @@ describe("request-bound Capture asset detail route", () => {
     expect(routeMocks.getCaptureAssetContent).not.toHaveBeenCalled();
   });
 
-  it("keeps byte reads exact and does not derive a request binding", async () => {
+  it("uses the authenticated owner binding for verified byte reads", async () => {
     const response = await GET(
       new Request("http://localhost/api/capture/assets/asset-a?content=1"),
       { params: Promise.resolve({ id: "asset-a" }) },
     );
 
     expect(response.status).toBe(200);
-    expect(routeMocks.getCaptureAssetContent).toHaveBeenCalledWith(
+    expect(response.headers.get("content-length")).toBe("4");
+    expect(response.headers.get("etag")).toBe(`"${"a".repeat(64)}"`);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(routeMocks.getCaptureAssetContentForRequest).toHaveBeenCalledWith(
       "asset-a",
-      context,
+      {
+        tenantId: "tenant-a",
+        actorId,
+        requestActorBinding,
+      },
     );
     expect(routeMocks.getCaptureAssetForRequest).not.toHaveBeenCalled();
     expect(
       routeMocks.canonicalRequestActorBindingFromSecurityContext,
-    ).not.toHaveBeenCalled();
+    ).toHaveBeenCalledWith(context);
+    expect(routeMocks.getCaptureAssetContent).not.toHaveBeenCalled();
   });
 
   it("returns a private conflict when request ownership cannot be validated", async () => {
@@ -189,6 +213,40 @@ describe("request-bound Capture asset detail route", () => {
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     await expect(response.json()).resolves.toEqual({
       error: "Captured file metadata could not be resolved safely.",
+    });
+  });
+
+  it("returns a private conflict when stored bytes fail verification", async () => {
+    routeMocks.getCaptureAssetContentForRequest.mockRejectedValueOnce(
+      new routeMocks.CaptureAssetContentIntegrityError(),
+    );
+
+    const response = await GET(
+      new Request("http://localhost/api/capture/assets/asset-a?content=1"),
+      { params: Promise.resolve({ id: "asset-a" }) },
+    );
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    await expect(response.json()).resolves.toEqual({
+      error: "Captured file content could not be verified safely.",
+    });
+  });
+
+  it("uses a content-specific private conflict for an unsafe byte owner", async () => {
+    routeMocks.getCaptureAssetContentForRequest.mockRejectedValueOnce(
+      new routeMocks.CaptureAssetReadConflictError("private content"),
+    );
+
+    const response = await GET(
+      new Request("http://localhost/api/capture/assets/asset-a?content=1"),
+      { params: Promise.resolve({ id: "asset-a" }) },
+    );
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    await expect(response.json()).resolves.toEqual({
+      error: "Captured file content could not be resolved safely.",
     });
   });
 });

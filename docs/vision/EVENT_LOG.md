@@ -326,6 +326,15 @@ nor changes an Agent, workflow, memory, consent, membership, approval, tool
 effect, or external system. A later governed enrollment or authorization
 cutover requires its own typed decision event and rollback contract.
 
+Converging public Capture content reads emits no domain event. The request
+selects one non-internal asset and its bytes from the validated
+canonical/current-email pair, keeps the persisted owner as an internal
+integrity fact, and fails closed unless the bounded byte count, response
+metadata, and SHA-256 match. It does not index, mutate, delete, reconcile
+knowledge, operate on internal artifacts, or change canonical writer identity;
+those governed boundaries require their own typed evidence when they later
+converge.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

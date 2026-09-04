@@ -69,6 +69,13 @@ export class CaptureAssetReadConflictError extends Error {
   }
 }
 
+export class CaptureAssetContentIntegrityError extends Error {
+  constructor(message = "Capture asset content failed integrity validation.") {
+    super(message);
+    this.name = "CaptureAssetContentIntegrityError";
+  }
+}
+
 export async function saveCaptureAsset(input: ScopedOwner & {
   filename: string;
   mediaType: string;
@@ -174,6 +181,7 @@ export async function listCaptureAssets(
       FROM omni_capture_assets
       WHERE tenant_id = ${tenantId}
         AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+        AND jsonb_typeof(metadata) = 'object'
         AND COALESCE(metadata->>'internalKind', '') = ''
       ORDER BY updated_at DESC, id ASC
       LIMIT ${boundedLimit}
@@ -252,10 +260,10 @@ export async function getCaptureAsset(id: string, owner: Owner) {
 }
 
 /**
- * Resolve metadata for an authenticated request without widening any content
- * or mutation path. Stored bytes, indexing, status changes, and deletion must
- * continue to call the exact-owner getCaptureAsset/getCaptureAssetContent
- * helpers instead.
+ * Resolve metadata for an authenticated request. Stored bytes are exposed only
+ * by getCaptureAssetContentForRequest after their persisted length and digest
+ * have been verified. Indexing, status changes, and deletion remain exact-owner
+ * operations.
  */
 export async function getCaptureAssetForRequest(
   id: string,
@@ -286,6 +294,7 @@ export async function getCaptureAssetForRequest(
     WHERE id = ${assetId}
       AND tenant_id = ${tenantId}
       AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+      AND jsonb_typeof(metadata) = 'object'
       AND COALESCE(metadata->>'internalKind', '') = ''
     LIMIT 1
   `;
@@ -299,6 +308,77 @@ export async function getCaptureAssetForRequest(
     exactActorId,
   );
   return captureAssetForRequest(asset, exactActorId);
+}
+
+/**
+ * Resolve a public asset and its persisted bytes in one request-bound database
+ * read. The selected physical owner is retained internally for integrity
+ * checks; API projections continue to expose the current request actor.
+ */
+export async function getCaptureAssetContentForRequest(
+  id: string,
+  owner: CaptureAssetListOwner,
+) {
+  const tenantId = normalizeTenantId(owner.tenantId);
+  const requestActorId = normalizeActorId(owner.actorId);
+  const assetId = normalizeId(id);
+  if (!hasDatabaseUrl()) {
+    const asset = await getCaptureAsset(assetId, {
+      tenantId,
+      actorId: requestActorId,
+    });
+    if (!asset || optionalString(asset.metadata.internalKind)) {
+      throw new CaptureAssetError("Captured file not found.", 404);
+    }
+    const content = await getCaptureAssetContent(assetId, {
+      tenantId,
+      actorId: requestActorId,
+    });
+    return {
+      asset: captureAssetForExactFileRequest(asset),
+      bytes: content.bytes,
+    };
+  }
+  const [canonicalActorId, exactActorId] = captureActorReadOrder(
+    owner.actorId,
+    owner.requestActorBinding,
+    requestActorId,
+  );
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT id, tenant_id, actor_id, filename, media_type, extension, byte_count,
+      content_sha256, storage_kind,
+      CASE
+        WHEN byte_count BETWEEN 1 AND ${MAX_CAPTURE_ASSET_BYTES}
+          AND octet_length(content) = byte_count
+        THEN content
+        ELSE NULL
+      END AS content,
+      status, extraction_status,
+      ingest_job_id, knowledge_document_id, error, tags, metadata, created_at,
+      updated_at
+    FROM omni_capture_assets
+    WHERE id = ${assetId}
+      AND tenant_id = ${tenantId}
+      AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+      AND jsonb_typeof(metadata) = 'object'
+      AND COALESCE(metadata->>'internalKind', '') = ''
+    LIMIT 2
+  `;
+  if (!rows[0]) throw new CaptureAssetError("Captured file not found.", 404);
+  if (rows.length !== 1) throw new CaptureAssetReadConflictError();
+  const asset = assetFromRow(rows[0]);
+  assertRequestCaptureAssetOwner(
+    asset,
+    assetId,
+    tenantId,
+    canonicalActorId,
+    exactActorId,
+  );
+  return {
+    asset: captureAssetForRequest(asset, exactActorId),
+    bytes: verifiedRequestCaptureAssetBytes(asset, rows[0].content),
+  };
 }
 
 /**
@@ -487,7 +567,7 @@ function captureAssetForRequest(
   return {
     ...asset,
     actorId: requestActorId,
-    contentAvailable: exactOwner,
+    contentAvailable: isRequestCaptureContentDescriptor(asset),
     indexable: exactOwner,
     manageable: exactOwner,
   };
@@ -519,6 +599,38 @@ function assertRequestCaptureAssetOwner(
   ) {
     throw new CaptureAssetReadConflictError();
   }
+}
+
+function verifiedRequestCaptureAssetBytes(
+  asset: CaptureAsset,
+  storedBytes: unknown,
+) {
+  if (
+    !(storedBytes instanceof Uint8Array) ||
+    !isRequestCaptureContentDescriptor(asset) ||
+    storedBytes.byteLength !== asset.byteCount
+  ) {
+    throw new CaptureAssetContentIntegrityError();
+  }
+  const bytes = Buffer.from(storedBytes);
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  if (digest !== asset.contentSha256) {
+    throw new CaptureAssetContentIntegrityError();
+  }
+  return bytes;
+}
+
+function isRequestCaptureContentDescriptor(asset: CaptureAsset) {
+  return asset.storageKind === "database" &&
+    Number.isSafeInteger(asset.byteCount) &&
+    asset.byteCount > 0 &&
+    asset.byteCount <= MAX_CAPTURE_ASSET_BYTES &&
+    /^[a-f0-9]{64}$/.test(asset.contentSha256) &&
+    asset.filename === safeFilename(asset.filename) &&
+    asset.mediaType.length <= 120 &&
+    /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/.test(
+      asset.mediaType,
+    );
 }
 
 function getAssetLedgerFile() { return getDataPath("capture-assets.json"); }

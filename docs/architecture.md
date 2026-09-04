@@ -542,6 +542,17 @@ structured compatibility to unknown. Bare Agent lists, Agent runtime identity, w
 membership authority, and all consent holds remain unchanged until a later
 reviewed enrollment release has sufficient adoption and revocation evidence.
 
+The thirteenth request-bound slice extends only the public Capture asset byte
+GET. PostgreSQL selects the globally unique, non-internal asset and its bytes
+from the validated canonical/current-email pair in one statement, retains the
+physical owner internally, and verifies the persisted storage kind, positive
+bounded byte count, safe response metadata, and SHA-256 before emitting a
+private response. Any mismatch fails closed without serving content.
+Canonical compatibility rows become downloadable but remain non-indexable and
+non-manageable; POST indexing, status mutation, deletion, linked knowledge
+cleanup, internal artifacts, recordings, background work, file-fallback
+ownership, portable data, and canonical writes remain exact-owner contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.
