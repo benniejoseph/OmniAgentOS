@@ -406,6 +406,16 @@ delete, recover, or otherwise operate on a recording, nor does it change writer
 identity. Those exact-owner operations and any later canonical-write cutover
 retain their existing scoped event and governed-action boundaries.
 
+Converging request-bound Mission collection summaries emits no domain event.
+The read validates and projects already-persisted public lifecycle metadata,
+uses the hidden source key only to detect a two-owner collision, removes owner
+identity after deriving capabilities, and never selects arbitrary mission
+metadata. It does not open a full board, poll events, transition a mission,
+create or change a task, comment, review, run an attempt, expose an artifact,
+start execution, or change writer identity. Those exact-owner operations and
+any later canonical-write cutover retain their existing typed-event and
+governed-action boundaries.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

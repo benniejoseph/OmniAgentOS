@@ -1321,6 +1321,23 @@ indexing, mutations, background recovery, portable data, events, and canonical
 writes stay exact. This read-only slice emits no domain event and does not
 unblock membership or consent holds.
 
+The next request canary converges only Mission collection summaries. Literal
+`ownerScope=readable` requests select safe mission identity, objective,
+lifecycle, priority, source label, and timestamps from the validated
+canonical/current-email pair; source keys are used only for an in-database
+collision check and arbitrary metadata is never selected. Bounded per-owner
+status lanes reuse the existing index before deterministic global ordering.
+Malformed owners, identifiers, text, states, chronology, duplicate IDs, or a
+cross-owner source-key collision fail the complete read. Exact physical rows
+alone advertise detail, management, and Command-handoff capabilities. Missions
+requires `requestReadContracts.missions=readable_v1`, disables all row actions
+while authority is stale, and gives retained history a summary-only view with
+no task board, event polling, task mutation, or run handoff. Bare collection
+GET and file fallback stay exact. Full detail, events, mission transitions,
+tasks, comments, reviews, attempts, artifacts, execution, portable data,
+events, and canonical writes remain unchanged. This read-only slice emits no
+domain event and does not unblock membership or consent holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
