@@ -16,6 +16,7 @@ import {
   type SealedCredentialPayload,
 } from "@/lib/settings/credential-vault";
 import { modelCatalogActorReadOrder } from "@/lib/settings/model-catalog-actor-scope";
+import { providerConnectionActorReadOrder } from "@/lib/settings/provider-connection-actor-scope";
 import { serviceApiKeyActorReadOrder } from "@/lib/settings/service-api-key-actor-scope";
 import {
   MODEL_PROVIDERS,
@@ -29,6 +30,7 @@ import {
   type RedactedProviderConnection,
   type RedactedServiceApiKey,
   type RequestModelCatalogEntry,
+  type RequestProviderConnection,
   type RequestServiceApiKey,
   type ServiceApiScope,
   type SettingsModelProvider,
@@ -96,6 +98,92 @@ export async function listProviderConnections(input: {
   return input.includeDeploymentFallback === false
     ? saved
     : [...saved, ...deploymentProviderConnections(input)];
+}
+
+export async function listProviderConnectionsForRequest(input: {
+  tenantId: string;
+  actorId: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+  includeDeploymentFallback?: boolean;
+}): Promise<RequestProviderConnection[]> {
+  const saved = await inTenant(input.tenantId, async () => {
+    if (!hasDatabaseUrl()) {
+      const ledger = await readLedger();
+      const records = ledger.providers
+        .filter((item) =>
+          item.tenantId === input.tenantId && item.actorId === input.actorId
+        )
+        .map((record) => {
+          const row = providerConnectionLedgerRow(record);
+          assertRequestProviderConnectionRow(
+            row,
+            input.tenantId,
+            input.actorId,
+            input.actorId,
+          );
+          return providerConnectionMetadataFromRow(row);
+        });
+      assertRequestProviderConnectionRecords(
+        records,
+        input.tenantId,
+        input.actorId,
+        input.actorId,
+      );
+      return records
+        .sort(compareProviderConnectionMetadata)
+        .map((record) => requestProviderConnection(record, input.actorId));
+    }
+
+    const [canonicalActorId, exactActorId] =
+      providerConnectionActorReadOrder(
+        input.actorId,
+        input.requestActorBinding,
+      );
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT id, tenant_id, actor_id, provider, label, status, enabled,
+        credential_version, credential_fingerprint, configured_fields,
+        last_validated_at, validation_code, catalog_refreshed_at, created_at,
+        updated_at, rotated_at
+      FROM omni_provider_connections
+      WHERE tenant_id = ${input.tenantId}
+        AND actor_id IN (${canonicalActorId}, ${exactActorId})
+        AND tenant_id COLLATE "C" = ${input.tenantId}::text COLLATE "C"
+        AND (
+          actor_id COLLATE "C" = ${canonicalActorId}::text COLLATE "C"
+          OR actor_id COLLATE "C" = ${exactActorId}::text COLLATE "C"
+        )
+      ORDER BY updated_at DESC, id COLLATE "C"
+    `;
+    const records = rows.map((row) => {
+      assertRequestProviderConnectionRow(
+        row,
+        input.tenantId,
+        canonicalActorId,
+        exactActorId,
+      );
+      return providerConnectionMetadataFromRow(row);
+    });
+    assertRequestProviderConnectionRecords(
+      records,
+      input.tenantId,
+      canonicalActorId,
+      exactActorId,
+    );
+    return records.map((record) =>
+      requestProviderConnection(record, exactActorId)
+    );
+  });
+
+  return input.includeDeploymentFallback === false
+    ? saved
+    : [
+        ...saved,
+        ...deploymentProviderConnections(input).map((record) => ({
+          ...record,
+          manageable: false,
+        })),
+      ];
 }
 
 export async function getProviderConnection(input: {
@@ -986,6 +1074,247 @@ function providerFromRow(row: Record<string, unknown>): InternalProviderConnecti
     rotatedAt: optionalDate(row.rotated_at),
   };
 }
+
+function providerConnectionMetadataFromRow(
+  row: Record<string, unknown>,
+): RedactedProviderConnection {
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    actorId: String(row.actor_id),
+    provider: String(row.provider) as SettingsModelProvider,
+    label: String(row.label),
+    source: "tenant_vault",
+    status: String(row.status) as ProviderConnectionStatus,
+    enabled: row.enabled as boolean,
+    credentialVersion: Number(row.credential_version),
+    credentialFingerprint: row.credential_fingerprint
+      ? String(row.credential_fingerprint)
+      : undefined,
+    configuredFields: Array.isArray(row.configured_fields)
+      ? row.configured_fields.map(String)
+      : [],
+    lastValidatedAt: optionalDate(row.last_validated_at),
+    validationCode: row.validation_code
+      ? String(row.validation_code)
+      : undefined,
+    catalogRefreshedAt: optionalDate(row.catalog_refreshed_at),
+    runtimeReadiness: "active_tenant_runtime",
+    runtimeNote:
+      "Available to the tenant runtime when assigned to Main agent or Orchestrator. Other saved routing scopes remain configuration-only.",
+    createdAt: optionalDate(row.created_at),
+    updatedAt: optionalDate(row.updated_at),
+    rotatedAt: optionalDate(row.rotated_at),
+  };
+}
+
+function requestProviderConnection(
+  record: RedactedProviderConnection,
+  requestActorId: string,
+): RequestProviderConnection {
+  const manageable = record.source === "tenant_vault" &&
+    record.actorId === requestActorId;
+  return {
+    id: record.id,
+    tenantId: record.tenantId,
+    actorId: requestActorId,
+    provider: record.provider,
+    label: safeProviderDisplayText(
+      record.label,
+      "Unnamed provider connection",
+      120,
+    ),
+    source: record.source,
+    status: record.status,
+    enabled: record.enabled,
+    credentialVersion: record.credentialVersion,
+    credentialFingerprint: record.credentialFingerprint,
+    configuredFields: [...record.configuredFields],
+    lastValidatedAt: record.lastValidatedAt,
+    validationCode: record.validationCode
+      ? safeProviderDisplayText(record.validationCode, "", 120) || undefined
+      : undefined,
+    catalogRefreshedAt: record.catalogRefreshedAt,
+    runtimeReadiness: manageable
+      ? "active_tenant_runtime"
+      : "configuration_only",
+    runtimeNote: manageable
+      ? record.runtimeNote
+      : "Retained connection metadata from your stable identity. Read only here; credentials, validation, assignments, and runtime routing remain isolated.",
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    rotatedAt: record.rotatedAt,
+    manageable,
+  };
+}
+
+function assertRequestProviderConnectionRow(
+  row: Record<string, unknown>,
+  expectedTenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  const id = typeof row.id === "string" ? row.id : "";
+  const tenantId = typeof row.tenant_id === "string" ? row.tenant_id : "";
+  const actorId = typeof row.actor_id === "string" ? row.actor_id : "";
+  const provider = typeof row.provider === "string" ? row.provider : "";
+  const label = typeof row.label === "string" ? row.label : "";
+  const status = typeof row.status === "string" ? row.status : "";
+  const configuredFields = row.configured_fields;
+  const fingerprint = row.credential_fingerprint;
+  const credentialVersion = row.credential_version;
+  const providerIsKnown = MODEL_PROVIDERS.includes(
+    provider as SettingsModelProvider,
+  );
+  const statusIsKnown = providerConnectionStatuses.includes(
+    status as ProviderConnectionStatus,
+  );
+  const fieldsAreValid = providerIsKnown &&
+    isValidProviderConfiguredFields(
+      provider as SettingsModelProvider,
+      status as ProviderConnectionStatus,
+      configuredFields,
+    );
+  if (
+    !uuidPattern.test(id) ||
+    tenantId !== expectedTenantId ||
+    (actorId !== canonicalActorId && actorId !== exactActorId) ||
+    !providerIsKnown ||
+    typeof row.label !== "string" ||
+    Array.from(label).length > 120 ||
+    !statusIsKnown ||
+    typeof row.enabled !== "boolean" ||
+    !Number.isSafeInteger(credentialVersion) ||
+    Number(credentialVersion) < 1 ||
+    !(
+      fingerprint === null ||
+      fingerprint === undefined ||
+      (typeof fingerprint === "string" && /^[0-9a-f]{12}$/.test(fingerprint))
+    ) ||
+    !fieldsAreValid ||
+    (status === "revoked" && (
+      row.enabled !== false ||
+      fingerprint !== null && fingerprint !== undefined
+    )) ||
+    !isOptionalText(row.validation_code) ||
+    (typeof row.validation_code === "string" &&
+      Array.from(row.validation_code).length > 120) ||
+    !isOptionalDate(row.last_validated_at) ||
+    !isOptionalDate(row.catalog_refreshed_at) ||
+    !isRequiredDate(row.created_at) ||
+    !isRequiredDate(row.updated_at) ||
+    !isOptionalDate(row.rotated_at)
+  ) {
+    throw new SettingsStoreError(
+      "Provider connection metadata could not be resolved safely.",
+      409,
+    );
+  }
+}
+
+function assertRequestProviderConnectionRecords(
+  records: RedactedProviderConnection[],
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  const ids = new Set<string>();
+  const providers = new Set<SettingsModelProvider>();
+  for (const record of records) {
+    if (
+      record.tenantId !== tenantId ||
+      (record.actorId !== canonicalActorId && record.actorId !== exactActorId) ||
+      ids.has(record.id) ||
+      providers.has(record.provider)
+    ) {
+      throw new SettingsStoreError(
+        "Provider connection metadata could not be resolved safely.",
+        409,
+      );
+    }
+    ids.add(record.id);
+    providers.add(record.provider);
+  }
+}
+
+function providerConnectionLedgerRow(record: InternalProviderConnection) {
+  return {
+    id: record.id,
+    tenant_id: record.tenantId,
+    actor_id: record.actorId,
+    provider: record.provider,
+    label: record.label,
+    status: record.status,
+    enabled: record.enabled,
+    credential_version: record.credentialVersion,
+    credential_fingerprint: record.credentialFingerprint,
+    configured_fields: record.configuredFields,
+    last_validated_at: record.lastValidatedAt,
+    validation_code: record.validationCode,
+    catalog_refreshed_at: record.catalogRefreshedAt,
+    created_at: record.createdAt,
+    updated_at: record.updatedAt,
+    rotated_at: record.rotatedAt,
+  };
+}
+
+function isValidProviderConfiguredFields(
+  provider: SettingsModelProvider,
+  status: ProviderConnectionStatus,
+  value: unknown,
+) {
+  if (!Array.isArray(value) || value.some((field) => typeof field !== "string")) {
+    return false;
+  }
+  const fields = value as string[];
+  if (new Set(fields).size !== fields.length) return false;
+  if (status === "revoked") return fields.length === 0;
+  if (provider !== "aws_bedrock") {
+    return fields.length === 1 && fields[0] === "apiKey";
+  }
+  const allowed = new Set([
+    "accessKeyId",
+    "secretAccessKey",
+    "region",
+    "sessionToken",
+  ]);
+  return fields.every((field) => allowed.has(field)) &&
+    fields.includes("accessKeyId") &&
+    fields.includes("secretAccessKey") &&
+    fields.includes("region");
+}
+
+function safeProviderDisplayText(
+  value: string,
+  fallback: string,
+  maxLength: number,
+) {
+  const sanitized = value
+    .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return Array.from(sanitized || fallback).slice(0, maxLength).join("");
+}
+
+function compareProviderConnectionMetadata(
+  left: RedactedProviderConnection,
+  right: RedactedProviderConnection,
+) {
+  const updated = (right.updatedAt || "").localeCompare(left.updatedAt || "");
+  return updated || left.id.localeCompare(right.id);
+}
+
+const providerConnectionStatuses: readonly ProviderConnectionStatus[] = [
+  "needs_validation",
+  "validating",
+  "connected",
+  "error",
+  "disabled",
+  "revoked",
+];
+
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function modelFromRow(row: Record<string, unknown>): ModelCatalogEntry {
   return {

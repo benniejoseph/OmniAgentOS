@@ -61,7 +61,7 @@ beforeEach(() => {
 });
 
 describe("settings snapshot route", () => {
-  it("passes the authenticated request binding into the snapshot", async () => {
+  it("keeps provider metadata exact for a bare request", async () => {
     const response = await GET(new Request("http://localhost/api/settings"));
 
     expect(response.status).toBe(200);
@@ -74,5 +74,18 @@ describe("settings snapshot route", () => {
     expect(
       routeMocks.canonicalRequestActorBindingFromSecurityContext,
     ).toHaveBeenCalledWith(context);
+  });
+
+  it("opts provider metadata into readable request ownership explicitly", async () => {
+    await GET(new Request(
+      "http://localhost/api/settings?ownerScope=readable",
+    ));
+
+    expect(routeMocks.getSettingsSnapshot).toHaveBeenCalledWith({
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestActorBinding,
+      providerOwnerScope: "readable",
+    });
   });
 });

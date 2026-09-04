@@ -5,6 +5,7 @@ const snapshotMocks = vi.hoisted(() => ({
   listModelAssignments: vi.fn(),
   listModelCatalogForRequest: vi.fn(),
   listProviderConnections: vi.fn(),
+  listProviderConnectionsForRequest: vi.fn(),
   listServiceApiKeysForRequest: vi.fn(),
 }));
 
@@ -36,6 +37,8 @@ vi.mock("@/lib/settings/store", () => ({
   listModelAssignments: snapshotMocks.listModelAssignments,
   listModelCatalogForRequest: snapshotMocks.listModelCatalogForRequest,
   listProviderConnections: snapshotMocks.listProviderConnections,
+  listProviderConnectionsForRequest:
+    snapshotMocks.listProviderConnectionsForRequest,
 }));
 
 import { getSettingsSnapshot } from "@/lib/settings/snapshot";
@@ -58,6 +61,7 @@ const input = {
 
 beforeEach(() => {
   snapshotMocks.listProviderConnections.mockReset().mockResolvedValue([]);
+  snapshotMocks.listProviderConnectionsForRequest.mockReset().mockResolvedValue([]);
   snapshotMocks.listModelCatalogForRequest.mockReset().mockResolvedValue([]);
   snapshotMocks.listModelAssignments.mockReset().mockResolvedValue([]);
   snapshotMocks.listServiceApiKeysForRequest.mockReset().mockResolvedValue([]);
@@ -77,17 +81,22 @@ beforeEach(() => {
 });
 
 describe("settings snapshot owner scopes", () => {
-  it("passes the request binding only to converged metadata lists", async () => {
-    await getSettingsSnapshot(input);
+  it("passes the request binding to the opt-in provider metadata list", async () => {
+    const snapshot = await getSettingsSnapshot({
+      ...input,
+      providerOwnerScope: "readable",
+    });
 
     const exactOwner = {
       tenantId: input.tenantId,
       actorId: input.actorId,
     };
-    expect(snapshotMocks.listProviderConnections).toHaveBeenCalledWith({
+    expect(snapshotMocks.listProviderConnectionsForRequest).toHaveBeenCalledWith({
       ...exactOwner,
+      requestActorBinding: input.requestActorBinding,
       includeDeploymentFallback: true,
     });
+    expect(snapshotMocks.listProviderConnections).not.toHaveBeenCalled();
     expect(snapshotMocks.listModelCatalogForRequest).toHaveBeenCalledWith(
       input,
     );
@@ -98,5 +107,44 @@ describe("settings snapshot owner scopes", () => {
     expect(snapshotMocks.listServiceApiKeysForRequest).toHaveBeenCalledWith(
       input,
     );
+    expect(snapshot.requestReadContracts).toEqual({
+      providerConnections: "readable_v1",
+    });
+  });
+
+  it("keeps provider metadata exact when the opt-in is absent", async () => {
+    snapshotMocks.listProviderConnections.mockResolvedValue([
+      {
+        actorId: input.actorId,
+        source: "tenant_vault",
+        provider: "openai",
+      },
+      {
+        actorId: "unexpected-owner@example.test",
+        source: "tenant_vault",
+        provider: "google",
+      },
+      {
+        actorId: input.actorId,
+        source: "deployment_environment",
+        provider: "anthropic",
+      },
+    ]);
+    const snapshot = await getSettingsSnapshot(input);
+
+    expect(snapshotMocks.listProviderConnections).toHaveBeenCalledWith({
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      includeDeploymentFallback: true,
+    });
+    expect(snapshotMocks.listProviderConnectionsForRequest).not.toHaveBeenCalled();
+    expect(snapshot.providers.map((provider) => provider.manageable)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    expect(snapshot.requestReadContracts).toEqual({
+      providerConnections: "exact_v1",
+    });
   });
 });

@@ -39,8 +39,8 @@ import {
   type ModelAssignment,
   type ModelAssignmentScope,
   type ModelCatalogEntry,
-  type RedactedProviderConnection,
   type RequestModelCatalogEntry,
+  type RequestProviderConnection,
   type ServiceApiScope,
   type SettingsModelProvider,
   type SettingsSnapshot,
@@ -117,18 +117,22 @@ export function SettingsWorkspace() {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [providerDraft, setProviderDraft] = useState<ProviderDraft>();
-  const [rotateConnection, setRotateConnection] = useState<RedactedProviderConnection>();
+  const [rotateConnection, setRotateConnection] = useState<RequestProviderConnection>();
   const [revealedToken, setRevealedToken] = useState<string>();
 
   const load = useCallback(async () => {
+    setLoading(true);
     setError(undefined);
     try {
-      const response = await fetch("/api/settings", { cache: "no-store" });
+      const response = await fetch("/api/settings?ownerScope=readable", { cache: "no-store" });
       const body = await response.json() as SettingsSnapshot & { message?: string };
       if (!response.ok) throw new Error(body.message || "Settings could not be loaded.");
       setSnapshot(body);
+      return true;
     } catch (loadError) {
+      setSnapshot(undefined);
       setError(loadError instanceof Error ? loadError.message : "Settings could not be loaded.");
+      return false;
     } finally {
       setLoading(false);
     }
@@ -157,7 +161,10 @@ export function SettingsWorkspace() {
       });
       const payload = await response.json().catch(() => ({})) as T & { message?: string; error?: string };
       if (!response.ok) throw new Error(payload.message || payload.error || "The change could not be saved.");
-      await load();
+      const refreshed = await load();
+      if (!refreshed) {
+        setError("The change was saved, but current settings could not be verified. Refresh before making another change.");
+      }
       return payload;
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : "The change could not be saved.";
@@ -169,10 +176,17 @@ export function SettingsWorkspace() {
     }
   }, [load]);
 
-  const savedProviders = snapshot?.providers.filter((item) => item.source === "tenant_vault" && item.status !== "revoked") || [];
+  const savedProviders = snapshot?.providers.filter((item) =>
+    item.source === "tenant_vault" &&
+    (item.status !== "revoked" || item.manageable !== true)
+  ) || [];
   const activeProviders = new Set(
     snapshot?.providers
-      .filter((item) => item.status === "connected" && item.enabled)
+      .filter((item) =>
+        item.status === "connected" &&
+        item.enabled &&
+        (item.source === "deployment_environment" || item.manageable === true)
+      )
       .map((item) => item.provider) || [],
   ).size;
   const deprecatedModels = snapshot?.models.filter((item) =>
@@ -184,6 +198,16 @@ export function SettingsWorkspace() {
     sessionStatus,
     "manage.connector",
   );
+  const providerManageBlocked = permissionMessage(
+    session,
+    sessionStatus,
+    "manage.connector",
+  );
+  const providerOwnershipBlocked = snapshot?.requestReadContracts
+    ?.providerConnections === "readable_v1"
+    ? undefined
+    : "Provider ownership metadata could not be verified. Refresh after the current release is active.";
+  const providerActionBlocked = providerManageBlocked || providerOwnershipBlocked;
 
   return (
     <div className={clsx("workspace-enter mx-auto w-full max-w-[112rem] px-4 pb-16 pt-5 sm:px-6 lg:px-8", styles.shell)}>
@@ -249,22 +273,59 @@ export function SettingsWorkspace() {
               snapshot={snapshot}
               savedProviders={savedProviders}
               busy={busy}
+              manageBlocked={providerActionBlocked}
               onAdd={(provider) => {
+                if (providerActionBlocked) {
+                  setError(providerActionBlocked);
+                  return;
+                }
                 setError(undefined);
                 setProviderDraft({ provider, label: providerDetails[provider].name, credentials: {} });
               }}
               onRotate={(connection) => {
+                if (connection.manageable !== true || providerActionBlocked) {
+                  setError(providerActionBlocked || "This retained connection is read only.");
+                  return;
+                }
                 setError(undefined);
                 setRotateConnection(connection);
                 setProviderDraft({ provider: connection.provider, label: connection.label, credentials: {} });
               }}
-              onValidate={(id) => void request(`validate:${id}`, `/api/settings/providers/${id}/validate`, "POST").catch(() => undefined)}
-              onToggle={(item) => void request(`toggle:${item.id}`, `/api/settings/providers/${item.id}`, "PATCH", { enabled: !item.enabled }).catch(() => undefined)}
-              onRevoke={(id) => void request(`revoke:${id}`, `/api/settings/providers/${id}`, "DELETE").catch(() => undefined)}
+              onValidate={(connection) => {
+                if (connection.manageable !== true || providerActionBlocked) {
+                  setError(providerActionBlocked || "This retained connection is read only.");
+                  return;
+                }
+                const id = encodeURIComponent(connection.id);
+                void request(`validate:${connection.id}`, `/api/settings/providers/${id}/validate`, "POST").catch(() => undefined);
+              }}
+              onToggle={(connection) => {
+                if (connection.manageable !== true || providerActionBlocked) {
+                  setError(providerActionBlocked || "This retained connection is read only.");
+                  return;
+                }
+                const id = encodeURIComponent(connection.id);
+                void request(`toggle:${connection.id}`, `/api/settings/providers/${id}`, "PATCH", { enabled: !connection.enabled }).catch(() => undefined);
+              }}
+              onRevoke={(connection) => {
+                if (connection.manageable !== true || providerActionBlocked) {
+                  setError(providerActionBlocked || "This retained connection is read only.");
+                  return;
+                }
+                const id = encodeURIComponent(connection.id);
+                void request(`revoke:${connection.id}`, `/api/settings/providers/${id}`, "DELETE").catch(() => undefined);
+              }}
             />
           ) : null}
           {!loading && snapshot && section === "models" ? (
-            <ModelsSection snapshot={snapshot} busy={busy} onSave={(scope, value) => request(`assignment:${scope}`, "/api/settings/assignments", "PUT", { scope, ...value })} onRefresh={(id) => request(`validate:${id}`, `/api/settings/providers/${id}/validate`, "POST")} />
+            <ModelsSection snapshot={snapshot} busy={busy} refreshBlocked={providerActionBlocked} onSave={(scope, value) => request(`assignment:${scope}`, "/api/settings/assignments", "PUT", { scope, ...value })} onRefresh={(connection) => {
+              if (connection.manageable !== true || providerActionBlocked) {
+                setError(providerActionBlocked || "This retained connection is read only.");
+                return Promise.reject(new Error(providerActionBlocked || "This retained connection is read only."));
+              }
+              const id = encodeURIComponent(connection.id);
+              return request(`validate:${connection.id}`, `/api/settings/providers/${id}/validate`, "POST");
+            }} />
           ) : null}
           {!loading && snapshot && section === "api" ? (
             <ApiSection snapshot={snapshot} busy={busy} manageBlocked={serviceKeyManageBlocked} onRequest={request} onRevealToken={setRevealedToken} />
@@ -285,8 +346,12 @@ export function SettingsWorkspace() {
           onChange={setProviderDraft}
           onClose={() => { setProviderDraft(undefined); setRotateConnection(undefined); }}
           onSubmit={async () => {
+            if (providerActionBlocked || (rotateConnection && rotateConnection.manageable !== true)) {
+              setError(providerActionBlocked || "This retained connection is read only.");
+              return;
+            }
             const target = rotateConnection
-              ? `/api/settings/providers/${rotateConnection.id}/rotate`
+              ? `/api/settings/providers/${encodeURIComponent(rotateConnection.id)}/rotate`
               : "/api/settings/providers";
             const payload = rotateConnection
               ? { credentials: providerDraft.credentials, validateNow: true }
@@ -318,7 +383,16 @@ function SectionHeader({ eyebrow, title, description, action }: { eyebrow: strin
 
 function OverviewSection({ snapshot, onNavigate }: { snapshot: SettingsSnapshot; onNavigate: (section: SettingsSection) => void }) {
   const deploymentProviders = snapshot.providers.filter((item) => item.source === "deployment_environment");
-  const tenantProviders = snapshot.providers.filter((item) => item.source === "tenant_vault" && item.status !== "revoked");
+  const tenantProviders = snapshot.providers.filter((item) =>
+    item.source === "tenant_vault" &&
+    item.status !== "revoked" &&
+    item.manageable === true
+  );
+  const retainedProviders = snapshot.providers.filter((item) =>
+    item.source === "tenant_vault" &&
+    item.status !== "revoked" &&
+    item.manageable !== true
+  );
   return <section className={styles.sectionCanvas}>
     <SectionHeader eyebrow="Workspace" title="Configuration at a glance" description="See what is active now, what is safely stored, and what still needs runtime activation." />
     <div className={clsx("mt-6 divide-y divide-line border-y border-line", styles.observatoryList)}>
@@ -331,7 +405,7 @@ function OverviewSection({ snapshot, onNavigate }: { snapshot: SettingsSnapshot;
       <OverviewRow icon={RefreshCw} title="Release" value={snapshot.platform.releaseRevision ? snapshot.platform.releaseRevision.slice(0, 12) : "Revision unavailable"} description="The deployment revision reported by this running application instance." tone="neutral" action={() => onNavigate("overview")} />
     </div>
     <div className={clsx("mt-8 grid gap-5 lg:grid-cols-2", styles.summaryPair)}>
-      <div className={clsx("rounded-lg bg-surface p-5 ring-1 ring-line", styles.summaryCard)}><p className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted">Tenant credentials</p><p className="mt-3 text-3xl font-semibold tracking-[-0.04em]">{tenantProviders.length}</p><p className="mt-1 text-sm text-muted">Sealed provider connections in this workspace</p></div>
+      <div className={clsx("rounded-lg bg-surface p-5 ring-1 ring-line", styles.summaryCard)}><p className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted">Tenant credentials</p><p className="mt-3 text-3xl font-semibold tracking-[-0.04em]">{tenantProviders.length}</p><p className="mt-1 text-sm text-muted">Current sealed provider connections{retainedProviders.length ? ` · ${retainedProviders.length} retained read only` : ""}</p></div>
       <div className={clsx("rounded-lg bg-surface p-5 ring-1 ring-line", styles.summaryCard)}><p className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted">Service identities</p><p className="mt-3 text-3xl font-semibold tracking-[-0.04em]">{snapshot.apiKeys.filter((item) => item.status === "active").length}</p><p className="mt-1 text-sm text-muted">Active hash-only API keys</p></div>
     </div>
   </section>;
@@ -345,15 +419,16 @@ function OverviewRow({ icon: Icon, title, value, description, tone = "neutral", 
   </button>;
 }
 
-function ProvidersSection({ snapshot, savedProviders, busy, onAdd, onRotate, onValidate, onToggle, onRevoke }: {
+function ProvidersSection({ snapshot, savedProviders, busy, manageBlocked, onAdd, onRotate, onValidate, onToggle, onRevoke }: {
   snapshot: SettingsSnapshot;
-  savedProviders: RedactedProviderConnection[];
+  savedProviders: RequestProviderConnection[];
   busy?: string;
+  manageBlocked?: string;
   onAdd: (provider: SettingsModelProvider) => void;
-  onRotate: (connection: RedactedProviderConnection) => void;
-  onValidate: (id: string) => void;
-  onToggle: (connection: RedactedProviderConnection) => void;
-  onRevoke: (id: string) => void;
+  onRotate: (connection: RequestProviderConnection) => void;
+  onValidate: (connection: RequestProviderConnection) => void;
+  onToggle: (connection: RequestProviderConnection) => void;
+  onRevoke: (connection: RequestProviderConnection) => void;
 }) {
   const providerByType = new Map(savedProviders.map((item) => [item.provider, item]));
   return <section className={styles.sectionCanvas}>
@@ -373,12 +448,12 @@ function ProvidersSection({ snapshot, savedProviders, busy, onAdd, onRotate, onV
             <p className="basis-full text-[11px] leading-5 text-muted">{connection?.runtimeNote || env?.runtimeNote || "No credentials configured for this provider."}{connection?.catalogRefreshedAt ? ` Catalog refreshed ${formatDate(connection.catalogRefreshedAt)}.` : ""}{connection?.validationCode ? ` Validation: ${connection.validationCode.replaceAll("_", " ")}.` : ""}</p>
           </div>
           <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
-            {connection ? <>
-              <button type="button" className="action-button min-h-9 px-2.5 text-xs" disabled={Boolean(busy)} onClick={() => onValidate(connection.id)}>{busy === `validate:${connection.id}` ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}Refresh</button>
-              <button type="button" className="action-button min-h-9 px-2.5 text-xs" disabled={Boolean(busy)} onClick={() => onRotate(connection)}><RotateCcw size={14} />Rotate</button>
-              <button type="button" className="action-button min-h-9 px-2.5 text-xs" disabled={Boolean(busy)} onClick={() => onToggle(connection)}>{connection.enabled ? "Disable" : "Enable"}</button>
-              <button type="button" className="grid size-9 place-items-center rounded-md text-muted transition hover:bg-danger/10 hover:text-danger" disabled={Boolean(busy)} onClick={() => { if (window.confirm(`Revoke ${detail.name} and scrub its stored credential?`)) onRevoke(connection.id); }} aria-label={`Revoke ${detail.name}`}><Trash2 size={14} /></button>
-            </> : <button type="button" className="primary-button min-h-9 text-xs" disabled={!snapshot.vault.configured} onClick={() => onAdd(provider)}><Plus size={14} />Connect</button>}
+            {connection?.manageable === true ? <>
+              <button type="button" className="action-button min-h-9 px-2.5 text-xs" disabled={Boolean(busy) || Boolean(manageBlocked)} title={manageBlocked} onClick={() => onValidate(connection)}>{busy === `validate:${connection.id}` ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}Refresh</button>
+              <button type="button" className="action-button min-h-9 px-2.5 text-xs" disabled={Boolean(busy) || Boolean(manageBlocked)} title={manageBlocked} onClick={() => onRotate(connection)}><RotateCcw size={14} />Rotate</button>
+              <button type="button" className="action-button min-h-9 px-2.5 text-xs" disabled={Boolean(busy) || Boolean(manageBlocked)} title={manageBlocked} onClick={() => onToggle(connection)}>{connection.enabled ? "Disable" : "Enable"}</button>
+              <button type="button" className="grid size-9 place-items-center rounded-md text-muted transition hover:bg-danger/10 hover:text-danger" disabled={Boolean(busy) || Boolean(manageBlocked)} title={manageBlocked} onClick={() => { if (window.confirm(`Revoke ${detail.name} and scrub its stored credential?`)) onRevoke(connection); }} aria-label={`Revoke ${detail.name}`}><Trash2 size={14} /></button>
+            </> : connection ? <span className="text-xs font-semibold text-muted">Retained connection · read only</span> : <button type="button" className="primary-button min-h-9 text-xs" disabled={!snapshot.vault.configured || Boolean(manageBlocked)} title={manageBlocked} onClick={() => onAdd(provider)}><Plus size={14} />Connect</button>}
           </div>
         </div>;
       })}
@@ -387,15 +462,20 @@ function ProvidersSection({ snapshot, savedProviders, busy, onAdd, onRotate, onV
   </section>;
 }
 
-function ModelsSection({ snapshot, busy, onSave, onRefresh }: {
+function ModelsSection({ snapshot, busy, refreshBlocked, onSave, onRefresh }: {
   snapshot: SettingsSnapshot;
   busy?: string;
+  refreshBlocked?: string;
   onSave: (scope: ModelAssignmentScope, value: AssignmentDraft) => Promise<unknown>;
-  onRefresh: (id: string) => Promise<unknown>;
+  onRefresh: (connection: RequestProviderConnection) => Promise<unknown>;
 }) {
-  const connected = snapshot.providers.filter((item) => item.source === "tenant_vault" && item.status === "connected");
+  const connected = snapshot.providers.filter((item) =>
+    item.source === "tenant_vault" &&
+    item.status === "connected" &&
+    item.manageable === true
+  );
   return <section className={styles.sectionCanvas}>
-    <SectionHeader eyebrow="Model routing" title="Assign the right model to each role" description="Choose a primary model and an optional fallback. Crossing provider boundaries is off until you explicitly consent for that assignment." action={connected.length ? <button type="button" className="action-button shrink-0" disabled={Boolean(busy)} onClick={() => void (async () => { for (const item of connected) await onRefresh(item.id); })().catch(() => undefined)}><RefreshCw size={15} />Refresh catalogs</button> : undefined} />
+    <SectionHeader eyebrow="Model routing" title="Assign the right model to each role" description="Choose a primary model and an optional fallback. Crossing provider boundaries is off until you explicitly consent for that assignment." action={connected.length ? <button type="button" className="action-button shrink-0" disabled={Boolean(busy) || Boolean(refreshBlocked)} title={refreshBlocked} onClick={() => void (async () => { for (const item of connected) await onRefresh(item); })().catch(() => undefined)}><RefreshCw size={15} />Refresh catalogs</button> : undefined} />
     <div className="mt-5 border-l-2 border-info bg-info/5 px-4 py-3"><p className="text-sm font-semibold text-info">Configuration scope</p><p className="mt-1 text-xs leading-5 text-muted">{snapshot.runtime.message}</p></div>
     <div className={clsx("mt-6 divide-y divide-line border-y border-line", styles.routeList)}>
       {MODEL_ASSIGNMENT_SCOPES.map((scope) => <AssignmentEditor key={scope} scope={scope} models={snapshot.models} providers={snapshot.providers} current={snapshot.assignments.find((item) => item.scope === scope)} busy={busy === `assignment:${scope}`} onSave={(value) => onSave(scope, value)} />)}
@@ -412,16 +492,20 @@ type AssignmentDraft = {
   crossProviderFallbackConsent?: true;
 };
 
-function AssignmentEditor({ scope, models, providers, current, busy, onSave }: { scope: ModelAssignmentScope; models: RequestModelCatalogEntry[]; providers: RedactedProviderConnection[]; current?: ModelAssignment; busy: boolean; onSave: (value: AssignmentDraft) => Promise<unknown> }) {
+function AssignmentEditor({ scope, models, providers, current, busy, onSave }: { scope: ModelAssignmentScope; models: RequestModelCatalogEntry[]; providers: RequestProviderConnection[]; current?: ModelAssignment; busy: boolean; onSave: (value: AssignmentDraft) => Promise<unknown> }) {
   const selectableModels = models.filter((item) => item.selectable === true);
-  const defaultProvider = current?.provider || selectableModels[0]?.provider || providers[0]?.provider || "openai";
+  const selectableProviders = providers.filter((item) =>
+    item.source === "deployment_environment" ||
+    (item.source === "tenant_vault" && item.manageable === true && item.status !== "revoked")
+  );
+  const defaultProvider = current?.provider || selectableModels[0]?.provider || selectableProviders[0]?.provider || "openai";
   const [provider, setProvider] = useState<SettingsModelProvider>(defaultProvider);
   const [modelId, setModelId] = useState(current?.modelId || "");
   const [fallbackProvider, setFallbackProvider] = useState<SettingsModelProvider | "">(current?.fallbackProvider || "");
   const [fallbackModelId, setFallbackModelId] = useState(current?.fallbackModelId || "");
   const [consent, setConsent] = useState(Boolean(current?.allowCrossProviderFallback));
   const providerOptions = [...new Set<SettingsModelProvider>([
-    ...providers.map((item) => item.provider),
+    ...selectableProviders.map((item) => item.provider),
     ...selectableModels.map((item) => item.provider),
     ...(current?.provider ? [current.provider] : []),
     ...(current?.fallbackProvider ? [current.fallbackProvider] : []),
@@ -499,7 +583,7 @@ function DataSection({ snapshot }: { snapshot: SettingsSnapshot }) {
   </section>;
 }
 
-function ProviderDialog({ draft, rotating, vaultReady, busy, error, onChange, onClose, onSubmit }: { draft: ProviderDraft; rotating?: RedactedProviderConnection; vaultReady: boolean; busy: boolean; error?: string; onChange: (draft: ProviderDraft) => void; onClose: () => void; onSubmit: () => Promise<void> }) {
+function ProviderDialog({ draft, rotating, vaultReady, busy, error, onChange, onClose, onSubmit }: { draft: ProviderDraft; rotating?: RequestProviderConnection; vaultReady: boolean; busy: boolean; error?: string; onChange: (draft: ProviderDraft) => void; onClose: () => void; onSubmit: () => Promise<void> }) {
   const [visible, setVisible] = useState<Record<string, boolean>>({});
   const detail = providerDetails[draft.provider];
   const complete = detail.fields.filter((field) => !field.label.includes("optional")).every((field) => draft.credentials[field.name]?.trim());
@@ -520,7 +604,7 @@ function ProviderMark({ provider }: { provider: SettingsModelProvider }) {
   return <span className={clsx("grid size-10 shrink-0 place-items-center rounded-lg bg-surface-raised text-xs font-bold text-foreground ring-1 ring-line", styles.providerMark)}>{initials}</span>;
 }
 
-function StatusPill({ status }: { status: RedactedProviderConnection["status"] }) {
+function StatusPill({ status }: { status: RequestProviderConnection["status"] }) {
   const success = status === "connected";
   const warning = status === "needs_validation" || status === "validating";
   return <span className={clsx("inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em]", success ? "bg-success/10 text-success" : warning ? "bg-warning/10 text-warning" : status === "disabled" || status === "revoked" ? "bg-surface-raised text-muted" : "bg-danger/10 text-danger")}>{success ? <CheckCircle2 size={11} /> : warning ? <CircleDashed size={11} /> : <AlertCircle size={11} />}{status.replaceAll("_", " ")}</span>;

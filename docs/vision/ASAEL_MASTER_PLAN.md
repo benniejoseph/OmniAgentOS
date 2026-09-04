@@ -1230,6 +1230,23 @@ detail, audio, completion, indexing, mutation, deletion, background recovery,
 portable data, events, and canonical writes stay exact. This read-only slice
 emits no domain event and does not unblock membership or consent holds.
 
+The following request canary adds opt-in provider-connection metadata reads.
+Authenticated PostgreSQL requests select only the redacted allowlist from the
+validated canonical/current-email pair, retain the physical owner long enough
+to derive `manageable` and runtime readiness, normalize display fields, and
+then project the current request actor. Credential ciphertext and key IDs are
+never selected. Malformed rows, revocation contradictions, duplicate IDs, and
+cross-owner copies of the same provider fail the complete read. Canonical
+connections are inspectable but configuration-only and expose no validation,
+rotation, enablement, revocation, assignment, or runtime affordance; deployment
+fallbacks remain visible but managed outside Asael. Bare Settings/provider
+GETs, file fallback, credential opening, every provider write, catalog refresh,
+assignments, runtime routing, MCP policy, portable data, events, and canonical
+writes stay exact. The UI requires the response-level `readable_v1`
+acknowledgement before exposing provider-write controls and clears stale
+actionability whenever that strict refresh fails. This read-only slice emits
+no domain event and does not unblock membership or consent holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

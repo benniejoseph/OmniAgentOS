@@ -2,9 +2,14 @@ import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { settingsErrorResponse } from "@/lib/settings/http";
 import { normalizeProviderCredentials, validateAndRefreshProvider } from "@/lib/settings/provider-catalog";
-import { listProviderConnections, saveProviderConnection } from "@/lib/settings/store";
+import {
+  listProviderConnections,
+  listProviderConnectionsForRequest,
+  saveProviderConnection,
+} from "@/lib/settings/store";
 import { MODEL_PROVIDERS } from "@/lib/settings/types";
 
 export const runtime = "nodejs";
@@ -26,7 +31,32 @@ async function GETHandler(request: Request) {
     return forbiddenResponse(error);
   }
   try {
-    return Response.json({ providers: await listProviderConnections({ ...context, includeDeploymentFallback: true }) });
+    const readable = new URL(request.url).searchParams.get("ownerScope") === "readable";
+    const providers = readable
+      ? await listProviderConnectionsForRequest({
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          requestActorBinding:
+            canonicalRequestActorBindingFromSecurityContext(context),
+          includeDeploymentFallback: true,
+        })
+      : (await listProviderConnections({
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          includeDeploymentFallback: true,
+        })).map((record) => ({
+          ...record,
+          manageable: record.source === "tenant_vault" &&
+            record.actorId === context.actorId,
+        }));
+    return Response.json({
+      providers,
+      requestReadContracts: {
+        providerConnections: readable ? "readable_v1" : "exact_v1",
+      },
+    }, {
+      headers: { "cache-control": "no-store, private" },
+    });
   } catch (error) {
     return settingsErrorResponse(error);
   }
