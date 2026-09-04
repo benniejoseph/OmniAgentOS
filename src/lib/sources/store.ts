@@ -13,18 +13,7 @@ import type { CanonicalTextSourceWrite } from "@/lib/sources/text-lineage";
 
 export type SourceSqlClient = ReturnType<typeof getSql>;
 
-export type StoredAdapterEnvelopeRow = Readonly<{
-  tenant_id: unknown;
-  connection_id: unknown;
-  adapter_output_id: unknown;
-  adapter_output_sha256: unknown;
-  adapter_operation: unknown;
-  adapter_id: unknown;
-  adapter_version_id: unknown;
-  adapter_config_sha256: unknown;
-  adapter_event_key_sha256: unknown;
-  adapter_observed_at: unknown;
-}>;
+export type StoredAdapterEnvelopeRow = Readonly<Record<string, unknown>>;
 
 export type CanonicalSourceLedger = {
   adapterOutputs: SourceAdapterUpsertV1[];
