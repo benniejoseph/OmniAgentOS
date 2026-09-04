@@ -3,8 +3,10 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
   getMissionDetail,
+  getMissionSummaryForRequest,
   MissionConflictError,
   MissionNotFoundError,
+  MissionReadConflictError,
   MissionTransitionError,
   transitionMission,
   transitionMissionTask,
@@ -22,6 +24,7 @@ import {
   cancelAgentRun,
   getAgentRun,
 } from "@/lib/runs/store";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { cancelWorkflowRunTick } from "@/lib/workflows/queue";
 import {
@@ -33,6 +36,7 @@ import { getWorkflowRunDetail } from "@/lib/workflows/store";
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 const transitionSchema = z.object({
   status: z.enum(["canceled", "archived"]),
@@ -54,6 +58,31 @@ async function GETHandler(
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const url = new URL(request.url);
+  const readableSummary =
+    url.searchParams.get("ownerScope") === "readable" &&
+    url.searchParams.get("view") === "summary";
+  if (readableSummary) {
+    try {
+      const mission = await getMissionSummaryForRequest(id, {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        requestActorBinding:
+          canonicalRequestActorBindingFromSecurityContext(context),
+      });
+      return mission
+        ? Response.json({
+            mission,
+            requestReadContracts: { missionSummary: "readable_v1" },
+          }, { headers: privateNoStoreHeaders })
+        : Response.json(
+            { error: "Mission not found." },
+            { status: 404, headers: privateNoStoreHeaders },
+          );
+    } catch (error) {
+      return missionSummaryReadErrorResponse(error);
+    }
+  }
   const detail = await getMissionDetail(id, {
     tenantId: context.tenantId,
     actorId: context.actorId,
@@ -61,6 +90,23 @@ async function GETHandler(
   return detail
     ? Response.json(toMissionDetailView(detail), { headers: { "cache-control": "private, no-store" } })
     : Response.json({ error: "Mission not found." }, { status: 404 });
+}
+
+function missionSummaryReadErrorResponse(error: unknown) {
+  if (error instanceof MissionReadConflictError) {
+    return Response.json(
+      { error: "Mission summary could not be verified." },
+      { status: 409, headers: privateNoStoreHeaders },
+    );
+  }
+  console.error(
+    "Mission summary read failed.",
+    error instanceof Error ? error.name : "UnknownError",
+  );
+  return Response.json(
+    { error: "Mission summary is temporarily unavailable." },
+    { status: 503, headers: privateNoStoreHeaders },
+  );
 }
 
 async function PATCHHandler(

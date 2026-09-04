@@ -1338,6 +1338,20 @@ tasks, comments, reviews, attempts, artifacts, execution, portable data,
 events, and canonical writes remain unchanged. This read-only slice emits no
 domain event and does not unblock membership or consent holds.
 
+The following compatibility repair adds a literal opt-in direct Mission
+summary lookup for deep links that fall outside the bounded collection. It
+selects the same explicit public columns from the validated
+canonical/current-email pair, proves the requested global ID without
+normalizing attacker input, and checks the hidden source key against the other
+owner before projection. The response requires the independent
+`requestReadContracts.missionSummary=readable_v1` acknowledgement and derives
+detail, management, and Command-handoff capabilities from physical ownership.
+An exact row may then use the unchanged bare full-detail route; a canonical row
+remains summary-only with no child, event, mutation, or execution access. File
+fallback stays exact-owner and rejects duplicate IDs or source keys. This
+read-only repair emits no domain event, changes no writer identity, and does
+not unblock membership or consent holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

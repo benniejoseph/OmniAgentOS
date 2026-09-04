@@ -8,6 +8,7 @@ import { listStreamEvents } from "@/lib/events/store";
 import { toMissionDetailView, toMissionSummaryView } from "@/lib/missions/public";
 import {
   getMissionDetail,
+  getMissionSummaryForRequest,
   listMissionSummariesForRequest,
 } from "@/lib/missions/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
@@ -41,17 +42,19 @@ export default async function MissionPage({
     const capabilityResult = await searchCapabilities({ tenantId, limit: 50 });
     let selected = missions.find((mission) => mission.id === id);
     let detail: Awaited<ReturnType<typeof getMissionDetail>> | undefined;
-    if (selected?.detailAvailable === true) {
-      detail = await getMissionDetail(id, { tenantId, actorId }, {
-        tasks: 100,
-        attempts: 250,
-        artifacts: 150,
+    if (!selected) {
+      // The bounded catalog is not proof that an absent deep link is missing.
+      // Re-resolve only its public summary across the request-readable owner
+      // pair before deciding whether an exact full-detail read is permitted.
+      selected = await getMissionSummaryForRequest(id, {
+        tenantId,
+        actorId,
+        requestActorBinding,
       });
-      if (!detail) return undefined;
-    } else if (!selected) {
-      // A deep-linked exact mission can fall outside the bounded catalog. The
-      // exact-owner getter is the proof used to add it as actionable; a
-      // retained catalog row is never probed through this path.
+      if (!selected) return undefined;
+      missions = [selected, ...missions.filter((mission) => mission.id !== id)];
+    }
+    if (selected.detailAvailable === true) {
       detail = await getMissionDetail(id, { tenantId, actorId }, {
         tasks: 100,
         attempts: 250,

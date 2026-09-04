@@ -702,6 +702,20 @@ board. Bare collection GET remains exact; full detail, events, cancellation or
 archive, task/comment/review/attempt/artifact operations, runtime execution,
 portable data, events, and canonical writes remain exact-owner contracts.
 
+The twenty-third request-bound slice closes the bounded-catalog deep-link
+seam without widening Mission detail. A literal opt-in direct summary GET
+resolves one strictly validated global Mission ID from the request-bound
+canonical/current-email pair, selects no arbitrary metadata, and checks its
+hidden source key for a cross-owner collision before returning the same public
+summary projection. Physical ownership alone enables detail, management, and
+Command handoff. The browser API client requires the independent
+`missionSummary=readable_v1` acknowledgement before adding an out-of-page row;
+the server projection calls the same typed request-bound store directly. An
+exact row may then use the existing exact full-detail path, while a canonical
+row remains summary-only. File mode remains exact-owner and validates its
+complete Mission ID and source-key namespaces. Events, child records,
+mutations, execution, portable data, and canonical writes are unchanged.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

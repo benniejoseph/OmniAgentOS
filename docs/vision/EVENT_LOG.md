@@ -416,6 +416,14 @@ start execution, or change writer identity. Those exact-owner operations and
 any later canonical-write cutover retain their existing typed-event and
 governed-action boundaries.
 
+Re-proving one request-bound Mission summary for an out-of-page deep link emits
+no domain event. The read validates already-persisted public lifecycle fields,
+uses the hidden source key only to reject a cross-owner collision, and derives
+capabilities from physical ownership before removing that owner identity. It
+does not read a board, child, event, arbitrary metadata, or artifact; mutate or
+execute work; or change writer identity. Exact detail and every governed effect
+retain their existing typed-event boundaries.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
