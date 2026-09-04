@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { loadTodaySnapshot } from "@/lib/today/snapshot";
 import { invalidateTodaySnapshot } from "@/lib/today/snapshot-cache";
@@ -27,6 +28,7 @@ async function GETHandler(request: Request) {
   const snapshot = await loadTodaySnapshot({
     tenantId: context.tenantId,
     actorId: context.actorId,
+    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
   });
   return Response.json(snapshot, {
     headers: { "cache-control": "private, no-store" },

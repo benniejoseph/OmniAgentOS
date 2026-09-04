@@ -207,10 +207,13 @@ data-right flows require their own request-bound typed evidence.
 Migration v50 emits no domain event. Exact canonical and retained auth-email
 aliases are an additive identity projection, not an authorization, ownership,
 consent, or membership decision. It rewrites no historical event, execution
-scope, receipt, approval, hash, or encrypted AAD, and its code binding has no
-serving call site. Later store-specific dual-read or write cutovers must emit
-typed evidence only where the governed operation boundary actually changes;
-the alias registry itself is not a substitute for that evidence.
+scope, receipt, approval, hash, or encrypted AAD. The first
+`omni_today_preferences` dual-read canary also emits no domain event: it makes
+no authorization decision, rejects ambiguous rows before mutation, preserves
+the selected physical actor, and retains the existing email-owned default
+write on a miss. Later store-specific write or governed-operation cutovers
+must emit typed evidence where the operation boundary actually changes; the
+alias registry itself is not a substitute for that evidence.
 
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a

@@ -2,10 +2,12 @@ import {
   ensureDatabaseSchema,
   getSql,
 } from "@/lib/db/client";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import {
   isBriefGenerationDue,
   localScheduleParts,
+  todayPreferenceActorReadOrder,
 } from "@/lib/today/briefs";
 import type { TodaySnapshot } from "@/lib/today/snapshot";
 
@@ -16,6 +18,7 @@ type PostgresTodaySnapshotOptions = {
   tenantId: string;
   actorId: string;
   now?: Date;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 };
 
 /**
@@ -28,9 +31,17 @@ export async function loadPostgresTodaySnapshot({
   tenantId,
   actorId,
   now = new Date(),
+  requestActorBinding,
 }: PostgresTodaySnapshotOptions): Promise<TodaySnapshot> {
   const safeTenantId = requiredScopeValue(tenantId, 120, "tenant");
   const safeActorId = requiredScopeValue(actorId, 200, "actor");
+  const preferenceActorReadOrder = todayPreferenceActorReadOrder(
+    actorId,
+    requestActorBinding,
+    safeActorId,
+  );
+  const canonicalPreferenceActorId = preferenceActorReadOrder[0];
+  const exactPreferenceActorId = preferenceActorReadOrder[1];
   const nowIso = validDate(now) ? now.toISOString() : new Date().toISOString();
   const wallClockIso = new Date().toISOString();
   const fallbackTimezone = defaultTimezone();
@@ -49,7 +60,7 @@ export async function loadPostgresTodaySnapshot({
       WITH runtime_settings AS MATERIALIZED (
         SELECT 1 AS ready
       ),
-      existing_preferences AS MATERIALIZED (
+      matched_preferences AS MATERIALIZED (
         SELECT
           preferences.tenant_id,
           preferences.actor_id,
@@ -62,11 +73,43 @@ export async function loadPostgresTodaySnapshot({
           preferences.quiet_hours_start,
           preferences.quiet_hours_end,
           preferences.created_at,
-          preferences.updated_at
+          preferences.updated_at,
+          CASE
+            WHEN preferences.actor_id = ${canonicalPreferenceActorId} THEN 0
+            ELSE 1
+          END AS preference_rank
         FROM omni_today_preferences preferences
         CROSS JOIN runtime_settings
         WHERE preferences.tenant_id = ${safeTenantId}
-          AND preferences.actor_id = ${safeActorId}
+          AND (
+            preferences.actor_id = ${canonicalPreferenceActorId}
+            OR preferences.actor_id = ${exactPreferenceActorId}
+          )
+        ORDER BY preference_rank ASC, preferences.actor_id ASC
+        LIMIT 2
+      ),
+      preference_match_state AS MATERIALIZED (
+        SELECT COUNT(*)::int AS preference_match_count
+        FROM matched_preferences
+      ),
+      existing_preferences AS MATERIALIZED (
+        SELECT
+          matched.tenant_id,
+          matched.actor_id,
+          matched.brief_enabled,
+          matched.brief_time,
+          matched.timezone,
+          matched.reminder_lead_minutes,
+          matched.notifications_enabled,
+          matched.quiet_hours_enabled,
+          matched.quiet_hours_start,
+          matched.quiet_hours_end,
+          matched.created_at,
+          matched.updated_at
+        FROM matched_preferences matched
+        CROSS JOIN preference_match_state state
+        WHERE state.preference_match_count = 1
+        ORDER BY matched.preference_rank ASC, matched.actor_id ASC
         LIMIT 1
       ),
       inserted_preferences AS (
@@ -76,10 +119,12 @@ export async function loadPostgresTodaySnapshot({
           quiet_hours_start, quiet_hours_end, created_at, updated_at
         )
         SELECT
-          ${safeTenantId}, ${safeActorId}, TRUE, '08:00', ${fallbackTimezone},
+          ${safeTenantId}, ${exactPreferenceActorId}, TRUE, '08:00', ${fallbackTimezone},
           30, TRUE, TRUE, '22:00', '07:00', ${wallClockIso}, ${wallClockIso}
         FROM runtime_settings
-        WHERE NOT EXISTS (SELECT 1 FROM existing_preferences)
+        CROSS JOIN preference_match_state state
+        WHERE state.preference_match_count = 0
+          AND NOT EXISTS (SELECT 1 FROM existing_preferences)
         ON CONFLICT (tenant_id, actor_id) DO UPDATE
           SET updated_at = omni_today_preferences.updated_at
         RETURNING
@@ -211,6 +256,7 @@ export async function loadPostgresTodaySnapshot({
         ) task_stats ON TRUE
       )
       SELECT
+        (SELECT preference_match_count FROM preference_match_state) AS preference_match_count,
         COALESCE((
           SELECT jsonb_agg(
             to_jsonb(item_rows) - 'status_rank'
@@ -255,6 +301,20 @@ export async function loadPostgresTodaySnapshot({
 function requireAggregateRow(row: Record<string, unknown> | undefined) {
   if (!row) {
     throw new Error("Today snapshot aggregate returned no row.");
+  }
+  const rawPreferenceMatchCount = row.preference_match_count;
+  const preferenceMatchCount = Number(rawPreferenceMatchCount);
+  if (
+    rawPreferenceMatchCount === null ||
+    rawPreferenceMatchCount === undefined ||
+    !Number.isInteger(preferenceMatchCount) ||
+    preferenceMatchCount < 0 ||
+    preferenceMatchCount > 2
+  ) {
+    throw new Error("Today snapshot aggregate returned an invalid preference match count.");
+  }
+  if (preferenceMatchCount > 1) {
+    throw new Error("Today preferences resolved to multiple physical rows.");
   }
   for (const field of ["items", "threads", "memories", "briefs", "projects"] as const) {
     if (!Array.isArray(parseJsonValue(row[field]))) {
