@@ -213,5 +213,10 @@
     "version": 43,
     "name": "memory_access_scope_shadow",
     "checksum": "561bf380b53a4dbd56966265de7122433eddcf49295d26df289ed48148f91117"
+  },
+  {
+    "version": 44,
+    "name": "memory_access_session_contract_shadow",
+    "checksum": "71ab0f6dc903e3e02769d55bafad1948e73dbd7036c2b0e2bbb24c3bb5aa5d85"
   }
 ]

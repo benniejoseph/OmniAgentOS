@@ -762,6 +762,10 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[43],
+      up: ensureMemoryAccessSessionContractShadow,
+    },
   ];
 }
 
@@ -10788,6 +10792,467 @@ async function ensureMemoryAccessScopeShadow(sql: SqlClient) {
     END
     $migration$
   `);
+}
+
+async function ensureMemoryAccessSessionContractShadow(sql: SqlClient) {
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_access_grant_ids_v1_are_canonical(
+      value_to_check JSONB,
+      maximum_entries INTEGER
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    STRICT
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT CASE
+        WHEN jsonb_typeof(value_to_check) IS DISTINCT FROM 'array' THEN FALSE
+        WHEN maximum_entries NOT BETWEEN 0 AND 256 THEN FALSE
+        WHEN jsonb_array_length(value_to_check) > maximum_entries THEN FALSE
+        ELSE NOT EXISTS (
+          SELECT 1
+          FROM (
+            SELECT
+              entry.value,
+              CASE
+                WHEN jsonb_typeof(entry.value) = 'string'
+                  THEN entry.value #>> '{}'
+                ELSE NULL
+              END AS id,
+              lag(
+                CASE
+                  WHEN jsonb_typeof(entry.value) = 'string'
+                    THEN entry.value #>> '{}'
+                  ELSE NULL
+                END
+              ) OVER (ORDER BY entry.ordinal_position) AS previous_id
+            FROM jsonb_array_elements(value_to_check)
+              WITH ORDINALITY AS entry(value, ordinal_position)
+          ) ordered_ids
+          WHERE jsonb_typeof(ordered_ids.value) IS DISTINCT FROM 'string'
+            OR NOT public.omni_source_contract_id_is_valid(ordered_ids.id)
+            OR (
+              ordered_ids.previous_id IS NOT NULL
+              AND ordered_ids.id COLLATE "C"
+                <= ordered_ids.previous_id COLLATE "C"
+            )
+        )
+      END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_access_scope_v1_is_valid(
+      candidate JSONB
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    STRICT
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT CASE
+        WHEN jsonb_typeof(candidate) IS DISTINCT FROM 'object' THEN FALSE
+        ELSE COALESCE((
+          candidate ?& ARRAY[
+            'version', 'tenantId', 'initiatingActorId',
+            'executingPrincipalType', 'executingPrincipalId',
+            'workspaceId', 'projectId', 'missionId',
+            'contextGrantIds', 'capabilityGrantIds',
+            'purposeId', 'purpose'
+          ]
+          AND candidate - ARRAY[
+            'version', 'tenantId', 'initiatingActorId',
+            'executingPrincipalType', 'executingPrincipalId',
+            'workspaceId', 'projectId', 'missionId',
+            'contextGrantIds', 'capabilityGrantIds',
+            'purposeId', 'purpose'
+          ] = '{}'::JSONB
+          AND public.omni_jsonb_safe_integer(candidate -> 'version', 1)
+          AND public.omni_jsonb_safe_integer_value(
+            candidate -> 'version'
+          ) = 1
+          AND jsonb_typeof(candidate -> 'tenantId') = 'string'
+          AND public.omni_source_contract_id_is_valid(candidate ->> 'tenantId')
+          AND jsonb_typeof(candidate -> 'initiatingActorId') = 'string'
+          AND public.omni_source_contract_id_is_valid(
+            candidate ->> 'initiatingActorId'
+          )
+          AND jsonb_typeof(candidate -> 'executingPrincipalType') = 'string'
+          AND candidate ->> 'executingPrincipalType' IN (
+            'user', 'agent', 'system'
+          )
+          AND jsonb_typeof(candidate -> 'executingPrincipalId') = 'string'
+          AND public.omni_source_contract_id_is_valid(
+            candidate ->> 'executingPrincipalId'
+          )
+          AND (
+            candidate ->> 'executingPrincipalType' <> 'user'
+            OR candidate ->> 'executingPrincipalId'
+              = candidate ->> 'initiatingActorId'
+          )
+          AND CASE
+            WHEN candidate -> 'workspaceId' = 'null'::JSONB THEN TRUE
+            WHEN jsonb_typeof(candidate -> 'workspaceId') = 'string' THEN
+              public.omni_source_contract_id_is_valid(
+                candidate ->> 'workspaceId'
+              )
+            ELSE FALSE
+          END
+          AND CASE
+            WHEN candidate -> 'projectId' = 'null'::JSONB THEN TRUE
+            WHEN jsonb_typeof(candidate -> 'projectId') = 'string' THEN
+              public.omni_source_contract_id_is_valid(
+                candidate ->> 'projectId'
+              )
+            ELSE FALSE
+          END
+          AND CASE
+            WHEN candidate -> 'missionId' = 'null'::JSONB THEN TRUE
+            WHEN jsonb_typeof(candidate -> 'missionId') = 'string' THEN
+              public.omni_source_contract_id_is_valid(
+                candidate ->> 'missionId'
+              )
+            ELSE FALSE
+          END
+          AND public.omni_memory_access_grant_ids_v1_are_canonical(
+            candidate -> 'contextGrantIds',
+            256
+          )
+          AND public.omni_memory_access_grant_ids_v1_are_canonical(
+            candidate -> 'capabilityGrantIds',
+            256
+          )
+          AND jsonb_typeof(candidate -> 'purposeId') = 'string'
+          AND public.omni_source_contract_id_is_valid(candidate ->> 'purposeId')
+          AND CASE
+            WHEN candidate -> 'purpose' = 'null'::JSONB THEN TRUE
+            WHEN jsonb_typeof(candidate -> 'purpose') = 'string' THEN
+              candidate ->> 'purpose' = btrim(candidate ->> 'purpose')
+              AND char_length(candidate ->> 'purpose') BETWEEN 1 AND 500
+            ELSE FALSE
+          END
+        ), FALSE)
+      END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_current_memory_access_scope_v1()
+    RETURNS JSONB
+    LANGUAGE plpgsql
+    STABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      raw_scope TEXT;
+      parsed_scope JSONB;
+    BEGIN
+      raw_scope := NULLIF(
+        current_setting('omni.memory_access_scope_v1', TRUE),
+        ''
+      );
+      IF raw_scope IS NULL OR octet_length(raw_scope) > 262144 THEN
+        RETURN NULL;
+      END IF;
+
+      BEGIN
+        parsed_scope := raw_scope::JSONB;
+      EXCEPTION
+        WHEN data_exception OR program_limit_exceeded THEN
+          RETURN NULL;
+      END;
+
+      IF public.omni_memory_access_scope_v1_is_valid(parsed_scope)
+        IS DISTINCT FROM TRUE
+      THEN
+        RETURN NULL;
+      END IF;
+      IF public.omni_current_tenant() IS NULL
+        OR parsed_scope ->> 'tenantId'
+          IS DISTINCT FROM public.omni_current_tenant()
+      THEN
+        RETURN NULL;
+      END IF;
+      IF current_setting('omni.system_scope', TRUE) IS DISTINCT FROM 'false' THEN
+        RETURN NULL;
+      END IF;
+
+      RETURN parsed_scope;
+    END
+    $function$
+  `;
+
+  // Keep the shadow contract unavailable to serving roles until one later
+  // cutover sets it transaction-locally and all memory-derived paths enforce it.
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_memory_access_grant_ids_v1_are_canonical(JSONB, INTEGER)
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_memory_access_scope_v1_is_valid(JSONB)
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_current_memory_access_scope_v1()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_memory_access_grant_ids_v1_are_canonical',
+            'omni_memory_access_scope_v1_is_valid',
+            'omni_current_memory_access_scope_v1'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_memory_access_grant_ids_v1_are_canonical(JSONB, INTEGER), ' ||
+          '%I.omni_memory_access_scope_v1_is_valid(JSONB), ' ||
+          '%I.omni_current_memory_access_scope_v1() FROM %I',
+          current_schema(),
+          current_schema(),
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `);
+
+  // v44 is additive only. Abort if the v43 enrollment and RLS barriers have
+  // drifted; this migration must not silently repair or relax either boundary.
+  await sql`
+    DO $migration$
+    DECLARE
+      valid_scope JSONB;
+    BEGIN
+      valid_scope := jsonb_build_object(
+        'version', 1,
+        'tenantId', 'tenant:contract_check',
+        'initiatingActorId', 'actor:contract_check',
+        'executingPrincipalType', 'user',
+        'executingPrincipalId', 'actor:contract_check',
+        'workspaceId', NULL,
+        'projectId', NULL,
+        'missionId', NULL,
+        'contextGrantIds', jsonb_build_array('grant:a', 'grant:b'),
+        'capabilityGrantIds', '[]'::JSONB,
+        'purposeId', 'memory:contract_check',
+        'purpose', 'Memory access contract self-check'
+      );
+
+      IF public.omni_memory_access_scope_v1_is_valid(valid_scope)
+        IS DISTINCT FROM TRUE
+      THEN
+        RAISE EXCEPTION 'Memory access session contract rejected a valid scope'
+          USING ERRCODE = '55000';
+      END IF;
+      IF public.omni_memory_access_scope_v1_is_valid(
+        jsonb_set(
+          valid_scope,
+          '{executingPrincipalType}',
+          '"system"'::JSONB
+        )
+      ) IS DISTINCT FROM TRUE THEN
+        RAISE EXCEPTION 'Memory access session contract rejected an actor-bound system principal'
+          USING ERRCODE = '55000';
+      END IF;
+      IF public.omni_memory_access_scope_v1_is_valid(valid_scope - 'purposeId')
+        IS DISTINCT FROM FALSE
+        OR public.omni_memory_access_scope_v1_is_valid(
+          valid_scope || jsonb_build_object('extra', TRUE)
+        ) IS DISTINCT FROM FALSE
+        OR public.omni_memory_access_scope_v1_is_valid('[]'::JSONB)
+          IS DISTINCT FROM FALSE
+        OR public.omni_memory_access_scope_v1_is_valid(
+          jsonb_set(
+            valid_scope,
+            '{executingPrincipalId}',
+            '"actor:other"'::JSONB
+          )
+        ) IS DISTINCT FROM FALSE
+        OR public.omni_memory_access_grant_ids_v1_are_canonical(
+          jsonb_build_array('grant:a', 'grant:a'),
+          256
+        ) IS DISTINCT FROM FALSE
+        OR public.omni_memory_access_grant_ids_v1_are_canonical(
+          jsonb_build_array('grant:b', 'grant:a'),
+          256
+        ) IS DISTINCT FROM FALSE
+      THEN
+        RAISE EXCEPTION 'Memory access session contract accepted a non-canonical scope'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_memories_access_enrollment_hold_check'
+          AND conrelid = 'omni_memories'::regclass
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid)
+            = '(access_contract_version = 0)'
+      ) THEN
+        RAISE EXCEPTION 'Memory access enrollment hold is missing or invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid = 'omni_memories'::regclass
+          AND attribute.attname = 'access_contract_version'
+          AND NOT attribute.attisdropped
+          AND attribute.attnotnull
+          AND pg_get_expr(
+            attribute_default.adbin,
+            attribute_default.adrelid
+          ) IN ('0', '0::smallint', '(0)::smallint')
+      ) THEN
+        RAISE EXCEPTION 'Memory access contract version default has drifted'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM omni_memories
+        WHERE access_contract_version <> 0
+      ) THEN
+        RAISE EXCEPTION 'Memory access scope shadow contains an enrollment'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid = 'omni_memories'::regclass
+          AND relrowsecurity
+          AND relforcerowsecurity
+      ) THEN
+        RAISE EXCEPTION 'Memory access scope shadow requires forced RLS'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_memories'::regclass
+          AND tgname = 'omni_memories_access_scope_immutable'
+          AND NOT tgisinternal
+          AND tgenabled = 'O'
+          AND pg_get_triggerdef(oid, TRUE) =
+            'CREATE TRIGGER omni_memories_access_scope_immutable BEFORE UPDATE OF tenant_id, access_contract_version, access_state, owner_actor_id, owner_agent_id, workspace_id, project_id, mission_id, visibility, sensitivity, origin_purpose, allowed_purpose_ids, access_scope_sha256, access_bound_at ON omni_memories FOR EACH ROW EXECUTE FUNCTION omni_reject_bound_memory_access_change()'
+      ) THEN
+        RAISE EXCEPTION 'Memory access immutability trigger is missing or disabled'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid = 'omni_memories'::regclass
+          AND polname = 'omni_memory_access_scope_holdback'
+          AND NOT polpermissive
+          AND polcmd = '*'
+          AND polroles = ARRAY[0::OID]
+          AND polqual IS NOT NULL
+          AND polwithcheck IS NOT NULL
+          AND pg_get_expr(polqual, polrelid) =
+            '((access_contract_version = 0) OR omni_system_scope_enabled())'
+          AND pg_get_expr(polwithcheck, polrelid) =
+            '((access_contract_version = 0) OR omni_system_scope_enabled())'
+      ) THEN
+        RAISE EXCEPTION 'Memory access RLS holdback is missing or invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE COALESCE(pg_get_expr(polqual, polrelid), '') LIKE
+            '%omni_current_memory_access_scope_v1%'
+          OR COALESCE(pg_get_expr(polwithcheck, polrelid), '') LIKE
+            '%omni_current_memory_access_scope_v1%'
+          OR COALESCE(pg_get_expr(polqual, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_valid%'
+          OR COALESCE(pg_get_expr(polwithcheck, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_valid%'
+          OR COALESCE(pg_get_expr(polqual, polrelid), '') LIKE
+            '%omni_memory_access_grant_ids_v1_are_canonical%'
+          OR COALESCE(pg_get_expr(polwithcheck, polrelid), '') LIKE
+            '%omni_memory_access_grant_ids_v1_are_canonical%'
+      ) THEN
+        RAISE EXCEPTION 'A row policy depends on the dormant memory access contract'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc
+        WHERE oid = to_regprocedure(
+          'public.omni_memory_access_grant_ids_v1_are_canonical(jsonb,integer)'
+        )
+          AND prorettype = 'boolean'::regtype
+          AND provolatile = 'i'
+          AND NOT prosecdef
+          AND proconfig @> ARRAY['search_path=pg_catalog, public']
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_proc
+        WHERE oid = to_regprocedure(
+          'public.omni_memory_access_scope_v1_is_valid(jsonb)'
+        )
+          AND prorettype = 'boolean'::regtype
+          AND provolatile = 'i'
+          AND NOT prosecdef
+          AND proconfig @> ARRAY['search_path=pg_catalog, public']
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_proc
+        WHERE oid = to_regprocedure(
+          'public.omni_current_memory_access_scope_v1()'
+        )
+          AND prorettype = 'jsonb'::regtype
+          AND provolatile = 's'
+          AND NOT prosecdef
+          AND proconfig @> ARRAY['search_path=pg_catalog, public']
+      ) THEN
+        RAISE EXCEPTION 'Memory access session function metadata is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_memory_access_grant_ids_v1_are_canonical',
+            'omni_memory_access_scope_v1_is_valid',
+            'omni_current_memory_access_scope_v1'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Memory access session functions have serving grants'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
 }
 
 // ---------------------------------------------------------------------------
