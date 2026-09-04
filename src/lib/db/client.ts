@@ -13907,9 +13907,12 @@ async function ensureTenantMemoryPurposeEntitlements(sql: SqlClient) {
             )
           ]::OID[]
           AND (
-            SELECT array_agg(collation ORDER BY ordinal_position)
+            SELECT array_agg(collation_oid ORDER BY ordinal_position)
             FROM unnest(index_record.indcollation)
-              WITH ORDINALITY AS collations(collation, ordinal_position)
+              WITH ORDINALITY AS collations(
+                collation_oid,
+                ordinal_position
+              )
           ) = ARRAY[
             (
               SELECT attcollation
