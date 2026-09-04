@@ -774,6 +774,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[45],
       up: ensureCanonicalAuthUserActorIdsShadow,
     },
+    {
+      ...databaseSchemaMigrations[46],
+      up: ensureMemoryPurposeCatalog,
+    },
   ];
 }
 
@@ -11983,6 +11987,1009 @@ async function ensureCanonicalAuthUserActorIdsShadow(sql: SqlClient) {
             '((access_contract_version = 0) OR omni_system_scope_enabled())'
       ) THEN
         RAISE EXCEPTION 'Memory access restrictive holdback changed'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureMemoryPurposeCatalog(sql: SqlClient) {
+  // Ordered security migrations must run as the stable schema owner. Failing
+  // before CREATE OR REPLACE avoids transferring trust to a rotated role.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Memory purpose migration requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_purpose_catalog_row_is_valid(
+      candidate_purpose_id TEXT,
+      candidate_contract_version SMALLINT,
+      candidate_operation_class TEXT,
+      candidate_description TEXT
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    STRICT
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$SELECT public.omni_source_contract_id_is_valid(candidate_purpose_id) AND candidate_contract_version BETWEEN 1 AND 32767 AND candidate_operation_class IN ('read', 'retrieve', 'write', 'correct', 'forget', 'formation', 'maintenance', 'export') AND candidate_purpose_id = 'memory.' || candidate_operation_class || '.v' || candidate_contract_version::TEXT AND candidate_description = btrim(candidate_description) AND char_length(candidate_description) BETWEEN 1 AND 500$function$
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_memory_purpose_catalog (
+      purpose_id TEXT PRIMARY KEY,
+      contract_version SMALLINT NOT NULL,
+      operation_class TEXT NOT NULL,
+      description TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_memory_purpose_catalog_operation_version_key
+        UNIQUE (operation_class, contract_version),
+      CONSTRAINT omni_memory_purpose_catalog_contract_check CHECK (
+        omni_memory_purpose_catalog_row_is_valid(
+          purpose_id,
+          contract_version,
+          operation_class,
+          description
+        )
+      )
+    )
+  `;
+
+  await sql`
+    INSERT INTO omni_memory_purpose_catalog (
+      purpose_id,
+      contract_version,
+      operation_class,
+      description
+    )
+    VALUES
+      (
+        'memory.read.v1', 1, 'read',
+        'Inspect authorized memory records without selecting them for model context.'
+      ),
+      (
+        'memory.retrieve.v1', 1, 'retrieve',
+        'Search and select authorized memory content for a bounded context or RAG operation.'
+      ),
+      (
+        'memory.write.v1', 1, 'write',
+        'Create or import an explicit authorized memory record.'
+      ),
+      (
+        'memory.correct.v1', 1, 'correct',
+        'Supersede, contradict, or revise an authorized memory claim.'
+      ),
+      (
+        'memory.forget.v1', 1, 'forget',
+        'Explicitly and irreversibly delete or scrub authorized memory and its descendants.'
+      ),
+      (
+        'memory.formation.v1', 1, 'formation',
+        'Derive a candidate episode, claim, or summary from authorized evidence.'
+      ),
+      (
+        'memory.maintenance.v1', 1, 'maintenance',
+        'Run authorized retention, rebuild, reindex, or repair work.'
+      ),
+      (
+        'memory.export.v1', 1, 'export',
+        'Export an authorized memory set through portable or bulk egress.'
+      )
+    ON CONFLICT (purpose_id) DO NOTHING
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_memory_purpose_catalog_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$BEGIN RAISE EXCEPTION 'Memory purpose contracts are append-only' USING ERRCODE = '55000'; END$function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_memory_purpose_catalog'::regclass
+          AND tgname = 'omni_memory_purpose_catalog_immutable'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memory_purpose_catalog_immutable
+        BEFORE UPDATE OR DELETE ON omni_memory_purpose_catalog
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_reject_memory_purpose_catalog_change();
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_memory_purpose_catalog'::regclass
+          AND tgname = 'omni_memory_purpose_catalog_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_memory_purpose_catalog_no_truncate
+        BEFORE TRUNCATE ON omni_memory_purpose_catalog
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_reject_memory_purpose_catalog_change();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql.query(`
+    REVOKE ALL
+    ON TABLE omni_memory_purpose_catalog
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_memory_purpose_catalog_row_is_valid(
+      TEXT,
+      SMALLINT,
+      TEXT,
+      TEXT
+    )
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_reject_memory_purpose_catalog_change()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memory_purpose_catalog'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON TABLE %I.omni_memory_purpose_catalog FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+
+      FOR grant_record IN
+        SELECT DISTINCT grantee, privilege_type, column_name
+        FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memory_purpose_catalog'
+          AND grantee <> current_user
+      LOOP
+        EXECUTE format(
+          'REVOKE %s (%I) ON TABLE %I.omni_memory_purpose_catalog FROM %s',
+          grant_record.privilege_type,
+          grant_record.column_name,
+          current_schema(),
+          CASE
+            WHEN grant_record.grantee = 'PUBLIC' THEN 'PUBLIC'
+            ELSE quote_ident(grant_record.grantee)
+          END
+        );
+      END LOOP;
+
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_memory_purpose_catalog_row_is_valid',
+            'omni_reject_memory_purpose_catalog_change'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_memory_purpose_catalog_row_is_valid(' ||
+          'TEXT, SMALLINT, TEXT, TEXT) FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_reject_memory_purpose_catalog_change() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `);
+
+  // The catalog defines vocabulary only. It grants no tenant, actor, agent,
+  // workflow, or maintenance process permission to use a purpose.
+  await sql`
+    DO $migration$
+    DECLARE
+      valid_scope JSONB;
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class relation
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE relation.oid = 'omni_memory_purpose_catalog'::regclass
+          AND namespace.nspname = current_schema()
+          AND relation.relkind = 'r'
+          AND relation.relpersistence = 'p'
+          AND relation.relowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND NOT relation.relrowsecurity
+          AND NOT relation.relforcerowsecurity
+      ) THEN
+        RAISE EXCEPTION 'Memory purpose catalog relation is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM (
+          SELECT
+            array_agg(attribute.attname ORDER BY attribute.attnum) AS names,
+            bool_and(attribute.attnotnull) AS all_not_null,
+            bool_and(attribute.attgenerated = '') AS none_generated,
+            count(*) AS column_count
+          FROM pg_attribute attribute
+          WHERE attribute.attrelid = 'omni_memory_purpose_catalog'::regclass
+            AND attribute.attnum > 0
+            AND NOT attribute.attisdropped
+        ) columns
+        WHERE columns.names = ARRAY[
+            'purpose_id', 'contract_version', 'operation_class',
+            'description', 'created_at'
+          ]
+          AND columns.all_not_null
+          AND columns.none_generated
+          AND columns.column_count = 5
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE attrelid = 'omni_memory_purpose_catalog'::regclass
+          AND attname = 'purpose_id'
+          AND atttypid = 'text'::regtype
+          AND NOT attisdropped
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE attrelid = 'omni_memory_purpose_catalog'::regclass
+          AND attname = 'contract_version'
+          AND atttypid = 'smallint'::regtype
+          AND NOT attisdropped
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE attrelid = 'omni_memory_purpose_catalog'::regclass
+          AND attname IN ('operation_class', 'description')
+          AND atttypid = 'text'::regtype
+          AND NOT attisdropped
+        GROUP BY attrelid
+        HAVING count(*) = 2
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid = 'omni_memory_purpose_catalog'::regclass
+          AND attribute.attname = 'created_at'
+          AND attribute.atttypid = 'timestamp with time zone'::regtype
+          AND NOT attribute.attisdropped
+          AND pg_get_expr(
+            attribute_default.adbin,
+            attribute_default.adrelid
+          ) = 'now()'
+      ) THEN
+        RAISE EXCEPTION 'Memory purpose catalog columns are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_record
+        JOIN pg_index index_record
+          ON index_record.indexrelid = constraint_record.conindid
+        WHERE constraint_record.conname =
+            'omni_memory_purpose_catalog_pkey'
+          AND constraint_record.conrelid =
+            'omni_memory_purpose_catalog'::regclass
+          AND constraint_record.contype = 'p'
+          AND constraint_record.convalidated
+          AND constraint_record.conkey = ARRAY[
+            (
+              SELECT attnum
+              FROM pg_attribute
+              WHERE attrelid = 'omni_memory_purpose_catalog'::regclass
+                AND attname = 'purpose_id'
+                AND NOT attisdropped
+            )
+          ]::SMALLINT[]
+          AND index_record.indisprimary
+          AND index_record.indisunique
+          AND index_record.indisvalid
+          AND index_record.indisready
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_record
+        JOIN pg_index index_record
+          ON index_record.indexrelid = constraint_record.conindid
+        WHERE constraint_record.conname =
+            'omni_memory_purpose_catalog_operation_version_key'
+          AND constraint_record.conrelid =
+            'omni_memory_purpose_catalog'::regclass
+          AND constraint_record.contype = 'u'
+          AND constraint_record.convalidated
+          AND constraint_record.conkey = ARRAY[
+            (
+              SELECT attnum
+              FROM pg_attribute
+              WHERE attrelid = 'omni_memory_purpose_catalog'::regclass
+                AND attname = 'operation_class'
+                AND NOT attisdropped
+            ),
+            (
+              SELECT attnum
+              FROM pg_attribute
+              WHERE attrelid = 'omni_memory_purpose_catalog'::regclass
+                AND attname = 'contract_version'
+                AND NOT attisdropped
+            )
+          ]::SMALLINT[]
+          AND NOT index_record.indisprimary
+          AND index_record.indisunique
+          AND index_record.indisvalid
+          AND index_record.indisready
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_memory_purpose_catalog_contract_check'
+          AND conrelid = 'omni_memory_purpose_catalog'::regclass
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid) =
+            'omni_memory_purpose_catalog_row_is_valid(purpose_id, contract_version, operation_class, description)'
+      ) THEN
+        RAISE EXCEPTION 'Memory purpose catalog constraints are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF (SELECT count(*) FROM omni_memory_purpose_catalog) <> 8
+        OR EXISTS (
+          SELECT 1
+          FROM omni_memory_purpose_catalog actual
+          LEFT JOIN (
+            VALUES
+              ('memory.read.v1', 1::SMALLINT, 'read',
+                'Inspect authorized memory records without selecting them for model context.'),
+              ('memory.retrieve.v1', 1::SMALLINT, 'retrieve',
+                'Search and select authorized memory content for a bounded context or RAG operation.'),
+              ('memory.write.v1', 1::SMALLINT, 'write',
+                'Create or import an explicit authorized memory record.'),
+              ('memory.correct.v1', 1::SMALLINT, 'correct',
+                'Supersede, contradict, or revise an authorized memory claim.'),
+              ('memory.forget.v1', 1::SMALLINT, 'forget',
+                'Explicitly and irreversibly delete or scrub authorized memory and its descendants.'),
+              ('memory.formation.v1', 1::SMALLINT, 'formation',
+                'Derive a candidate episode, claim, or summary from authorized evidence.'),
+              ('memory.maintenance.v1', 1::SMALLINT, 'maintenance',
+                'Run authorized retention, rebuild, reindex, or repair work.'),
+              ('memory.export.v1', 1::SMALLINT, 'export',
+                'Export an authorized memory set through portable or bulk egress.')
+          ) expected(purpose_id, contract_version, operation_class, description)
+            ON expected.purpose_id = actual.purpose_id
+            AND expected.contract_version = actual.contract_version
+            AND expected.operation_class = actual.operation_class
+            AND expected.description = actual.description
+          WHERE expected.purpose_id IS NULL
+        )
+      THEN
+        RAISE EXCEPTION 'Memory purpose catalog seed contracts are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid =
+            'omni_memory_purpose_catalog'::regclass
+          AND trigger_record.tgname = 'omni_memory_purpose_catalog_immutable'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_reject_memory_purpose_catalog_change()'
+          )
+          AND trigger_record.tgtype = 27
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND trigger_record.tgattr::TEXT = ''
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid =
+            'omni_memory_purpose_catalog'::regclass
+          AND trigger_record.tgname = 'omni_memory_purpose_catalog_no_truncate'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_reject_memory_purpose_catalog_change()'
+          )
+          AND trigger_record.tgtype = 34
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND trigger_record.tgattr::TEXT = ''
+      ) THEN
+        RAISE EXCEPTION 'Memory purpose catalog triggers are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_memory_purpose_catalog_row_is_valid(text,smallint,text,text)'
+        )
+          AND procedure.prorettype = 'boolean'::regtype
+          AND procedure.provolatile = 'i'
+          AND procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'sql'
+          AND procedure.prosrc = $expected$SELECT public.omni_source_contract_id_is_valid(candidate_purpose_id) AND candidate_contract_version BETWEEN 1 AND 32767 AND candidate_operation_class IN ('read', 'retrieve', 'write', 'correct', 'forget', 'formation', 'maintenance', 'export') AND candidate_purpose_id = 'memory.' || candidate_operation_class || '.v' || candidate_contract_version::TEXT AND candidate_description = btrim(candidate_description) AND char_length(candidate_description) BETWEEN 1 AND 500$expected$
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_reject_memory_purpose_catalog_change()'
+        )
+          AND procedure.prorettype = 'trigger'::regtype
+          AND procedure.provolatile = 'v'
+          AND NOT procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'plpgsql'
+          AND procedure.prosrc =
+            $expected$BEGIN RAISE EXCEPTION 'Memory purpose contracts are append-only' USING ERRCODE = '55000'; END$expected$
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_memory_purpose_catalog_row_is_valid',
+            'omni_reject_memory_purpose_catalog_change'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memory_purpose_catalog'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_memory_purpose_catalog'
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Memory purpose catalog is exposed to a serving role'
+          USING ERRCODE = '55000';
+      END IF;
+
+      valid_scope := jsonb_build_object(
+        'version', 1,
+        'tenantId', 'tenant:purpose_catalog_check',
+        'initiatingActorId', 'actor:purpose_catalog_check',
+        'executingPrincipalType', 'user',
+        'executingPrincipalId', 'actor:purpose_catalog_check',
+        'workspaceId', NULL,
+        'projectId', NULL,
+        'missionId', NULL,
+        'contextGrantIds', '[]'::JSONB,
+        'capabilityGrantIds', '[]'::JSONB,
+        'purposeId', 'memory.read.v1',
+        'purpose', 'Memory purpose catalog self-check'
+      );
+      IF public.omni_memory_access_scope_v1_is_valid(valid_scope)
+        IS DISTINCT FROM TRUE
+        OR public.omni_memory_access_scope_v1_is_authorized(valid_scope)
+          IS DISTINCT FROM FALSE
+      THEN
+        RAISE EXCEPTION 'Dormant memory authorization boundary changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF public.omni_memory_access_scope_v1_is_valid(
+        jsonb_set(
+          valid_scope,
+          '{executingPrincipalType}',
+          '"system"'::JSONB
+        )
+      ) IS DISTINCT FROM TRUE
+        OR public.omni_memory_access_scope_v1_is_valid(
+          valid_scope - 'purposeId'
+        ) IS DISTINCT FROM FALSE
+        OR public.omni_memory_access_scope_v1_is_valid(
+          valid_scope || jsonb_build_object('extra', TRUE)
+        ) IS DISTINCT FROM FALSE
+        OR public.omni_memory_access_scope_v1_is_valid('[]'::JSONB)
+          IS DISTINCT FROM FALSE
+        OR public.omni_memory_access_scope_v1_is_valid(
+          jsonb_set(
+            valid_scope,
+            '{executingPrincipalId}',
+            '"actor:other"'::JSONB
+          )
+        ) IS DISTINCT FROM FALSE
+        OR public.omni_memory_access_grant_ids_v1_are_canonical(
+          jsonb_build_array('grant:a', 'grant:a'),
+          256
+        ) IS DISTINCT FROM FALSE
+        OR public.omni_memory_access_grant_ids_v1_are_canonical(
+          jsonb_build_array('grant:b', 'grant:a'),
+          256
+        ) IS DISTINCT FROM FALSE
+      THEN
+        RAISE EXCEPTION 'Dormant memory access validator changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE COALESCE(pg_get_expr(polqual, polrelid), '') LIKE
+            '%omni_current_memory_access_scope_v1%'
+          OR COALESCE(pg_get_expr(polwithcheck, polrelid), '') LIKE
+            '%omni_current_memory_access_scope_v1%'
+          OR COALESCE(pg_get_expr(polqual, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_valid%'
+          OR COALESCE(pg_get_expr(polwithcheck, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_valid%'
+          OR COALESCE(pg_get_expr(polqual, polrelid), '') LIKE
+            '%omni_memory_access_grant_ids_v1_are_canonical%'
+          OR COALESCE(pg_get_expr(polwithcheck, polrelid), '') LIKE
+            '%omni_memory_access_grant_ids_v1_are_canonical%'
+      ) THEN
+        RAISE EXCEPTION 'A row policy uses the dormant access contract'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_memory_access_grant_ids_v1_are_canonical(jsonb,integer)'
+        )
+          AND procedure.prorettype = 'boolean'::regtype
+          AND procedure.provolatile = 'i'
+          AND procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'sql'
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_memory_access_scope_v1_is_valid(jsonb)'
+        )
+          AND procedure.prorettype = 'boolean'::regtype
+          AND procedure.provolatile = 'i'
+          AND procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'sql'
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_current_memory_access_scope_v1()'
+        )
+          AND procedure.prorettype = 'jsonb'::regtype
+          AND procedure.provolatile = 's'
+          AND NOT procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'plpgsql'
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_memory_access_grant_ids_v1_are_canonical',
+            'omni_memory_access_scope_v1_is_valid',
+            'omni_current_memory_access_scope_v1'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Dormant memory access functions changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_memory_access_scope_v1_is_authorized(jsonb)'
+        )
+          AND procedure.prorettype = 'boolean'::regtype
+          AND procedure.provolatile = 'v'
+          AND procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'sql'
+          AND btrim(regexp_replace(
+            procedure.prosrc,
+            '[[:space:]]+',
+            ' ',
+            'g'
+          )) = 'SELECT FALSE'
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name = 'omni_memory_access_scope_v1_is_authorized'
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Dormant memory authorization hook changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE COALESCE(pg_get_expr(polqual, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_authorized%'
+          OR COALESCE(pg_get_expr(polwithcheck, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_authorized%'
+      ) THEN
+        RAISE EXCEPTION 'A row policy uses the dormant authorization hook'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_memories_access_enrollment_hold_check'
+          AND conrelid = 'omni_memories'::regclass
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid) =
+            '(access_contract_version = 0)'
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid = 'omni_memories'::regclass
+          AND attribute.attname = 'access_contract_version'
+          AND NOT attribute.attisdropped
+          AND attribute.atttypid = 'smallint'::regtype
+          AND attribute.attnotnull
+          AND attribute.attgenerated = ''
+          AND pg_get_expr(
+            attribute_default.adbin,
+            attribute_default.adrelid
+          ) IN ('0', '0::smallint', '(0)::smallint')
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_memories
+        WHERE access_contract_version IS DISTINCT FROM 0
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid = 'omni_memories'::regclass
+          AND relrowsecurity
+          AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid = 'omni_memories'::regclass
+          AND polname = 'omni_memory_access_scope_holdback'
+          AND NOT polpermissive
+          AND polcmd = '*'
+          AND polroles = ARRAY[0::OID]
+          AND pg_get_expr(polqual, polrelid) =
+            '((access_contract_version = 0) OR omni_system_scope_enabled())'
+          AND pg_get_expr(polwithcheck, polrelid) =
+            '((access_contract_version = 0) OR omni_system_scope_enabled())'
+      ) THEN
+        RAISE EXCEPTION 'Memory access enrollment boundary changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_memories'::regclass
+          AND tgname = 'omni_memories_access_scope_immutable'
+          AND NOT tgisinternal
+          AND tgenabled = 'O'
+          AND pg_get_triggerdef(oid, TRUE) =
+            'CREATE TRIGGER omni_memories_access_scope_immutable BEFORE UPDATE OF tenant_id, access_contract_version, access_state, owner_actor_id, owner_agent_id, workspace_id, project_id, mission_id, visibility, sensitivity, origin_purpose, allowed_purpose_ids, access_scope_sha256, access_bound_at ON omni_memories FOR EACH ROW EXECUTE FUNCTION omni_reject_bound_memory_access_change()'
+      ) THEN
+        RAISE EXCEPTION 'Memory access immutability boundary changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid = 'omni_auth_users'::regclass
+          AND attribute.attname = 'actor_id'
+          AND attribute.atttypid = 'text'::regtype
+          AND attribute.attnotnull
+          AND attribute.attgenerated = 's'
+          AND pg_get_expr(
+            attribute_default.adbin,
+            attribute_default.adrelid
+          ) = '(''actor:''::text || id)'
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user actor identity changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_auth_users_id_uuid_check'
+          AND conrelid = 'omni_auth_users'::regclass
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid) =
+            '(id ~ ''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$''::text)'
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_auth_users_actor_id_contract_check'
+          AND conrelid = 'omni_auth_users'::regclass
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid) =
+            'omni_source_contract_id_is_valid(actor_id)'
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identity checks changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_record
+        JOIN pg_index index_record
+          ON index_record.indexrelid = constraint_record.conindid
+        WHERE constraint_record.conname = 'omni_auth_users_actor_id_key'
+          AND constraint_record.conrelid = 'omni_auth_users'::regclass
+          AND constraint_record.contype = 'u'
+          AND constraint_record.convalidated
+          AND constraint_record.conkey = ARRAY[
+            (
+              SELECT attnum
+              FROM pg_attribute
+              WHERE attrelid = 'omni_auth_users'::regclass
+                AND attname = 'actor_id'
+                AND NOT attisdropped
+            )
+          ]::SMALLINT[]
+          AND index_record.indisunique
+          AND index_record.indisvalid
+          AND index_record.indisready
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identity uniqueness changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM omni_auth_users
+        WHERE actor_id IS DISTINCT FROM 'actor:' || id
+          OR NOT public.omni_source_contract_id_is_valid(actor_id)
+      ) OR (
+        SELECT count(*) FROM omni_auth_users
+      ) IS DISTINCT FROM (
+        SELECT count(DISTINCT actor_id) FROM omni_auth_users
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identity mapping changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'omni_auth_users'::regclass
+          AND trigger_record.tgname =
+            'omni_auth_users_actor_identity_immutable'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_reject_auth_user_identity_change()'
+          )
+          AND trigger_record.tgtype = 27
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND trigger_record.tgattr::TEXT = (
+            SELECT attnum::TEXT
+            FROM pg_attribute
+            WHERE attrelid = 'omni_auth_users'::regclass
+              AND attname = 'id'
+              AND NOT attisdropped
+          )
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'omni_auth_users'::regclass
+          AND trigger_record.tgname =
+            'omni_auth_users_actor_identity_no_truncate'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_reject_auth_user_identity_change()'
+          )
+          AND trigger_record.tgtype = 34
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND trigger_record.tgattr::TEXT = ''
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identity triggers changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_reject_auth_user_identity_change()'
+        )
+          AND procedure.prorettype = 'trigger'::regtype
+          AND procedure.provolatile = 'v'
+          AND NOT procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'plpgsql'
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name = 'omni_reject_auth_user_identity_change'
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identity function changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class relation
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE relation.oid = 'omni_auth_users'::regclass
+          AND namespace.nspname = current_schema()
+          AND relation.relkind = 'r'
+          AND relation.relpersistence = 'p'
+          AND relation.relowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identity owner changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_auth_users'
+          AND privilege_type IN ('DELETE', 'TRUNCATE')
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identities remain removable'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM omni_auth_memberships membership
+        LEFT JOIN omni_auth_users auth_user ON auth_user.id = membership.user_id
+        WHERE auth_user.id IS NULL
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_auth_sessions session_record
+        LEFT JOIN omni_auth_users auth_user ON auth_user.id = session_record.user_id
+        WHERE auth_user.id IS NULL
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_mobile_sessions mobile_session
+        LEFT JOIN omni_auth_users auth_user ON auth_user.id = mobile_session.user_id
+        WHERE auth_user.id IS NULL
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identity has orphaned references'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid = 'omni_auth_users'::regclass
+          AND (relrowsecurity OR relforcerowsecurity)
+      ) THEN
+        RAISE EXCEPTION 'Auth users cannot require tenant scope before login'
           USING ERRCODE = '55000';
       END IF;
     END
