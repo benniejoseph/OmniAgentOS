@@ -34,35 +34,40 @@ type OAuthGrant = {
   syncedItems?: number;
   createdAt: string;
   updatedAt: string;
+  manageable?: boolean;
 };
 
 type OAuthPayload = {
   providers?: OAuthProvider[];
   grants?: OAuthGrant[];
+  requestReadContracts?: {
+    oauthGrants?: "exact_v1" | "readable_v1";
+  };
 };
 
 type PersonalConnectionsProps = {
   payload?: unknown;
   loading?: boolean;
   error?: string;
+  disabledReason?: string;
   onRefresh: () => Promise<void>;
 };
 
 const permissions = [
   {
-    suffix: "/auth/gmail.readonly",
+    scope: "https://www.googleapis.com/auth/gmail.readonly",
     label: "Gmail",
     detail: "Messages and metadata, read-only",
     icon: Mail,
   },
   {
-    suffix: "/auth/calendar.events.readonly",
+    scope: "https://www.googleapis.com/auth/calendar.events.readonly",
     label: "Calendar",
     detail: "Events and schedules, read-only",
     icon: CalendarDays,
   },
   {
-    suffix: "/auth/drive.readonly",
+    scope: "https://www.googleapis.com/auth/drive.readonly",
     label: "Drive",
     detail: "Files and document content, read-only",
     icon: HardDrive,
@@ -73,6 +78,7 @@ export function PersonalConnections({
   payload,
   loading,
   error,
+  disabledReason,
   onRefresh,
 }: PersonalConnectionsProps) {
   const oauth = asOAuthPayload(payload);
@@ -81,6 +87,13 @@ export function PersonalConnections({
     (item) => item.provider === "google" && item.status === "active",
   );
   const connected = Boolean(grant);
+  const actionDisabledReason = loading
+    ? "Refreshing connection ownership."
+    : oauth.requestReadContracts?.oauthGrants !== "readable_v1"
+      ? "Connection ownership could not be verified. Refresh before changing this source."
+      : grant && grant.manageable !== true
+        ? "This retained connection is visible for continuity, but only its stored owner can use or change it."
+        : disabledReason;
   const [action, setAction] = useState<"sync" | "disconnect" | "delete-data">();
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [confirmDeleteData, setConfirmDeleteData] = useState(false);
@@ -90,12 +103,19 @@ export function PersonalConnections({
   const grantedPermissions = useMemo(
     () =>
       permissions.filter((permission) =>
-        grant?.scopes.some((scope) => scope.endsWith(permission.suffix)),
+        grant?.scopes.includes(permission.scope),
       ),
     [grant?.scopes],
   );
 
+  function blockUnavailableAction() {
+    if (!actionDisabledReason) return false;
+    setMessage({ tone: "error", text: actionDisabledReason });
+    return true;
+  }
+
   async function syncGoogle() {
+    if (blockUnavailableAction()) return;
     setAction("sync");
     setMessage(undefined);
     try {
@@ -130,6 +150,7 @@ export function PersonalConnections({
   }
 
   async function disconnectGoogle() {
+    if (blockUnavailableAction()) return;
     setAction("disconnect");
     setMessage(undefined);
     try {
@@ -160,6 +181,7 @@ export function PersonalConnections({
   }
 
   async function deleteImportedGoogleData() {
+    if (blockUnavailableAction()) return;
     setAction("delete-data"); setMessage(undefined);
     try {
       const response = await fetch("/api/knowledge?source=google%3A", { method: "DELETE", headers: { accept: "application/json" } });
@@ -204,6 +226,7 @@ export function PersonalConnections({
                 connected={connected}
                 configured={provider?.configured}
                 syncStatus={grant?.syncStatus}
+                manageable={grant?.manageable}
                 loading={Boolean(loading && !provider)}
               />
             </div>
@@ -215,7 +238,7 @@ export function PersonalConnections({
                 <Loader2 size={15} className="animate-spin" aria-hidden="true" />
                 Checking connection…
               </span>
-            ) : connected ? (
+            ) : connected && !actionDisabledReason ? (
               <>
                 <button
                   type="button"
@@ -248,13 +271,29 @@ export function PersonalConnections({
                   Disconnect
                 </button>
               </>
-            ) : provider?.configured ? (
+            ) : connected ? (
+              <span
+                className="inline-flex min-h-11 items-center rounded-md border border-line bg-background px-3 text-sm font-semibold text-muted"
+                title={actionDisabledReason}
+              >
+                Read only
+              </span>
+            ) : provider?.configured && !actionDisabledReason ? (
               <a
                 href={provider.authorizeUrl}
                 className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-ink transition hover:brightness-105"
               >
                 Connect Google
               </a>
+            ) : provider?.configured ? (
+              <button
+                type="button"
+                disabled
+                title={actionDisabledReason}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-ink opacity-60"
+              >
+                Connect Google
+              </button>
             ) : (
               <span className="inline-flex min-h-11 items-center rounded-md border border-warning/40 bg-warning/10 px-3 text-sm font-semibold text-warning">
                 OAuth setup required
@@ -281,13 +320,16 @@ export function PersonalConnections({
             {message.text}
           </p>
         ) : null}
+        {actionDisabledReason ? (
+          <p className="mt-4 text-xs leading-5 text-muted">{actionDisabledReason}</p>
+        ) : null}
         {grant?.syncError ? (
           <p className="mt-4 rounded-md border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger">
             Last sync failed: {grant.syncError}
           </p>
         ) : null}
 
-        {confirmDisconnect ? (
+        {confirmDisconnect && !actionDisabledReason ? (
           <div className="mt-4 flex flex-col gap-3 rounded-md border border-danger/30 bg-danger/8 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-sm font-semibold">Disconnect Google?</p>
@@ -319,7 +361,7 @@ export function PersonalConnections({
           </div>
         ) : null}
 
-        {connected ? <div className="mt-4 border-t border-line pt-4"><button type="button" onClick={() => setConfirmDeleteData((current) => !current)} disabled={busy} className="inline-flex min-h-10 items-center gap-2 text-sm font-semibold text-muted transition hover:text-danger" aria-expanded={confirmDeleteData}><Trash2 size={15} aria-hidden="true" />Remove imported Google data</button>{confirmDeleteData ? <div className="mt-3 flex flex-col gap-3 rounded-md border border-danger/30 bg-danger/8 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-semibold">Forget all imported Gmail, Calendar, and Drive context?</p><p className="mt-1 text-xs leading-5 text-muted">This removes connected-source knowledge and derived memories. Your Google account stays connected and a future sync can import current items again.</p></div><div className="flex gap-2"><button type="button" onClick={() => setConfirmDeleteData(false)} className="action-button">Cancel</button><button type="button" onClick={() => void deleteImportedGoogleData()} disabled={Boolean(action)} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-danger px-3 text-sm font-semibold text-white disabled:opacity-60">{action === "delete-data" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}Forget imported data</button></div></div> : null}</div> : null}
+        {connected && !actionDisabledReason ? <div className="mt-4 border-t border-line pt-4"><button type="button" onClick={() => setConfirmDeleteData((current) => !current)} disabled={busy} className="inline-flex min-h-10 items-center gap-2 text-sm font-semibold text-muted transition hover:text-danger" aria-expanded={confirmDeleteData}><Trash2 size={15} aria-hidden="true" />Remove imported Google data</button>{confirmDeleteData ? <div className="mt-3 flex flex-col gap-3 rounded-md border border-danger/30 bg-danger/8 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-semibold">Forget all imported Gmail, Calendar, and Drive context?</p><p className="mt-1 text-xs leading-5 text-muted">This removes connected-source knowledge and derived memories. Your Google account stays connected and a future sync can import current items again.</p></div><div className="flex gap-2"><button type="button" onClick={() => setConfirmDeleteData(false)} className="action-button">Cancel</button><button type="button" onClick={() => void deleteImportedGoogleData()} disabled={Boolean(action)} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-danger px-3 text-sm font-semibold text-white disabled:opacity-60">{action === "delete-data" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}Forget imported data</button></div></div> : null}</div> : null}
 
         <div className="mt-5 grid gap-px overflow-hidden rounded-md border border-line bg-line md:grid-cols-3">
           <ConnectionFact
@@ -379,11 +421,13 @@ function ConnectionStatus({
   connected,
   configured,
   syncStatus,
+  manageable,
   loading,
 }: {
   connected: boolean;
   configured?: boolean;
   syncStatus?: OAuthGrant["syncStatus"];
+  manageable?: boolean;
   loading?: boolean;
 }) {
   const label = loading
@@ -392,12 +436,14 @@ function ConnectionStatus({
     ? "Unavailable"
     : !connected
       ? "Not connected"
+      : manageable !== true
+        ? "Read only"
       : syncStatus === "error"
         ? "Needs attention"
         : syncStatus === "syncing"
           ? "Syncing"
           : "Connected";
-  const live = !loading && connected && syncStatus !== "error";
+  const live = !loading && connected && manageable === true && syncStatus !== "error";
   return (
     <span
       className={clsx(

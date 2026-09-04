@@ -561,7 +561,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
     description: "Connect personal sources and governed tools, then keep their permissions, freshness, and health visible in one place.",
     icon: Cable,
     endpoints: [
-      { key: "oauth", label: "Personal sources", path: "/api/oauth" },
+      { key: "oauth", label: "Personal sources", path: "/api/oauth?ownerScope=readable" },
       { key: "connectors", label: "MCP connectors", path: "/api/connectors" },
       { key: "openapi", label: "OpenAPI connectors", path: "/api/openapi-connectors" },
       { key: "catalog", label: "Connection catalog", path: "/api/connection-catalog" },
@@ -1336,6 +1336,11 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
     sessionStatus,
     "manage.connector",
   );
+  const personalSourceDisabledReason = permissionMessage(
+    workspaceSession,
+    sessionStatus,
+    "write.memory",
+  );
 
   async function runAction(action: DomainAction, values: Record<string, FormValue>) {
     const disabledReason = permissionMessage(
@@ -1624,6 +1629,7 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
           payload={data.oauth}
           loading={resources.oauth?.status === "loading"}
           error={resources.oauth?.status === "error" ? resources.oauth.error : undefined}
+          disabledReason={personalSourceDisabledReason}
           onRefresh={load}
         />
       ) : null}

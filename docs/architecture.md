@@ -634,6 +634,22 @@ and their pre-read, runtime model resolution, provider credentials, catalog
 refresh, MCP policy, portable data, events, and canonical writes remain
 exact-owner contracts.
 
+The nineteenth request-bound slice converges only OAuth connection metadata.
+The opt-in PostgreSQL reader selects an explicit public column allowlist from
+the validated canonical/current-email pair; sealed tokens and sync cursors are
+never selected. It verifies tenant and physical owner, provider, active state,
+scope identifiers, authorization generation, sync state, counters, and
+timestamps, then rejects duplicate IDs or any cross-owner provider collision
+before projecting the current request actor. Only an exact-owner row is
+`manageable`; provider-derived sync errors are normalized for display. Capture
+and Integrations require both `requestReadContracts.oauthGrants=readable_v1`
+and `manageable: true`, plus the existing role permission, before exposing or
+executing connect, reconnect, sync, Photos, source-removal, or disconnect
+controls. Bare GET and file fallback remain exact. Token opening, scheduled
+sync, refresh, authorization state/callback, save, revoke, Photos sessions,
+autonomy/readiness, portable data, source lineage, events, and canonical writes
+remain exact-owner contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.
