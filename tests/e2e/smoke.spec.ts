@@ -1578,8 +1578,14 @@ test("owner can compose a skill, create an agent, and assign work from the visua
       fetch("/api/agents").then((response) => response.json()),
     ]);
     return {
-      skillId: skills.skills.find((item: { name?: string }) => item.name === skillName)?.id,
-      agentId: agents.agents.find((item: { name?: string }) => item.name === agentName)?.id,
+      skillId: skills.skills.find(
+        (item: { name?: string; manageable?: boolean }) =>
+          item.name === skillName && item.manageable === true,
+      )?.id,
+      agentId: agents.agents.find(
+        (item: { name?: string; manageable?: boolean }) =>
+          item.name === agentName && item.manageable === true,
+      )?.id,
     };
   }, { skillName, agentName });
   const cleanup = await page.evaluate(async ({ agentId, skillId }) => {

@@ -19,6 +19,38 @@ void main() {
     expect(agent.memoryScope, 'project');
   });
 
+  test('agent actionability honors flags with legacy-safe defaults', () {
+    final legacyCustom = AgentProfile.fromJson({
+      'id': 'custom-current',
+      'name': 'Current custom agent',
+    });
+    final legacyBuiltIn = AgentProfile.fromJson({
+      'id': 'atlas',
+      'name': 'Atlas',
+    }, builtIn: true);
+    final canonicalCustom = AgentProfile.fromJson({
+      'id': 'custom-canonical',
+      'name': 'Canonical custom agent',
+      'selectable': false,
+      'manageable': false,
+    });
+    final malformedCapabilities = AgentProfile.fromJson({
+      'id': 'custom-malformed',
+      'name': 'Malformed capabilities',
+      'selectable': 'yes',
+      'manageable': 1,
+    });
+
+    expect(legacyCustom.selectable, isTrue);
+    expect(legacyCustom.manageable, isTrue);
+    expect(legacyBuiltIn.selectable, isTrue);
+    expect(legacyBuiltIn.manageable, isFalse);
+    expect(canonicalCustom.selectable, isFalse);
+    expect(canonicalCustom.manageable, isFalse);
+    expect(malformedCapabilities.selectable, isFalse);
+    expect(malformedCapabilities.manageable, isFalse);
+  });
+
   test('skill actionability honors flags with legacy-safe defaults', () {
     final legacyCustom = AgentSkill.fromJson({
       'id': 'custom-current',
@@ -35,6 +67,12 @@ void main() {
       'selectable': false,
       'manageable': false,
     });
+    final malformedCapabilities = AgentSkill.fromJson({
+      'id': 'custom-malformed',
+      'name': 'Malformed capabilities',
+      'selectable': 'yes',
+      'manageable': 1,
+    });
 
     expect(legacyCustom.selectable, isTrue);
     expect(legacyCustom.manageable, isTrue);
@@ -42,6 +80,8 @@ void main() {
     expect(legacyBuiltIn.manageable, isFalse);
     expect(canonicalCustom.selectable, isFalse);
     expect(canonicalCustom.manageable, isFalse);
+    expect(malformedCapabilities.selectable, isFalse);
+    expect(malformedCapabilities.manageable, isFalse);
     expect(
       filterSelectableSkillIds(
         [legacyCustom, legacyBuiltIn, canonicalCustom],

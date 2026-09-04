@@ -44,6 +44,7 @@ import {
   createCustomAgent,
   getCustomAgent,
   getCustomAgentForRequest,
+  listCustomAgentsForRequest,
   updateCustomAgent,
 } from "@/lib/skills/store";
 
@@ -270,6 +271,78 @@ describe("Postgres custom Agent request detail reads", () => {
     })).rejects.toBeInstanceOf(CustomAgentReadConflictError);
     expect(dbMocks.ensureDatabaseSchema).not.toHaveBeenCalled();
     expect(dbMocks.statements).toHaveLength(0);
+  });
+});
+
+describe("Postgres custom Agent request list reads", () => {
+  it("reads both owner partitions in deterministic order and projects actionability", async () => {
+    dbMocks.responses.push([
+      {
+        ...agentRow("canonical-agent", []),
+        actor_id: canonicalActorId,
+        slug: "canonical-agent",
+      },
+      {
+        ...agentRow("exact-agent", []),
+        slug: "exact-agent",
+      },
+    ]);
+
+    await expect(listCustomAgentsForRequest({
+      ...scope,
+      requestActorBinding,
+    })).resolves.toEqual([
+      expect.objectContaining({
+        id: "canonical-agent",
+        actorId: scope.actorId,
+        selectable: false,
+        manageable: false,
+      }),
+      expect.objectContaining({
+        id: "exact-agent",
+        actorId: scope.actorId,
+        selectable: true,
+        manageable: true,
+      }),
+    ]);
+    expect(dbMocks.statements[0].text).toMatch(
+      /FROM omni_custom_agents[\s\S]*tenant_id = \$\d+[\s\S]*actor_id = \$\d+ OR actor_id = \$\d+[\s\S]*ORDER BY updated_at DESC, id ASC/,
+    );
+    expect(dbMocks.statements[0].params).toEqual([
+      scope.tenantId,
+      canonicalActorId,
+      scope.actorId,
+    ]);
+  });
+
+  it("fails the whole list on cross-owner slug collisions or invalid IDs", async () => {
+    dbMocks.responses.push([
+      {
+        ...agentRow("canonical-agent", []),
+        actor_id: canonicalActorId,
+        slug: "shared-agent",
+      },
+      {
+        ...agentRow("exact-agent", []),
+        slug: "shared-agent",
+      },
+    ]);
+    await expect(listCustomAgentsForRequest({
+      ...scope,
+      requestActorBinding,
+    })).rejects.toBeInstanceOf(CustomAgentReadConflictError);
+
+    dbMocks.responses.push([agentRow("malformed agent", [])]);
+    await expect(listCustomAgentsForRequest({
+      ...scope,
+      requestActorBinding,
+    })).rejects.toBeInstanceOf(CustomAgentReadConflictError);
+
+    dbMocks.responses.push([agentRow("atlas", [])]);
+    await expect(listCustomAgentsForRequest({
+      ...scope,
+      requestActorBinding,
+    })).rejects.toBeInstanceOf(CustomAgentReadConflictError);
   });
 });
 

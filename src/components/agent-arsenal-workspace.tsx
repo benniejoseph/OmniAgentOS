@@ -25,7 +25,11 @@ import {
 import { upsertById } from "@/lib/agents/client-state";
 import { arsenalAgents, type ArsenalAgent } from "@/lib/agents/arsenal";
 import type { AgentPerformance } from "@/lib/agents/performance";
-import type { AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
+import type {
+  AgentSkill,
+  CustomAgentDefinition,
+  RequestCustomAgentDefinition,
+} from "@/lib/skills/types";
 import styles from "@/components/agent-arsenal-workspace.module.css";
 
 type ToolOption = {
@@ -34,19 +38,19 @@ type ToolOption = {
   riskLevel: number;
   category: string;
 };
-type AgentView = ArsenalAgent & { custom?: CustomAgentDefinition };
+type AgentView = ArsenalAgent & { custom?: RequestCustomAgentDefinition };
 type EditorState = { kind: "agent" | "skill"; id?: string };
 type BuilderSaveResult =
   | {
       kind: "agent";
-      agent: CustomAgentDefinition;
+      agent: RequestCustomAgentDefinition;
       message: string;
     }
   | { kind: "skill"; skill: AgentSkill; message: string };
 
 export function AgentArsenalWorkspace() {
   const [selectedId, setSelectedId] = useState("atlas");
-  const [customAgents, setCustomAgents] = useState<CustomAgentDefinition[]>([]);
+  const [customAgents, setCustomAgents] = useState<RequestCustomAgentDefinition[]>([]);
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [tools, setTools] = useState<ToolOption[]>([]);
   const [performance, setPerformance] = useState<AgentPerformance[]>([]);
@@ -95,9 +99,10 @@ export function AgentArsenalWorkspace() {
     try {
       const [agentPayload, skillPayload, toolPayload, performancePayload] =
         await Promise.all([
-          readJson<{ agents?: CustomAgentDefinition[] }>("/api/agents", {
-            signal: controller.signal,
-          }),
+          readJson<{ agents?: RequestCustomAgentDefinition[] }>(
+            "/api/agents?ownerScope=readable",
+            { signal: controller.signal },
+          ),
           readJson<{ skills?: AgentSkill[] }>("/api/skills", {
             signal: controller.signal,
           }),
@@ -141,6 +146,7 @@ export function AgentArsenalWorkspace() {
   async function removeSelectedAgent() {
     if (
       !selected.custom ||
+      selected.custom.manageable !== true ||
       !window.confirm(
         `Delete ${selected.name}? Existing run history will remain.`,
       )
@@ -357,14 +363,20 @@ export function AgentArsenalWorkspace() {
             <p>{selected.autonomy}</p>
           </div>
           <div className="mt-4 grid gap-2">
-            <Link
-              href={`/app/command?agent=${encodeURIComponent(selected.id)}`}
-              className="primary-button justify-center"
-            >
-              Assign work to {selected.name}
-              <ArrowRight size={15} aria-hidden="true" />
-            </Link>
-            {selected.custom ? (
+            {!selected.custom || selected.custom.selectable === true ? (
+              <Link
+                href={`/app/command?agent=${encodeURIComponent(selected.id)}`}
+                className="primary-button justify-center"
+              >
+                Assign work to {selected.name}
+                <ArrowRight size={15} aria-hidden="true" />
+              </Link>
+            ) : (
+              <p className="rounded-md border border-border/70 bg-muted/40 px-3 py-2 text-center text-sm text-muted-foreground">
+                Read-only compatibility profile
+              </p>
+            )}
+            {selected.custom?.manageable === true ? (
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -485,7 +497,7 @@ function BuilderDialog({
   onSaved,
 }: {
   editor: EditorState;
-  agents: CustomAgentDefinition[];
+  agents: RequestCustomAgentDefinition[];
   skills: AgentSkill[];
   tools: ToolOption[];
   onClose: () => void;
@@ -617,7 +629,11 @@ function BuilderDialog({
           request,
         );
         if (!payload.agent) throw new Error("The saved agent was not returned.");
-        await onSaved({ kind: "agent", agent: payload.agent, message });
+        await onSaved({
+          kind: "agent",
+          agent: agentAfterExactWrite(payload.agent),
+          message,
+        });
       } else {
         const payload = await mutate<{ skill?: AgentSkill }>(
           editor.id ? `${base}/${encodeURIComponent(editor.id)}` : base,
@@ -910,6 +926,11 @@ function toggle(values: string[], value: string) {
 }
 function skillAfterExactWrite(skill: AgentSkill): AgentSkill {
   return { ...skill, selectable: true, manageable: true };
+}
+function agentAfterExactWrite(
+  agent: CustomAgentDefinition,
+): RequestCustomAgentDefinition {
+  return { ...agent, selectable: true, manageable: true };
 }
 function RosterButton({
   agent,

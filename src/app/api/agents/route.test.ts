@@ -25,6 +25,7 @@ const routeMocks = vi.hoisted(() => {
     getCustomAgent: vi.fn(),
     getCustomAgentForRequest: vi.fn(),
     listCustomAgents: vi.fn(),
+    listCustomAgentsForRequest: vi.fn(),
     updateCustomAgent: vi.fn(),
   };
 });
@@ -53,6 +54,7 @@ vi.mock("@/lib/skills/store", () => ({
   getCustomAgent: routeMocks.getCustomAgent,
   getCustomAgentForRequest: routeMocks.getCustomAgentForRequest,
   listCustomAgents: routeMocks.listCustomAgents,
+  listCustomAgentsForRequest: routeMocks.listCustomAgentsForRequest,
   updateCustomAgent: routeMocks.updateCustomAgent,
 }));
 
@@ -61,7 +63,10 @@ import {
   GET as GETAgent,
   PATCH as PATCHAgent,
 } from "@/app/api/agents/[id]/route";
-import { POST as POSTAgent } from "@/app/api/agents/route";
+import {
+  GET as GETAgents,
+  POST as POSTAgent,
+} from "@/app/api/agents/route";
 
 const context = {
   tenantId: "tenant-a",
@@ -110,10 +115,89 @@ beforeEach(() => {
     manageable: true,
   });
   routeMocks.listCustomAgents.mockReset().mockResolvedValue([agent]);
+  routeMocks.listCustomAgentsForRequest.mockReset().mockResolvedValue([{
+    ...agent,
+    selectable: true,
+    manageable: true,
+  }]);
   routeMocks.updateCustomAgent.mockReset().mockResolvedValue(agent);
 });
 
 describe("custom Agent Skill integrity route responses", () => {
+  it("keeps the bare custom Agent list exact with explicit capabilities", async () => {
+    const response = await GETAgents(
+      new Request("http://localhost/api/agents"),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(routeMocks.listCustomAgentsForRequest).toHaveBeenCalledWith({
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestActorBinding: undefined,
+    });
+    expect(routeMocks.listCustomAgents).not.toHaveBeenCalled();
+    expect(
+      routeMocks.canonicalRequestActorBindingFromSecurityContext,
+    ).not.toHaveBeenCalled();
+    const payload = await response.json();
+    expect(payload.agents).toEqual([
+      expect.objectContaining({
+        id: agent.id,
+        selectable: true,
+        manageable: true,
+      }),
+    ]);
+  });
+
+  it("binds only the opt-in readable Agent list and publishes built-in capabilities", async () => {
+    const response = await GETAgents(
+      new Request("http://localhost/api/agents?ownerScope=readable"),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(
+      routeMocks.canonicalRequestActorBindingFromSecurityContext,
+    ).toHaveBeenCalledWith(context);
+    expect(routeMocks.listCustomAgentsForRequest).toHaveBeenCalledWith({
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestActorBinding,
+    });
+    const payload = await response.json();
+    expect(payload.agents).toEqual([
+      expect.objectContaining({
+        id: agent.id,
+        selectable: true,
+        manageable: true,
+      }),
+    ]);
+    expect(payload.builtIns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "atlas",
+          builtIn: true,
+          selectable: true,
+          manageable: false,
+        }),
+      ]),
+    );
+    expect(routeMocks.listCustomAgents).not.toHaveBeenCalled();
+  });
+
+  it("maps a typed custom Agent list conflict to a controlled private response", async () => {
+    routeMocks.listCustomAgentsForRequest.mockRejectedValueOnce(
+      new routeMocks.CustomAgentReadConflictError(),
+    );
+    const response = await GETAgents(
+      new Request("http://localhost/api/agents?ownerScope=readable"),
+    );
+    expect(response.status).toBe(409);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toEqual({
+      error: "Custom Agent ownership could not be verified.",
+    });
+  });
+
   it("binds only the custom Agent detail GET and keeps success and 404 private", async () => {
     const success = await GETAgent(
       new Request("http://localhost/api/agents/agent-a"),

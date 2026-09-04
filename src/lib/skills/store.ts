@@ -135,6 +135,46 @@ export async function listCustomAgents(options: Scope) {
   return (await readLedger()).agents.filter((item) => item.tenantId === tenantId && item.actorId === actorId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+export async function listCustomAgentsForRequest(options: RequestReadScope) {
+  if (!hasDatabaseUrl()) {
+    const tenantId = tenant(options.tenantId);
+    const exactActorId = safe(options.actorId, 200);
+    const agents = await listCustomAgents(options);
+    assertRequestCustomAgentOwners(
+      agents,
+      tenantId,
+      exactActorId,
+      exactActorId,
+    );
+    assertNoAgentSlugCollisions(agents);
+    return agents.map(customAgentForExactFileRequest);
+  }
+  const tenantId = tenant(options.tenantId);
+  const requestActorId = safe(options.actorId, 200);
+  const [canonicalActorId, exactActorId] = skillActorReadOrder(
+    options.actorId,
+    options.requestActorBinding,
+    requestActorId,
+  );
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT *
+    FROM omni_custom_agents
+    WHERE tenant_id = ${tenantId}
+      AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+    ORDER BY updated_at DESC, id ASC
+  `;
+  const agents = rows.map(agentFromRow);
+  assertRequestCustomAgentOwners(
+    agents,
+    tenantId,
+    canonicalActorId,
+    exactActorId,
+  );
+  assertNoAgentSlugCollisions(agents);
+  return agents.map((agent) => customAgentForRequest(agent, exactActorId));
+}
+
 export async function getCustomAgent(id: string, options: Scope) { return (await listCustomAgents(options)).find((item) => item.id === id); }
 
 export async function getCustomAgentForRequest(
@@ -412,6 +452,41 @@ function assertRequestCustomAgentOwner(
     throw new CustomAgentReadConflictError(
       "Custom Agent request row validation failed.",
     );
+  }
+}
+
+function assertRequestCustomAgentOwners(
+  agents: CustomAgentDefinition[],
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  const seenIds = new Set<string>();
+  for (const agent of agents) {
+    if (
+      agent.tenantId !== tenantId ||
+      (agent.actorId !== canonicalActorId && agent.actorId !== exactActorId) ||
+      !isValidCustomAgentRequestId(agent.id) ||
+      builtInAgentIds.has(agent.id) ||
+      seenIds.has(agent.id)
+    ) {
+      throw new CustomAgentReadConflictError(
+        "Custom Agent request list validation failed.",
+      );
+    }
+    seenIds.add(agent.id);
+  }
+}
+
+function assertNoAgentSlugCollisions(agents: CustomAgentDefinition[]) {
+  const seenSlugs = new Set<string>();
+  for (const agent of agents) {
+    if (seenSlugs.has(agent.slug)) {
+      throw new CustomAgentReadConflictError(
+        "Custom Agent slug is ambiguous in the readable namespace.",
+      );
+    }
+    seenSlugs.add(agent.slug);
   }
 }
 

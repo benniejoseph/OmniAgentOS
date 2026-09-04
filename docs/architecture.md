@@ -495,6 +495,20 @@ Flutter Agent controls, mutations, runtime profile/Skill resolution,
 run-contract hashes, portable data, file fallback, and canonical writes remain
 on their exact-owner paths.
 
+The eleventh slice adds an opt-in custom Agent collection projection for
+Arsenal. `ownerScope=readable` reads the complete canonical/current-email
+owner pair in deterministic update-time/ID order, rejects malformed or
+built-in-reserved IDs, unexpected ownership, duplicate IDs, and cross-owner
+slug collisions before projection, then publishes exact rows as actionable
+and canonical rows as read-only. Arsenal trusts only explicit boolean
+capability flags before assignment or mutation. Bare collection GET remains
+exact-owner for Missions, Flutter, and legacy clients, while returning
+explicit exact-row flags; those clients already filter future assignment and
+mutation controls and preserve an unchanged read-only historical assignee.
+Canonical Agent enrollment remains blocked on native-version adoption. Agent
+runtime/Skill resolution, mutations, run-contract hashes, portable data,
+file compatibility, and canonical writes remain exact-owner contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

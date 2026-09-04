@@ -1,23 +1,55 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { arsenalAgents } from "@/lib/agents/arsenal";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { customAgentInputSchema } from "@/lib/skills/schema";
 import {
   AgentSkillAssignmentError,
+  CustomAgentReadConflictError,
   createCustomAgent,
-  listCustomAgents,
+  listCustomAgentsForRequest,
 } from "@/lib/skills/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
+const requestBuiltInAgents = arsenalAgents.map((agent) => ({
+  ...agent,
+  builtIn: true,
+  selectable: true,
+  manageable: false,
+}));
+
 async function GETHandler(request: Request) {
   let context;
   try { context = await authorizeRequest({ request, action: "read", resourceType: "custom_agent" }); }
   catch (error) { return forbiddenResponse(error); }
-  return Response.json({ builtIns: arsenalAgents, agents: await listCustomAgents({ tenantId: context.tenantId, actorId: context.actorId }) }, { headers: { "cache-control": "private, no-store" } });
+  try {
+    const readableOwnerScope =
+      new URL(request.url).searchParams.get("ownerScope") === "readable";
+    const scope = { tenantId: context.tenantId, actorId: context.actorId };
+    const agents = await listCustomAgentsForRequest({
+      ...scope,
+      requestActorBinding: readableOwnerScope
+        ? canonicalRequestActorBindingFromSecurityContext(context)
+        : undefined,
+    });
+    return Response.json(
+      { builtIns: requestBuiltInAgents, agents },
+      { headers: privateNoStoreHeaders },
+    );
+  } catch (error) {
+    if (error instanceof CustomAgentReadConflictError) {
+      return Response.json(
+        { error: "Custom Agent ownership could not be verified." },
+        { status: 409, headers: privateNoStoreHeaders },
+      );
+    }
+    throw error;
+  }
 }
 
 async function POSTHandler(request: Request) {
