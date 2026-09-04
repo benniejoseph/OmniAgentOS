@@ -4,10 +4,10 @@ import {
 } from "@/lib/db/client";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
+import { todayActorReadOrder } from "@/lib/today/actor-scope";
 import {
   isBriefGenerationDue,
   localScheduleParts,
-  todayPreferenceActorReadOrder,
 } from "@/lib/today/briefs";
 import type { TodaySnapshot } from "@/lib/today/snapshot";
 
@@ -35,13 +35,13 @@ export async function loadPostgresTodaySnapshot({
 }: PostgresTodaySnapshotOptions): Promise<TodaySnapshot> {
   const safeTenantId = requiredScopeValue(tenantId, 120, "tenant");
   const safeActorId = requiredScopeValue(actorId, 200, "actor");
-  const preferenceActorReadOrder = todayPreferenceActorReadOrder(
+  const actorReadOrder = todayActorReadOrder(
     actorId,
     requestActorBinding,
     safeActorId,
   );
-  const canonicalPreferenceActorId = preferenceActorReadOrder[0];
-  const exactPreferenceActorId = preferenceActorReadOrder[1];
+  const canonicalActorId = actorReadOrder[0];
+  const exactActorId = actorReadOrder[1];
   const nowIso = validDate(now) ? now.toISOString() : new Date().toISOString();
   const wallClockIso = new Date().toISOString();
   const fallbackTimezone = defaultTimezone();
@@ -75,15 +75,15 @@ export async function loadPostgresTodaySnapshot({
           preferences.created_at,
           preferences.updated_at,
           CASE
-            WHEN preferences.actor_id = ${canonicalPreferenceActorId} THEN 0
+            WHEN preferences.actor_id = ${canonicalActorId} THEN 0
             ELSE 1
           END AS preference_rank
         FROM omni_today_preferences preferences
         CROSS JOIN runtime_settings
         WHERE preferences.tenant_id = ${safeTenantId}
           AND (
-            preferences.actor_id = ${canonicalPreferenceActorId}
-            OR preferences.actor_id = ${exactPreferenceActorId}
+            preferences.actor_id = ${canonicalActorId}
+            OR preferences.actor_id = ${exactActorId}
           )
         ORDER BY preference_rank ASC, preferences.actor_id ASC
         LIMIT 2
@@ -119,7 +119,7 @@ export async function loadPostgresTodaySnapshot({
           quiet_hours_start, quiet_hours_end, created_at, updated_at
         )
         SELECT
-          ${safeTenantId}, ${exactPreferenceActorId}, TRUE, '08:00', ${fallbackTimezone},
+          ${safeTenantId}, ${exactActorId}, TRUE, '08:00', ${fallbackTimezone},
           30, TRUE, TRUE, '22:00', '07:00', ${wallClockIso}, ${wallClockIso}
         FROM runtime_settings
         CROSS JOIN preference_match_state state
@@ -155,11 +155,15 @@ export async function loadPostgresTodaySnapshot({
         FROM omni_today_items items
         CROSS JOIN runtime_settings
         WHERE items.tenant_id = ${safeTenantId}
-          AND items.actor_id = ${safeActorId}
+          AND (
+            items.actor_id = ${canonicalActorId}
+            OR items.actor_id = ${exactActorId}
+          )
         ORDER BY
           CASE items.status WHEN 'open' THEN 0 ELSE 1 END,
           items.due_at ASC NULLS LAST,
-          items.created_at DESC
+          items.created_at DESC,
+          items.id ASC
         LIMIT 100
       ),
       thread_rows AS MATERIALIZED (
@@ -260,7 +264,7 @@ export async function loadPostgresTodaySnapshot({
         COALESCE((
           SELECT jsonb_agg(
             to_jsonb(item_rows) - 'status_rank'
-            ORDER BY status_rank ASC, due_at ASC NULLS LAST, created_at DESC
+            ORDER BY status_rank ASC, due_at ASC NULLS LAST, created_at DESC, id ASC
           )
           FROM item_rows
         ), '[]'::jsonb) AS items,

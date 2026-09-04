@@ -145,7 +145,7 @@ describe("Postgres Today snapshot", () => {
     expect(statement.text).toContain("ON CONFLICT (tenant_id, actor_id) DO UPDATE");
     expect(statement.text).toContain("LIMIT 500");
     expect(statement.text).toMatch(
-      /FROM omni_today_items items[\s\S]*?WHERE items\.tenant_id = \$\d+[\s\S]*?AND items\.actor_id = \$\d+/,
+      /FROM omni_today_items items[\s\S]*?WHERE items\.tenant_id = \$\d+[\s\S]*?AND \([\s\S]*?items\.actor_id = \$\d+[\s\S]*?OR items\.actor_id = \$\d+[\s\S]*?\)/,
     );
     expect(statement.text).toMatch(
       /FROM omni_threads threads[\s\S]*?WHERE threads\.tenant_id = \$\d+[\s\S]*?AND threads\.actor_id = \$\d+/,
@@ -262,6 +262,9 @@ describe("Postgres Today snapshot", () => {
 
     expect(dbMocks.statements[1].params).toContain(canonicalActorId);
     expect(dbMocks.statements[1].params).toContain(actorId);
+    expect(dbMocks.statements[1].text).toMatch(
+      /FROM omni_today_items items[\s\S]*?items\.actor_id = \$\d+[\s\S]*?OR items\.actor_id = \$\d+/,
+    );
   });
 });
 

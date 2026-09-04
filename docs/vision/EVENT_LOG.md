@@ -215,6 +215,15 @@ write on a miss. Later store-specific write or governed-operation cutovers
 must emit typed evidence where the operation boundary actually changes; the
 alias registry itself is not a substitute for that evidence.
 
+The request-bound `omni_today_items` read/edit canary also emits no domain
+event. It broadens selection only to the validated canonical/current-email
+pair, relies on the collection's globally unique item ID for direct edits,
+keeps the selected row's persisted actor and existing business mutation, and
+retains email-owned creation. It changes neither authorization nor a governed
+operation boundary. Derived briefs, notification state, background workers,
+portable data flows, and canonical writes remain outside the canary and must
+receive their own typed evidence when their operation boundaries change.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
