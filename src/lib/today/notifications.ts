@@ -9,6 +9,7 @@ import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-ac
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import { todayActorReadOrder } from "@/lib/today/actor-scope";
 import {
   getTodayPreferences,
   listTodayPreferencesForTenant,
@@ -40,7 +41,10 @@ export async function getNotificationCenter(options: {
   if (options.processDue === false) {
     [preferences, notifications] = await Promise.all([
       getTodayPreferences(preferenceScope),
-      listNotifications(60, ownerScope),
+      listNotifications(60, {
+        ...ownerScope,
+        requestActorBinding: options.requestActorBinding,
+      }),
     ]);
   } else {
     preferences = await getTodayPreferences(preferenceScope);
@@ -107,22 +111,56 @@ export async function processDueNotifications(options: {
 
 export async function listNotifications(
   limit = 60,
-  options: { tenantId?: string; actorId: string },
+  options: {
+    tenantId?: string;
+    actorId: string;
+    requestActorBinding?: CanonicalRequestActorBindingV1;
+  },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const actorId = safeText(options.actorId, 200);
   const bounded = Math.min(Math.max(limit, 1), 200);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const actorReadOrder = todayActorReadOrder(
+      options.actorId,
+      options.requestActorBinding,
+      actorId,
+    );
+    const canonicalActorId = actorReadOrder[0];
+    const exactActorId = actorReadOrder[1];
     const rows = await getSql()`
-      SELECT * FROM omni_personal_notifications
-      WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
+      WITH readable_notifications AS MATERIALIZED (
+        SELECT * FROM omni_personal_notifications
+        WHERE tenant_id = ${tenantId}
+          AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+      ), logical_occurrence_collision AS (
+        SELECT 1
+        FROM readable_notifications
+        GROUP BY source_type, source_id, occurrence_key
+        HAVING COUNT(DISTINCT actor_id COLLATE "C") > 1
+      ), limited_notifications AS (
+        SELECT * FROM readable_notifications
+        ORDER BY
+          CASE status WHEN 'unread' THEN 0 WHEN 'snoozed' THEN 1 WHEN 'read' THEN 2 ELSE 3 END,
+          updated_at DESC,
+          id ASC
+        LIMIT ${bounded}
+      )
+      SELECT limited_notifications.*,
+        EXISTS (SELECT 1 FROM logical_occurrence_collision) AS logical_occurrence_collision
+      FROM limited_notifications
       ORDER BY
-        CASE status WHEN 'unread' THEN 0 WHEN 'snoozed' THEN 1 WHEN 'read' THEN 2 ELSE 3 END,
-        updated_at DESC
-      LIMIT ${bounded}
+        CASE limited_notifications.status WHEN 'unread' THEN 0 WHEN 'snoozed' THEN 1 WHEN 'read' THEN 2 ELSE 3 END,
+        limited_notifications.updated_at DESC,
+        limited_notifications.id ASC
     `;
-    return rows.map(notificationFromRow);
+    if (rows.some((row) => row.logical_occurrence_collision === true)) {
+      throw new Error("Personal notifications resolved to a duplicate logical occurrence.");
+    }
+    return rows.map((row) =>
+      notificationForRequest(notificationFromRow(row), exactActorId),
+    );
   }
   const ledger = await readLedger();
   return ledger.notifications
@@ -348,7 +386,15 @@ function notificationFromRow(row: Record<string, unknown>): PersonalNotification
 
 function compareNotifications(left: PersonalNotification, right: PersonalNotification) {
   const order: Record<PersonalNotificationStatus, number> = { unread: 0, snoozed: 1, read: 2, acted: 3, dismissed: 4 };
-  return order[left.status] - order[right.status] || right.updatedAt.localeCompare(left.updatedAt);
+  return order[left.status] - order[right.status]
+    || right.updatedAt.localeCompare(left.updatedAt)
+    || left.id.localeCompare(right.id);
+}
+function notificationForRequest(
+  notification: PersonalNotification,
+  requestActorId: string,
+): PersonalNotification {
+  return { ...notification, actorId: requestActorId };
 }
 function normalizeStatus(value: unknown): PersonalNotificationStatus {
   return ["unread", "read", "snoozed", "dismissed", "acted"].includes(String(value))

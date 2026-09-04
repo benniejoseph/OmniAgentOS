@@ -1034,6 +1034,19 @@ feed workflow initiating actors and governed effects. This slice changes no
 action scope or event identity and does not unblock membership epochs or the
 v43-v49 holds.
 
+The next canary converges personal-notification reads only through the
+interactive, notification-generation-free inbox path; the existing preference
+lookup/default behavior is unchanged. PostgreSQL considers the canonical/current-email
+partitions together, rejects any duplicate `(source_type, source_id,
+occurrence_key)` across the complete readable set before limiting, then
+applies the existing status/update ordering with ID as a tie-breaker. Results
+retain the current email-shaped request actor. Reminder generation, scheduler
+enumeration, occurrence upsert, read-all, snooze, dismiss, complete, the
+coupled Today-item update, file fallback, and canonical writes remain exact
+and unchanged. Because this is read-only and fails rather than reconciling
+notification lifecycle state, it does not unblock membership epochs or the
+v43-v49 holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

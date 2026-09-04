@@ -413,6 +413,17 @@ autonomous execution, artifact feedback, Today/brief projections, portable
 data, file fallback, and canonical writes remain exact-owner paths because
 those operations create workflows, scopes, evidence, and durable effects.
 
+The fifth request-bound slice changes only selection for the interactive
+personal-notification inbox. Only the notification-generation-free
+`processDue: false` path passes the validated canonical/current-email binding;
+the existing preference lookup/default behavior is unchanged. Its PostgreSQL
+read checks the complete readable set for duplicate source occurrences before
+the global status/update/ID ordering and limit; any cross-alias duplicate
+fails closed rather than being merged or selected. Returned ownership remains
+email-shaped. Reminder generation, worker enumeration, occurrence upsert,
+read-all, snooze, dismiss, complete, and the coupled Today-item mutation stay
+exact-owner paths, as does file fallback.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

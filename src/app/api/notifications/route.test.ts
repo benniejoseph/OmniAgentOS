@@ -23,12 +23,23 @@ vi.mock("@/lib/today/notifications", () => ({
 
 import { GET } from "@/app/api/notifications/route";
 
+const authUserId = "11111111-1111-4111-8111-111111111111";
+const actorId = "notification-owner@example.test";
+const canonicalActorId = `actor:${authUserId}`;
+
 describe("notification inbox route", () => {
   beforeEach(() => {
     routeMocks.authorizeRequest.mockReset().mockResolvedValue({
       tenantId: "tenant-a",
-      actorId: "owner-a",
+      actorId,
       role: "admin",
+      source: "session",
+      auth: {
+        userId: authUserId,
+        email: actorId,
+        sessionId: "session-a",
+        tenantName: "Tenant A",
+      },
     });
     routeMocks.getNotificationCenter.mockReset().mockResolvedValue({
       generatedAt: "2026-08-26T12:00:00.000Z",
@@ -48,8 +59,16 @@ describe("notification inbox route", () => {
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(routeMocks.getNotificationCenter).toHaveBeenCalledWith({
       tenantId: "tenant-a",
-      actorId: "owner-a",
+      actorId,
       processDue: false,
+      requestActorBinding: {
+        version: 1,
+        kind: "auth_user",
+        authUserId,
+        canonicalActorId,
+        legacyOwnerActorIds: [actorId],
+        readableOwnerActorIds: [canonicalActorId, actorId],
+      },
     });
   });
 });
