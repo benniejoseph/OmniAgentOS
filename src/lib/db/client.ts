@@ -13974,12 +13974,12 @@ async function ensureTenantMemoryPurposeEntitlements(sql: SqlClient) {
     DO $migration$
     BEGIN
       IF public.omni_memory_purpose_entitlement_row_is_valid(
-        1,
+        1::SMALLINT,
         'tenant:entitlement_check',
         'memory.read.v1',
-        1,
+        1::BIGINT,
         'held',
-        0,
+        0::BIGINT,
         'actor:entitlement_check',
         NULL,
         NULL,
@@ -13989,12 +13989,12 @@ async function ensureTenantMemoryPurposeEntitlements(sql: SqlClient) {
         CURRENT_TIMESTAMP
       ) IS DISTINCT FROM TRUE OR
         public.omni_memory_purpose_entitlement_row_is_valid(
-          1,
+          1::SMALLINT,
           'tenant:entitlement_check',
           'memory.read.v1',
-          1,
+          1::BIGINT,
           'active',
-          1,
+          1::BIGINT,
           'actor:entitlement_check',
           'actor:entitlement_check',
           NULL,
@@ -14004,12 +14004,12 @@ async function ensureTenantMemoryPurposeEntitlements(sql: SqlClient) {
           CURRENT_TIMESTAMP
         ) IS DISTINCT FROM TRUE OR
         public.omni_memory_purpose_entitlement_row_is_valid(
-          1,
+          1::SMALLINT,
           'tenant:entitlement_check',
           'memory.read.v1',
-          1,
+          1::BIGINT,
           'active',
-          0,
+          0::BIGINT,
           'actor:entitlement_check',
           NULL,
           NULL,
@@ -14019,12 +14019,12 @@ async function ensureTenantMemoryPurposeEntitlements(sql: SqlClient) {
           CURRENT_TIMESTAMP
         ) IS DISTINCT FROM FALSE OR
         public.omni_memory_purpose_entitlement_row_is_valid(
-          1,
+          1::SMALLINT,
           'tenant:entitlement_check',
           'memory.read.v1',
-          1,
+          1::BIGINT,
           'unknown',
-          0,
+          0::BIGINT,
           'actor:entitlement_check',
           NULL,
           NULL,
