@@ -424,6 +424,15 @@ does not read a board, child, event, arbitrary metadata, or artifact; mutate or
 execute work; or change writer identity. Exact detail and every governed effect
 retain their existing typed-event boundaries.
 
+Installing the held tenant-actor membership-epoch authority emits no domain
+event. Migration v54 creates no epoch and makes no membership decision; it
+cannot truthfully attribute current mutable membership state to a historical
+decision actor. A future lifecycle writer must append typed membership
+authority evidence in the same transaction that creates, activates, or
+revokes an epoch. That event may contain only versioned authority identifiers,
+state, epoch, causation, and decision attribution—not credentials, personal
+content, consent text, or inferred administrator intent.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

@@ -53,3 +53,9 @@ capability authorities can be resolved and locked in that same transaction.
 Migration v46 and its pure code accessor now define a stable authenticated-user
 actor projection, but `ExecutionScope` v1 still carries the historical actor
 unchanged and does not infer or persist that projection.
+Migration v54 adds an empty, owner-only tenant-actor membership-epoch shadow.
+It grants no scope, enrolls no current membership, changes no session or role,
+and remains behind a validated activation hold plus restrictive RLS. A future
+authority writer and typed event must establish an epoch before the memory
+authorization hook can use it; `ExecutionScope` cannot substitute for that
+membership decision.

@@ -1352,6 +1352,20 @@ fallback stays exact-owner and rejects duplicate IDs or source keys. This
 read-only repair emits no domain event, changes no writer identity, and does
 not unblock membership or consent holds.
 
+Migration v54 adds the first versioned tenant-actor membership authority as an
+empty, owner-only shadow ledger. Each future subject epoch must begin held,
+advance monotonically under a tenant-and-subject lock, and may only move from
+held to active or revoked and from active to revoked; revocation is terminal
+and a later authority requires the next epoch. A validated activation hold,
+forced tenant RLS, a restrictive system-only policy, and zero-row postflight
+keep the ledger unusable by serving roles. No current membership is enrolled:
+the mutable bootstrap upsert has no authoritative decision actor or typed
+evidence, so treating it as epoch one would fabricate history. Current auth
+rows, roles, sessions, login behavior, file fallback, the v45 deny hook, and
+the v48-v49 holds stay unchanged. Informed-notice evidence and the exact epoch
+binding must be added to the still-empty consent contract together before any
+consent grant writer can exist.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

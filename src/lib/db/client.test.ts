@@ -687,11 +687,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the Capture recording request-read index migration", () => {
+  it("pins the tenant actor membership epoch shadow migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 53,
-      name: "capture_recording_request_read_index",
-      checksum: "763a675a5401d9ba91f0ccee618eb023a016cc06d352d07df530c7f3ade284bf",
+      version: 54,
+      name: "tenant_actor_membership_epochs_shadow",
+      checksum: "5a875be0322dd61a8fbff5c1032a0ac1723171409b91b84937e3e50e31c0b3b4",
     });
   });
 
