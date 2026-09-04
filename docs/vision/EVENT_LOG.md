@@ -273,6 +273,16 @@ recording, RAG, worker, file-fallback, event, execution-scope, or canonical-
 write behavior; any later action-path identity cutover must emit evidence at
 the affected governed boundary.
 
+Converging authenticated custom Skill reads emits no domain event. The
+request-only projection merges the validated canonical/current-email custom
+rows, fails closed on duplicate slugs, retains persisted global Skill IDs,
+and projects the current request actor. Built-ins, Skill mutations, custom
+Agent references, execution/run-contract identity, portable data, file
+fallback, events, and canonical writes remain unchanged; a later governed or
+writable identity cutover must emit its own evidence. Canonical Skill
+enrollment stays blocked until Agent/Skill reference ownership and UI
+actionability are enforced together.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

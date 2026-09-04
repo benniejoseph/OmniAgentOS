@@ -3,10 +3,22 @@ import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl 
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import { skillActorReadOrder } from "@/lib/skills/actor-scope";
 import { builtInSkills } from "@/lib/skills/catalog";
 import type { AgentBuilderLedger, AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 
 type Scope = { tenantId?: string; actorId: string };
+type RequestReadScope = Scope & {
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+};
+
+export class AgentSkillReadConflictError extends Error {
+  constructor(message = "Custom skill ownership is ambiguous.") {
+    super(message);
+    this.name = "AgentSkillReadConflictError";
+  }
+}
 
 export async function listAgentSkills(options: Scope, includeBuiltIns = true) {
   const custom = await listCustomSkills(options);
@@ -17,6 +29,25 @@ export async function getAgentSkill(id: string, options: Scope) {
   const builtIn = builtInSkills.find((item) => item.id === id);
   if (builtIn) return builtIn;
   return (await listCustomSkills(options)).find((item) => item.id === id);
+}
+
+export async function listAgentSkillsForRequest(
+  options: RequestReadScope,
+  includeBuiltIns = true,
+) {
+  if (!hasDatabaseUrl()) return listAgentSkills(options, includeBuiltIns);
+  const custom = await listCustomSkillsForRequest(options);
+  return includeBuiltIns ? [...builtInSkills, ...custom] : custom;
+}
+
+export async function getAgentSkillForRequest(
+  id: string,
+  options: RequestReadScope,
+) {
+  const builtIn = builtInSkills.find((item) => item.id === id);
+  if (builtIn) return builtIn;
+  if (!hasDatabaseUrl()) return getAgentSkill(id, options);
+  return (await listCustomSkillsForRequest(options)).find((item) => item.id === id);
 }
 
 export async function createAgentSkill(input: Omit<AgentSkill, "id" | "tenantId" | "actorId" | "slug" | "version" | "builtIn" | "createdAt" | "updatedAt">, options: Scope) {
@@ -117,6 +148,62 @@ function listCustomSkills(options: Scope) {
   if (hasDatabaseUrl()) return ensureDatabaseSchema().then(() => getSql()`SELECT * FROM omni_custom_skills WHERE tenant_id=${tenantId} AND actor_id=${actorId} ORDER BY updated_at DESC`).then((rows) => rows.map(skillFromRow));
   return readLedger().then((ledger) => ledger.skills.filter((item) => item.tenantId === tenantId && item.actorId === actorId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
 }
+
+async function listCustomSkillsForRequest(options: RequestReadScope) {
+  const tenantId = tenant(options.tenantId);
+  const requestActorId = safe(options.actorId, 200);
+  const [canonicalActorId, exactActorId] = skillActorReadOrder(
+    options.actorId,
+    options.requestActorBinding,
+    requestActorId,
+  );
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT *
+    FROM omni_custom_skills
+    WHERE tenant_id = ${tenantId}
+      AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+    ORDER BY updated_at DESC, id ASC
+  `;
+  const skills = rows.map(skillFromRow);
+  assertRequestSkillOwners(skills, tenantId, canonicalActorId, exactActorId);
+  assertNoCrossActorSkillSlugCollisions(skills);
+  return skills.map((skill) => skillForRequest(skill, exactActorId));
+}
+
+function assertRequestSkillOwners(
+  skills: AgentSkill[],
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  for (const skill of skills) {
+    if (
+      skill.tenantId !== tenantId ||
+      (skill.actorId !== canonicalActorId && skill.actorId !== exactActorId)
+    ) {
+      throw new AgentSkillReadConflictError("Custom skill owner validation failed.");
+    }
+  }
+}
+
+function assertNoCrossActorSkillSlugCollisions(skills: AgentSkill[]) {
+  const ownersBySlug = new Map<string, string>();
+  for (const skill of skills) {
+    const existingOwner = ownersBySlug.get(skill.slug);
+    if (existingOwner !== undefined && existingOwner !== skill.actorId) {
+      throw new AgentSkillReadConflictError(
+        "Custom skill slug is ambiguous across readable owners.",
+      );
+    }
+    ownersBySlug.set(skill.slug, skill.actorId);
+  }
+}
+
+function skillForRequest(skill: AgentSkill, requestActorId: string): AgentSkill {
+  return { ...skill, actorId: requestActorId };
+}
+
 function readLedger() { return readJsonFile<AgentBuilderLedger>(getDataPath("agent-builder.json"), { skills: [], agents: [] }); }
 function updateLedger(mutate: (ledger: AgentBuilderLedger) => AgentBuilderLedger) { return updateJsonFile<AgentBuilderLedger>(getDataPath("agent-builder.json"), { skills: [], agents: [] }, mutate); }
 function normalizeSkill(input: Pick<AgentSkill, "name" | "description" | "instructions" | "category" | "status" | "toolIds" | "tags" | "knowledgeTags">) { return { name: safe(input.name, 120), description: safe(input.description, 500), instructions: safe(input.instructions, 12_000), category: input.category, status: input.status, toolIds: ids(input.toolIds, 40), tags: ids(input.tags, 30), knowledgeTags: ids(input.knowledgeTags, 30) }; }

@@ -1082,6 +1082,23 @@ portable data, retained aliases, and canonical writes remain exact-owner.
 This read-only canary changes no governed effect and does not unblock
 membership epochs or v43-v49.
 
+The following request-read slice covers only custom Skill list and detail
+responses. Built-in Skills keep their static catalog identity and order.
+Authenticated PostgreSQL reads treat canonical and current-email custom rows
+as one namespace, reject any duplicate custom slug across those partitions,
+apply a deterministic update-time/ID order, and project the current request
+actor. Skill IDs remain the persisted global IDs. Creation, update, deletion,
+custom Agent references, agent execution and run-contract hashes, portable
+export/restore, file fallback, retained aliases, and canonical writes remain
+exact-owner. This read-only canary neither reconciles a collision nor changes
+runtime authority, so membership epochs and v43-v49 remain blocked.
+Production has no canonical-owned custom Skill row, making this a dormant
+compatibility canary. Before any canonical Skill can exist, custom-Agent
+create/update must validate every custom Skill against the Agent's persisted
+owner and the UI must not offer a cross-owner Skill for edit, deletion, or
+assignment; alternatively the Agent/Skill runtime graph must converge
+atomically.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

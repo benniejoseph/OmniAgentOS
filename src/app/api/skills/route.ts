@@ -1,8 +1,9 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { skillInputSchema } from "@/lib/skills/schema";
-import { createAgentSkill, listAgentSkills } from "@/lib/skills/store";
+import { createAgentSkill, listAgentSkillsForRequest } from "@/lib/skills/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -12,7 +13,14 @@ async function GETHandler(request: Request) {
   let context;
   try { context = await authorizeRequest({ request, action: "read", resourceType: "agent_skill" }); }
   catch (error) { return forbiddenResponse(error); }
-  return Response.json({ skills: await listAgentSkills({ tenantId: context.tenantId, actorId: context.actorId }) }, { headers: { "cache-control": "private, no-store" } });
+  return Response.json({
+    skills: await listAgentSkillsForRequest({
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestActorBinding:
+        canonicalRequestActorBindingFromSecurityContext(context),
+    }),
+  }, { headers: { "cache-control": "private, no-store" } });
 }
 
 async function POSTHandler(request: Request) {

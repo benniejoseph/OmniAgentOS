@@ -454,6 +454,17 @@ ingestion-job recovery, recordings and segments, RAG linkage, background
 work, file fallback, and canonical writes retain their exact persisted-owner
 contracts.
 
+The ninth request-bound slice converges custom Skill list and detail reads
+only. Built-in Skills remain unchanged. PostgreSQL reads the validated
+canonical/current-email custom rows as one set, fails closed on any duplicate
+custom slug, orders by update time and global ID, and projects the request
+actor. Skill creation, editing, deletion, custom Agent references, runtime
+selection and run-contract hashes, portable data, file fallback, and
+canonical writes remain exact-owner. This is dormant while canonical-owned
+custom Skills remain empty. Canonical Skill enrollment is blocked until
+custom-Agent writes enforce same-persisted-owner Skill references and the UI
+cannot offer a cross-owner Skill as actionable.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.
