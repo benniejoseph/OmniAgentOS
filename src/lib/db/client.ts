@@ -792,6 +792,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[49],
       up: ensureCanonicalAuthUserActorIdentifiersShadow,
     },
+    {
+      ...databaseSchemaMigrations[50],
+      up: ensureCustomAgentSkillReferenceIntegrity,
+    },
   ];
 }
 
@@ -20795,6 +20799,973 @@ async function ensureCanonicalAuthUserActorIdentifiersShadow(sql: SqlClient) {
         FROM omni_tenant_actor_memory_purpose_consents
       ) THEN
         RAISE EXCEPTION 'Actor memory purpose consent floor changed during actor alias installation'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureCustomAgentSkillReferenceIntegrity(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Custom Agent Skill reference migration requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+    END
+    $migration$
+  `;
+
+  // Freeze both sides of the reference graph before the audit. The locks are
+  // transaction-held, so no writer can create a gap between preflight and the
+  // trigger installation below.
+  await sql`
+    LOCK TABLE omni_custom_agents, omni_custom_skills
+    IN SHARE ROW EXCLUSIVE MODE
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid IN (
+            'omni_custom_agents'::regclass,
+            'omni_custom_skills'::regclass
+          )
+          AND NOT trigger_record.tgisinternal
+      ) THEN
+        RAISE EXCEPTION 'Unexpected custom Agent or Skill triggers exist before integrity installation'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_custom_skills custom_skill
+        WHERE custom_skill.id IS NULL
+          OR custom_skill.id IS DISTINCT FROM btrim(custom_skill.id)
+          OR char_length(custom_skill.id) NOT BETWEEN 1 AND 120
+          OR custom_skill.id COLLATE "C" IN (
+            'core.research',
+            'core.builder',
+            'core.critic',
+            'core.memory'
+          )
+      ) THEN
+        RAISE EXCEPTION 'Existing custom Skill identifiers are malformed or reserved'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_custom_agents agent
+        WHERE agent.skill_ids IS NULL
+          OR cardinality(agent.skill_ids) > 30
+      ) THEN
+        RAISE EXCEPTION 'Existing custom Agent Skill reference arrays are null or oversized'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_custom_agents agent
+        CROSS JOIN LATERAL unnest(agent.skill_ids) referenced(skill_id)
+        WHERE referenced.skill_id IS NULL
+          OR referenced.skill_id IS DISTINCT FROM btrim(referenced.skill_id)
+          OR char_length(referenced.skill_id) NOT BETWEEN 1 AND 120
+      ) THEN
+        RAISE EXCEPTION 'Existing custom Agent Skill reference identifiers are malformed'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_custom_agents agent
+        CROSS JOIN LATERAL unnest(agent.skill_ids) referenced(skill_id)
+        GROUP BY agent.id, referenced.skill_id COLLATE "C"
+        HAVING count(*) > 1
+      ) THEN
+        RAISE EXCEPTION 'Existing custom Agent Skill reference arrays contain duplicates'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_custom_agents agent
+        CROSS JOIN LATERAL unnest(agent.skill_ids) referenced(skill_id)
+        WHERE referenced.skill_id COLLATE "C" NOT IN (
+            'core.research',
+            'core.builder',
+            'core.critic',
+            'core.memory'
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM omni_custom_skills custom_skill
+            WHERE custom_skill.id COLLATE "C" =
+                referenced.skill_id COLLATE "C"
+              AND custom_skill.tenant_id COLLATE "C" =
+                agent.tenant_id COLLATE "C"
+              AND custom_skill.actor_id COLLATE "C" =
+                agent.actor_id COLLATE "C"
+          )
+      ) THEN
+        RAISE EXCEPTION 'Existing custom Agent Skill references do not resolve to their exact owner'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_custom_agent_skill_references()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    STRICT
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      referenced_skill_id TEXT;
+    BEGIN
+      IF TG_RELID IS DISTINCT FROM 'public.omni_custom_agents'::regclass
+        OR TG_WHEN IS DISTINCT FROM 'BEFORE'
+        OR TG_LEVEL IS DISTINCT FROM 'ROW'
+        OR TG_OP NOT IN ('INSERT', 'UPDATE')
+        OR TG_NARGS <> 0
+      THEN
+        RAISE EXCEPTION 'Custom Agent Skill validator has an invalid trigger context'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.skill_ids IS NULL
+        OR cardinality(NEW.skill_ids) > 30
+        OR EXISTS (
+          SELECT 1
+          FROM unnest(NEW.skill_ids) referenced(skill_id)
+          WHERE referenced.skill_id IS NULL
+            OR referenced.skill_id IS DISTINCT FROM btrim(referenced.skill_id)
+            OR char_length(referenced.skill_id) NOT BETWEEN 1 AND 120
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM unnest(NEW.skill_ids) referenced(skill_id)
+          GROUP BY referenced.skill_id COLLATE "C"
+          HAVING count(*) > 1
+        )
+      THEN
+        RAISE EXCEPTION 'Custom agent skill references are invalid'
+          USING ERRCODE = '23514',
+            SCHEMA = 'public',
+            TABLE = 'omni_custom_agents',
+            COLUMN = 'skill_ids',
+            CONSTRAINT = 'omni_custom_agents_skill_references_valid';
+      END IF;
+
+      FOR referenced_skill_id IN
+        SELECT referenced.skill_id COLLATE "C"
+        FROM unnest(NEW.skill_ids) referenced(skill_id)
+        WHERE referenced.skill_id COLLATE "C" NOT IN (
+            'core.research',
+            'core.builder',
+            'core.critic',
+            'core.memory'
+          )
+        GROUP BY referenced.skill_id COLLATE "C"
+        ORDER BY referenced.skill_id COLLATE "C"
+      LOOP
+        PERFORM 1
+        FROM public.omni_custom_skills custom_skill
+        WHERE custom_skill.id COLLATE "C" =
+            referenced_skill_id COLLATE "C"
+          AND custom_skill.tenant_id COLLATE "C" =
+            NEW.tenant_id COLLATE "C"
+          AND custom_skill.actor_id COLLATE "C" =
+            NEW.actor_id COLLATE "C"
+        FOR KEY SHARE OF custom_skill;
+
+        IF NOT FOUND THEN
+          RAISE EXCEPTION 'Custom agent skill references are invalid'
+            USING ERRCODE = '23514',
+              SCHEMA = 'public',
+              TABLE = 'omni_custom_agents',
+              COLUMN = 'skill_ids',
+              CONSTRAINT = 'omni_custom_agents_skill_references_valid';
+        END IF;
+      END LOOP;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_custom_skill_reference_identity()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    STRICT
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF TG_RELID IS DISTINCT FROM 'public.omni_custom_skills'::regclass
+        OR TG_WHEN IS DISTINCT FROM 'BEFORE'
+        OR TG_LEVEL IS DISTINCT FROM 'ROW'
+        OR TG_OP NOT IN ('INSERT', 'UPDATE', 'DELETE')
+        OR TG_NARGS <> 0
+      THEN
+        RAISE EXCEPTION 'Custom Skill reference guard has an invalid trigger context'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF TG_OP = 'INSERT' THEN
+        IF NEW.id IS NULL
+          OR NEW.id IS DISTINCT FROM btrim(NEW.id)
+          OR char_length(NEW.id) NOT BETWEEN 1 AND 120
+          OR NEW.id COLLATE "C" IN (
+            'core.research',
+            'core.builder',
+            'core.critic',
+            'core.memory'
+          )
+        THEN
+          RAISE EXCEPTION 'Custom skill identifier is invalid or reserved'
+            USING ERRCODE = '23514',
+              SCHEMA = 'public',
+              TABLE = 'omni_custom_skills',
+              COLUMN = 'id',
+              CONSTRAINT = 'omni_custom_skills_id_valid';
+        END IF;
+        RETURN NEW;
+      END IF;
+
+      IF TG_OP = 'UPDATE' THEN
+        IF NEW.id COLLATE "C" IS DISTINCT FROM OLD.id COLLATE "C"
+          OR NEW.tenant_id COLLATE "C" IS DISTINCT FROM
+            OLD.tenant_id COLLATE "C"
+          OR NEW.actor_id COLLATE "C" IS DISTINCT FROM
+            OLD.actor_id COLLATE "C"
+        THEN
+          RAISE EXCEPTION 'Custom skill reference identity is immutable'
+            USING ERRCODE = '23514',
+              SCHEMA = 'public',
+              TABLE = 'omni_custom_skills',
+              CONSTRAINT = 'omni_custom_skills_reference_identity_immutable';
+        END IF;
+        RETURN NEW;
+      END IF;
+
+      IF current_setting('transaction_isolation') IS DISTINCT FROM
+          'read committed'
+      THEN
+        RAISE EXCEPTION 'Custom skill deletion requires read committed isolation'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM public.omni_custom_agents agent
+        WHERE agent.tenant_id COLLATE "C" = OLD.tenant_id COLLATE "C"
+          AND agent.actor_id COLLATE "C" = OLD.actor_id COLLATE "C"
+          AND EXISTS (
+            SELECT 1
+            FROM unnest(agent.skill_ids) referenced(skill_id)
+            WHERE referenced.skill_id COLLATE "C" = OLD.id COLLATE "C"
+          )
+      ) THEN
+        RAISE EXCEPTION 'Custom skill is still referenced by an agent'
+          USING ERRCODE = '23503',
+            SCHEMA = 'public',
+            TABLE = 'omni_custom_skills',
+            CONSTRAINT = 'omni_custom_agents_skill_references_fkey';
+      END IF;
+
+      RETURN OLD;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_custom_skills_truncate()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    STRICT
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF TG_RELID IS DISTINCT FROM 'public.omni_custom_skills'::regclass
+        OR TG_WHEN IS DISTINCT FROM 'BEFORE'
+        OR TG_LEVEL IS DISTINCT FROM 'STATEMENT'
+        OR TG_OP IS DISTINCT FROM 'TRUNCATE'
+        OR TG_NARGS <> 0
+      THEN
+        RAISE EXCEPTION 'Custom Skill truncate guard has an invalid trigger context'
+          USING ERRCODE = '55000';
+      END IF;
+
+      RAISE EXCEPTION 'Custom skills cannot be truncated while Agent references are durable'
+        USING ERRCODE = '23503',
+          SCHEMA = 'public',
+          TABLE = 'omni_custom_skills',
+          CONSTRAINT = 'omni_custom_agents_skill_references_fkey';
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_custom_agents'::regclass
+          AND tgname = 'omni_custom_agents_validate_skill_references'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_custom_agents_validate_skill_references
+        BEFORE INSERT OR UPDATE OF tenant_id, actor_id, skill_ids
+        ON omni_custom_agents
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_custom_agent_skill_references();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_custom_skills'::regclass
+          AND tgname = 'omni_custom_skills_protect_reference_identity'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_custom_skills_protect_reference_identity
+        BEFORE INSERT OR UPDATE OF id, tenant_id, actor_id OR DELETE
+        ON omni_custom_skills
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_protect_custom_skill_reference_identity();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_custom_skills'::regclass
+          AND tgname = 'omni_custom_skills_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_custom_skills_no_truncate
+        BEFORE TRUNCATE ON omni_custom_skills
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_reject_custom_skills_truncate();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_validate_custom_agent_skill_references()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_protect_custom_skill_reference_identity()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_reject_custom_skills_truncate()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE TRIGGER
+    ON TABLE omni_custom_agents
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE TRIGGER, TRUNCATE
+    ON TABLE omni_custom_skills
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_validate_custom_agent_skill_references',
+            'omni_protect_custom_skill_reference_identity',
+            'omni_reject_custom_skills_truncate'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_validate_custom_agent_skill_references() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_protect_custom_skill_reference_identity() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_reject_custom_skills_truncate() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND (
+            (
+              table_name = 'omni_custom_agents'
+              AND privilege_type = 'TRIGGER'
+            ) OR (
+              table_name = 'omni_custom_skills'
+              AND privilege_type IN ('TRIGGER', 'TRUNCATE')
+            )
+          )
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE TRIGGER ON TABLE %I.omni_custom_agents FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE TRIGGER, TRUNCATE ON TABLE %I.omni_custom_skills FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `);
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM omni_custom_skills custom_skill
+        WHERE custom_skill.id IS NULL
+          OR custom_skill.id IS DISTINCT FROM btrim(custom_skill.id)
+          OR char_length(custom_skill.id) NOT BETWEEN 1 AND 120
+          OR custom_skill.id COLLATE "C" IN (
+            'core.research',
+            'core.builder',
+            'core.critic',
+            'core.memory'
+          )
+      ) THEN
+        RAISE EXCEPTION 'Custom Skill identifier integrity changed during migration'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_custom_agents agent
+        WHERE agent.skill_ids IS NULL
+          OR cardinality(agent.skill_ids) > 30
+          OR EXISTS (
+            SELECT 1
+            FROM unnest(agent.skill_ids) referenced(skill_id)
+            WHERE referenced.skill_id IS NULL
+              OR referenced.skill_id IS DISTINCT FROM btrim(referenced.skill_id)
+              OR char_length(referenced.skill_id) NOT BETWEEN 1 AND 120
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM unnest(agent.skill_ids) referenced(skill_id)
+            GROUP BY referenced.skill_id COLLATE "C"
+            HAVING count(*) > 1
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM unnest(agent.skill_ids) referenced(skill_id)
+            WHERE referenced.skill_id COLLATE "C" NOT IN (
+                'core.research',
+                'core.builder',
+                'core.critic',
+                'core.memory'
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM omni_custom_skills custom_skill
+                WHERE custom_skill.id COLLATE "C" =
+                    referenced.skill_id COLLATE "C"
+                  AND custom_skill.tenant_id COLLATE "C" =
+                    agent.tenant_id COLLATE "C"
+                  AND custom_skill.actor_id COLLATE "C" =
+                    agent.actor_id COLLATE "C"
+              )
+          )
+      ) THEN
+        RAISE EXCEPTION 'Custom Agent Skill reference integrity changed during migration'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (
+        SELECT count(*)
+        FROM pg_proc procedure
+        JOIN pg_namespace namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = current_schema()
+          AND procedure.proname IN (
+            'omni_validate_custom_agent_skill_references',
+            'omni_protect_custom_skill_reference_identity',
+            'omni_reject_custom_skills_truncate'
+          )
+      ) <> 3 OR EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_namespace namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = current_schema()
+          AND procedure.proname IN (
+            'omni_validate_custom_agent_skill_references',
+            'omni_protect_custom_skill_reference_identity',
+            'omni_reject_custom_skills_truncate'
+          )
+          AND procedure.oid NOT IN (
+            to_regprocedure(
+              'public.omni_validate_custom_agent_skill_references()'
+            ),
+            to_regprocedure(
+              'public.omni_protect_custom_skill_reference_identity()'
+            ),
+            to_regprocedure(
+              'public.omni_reject_custom_skills_truncate()'
+            )
+          )
+      ) THEN
+        RAISE EXCEPTION 'Custom Agent Skill reference functions are overloaded'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'omni_custom_agents'::regclass
+          AND trigger_record.tgname =
+            'omni_custom_agents_validate_skill_references'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_validate_custom_agent_skill_references()'
+          )
+          AND trigger_record.tgtype = 23
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND COALESCE(
+            (to_jsonb(trigger_record) ->> 'tgparentid')::OID,
+            0::OID
+          ) = 0::OID
+          AND trigger_record.tgattr::TEXT = (
+            SELECT string_agg(attribute.attnum::TEXT, ' ' ORDER BY attribute.attnum)
+            FROM pg_attribute attribute
+            WHERE attribute.attrelid = 'omni_custom_agents'::regclass
+              AND attribute.attname IN ('tenant_id', 'actor_id', 'skill_ids')
+              AND NOT attribute.attisdropped
+          )
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'omni_custom_skills'::regclass
+          AND trigger_record.tgname =
+            'omni_custom_skills_protect_reference_identity'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_protect_custom_skill_reference_identity()'
+          )
+          AND trigger_record.tgtype = 31
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND COALESCE(
+            (to_jsonb(trigger_record) ->> 'tgparentid')::OID,
+            0::OID
+          ) = 0::OID
+          AND trigger_record.tgattr::TEXT = (
+            SELECT string_agg(attribute.attnum::TEXT, ' ' ORDER BY attribute.attnum)
+            FROM pg_attribute attribute
+            WHERE attribute.attrelid = 'omni_custom_skills'::regclass
+              AND attribute.attname IN ('id', 'tenant_id', 'actor_id')
+              AND NOT attribute.attisdropped
+          )
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'omni_custom_skills'::regclass
+          AND trigger_record.tgname = 'omni_custom_skills_no_truncate'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_reject_custom_skills_truncate()'
+          )
+          AND trigger_record.tgtype = 34
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND COALESCE(
+            (to_jsonb(trigger_record) ->> 'tgparentid')::OID,
+            0::OID
+          ) = 0::OID
+          AND trigger_record.tgattr::TEXT = ''
+      ) OR (
+        SELECT count(*)
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid IN (
+            'omni_custom_agents'::regclass,
+            'omni_custom_skills'::regclass
+          )
+          AND NOT trigger_record.tgisinternal
+      ) <> 3
+      THEN
+        RAISE EXCEPTION 'Custom Agent Skill reference triggers are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_validate_custom_agent_skill_references()'
+        )
+          AND procedure.prokind = 'f'
+          AND NOT procedure.proretset
+          AND procedure.proparallel = 'u'
+          AND procedure.pronargdefaults = 0
+          AND procedure.provariadic = 0::OID
+          AND procedure.prorettype = 'trigger'::regtype
+          AND procedure.provolatile = 'v'
+          AND procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'plpgsql'
+          AND procedure.prosrc = $expected$
+    DECLARE
+      referenced_skill_id TEXT;
+    BEGIN
+      IF TG_RELID IS DISTINCT FROM 'public.omni_custom_agents'::regclass
+        OR TG_WHEN IS DISTINCT FROM 'BEFORE'
+        OR TG_LEVEL IS DISTINCT FROM 'ROW'
+        OR TG_OP NOT IN ('INSERT', 'UPDATE')
+        OR TG_NARGS <> 0
+      THEN
+        RAISE EXCEPTION 'Custom Agent Skill validator has an invalid trigger context'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.skill_ids IS NULL
+        OR cardinality(NEW.skill_ids) > 30
+        OR EXISTS (
+          SELECT 1
+          FROM unnest(NEW.skill_ids) referenced(skill_id)
+          WHERE referenced.skill_id IS NULL
+            OR referenced.skill_id IS DISTINCT FROM btrim(referenced.skill_id)
+            OR char_length(referenced.skill_id) NOT BETWEEN 1 AND 120
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM unnest(NEW.skill_ids) referenced(skill_id)
+          GROUP BY referenced.skill_id COLLATE "C"
+          HAVING count(*) > 1
+        )
+      THEN
+        RAISE EXCEPTION 'Custom agent skill references are invalid'
+          USING ERRCODE = '23514',
+            SCHEMA = 'public',
+            TABLE = 'omni_custom_agents',
+            COLUMN = 'skill_ids',
+            CONSTRAINT = 'omni_custom_agents_skill_references_valid';
+      END IF;
+
+      FOR referenced_skill_id IN
+        SELECT referenced.skill_id COLLATE "C"
+        FROM unnest(NEW.skill_ids) referenced(skill_id)
+        WHERE referenced.skill_id COLLATE "C" NOT IN (
+            'core.research',
+            'core.builder',
+            'core.critic',
+            'core.memory'
+          )
+        GROUP BY referenced.skill_id COLLATE "C"
+        ORDER BY referenced.skill_id COLLATE "C"
+      LOOP
+        PERFORM 1
+        FROM public.omni_custom_skills custom_skill
+        WHERE custom_skill.id COLLATE "C" =
+            referenced_skill_id COLLATE "C"
+          AND custom_skill.tenant_id COLLATE "C" =
+            NEW.tenant_id COLLATE "C"
+          AND custom_skill.actor_id COLLATE "C" =
+            NEW.actor_id COLLATE "C"
+        FOR KEY SHARE OF custom_skill;
+
+        IF NOT FOUND THEN
+          RAISE EXCEPTION 'Custom agent skill references are invalid'
+            USING ERRCODE = '23514',
+              SCHEMA = 'public',
+              TABLE = 'omni_custom_agents',
+              COLUMN = 'skill_ids',
+              CONSTRAINT = 'omni_custom_agents_skill_references_valid';
+        END IF;
+      END LOOP;
+
+      RETURN NEW;
+    END
+    $expected$
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_protect_custom_skill_reference_identity()'
+        )
+          AND procedure.prokind = 'f'
+          AND NOT procedure.proretset
+          AND procedure.proparallel = 'u'
+          AND procedure.pronargdefaults = 0
+          AND procedure.provariadic = 0::OID
+          AND procedure.prorettype = 'trigger'::regtype
+          AND procedure.provolatile = 'v'
+          AND procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'plpgsql'
+          AND procedure.prosrc = $expected$
+    BEGIN
+      IF TG_RELID IS DISTINCT FROM 'public.omni_custom_skills'::regclass
+        OR TG_WHEN IS DISTINCT FROM 'BEFORE'
+        OR TG_LEVEL IS DISTINCT FROM 'ROW'
+        OR TG_OP NOT IN ('INSERT', 'UPDATE', 'DELETE')
+        OR TG_NARGS <> 0
+      THEN
+        RAISE EXCEPTION 'Custom Skill reference guard has an invalid trigger context'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF TG_OP = 'INSERT' THEN
+        IF NEW.id IS NULL
+          OR NEW.id IS DISTINCT FROM btrim(NEW.id)
+          OR char_length(NEW.id) NOT BETWEEN 1 AND 120
+          OR NEW.id COLLATE "C" IN (
+            'core.research',
+            'core.builder',
+            'core.critic',
+            'core.memory'
+          )
+        THEN
+          RAISE EXCEPTION 'Custom skill identifier is invalid or reserved'
+            USING ERRCODE = '23514',
+              SCHEMA = 'public',
+              TABLE = 'omni_custom_skills',
+              COLUMN = 'id',
+              CONSTRAINT = 'omni_custom_skills_id_valid';
+        END IF;
+        RETURN NEW;
+      END IF;
+
+      IF TG_OP = 'UPDATE' THEN
+        IF NEW.id COLLATE "C" IS DISTINCT FROM OLD.id COLLATE "C"
+          OR NEW.tenant_id COLLATE "C" IS DISTINCT FROM
+            OLD.tenant_id COLLATE "C"
+          OR NEW.actor_id COLLATE "C" IS DISTINCT FROM
+            OLD.actor_id COLLATE "C"
+        THEN
+          RAISE EXCEPTION 'Custom skill reference identity is immutable'
+            USING ERRCODE = '23514',
+              SCHEMA = 'public',
+              TABLE = 'omni_custom_skills',
+              CONSTRAINT = 'omni_custom_skills_reference_identity_immutable';
+        END IF;
+        RETURN NEW;
+      END IF;
+
+      IF current_setting('transaction_isolation') IS DISTINCT FROM
+          'read committed'
+      THEN
+        RAISE EXCEPTION 'Custom skill deletion requires read committed isolation'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM public.omni_custom_agents agent
+        WHERE agent.tenant_id COLLATE "C" = OLD.tenant_id COLLATE "C"
+          AND agent.actor_id COLLATE "C" = OLD.actor_id COLLATE "C"
+          AND EXISTS (
+            SELECT 1
+            FROM unnest(agent.skill_ids) referenced(skill_id)
+            WHERE referenced.skill_id COLLATE "C" = OLD.id COLLATE "C"
+          )
+      ) THEN
+        RAISE EXCEPTION 'Custom skill is still referenced by an agent'
+          USING ERRCODE = '23503',
+            SCHEMA = 'public',
+            TABLE = 'omni_custom_skills',
+            CONSTRAINT = 'omni_custom_agents_skill_references_fkey';
+      END IF;
+
+      RETURN OLD;
+    END
+    $expected$
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_reject_custom_skills_truncate()'
+        )
+          AND procedure.prokind = 'f'
+          AND NOT procedure.proretset
+          AND procedure.proparallel = 'u'
+          AND procedure.pronargdefaults = 0
+          AND procedure.provariadic = 0::OID
+          AND procedure.prorettype = 'trigger'::regtype
+          AND procedure.provolatile = 'v'
+          AND procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig =
+            ARRAY['search_path=pg_catalog, public']
+          AND procedure.proowner = (
+            SELECT relowner
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          AND language.lanname = 'plpgsql'
+          AND procedure.prosrc = $expected$
+    BEGIN
+      IF TG_RELID IS DISTINCT FROM 'public.omni_custom_skills'::regclass
+        OR TG_WHEN IS DISTINCT FROM 'BEFORE'
+        OR TG_LEVEL IS DISTINCT FROM 'STATEMENT'
+        OR TG_OP IS DISTINCT FROM 'TRUNCATE'
+        OR TG_NARGS <> 0
+      THEN
+        RAISE EXCEPTION 'Custom Skill truncate guard has an invalid trigger context'
+          USING ERRCODE = '55000';
+      END IF;
+
+      RAISE EXCEPTION 'Custom skills cannot be truncated while Agent references are durable'
+        USING ERRCODE = '23503',
+          SCHEMA = 'public',
+          TABLE = 'omni_custom_skills',
+          CONSTRAINT = 'omni_custom_agents_skill_references_fkey';
+    END
+    $expected$
+      ) THEN
+        RAISE EXCEPTION 'Custom Agent Skill reference functions are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM (
+          VALUES
+            (to_regprocedure(
+              'public.omni_validate_custom_agent_skill_references()'
+            )),
+            (to_regprocedure(
+              'public.omni_protect_custom_skill_reference_identity()'
+            )),
+            (to_regprocedure(
+              'public.omni_reject_custom_skills_truncate()'
+            ))
+        ) expected(procedure_oid)
+        JOIN pg_proc procedure ON procedure.oid = expected.procedure_oid
+        CROSS JOIN LATERAL aclexplode(
+          COALESCE(
+            procedure.proacl,
+            acldefault('f', procedure.proowner)
+          )
+        ) privilege
+        WHERE privilege.grantee <> procedure.proowner
+      ) THEN
+        RAISE EXCEPTION 'Custom Agent Skill reference functions have serving grants'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND (
+            (
+              table_name = 'omni_custom_agents'
+              AND privilege_type = 'TRIGGER'
+            ) OR (
+              table_name = 'omni_custom_skills'
+              AND privilege_type IN ('TRIGGER', 'TRUNCATE')
+            )
+          )
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Custom Agent Skill reference tables retain unsafe serving grants'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM (
+          VALUES
+            ('omni_custom_agents'::regclass),
+            ('omni_custom_skills'::regclass)
+        ) expected(relation_oid)
+        JOIN pg_class relation ON relation.oid = expected.relation_oid
+        WHERE relation.relowner IS DISTINCT FROM (
+          SELECT relowner
+          FROM pg_class
+          WHERE oid = 'omni_schema_version'::regclass
+        )
+      ) THEN
+        RAISE EXCEPTION 'Custom Agent Skill reference trigger relations have invalid ownership'
           USING ERRCODE = '55000';
       END IF;
     END

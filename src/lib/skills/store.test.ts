@@ -2,8 +2,17 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { builtInSkills } from "@/lib/skills/catalog";
 import { customAgentPatchSchema } from "@/lib/skills/schema";
-import { createAgentSkill, createCustomAgent, deleteAgentSkill, listAgentSkills, listCustomAgents, updateCustomAgent } from "@/lib/skills/store";
+import {
+  AgentSkillAssignmentError,
+  createAgentSkill,
+  createCustomAgent,
+  deleteAgentSkill,
+  listAgentSkills,
+  listCustomAgents,
+  updateCustomAgent,
+} from "@/lib/skills/store";
 
 describe("agent and skill studio store", () => {
   let dataDirectory = "";
@@ -68,4 +77,71 @@ describe("agent and skill studio store", () => {
     expect(await deleteAgentSkill(skill.id, scope)).toBe(true);
     expect(await listCustomAgents(scope)).toMatchObject([{ id: agent.id, skillIds: [] }]);
   });
+
+  it("accepts only built-in or exact-owner custom Skills in file mode", async () => {
+    const scope = { tenantId: "private", actorId: "owner" };
+    const exactSkill = await createAgentSkill(skillInput("Exact Skill"), scope);
+    const otherSkill = await createAgentSkill(
+      skillInput("Other Skill"),
+      { tenantId: "private", actorId: "other-owner" },
+    );
+
+    const agent = await createCustomAgent({
+      ...agentInput("Exact Agent"),
+      skillIds: [builtInSkills[0].id, ` ${exactSkill.id} `],
+    }, scope);
+    expect(agent.skillIds).toEqual([builtInSkills[0].id, exactSkill.id]);
+
+    await expect(createCustomAgent({
+      ...agentInput("Cross Owner Agent"),
+      skillIds: [otherSkill.id],
+    }, scope)).rejects.toBeInstanceOf(AgentSkillAssignmentError);
+    await expect(createCustomAgent({
+      ...agentInput("Missing Skill Agent"),
+      skillIds: ["missing-skill"],
+    }, scope)).rejects.toBeInstanceOf(AgentSkillAssignmentError);
+    expect((await listCustomAgents(scope)).map((item) => item.name)).toEqual([
+      "Exact Agent",
+    ]);
+
+    await expect(updateCustomAgent(agent.id, {
+      description: "This update must not cross the actor boundary.",
+      skillIds: [otherSkill.id],
+    }, scope)).rejects.toBeInstanceOf(AgentSkillAssignmentError);
+    expect(await listCustomAgents(scope)).toMatchObject([{
+      id: agent.id,
+      description: agent.description,
+      skillIds: [builtInSkills[0].id, exactSkill.id],
+    }]);
+  });
 });
+
+function skillInput(name: string) {
+  return {
+    name,
+    description: `Description for ${name}.`,
+    instructions: `Instructions for ${name} with enough detail.`,
+    category: "personal" as const,
+    status: "active" as const,
+    toolIds: [],
+    tags: [],
+    knowledgeTags: [],
+  };
+}
+
+function agentInput(name: string) {
+  return {
+    name,
+    role: "Specialist",
+    description: `Description for ${name}.`,
+    instructions: `Instructions for ${name} with enough detail.`,
+    status: "ready" as const,
+    accent: "emerald" as const,
+    modelPolicy: "auto" as const,
+    autonomy: "governed" as const,
+    approvalPolicy: "risk_based" as const,
+    memoryScope: "all" as const,
+    skillIds: [],
+    toolIds: [],
+  };
+}

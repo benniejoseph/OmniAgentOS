@@ -2,7 +2,12 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { customAgentPatchSchema } from "@/lib/skills/schema";
-import { deleteCustomAgent, getCustomAgent, updateCustomAgent } from "@/lib/skills/store";
+import {
+  AgentSkillAssignmentError,
+  deleteCustomAgent,
+  getCustomAgent,
+  updateCustomAgent,
+} from "@/lib/skills/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -27,8 +32,26 @@ async function PATCHHandler(request: Request, context: RouteContext<"/api/agents
   const parsed = customAgentPatchSchema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid agent update", details: parsed.error.flatten() }, { status: 400 });
   const { id } = await context.params;
-  const agent = await updateCustomAgent(id, parsed.data, { tenantId: auth.tenantId, actorId: auth.actorId });
-  return agent ? Response.json({ agent }) : Response.json({ error: "Custom agent not found." }, { status: 404 });
+  try {
+    const agent = await updateCustomAgent(id, parsed.data, { tenantId: auth.tenantId, actorId: auth.actorId });
+    return agent ? Response.json({ agent }) : Response.json({ error: "Custom agent not found." }, { status: 404 });
+  } catch (error) {
+    if (error instanceof AgentSkillAssignmentError) {
+      return Response.json(
+        { error: "One or more selected skills are unavailable for this agent." },
+        { status: 409, headers: { "cache-control": "private, no-store" } },
+      );
+    }
+    const duplicate = error instanceof Error &&
+      /unique|duplicate|already exists/i.test(error.message);
+    return Response.json(
+      { error: duplicate ? "An agent with this name already exists." : "Agent update failed." },
+      {
+        status: duplicate ? 409 : 500,
+        headers: { "cache-control": "private, no-store" },
+      },
+    );
+  }
 }
 
 async function DELETEHandler(request: Request, context: RouteContext<"/api/agents/[id]">) {

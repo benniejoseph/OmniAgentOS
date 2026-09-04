@@ -248,5 +248,10 @@
     "version": 50,
     "name": "canonical_auth_user_actor_identifiers_shadow",
     "checksum": "dba62605eda14909482eec5a162fec9dea07c85bae26647b13df718bc8235863"
+  },
+  {
+    "version": 51,
+    "name": "custom_agent_skill_reference_integrity",
+    "checksum": "8c7e3a41d5b69f204a18c7de93f2b605e1468acd7b30f9542d6ce18fa905734b"
   }
 ]

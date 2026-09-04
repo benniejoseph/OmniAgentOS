@@ -283,6 +283,14 @@ writable identity cutover must emit its own evidence. Canonical Skill
 enrollment stays blocked until Agent/Skill reference ownership and UI
 actionability are enforced together.
 
+Installing the custom Agent-to-Skill reference barrier emits no domain event.
+Migration v51 and the matching request validation reject invalid or
+cross-owner edges, reserve catalog IDs, and block unsafe identity mutation or
+direct deletion; they do not alter any valid Agent, Skill, run, approval,
+receipt, or external effect. Existing Agent create/update event debt is not
+expanded into this integrity-only slice, and a later execution-identity or
+canonical-write cutover must add typed evidence at its governed boundary.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

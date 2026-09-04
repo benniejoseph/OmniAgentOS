@@ -1099,6 +1099,20 @@ owner and the UI must not offer a cross-owner Skill for edit, deletion, or
 assignment; alternatively the Agent/Skill runtime graph must converge
 atomically.
 
+The next compatibility batch installs that required reference barrier.
+Migration v51 reserves built-in Skill IDs, validates custom Skill identifiers,
+and enforces exact tenant/actor ownership for every non-built-in Agent Skill
+edge, including direct database writers and concurrent deletion. Unsafe
+trigger/truncate privileges and Skill truncation are blocked; direct Skill
+deletion requires read-committed isolation for a fresh post-lock reference
+check. The Agent
+write path performs the same validation transactionally, while Skill response
+metadata lets the UI expose canonical compatibility rows for reading without
+offering assignment, edit, or deletion. This makes the dormant Skill read
+canary safe to populate, but it does not converge custom Agent reads, Agent
+runtime identity, run-contract hashes, portable data, or canonical writes;
+those remain separate gates before any canonical Skill can drive execution.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

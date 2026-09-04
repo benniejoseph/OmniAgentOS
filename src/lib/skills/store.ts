@@ -20,6 +20,15 @@ export class AgentSkillReadConflictError extends Error {
   }
 }
 
+export class AgentSkillAssignmentError extends Error {
+  readonly code = "agent_skill_assignment_invalid";
+
+  constructor() {
+    super("One or more selected skills are unavailable for this agent.");
+    this.name = "AgentSkillAssignmentError";
+  }
+}
+
 export async function listAgentSkills(options: Scope, includeBuiltIns = true) {
   const custom = await listCustomSkills(options);
   return includeBuiltIns ? [...builtInSkills, ...custom] : custom;
@@ -35,9 +44,15 @@ export async function listAgentSkillsForRequest(
   options: RequestReadScope,
   includeBuiltIns = true,
 ) {
-  if (!hasDatabaseUrl()) return listAgentSkills(options, includeBuiltIns);
+  if (!hasDatabaseUrl()) {
+    return (await listAgentSkills(options, includeBuiltIns)).map((skill) =>
+      skillForExactFileRequest(skill),
+    );
+  }
   const custom = await listCustomSkillsForRequest(options);
-  return includeBuiltIns ? [...builtInSkills, ...custom] : custom;
+  return includeBuiltIns
+    ? [...builtInSkills.map(skillForBuiltInRequest), ...custom]
+    : custom;
 }
 
 export async function getAgentSkillForRequest(
@@ -45,12 +60,15 @@ export async function getAgentSkillForRequest(
   options: RequestReadScope,
 ) {
   const builtIn = builtInSkills.find((item) => item.id === id);
-  if (builtIn) return builtIn;
-  if (!hasDatabaseUrl()) return getAgentSkill(id, options);
+  if (builtIn) return skillForBuiltInRequest(builtIn);
+  if (!hasDatabaseUrl()) {
+    const skill = await getAgentSkill(id, options);
+    return skill ? skillForExactFileRequest(skill) : undefined;
+  }
   return (await listCustomSkillsForRequest(options)).find((item) => item.id === id);
 }
 
-export async function createAgentSkill(input: Omit<AgentSkill, "id" | "tenantId" | "actorId" | "slug" | "version" | "builtIn" | "createdAt" | "updatedAt">, options: Scope) {
+export async function createAgentSkill(input: Omit<AgentSkill, "id" | "tenantId" | "actorId" | "slug" | "version" | "builtIn" | "selectable" | "manageable" | "createdAt" | "updatedAt">, options: Scope) {
   const desiredSlug = slug(input.name);
   if ((await listAgentSkills(options)).some((item) => item.slug === desiredSlug)) throw new Error("A skill with this name already exists.");
   const now = new Date().toISOString();
@@ -118,23 +136,128 @@ export async function createCustomAgent(input: Omit<CustomAgentDefinition, "id" 
   const agent: CustomAgentDefinition = { ...normalizeAgent(input), id: randomUUID(), tenantId: tenant(options.tenantId), actorId: safe(options.actorId, 200), slug: desiredSlug, createdAt: now, updatedAt: now };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`INSERT INTO omni_custom_agents (id, tenant_id, actor_id, slug, name, role, description, instructions, status, accent, model_policy, autonomy, approval_policy, memory_scope, skill_ids, tool_ids, created_at, updated_at)
-      VALUES (${agent.id}, ${agent.tenantId}, ${agent.actorId}, ${agent.slug}, ${agent.name}, ${agent.role}, ${agent.description}, ${agent.instructions}, ${agent.status}, ${agent.accent}, ${agent.modelPolicy}, ${agent.autonomy}, ${agent.approvalPolicy}, ${agent.memoryScope}, ${agent.skillIds}, ${agent.toolIds}, ${now}, ${now}) RETURNING *`;
-    return agentFromRow(rows[0]);
+    try {
+      return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+        await assertAgentSkillAssignmentsWithSql(
+          agent.skillIds,
+          agent.tenantId,
+          agent.actorId,
+          sql,
+        );
+        const rows = await sql`
+          INSERT INTO omni_custom_agents (
+            id, tenant_id, actor_id, slug, name, role, description,
+            instructions, status, accent, model_policy, autonomy,
+            approval_policy, memory_scope, skill_ids, tool_ids,
+            created_at, updated_at
+          ) VALUES (
+            ${agent.id}, ${agent.tenantId}, ${agent.actorId}, ${agent.slug},
+            ${agent.name}, ${agent.role}, ${agent.description},
+            ${agent.instructions}, ${agent.status}, ${agent.accent},
+            ${agent.modelPolicy}, ${agent.autonomy}, ${agent.approvalPolicy},
+            ${agent.memoryScope}, ${agent.skillIds}, ${agent.toolIds},
+            ${now}, ${now}
+          )
+          RETURNING *
+        `;
+        return agentFromRow(rows[0]);
+      }) as CustomAgentDefinition;
+    } catch (error) {
+      throw translatedAgentSkillConstraintError(error);
+    }
   }
-  await updateLedger((ledger) => ({ ...ledger, agents: [agent, ...ledger.agents] })); return agent;
+  await updateLedger((ledger) => {
+    if (ledger.agents.some((item) =>
+      item.tenantId === agent.tenantId &&
+      item.actorId === agent.actorId &&
+      item.slug === agent.slug
+    )) {
+      throw new Error("An agent with this name already exists.");
+    }
+    assertAgentSkillAssignmentsInLedger(
+      agent.skillIds,
+      agent.tenantId,
+      agent.actorId,
+      ledger,
+    );
+    return { ...ledger, agents: [agent, ...ledger.agents] };
+  });
+  return agent;
 }
 
 export async function updateCustomAgent(id: string, input: Partial<Omit<CustomAgentDefinition, "id" | "tenantId" | "actorId" | "slug" | "createdAt" | "updatedAt">>, options: Scope) {
-  const current = await getCustomAgent(id, options); if (!current) return undefined;
-  const next = { ...current, ...normalizeAgent({ ...current, ...input }), slug: input.name ? slug(input.name) : current.slug, updatedAt: new Date().toISOString() };
+  const tenantId = tenant(options.tenantId);
+  const actorId = safe(options.actorId, 200);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`UPDATE omni_custom_agents SET slug=${next.slug}, name=${next.name}, role=${next.role}, description=${next.description}, instructions=${next.instructions}, status=${next.status}, accent=${next.accent}, model_policy=${next.modelPolicy}, autonomy=${next.autonomy}, approval_policy=${next.approvalPolicy}, memory_scope=${next.memoryScope}, skill_ids=${next.skillIds}, tool_ids=${next.toolIds}, updated_at=${next.updatedAt}
-      WHERE id=${id} AND tenant_id=${next.tenantId} AND actor_id=${next.actorId} RETURNING *`;
-    return rows[0] ? agentFromRow(rows[0]) : undefined;
+    try {
+      return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+        const currentRows = await sql`
+          SELECT * FROM omni_custom_agents
+          WHERE id = ${id} AND tenant_id = ${tenantId} AND actor_id = ${actorId}
+          FOR UPDATE
+        `;
+        if (!currentRows[0]) return undefined;
+        const current = agentFromRow(currentRows[0]);
+        const next = updatedCustomAgent(current, input);
+        await assertAgentSkillAssignmentsWithSql(
+          next.skillIds,
+          tenantId,
+          actorId,
+          sql,
+        );
+        const rows = await sql`
+          UPDATE omni_custom_agents
+          SET slug = ${next.slug}, name = ${next.name}, role = ${next.role},
+            description = ${next.description}, instructions = ${next.instructions},
+            status = ${next.status}, accent = ${next.accent},
+            model_policy = ${next.modelPolicy}, autonomy = ${next.autonomy},
+            approval_policy = ${next.approvalPolicy}, memory_scope = ${next.memoryScope},
+            skill_ids = ${next.skillIds}, tool_ids = ${next.toolIds},
+            updated_at = ${next.updatedAt}
+          WHERE id = ${id} AND tenant_id = ${tenantId} AND actor_id = ${actorId}
+          RETURNING *
+        `;
+        return rows[0] ? agentFromRow(rows[0]) : undefined;
+      }) as CustomAgentDefinition | undefined;
+    } catch (error) {
+      throw translatedAgentSkillConstraintError(error);
+    }
   }
-  await updateLedger((ledger) => ({ ...ledger, agents: ledger.agents.map((item) => item.id === id && item.tenantId === next.tenantId && item.actorId === next.actorId ? next : item) })); return next;
+  let saved: CustomAgentDefinition | undefined;
+  const missingAgent = new Error("Custom agent not found.");
+  try {
+    await updateLedger((ledger) => {
+      const current = ledger.agents.find((item) =>
+        item.id === id && item.tenantId === tenantId && item.actorId === actorId
+      );
+      if (!current) throw missingAgent;
+      const next = updatedCustomAgent(current, input);
+      if (ledger.agents.some((item) =>
+        item.id !== id &&
+        item.tenantId === tenantId &&
+        item.actorId === actorId &&
+        item.slug === next.slug
+      )) {
+        throw new Error("An agent with this name already exists.");
+      }
+      assertAgentSkillAssignmentsInLedger(
+        next.skillIds,
+        tenantId,
+        actorId,
+        ledger,
+      );
+      saved = next;
+      return {
+        ...ledger,
+        agents: ledger.agents.map((item) => item === current ? next : item),
+      };
+    });
+  } catch (error) {
+    if (error === missingAgent) return undefined;
+    throw error;
+  }
+  return saved;
 }
 
 export async function deleteCustomAgent(id: string, options: Scope) {
@@ -201,7 +324,103 @@ function assertNoCrossActorSkillSlugCollisions(skills: AgentSkill[]) {
 }
 
 function skillForRequest(skill: AgentSkill, requestActorId: string): AgentSkill {
-  return { ...skill, actorId: requestActorId };
+  const exactOwner = skill.actorId === requestActorId;
+  return {
+    ...skill,
+    actorId: requestActorId,
+    selectable: exactOwner,
+    manageable: exactOwner,
+  };
+}
+
+function skillForBuiltInRequest(skill: AgentSkill): AgentSkill {
+  return { ...skill, selectable: true, manageable: false };
+}
+
+function skillForExactFileRequest(skill: AgentSkill): AgentSkill {
+  return skill.builtIn
+    ? skillForBuiltInRequest(skill)
+    : { ...skill, selectable: true, manageable: true };
+}
+
+const builtInSkillIds = new Set(builtInSkills.map((skill) => skill.id));
+
+async function assertAgentSkillAssignmentsWithSql(
+  skillIds: string[],
+  tenantId: string,
+  actorId: string,
+  sql: ReturnType<typeof getSql>,
+) {
+  const customSkillIds = skillIds.filter((id) => !builtInSkillIds.has(id));
+  if (!customSkillIds.length) return;
+  const rows = await sql`
+    SELECT id, tenant_id, actor_id
+    FROM omni_custom_skills
+    WHERE tenant_id COLLATE "C" = ${tenantId}::text COLLATE "C"
+      AND actor_id COLLATE "C" = ${actorId}::text COLLATE "C"
+      AND id COLLATE "C" = ANY(${customSkillIds}::text[])
+    ORDER BY id COLLATE "C"
+    FOR KEY SHARE
+  `;
+  const requested = new Set(customSkillIds);
+  if (rows.some((row) =>
+    String(row.tenant_id) !== tenantId ||
+    String(row.actor_id) !== actorId ||
+    !requested.has(String(row.id))
+  )) {
+    throw new AgentSkillAssignmentError();
+  }
+  const found = new Set(rows.map((row) => String(row.id)));
+  if (customSkillIds.some((id) => !found.has(id))) {
+    throw new AgentSkillAssignmentError();
+  }
+}
+
+function assertAgentSkillAssignmentsInLedger(
+  skillIds: string[],
+  tenantId: string,
+  actorId: string,
+  ledger: AgentBuilderLedger,
+) {
+  const exactCustomSkillIds = new Set(
+    ledger.skills
+      .filter((skill) =>
+        skill.tenantId === tenantId && skill.actorId === actorId
+      )
+      .map((skill) => skill.id),
+  );
+  if (skillIds.some((id) =>
+    !builtInSkillIds.has(id) && !exactCustomSkillIds.has(id)
+  )) {
+    throw new AgentSkillAssignmentError();
+  }
+}
+
+function updatedCustomAgent(
+  current: CustomAgentDefinition,
+  input: Partial<Omit<CustomAgentDefinition, "id" | "tenantId" | "actorId" | "slug" | "createdAt" | "updatedAt">>,
+) {
+  return {
+    ...current,
+    ...normalizeAgent({ ...current, ...input }),
+    slug: input.name ? slug(input.name) : current.slug,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function translatedAgentSkillConstraintError(error: unknown) {
+  if (isAgentSkillConstraintError(error)) {
+    return new AgentSkillAssignmentError();
+  }
+  return error;
+}
+
+function isAgentSkillConstraintError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const failure = error as Record<string, unknown>;
+  const constraint = failure.constraint_name ?? failure.constraint;
+  return failure.code === "23514" &&
+    constraint === "omni_custom_agents_skill_references_valid";
 }
 
 function readLedger() { return readJsonFile<AgentBuilderLedger>(getDataPath("agent-builder.json"), { skills: [], agents: [] }); }
