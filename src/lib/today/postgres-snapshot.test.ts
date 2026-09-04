@@ -9,13 +9,25 @@ const dbMocks = vi.hoisted(() => {
       return Promise.resolve([...rows]);
     },
   );
+  const commit = vi.fn();
+  const rollback = vi.fn();
   const transaction = vi.fn(
-    async (callback: (transactionSql: typeof sql) => Promise<unknown>) =>
-      callback(sql),
+    async (callback: (transactionSql: typeof sql) => Promise<unknown>) => {
+      try {
+        const result = await callback(sql);
+        commit();
+        return result;
+      } catch (error) {
+        rollback();
+        throw error;
+      }
+    },
   );
   return {
+    commit,
     ensureDatabaseSchema: vi.fn(async () => undefined),
     getSql: vi.fn(() => ({ transaction })),
+    rollback,
     rows,
     sql,
     statements,
@@ -42,12 +54,16 @@ beforeEach(() => {
   dbMocks.getSql.mockClear();
   dbMocks.sql.mockClear();
   dbMocks.transaction.mockClear();
+  dbMocks.commit.mockClear();
+  dbMocks.rollback.mockClear();
 });
 
 describe("Postgres Today snapshot", () => {
   it("hydrates the owner projection through one scoped transaction and aggregate statement", async () => {
     dbMocks.rows.push({
       preference_match_count: 1,
+      brief_owner_collision: false,
+      brief_content_malformed: false,
       items: [
         {
           id: "item-open",
@@ -99,10 +115,23 @@ describe("Postgres Today snapshot", () => {
         id: "brief-1",
         local_date: "2026-08-25",
         content: {
+          id: "brief-1",
+          tenantId: "tenant-a",
+          actorId: "owner-a",
+          localDate: "2026-08-25",
           summary: "Focus on the production release.",
           focus: [{ title: "Launch", reason: "Ready for verification." }],
           watchouts: ["Watch the latency budget."],
           resurfaced: [{ title: "Release flow", context: "Verify before promotion." }],
+          generatedBy: "system",
+          sourceCounts: {
+            items: 2,
+            memories: 1,
+            threads: 1,
+            activeWork: 0,
+            projects: 1,
+          },
+          generatedAt: "2026-08-26T00:30:00.000Z",
         },
         generated_by: "system",
         source_counts: {
@@ -134,6 +163,8 @@ describe("Postgres Today snapshot", () => {
 
     expect(dbMocks.ensureDatabaseSchema).toHaveBeenCalledOnce();
     expect(dbMocks.transaction).toHaveBeenCalledOnce();
+    expect(dbMocks.commit).toHaveBeenCalledOnce();
+    expect(dbMocks.rollback).not.toHaveBeenCalled();
     expect(dbMocks.sql).toHaveBeenCalledTimes(2);
     expect(dbMocks.statements).toHaveLength(2);
 
@@ -151,7 +182,49 @@ describe("Postgres Today snapshot", () => {
       /FROM omni_threads threads[\s\S]*?WHERE threads\.tenant_id = \$\d+[\s\S]*?AND \([\s\S]*?threads\.actor_id = \$\d+[\s\S]*?OR threads\.actor_id = \$\d+[\s\S]*?\)[\s\S]*?ORDER BY threads\.updated_at DESC, threads\.id ASC[\s\S]*?LIMIT 6/,
     );
     expect(statement.text).toMatch(
-      /FROM omni_daily_briefs briefs[\s\S]*?WHERE briefs\.tenant_id = \$\d+[\s\S]*?AND briefs\.actor_id = \$\d+/,
+      /matched_brief_rows AS MATERIALIZED \([\s\S]*?FROM omni_daily_briefs briefs[\s\S]*?WHERE briefs\.tenant_id = \$\d+[\s\S]*?briefs\.actor_id = \$\d+[\s\S]*?OR briefs\.actor_id = \$\d+[\s\S]*?briefs\.local_date IN/,
+    );
+    const matchedBriefRows = statement.text.match(
+      /matched_brief_rows AS MATERIALIZED \(([\s\S]*?)\),\s*brief_guard_state AS MATERIALIZED/,
+    );
+    expect(matchedBriefRows).not.toBeNull();
+    expect(matchedBriefRows?.[1]).not.toContain("LIMIT");
+    expect(statement.text).toMatch(
+      /GROUP BY matched\.local_date[\s\S]*?HAVING COUNT\(DISTINCT matched\.actor_id COLLATE "C"\) > 1/,
+    );
+    expect(statement.text).toContain("briefs.content ->> 'id' = briefs.id");
+    expect(statement.text).toContain("briefs.content ->> 'tenantId' = briefs.tenant_id");
+    expect(statement.text).toContain("briefs.content ->> 'actorId' = briefs.actor_id");
+    expect(statement.text).toContain("briefs.content ->> 'localDate' = briefs.local_date");
+    expect(statement.text).toContain("briefs.content ->> 'generatedBy' = briefs.generated_by");
+    expect(statement.text).toContain("briefs.content ->> 'model' = briefs.model");
+    expect(statement.text).toContain("briefs.content -> 'sourceCounts' = briefs.source_counts");
+    expect(statement.text).toContain("briefs.source_counts ?& ARRAY[");
+    expect(statement.text).toContain("FROM jsonb_each(");
+    expect(statement.text).toContain("isfinite(briefs.generated_at)");
+    expect(statement.text).toContain("'generatedAt'\n                ~ '^[0-9]{4}");
+    expect(statement.text).toContain(
+      "YEAR FROM (briefs.generated_at AT TIME ZONE 'UTC')",
+    );
+    expect(statement.text).toContain("briefs.generated_at AT TIME ZONE 'UTC'");
+    expect(statement.text).toMatch(
+      /jsonb_array_length\(briefs\.content -> 'focus'\) <= 5[\s\S]*?jsonb_array_length\(briefs\.content -> 'watchouts'\) <= 4[\s\S]*?jsonb_array_length\(briefs\.content -> 'resurfaced'\) <= 3/,
+    );
+    expect(statement.text).toMatch(
+      /CROSS JOIN brief_guard_state brief_guard[\s\S]*?WHERE state\.preference_match_count = 0[\s\S]*?AND NOT brief_guard\.brief_owner_collision[\s\S]*?AND NOT brief_guard\.brief_content_malformed/,
+    );
+    expect(statement.text).toMatch(
+      /brief_rows AS MATERIALIZED \([\s\S]*?FROM matched_brief_rows briefs[\s\S]*?ORDER BY briefs\.local_date ASC, briefs\.generated_at DESC, briefs\.id ASC[\s\S]*?LIMIT 3/,
+    );
+    const publicBriefRows = statement.text.match(
+      /brief_rows AS MATERIALIZED \(\s*SELECT([\s\S]*?)FROM matched_brief_rows briefs/,
+    );
+    expect(publicBriefRows).not.toBeNull();
+    expect(publicBriefRows?.[1]).not.toContain("tenant_id");
+    expect(publicBriefRows?.[1]).not.toContain("actor_id");
+    expect(publicBriefRows?.[1]).not.toContain("content_is_valid");
+    expect(statement.text).toMatch(
+      /to_jsonb\(brief_rows\)[\s\S]*?ORDER BY local_date ASC, generated_at DESC, id ASC/,
     );
     expect(statement.text).toMatch(
       /FROM omni_projects projects[\s\S]*?WHERE projects\.tenant_id = \$\d+[\s\S]*?AND \([\s\S]*?projects\.actor_id = \$\d+[\s\S]*?OR projects\.actor_id = \$\d+[\s\S]*?\)[\s\S]*?AND projects\.status = 'active'[\s\S]*?ORDER BY projects\.updated_at DESC, projects\.id ASC[\s\S]*?LIMIT 4/,
@@ -194,6 +267,7 @@ describe("Postgres Today snapshot", () => {
       summary: "Focus on the production release.",
       sourceCounts: { items: 2, projects: 1 },
     });
+    expect(snapshot.brief).not.toHaveProperty("actorId");
     expect(snapshot.briefGenerationDue).toBe(false);
     expect(snapshot.projects).toEqual([{
       id: "project-1",
@@ -209,6 +283,8 @@ describe("Postgres Today snapshot", () => {
   it("uses safe read defaults when the aggregate contains malformed optional data", async () => {
     dbMocks.rows.push({
       preference_match_count: 0,
+      brief_owner_collision: false,
+      brief_content_malformed: false,
       items: [],
       threads: [],
       memories: [],
@@ -224,6 +300,8 @@ describe("Postgres Today snapshot", () => {
     });
 
     expect(dbMocks.transaction).toHaveBeenCalledOnce();
+    expect(dbMocks.commit).toHaveBeenCalledOnce();
+    expect(dbMocks.rollback).not.toHaveBeenCalled();
     expect(dbMocks.sql).toHaveBeenCalledTimes(2);
     expect(snapshot).toMatchObject({
       items: [],
@@ -252,13 +330,19 @@ describe("Postgres Today snapshot", () => {
       actorId: "owner-missing",
       now: new Date("2026-08-26T09:00:00.000Z"),
     })).rejects.toThrow("Today snapshot aggregate returned no row.");
+    expect(dbMocks.rollback).toHaveBeenCalledOnce();
+    expect(dbMocks.commit).not.toHaveBeenCalled();
   });
 
   it("fails closed when canonical and legacy preference rows both match", async () => {
     const authUserId = "11111111-1111-4111-8111-111111111111";
     const actorId = "owner@example.com";
     const canonicalActorId = `actor:${authUserId}`;
-    dbMocks.rows.push({ preference_match_count: 2 });
+    dbMocks.rows.push({
+      preference_match_count: 2,
+      brief_owner_collision: false,
+      brief_content_malformed: false,
+    });
 
     await expect(loadPostgresTodaySnapshot({
       tenantId: "tenant-collision",
@@ -274,10 +358,18 @@ describe("Postgres Today snapshot", () => {
       },
     })).rejects.toThrow("Today preferences resolved to multiple physical rows.");
 
+    expect(dbMocks.rollback).toHaveBeenCalledOnce();
+    expect(dbMocks.commit).not.toHaveBeenCalled();
+
     expect(dbMocks.statements[1].params).toContain(canonicalActorId);
     expect(dbMocks.statements[1].params).toContain(actorId);
     expect(dbMocks.statements[1].text).toMatch(
       /FROM omni_today_items items[\s\S]*?items\.actor_id = \$\d+[\s\S]*?OR items\.actor_id = \$\d+/,
+    );
+    expectScopeActorPair(
+      dbMocks.statements[1],
+      /matched_brief_rows AS MATERIALIZED[\s\S]*?briefs\.actor_id = \$(\d+)[\s\S]*?OR briefs\.actor_id = \$(\d+)/,
+      [canonicalActorId, actorId],
     );
     expectScopeActorPair(
       dbMocks.statements[1],
@@ -293,7 +385,64 @@ describe("Postgres Today snapshot", () => {
       /FROM omni_project_tasks tasks[\s\S]*?owner_project\.tenant_id = \$\d+[\s\S]*?owner_project\.actor_id = projects\.actor_id/,
     );
   });
+
+  it("rolls back preference insertion when brief aliases collide beyond the limit", async () => {
+    dbMocks.rows.push({
+      preference_match_count: 0,
+      brief_owner_collision: true,
+      brief_content_malformed: false,
+    });
+
+    await expect(loadPostgresTodaySnapshot({
+      tenantId: "tenant-brief-collision",
+      actorId: "owner@example.com",
+      now: new Date("2026-08-26T09:00:00.000Z"),
+      requestActorBinding: requestActorBinding("owner@example.com"),
+    })).rejects.toThrow(
+      "Daily briefs resolved to multiple physical rows for one local date.",
+    );
+
+    expect(dbMocks.rollback).toHaveBeenCalledOnce();
+    expect(dbMocks.commit).not.toHaveBeenCalled();
+    const statement = dbMocks.statements[1];
+    expect(statement.text.indexOf("brief_guard_state AS MATERIALIZED")).toBeLessThan(
+      statement.text.indexOf("brief_rows AS MATERIALIZED"),
+    );
+  });
+
+  it("rolls back preference insertion when stored brief identity or content is malformed", async () => {
+    dbMocks.rows.push({
+      preference_match_count: 0,
+      brief_owner_collision: false,
+      brief_content_malformed: true,
+    });
+
+    await expect(loadPostgresTodaySnapshot({
+      tenantId: "tenant-brief-malformed",
+      actorId: "owner@example.com",
+      now: new Date("2026-08-26T09:00:00.000Z"),
+      requestActorBinding: requestActorBinding("owner@example.com"),
+    })).rejects.toThrow(
+      "Today snapshot encountered malformed daily brief content.",
+    );
+
+    expect(dbMocks.rollback).toHaveBeenCalledOnce();
+    expect(dbMocks.commit).not.toHaveBeenCalled();
+  });
 });
+
+function requestActorBinding(actorId: string) {
+  const authUserId = "11111111-1111-4111-8111-111111111111";
+  const canonicalActorId = `actor:${authUserId}`;
+  return {
+    version: 1 as const,
+    kind: "auth_user" as const,
+    authUserId,
+    canonicalActorId,
+    legacyOwnerActorIds: Object.freeze([actorId]),
+    readableOwnerActorIds: Object.freeze([canonicalActorId, actorId]),
+  };
+}
 
 function expectScopeActorPair(
   statement: { text: string; params: unknown[] },
