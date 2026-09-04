@@ -61,7 +61,7 @@ beforeEach(() => {
 });
 
 describe("settings snapshot route", () => {
-  it("keeps provider metadata exact for a bare request", async () => {
+  it("keeps opt-in metadata exact for a bare request", async () => {
     const response = await GET(new Request("http://localhost/api/settings"));
 
     expect(response.status).toBe(200);
@@ -76,7 +76,7 @@ describe("settings snapshot route", () => {
     ).toHaveBeenCalledWith(context);
   });
 
-  it("opts provider metadata into readable request ownership explicitly", async () => {
+  it("opts provider and assignment metadata into readable request ownership explicitly", async () => {
     await GET(new Request(
       "http://localhost/api/settings?ownerScope=readable",
     ));
@@ -86,6 +86,19 @@ describe("settings snapshot route", () => {
       actorId: context.actorId,
       requestActorBinding,
       providerOwnerScope: "readable",
+      modelAssignmentOwnerScope: "readable",
+    });
+  });
+
+  it("does not widen similar but unsupported owner scopes", async () => {
+    await GET(new Request(
+      "http://localhost/api/settings?ownerScope=Readable",
+    ));
+
+    expect(routeMocks.getSettingsSnapshot).toHaveBeenCalledWith({
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestActorBinding,
     });
   });
 });

@@ -616,6 +616,24 @@ credential opening, validation, rotation, status updates, revocation, catalog
 refresh, assignments, runtime routing, MCP policy, file fallback, portable
 data, events, and canonical writes remain exact-owner contracts.
 
+The eighteenth request-bound slice converges only model-assignment metadata
+GETs. The request reader selects an explicit column allowlist from the
+validated canonical/current-email pair, verifies every owner, identifier,
+scope, provider, fallback pair, consent state, stored readiness, and timestamp,
+and rejects duplicate IDs or any duplicate scope before projection. Render-safe
+model identifiers are separate from persisted identity. Exact-owner rows
+remain manageable and retain their computed runtime readiness; canonical rows
+are projected as configuration-only, read-only continuity records. Aggregate
+Settings and direct assignment GETs require the literal `ownerScope=readable`
+opt-in and acknowledge `requestReadContracts.modelAssignments=readable_v1`.
+The UI requires that acknowledgement plus `manage.connector`, counts only
+exact-owner routes, and renders a retained scope outside the editor so its
+provider, fallback, or disclosure state cannot seed a write. Bare GETs remain
+exact, and file fallback validates only exact-owner records. Assignment saves
+and their pre-read, runtime model resolution, provider credentials, catalog
+refresh, MCP policy, portable data, events, and canonical writes remain
+exact-owner contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

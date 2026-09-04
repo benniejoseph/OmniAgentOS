@@ -368,6 +368,15 @@ validate, rotate, enable, revoke, refresh, assign, route, or otherwise use a
 credential. Those exact-owner operations and any later canonical-write cutover
 retain their existing governed and typed-event boundaries.
 
+Converging request-bound model-assignment metadata emits no domain event. The
+read validates and projects already-persisted route policy, derives management
+and runtime readiness from physical ownership, and renders canonical continuity
+rows outside writable form state. It does not save an assignment, grant
+cross-provider disclosure, open a credential, select a runtime model, refresh a
+catalog, change MCP authority, or change writer identity. Those exact-owner
+operations and any later canonical-write cutover retain their existing
+governed and typed-event boundaries.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

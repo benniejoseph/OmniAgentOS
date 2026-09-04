@@ -1247,6 +1247,27 @@ acknowledgement before exposing provider-write controls and clears stale
 actionability whenever that strict refresh fails. This read-only slice emits
 no domain event and does not unblock membership or consent holds.
 
+The next request canary converges only model-assignment metadata GETs.
+Authenticated PostgreSQL reads select an explicit allowlist from the validated
+canonical/current-email pair, retain physical ownership until actionability and
+runtime readiness are derived, and then project the current request actor.
+Malformed identifiers, scopes, providers, fallback pairs, consent/readiness
+contradictions, timestamps, duplicate IDs, and every cross-owner scope
+collision fail the complete read. Separate display identifiers neutralize
+control and bidi characters without rewriting persisted identity. Exact rows
+remain manageable; canonical rows are configuration-only continuity records.
+The aggregate Settings and direct assignment endpoints widen only for literal
+`ownerScope=readable` and publish a `readable_v1` assignment acknowledgement.
+The Settings UI requires that acknowledgement and `manage.connector` before a
+save, counts only exact routes, never mounts an editor for a retained scope,
+and presents retained fallback and consent as text rather than form state.
+Bare GETs and file fallback remain exact. Assignment PUT/pre-read, runtime
+resolution, provider credentials, catalog refresh, MCP policy, portable data,
+events, and canonical writes remain unchanged. The exact-PUT race with a newly
+appearing canonical scope deliberately fails the next complete readable GET;
+widening a write to hide that collision is outside this canary. This read-only
+slice emits no domain event and does not unblock membership or consent holds.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

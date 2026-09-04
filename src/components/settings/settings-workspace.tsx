@@ -36,10 +36,10 @@ import {
   MODEL_PROVIDERS,
   SERVICE_API_SCOPES,
   type McpExportConfiguration,
-  type ModelAssignment,
   type ModelAssignmentScope,
   type ModelCatalogEntry,
   type RequestModelCatalogEntry,
+  type RequestModelAssignment,
   type RequestProviderConnection,
   type ServiceApiScope,
   type SettingsModelProvider,
@@ -208,6 +208,19 @@ export function SettingsWorkspace() {
     ? undefined
     : "Provider ownership metadata could not be verified. Refresh after the current release is active.";
   const providerActionBlocked = providerManageBlocked || providerOwnershipBlocked;
+  const assignmentManageBlocked = permissionMessage(
+    session,
+    sessionStatus,
+    "manage.connector",
+  );
+  const assignmentOwnershipBlocked = snapshot?.requestReadContracts
+    ?.modelAssignments === "readable_v1"
+    ? undefined
+    : "Model-route ownership metadata could not be verified. Refresh after the current release is active.";
+  const assignmentActionBlocked = assignmentManageBlocked || assignmentOwnershipBlocked;
+  const configuredAssignmentCount = snapshot?.assignments.filter(
+    (assignment) => assignment.manageable === true,
+  ).length || 0;
 
   return (
     <div className={clsx("workspace-enter mx-auto w-full max-w-[112rem] px-4 pb-16 pt-5 sm:px-6 lg:px-8", styles.shell)}>
@@ -222,7 +235,7 @@ export function SettingsWorkspace() {
           </div>
           <div className={clsx("grid grid-cols-3 divide-x divide-line overflow-hidden rounded-lg border border-line bg-surface", styles.heroMetrics)}>
             <HeaderMetric label="Providers" value={loading ? "—" : String(activeProviders)} detail="connected" />
-            <HeaderMetric label="Routes" value={loading ? "—" : String(snapshot?.assignments.length || 0)} detail="configured" />
+            <HeaderMetric label="Routes" value={loading ? "—" : String(configuredAssignmentCount)} detail="configured" />
             <HeaderMetric label="Lifecycle" value={loading ? "—" : deprecatedModels ? String(deprecatedModels) : "Clear"} detail={deprecatedModels ? "need review" : "no alerts"} warning={deprecatedModels > 0} />
           </div>
         </div>
@@ -318,7 +331,15 @@ export function SettingsWorkspace() {
             />
           ) : null}
           {!loading && snapshot && section === "models" ? (
-            <ModelsSection snapshot={snapshot} busy={busy} refreshBlocked={providerActionBlocked} onSave={(scope, value) => request(`assignment:${scope}`, "/api/settings/assignments", "PUT", { scope, ...value })} onRefresh={(connection) => {
+            <ModelsSection snapshot={snapshot} busy={busy} refreshBlocked={providerActionBlocked} saveBlocked={assignmentActionBlocked} onSave={(scope, value) => {
+              const current = snapshot.assignments.find((item) => item.scope === scope);
+              if (assignmentActionBlocked || (current && current.manageable !== true)) {
+                const message = assignmentActionBlocked || "This retained model route is read only.";
+                setError(message);
+                return Promise.reject(new Error(message));
+              }
+              return request(`assignment:${scope}`, "/api/settings/assignments", "PUT", { scope, ...value });
+            }} onRefresh={(connection) => {
               if (connection.manageable !== true || providerActionBlocked) {
                 setError(providerActionBlocked || "This retained connection is read only.");
                 return Promise.reject(new Error(providerActionBlocked || "This retained connection is read only."));
@@ -393,6 +414,9 @@ function OverviewSection({ snapshot, onNavigate }: { snapshot: SettingsSnapshot;
     item.status !== "revoked" &&
     item.manageable !== true
   );
+  const configuredAssignments = snapshot.assignments.filter(
+    (item) => item.manageable === true,
+  );
   return <section className={styles.sectionCanvas}>
     <SectionHeader eyebrow="Workspace" title="Configuration at a glance" description="See what is active now, what is safely stored, and what still needs runtime activation." />
     <div className={clsx("mt-6 divide-y divide-line border-y border-line", styles.observatoryList)}>
@@ -400,7 +424,7 @@ function OverviewSection({ snapshot, onNavigate }: { snapshot: SettingsSnapshot;
       <OverviewRow icon={Database} title="Storage" value={`${snapshot.platform.storageBackend} · ${snapshot.platform.databaseConfigured ? "database configured" : "no database"}`} description={snapshot.platform.storageBackend === "ephemeral" ? "Hosted ephemeral storage is not durable. Configure the production database before relying on saved settings." : "Tenant records use the active application persistence backend."} tone={snapshot.platform.storageBackend === "ephemeral" ? "warning" : "success"} action={() => onNavigate("data")} />
       <OverviewRow icon={snapshot.vault.configured ? LockKeyhole : AlertCircle} title="Credential vault" value={snapshot.vault.configured ? `Ready · ${snapshot.vault.activeKeyId}` : "Setup required"} description={snapshot.vault.message} tone={snapshot.vault.configured ? "success" : "warning"} action={() => onNavigate("providers")} />
       <OverviewRow icon={Cloud} title="Deployment routing" value={`${deploymentProviders.length} environment provider${deploymentProviders.length === 1 ? "" : "s"}`} description="These remain the active runtime fallback and are managed by your deployment platform." action={() => onNavigate("providers")} />
-      <OverviewRow icon={BrainCircuit} title="Workspace model policy" value={`${snapshot.assignments.length} of ${MODEL_ASSIGNMENT_SCOPES.length} roles assigned`} description={snapshot.runtime.message} tone="neutral" action={() => onNavigate("models")} />
+      <OverviewRow icon={BrainCircuit} title="Workspace model policy" value={`${configuredAssignments.length} of ${MODEL_ASSIGNMENT_SCOPES.length} roles assigned`} description={snapshot.runtime.message} tone="neutral" action={() => onNavigate("models")} />
       <OverviewRow icon={Network} title="MCP server" value={snapshot.mcp.enabled ? "Enabled" : "Disabled"} description={snapshot.mcp.enabled ? `${snapshot.mcp.serverName} · ${snapshot.mcp.allowedScopes.length} allowed scopes` : "Enable governed access when you are ready to connect an MCP client."} tone={snapshot.mcp.enabled ? "success" : "neutral"} action={() => onNavigate("api")} />
       <OverviewRow icon={RefreshCw} title="Release" value={snapshot.platform.releaseRevision ? snapshot.platform.releaseRevision.slice(0, 12) : "Revision unavailable"} description="The deployment revision reported by this running application instance." tone="neutral" action={() => onNavigate("overview")} />
     </div>
@@ -462,10 +486,11 @@ function ProvidersSection({ snapshot, savedProviders, busy, manageBlocked, onAdd
   </section>;
 }
 
-function ModelsSection({ snapshot, busy, refreshBlocked, onSave, onRefresh }: {
+function ModelsSection({ snapshot, busy, refreshBlocked, saveBlocked, onSave, onRefresh }: {
   snapshot: SettingsSnapshot;
   busy?: string;
   refreshBlocked?: string;
+  saveBlocked?: string;
   onSave: (scope: ModelAssignmentScope, value: AssignmentDraft) => Promise<unknown>;
   onRefresh: (connection: RequestProviderConnection) => Promise<unknown>;
 }) {
@@ -478,7 +503,13 @@ function ModelsSection({ snapshot, busy, refreshBlocked, onSave, onRefresh }: {
     <SectionHeader eyebrow="Model routing" title="Assign the right model to each role" description="Choose a primary model and an optional fallback. Crossing provider boundaries is off until you explicitly consent for that assignment." action={connected.length ? <button type="button" className="action-button shrink-0" disabled={Boolean(busy) || Boolean(refreshBlocked)} title={refreshBlocked} onClick={() => void (async () => { for (const item of connected) await onRefresh(item); })().catch(() => undefined)}><RefreshCw size={15} />Refresh catalogs</button> : undefined} />
     <div className="mt-5 border-l-2 border-info bg-info/5 px-4 py-3"><p className="text-sm font-semibold text-info">Configuration scope</p><p className="mt-1 text-xs leading-5 text-muted">{snapshot.runtime.message}</p></div>
     <div className={clsx("mt-6 divide-y divide-line border-y border-line", styles.routeList)}>
-      {MODEL_ASSIGNMENT_SCOPES.map((scope) => <AssignmentEditor key={scope} scope={scope} models={snapshot.models} providers={snapshot.providers} current={snapshot.assignments.find((item) => item.scope === scope)} busy={busy === `assignment:${scope}`} onSave={(value) => onSave(scope, value)} />)}
+      {MODEL_ASSIGNMENT_SCOPES.map((scope) => {
+        const current = snapshot.assignments.find((item) => item.scope === scope);
+        const editorKey = `${scope}:${current?.id || "new"}:${current?.updatedAt || "empty"}`;
+        return current && current.manageable !== true
+          ? <RetainedAssignment key={editorKey} scope={scope} assignment={current} />
+          : <AssignmentEditor key={editorKey} scope={scope} models={snapshot.models} providers={snapshot.providers} current={current} busy={busy === `assignment:${scope}`} saveBlocked={saveBlocked} onSave={(value) => onSave(scope, value)} />;
+      })}
     </div>
     <ModelCatalog models={snapshot.models} />
   </section>;
@@ -492,7 +523,7 @@ type AssignmentDraft = {
   crossProviderFallbackConsent?: true;
 };
 
-function AssignmentEditor({ scope, models, providers, current, busy, onSave }: { scope: ModelAssignmentScope; models: RequestModelCatalogEntry[]; providers: RequestProviderConnection[]; current?: ModelAssignment; busy: boolean; onSave: (value: AssignmentDraft) => Promise<unknown> }) {
+function AssignmentEditor({ scope, models, providers, current, busy, saveBlocked, onSave }: { scope: ModelAssignmentScope; models: RequestModelCatalogEntry[]; providers: RequestProviderConnection[]; current?: RequestModelAssignment; busy: boolean; saveBlocked?: string; onSave: (value: AssignmentDraft) => Promise<unknown> }) {
   const selectableModels = models.filter((item) => item.selectable === true);
   const selectableProviders = providers.filter((item) =>
     item.source === "deployment_environment" ||
@@ -519,14 +550,32 @@ function AssignmentEditor({ scope, models, providers, current, busy, onSave }: {
     <div className="grid gap-4 xl:grid-cols-[minmax(11rem,.55fr)_minmax(0,1fr)_auto] xl:items-start">
       <div><h3 className="text-sm font-semibold">{details.title}</h3><p className="mt-1 text-xs leading-5 text-muted">{details.description}</p>{current ? <span className={`mt-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${current.runtimeReadiness === "active" ? "text-success" : "text-warning"}`}><CircleDashed size={11} />{current.runtimeReadiness === "active" ? "Runtime active" : "Configuration only"}</span> : null}</div>
       <div className="grid gap-3 sm:grid-cols-2">
-        <SettingsField label="Primary provider"><select value={provider} onChange={(event) => { setProvider(event.target.value as SettingsModelProvider); setModelId(""); }}><option value="">Choose provider</option>{providerOptions.map((item) => <option key={item} value={item}>{providerDetails[item].name}</option>)}</select></SettingsField>
-        <SettingsField label="Primary model"><input list={`${scope}-primary-models`} value={modelId} onChange={(event) => setModelId(event.target.value)} maxLength={240} placeholder={primaryModels.length ? "Choose or enter a model" : "Enter model ID"} /><datalist id={`${scope}-primary-models`}>{primaryModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField>
-        <SettingsField label="Fallback provider"><select value={fallbackProvider} onChange={(event) => { setFallbackProvider(event.target.value as SettingsModelProvider | ""); setFallbackModelId(""); setConsent(false); }}><option value="">No fallback</option>{providerOptions.map((item) => <option key={item} value={item}>{providerDetails[item].name}</option>)}</select></SettingsField>
-        <SettingsField label="Fallback model"><input list={`${scope}-fallback-models`} value={fallbackModelId} onChange={(event) => setFallbackModelId(event.target.value)} disabled={!fallbackProvider} maxLength={240} placeholder={fallbackProvider ? "Choose or enter a model" : "Select provider first"} /><datalist id={`${scope}-fallback-models`}>{fallbackModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField>
+        <SettingsField label="Primary provider"><select value={provider} disabled={Boolean(saveBlocked)} onChange={(event) => { setProvider(event.target.value as SettingsModelProvider); setModelId(""); }}><option value="">Choose provider</option>{providerOptions.map((item) => <option key={item} value={item}>{providerDetails[item].name}</option>)}</select></SettingsField>
+        <SettingsField label="Primary model"><input list={`${scope}-primary-models`} value={modelId} onChange={(event) => setModelId(event.target.value)} disabled={Boolean(saveBlocked)} maxLength={240} placeholder={primaryModels.length ? "Choose or enter a model" : "Enter model ID"} /><datalist id={`${scope}-primary-models`}>{primaryModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField>
+        <SettingsField label="Fallback provider"><select value={fallbackProvider} disabled={Boolean(saveBlocked)} onChange={(event) => { setFallbackProvider(event.target.value as SettingsModelProvider | ""); setFallbackModelId(""); setConsent(false); }}><option value="">No fallback</option>{providerOptions.map((item) => <option key={item} value={item}>{providerDetails[item].name}</option>)}</select></SettingsField>
+        <SettingsField label="Fallback model"><input list={`${scope}-fallback-models`} value={fallbackModelId} onChange={(event) => setFallbackModelId(event.target.value)} disabled={Boolean(saveBlocked) || !fallbackProvider} maxLength={240} placeholder={fallbackProvider ? "Choose or enter a model" : "Select provider first"} /><datalist id={`${scope}-fallback-models`}>{fallbackModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField>
         {selectedLifecycle && (selectedLifecycle.lifecycle === "deprecated" || selectedLifecycle.lifecycle === "retiring") ? <div className="flex items-start gap-2 rounded-md bg-warning/5 p-3 text-xs leading-5 text-warning sm:col-span-2"><AlertCircle size={14} className="mt-0.5 shrink-0" /><span><strong className="block">Model update needed</strong>{selectedLifecycle.lifecycleReason || "This model is no longer current in the provider catalog."}</span></div> : null}
-        {crossesBoundary ? <label className="flex items-start gap-2 rounded-md bg-warning/5 p-3 text-xs leading-5 text-muted sm:col-span-2"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} className="mt-1 accent-primary" /><span><strong className="block text-foreground">Allow cross-provider disclosure</strong>On primary failure, this role may send the same task context to {providerDetails[fallbackProvider as SettingsModelProvider].name}.</span></label> : null}
+        {crossesBoundary ? <label className="flex items-start gap-2 rounded-md bg-warning/5 p-3 text-xs leading-5 text-muted sm:col-span-2"><input type="checkbox" checked={consent} disabled={Boolean(saveBlocked)} onChange={(event) => setConsent(event.target.checked)} className="mt-1 accent-primary" /><span><strong className="block text-foreground">Allow cross-provider disclosure</strong>On primary failure, this role may send the same task context to {providerDetails[fallbackProvider as SettingsModelProvider].name}.</span></label> : null}
       </div>
-      <button type="button" className="primary-button min-h-9 self-end text-xs" disabled={busy || !modelId || Boolean(fallbackProvider) !== Boolean(fallbackModelId) || (crossesBoundary && !consent)} onClick={() => void onSave({ provider, modelId, fallbackProvider: fallbackProvider || undefined, fallbackModelId: fallbackModelId || undefined, crossProviderFallbackConsent: crossesBoundary && consent ? true : undefined }).catch(() => undefined)}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}Save route</button>
+      <button type="button" className="primary-button min-h-9 self-end text-xs" disabled={busy || Boolean(saveBlocked) || !modelId || Boolean(fallbackProvider) !== Boolean(fallbackModelId) || (crossesBoundary && !consent)} title={saveBlocked} onClick={() => void onSave({ provider, modelId, fallbackProvider: fallbackProvider || undefined, fallbackModelId: fallbackModelId || undefined, crossProviderFallbackConsent: crossesBoundary && consent ? true : undefined }).catch(() => undefined)}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}Save route</button>
+    </div>
+  </div>;
+}
+
+function RetainedAssignment({ scope, assignment }: { scope: ModelAssignmentScope; assignment: RequestModelAssignment }) {
+  const details = assignmentLabels[scope];
+  const fallback = assignment.fallbackProvider && assignment.fallbackModelId
+    ? `${providerDetails[assignment.fallbackProvider].name} · ${assignment.displayFallbackModelId || "Unsupported model identifier"}`
+    : "No fallback recorded";
+  return <div className={clsx("py-5", styles.routeRow)}>
+    <div className="grid gap-4 xl:grid-cols-[minmax(11rem,.55fr)_minmax(0,1fr)_auto] xl:items-start">
+      <div><h3 className="text-sm font-semibold">{details.title}</h3><p className="mt-1 text-xs leading-5 text-muted">{details.description}</p><span className="mt-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted"><LockKeyhole size={11} />Retained route</span></div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div><p className="text-[10px] font-bold uppercase tracking-[0.08em] text-muted">Primary</p><p className="mt-1 text-sm font-semibold">{providerDetails[assignment.provider].name} · <span className="font-mono text-xs">{assignment.displayModelId || "Unsupported model identifier"}</span></p></div>
+        <div><p className="text-[10px] font-bold uppercase tracking-[0.08em] text-muted">Fallback</p><p className="mt-1 text-sm text-muted">{fallback}</p></div>
+        <p className="text-xs leading-5 text-muted sm:col-span-2">This stable-identity route remains visible for continuity, cannot control the current runtime, and cannot be edited from this session.{assignment.allowCrossProviderFallback ? " Cross-provider fallback consent is recorded on the retained route." : ""}</p>
+      </div>
+      <span className="self-end text-xs font-semibold text-muted">Read only</span>
     </div>
   </div>;
 }

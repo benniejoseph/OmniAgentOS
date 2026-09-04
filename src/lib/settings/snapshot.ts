@@ -5,7 +5,7 @@ import { listServiceApiKeysForRequest } from "@/lib/settings/service-api-keys";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import {
   getMcpExportConfiguration,
-  listModelAssignments,
+  listModelAssignmentsForRequest,
   listModelCatalogForRequest,
   listProviderConnections,
   listProviderConnectionsForRequest,
@@ -17,6 +17,7 @@ export async function getSettingsSnapshot(input: {
   actorId: string;
   requestActorBinding?: CanonicalRequestActorBindingV1;
   providerOwnerScope?: "readable";
+  modelAssignmentOwnerScope?: "readable";
 }): Promise<SettingsSnapshot> {
   const exactOwner = { tenantId: input.tenantId, actorId: input.actorId };
   const requestReadOwner = {
@@ -39,13 +40,18 @@ export async function getSettingsSnapshot(input: {
             record.actorId === input.actorId,
         }))),
     listModelCatalogForRequest(requestReadOwner),
-    listModelAssignments(exactOwner),
+    input.modelAssignmentOwnerScope === "readable"
+      ? listModelAssignmentsForRequest(requestReadOwner)
+      : listModelAssignmentsForRequest(exactOwner),
     listServiceApiKeysForRequest(requestReadOwner),
     getMcpExportConfiguration(exactOwner),
   ]);
   return {
     requestReadContracts: {
       providerConnections: input.providerOwnerScope === "readable"
+        ? "readable_v1"
+        : "exact_v1",
+      modelAssignments: input.modelAssignmentOwnerScope === "readable"
         ? "readable_v1"
         : "exact_v1",
     },

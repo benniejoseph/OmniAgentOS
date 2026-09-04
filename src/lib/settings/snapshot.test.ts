@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const snapshotMocks = vi.hoisted(() => ({
   getMcpExportConfiguration: vi.fn(),
-  listModelAssignments: vi.fn(),
+  listModelAssignmentsForRequest: vi.fn(),
   listModelCatalogForRequest: vi.fn(),
   listProviderConnections: vi.fn(),
   listProviderConnectionsForRequest: vi.fn(),
@@ -34,7 +34,8 @@ vi.mock("@/lib/settings/service-api-keys", () => ({
 
 vi.mock("@/lib/settings/store", () => ({
   getMcpExportConfiguration: snapshotMocks.getMcpExportConfiguration,
-  listModelAssignments: snapshotMocks.listModelAssignments,
+  listModelAssignmentsForRequest:
+    snapshotMocks.listModelAssignmentsForRequest,
   listModelCatalogForRequest: snapshotMocks.listModelCatalogForRequest,
   listProviderConnections: snapshotMocks.listProviderConnections,
   listProviderConnectionsForRequest:
@@ -63,7 +64,7 @@ beforeEach(() => {
   snapshotMocks.listProviderConnections.mockReset().mockResolvedValue([]);
   snapshotMocks.listProviderConnectionsForRequest.mockReset().mockResolvedValue([]);
   snapshotMocks.listModelCatalogForRequest.mockReset().mockResolvedValue([]);
-  snapshotMocks.listModelAssignments.mockReset().mockResolvedValue([]);
+  snapshotMocks.listModelAssignmentsForRequest.mockReset().mockResolvedValue([]);
   snapshotMocks.listServiceApiKeysForRequest.mockReset().mockResolvedValue([]);
   snapshotMocks.getMcpExportConfiguration.mockReset().mockResolvedValue({
     tenantId: input.tenantId,
@@ -85,6 +86,7 @@ describe("settings snapshot owner scopes", () => {
     const snapshot = await getSettingsSnapshot({
       ...input,
       providerOwnerScope: "readable",
+      modelAssignmentOwnerScope: "readable",
     });
 
     const exactOwner = {
@@ -100,7 +102,9 @@ describe("settings snapshot owner scopes", () => {
     expect(snapshotMocks.listModelCatalogForRequest).toHaveBeenCalledWith(
       input,
     );
-    expect(snapshotMocks.listModelAssignments).toHaveBeenCalledWith(exactOwner);
+    expect(snapshotMocks.listModelAssignmentsForRequest).toHaveBeenCalledWith(
+      input,
+    );
     expect(snapshotMocks.getMcpExportConfiguration).toHaveBeenCalledWith(
       exactOwner,
     );
@@ -109,6 +113,7 @@ describe("settings snapshot owner scopes", () => {
     );
     expect(snapshot.requestReadContracts).toEqual({
       providerConnections: "readable_v1",
+      modelAssignments: "readable_v1",
     });
   });
 
@@ -130,6 +135,10 @@ describe("settings snapshot owner scopes", () => {
         provider: "anthropic",
       },
     ]);
+    snapshotMocks.listModelAssignmentsForRequest.mockResolvedValue([
+      { actorId: input.actorId, scope: "main_agent", manageable: true },
+      { actorId: input.actorId, scope: "workflow", manageable: true },
+    ]);
     const snapshot = await getSettingsSnapshot(input);
 
     expect(snapshotMocks.listProviderConnections).toHaveBeenCalledWith({
@@ -138,6 +147,10 @@ describe("settings snapshot owner scopes", () => {
       includeDeploymentFallback: true,
     });
     expect(snapshotMocks.listProviderConnectionsForRequest).not.toHaveBeenCalled();
+    expect(snapshotMocks.listModelAssignmentsForRequest).toHaveBeenCalledWith({
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+    });
     expect(snapshot.providers.map((provider) => provider.manageable)).toEqual([
       true,
       false,
@@ -145,6 +158,28 @@ describe("settings snapshot owner scopes", () => {
     ]);
     expect(snapshot.requestReadContracts).toEqual({
       providerConnections: "exact_v1",
+      modelAssignments: "exact_v1",
     });
+    expect(snapshot.assignments.map((assignment) => assignment.manageable)).toEqual([
+      true,
+      true,
+    ]);
+  });
+
+  it("can widen assignment metadata without widening provider metadata", async () => {
+    await getSettingsSnapshot({
+      ...input,
+      modelAssignmentOwnerScope: "readable",
+    });
+
+    expect(snapshotMocks.listProviderConnections).toHaveBeenCalledWith({
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      includeDeploymentFallback: true,
+    });
+    expect(snapshotMocks.listProviderConnectionsForRequest).not.toHaveBeenCalled();
+    expect(snapshotMocks.listModelAssignmentsForRequest).toHaveBeenCalledWith(
+      input,
+    );
   });
 });

@@ -10,6 +10,10 @@ describe("workspace permission presentation", () => {
     expect(canPerform("viewer", "read")).toBe(true);
     expect(canPerform("viewer", "run.agent")).toBe(false);
     expect(canPerform("viewer", "manage.workflow")).toBe(false);
+    expect(canPerform("viewer", "manage.connector")).toBe(false);
+    expect(canPerform("operator", "manage.connector")).toBe(false);
+    expect(canPerform("admin", "manage.connector")).toBe(true);
+    expect(canPerform("system", "manage.connector")).toBe(true);
   });
 
   it("does not ask users to sign in when auth is disabled", () => {
