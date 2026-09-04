@@ -233,5 +233,10 @@
     "version": 47,
     "name": "memory_access_purpose_catalog",
     "checksum": "70920d1b2b20f97ce2f1e11f880c93e99a79f18e2a1a1866d7bd47fb1ee7e5a0"
+  },
+  {
+    "version": 48,
+    "name": "tenant_memory_purpose_entitlements_shadow",
+    "checksum": "8d443dcf2a3926c1c546977df483be4da9d40ada0301c6243605b26dd2c2e51a"
   }
 ]
