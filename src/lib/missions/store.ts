@@ -6,6 +6,7 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import { appendDomainEventSafely } from "@/lib/events/store";
+import { missionActorReadOrder } from "@/lib/missions/actor-scope";
 import type {
   Mission,
   MissionArtifact,
@@ -14,16 +15,23 @@ import type {
   MissionDetail,
   MissionLedger,
   MissionPriority,
+  RequestMissionSummary,
   MissionStatus,
   MissionTask,
   MissionTaskBlockerKind,
   MissionTaskStatus,
 } from "@/lib/missions/types";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
+import { canonicalStatusForMission } from "@/lib/status/canonical";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
 type MissionOwner = { tenantId?: string; actorId: string };
+
+type MissionRequestOwner = MissionOwner & {
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+};
 
 export type MissionTaskUpdate = {
   expectedUpdatedAt?: string;
@@ -61,6 +69,12 @@ const TERMINAL_ATTEMPT_STATUSES = new Set<MissionAttemptStatus>([
 export class MissionNotFoundError extends Error {}
 export class MissionConflictError extends Error {}
 export class MissionTransitionError extends Error {}
+export class MissionReadConflictError extends Error {
+  constructor(message = "Mission request ownership is ambiguous.") {
+    super(message);
+    this.name = "MissionReadConflictError";
+  }
+}
 
 export async function createMission(input: {
   tenantId?: string;
@@ -172,6 +186,160 @@ export async function listMissions(
     .filter((mission) => owns(mission, owner))
     .sort(compareMissions)
     .slice(0, bounded);
+}
+
+/**
+ * Returns the request-readable Mission catalog without widening any exact
+ * Mission detail, mutation, event, or execution path.
+ */
+export async function listMissionSummariesForRequest(
+  limit: number,
+  options: MissionRequestOwner,
+): Promise<RequestMissionSummary[]> {
+  const owner = normalizeOwner(options);
+  const bounded = Number.isFinite(limit)
+    ? Math.min(Math.max(Math.trunc(limit), 1), 200)
+    : 50;
+
+  if (!hasDatabaseUrl()) {
+    const ledger = await readLedger();
+    const exactMissions = ledger.missions
+      .filter((mission) => owns(mission, owner));
+    assertExactFileMissionSourceKeys(exactMissions);
+    const summaries = exactMissions
+      .map(missionPhysicalSummaryFromMission);
+    assertRequestMissionSummaries(
+      summaries,
+      owner.tenantId,
+      owner.actorId,
+      owner.actorId,
+    );
+    return summaries
+      .sort(compareRequestMissionSummaries)
+      .slice(0, bounded)
+      .map((summary) => requestMissionSummary(summary, owner.actorId));
+  }
+
+  const [canonicalActorId, exactActorId] = missionActorReadOrder(
+    options.actorId,
+    options.requestActorBinding,
+    owner.actorId,
+  );
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    WITH status_order(status, status_rank) AS (
+      VALUES
+        ('running'::text, 0),
+        ('waiting'::text, 1),
+        ('queued'::text, 2),
+        ('draft'::text, 3),
+        ('succeeded'::text, 4),
+        ('failed'::text, 5),
+        ('canceled'::text, 6),
+        ('archived'::text, 7)
+    ), requested_owners(actor_id, owner_rank) AS (
+      VALUES (${canonicalActorId}::text, 0), (${exactActorId}::text, 1)
+    ), readable_owners AS (
+      SELECT actor_id, owner_rank
+      FROM requested_owners
+      WHERE owner_rank = 0
+        OR actor_id COLLATE "C" <> ${canonicalActorId}::text COLLATE "C"
+    ), bounded_rows AS (
+      SELECT mission.id, mission.tenant_id, mission.actor_id, mission.title,
+        mission.objective, mission.status, mission.priority, mission.source,
+        mission.started_at, mission.terminal_at, mission.created_at,
+        mission.updated_at, status_order.status_rank
+      FROM readable_owners
+      CROSS JOIN status_order
+      CROSS JOIN LATERAL (
+        SELECT id, tenant_id, actor_id, title, objective, status, priority,
+          source, started_at, terminal_at, created_at, updated_at
+        FROM omni_missions
+        WHERE tenant_id = ${owner.tenantId}
+          AND actor_id = readable_owners.actor_id
+          AND status = status_order.status
+          AND tenant_id COLLATE "C" = ${owner.tenantId}::text COLLATE "C"
+          AND actor_id COLLATE "C" = readable_owners.actor_id COLLATE "C"
+          AND status COLLATE "C" = status_order.status COLLATE "C"
+        ORDER BY updated_at DESC, id COLLATE "C" ASC
+        LIMIT ${bounded}
+      ) AS mission
+    ), invalid_status_state AS (
+      SELECT EXISTS (
+        SELECT 1
+        FROM readable_owners
+        CROSS JOIN LATERAL (
+          SELECT 1
+          FROM omni_missions AS invalid_mission
+          WHERE invalid_mission.tenant_id = ${owner.tenantId}
+            AND invalid_mission.actor_id = readable_owners.actor_id
+            AND invalid_mission.tenant_id COLLATE "C" =
+              ${owner.tenantId}::text COLLATE "C"
+            AND invalid_mission.actor_id COLLATE "C" =
+              readable_owners.actor_id COLLATE "C"
+            AND NOT EXISTS (
+              SELECT 1
+              FROM status_order AS accepted_status
+              WHERE accepted_status.status = invalid_mission.status
+                AND accepted_status.status COLLATE "C" =
+                  invalid_mission.status COLLATE "C"
+            )
+          LIMIT 1
+        ) AS invalid_status
+        LIMIT 1
+      ) AS unsupported_status
+    ), source_key_state AS (
+      SELECT EXISTS (
+        SELECT 1
+        FROM omni_missions AS canonical_mission
+        INNER JOIN omni_missions AS exact_mission
+          ON exact_mission.tenant_id = canonical_mission.tenant_id
+          AND exact_mission.source_key = canonical_mission.source_key
+          AND exact_mission.source_key COLLATE "C" =
+            canonical_mission.source_key COLLATE "C"
+        WHERE ${exactActorId}::text COLLATE "C" <>
+            ${canonicalActorId}::text COLLATE "C"
+          AND canonical_mission.tenant_id = ${owner.tenantId}
+          AND canonical_mission.actor_id = ${canonicalActorId}
+          AND exact_mission.actor_id = ${exactActorId}
+          AND canonical_mission.tenant_id COLLATE "C" =
+            ${owner.tenantId}::text COLLATE "C"
+          AND canonical_mission.actor_id COLLATE "C" =
+            ${canonicalActorId}::text COLLATE "C"
+          AND exact_mission.tenant_id COLLATE "C" =
+            ${owner.tenantId}::text COLLATE "C"
+          AND exact_mission.actor_id COLLATE "C" =
+            ${exactActorId}::text COLLATE "C"
+        LIMIT 1
+      ) AS source_key_collision
+    )
+    SELECT bounded_rows.id, bounded_rows.tenant_id, bounded_rows.actor_id,
+      bounded_rows.title, bounded_rows.objective, bounded_rows.status,
+      bounded_rows.priority, bounded_rows.source, bounded_rows.started_at,
+      bounded_rows.terminal_at, bounded_rows.created_at,
+      bounded_rows.updated_at, source_key_state.source_key_collision,
+      invalid_status_state.unsupported_status,
+      bounded_rows.id IS NOT NULL AS mission_present
+    FROM source_key_state
+    CROSS JOIN invalid_status_state
+    LEFT JOIN bounded_rows ON TRUE
+    ORDER BY bounded_rows.status_rank ASC, bounded_rows.updated_at DESC,
+      bounded_rows.id COLLATE "C" ASC
+    LIMIT ${bounded}
+  `;
+  if (rows.length > bounded) throw new MissionReadConflictError();
+  const summaries = rows
+    .filter(requestMissionRowIsPresent)
+    .map(missionPhysicalSummaryFromRow);
+  assertRequestMissionSummaries(
+    summaries,
+    owner.tenantId,
+    canonicalActorId,
+    exactActorId,
+  );
+  return summaries
+    .sort(compareRequestMissionSummaries)
+    .map((summary) => requestMissionSummary(summary, exactActorId));
 }
 
 export async function getMission(
@@ -1663,6 +1831,290 @@ function emptyLedger(): MissionLedger {
 
 function getMissionsFile() {
   return getDataPath("missions.json");
+}
+
+type MissionPhysicalSummary = {
+  id: string;
+  tenantId: string;
+  actorId: string;
+  title: string;
+  objective: string;
+  status: MissionStatus;
+  priority: MissionPriority;
+  source: string;
+  startedAt?: string;
+  terminalAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function requestMissionRowIsPresent(row: Record<string, unknown>) {
+  if (
+    row.source_key_collision !== false ||
+    row.unsupported_status !== false ||
+    (row.mission_present !== true && row.mission_present !== false)
+  ) {
+    throw new MissionReadConflictError();
+  }
+  return row.mission_present;
+}
+
+function missionPhysicalSummaryFromRow(
+  row: Record<string, unknown>,
+): MissionPhysicalSummary {
+  if (row.source_key_collision !== false) {
+    throw new MissionReadConflictError();
+  }
+  return missionPhysicalSummaryFromValues({
+    id: row.id,
+    tenantId: row.tenant_id,
+    actorId: row.actor_id,
+    title: row.title,
+    objective: row.objective,
+    status: row.status,
+    priority: row.priority,
+    source: row.source,
+    startedAt: row.started_at,
+    terminalAt: row.terminal_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function missionPhysicalSummaryFromMission(
+  mission: Mission,
+): MissionPhysicalSummary {
+  return missionPhysicalSummaryFromValues({
+    id: mission.id,
+    tenantId: mission.tenantId,
+    actorId: mission.actorId,
+    title: mission.title,
+    objective: mission.objective,
+    status: mission.status,
+    priority: mission.priority,
+    source: mission.source,
+    startedAt: mission.startedAt,
+    terminalAt: mission.terminalAt,
+    createdAt: mission.createdAt,
+    updatedAt: mission.updatedAt,
+  });
+}
+
+function missionPhysicalSummaryFromValues(values: {
+  id: unknown;
+  tenantId: unknown;
+  actorId: unknown;
+  title: unknown;
+  objective: unknown;
+  status: unknown;
+  priority: unknown;
+  source: unknown;
+  startedAt: unknown;
+  terminalAt: unknown;
+  createdAt: unknown;
+  updatedAt: unknown;
+}): MissionPhysicalSummary {
+  if (typeof values.tenantId !== "string" || typeof values.actorId !== "string") {
+    throw new MissionReadConflictError();
+  }
+  const status = requestMissionStatus(values.status);
+  const startedAt = optionalRequestMissionIso(values.startedAt);
+  const terminalAt = optionalRequestMissionIso(values.terminalAt);
+  const createdAt = requestMissionIso(values.createdAt);
+  const updatedAt = requestMissionIso(values.updatedAt);
+  if (
+    createdAt > updatedAt ||
+    (startedAt !== undefined &&
+      (startedAt < createdAt || startedAt > updatedAt)) ||
+    (terminalAt !== undefined &&
+      (terminalAt < createdAt || terminalAt > updatedAt)) ||
+    (startedAt !== undefined && terminalAt !== undefined &&
+      startedAt > terminalAt) ||
+    (status === "running" && startedAt === undefined) ||
+    ((status === "draft" || status === "queued") && startedAt !== undefined) ||
+    (TERMINAL_MISSION_STATUSES.has(status)
+      ? terminalAt === undefined
+      : terminalAt !== undefined)
+  ) {
+    throw new MissionReadConflictError();
+  }
+  return {
+    id: requestMissionIdentifier(values.id),
+    tenantId: values.tenantId,
+    actorId: values.actorId,
+    title: requestMissionLine(values.title, 240),
+    objective: requestMissionTextBlock(values.objective, 4_000),
+    status,
+    priority: requestMissionPriority(values.priority),
+    source: requestMissionLine(values.source, 80),
+    startedAt,
+    terminalAt,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function assertRequestMissionSummaries(
+  summaries: MissionPhysicalSummary[],
+  tenantId: string,
+  canonicalActorId: string,
+  exactActorId: string,
+) {
+  const ids = new Set<string>();
+  for (const summary of summaries) {
+    if (
+      summary.tenantId !== tenantId ||
+      (summary.actorId !== canonicalActorId &&
+        summary.actorId !== exactActorId) ||
+      ids.has(summary.id)
+    ) {
+      throw new MissionReadConflictError();
+    }
+    ids.add(summary.id);
+  }
+}
+
+function assertExactFileMissionSourceKeys(missions: Mission[]) {
+  const sourceKeys = new Set<string>();
+  for (const mission of missions) {
+    if (
+      typeof mission.sourceKey !== "string" ||
+      mission.sourceKey.length < 1 ||
+      mission.sourceKey.length > 240 ||
+      safeText(mission.sourceKey, 240) !== mission.sourceKey ||
+      sourceKeys.has(mission.sourceKey)
+    ) {
+      throw new MissionReadConflictError();
+    }
+    sourceKeys.add(mission.sourceKey);
+  }
+}
+
+function requestMissionSummary(
+  summary: MissionPhysicalSummary,
+  exactActorId: string,
+): RequestMissionSummary {
+  const exactOwner = summary.actorId === exactActorId;
+  return {
+    id: summary.id,
+    title: summary.title,
+    objective: summary.objective,
+    status: summary.status,
+    canonicalStatus: canonicalStatusForMission(summary.status),
+    priority: summary.priority,
+    source: summary.source,
+    startedAt: summary.startedAt,
+    terminalAt: summary.terminalAt,
+    createdAt: summary.createdAt,
+    updatedAt: summary.updatedAt,
+    detailAvailable: exactOwner,
+    manageable: exactOwner,
+    runnable: exactOwner,
+  };
+}
+
+function compareRequestMissionSummaries(
+  left: MissionPhysicalSummary,
+  right: MissionPhysicalSummary,
+) {
+  const order: Record<MissionStatus, number> = {
+    running: 0,
+    waiting: 1,
+    queued: 2,
+    draft: 3,
+    succeeded: 4,
+    failed: 5,
+    canceled: 6,
+    archived: 7,
+  };
+  const statusOrder = order[left.status] - order[right.status];
+  if (statusOrder) return statusOrder;
+  if (left.updatedAt !== right.updatedAt) {
+    return left.updatedAt > right.updatedAt ? -1 : 1;
+  }
+  if (left.id === right.id) return 0;
+  return left.id < right.id ? -1 : 1;
+}
+
+function requestMissionIdentifier(value: unknown) {
+  if (
+    typeof value !== "string" ||
+    !/^[a-zA-Z0-9_.:-]{1,240}$/.test(value)
+  ) {
+    throw new MissionReadConflictError();
+  }
+  return value;
+}
+
+function requestMissionLine(value: unknown, maximum: number) {
+  if (
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > maximum ||
+    safeText(value, maximum) !== value
+  ) {
+    throw new MissionReadConflictError();
+  }
+  return value;
+}
+
+function requestMissionTextBlock(value: unknown, maximum: number) {
+  if (
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > maximum ||
+    safeTextBlock(value, maximum) !== value
+  ) {
+    throw new MissionReadConflictError();
+  }
+  return value;
+}
+
+function requestMissionStatus(value: unknown): MissionStatus {
+  if (
+    value !== "draft" &&
+    value !== "queued" &&
+    value !== "running" &&
+    value !== "waiting" &&
+    value !== "succeeded" &&
+    value !== "failed" &&
+    value !== "canceled" &&
+    value !== "archived"
+  ) {
+    throw new MissionReadConflictError();
+  }
+  return value;
+}
+
+function requestMissionPriority(value: unknown): MissionPriority {
+  if (
+    value !== "low" &&
+    value !== "normal" &&
+    value !== "high" &&
+    value !== "urgent"
+  ) {
+    throw new MissionReadConflictError();
+  }
+  return value;
+}
+
+function optionalRequestMissionIso(value: unknown) {
+  return value === null || value === undefined
+    ? undefined
+    : requestMissionIso(value);
+}
+
+function requestMissionIso(value: unknown) {
+  if (!(typeof value === "string" || value instanceof Date)) {
+    throw new MissionReadConflictError();
+  }
+  const parsed = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new MissionReadConflictError();
+  const normalized = parsed.toISOString();
+  if (typeof value === "string" && value !== normalized) {
+    throw new MissionReadConflictError();
+  }
+  return normalized;
 }
 
 function missionFromRow(row: Record<string, unknown>): Mission {

@@ -3,6 +3,7 @@ import type {
   MissionArtifact,
   MissionDetail,
   MissionTask,
+  RequestMissionSummary,
 } from "@/lib/missions/types";
 import {
   canonicalStatusForMission,
@@ -10,7 +11,7 @@ import {
   canonicalStatusForMissionTask,
 } from "@/lib/status/canonical";
 
-export function toMissionSummaryView(mission: Mission) {
+export function toMissionSummaryView(mission: Mission): RequestMissionSummary {
   return {
     id: mission.id,
     title: mission.title,
@@ -23,10 +24,13 @@ export function toMissionSummaryView(mission: Mission) {
     terminalAt: mission.terminalAt,
     createdAt: mission.createdAt,
     updatedAt: mission.updatedAt,
+    detailAvailable: true,
+    manageable: true,
+    runnable: true,
   };
 }
 
-export type MissionSummaryView = ReturnType<typeof toMissionSummaryView>;
+export type MissionSummaryView = RequestMissionSummary;
 
 export function toMissionTaskView(task: MissionTask) {
   return {

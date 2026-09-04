@@ -684,6 +684,24 @@ file fallback compatibility, transcript/audio routes, creation, completion,
 indexing, mutation, deletion, background recovery, portable data, events, and
 canonical writes remain exact-owner contracts.
 
+The twenty-second request-bound slice converges only Mission collection
+summaries. PostgreSQL reads explicit public mission columns from the validated
+canonical/current-email pair through bounded owner/status lanes that reuse the
+existing owner/status index, then applies one deterministic global order and
+limit. The query checks cross-owner source-key collision without returning the
+source key; arbitrary mission metadata is never selected. Every projected row
+must satisfy exact tenant/physical-owner, identifier, status, priority, text,
+lifecycle, chronology, uniqueness, and ordering invariants. File fallback
+remains exact-owner and validates the complete exact set before limiting.
+Physical ownership is removed only after deriving independent detail,
+management, and Command-handoff capabilities. Missions requires the
+`requestReadContracts.missions=readable_v1` acknowledgement before restoring
+any actionability, clears cached exact detail when collection authority becomes
+stale, and renders a canonical row as summary-only rather than as an empty task
+board. Bare collection GET remains exact; full detail, events, cancellation or
+archive, task/comment/review/attempt/artifact operations, runtime execution,
+portable data, events, and canonical writes remain exact-owner contracts.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

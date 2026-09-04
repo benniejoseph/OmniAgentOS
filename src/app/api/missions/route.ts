@@ -1,8 +1,14 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { createMission, listMissions } from "@/lib/missions/store";
+import {
+  createMission,
+  listMissions,
+  listMissionSummariesForRequest,
+  MissionReadConflictError,
+} from "@/lib/missions/store";
 import { toMissionSummaryView } from "@/lib/missions/public";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -14,6 +20,7 @@ const createSchema = z.object({
   objective: z.string().trim().min(1).max(4_000),
   priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
 }).strict();
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function GETHandler(request: Request) {
   let context;
@@ -26,16 +33,33 @@ async function GETHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const rawLimit = new URL(request.url).searchParams.get("limit");
+  const url = new URL(request.url);
+  const rawLimit = url.searchParams.get("limit");
   const requestedLimit = rawLimit === null ? Number.NaN : Number(rawLimit);
   const limit = Number.isFinite(requestedLimit) ? requestedLimit : 50;
-  const missions = await listMissions(limit, {
+  const readableOwnerScope = url.searchParams.get("ownerScope") === "readable";
+  const owner = {
     tenantId: context.tenantId,
     actorId: context.actorId,
-  });
-  return Response.json({ missions: missions.map(toMissionSummaryView) }, {
-    headers: { "cache-control": "private, no-store" },
-  });
+  };
+  try {
+    const missions = readableOwnerScope
+      ? await listMissionSummariesForRequest(limit, {
+          ...owner,
+          requestActorBinding:
+            canonicalRequestActorBindingFromSecurityContext(context),
+        })
+      : (await listMissions(limit, owner)).map(toMissionSummaryView);
+    return Response.json({
+      missions,
+      requestReadContracts: {
+        missions: readableOwnerScope ? "readable_v1" : "exact_v1",
+      },
+    }, { headers: privateNoStoreHeaders });
+  } catch (error) {
+    if (!readableOwnerScope) throw error;
+    return missionCollectionReadErrorResponse(error);
+  }
 }
 
 async function POSTHandler(request: Request) {
@@ -69,4 +93,21 @@ async function POSTHandler(request: Request) {
     source: "user",
   });
   return Response.json({ mission: toMissionSummaryView(mission) }, { status: 201 });
+}
+
+function missionCollectionReadErrorResponse(error: unknown) {
+  if (error instanceof MissionReadConflictError) {
+    return Response.json(
+      { error: "Mission history could not be verified." },
+      { status: 409, headers: privateNoStoreHeaders },
+    );
+  }
+  console.error(
+    "Mission history read failed.",
+    error instanceof Error ? error.name : "UnknownError",
+  );
+  return Response.json(
+    { error: "Mission history is temporarily unavailable." },
+    { status: 503, headers: privateNoStoreHeaders },
+  );
 }

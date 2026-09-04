@@ -1,3 +1,5 @@
+import type { CanonicalStatusProjection } from "@/lib/status/canonical";
+
 export type MissionPriority = "low" | "normal" | "high" | "urgent";
 
 export type MissionStatus =
@@ -66,6 +68,23 @@ export type Mission = {
   terminalAt?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type RequestMissionSummary = {
+  id: string;
+  title: string;
+  objective: string;
+  status: MissionStatus;
+  canonicalStatus: CanonicalStatusProjection;
+  priority: MissionPriority;
+  source: string;
+  startedAt?: string;
+  terminalAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  detailAvailable: boolean;
+  manageable: boolean;
+  runnable: boolean;
 };
 
 export type MissionTask = {

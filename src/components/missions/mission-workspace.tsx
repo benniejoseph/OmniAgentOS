@@ -34,12 +34,16 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
-import { useWorkspaceSession } from "@/components/app-shell/session-context";
+import {
+  permissionMessage,
+  useWorkspaceSession,
+} from "@/components/app-shell/session-context";
 import type { CapabilityDescriptor } from "@/lib/capabilities/types";
 import type { MissionDetailView, MissionSummaryView } from "@/lib/missions/public";
 import type { MissionStatus } from "@/lib/missions/types";
+import { canonicalStatusForMission } from "@/lib/status/canonical";
 import styles from "@/components/missions/mission-workspace.module.css";
 
 type ViewMode = "board" | "canvas" | "list";
@@ -82,6 +86,184 @@ type BoardMissionDetail = Omit<MissionDetailView, "tasks" | "artifacts"> & {
 
 type BoardColumn = { id: BoardColumnId; title: string; description: string };
 
+type MissionReadContract = "readable_v1" | undefined;
+type MissionSelectionMode = "exact" | "retained" | "unverified";
+
+export function missionCollectionIsReadable(contract: unknown): contract is "readable_v1" {
+  return contract === "readable_v1";
+}
+
+export function missionSelectionMode(
+  mission: Pick<MissionSummaryView, "detailAvailable"> | undefined,
+  contract: unknown,
+  loading = false,
+): MissionSelectionMode | undefined {
+  if (!mission) return undefined;
+  if (loading || !missionCollectionIsReadable(contract)) return "unverified";
+  return mission.detailAvailable === true ? "exact" : "retained";
+}
+
+export function missionCreateActionBlocked({
+  contract,
+  loading,
+  permissionBlocked,
+}: {
+  contract: unknown;
+  loading: boolean;
+  permissionBlocked?: string;
+}) {
+  if (loading) return "Mission ownership is being refreshed.";
+  if (!missionCollectionIsReadable(contract)) {
+    return "Mission ownership could not be verified. Refresh Missions and try again.";
+  }
+  return permissionBlocked;
+}
+
+export function missionTaskActionBlocked({
+  mission,
+  contract,
+  loading,
+  permissionBlocked,
+}: {
+  mission: Pick<MissionSummaryView, "manageable"> | undefined;
+  contract: unknown;
+  loading: boolean;
+  permissionBlocked?: string;
+}) {
+  const collectionBlocked = missionCreateActionBlocked({
+    contract,
+    loading,
+    permissionBlocked,
+  });
+  if (collectionBlocked) return collectionBlocked;
+  if (mission?.manageable !== true) {
+    return "This retained mission is read only in this session.";
+  }
+  return undefined;
+}
+
+export function missionCommandActionBlocked({
+  mission,
+  contract,
+  loading,
+  permissionBlocked,
+}: {
+  mission: Pick<MissionSummaryView, "runnable"> | undefined;
+  contract: unknown;
+  loading: boolean;
+  permissionBlocked?: string;
+}) {
+  const collectionBlocked = missionCreateActionBlocked({
+    contract,
+    loading,
+    permissionBlocked,
+  });
+  if (collectionBlocked) return collectionBlocked;
+  if (mission?.runnable !== true) {
+    return "This retained mission cannot enter Command from this session.";
+  }
+  return undefined;
+}
+
+export function disableMissionSummaryCapabilities(
+  missions: MissionSummaryView[],
+) {
+  return missions.map((mission) => ({
+    ...mission,
+    detailAvailable: false,
+    manageable: false,
+    runnable: false,
+  }));
+}
+
+export function missionRequestIsCurrent({
+  currentController,
+  requestController,
+  currentGeneration,
+  requestGeneration,
+}: {
+  currentController: AbortController | null;
+  requestController: AbortController;
+  currentGeneration: number;
+  requestGeneration: number;
+}) {
+  return currentController === requestController &&
+    currentGeneration === requestGeneration &&
+    !requestController.signal.aborted;
+}
+
+export function missionDetailRequestIsCurrent(
+  currentGeneration: number,
+  requestGeneration: number,
+) {
+  return currentGeneration === requestGeneration;
+}
+
+export function missionEventFailureClosesRow({
+  status,
+  invalidDetail = false,
+}: {
+  status?: number;
+  invalidDetail?: boolean;
+}) {
+  return invalidDetail || status === 401 || status === 403 || status === 404;
+}
+
+export function missionFailureClearsCollection(status: number | undefined) {
+  return status === 401 || status === 403;
+}
+
+export function missionBaseSelection(
+  missions: Array<Pick<MissionSummaryView, "id">>,
+  baseSelection: string,
+  fallbackSelection = "",
+) {
+  if (missions.some((mission) => mission.id === baseSelection)) return baseSelection;
+  if (missions.some((mission) => mission.id === fallbackSelection)) return fallbackSelection;
+  return missions[0]?.id || "";
+}
+
+export function missionNeedsDeepExactReproof(
+  missions: Array<Pick<MissionSummaryView, "id">>,
+  routeMissionId: string,
+) {
+  return Boolean(
+    routeMissionId &&
+    !missions.some((mission) => mission.id === routeMissionId),
+  );
+}
+
+export function missionRouteSelection(
+  missions: Array<Pick<MissionSummaryView, "id">>,
+  routeMissionId: string,
+  baseSelection: string,
+) {
+  if (routeMissionId) {
+    return missions.some((mission) => mission.id === routeMissionId)
+      ? routeMissionId
+      : "";
+  }
+  return missionBaseSelection(missions, baseSelection);
+}
+
+export function missionRouteAfterReproof(
+  missions: Array<Pick<MissionSummaryView, "id">>,
+  routeMissionId: string,
+  baseSelection: string,
+  routeMissionMissing: boolean,
+) {
+  if (routeMissionMissing) {
+    return {
+      selectedId: missionBaseSelection(missions, baseSelection),
+      replacePath: "/app/missions" as const,
+    };
+  }
+  return {
+    selectedId: missionRouteSelection(missions, routeMissionId, baseSelection),
+    replacePath: undefined,
+  };
+}
+
 const BOARD_COLUMNS: BoardColumn[] = [
   { id: "inbox", title: "Inbox", description: "Needs shaping" },
   { id: "waiting", title: "Waiting", description: "Dependency or schedule" },
@@ -97,6 +279,7 @@ export function MissionWorkspace({
   initialMissions,
   initialCapabilities,
   initialDetail,
+  initialMissionReadContract,
   initialEventCursor = 0,
   initialAsOf = 0,
 }: {
@@ -104,24 +287,50 @@ export function MissionWorkspace({
   initialMissions?: MissionSummaryView[];
   initialCapabilities?: CapabilityDescriptor[];
   initialDetail?: MissionDetailView;
+  initialMissionReadContract?: "readable_v1";
   initialEventCursor?: number;
   initialAsOf?: number;
 }) {
   const pathname = usePathname();
   const { session, status: sessionStatus, refresh: refreshSession } = useWorkspaceSession();
-  const hasInitialWorkspace = initialMissions !== undefined && initialCapabilities !== undefined;
-  const [missions, setMissions] = useState<MissionSummaryView[]>(initialMissions || []);
+  const hasInitialWorkspace = initialMissions !== undefined &&
+    initialCapabilities !== undefined &&
+    missionCollectionIsReadable(initialMissionReadContract);
+  const initialRows = hasInitialWorkspace
+    ? initialMissions || []
+    : disableMissionSummaryCapabilities(initialMissions || []);
+  const normalizedInitialDetail = initialDetail
+    ? normalizeMissionDetail(initialDetail, initialDetail.mission.id)
+    : undefined;
+  const initialDetailRow = normalizedInitialDetail
+    ? initialRows.find((mission) => mission.id === normalizedInitialDetail.mission.id)
+    : undefined;
+  const safeInitialDetail = normalizedInitialDetail &&
+      initialDetailRow?.detailAvailable === true &&
+      missionDetailHasExpectedId(normalizedInitialDetail, normalizedInitialDetail.mission.id)
+    ? normalizedInitialDetail as BoardMissionDetail
+    : undefined;
+  const [missions, setMissions] = useState<MissionSummaryView[]>(initialRows);
+  const missionsRef = useRef(missions);
+  const [missionReadContract, setMissionReadContract] = useState<MissionReadContract>(
+    hasInitialWorkspace ? "readable_v1" : undefined,
+  );
+  const missionReadContractRef = useRef<MissionReadContract>(
+    hasInitialWorkspace ? "readable_v1" : undefined,
+  );
   const [details, setDetails] = useState<Record<string, BoardMissionDetail>>(
-    initialDetail ? { [initialDetail.mission.id]: initialDetail as BoardMissionDetail } : {},
+    safeInitialDetail ? { [safeInitialDetail.mission.id]: safeInitialDetail } : {},
   );
   const detailsRef = useRef(details);
   const [capabilities, setCapabilities] = useState<CapabilityDescriptor[]>(initialCapabilities || []);
-  const initialSelectionId = initialMissionId || initialDetail?.mission.id || initialMissions?.[0]?.id || "";
-  const baseSelectionRef = useRef(initialDetail?.mission.id || initialMissions?.[0]?.id || "");
+  const initialSelectionId = initialMissionId || safeInitialDetail?.mission.id || initialRows[0]?.id || "";
+  const baseSelectionRef = useRef(safeInitialDetail?.mission.id || initialRows[0]?.id || "");
   const [selectedId, setSelectedId] = useState(initialSelectionId);
+  const selectedIdRef = useRef(initialSelectionId);
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [loading, setLoading] = useState(!hasInitialWorkspace);
+  const loadingRef = useRef(!hasInitialWorkspace);
   const [showLoading, setShowLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
@@ -144,26 +353,299 @@ export function MissionWorkspace({
   const [announcement, setAnnouncement] = useState("Mission board is ready.");
   const [asOf, setAsOf] = useState(initialAsOf);
   const listController = useRef<AbortController | null>(null);
+  const listGeneration = useRef(0);
   const detailController = useRef<AbortController | null>(null);
+  const detailGeneration = useRef(0);
+  const detailRequestGeneration = useRef(0);
+  const eventController = useRef<AbortController | null>(null);
+  const eventGeneration = useRef(0);
+  const mutationRecoveryController = useRef<AbortController | null>(null);
+  const mutationGeneration = useRef(0);
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
+  const sessionOwnerKey = session?.context?.tenantId && session.context.actorId
+    ? `${session.context.tenantId}\u0000${session.context.actorId}`
+    : undefined;
+  const lastVerifiedOwnerKey = useRef(
+    hasInitialWorkspace ? sessionOwnerKey : undefined,
+  );
   const selectedDetail = selectedId ? details[selectedId] : undefined;
-  const selectedMission = missions.find((mission) => mission.id === selectedId) || selectedDetail?.mission;
+  const selectedMission = missions.find((mission) => mission.id === selectedId);
   const selectedMissionStatus = selectedMission?.status;
   const selectedTask = selectedDetail?.tasks.find((task) => task.id === selectedTaskId);
+  const createPermissionBlocked = permissionMessage(session, sessionStatus, "run.agent");
+  const taskPermissionBlocked = permissionMessage(session, sessionStatus, "manage.workflow");
+  const createActionBlocked = missionCreateActionBlocked({
+    contract: missionReadContract,
+    loading,
+    permissionBlocked: createPermissionBlocked,
+  });
+  const taskActionBlocked = missionTaskActionBlocked({
+    mission: selectedMission,
+    contract: missionReadContract,
+    loading,
+    permissionBlocked: taskPermissionBlocked,
+  });
+  const commandActionBlocked = missionCommandActionBlocked({
+    mission: selectedMission,
+    contract: missionReadContract,
+    loading,
+    permissionBlocked: createPermissionBlocked,
+  });
+  const selectionMode = missionSelectionMode(
+    selectedMission,
+    missionReadContract,
+    loading,
+  );
+  const summarySelectionMode: Exclude<MissionSelectionMode, "exact"> =
+    selectionMode === "retained" ? "retained" : "unverified";
   const sessionProblem = sessionStatus === "error"
     ? "We could not verify your session. Try reconnecting."
     : sessionStatus === "ready" && !available ? "Sign in to open Missions." : undefined;
   const displayError = error || sessionProblem;
   const workspaceLoading = loading && !sessionProblem;
 
-  useEffect(() => { detailsRef.current = details; }, [details]);
+  const replaceMissions = useCallback((nextMissions: MissionSummaryView[]) => {
+    missionsRef.current = nextMissions;
+    setMissions(nextMissions);
+  }, []);
+
+  const replaceDetails = useCallback((nextDetails: Record<string, BoardMissionDetail>) => {
+    detailsRef.current = nextDetails;
+    setDetails(nextDetails);
+  }, []);
+
+  const replaceMissionReadContract = useCallback((contract: MissionReadContract) => {
+    missionReadContractRef.current = contract;
+    setMissionReadContract(contract);
+  }, []);
+
+  const replaceLoading = useCallback((nextLoading: boolean) => {
+    loadingRef.current = nextLoading;
+    setLoading(nextLoading);
+  }, []);
+
+  const clearRowActionability = useCallback(() => {
+    detailGeneration.current += 1;
+    detailRequestGeneration.current += 1;
+    const activeDetailController = detailController.current;
+    detailController.current = null;
+    activeDetailController?.abort();
+    const activeEventController = eventController.current;
+    eventController.current = null;
+    eventGeneration.current += 1;
+    activeEventController?.abort();
+    mutationGeneration.current += 1;
+    const activeRecoveryController = mutationRecoveryController.current;
+    mutationRecoveryController.current = null;
+    activeRecoveryController?.abort();
+    replaceMissionReadContract(undefined);
+    replaceMissions(disableMissionSummaryCapabilities(missionsRef.current));
+    replaceDetails({});
+    setDetailLoading(false);
+    setSelectedTaskId("");
+    setShowCreate(false);
+    setShowTaskCreate(false);
+    setCreating(false);
+    setCreatingTask(false);
+    setMutatingTaskId("");
+    setTaskActionError(undefined);
+  }, [replaceDetails, replaceMissionReadContract, replaceMissions]);
+
+  const invalidateMissionRow = useCallback((missionId: string) => {
+    detailGeneration.current += 1;
+    detailRequestGeneration.current += 1;
+    const activeDetailController = detailController.current;
+    detailController.current = null;
+    activeDetailController?.abort();
+    eventGeneration.current += 1;
+    const activeEventController = eventController.current;
+    eventController.current = null;
+    activeEventController?.abort();
+    mutationGeneration.current += 1;
+    const activeRecoveryController = mutationRecoveryController.current;
+    mutationRecoveryController.current = null;
+    activeRecoveryController?.abort();
+    replaceMissions(missionsRef.current.map((candidate) =>
+      candidate.id === missionId
+        ? { ...candidate, detailAvailable: false, manageable: false, runnable: false }
+        : candidate
+    ));
+    const nextDetails = { ...detailsRef.current };
+    delete nextDetails[missionId];
+    replaceDetails(nextDetails);
+    setDetailLoading(false);
+    setCreating(false);
+    if (selectedIdRef.current === missionId) {
+      setSelectedTaskId("");
+      setShowTaskCreate(false);
+      setCreatingTask(false);
+      setMutatingTaskId("");
+      setTaskActionError(undefined);
+    }
+  }, [replaceDetails, replaceMissions]);
+
+  const loadWorkspace = useCallback(async () => {
+    if (!sessionOwnerKey) return;
+    listController.current?.abort();
+    const controller = new AbortController();
+    const requestGeneration = ++listGeneration.current;
+    listController.current = controller;
+    clearRowActionability();
+    setCapabilities([]);
+    setShowLoading(false);
+    replaceLoading(true);
+    setError(undefined);
+    try {
+      const [missionPayload, capabilityPayload] = await Promise.all([
+        readJson("/api/missions?ownerScope=readable&limit=50", {
+          signal: controller.signal,
+        }),
+        readJson("/api/capabilities?view=catalog&limit=50", {
+          signal: controller.signal,
+        }),
+      ]);
+      if (!missionRequestIsCurrent({
+        currentController: listController.current,
+        requestController: controller,
+        currentGeneration: listGeneration.current,
+        requestGeneration,
+      })) return;
+      if (!missionCollectionIsReadable(
+        record(missionPayload.requestReadContracts).missions,
+      )) {
+        throw new Error("Mission ownership could not be verified.");
+      }
+      let nextMissions = normalizeMissionSummaries(missionPayload.missions);
+      if (!nextMissions) {
+        throw new Error("Missions returned an unsupported response.");
+      }
+      let reprovedDetail: BoardMissionDetail | undefined;
+      let routeMissionMissing = false;
+      const routeMissionId = missionIdFromPath(pathname);
+      if (missionNeedsDeepExactReproof(nextMissions, routeMissionId)) {
+        const detailRequest = ++detailRequestGeneration.current;
+        try {
+          const detailPayload = await readJson(
+            `/api/missions/${encodeURIComponent(routeMissionId)}`,
+            { signal: controller.signal },
+          );
+          if (!missionRequestIsCurrent({
+            currentController: listController.current,
+            requestController: controller,
+            currentGeneration: listGeneration.current,
+            requestGeneration,
+          }) || !missionDetailRequestIsCurrent(
+            detailRequestGeneration.current,
+            detailRequest,
+          )) return;
+          const normalizedDetail = normalizeMissionDetail(detailPayload, routeMissionId);
+          if (!normalizedDetail || normalizedDetail.mission.detailAvailable !== true) {
+            throw new MissionDetailContractError();
+          }
+          reprovedDetail = normalizedDetail as BoardMissionDetail;
+          nextMissions = [
+            normalizedDetail.mission,
+            ...nextMissions.filter((mission) => mission.id !== routeMissionId),
+          ];
+        } catch (detailError) {
+          if (detailError instanceof ApiRequestError && detailError.status === 404) {
+            routeMissionMissing = true;
+          } else {
+            throw detailError;
+          }
+        }
+      }
+      const nextCapabilities = Array.isArray(capabilityPayload.capabilities)
+        ? capabilityPayload.capabilities as CapabilityDescriptor[]
+        : [];
+      if (!missionRequestIsCurrent({
+        currentController: listController.current,
+        requestController: controller,
+        currentGeneration: listGeneration.current,
+        requestGeneration,
+      })) return;
+      const currentSelectedId = selectedIdRef.current;
+      const routeResolution = missionRouteAfterReproof(
+        nextMissions,
+        routeMissionId,
+        baseSelectionRef.current || currentSelectedId,
+        routeMissionMissing,
+      );
+      if (routeResolution.replacePath) {
+        replaceMissionHistory(routeResolution.replacePath);
+      }
+      replaceMissions(nextMissions);
+      replaceDetails(reprovedDetail
+        ? { [reprovedDetail.mission.id]: reprovedDetail }
+        : {});
+      replaceMissionReadContract("readable_v1");
+      setCapabilities(nextCapabilities);
+      const nextSelectedId = routeResolution.selectedId;
+      selectedIdRef.current = nextSelectedId;
+      setSelectedId(nextSelectedId);
+      baseSelectionRef.current = missionBaseSelection(
+        nextMissions,
+        baseSelectionRef.current,
+        nextSelectedId,
+      );
+      lastVerifiedOwnerKey.current = sessionOwnerKey;
+      setError(routeMissionMissing
+        ? "This mission is no longer available."
+        : undefined);
+    } catch (loadError) {
+      if (!missionRequestIsCurrent({
+        currentController: listController.current,
+        requestController: controller,
+        currentGeneration: listGeneration.current,
+        requestGeneration,
+      })) return;
+      lastVerifiedOwnerKey.current = undefined;
+      setError(friendlyMessage(loadError, "load"));
+    } finally {
+      if (missionRequestIsCurrent({
+        currentController: listController.current,
+        requestController: controller,
+        currentGeneration: listGeneration.current,
+        requestGeneration,
+      })) {
+        listController.current = null;
+        replaceLoading(false);
+      }
+    }
+  }, [clearRowActionability, pathname, replaceDetails, replaceLoading, replaceMissionReadContract, replaceMissions, sessionOwnerKey]);
 
   useEffect(() => {
     const routeMissionId = missionIdFromPath(pathname);
-    const nextId = routeMissionId || (pathname === "/app/missions" ? baseSelectionRef.current || missions[0]?.id || "" : "");
-    if (!nextId) return;
+    const nextId = missionRouteSelection(
+      missions,
+      routeMissionId,
+      baseSelectionRef.current,
+    );
+    const selectionChanged = selectedIdRef.current !== nextId;
+    if (selectionChanged) {
+      detailGeneration.current += 1;
+      detailRequestGeneration.current += 1;
+      const activeDetailController = detailController.current;
+      detailController.current = null;
+      activeDetailController?.abort();
+      eventGeneration.current += 1;
+      const activeEventController = eventController.current;
+      eventController.current = null;
+      activeEventController?.abort();
+      mutationGeneration.current += 1;
+      const activeRecoveryController = mutationRecoveryController.current;
+      mutationRecoveryController.current = null;
+      activeRecoveryController?.abort();
+      setDetailLoading(false);
+      setSelectedTaskId("");
+      setShowTaskCreate(false);
+      setCreatingTask(false);
+      setMutatingTaskId("");
+      setTaskActionError(undefined);
+    }
+    selectedIdRef.current = nextId;
     setSelectedId((current) => current === nextId ? current : nextId);
-    setError(undefined);
+    if (selectionChanged) setError(undefined);
   }, [missions, pathname]);
 
   useEffect(() => {
@@ -180,33 +662,27 @@ export function MissionWorkspace({
   }, [loading]);
 
   useEffect(() => {
-    if (hasInitialWorkspace || !available || sessionStatus !== "ready") return;
-    listController.current?.abort();
-    const controller = new AbortController();
-    listController.current = controller;
-    async function loadWorkspace() {
-      setShowLoading(false);
-      setLoading(true);
-      try {
-        const [missionPayload, capabilityPayload] = await Promise.all([
-          readJson("/api/missions?limit=50", { signal: controller.signal }),
-          readJson("/api/capabilities?view=catalog&limit=50", { signal: controller.signal }),
-        ]);
-        if (controller.signal.aborted) return;
-        const nextMissions = (missionPayload.missions || []) as MissionSummaryView[];
-        setMissions(nextMissions);
-        setCapabilities((capabilityPayload.capabilities || []) as CapabilityDescriptor[]);
-        setSelectedId((current) => current || nextMissions[0]?.id || "");
-        setError(undefined);
-      } catch (loadError) {
-        if (!controller.signal.aborted) setError(friendlyMessage(loadError, "load"));
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
-      }
+    if (sessionStatus !== "ready" || !available || !sessionOwnerKey) {
+      listGeneration.current += 1;
+      const activeListController = listController.current;
+      listController.current = null;
+      activeListController?.abort();
+      lastVerifiedOwnerKey.current = undefined;
+      clearRowActionability();
+      replaceLoading(false);
+      return;
     }
+    if (
+      lastVerifiedOwnerKey.current === sessionOwnerKey &&
+      missionCollectionIsReadable(missionReadContractRef.current)
+    ) return;
     void loadWorkspace();
-    return () => controller.abort();
-  }, [available, hasInitialWorkspace, sessionStatus]);
+    return () => {
+      const activeListController = listController.current;
+      listController.current = null;
+      activeListController?.abort();
+    };
+  }, [available, clearRowActionability, loadWorkspace, replaceLoading, sessionOwnerKey, sessionStatus]);
 
   useEffect(() => {
     if (!available || sessionStatus !== "ready") return;
@@ -223,70 +699,189 @@ export function MissionWorkspace({
     return () => controller.abort();
   }, [available, sessionStatus]);
 
+  useEffect(() => () => {
+    listGeneration.current += 1;
+    detailGeneration.current += 1;
+    detailRequestGeneration.current += 1;
+    eventGeneration.current += 1;
+    mutationGeneration.current += 1;
+    listController.current?.abort();
+    detailController.current?.abort();
+    eventController.current?.abort();
+    mutationRecoveryController.current?.abort();
+  }, []);
+
   useEffect(() => {
-    if (!available || sessionStatus !== "ready" || !selectedId || details[selectedId]) return;
+    const mission = missions.find((candidate) => candidate.id === selectedId);
+    if (
+      !available ||
+      sessionStatus !== "ready" ||
+      !selectedId ||
+      missionSelectionMode(mission, missionReadContract, loading) !== "exact" ||
+      details[selectedId]
+    ) {
+      const activeController = detailController.current;
+      detailController.current = null;
+      activeController?.abort();
+      setDetailLoading(false);
+      return;
+    }
     detailController.current?.abort();
     const controller = new AbortController();
+    const requestGeneration = ++detailGeneration.current;
+    const detailRequest = ++detailRequestGeneration.current;
+    const missionId = selectedId;
     detailController.current = controller;
     async function loadDetail() {
       setDetailLoading(true);
       try {
-        const detail = await readJson(`/api/missions/${encodeURIComponent(selectedId)}`, { signal: controller.signal }) as BoardMissionDetail;
-        if (!controller.signal.aborted) updateDetail(detail);
+        const payload = await readJson(`/api/missions/${encodeURIComponent(missionId)}`, {
+          signal: controller.signal,
+        });
+        if (!missionRequestIsCurrent({
+          currentController: detailController.current,
+          requestController: controller,
+          currentGeneration: detailGeneration.current,
+          requestGeneration,
+        }) ||
+          !missionDetailRequestIsCurrent(detailRequestGeneration.current, detailRequest) ||
+          selectedIdRef.current !== missionId) return;
+        const detail = normalizeMissionDetail(payload, missionId);
+        if (!detail) throw new MissionDetailContractError();
+        updateDetail(detail as BoardMissionDetail, missionId);
       } catch (loadError) {
-        if (!controller.signal.aborted) setError(friendlyMessage(loadError, "load"));
+        if (!missionRequestIsCurrent({
+          currentController: detailController.current,
+          requestController: controller,
+          currentGeneration: detailGeneration.current,
+          requestGeneration,
+        }) ||
+          !missionDetailRequestIsCurrent(detailRequestGeneration.current, detailRequest) ||
+          selectedIdRef.current !== missionId) return;
+        const status = loadError instanceof ApiRequestError
+          ? loadError.status
+          : undefined;
+        if (missionFailureClearsCollection(status)) {
+          clearRowActionability();
+        } else {
+          invalidateMissionRow(missionId);
+        }
+        setError(loadError instanceof MissionDetailContractError
+          ? "Mission detail returned an unsupported response."
+          : friendlyMessage(loadError, "load"));
       } finally {
-        if (!controller.signal.aborted) setDetailLoading(false);
+        if (missionRequestIsCurrent({
+          currentController: detailController.current,
+          requestController: controller,
+          currentGeneration: detailGeneration.current,
+          requestGeneration,
+        })) {
+          detailController.current = null;
+          setDetailLoading(false);
+        }
       }
     }
     void loadDetail();
-    return () => controller.abort();
-  }, [available, details, selectedId, sessionStatus]);
+    return () => {
+      controller.abort();
+      if (detailController.current === controller) {
+        detailController.current = null;
+        setDetailLoading(false);
+      }
+    };
+  }, [available, clearRowActionability, details, invalidateMissionRow, loading, missionReadContract, missions, selectedId, sessionStatus]);
 
   useEffect(() => {
-    if (!available || sessionStatus !== "ready" || !selectedId || !selectedMissionStatus || !["queued", "running", "waiting"].includes(selectedMissionStatus)) return;
+    if (
+      !available ||
+      sessionStatus !== "ready" ||
+      !selectedId ||
+      selectionMode !== "exact" ||
+      !selectedMissionStatus ||
+      !["queued", "running", "waiting"].includes(selectedMissionStatus)
+    ) return;
+    const missionId = selectedId;
+    const requestGeneration = ++eventGeneration.current;
     let stopped = false;
     let inFlight = false;
-    let cursor = initialDetail?.mission.id === selectedId ? initialEventCursor : 0;
-    let visibleStatus = detailsRef.current[selectedId]?.mission.status;
-    let visibleUpdatedAt = detailsRef.current[selectedId]?.mission.updatedAt;
+    let cursor = safeInitialDetail?.mission.id === missionId ? initialEventCursor : 0;
+    let visibleStatus = detailsRef.current[missionId]?.mission.status;
+    let visibleUpdatedAt = detailsRef.current[missionId]?.mission.updatedAt;
     let consecutiveFailures = 0;
     let timer: number | undefined;
     let controller: AbortController | undefined;
+    const requestStillAllowed = () => {
+      const currentMission = missionsRef.current.find((mission) => mission.id === missionId);
+      return !stopped &&
+        eventGeneration.current === requestGeneration &&
+        selectedIdRef.current === missionId &&
+        missionSelectionMode(
+          currentMission,
+          missionReadContractRef.current,
+          loadingRef.current,
+        ) === "exact";
+    };
     const schedule = () => {
-      if (stopped || document.visibilityState === "hidden") return;
+      if (!requestStillAllowed() || document.visibilityState === "hidden") return;
       if (timer !== undefined) window.clearTimeout(timer);
       timer = window.setTimeout(() => void pollMissionEvents(), missionEventPollDelay(consecutiveFailures));
     };
     const pollMissionEvents = async () => {
       timer = undefined;
-      if (stopped || inFlight || document.visibilityState === "hidden") return;
+      if (!requestStillAllowed() || inFlight || document.visibilityState === "hidden") return;
       inFlight = true;
       controller = new AbortController();
+      eventController.current = controller;
       try {
-        const payload = await readJson(`/api/missions/${encodeURIComponent(selectedId)}/events?afterSeq=${cursor}&limit=25`, { signal: controller.signal });
+        const payload = await readJson(`/api/missions/${encodeURIComponent(missionId)}/events?afterSeq=${cursor}&limit=25`, { signal: controller.signal });
+        if (!requestStillAllowed() || controller.signal.aborted) return;
         const events = Array.isArray(payload.events) ? payload.events : [];
         const nextCursor = missionEventCursor(payload.cursor, cursor);
         const projection = missionEventProjection(payload.mission);
         const changed = Boolean(projection && (!visibleStatus || projection.status !== visibleStatus || projection.updatedAt !== visibleUpdatedAt));
         if (events.length > 0 || changed) {
-          const detail = await readJson(`/api/missions/${encodeURIComponent(selectedId)}`, { signal: controller.signal }) as BoardMissionDetail;
-          if (stopped) return;
-          updateDetail(detail);
+          const detailRequest = ++detailRequestGeneration.current;
+          const detailPayload = await readJson(`/api/missions/${encodeURIComponent(missionId)}`, { signal: controller.signal });
+          if (
+            !requestStillAllowed() ||
+            controller.signal.aborted ||
+            !missionDetailRequestIsCurrent(detailRequestGeneration.current, detailRequest)
+          ) return;
+          const detail = normalizeMissionDetail(detailPayload, missionId);
+          if (!detail) throw new MissionDetailContractError();
+          if (!updateDetail(detail as BoardMissionDetail, missionId)) return;
           visibleStatus = detail.mission.status;
           visibleUpdatedAt = detail.mission.updatedAt;
         }
         cursor = nextCursor;
         consecutiveFailures = 0;
-      } catch {
-        if (!controller.signal.aborted) consecutiveFailures += 1;
+      } catch (pollError) {
+        if (!controller.signal.aborted && requestStillAllowed()) {
+          const status = pollError instanceof ApiRequestError
+            ? pollError.status
+            : undefined;
+          const invalidDetail = pollError instanceof MissionDetailContractError;
+          if (missionEventFailureClosesRow({ status, invalidDetail })) {
+            if (missionFailureClearsCollection(status)) {
+              clearRowActionability();
+            } else {
+              invalidateMissionRow(missionId);
+            }
+            setError(invalidDetail
+              ? "Mission detail returned an unsupported response."
+              : friendlyMessage(pollError, "load"));
+          } else {
+            consecutiveFailures += 1;
+          }
+        }
       } finally {
+        if (eventController.current === controller) eventController.current = null;
         inFlight = false;
         schedule();
       }
     };
     const wake = () => {
-      if (stopped || inFlight || document.visibilityState === "hidden") return;
+      if (!requestStillAllowed() || inFlight || document.visibilityState === "hidden") return;
       if (timer !== undefined) window.clearTimeout(timer);
       timer = undefined;
       void pollMissionEvents();
@@ -305,12 +900,14 @@ export function MissionWorkspace({
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       stopped = true;
+      eventGeneration.current += 1;
       if (timer !== undefined) window.clearTimeout(timer);
       controller?.abort();
+      if (eventController.current === controller) eventController.current = null;
       window.removeEventListener("focus", wake);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [available, initialDetail?.mission.id, initialEventCursor, selectedId, selectedMissionStatus, sessionStatus]);
+  }, [available, clearRowActionability, initialEventCursor, invalidateMissionRow, safeInitialDetail?.mission.id, selectedId, selectedMissionStatus, selectionMode, sessionStatus]);
 
   const visibleMissions = useMemo(() => missions.filter((mission) => showArchived || mission.status !== "archived"), [missions, showArchived]);
   const tasks = useMemo(() => selectedDetail?.tasks || [], [selectedDetail]);
@@ -330,40 +927,176 @@ export function MissionWorkspace({
   const attentionCount = tasks.filter((task) => ["needs-you", "review", "waiting"].includes(boardColumnForTask(task, tasks))).length;
   const doneCount = tasks.filter((task) => boardColumnForTask(task, tasks) === "done").length;
 
-  function updateDetail(detail: BoardMissionDetail) {
-    setDetails((current) => ({ ...current, [detail.mission.id]: detail }));
-    setMissions((current) => current.some((mission) => mission.id === detail.mission.id)
-      ? current.map((mission) => mission.id === detail.mission.id ? detail.mission : mission)
-      : [detail.mission, ...current]);
+  function updateDetail(detail: BoardMissionDetail, expectedId: string) {
+    if (!missionDetailHasExpectedId(detail, expectedId)) return false;
+    const normalizedMission = normalizeMissionSummary(detail.mission);
+    if (normalizedMission?.id !== expectedId) return false;
+    const currentMission = missionsRef.current.find((mission) => mission.id === expectedId);
+    if (
+      !currentMission ||
+      missionSelectionMode(
+        currentMission,
+        missionReadContractRef.current,
+        loadingRef.current,
+      ) !== "exact"
+    ) return false;
+    const currentDetail = detailsRef.current[expectedId];
+    if (
+      currentDetail &&
+      Date.parse(detail.mission.updatedAt) < Date.parse(currentDetail.mission.updatedAt)
+    ) return false;
+    const mergedDetail: BoardMissionDetail = {
+      ...detail,
+      mission: {
+        ...normalizedMission,
+        detailAvailable: currentMission.detailAvailable,
+        manageable: currentMission.manageable,
+        runnable: currentMission.runnable,
+      },
+    };
+    replaceDetails({ ...detailsRef.current, [expectedId]: mergedDetail });
+    replaceMissions(missionsRef.current.map((mission) =>
+      mission.id === expectedId ? mergedDetail.mission : mission
+    ));
+    return true;
   }
 
-  async function refreshDetail(missionId = selectedId) {
-    if (!missionId) return undefined;
-    const detail = await readJson(`/api/missions/${encodeURIComponent(missionId)}`) as BoardMissionDetail;
-    updateDetail(detail);
-    return detail;
+  async function refreshDetail(
+    missionId: string,
+    requestGeneration: number,
+  ) {
+    const currentMission = missionsRef.current.find((mission) => mission.id === missionId);
+    if (
+      mutationGeneration.current !== requestGeneration ||
+      missionSelectionMode(
+        currentMission,
+        missionReadContractRef.current,
+        loadingRef.current,
+      ) !== "exact"
+    ) return undefined;
+    mutationRecoveryController.current?.abort();
+    const controller = new AbortController();
+    const detailRequest = ++detailRequestGeneration.current;
+    mutationRecoveryController.current = controller;
+    try {
+      const payload = await readJson(`/api/missions/${encodeURIComponent(missionId)}`, {
+        signal: controller.signal,
+      });
+      if (
+        controller.signal.aborted ||
+        mutationGeneration.current !== requestGeneration ||
+        !missionDetailRequestIsCurrent(detailRequestGeneration.current, detailRequest) ||
+        selectedIdRef.current !== missionId
+      ) return undefined;
+      const detail = normalizeMissionDetail(payload, missionId);
+      if (!detail) {
+        invalidateMissionRow(missionId);
+        setError("Mission detail returned an unsupported response.");
+        return undefined;
+      }
+      return updateDetail(detail as BoardMissionDetail, missionId)
+        ? (detail as BoardMissionDetail)
+        : undefined;
+    } catch (recoveryError) {
+      const status = recoveryError instanceof ApiRequestError
+        ? recoveryError.status
+        : undefined;
+      if (
+        !controller.signal.aborted &&
+        mutationGeneration.current === requestGeneration &&
+        missionDetailRequestIsCurrent(detailRequestGeneration.current, detailRequest) &&
+        selectedIdRef.current === missionId &&
+        missionEventFailureClosesRow({ status })
+      ) {
+        if (missionFailureClearsCollection(status)) {
+          clearRowActionability();
+        } else {
+          invalidateMissionRow(missionId);
+        }
+        setError(friendlyMessage(recoveryError, "load"));
+      }
+      throw recoveryError;
+    } finally {
+      if (mutationRecoveryController.current === controller) {
+        mutationRecoveryController.current = null;
+      }
+    }
   }
 
   function selectMission(id: string) {
+    detailGeneration.current += 1;
+    detailRequestGeneration.current += 1;
+    const activeDetailController = detailController.current;
+    detailController.current = null;
+    activeDetailController?.abort();
+    eventGeneration.current += 1;
+    const activeEventController = eventController.current;
+    eventController.current = null;
+    activeEventController?.abort();
+    mutationGeneration.current += 1;
+    const activeRecoveryController = mutationRecoveryController.current;
+    mutationRecoveryController.current = null;
+    activeRecoveryController?.abort();
+    setDetailLoading(false);
+    selectedIdRef.current = id;
     setSelectedTaskId("");
     setTaskActionError(undefined);
     setShowTaskCreate(false);
+    setCreatingTask(false);
+    setMutatingTaskId("");
     setSelectedId(id);
     setError(undefined);
     pushMissionHistory(id);
   }
 
+  function currentCreateActionBlocked() {
+    return missionCreateActionBlocked({
+      contract: missionReadContractRef.current,
+      loading: loadingRef.current,
+      permissionBlocked: permissionMessage(session, sessionStatus, "run.agent"),
+    });
+  }
+
+  function currentTaskActionBlocked(missionId: string) {
+    return missionTaskActionBlocked({
+      mission: missionsRef.current.find((mission) => mission.id === missionId),
+      contract: missionReadContractRef.current,
+      loading: loadingRef.current,
+      permissionBlocked: permissionMessage(session, sessionStatus, "manage.workflow"),
+    });
+  }
+
+  function currentCommandActionBlocked(missionId: string) {
+    return missionCommandActionBlocked({
+      mission: missionsRef.current.find((mission) => mission.id === missionId),
+      contract: missionReadContractRef.current,
+      loading: loadingRef.current,
+      permissionBlocked: permissionMessage(session, sessionStatus, "run.agent"),
+    });
+  }
+
   async function createMission(event: React.FormEvent) {
     event.preventDefault();
     if (!title.trim() || !objective.trim()) return;
+    const blockedReason = currentCreateActionBlocked();
+    if (blockedReason) {
+      setError(blockedReason);
+      return;
+    }
+    const requestGeneration = ++mutationGeneration.current;
+    mutationRecoveryController.current?.abort();
+    mutationRecoveryController.current = null;
     setCreating(true);
     setError(undefined);
     try {
       const payload = await readJson("/api/missions", {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: title.trim(), objective: objective.trim(), priority }),
       });
-      const mission = payload.mission as MissionSummaryView;
-      setMissions((current) => [mission, ...current.filter((item) => item.id !== mission.id)]);
+      if (mutationGeneration.current !== requestGeneration) return;
+      const mission = normalizeMissionSummary(payload.mission);
+      if (!mission) throw new Error("Mission creation returned an unsupported response.");
+      replaceMissions([mission, ...missionsRef.current.filter((item) => item.id !== mission.id)]);
+      selectedIdRef.current = mission.id;
       setSelectedTaskId("");
       setTaskActionError(undefined);
       setShowTaskCreate(false);
@@ -372,69 +1105,137 @@ export function MissionWorkspace({
       setAnnouncement(`${mission.title} was created as a draft mission.`);
       pushMissionHistory(mission.id);
     } catch (createError) {
-      setError(friendlyMessage(createError, "create"));
-    } finally { setCreating(false); }
+      if (mutationGeneration.current === requestGeneration) {
+        setError(friendlyMessage(createError, "create"));
+      }
+    } finally {
+      if (mutationGeneration.current === requestGeneration) setCreating(false);
+    }
   }
 
   async function createTask(input: NewTaskInput) {
-    if (!selectedId) return;
+    const missionId = selectedIdRef.current;
+    const blockedReason = currentTaskActionBlocked(missionId);
+    if (!missionId || blockedReason) {
+      if (blockedReason) setTaskActionError(blockedReason);
+      return;
+    }
+    const requestGeneration = ++mutationGeneration.current;
+    mutationRecoveryController.current?.abort();
+    mutationRecoveryController.current = null;
     setCreatingTask(true); setTaskActionError(undefined);
     try {
-      const payload = await readJson(`/api/missions/${encodeURIComponent(selectedId)}/tasks`, {
+      const payload = await readJson(`/api/missions/${encodeURIComponent(missionId)}/tasks`, {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: input.title, instructions: input.instructions, definitionOfDone: input.definitionOfDone, priority: input.priority, status: input.boardStage === "inbox" ? "triage" : "pending", assigneeId: input.assigneeId || undefined, reviewRequired: input.reviewRequired }),
       });
-      const detail = await refreshDetail();
+      if (mutationGeneration.current !== requestGeneration) return;
+      const detail = await refreshDetail(missionId, requestGeneration);
+      if (mutationGeneration.current !== requestGeneration) return;
       const taskId = taskIdFromMutation(payload);
       if (taskId && detail?.tasks.some((task) => task.id === taskId)) setSelectedTaskId(taskId);
       setShowTaskCreate(false);
       setAnnouncement(`${input.title} was added to ${input.boardStage === "inbox" ? "Inbox" : "Ready"}.`);
-    } catch (createError) { setTaskActionError(friendlyMessage(createError, "create")); }
-    finally { setCreatingTask(false); }
+    } catch (createError) {
+      if (mutationGeneration.current === requestGeneration) {
+        setTaskActionError(friendlyMessage(createError, "create"));
+      }
+    } finally {
+      if (mutationGeneration.current === requestGeneration) setCreatingTask(false);
+    }
   }
 
   async function patchTask(taskId: string, input: Record<string, unknown>, successMessage: string) {
-    if (!selectedId) return;
+    const missionId = selectedIdRef.current;
+    const blockedReason = currentTaskActionBlocked(missionId);
+    const taskIsCurrent = detailsRef.current[missionId]?.tasks.some((task) => task.id === taskId);
+    if (!missionId || blockedReason || !taskIsCurrent) {
+      setTaskActionError(blockedReason || "This task is no longer available in the current mission.");
+      return;
+    }
+    const requestGeneration = ++mutationGeneration.current;
+    mutationRecoveryController.current?.abort();
+    mutationRecoveryController.current = null;
     setMutatingTaskId(taskId); setTaskActionError(undefined);
     try {
-      await readJson(`/api/missions/${encodeURIComponent(selectedId)}/tasks/${encodeURIComponent(taskId)}`, {
+      await readJson(`/api/missions/${encodeURIComponent(missionId)}/tasks/${encodeURIComponent(taskId)}`, {
         method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
       });
-      await refreshDetail();
-      setAnnouncement(successMessage);
-    } catch (mutationError) { setTaskActionError(friendlyMessage(mutationError, "update")); }
-    finally { setMutatingTaskId(""); }
+      if (mutationGeneration.current !== requestGeneration) return;
+      await refreshDetail(missionId, requestGeneration);
+      if (mutationGeneration.current === requestGeneration) setAnnouncement(successMessage);
+    } catch (mutationError) {
+      if (mutationGeneration.current === requestGeneration) {
+        setTaskActionError(friendlyMessage(mutationError, "update"));
+      }
+    } finally {
+      if (mutationGeneration.current === requestGeneration) setMutatingTaskId("");
+    }
   }
 
   async function addComment(taskId: string, body: string) {
-    if (!selectedId || !body.trim()) return false;
+    const missionId = selectedIdRef.current;
+    const blockedReason = currentTaskActionBlocked(missionId);
+    const taskIsCurrent = detailsRef.current[missionId]?.tasks.some((task) => task.id === taskId);
+    if (!missionId || !body.trim() || blockedReason || !taskIsCurrent) {
+      if (blockedReason || !taskIsCurrent) {
+        setTaskActionError(blockedReason || "This task is no longer available in the current mission.");
+      }
+      return false;
+    }
+    const requestGeneration = ++mutationGeneration.current;
+    mutationRecoveryController.current?.abort();
+    mutationRecoveryController.current = null;
     setMutatingTaskId(taskId); setTaskActionError(undefined);
     try {
-      await readJson(`/api/missions/${encodeURIComponent(selectedId)}/tasks/${encodeURIComponent(taskId)}/comments`, {
+      await readJson(`/api/missions/${encodeURIComponent(missionId)}/tasks/${encodeURIComponent(taskId)}/comments`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ body: body.trim() }),
       });
-      await refreshDetail();
+      if (mutationGeneration.current !== requestGeneration) return false;
+      await refreshDetail(missionId, requestGeneration);
+      if (mutationGeneration.current !== requestGeneration) return false;
       setAnnouncement("Comment added to the task.");
       return true;
-    } catch (commentError) { setTaskActionError(friendlyMessage(commentError, "update")); return false; }
-    finally { setMutatingTaskId(""); }
+    } catch (commentError) {
+      if (mutationGeneration.current === requestGeneration) {
+        setTaskActionError(friendlyMessage(commentError, "update"));
+      }
+      return false;
+    } finally {
+      if (mutationGeneration.current === requestGeneration) setMutatingTaskId("");
+    }
   }
 
   async function reviewTask(taskId: string, action: ReviewAction, note = "") {
-    if (!selectedId) return;
+    const missionId = selectedIdRef.current;
+    const blockedReason = currentTaskActionBlocked(missionId);
+    const taskIsCurrent = detailsRef.current[missionId]?.tasks.some((task) => task.id === taskId);
+    if (!missionId || blockedReason || !taskIsCurrent) {
+      setTaskActionError(blockedReason || "This task is no longer available in the current mission.");
+      return;
+    }
+    const requestGeneration = ++mutationGeneration.current;
+    mutationRecoveryController.current?.abort();
+    mutationRecoveryController.current = null;
     setMutatingTaskId(taskId); setTaskActionError(undefined);
     try {
-      await readJson(`/api/missions/${encodeURIComponent(selectedId)}/tasks/${encodeURIComponent(taskId)}/review`, {
+      await readJson(`/api/missions/${encodeURIComponent(missionId)}/tasks/${encodeURIComponent(taskId)}/review`, {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({
           action,
           ...(action === "request_changes" ? { reason: note.trim() } : note.trim() ? { summary: note.trim() } : {}),
         }),
       });
-      await refreshDetail();
-      setAnnouncement(reviewActionLabel(action));
-    } catch (reviewError) { setTaskActionError(friendlyMessage(reviewError, "update")); }
-    finally { setMutatingTaskId(""); }
+      if (mutationGeneration.current !== requestGeneration) return;
+      await refreshDetail(missionId, requestGeneration);
+      if (mutationGeneration.current === requestGeneration) setAnnouncement(reviewActionLabel(action));
+    } catch (reviewError) {
+      if (mutationGeneration.current === requestGeneration) {
+        setTaskActionError(friendlyMessage(reviewError, "update"));
+      }
+    } finally {
+      if (mutationGeneration.current === requestGeneration) setMutatingTaskId("");
+    }
   }
 
   return (
@@ -447,12 +1248,12 @@ export function MissionWorkspace({
         </div>
         <div className={styles.headerActions}>
           <Link href="/app/connectors" title="Manage connected capabilities"><Zap size={14} aria-hidden="true" /> {capabilities.length} tools</Link>
-          <button type="button" className={styles.secondaryButton} onClick={() => setShowCreate(true)}><Plus size={14} aria-hidden="true" /> Mission</button>
-          <button type="button" className={styles.primaryButton} onClick={() => setShowTaskCreate(true)} disabled={!selectedMission}><Plus size={14} aria-hidden="true" /> Task</button>
+          <button type="button" className={styles.secondaryButton} onClick={() => setShowCreate(true)} disabled={Boolean(createActionBlocked)} title={createActionBlocked}><Plus size={14} aria-hidden="true" /> Mission</button>
+          {selectionMode === "exact" ? <button type="button" className={styles.primaryButton} onClick={() => setShowTaskCreate(true)} disabled={Boolean(taskActionBlocked)} title={taskActionBlocked}><Plus size={14} aria-hidden="true" /> Task</button> : null}
         </div>
       </header>
 
-      {displayError ? <div className={styles.error} role="alert"><TriangleAlert size={15} aria-hidden="true" /><span>{displayError}</span>{sessionStatus === "ready" && !available ? <Link href="/login">Sign in</Link> : <button type="button" onClick={() => sessionStatus === "error" ? void refreshSession() : window.location.reload()}>Try again</button>}</div> : null}
+      {displayError ? <div className={styles.error} role="alert"><TriangleAlert size={15} aria-hidden="true" /><span>{displayError}</span>{sessionStatus === "ready" && !available ? <Link href="/login">Sign in</Link> : <button type="button" onClick={() => sessionStatus === "error" ? void refreshSession() : void loadWorkspace()}>Try again</button>}</div> : null}
 
       <div className={clsx(styles.workspace, railCollapsed && styles.workspaceRailCollapsed)}>
         <aside className={clsx(styles.rail, railCollapsed && styles.railCollapsed)} aria-label="Mission selector">
@@ -469,19 +1270,19 @@ export function MissionWorkspace({
                 <span className={styles.missionItemCopy}><strong>{mission.title}</strong><small>{missionStatusLabel(mission.status)} · {relativeTime(mission.updatedAt, asOf)}</small></span>
                 <ChevronRight className={styles.missionChevron} size={14} aria-hidden="true" />
               </button>
-            )) : <div className={styles.emptyRail}><Inbox size={18} aria-hidden="true" />{!railCollapsed ? <><p>No missions yet.</p><button type="button" onClick={() => setShowCreate(true)}>Create one</button></> : null}</div>}
+            )) : <div className={styles.emptyRail}><Inbox size={18} aria-hidden="true" />{!railCollapsed ? <><p>No missions yet.</p><button type="button" onClick={() => setShowCreate(true)} disabled={Boolean(createActionBlocked)} title={createActionBlocked}>Create one</button></> : null}</div>}
           </div>
           <label className={styles.archiveToggle} title="Include archived missions"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.currentTarget.checked)} /><Archive size={13} aria-hidden="true" />{!railCollapsed ? <span>Show archived</span> : null}</label>
         </aside>
 
         <main className={styles.main}>
-          {selectedMission ? <>
+          {selectedMission && selectionMode === "exact" ? <>
             <section className={styles.missionHeader} aria-labelledby="mission-title">
               <div className={styles.missionIdentity}>
                 <div className={styles.missionMeta}><span className={clsx(styles.missionStatus, statusToneClass(selectedMission.status))}>{missionStatusLabel(selectedMission.status)}</span><span>{selectedMission.priority} priority</span><span>Updated {relativeTime(selectedMission.updatedAt, asOf)}</span></div>
                 <h2 id="mission-title">{selectedMission.title}</h2><p>{selectedMission.objective}</p>
               </div>
-              <div className={styles.missionLinks}><Link href={talkHref(selectedMission)}><Bot size={14} aria-hidden="true" /> Continue in Command</Link><Link href="/app/approvals"><ShieldCheck size={14} aria-hidden="true" /> Approvals</Link></div>
+              <div className={styles.missionLinks}>{!commandActionBlocked ? <Link href={talkHref(selectedMission)} onClick={(event) => { const blockedReason = currentCommandActionBlocked(selectedMission.id); if (blockedReason) { event.preventDefault(); setError(blockedReason); } }}><Bot size={14} aria-hidden="true" /> Continue in Command</Link> : null}<Link href="/app/approvals"><ShieldCheck size={14} aria-hidden="true" /> Approvals</Link></div>
             </section>
             <div className={styles.metrics} aria-label="Mission task overview"><span><strong>{tasks.length}</strong> tasks</span><span><strong>{workingCount}</strong> working</span><span><strong>{attentionCount}</strong> need attention</span><span><strong>{doneCount}</strong> done</span><span className={styles.ledgerSignal}><i aria-hidden="true" /> Ledger live</span></div>
             <div className={styles.toolbar}>
@@ -489,30 +1290,57 @@ export function MissionWorkspace({
               <label className={styles.filterField}><UserRound size={13} aria-hidden="true" /><span className="sr-only">Filter by assignee</span><select value={assigneeFilter} onChange={(event) => setAssigneeFilter(event.currentTarget.value)}><option value="all">All agents</option><option value="unassigned">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
               <label className={styles.filterField}><CircleDot size={13} aria-hidden="true" /><span className="sr-only">Filter by task state</span><select value={taskFilter} onChange={(event) => setTaskFilter(event.currentTarget.value as TaskFilter)}><option value="all">All states</option><option value="open">Open work</option><option value="attention">Needs attention</option><option value="done">Done</option></select></label>
               <div className={styles.viewSwitch} role="group" aria-label="Mission view"><ViewButton active={view === "board"} label="Board" onClick={() => setView("board")} icon={<Columns3 size={14} />} /><ViewButton active={view === "canvas"} label="Canvas" onClick={() => setView("canvas")} icon={<GitBranch size={14} />} /><ViewButton active={view === "list"} label="List" onClick={() => setView("list")} icon={<LayoutList size={14} />} /></div>
-              <button type="button" className={styles.toolbarAdd} onClick={() => setShowTaskCreate(true)}><Plus size={14} aria-hidden="true" /> New task</button>
+              <button type="button" className={styles.toolbarAdd} onClick={() => setShowTaskCreate(true)} disabled={Boolean(taskActionBlocked)} title={taskActionBlocked}><Plus size={14} aria-hidden="true" /> New task</button>
             </div>
             {detailLoading && !selectedDetail ? <CanvasSkeleton /> : <div className={styles.viewFrame} key={view}>
-              {view === "board" ? <TaskBoard columns={BOARD_COLUMNS} groupedTasks={groupedTasks} allTasks={tasks} detail={selectedDetail} agents={agentNameMap} asOf={asOf} mobileColumn={mobileColumn} onMobileColumnChange={setMobileColumn} onSelectTask={(task) => setSelectedTaskId(task.id)} onCreateTask={() => setShowTaskCreate(true)} />
+              {view === "board" ? <TaskBoard columns={BOARD_COLUMNS} groupedTasks={groupedTasks} allTasks={tasks} detail={selectedDetail} agents={agentNameMap} asOf={asOf} mobileColumn={mobileColumn} onMobileColumnChange={setMobileColumn} onSelectTask={(task) => setSelectedTaskId(task.id)} onCreateTask={() => setShowTaskCreate(true)} createDisabledReason={taskActionBlocked} />
                 : view === "canvas" ? <TaskCanvas tasks={filteredTasks} allTasks={tasks} agents={agentNameMap} onSelectTask={(task) => setSelectedTaskId(task.id)} />
                   : <TaskList tasks={filteredTasks} allTasks={tasks} detail={selectedDetail} agents={agentNameMap} asOf={asOf} onSelectTask={(task) => setSelectedTaskId(task.id)} />}
             </div>}
-          </> : workspaceLoading ? (showLoading ? <CanvasSkeleton /> : <div className={styles.loadingReserve} aria-hidden="true" />) : <div className={styles.emptyCanvas}><Workflow size={28} aria-hidden="true" /><h2>Create a mission to organize durable work</h2><p>Each mission keeps tasks, agent attempts, approvals, and evidence connected.</p><button type="button" onClick={() => setShowCreate(true)}><Plus size={14} aria-hidden="true" /> New mission</button></div>}
+          </> : selectedMission ? <MissionSummaryOnly mission={selectedMission} mode={summarySelectionMode} asOf={asOf} /> : workspaceLoading ? (showLoading ? <CanvasSkeleton /> : <div className={styles.loadingReserve} aria-hidden="true" />) : <div className={styles.emptyCanvas}><Workflow size={28} aria-hidden="true" /><h2>Create a mission to organize durable work</h2><p>Each mission keeps tasks, agent attempts, approvals, and evidence connected.</p><button type="button" onClick={() => setShowCreate(true)} disabled={Boolean(createActionBlocked)} title={createActionBlocked}><Plus size={14} aria-hidden="true" /> New mission</button></div>}
         </main>
       </div>
 
-      {showCreate ? <MissionCreateDialog title={title} objective={objective} priority={priority} creating={creating} error={error} onTitleChange={setTitle} onObjectiveChange={setObjective} onPriorityChange={setPriority} onClose={() => setShowCreate(false)} onSubmit={createMission} /> : null}
-      {showTaskCreate && selectedMission ? <TaskCreateDialog missionTitle={selectedMission.title} agents={agents} creating={creatingTask} error={taskActionError} onClose={() => { setShowTaskCreate(false); setTaskActionError(undefined); }} onCreate={createTask} /> : null}
-      {selectedTask && selectedDetail ? <TaskDrawer key={`${selectedTask.id}:${selectedTask.updatedAt}`} task={selectedTask} allTasks={tasks} detail={selectedDetail} agents={agents} agentNames={agentNameMap} asOf={asOf} busy={mutatingTaskId === selectedTask.id} error={taskActionError} onClose={() => { setSelectedTaskId(""); setTaskActionError(undefined); }} onSave={(input) => patchTask(selectedTask.id, { expectedUpdatedAt: selectedTask.updatedAt, ...input }, "Task details saved.")} onAction={(action) => patchTask(selectedTask.id, { expectedUpdatedAt: selectedTask.updatedAt, ...taskActionPatch(action, selectedTask) }, taskActionLabel(action))} onReview={(action, note) => reviewTask(selectedTask.id, action, note)} onComment={(body) => addComment(selectedTask.id, body)} /> : null}
+      {showCreate && !createActionBlocked ? <MissionCreateDialog title={title} objective={objective} priority={priority} creating={creating} error={error} onTitleChange={setTitle} onObjectiveChange={setObjective} onPriorityChange={setPriority} onClose={() => setShowCreate(false)} onSubmit={createMission} /> : null}
+      {showTaskCreate && selectedMission && !taskActionBlocked ? <TaskCreateDialog missionTitle={selectedMission.title} agents={agents} creating={creatingTask} error={taskActionError} onClose={() => { setShowTaskCreate(false); setTaskActionError(undefined); }} onCreate={createTask} /> : null}
+      {selectedTask && selectedDetail ? <TaskDrawer key={`${selectedTask.id}:${selectedTask.updatedAt}`} task={selectedTask} allTasks={tasks} detail={selectedDetail} agents={agents} agentNames={agentNameMap} asOf={asOf} busy={mutatingTaskId === selectedTask.id} disabledReason={taskActionBlocked} error={taskActionError} onClose={() => { setSelectedTaskId(""); setTaskActionError(undefined); }} onSave={(input) => patchTask(selectedTask.id, { expectedUpdatedAt: selectedTask.updatedAt, ...input }, "Task details saved.")} onAction={(action) => patchTask(selectedTask.id, { expectedUpdatedAt: selectedTask.updatedAt, ...taskActionPatch(action, selectedTask) }, taskActionLabel(action))} onReview={(action, note) => reviewTask(selectedTask.id, action, note)} onComment={(body) => addComment(selectedTask.id, body)} /> : null}
     </section>
   );
+}
+
+export function MissionSummaryOnly({
+  mission,
+  mode,
+  asOf = 0,
+}: {
+  mission: MissionSummaryView;
+  mode: Exclude<MissionSelectionMode, "exact">;
+  asOf?: number;
+}) {
+  const retained = mode === "retained";
+  return <section aria-labelledby="mission-title" data-mission-surface="summary-only">
+    <section className={styles.missionHeader}>
+      <div className={styles.missionIdentity}>
+        <div className={styles.missionMeta}><span className={clsx(styles.missionStatus, statusToneClass(mission.status))}>{missionStatusLabel(mission.status)}</span><span>{mission.priority} priority</span><span>Updated {relativeTime(mission.updatedAt, asOf)}</span></div>
+        <h2 id="mission-title">{mission.title}</h2><p>{mission.objective}</p>
+      </div>
+    </section>
+    <div className={styles.emptyCanvas}>
+      <ShieldCheck size={28} aria-hidden="true" />
+      <h3>{retained ? "Read-only retained mission" : "Mission access is being verified"}</h3>
+      <p>{retained
+        ? "This mission remains visible for continuity, but its task board, execution controls, and updates remain with its stored owner."
+        : "The summary remains visible while current ownership is verified. Detail and action controls are unavailable until refresh succeeds."}</p>
+    </div>
+  </section>;
 }
 
 function ViewButton({ active, label, icon, onClick }: { active: boolean; label: string; icon: React.ReactNode; onClick: () => void }) {
   return <button type="button" className={active ? styles.viewButtonActive : undefined} aria-pressed={active} onClick={onClick}>{icon}<span>{label}</span></button>;
 }
 
-function TaskBoard({ columns, groupedTasks, allTasks, detail, agents, asOf, mobileColumn, onMobileColumnChange, onSelectTask, onCreateTask }: {
-  columns: BoardColumn[]; groupedTasks: Map<BoardColumnId, BoardTask[]>; allTasks: BoardTask[]; detail?: BoardMissionDetail; agents: Map<string, string>; asOf: number; mobileColumn: BoardColumnId; onMobileColumnChange: (column: BoardColumnId) => void; onSelectTask: (task: BoardTask) => void; onCreateTask: () => void;
+function TaskBoard({ columns, groupedTasks, allTasks, detail, agents, asOf, mobileColumn, onMobileColumnChange, onSelectTask, onCreateTask, createDisabledReason }: {
+  columns: BoardColumn[]; groupedTasks: Map<BoardColumnId, BoardTask[]>; allTasks: BoardTask[]; detail?: BoardMissionDetail; agents: Map<string, string>; asOf: number; mobileColumn: BoardColumnId; onMobileColumnChange: (column: BoardColumnId) => void; onSelectTask: (task: BoardTask) => void; onCreateTask: () => void; createDisabledReason?: string;
 }) {
   return <section className={styles.boardRegion} aria-label="Task board">
     <label className={styles.mobileColumnPicker}><span>Board column</span><select value={mobileColumn} onChange={(event) => onMobileColumnChange(event.currentTarget.value as BoardColumnId)}>{columns.map((column) => <option key={column.id} value={column.id}>{column.title} ({groupedTasks.get(column.id)?.length || 0})</option>)}</select></label>
@@ -521,7 +1349,7 @@ function TaskBoard({ columns, groupedTasks, allTasks, detail, agents, asOf, mobi
       return <section key={column.id} className={styles.boardColumn} data-mobile-visible={column.id === mobileColumn} aria-labelledby={`column-${column.id}`}>
         <header className={styles.columnHeader}><span className={clsx(styles.columnMark, columnToneClass(column.id))} aria-hidden="true" /><div><h3 id={`column-${column.id}`}>{column.title}</h3><p>{column.description}</p></div><strong>{columnTasks.length}</strong></header>
         <div className={styles.columnTasks}>{columnTasks.map((task) => <TaskCard key={task.id} task={task} allTasks={allTasks} detail={detail} agents={agents} asOf={asOf} onSelect={() => onSelectTask(task)} />)}
-          {!columnTasks.length ? <div className={styles.columnEmpty}><span>{column.id === "inbox" ? "Drop a rough task here to shape it." : `No tasks in ${column.title.toLowerCase()}.`}</span>{column.id === "inbox" ? <button type="button" onClick={onCreateTask}><Plus size={12} aria-hidden="true" /> Add task</button> : null}</div> : null}
+          {!columnTasks.length ? <div className={styles.columnEmpty}><span>{column.id === "inbox" ? "Drop a rough task here to shape it." : `No tasks in ${column.title.toLowerCase()}.`}</span>{column.id === "inbox" ? <button type="button" onClick={onCreateTask} disabled={Boolean(createDisabledReason)} title={createDisabledReason}><Plus size={12} aria-hidden="true" /> Add task</button> : null}</div> : null}
         </div>
       </section>;
     })}</div>
@@ -604,8 +1432,8 @@ function TaskCreateDialog({ missionTitle, agents, creating, error, onClose, onCr
 
 type ReviewAction = "request_review" | "approve" | "request_changes";
 
-function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, error, onClose, onSave, onAction, onReview, onComment }: {
-  task: BoardTask; allTasks: BoardTask[]; detail: BoardMissionDetail; agents: AgentOption[]; agentNames: Map<string, string>; asOf: number; busy: boolean; error?: string; onClose: () => void; onSave: (input: Record<string, unknown>) => void; onAction: (action: TaskAction) => void; onReview: (action: ReviewAction, note: string) => void; onComment: (body: string) => Promise<boolean>;
+function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, disabledReason, error, onClose, onSave, onAction, onReview, onComment }: {
+  task: BoardTask; allTasks: BoardTask[]; detail: BoardMissionDetail; agents: AgentOption[]; agentNames: Map<string, string>; asOf: number; busy: boolean; disabledReason?: string; error?: string; onClose: () => void; onSave: (input: Record<string, unknown>) => void; onAction: (action: TaskAction) => void; onReview: (action: ReviewAction, note: string) => void; onComment: (body: string) => Promise<boolean>;
 }) {
   const closeRef = useDialogFocus(onClose);
   const [title, setTitle] = useState(task.title); const [instructions, setInstructions] = useState(task.instructions); const [definitionOfDone, setDefinitionOfDone] = useState(task.definitionOfDone); const [priority, setPriority] = useState(task.priority);
@@ -617,6 +1445,7 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, er
   );
   function save(event: React.FormEvent) {
     event.preventDefault();
+    if (disabledReason) return;
     const unchangedReadOnlyAssignee = Boolean(
       assigneeId &&
       assigneeId === originalAssigneeId &&
@@ -639,19 +1468,20 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, er
   return <div className={styles.drawerBackdrop} onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className={styles.drawer} role="dialog" aria-modal="true" aria-labelledby="task-drawer-title">
     <header className={styles.drawerHeader}><div><p>Task details</p><h2 id="task-drawer-title">{task.title}</h2></div><button ref={closeRef} type="button" onClick={onClose} aria-label="Close task details"><X size={17} /></button></header>
     <div className={styles.drawerStatus}><span><i className={columnToneClass(column)} aria-hidden="true" />{boardColumnLabel(column)}</span><span>{taskAssigneeLabel(task, agentNames)}</span><span>Updated {relativeTime(task.updatedAt, asOf)}</span></div>
+    {disabledReason ? <div className={styles.drawerError} role="status"><ShieldCheck size={14} aria-hidden="true" /><span>{disabledReason}</span></div> : null}
     {error ? <div className={styles.drawerError} role="alert"><CircleAlert size={14} aria-hidden="true" /><span>{error}</span></div> : null}
     <form className={styles.taskForm} onSubmit={save}>
-      <label>Title<input value={title} onChange={(event) => setTitle(event.currentTarget.value)} maxLength={240} /></label>
-      <label>Working instructions<textarea value={instructions} onChange={(event) => setInstructions(event.currentTarget.value)} rows={5} maxLength={8000} /></label>
-      <label>Definition of done<textarea value={definitionOfDone} onChange={(event) => setDefinitionOfDone(event.currentTarget.value)} rows={4} maxLength={2000} /></label>
-      <div className={styles.formGrid}><label>Priority<select value={priority} onChange={(event) => setPriority(event.currentTarget.value as BoardTask["priority"])}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label><label>Assignee<select value={assigneeId} onChange={(event) => setAssigneeId(event.currentTarget.value)}><option value="">Unassigned</option>{assignmentOptions.map((agent) => <option key={agent.id} value={agent.id} disabled={!agent.selectable}>{agent.name}{agent.selectable ? "" : " · read only"}</option>)}</select></label></div>
-      <label className={styles.checkLabel}><input type="checkbox" checked={reviewRequired} onChange={(event) => setReviewRequired(event.currentTarget.checked)} /><span><strong>Review required</strong><small>Require evidence acceptance before completion.</small></span></label>
-      <label>Blocker or requested input<textarea value={blockerReason} onChange={(event) => setBlockerReason(event.currentTarget.value)} rows={2} maxLength={2000} placeholder="Describe exactly what is needed to continue." /></label>
-      <details className={styles.drawerDisclosure} open><summary><span><GitBranch size={14} aria-hidden="true" /> Dependencies</span><b>{dependencyIds.length}</b></summary><div className={styles.dependencyEditor}>{allTasks.filter((candidate) => candidate.id !== task.id).length ? allTasks.filter((candidate) => candidate.id !== task.id).map((candidate) => <label key={candidate.id}><input type="checkbox" checked={dependencyIds.includes(candidate.id)} onChange={() => toggleDependency(candidate.id)} /><span><strong>{candidate.title}</strong><small>{boardColumnLabel(boardColumnForTask(candidate, allTasks))}</small></span></label>) : <p>No other tasks can be linked yet.</p>}</div></details>
-      <button className={styles.saveTask} type="submit" disabled={busy || !title.trim()}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save changes</button>
+      <label>Title<input value={title} onChange={(event) => setTitle(event.currentTarget.value)} maxLength={240} disabled={Boolean(disabledReason)} /></label>
+      <label>Working instructions<textarea value={instructions} onChange={(event) => setInstructions(event.currentTarget.value)} rows={5} maxLength={8000} disabled={Boolean(disabledReason)} /></label>
+      <label>Definition of done<textarea value={definitionOfDone} onChange={(event) => setDefinitionOfDone(event.currentTarget.value)} rows={4} maxLength={2000} disabled={Boolean(disabledReason)} /></label>
+      <div className={styles.formGrid}><label>Priority<select value={priority} onChange={(event) => setPriority(event.currentTarget.value as BoardTask["priority"])} disabled={Boolean(disabledReason)}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label><label>Assignee<select value={assigneeId} onChange={(event) => setAssigneeId(event.currentTarget.value)} disabled={Boolean(disabledReason)}><option value="">Unassigned</option>{assignmentOptions.map((agent) => <option key={agent.id} value={agent.id} disabled={!agent.selectable}>{agent.name}{agent.selectable ? "" : " · read only"}</option>)}</select></label></div>
+      <label className={styles.checkLabel}><input type="checkbox" checked={reviewRequired} onChange={(event) => setReviewRequired(event.currentTarget.checked)} disabled={Boolean(disabledReason)} /><span><strong>Review required</strong><small>Require evidence acceptance before completion.</small></span></label>
+      <label>Blocker or requested input<textarea value={blockerReason} onChange={(event) => setBlockerReason(event.currentTarget.value)} rows={2} maxLength={2000} placeholder="Describe exactly what is needed to continue." disabled={Boolean(disabledReason)} /></label>
+      <details className={styles.drawerDisclosure} open><summary><span><GitBranch size={14} aria-hidden="true" /> Dependencies</span><b>{dependencyIds.length}</b></summary><div className={styles.dependencyEditor}>{allTasks.filter((candidate) => candidate.id !== task.id).length ? allTasks.filter((candidate) => candidate.id !== task.id).map((candidate) => <label key={candidate.id}><input type="checkbox" checked={dependencyIds.includes(candidate.id)} onChange={() => toggleDependency(candidate.id)} disabled={Boolean(disabledReason)} /><span><strong>{candidate.title}</strong><small>{boardColumnLabel(boardColumnForTask(candidate, allTasks))}</small></span></label>) : <p>No other tasks can be linked yet.</p>}</div></details>
+      <button className={styles.saveTask} type="submit" disabled={busy || Boolean(disabledReason) || !title.trim()}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save changes</button>
     </form>
-    <section className={styles.taskActions} aria-labelledby="task-actions-title"><header><div><p>State controls</p><h3 id="task-actions-title">Move work forward</h3></div>{busy ? <Loader2 size={15} className="animate-spin" aria-label="Saving" /> : null}</header>{column === "review" ? <label className={styles.reviewNote}>Review note<textarea value={reviewNote} onChange={(event) => setReviewNote(event.currentTarget.value)} rows={2} maxLength={4000} placeholder="Add acceptance notes or explain the requested changes." /></label> : null}<div>{taskActionsFor(column, task).map((action) => action.kind === "review" ? <button key={action.action} type="button" disabled={busy || (action.action === "request_changes" && !reviewNote.trim())} className={action.tone === "primary" ? styles.actionPrimary : action.tone === "danger" ? styles.actionDanger : undefined} onClick={() => onReview(action.action as ReviewAction, reviewNote)}>{actionIcon(action.action)} {action.label}</button> : <button key={action.action} type="button" disabled={busy} className={action.tone === "primary" ? styles.actionPrimary : action.tone === "danger" ? styles.actionDanger : undefined} onClick={() => onAction(action.action as TaskAction)}>{actionIcon(action.action)} {action.label}</button>)}</div></section>
-    <section className={styles.drawerSection} aria-labelledby="comments-title"><header><div><p>Collaboration</p><h3 id="comments-title">Comments</h3></div><span>{comments.length}</span></header><div className={styles.commentList}>{comments.length ? comments.map((item) => <article key={item.id}><span>{initials(item.authorName || "You")}</span><div><strong>{item.authorName || "You"}<small>{relativeTime(item.createdAt, asOf)}</small></strong><p>{item.body}</p></div></article>) : <p>No comments yet. Add context without interrupting the task history.</p>}</div><form className={styles.commentForm} onSubmit={(event) => { event.preventDefault(); if (!comment.trim()) return; void onComment(comment).then((saved) => { if (saved) setComment(""); }); }}><label className="sr-only" htmlFor={`comment-${task.id}`}>Add a comment</label><textarea id={`comment-${task.id}`} value={comment} onChange={(event) => setComment(event.currentTarget.value)} rows={2} placeholder="Add context or an instruction…" /><button type="submit" disabled={busy || !comment.trim()}><Send size={13} aria-hidden="true" /> Comment</button></form></section>
+    <section className={styles.taskActions} aria-labelledby="task-actions-title"><header><div><p>State controls</p><h3 id="task-actions-title">Move work forward</h3></div>{busy ? <Loader2 size={15} className="animate-spin" aria-label="Saving" /> : null}</header>{column === "review" ? <label className={styles.reviewNote}>Review note<textarea value={reviewNote} onChange={(event) => setReviewNote(event.currentTarget.value)} rows={2} maxLength={4000} placeholder="Add acceptance notes or explain the requested changes." disabled={Boolean(disabledReason)} /></label> : null}<div>{taskActionsFor(column, task).map((action) => action.kind === "review" ? <button key={action.action} type="button" disabled={busy || Boolean(disabledReason) || (action.action === "request_changes" && !reviewNote.trim())} className={action.tone === "primary" ? styles.actionPrimary : action.tone === "danger" ? styles.actionDanger : undefined} onClick={() => onReview(action.action as ReviewAction, reviewNote)}>{actionIcon(action.action)} {action.label}</button> : <button key={action.action} type="button" disabled={busy || Boolean(disabledReason)} className={action.tone === "primary" ? styles.actionPrimary : action.tone === "danger" ? styles.actionDanger : undefined} onClick={() => onAction(action.action as TaskAction)}>{actionIcon(action.action)} {action.label}</button>)}</div></section>
+    <section className={styles.drawerSection} aria-labelledby="comments-title"><header><div><p>Collaboration</p><h3 id="comments-title">Comments</h3></div><span>{comments.length}</span></header><div className={styles.commentList}>{comments.length ? comments.map((item) => <article key={item.id}><span>{initials(item.authorName || "You")}</span><div><strong>{item.authorName || "You"}<small>{relativeTime(item.createdAt, asOf)}</small></strong><p>{item.body}</p></div></article>) : <p>No comments yet. Add context without interrupting the task history.</p>}</div><form className={styles.commentForm} onSubmit={(event) => { event.preventDefault(); if (!comment.trim() || disabledReason) return; void onComment(comment).then((saved) => { if (saved) setComment(""); }); }}><label className="sr-only" htmlFor={`comment-${task.id}`}>Add a comment</label><textarea id={`comment-${task.id}`} value={comment} onChange={(event) => setComment(event.currentTarget.value)} rows={2} placeholder="Add context or an instruction…" disabled={Boolean(disabledReason)} /><button type="submit" disabled={busy || Boolean(disabledReason) || !comment.trim()}><Send size={13} aria-hidden="true" /> Comment</button></form></section>
     <section className={styles.drawerSection} aria-labelledby="attempts-title"><header><div><p>Execution</p><h3 id="attempts-title">Attempt history</h3></div><span>{attempts.length}</span></header><div className={styles.timeline}>{attempts.length ? attempts.map((attempt) => <article key={attempt.id}><i className={statusToneClass(attempt.status)} aria-hidden="true" /><div><strong>{attempt.executorType.replaceAll("_", " ")}</strong><p>{attemptStatusCopy(attempt.status)}</p><small>{relativeTime(attempt.updatedAt, asOf)}</small></div></article>) : <p>No agent attempt has been attached to this task.</p>}</div></section>
     <section className={styles.drawerSection} aria-labelledby="evidence-title"><header><div><p>Proof</p><h3 id="evidence-title">Evidence & handoffs</h3></div><span>{artifacts.length}</span></header><div className={styles.evidenceList}>{artifacts.length ? artifacts.map((artifact) => <article key={artifact.id}><span>{isHandoffArtifact(artifact) ? <CheckCircle2 size={15} /> : <FileText size={15} />}</span><div><strong>{artifact.title}</strong><p>{artifactPreview(artifact) || `${artifact.kind.replaceAll("_", " ")} recorded for this task.`}</p><small>{relativeTime(artifact.createdAt, asOf)}</small></div></article>) : <p>Receipts, files, and structured handoffs will appear here.</p>}</div></section>
   </aside></div>;
@@ -709,6 +1539,7 @@ function CanvasSkeleton() { return <div className={styles.canvasSkeleton} aria-h
 
 function missionIdFromPath(pathname: string) { const match = pathname.match(/^\/app\/missions\/([^/]+)\/?$/); if (!match) return ""; try { return decodeURIComponent(match[1]); } catch { return ""; } }
 function pushMissionHistory(id: string) { const nextPath = `/app/missions/${encodeURIComponent(id)}`; if (window.location.pathname !== nextPath) window.history.pushState(null, "", nextPath); }
+function replaceMissionHistory(path: string) { if (window.location.pathname !== path) window.history.replaceState(null, "", path); }
 function missionStatusLabel(status: MissionStatus) { return ({ draft: "Draft", queued: "Queued", running: "Running", waiting: "Needs attention", succeeded: "Completed", failed: "Failed", canceled: "Canceled", archived: "Archived" })[status]; }
 function statusToneClass(status: string) { if (["running", "succeeded", "completed", "approved"].includes(status)) return styles.toneGood; if (["waiting", "blocked", "queued", "review"].includes(status)) return styles.toneAttention; if (["failed", "canceled"].includes(status)) return styles.toneDanger; return styles.toneNeutral; }
 function columnToneClass(column: BoardColumnId) { if (["working", "done"].includes(column)) return styles.toneGood; if (["waiting", "needs-you", "review"].includes(column)) return styles.toneAttention; if (column === "ready") return styles.toneReady; return styles.toneNeutral; }
@@ -756,6 +1587,176 @@ function commentsForTask(detail: BoardMissionDetail | undefined, task: BoardTask
 function isCommentArtifact(artifact: BoardArtifact) { return artifact.kind.toLowerCase().includes("comment"); }
 function isHandoffArtifact(artifact: BoardArtifact) { return artifact.kind.toLowerCase().includes("handoff"); }
 function artifactPreview(artifact: BoardArtifact) { const metadata = record(artifact.metadata); const data = record(artifact.data); return artifact.preview || stringValue(metadata.preview, metadata.summary, metadata.body, data.preview, data.summary, data.body); }
+
+export function normalizeMissionSummaries(value: unknown) {
+  if (!Array.isArray(value) || value.length > 50) return undefined;
+  const summaries = value.map(normalizeMissionSummary);
+  if (summaries.some((mission) => !mission)) return undefined;
+  const normalized = summaries as MissionSummaryView[];
+  if (new Set(normalized.map((mission) => mission.id)).size !== normalized.length) {
+    return undefined;
+  }
+  return normalized;
+}
+
+export function normalizeMissionSummary(value: unknown): MissionSummaryView | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const mission = value as Record<string, unknown>;
+  const canonicalStatus = record(mission.canonicalStatus);
+  if (
+    !isMissionIdentifier(mission.id) ||
+    !isBoundedMissionLine(mission.title, 240) ||
+    !isBoundedMissionTextBlock(mission.objective, 4_000) ||
+    !isMissionStatus(mission.status) ||
+    !isMissionPriority(mission.priority) ||
+    !isBoundedMissionLine(mission.source, 80) ||
+    (mission.startedAt !== undefined && !isIsoTimestamp(mission.startedAt)) ||
+    (mission.terminalAt !== undefined && !isIsoTimestamp(mission.terminalAt)) ||
+    !isIsoTimestamp(mission.createdAt) ||
+    !isIsoTimestamp(mission.updatedAt) ||
+    typeof mission.detailAvailable !== "boolean" ||
+    typeof mission.manageable !== "boolean" ||
+    typeof mission.runnable !== "boolean" ||
+    (mission.detailAvailable !== true &&
+      (mission.manageable === true || mission.runnable === true))
+  ) return undefined;
+  const status = mission.status as MissionStatus;
+  const startedAt = mission.startedAt as string | undefined;
+  const terminalAt = mission.terminalAt as string | undefined;
+  const createdAt = mission.createdAt as string;
+  const updatedAt = mission.updatedAt as string;
+  const terminalStatus = ["succeeded", "failed", "canceled", "archived"].includes(status);
+  if (
+    createdAt > updatedAt ||
+    (startedAt !== undefined && (startedAt < createdAt || startedAt > updatedAt)) ||
+    (terminalAt !== undefined && (terminalAt < createdAt || terminalAt > updatedAt)) ||
+    (startedAt !== undefined && terminalAt !== undefined && startedAt > terminalAt) ||
+    (status === "running" && startedAt === undefined) ||
+    ((status === "draft" || status === "queued") && startedAt !== undefined) ||
+    (terminalStatus ? terminalAt === undefined : terminalAt !== undefined)
+  ) return undefined;
+  const expectedCanonicalStatus = canonicalStatusForMission(status);
+  if (
+    canonicalStatus.schemaVersion !== expectedCanonicalStatus.schemaVersion ||
+    canonicalStatus.status !== expectedCanonicalStatus.status ||
+    canonicalStatus.domain !== expectedCanonicalStatus.domain ||
+    canonicalStatus.basis !== expectedCanonicalStatus.basis ||
+    canonicalStatus.source !== expectedCanonicalStatus.source ||
+    canonicalStatus.sourceStatus !== expectedCanonicalStatus.sourceStatus ||
+    canonicalStatus.verificationState !== expectedCanonicalStatus.verificationState
+  ) return undefined;
+  return {
+    id: mission.id as string,
+    title: mission.title as string,
+    objective: mission.objective as string,
+    status,
+    canonicalStatus: {
+      schemaVersion: expectedCanonicalStatus.schemaVersion,
+      status: expectedCanonicalStatus.status,
+      domain: expectedCanonicalStatus.domain,
+      basis: expectedCanonicalStatus.basis,
+      source: expectedCanonicalStatus.source,
+      sourceStatus: expectedCanonicalStatus.sourceStatus,
+      verificationState: expectedCanonicalStatus.verificationState,
+    },
+    priority: mission.priority as MissionSummaryView["priority"],
+    source: mission.source as string,
+    ...(startedAt !== undefined ? { startedAt } : {}),
+    ...(terminalAt !== undefined ? { terminalAt } : {}),
+    createdAt,
+    updatedAt,
+    detailAvailable: mission.detailAvailable as boolean,
+    manageable: mission.manageable as boolean,
+    runnable: mission.runnable as boolean,
+  };
+}
+
+export function normalizeMissionDetail(
+  value: unknown,
+  expectedId: string,
+): MissionDetailView | undefined {
+  if (!missionDetailHasExpectedId(value, expectedId)) return undefined;
+  const detail = value as Record<string, unknown>;
+  const mission = normalizeMissionSummary(detail.mission);
+  if (!mission) return undefined;
+  return {
+    mission,
+    tasks: detail.tasks as MissionDetailView["tasks"],
+    attempts: detail.attempts as MissionDetailView["attempts"],
+    artifacts: detail.artifacts as MissionDetailView["artifacts"],
+  };
+}
+
+export function missionDetailHasExpectedId(
+  value: unknown,
+  expectedId: string,
+): value is BoardMissionDetail {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const detail = value as Record<string, unknown>;
+  const mission = normalizeMissionSummary(detail.mission);
+  if (
+    mission?.id !== expectedId ||
+    !Array.isArray(detail.tasks) ||
+    !Array.isArray(detail.attempts) ||
+    !Array.isArray(detail.artifacts) ||
+    detail.tasks.length > 100 ||
+    detail.attempts.length > 250 ||
+    detail.artifacts.length > 150
+  ) return false;
+  const scopedItemsAreValid = (items: unknown[]) => {
+    const ids = new Set<string>();
+    return items.every((item) => {
+      const candidate = record(item);
+      if (!isMissionIdentifier(candidate.id) || candidate.missionId !== expectedId) {
+        return false;
+      }
+      if (ids.has(candidate.id)) return false;
+      ids.add(candidate.id);
+      return true;
+    });
+  };
+  return scopedItemsAreValid(detail.tasks) &&
+    scopedItemsAreValid(detail.attempts) &&
+    scopedItemsAreValid(detail.artifacts);
+}
+
+function isMissionStatus(value: unknown): value is MissionStatus {
+  return typeof value === "string" &&
+    ["draft", "queued", "running", "waiting", "succeeded", "failed", "canceled", "archived"].includes(value);
+}
+
+function isMissionPriority(value: unknown): value is MissionSummaryView["priority"] {
+  return typeof value === "string" && ["low", "normal", "high", "urgent"].includes(value);
+}
+
+function isMissionIdentifier(value: unknown): value is string {
+  return typeof value === "string" && /^[a-zA-Z0-9_.:-]{1,240}$/.test(value);
+}
+
+function isBoundedMissionLine(value: unknown, maximum: number): value is string {
+  return typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= maximum &&
+    value.replace(/\s+/g, " ").trim() === value;
+}
+
+function isBoundedMissionTextBlock(value: unknown, maximum: number): value is string {
+  return typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= maximum &&
+    value.trim() === value;
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return false;
+  try {
+    return parsed.toISOString() === value;
+  } catch {
+    return false;
+  }
+}
 
 function agentOptions(payload: Record<string, unknown>): AgentOption[] {
   const combined = [
@@ -806,6 +1807,7 @@ function missionEventProjection(value: unknown) { if (!value || typeof value !==
 function missionEventPollDelay(consecutiveFailures: number) { const failureCount = Math.min(Math.max(consecutiveFailures, 0), 4); return Math.min(2_500 * (2 ** failureCount), 30_000); }
 
 class ApiRequestError extends Error { constructor(readonly status: number) { super("Request failed"); } }
+class MissionDetailContractError extends Error {}
 async function readJson(path: string, init?: RequestInit) { const response = await fetch(path, { cache: "no-store", ...init }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new ApiRequestError(response.status); return payload as Record<string, unknown>; }
 function friendlyMessage(error: unknown, operation: "load" | "create" | "update") { if (error instanceof ApiRequestError) { if (error.status === 401) return "Your session has ended. Sign in and try again."; if (error.status === 403) return "You do not have permission to make this change."; if (error.status === 404) return "This mission or task is no longer available."; if (error.status === 409) return "The task changed elsewhere. Refresh it before trying again."; if (error.status === 429) return "The workspace is busy. Wait a moment and try again."; if (error.status >= 500) return "The mission service is temporarily unavailable. Your existing board is still safe."; } if (operation === "load") return "Missions could not be loaded. Check your connection and try again."; if (operation === "create") return "That item could not be created. Review the details and try again."; return "That change could not be saved. Refresh the task and try again."; }
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
