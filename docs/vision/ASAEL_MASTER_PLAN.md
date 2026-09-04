@@ -819,6 +819,16 @@ starts a new Drive rollout, changes legacy knowledge writes, or changes served
 RAG. The next P2.3 slice must create a fresh rollout generation and settle its
 own pages through this substrate before any read authority can move.
 
+The first persisted P0.3 rollout-control slice is also additive and inactive.
+It records immutable tenant capability generations with exact engine,
+contract, configuration, mode, and actor bindings; enforces monotonic
+generation numbers and one current generation; and permits only explicit
+activation, pause/resume, or terminal supersession transitions. A monotonic
+lifecycle revision makes every transition independently addressable. No tenant
+is enrolled by the schema migration. Drive generation 2 must be registered and
+activated explicitly before its first checkpoint can be claimed, while existing
+generation-1 shadow rows remain historical and unchanged.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

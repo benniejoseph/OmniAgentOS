@@ -106,6 +106,18 @@ observations append no new event. An absence observation creates neither a
 SourceItem nor a tombstone, but fences older delayed upserts. The foundation
 batch has no active Drive caller and does not change served RAG.
 
+The first P0.3 rollout registry emits `capability.rollout.registered` and
+`capability.rollout.status_transitioned` in the same transaction as the
+generation insert or compare-and-swap lifecycle transition. The strict domain
+payload contains only opaque capability, engine, contract, and actor IDs; the
+monotonic generation; a configuration SHA-256 digest; rollout mode; closed
+lifecycle states; a monotonic lifecycle revision; and lifecycle timestamps. It
+contains no configuration body, credentials, source data, tool input/output,
+or private reasoning. As with all scoped domain events, the event writer adds
+the separately validated `_executionScope` attribution envelope, including its
+bounded purpose and grant identifiers. The registry is initially empty, so
+these events do not activate behavior by themselves.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

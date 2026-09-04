@@ -80,6 +80,7 @@ export const tenantRootPolicyTables = [
   "omni_source_adapter_output_receipts",
   "omni_source_items",
   "omni_source_sync_page_checkpoints",
+  "omni_tenant_capability_rollouts",
   "omni_knowledge_documents",
   "omni_knowledge_chunks",
   "omni_retrieval_traces",
@@ -729,6 +730,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[38],
       up: async (sql) => {
         await ensureCanonicalSourceConvergenceFoundation(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[39],
+      up: async (sql) => {
+        await ensureTenantCapabilityRollouts(sql);
         await ensureTenantIsolationPolicies(sql);
       },
     },
@@ -6851,6 +6859,304 @@ async function ensureCanonicalSourceConvergenceFoundation(sql: SqlClient) {
       LOOP
         EXECUTE format(
           'GRANT %s ON TABLE %I.omni_source_sync_heads TO %I',
+          grant_record.privilege_type,
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `);
+}
+
+async function ensureTenantCapabilityRollouts(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_tenant_capability_rollouts (
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      capability_id TEXT NOT NULL,
+      rollout_generation BIGINT NOT NULL,
+      engine_version TEXT NOT NULL,
+      contract_version_id TEXT NOT NULL,
+      configuration_sha256 TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'registered',
+      lifecycle_revision BIGINT NOT NULL DEFAULT 0,
+      created_by_actor_id TEXT NOT NULL,
+      activated_by_actor_id TEXT,
+      activated_at TIMESTAMPTZ,
+      superseded_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_tenant_capability_rollouts_pkey
+        PRIMARY KEY (tenant_id, capability_id, rollout_generation),
+      CONSTRAINT omni_tenant_capability_rollouts_schema_check CHECK (
+        schema_version = 1
+      ),
+      CONSTRAINT omni_tenant_capability_rollouts_ids_check CHECK (
+        omni_source_contract_id_is_valid(tenant_id)
+        AND omni_source_contract_id_is_valid(capability_id)
+        AND omni_source_contract_id_is_valid(engine_version)
+        AND omni_source_contract_id_is_valid(contract_version_id)
+        AND omni_source_contract_id_is_valid(created_by_actor_id)
+        AND (
+          activated_by_actor_id IS NULL
+          OR omni_source_contract_id_is_valid(activated_by_actor_id)
+        )
+      ),
+      CONSTRAINT omni_tenant_capability_rollouts_generation_check CHECK (
+        rollout_generation BETWEEN 1 AND 9007199254740991
+        AND lifecycle_revision BETWEEN 0 AND 9007199254740991
+        AND (
+          (status = 'registered' AND lifecycle_revision = 0)
+          OR (status <> 'registered' AND lifecycle_revision >= 1)
+        )
+      ),
+      CONSTRAINT omni_tenant_capability_rollouts_hash_check CHECK (
+        configuration_sha256 ~ '^[0-9a-f]{64}$'
+      ),
+      CONSTRAINT omni_tenant_capability_rollouts_mode_check CHECK (
+        mode IN ('shadow', 'canary', 'enabled')
+      ),
+      CONSTRAINT omni_tenant_capability_rollouts_status_check CHECK (
+        status IN ('registered', 'active', 'paused', 'superseded')
+      ),
+      CONSTRAINT omni_tenant_capability_rollouts_activation_check CHECK (
+        (activated_by_actor_id IS NULL) = (activated_at IS NULL)
+        AND (
+          (status = 'registered' AND activated_at IS NULL)
+          OR (status IN ('active', 'paused') AND activated_at IS NOT NULL)
+          OR status = 'superseded'
+        )
+      ),
+      CONSTRAINT omni_tenant_capability_rollouts_superseded_check CHECK (
+        (status = 'superseded') = (superseded_at IS NOT NULL)
+      ),
+      CONSTRAINT omni_tenant_capability_rollouts_timestamps_check CHECK (
+        created_at <= updated_at
+        AND (activated_at IS NULL OR created_at <= activated_at)
+        AND (activated_at IS NULL OR activated_at <= updated_at)
+        AND (superseded_at IS NULL OR created_at <= superseded_at)
+        AND (superseded_at IS NULL OR superseded_at <= updated_at)
+        AND (activated_at IS NULL OR superseded_at IS NULL
+          OR activated_at <= superseded_at)
+      )
+    )
+  `;
+
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_tenant_capability_rollouts_one_current_idx
+    ON omni_tenant_capability_rollouts (tenant_id, capability_id)
+    WHERE status <> 'superseded'
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS
+      omni_tenant_capability_rollouts_active_idx
+    ON omni_tenant_capability_rollouts (
+      tenant_id,
+      status,
+      capability_id,
+      rollout_generation DESC
+    )
+    WHERE status IN ('active', 'paused')
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_capability_rollout_insert()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id),
+        hashtext(NEW.capability_id)
+      );
+
+      IF NEW.status <> 'registered'
+        OR NEW.lifecycle_revision <> 0
+        OR NEW.activated_by_actor_id IS NOT NULL
+        OR NEW.activated_at IS NOT NULL
+        OR NEW.superseded_at IS NOT NULL
+      THEN
+        RAISE EXCEPTION 'Capability rollouts must be inserted as registered'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM omni_tenant_capability_rollouts rollout
+        WHERE rollout.tenant_id = NEW.tenant_id
+          AND rollout.capability_id = NEW.capability_id
+          AND rollout.rollout_generation >= NEW.rollout_generation
+      ) THEN
+        RAISE EXCEPTION 'Capability rollout generation must increase'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.status <> 'superseded' AND EXISTS (
+        SELECT 1
+        FROM omni_tenant_capability_rollouts rollout
+        WHERE rollout.tenant_id = NEW.tenant_id
+          AND rollout.capability_id = NEW.capability_id
+          AND rollout.status <> 'superseded'
+      ) THEN
+        RAISE EXCEPTION 'Capability already has a current rollout generation'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_capability_rollout()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION '% rows cannot be changed with %', TG_TABLE_NAME, TG_OP
+          USING ERRCODE = '55000';
+      END IF;
+
+      PERFORM pg_advisory_xact_lock(
+        hashtext(OLD.tenant_id),
+        hashtext(OLD.capability_id)
+      );
+
+      IF OLD.status = 'superseded' THEN
+        RAISE EXCEPTION 'Superseded capability rollouts are immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.schema_version IS DISTINCT FROM OLD.schema_version
+        OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+        OR NEW.capability_id IS DISTINCT FROM OLD.capability_id
+        OR NEW.rollout_generation IS DISTINCT FROM OLD.rollout_generation
+        OR NEW.engine_version IS DISTINCT FROM OLD.engine_version
+        OR NEW.contract_version_id IS DISTINCT FROM OLD.contract_version_id
+        OR NEW.configuration_sha256 IS DISTINCT FROM OLD.configuration_sha256
+        OR NEW.mode IS DISTINCT FROM OLD.mode
+        OR NEW.created_by_actor_id IS DISTINCT FROM OLD.created_by_actor_id
+        OR NEW.created_at IS DISTINCT FROM OLD.created_at
+      THEN
+        RAISE EXCEPTION 'Capability rollout contract is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT (
+        (OLD.status = 'registered' AND NEW.status IN ('active', 'superseded'))
+        OR (OLD.status = 'active' AND NEW.status IN ('paused', 'superseded'))
+        OR (OLD.status = 'paused' AND NEW.status IN ('active', 'superseded'))
+      ) THEN
+        RAISE EXCEPTION 'Capability rollout status transition is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.lifecycle_revision <> OLD.lifecycle_revision + 1 THEN
+        RAISE EXCEPTION 'Capability rollout lifecycle revision must increase once'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF OLD.activated_at IS NOT NULL AND (
+        NEW.activated_at IS DISTINCT FROM OLD.activated_at
+        OR NEW.activated_by_actor_id IS DISTINCT FROM
+          OLD.activated_by_actor_id
+      ) THEN
+        RAISE EXCEPTION 'Capability rollout activation identity is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF OLD.activated_at IS NULL
+        AND NEW.activated_at IS NOT NULL
+        AND NOT (OLD.status = 'registered' AND NEW.status = 'active')
+      THEN
+        RAISE EXCEPTION 'Capability rollout activation metadata is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF OLD.superseded_at IS NOT NULL
+        AND NEW.superseded_at IS DISTINCT FROM OLD.superseded_at
+      THEN
+        RAISE EXCEPTION 'Capability rollout supersession time is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.updated_at <= OLD.updated_at THEN
+        RAISE EXCEPTION 'Capability rollout updated_at must increase'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_tenant_capability_rollouts_validate_insert'
+          AND tgrelid = 'omni_tenant_capability_rollouts'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_tenant_capability_rollouts_validate_insert
+        BEFORE INSERT ON omni_tenant_capability_rollouts
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_capability_rollout_insert();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_tenant_capability_rollouts_protect'
+          AND tgrelid = 'omni_tenant_capability_rollouts'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_tenant_capability_rollouts_protect
+        BEFORE UPDATE OR DELETE ON omni_tenant_capability_rollouts
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_protect_capability_rollout();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'omni_tenant_capability_rollouts_no_truncate'
+          AND tgrelid = 'omni_tenant_capability_rollouts'::regclass
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_tenant_capability_rollouts_no_truncate
+        BEFORE TRUNCATE ON omni_tenant_capability_rollouts
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_protect_capability_rollout();
+      END IF;
+    END
+    $migration$
+  `;
+
+  // Mirror the existing mutable tenant-control-plane grants without naming a
+  // deployment-owned runtime role in application schema code.
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee, privilege_type
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_provider_connections'
+          AND privilege_type IN ('SELECT', 'INSERT', 'UPDATE')
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'GRANT %s ON TABLE %I.omni_tenant_capability_rollouts TO %I',
           grant_record.privilege_type,
           current_schema(),
           grant_record.grantee
