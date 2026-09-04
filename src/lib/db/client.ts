@@ -12259,7 +12259,7 @@ async function ensureMemoryPurposeCatalog(sql: SqlClient) {
             AND attribute.attnum > 0
             AND NOT attribute.attisdropped
         ) columns
-        WHERE columns.names = ARRAY[
+        WHERE columns.names::TEXT[] = ARRAY[
             'purpose_id', 'contract_version', 'operation_class',
             'description', 'created_at'
           ]
