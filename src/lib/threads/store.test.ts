@@ -30,4 +30,52 @@ describe("durable conversation threads (file mode)", () => {
     const threads = await store.listThreads(10, { tenantId: "tenant-c", actorId: "user-one" });
     expect(threads.map((thread) => thread.title)).toEqual(["One"]);
   });
+
+  it("keeps canonical bindings exact in file mode", async () => {
+    const store = await import("@/lib/threads/store");
+    const authUserId = "11111111-1111-4111-8111-111111111111";
+    const actorId = "file-owner@example.test";
+    const canonicalActorId = `actor:${authUserId}`;
+    const canonicalThread = await store.createThread({
+      tenantId: "tenant-file-binding",
+      actorId: canonicalActorId,
+      title: "Canonical",
+      mode: "orchestrate",
+    });
+    const emailThread = await store.createThread({
+      tenantId: "tenant-file-binding",
+      actorId,
+      title: "Current email",
+      mode: "orchestrate",
+    });
+    const requestActorBinding = {
+      version: 1 as const,
+      kind: "auth_user" as const,
+      authUserId,
+      canonicalActorId,
+      legacyOwnerActorIds: Object.freeze([actorId]),
+      readableOwnerActorIds: Object.freeze([canonicalActorId, actorId]),
+    };
+
+    await expect(store.listThreads(10, {
+      tenantId: "tenant-file-binding",
+      actorId,
+      requestActorBinding,
+    })).resolves.toEqual([
+      expect.objectContaining({ id: emailThread.id, actorId }),
+    ]);
+    await expect(store.getOwnedThread(canonicalThread.id, {
+      tenantId: "tenant-file-binding",
+      actorId,
+      requestActorBinding,
+    })).resolves.toBeNull();
+    await expect(store.getOwnedThread(emailThread.id, {
+      tenantId: "tenant-file-binding",
+      actorId,
+      requestActorBinding,
+    })).resolves.toEqual(expect.objectContaining({
+      id: emailThread.id,
+      actorId,
+    }));
+  });
 });

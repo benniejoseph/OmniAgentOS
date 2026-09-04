@@ -392,6 +392,17 @@ notification workers, portable data flows, schedulers, file fallback,
 retained prior-email aliases, and canonical writes remain exact-only or
 unchanged until their own lifecycle and uniqueness gates are designed.
 
+The third request-bound slice is read-only and limited to conversation
+threads. Authenticated thread lists and owner-scoped direct-ID lookups can
+inspect the canonical and exact-current-email partitions, globally order list
+results by update time and ID, and project the current request actor. The
+parent thread is resolved before its turns or thread-linked memories are read;
+the same owner gate protects thread-linked browser-activity reads. Thread IDs
+are globally unique, so direct selection is unambiguous. Thread creation,
+turn appends, agent continuation, workflow attachment, Today projections,
+portable data, file fallback, prior aliases, and canonical writes remain on
+their existing exact-owner paths.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

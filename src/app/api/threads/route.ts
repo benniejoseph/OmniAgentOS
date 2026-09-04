@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody, parseBoundedInteger } from "@/lib/http/body";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { createThread, listThreads } from "@/lib/threads/store";
 
@@ -15,7 +16,13 @@ async function GETHandler(request: Request) {
   try { context = await authorizeRequest({ request, action: "read", resourceType: "thread" }); }
   catch (error) { return forbiddenResponse(error); }
   const limit = parseBoundedInteger(new URL(request.url).searchParams.get("limit"), 30, { max: 100 });
-  return Response.json({ threads: await listThreads(limit, { tenantId: context.tenantId, actorId: context.actorId }) });
+  return Response.json({
+    threads: await listThreads(limit, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
+    }),
+  }, { headers: { "cache-control": "private, no-store" } });
 }
 
 async function POSTHandler(request: Request) {

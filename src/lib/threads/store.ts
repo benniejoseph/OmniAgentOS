@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import type { AgentMode, ChatRole } from "@/lib/orchestration/types";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import { threadActorReadOrder } from "@/lib/threads/actor-scope";
 import type { ThreadLedger, ThreadRecord, ThreadTurnRecord } from "@/lib/threads/types";
 
 export async function createThread(input: {
@@ -43,19 +45,98 @@ export async function getThread(id: string, options: { tenantId?: string } = {})
   return ledger.threads.find((thread) => thread.id === id && thread.tenantId === tenantId) || null;
 }
 
-export async function listThreads(limit = 30, options: { tenantId?: string; actorId?: string } = {}) {
+export async function getOwnedThread(
+  id: string,
+  options: {
+    tenantId?: string;
+    actorId: string;
+    requestActorBinding?: CanonicalRequestActorBindingV1;
+  },
+) {
   const tenantId = normalizeTenantId(options.tenantId);
-  const actorId = options.actorId ? safeText(options.actorId, 200) : undefined;
+  const actorId = safeText(options.actorId, 200);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const actorReadOrder = threadActorReadOrder(
+      options.actorId,
+      options.requestActorBinding,
+      actorId,
+    );
+    const canonicalActorId = actorReadOrder[0];
+    const exactActorId = actorReadOrder[1];
+    const rows = await getSql()`
+      SELECT * FROM omni_threads
+      WHERE id = ${id} AND tenant_id = ${tenantId}
+        AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+      LIMIT 1
+    `;
+    return rows[0]
+      ? projectThreadForRequest(threadFromRow(rows[0]), exactActorId)
+      : null;
+  }
+  const ledger = await readLedger();
+  const thread = ledger.threads.find((candidate) =>
+    candidate.id === id
+      && candidate.tenantId === tenantId
+      && candidate.actorId === actorId
+  );
+  return thread ? projectThreadForRequest(thread, actorId) : null;
+}
+
+export async function listThreads(
+  limit = 30,
+  options: {
+    tenantId?: string;
+    actorId?: string;
+    requestActorBinding?: CanonicalRequestActorBindingV1;
+  } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const requestActorId = options.actorId;
+  const actorId = requestActorId === undefined
+    ? undefined
+    : safeText(requestActorId, 200);
   const bounded = Math.min(Math.max(limit, 1), 100);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = actorId
-      ? await getSql()`SELECT * FROM omni_threads WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} ORDER BY updated_at DESC LIMIT ${bounded}`
-      : await getSql()`SELECT * FROM omni_threads WHERE tenant_id = ${tenantId} ORDER BY updated_at DESC LIMIT ${bounded}`;
+    if (requestActorId !== undefined && actorId !== undefined) {
+      const actorReadOrder = threadActorReadOrder(
+        requestActorId,
+        options.requestActorBinding,
+        actorId,
+      );
+      const canonicalActorId = actorReadOrder[0];
+      const exactActorId = actorReadOrder[1];
+      const rows = await getSql()`
+        SELECT * FROM omni_threads
+        WHERE tenant_id = ${tenantId}
+          AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+        ORDER BY updated_at DESC, id ASC
+        LIMIT ${bounded}
+      `;
+      return rows.map((row) =>
+        projectThreadForRequest(threadFromRow(row), exactActorId),
+      );
+    }
+    const rows = await getSql()`
+      SELECT * FROM omni_threads
+      WHERE tenant_id = ${tenantId}
+      ORDER BY updated_at DESC, id ASC
+      LIMIT ${bounded}
+    `;
     return rows.map(threadFromRow);
   }
   const ledger = await readLedger();
-  return ledger.threads.filter((thread) => thread.tenantId === tenantId && (!actorId || thread.actorId === actorId)).slice(0, bounded);
+  return ledger.threads
+    .filter((thread) =>
+      thread.tenantId === tenantId
+        && (actorId === undefined || thread.actorId === actorId)
+    )
+    .slice(0, bounded)
+    .map((thread) => actorId !== undefined
+      ? projectThreadForRequest(thread, actorId)
+      : thread
+    );
 }
 
 export async function appendThreadTurn(input: {
@@ -123,6 +204,7 @@ function updateLedger(mutate: (ledger: ThreadLedger) => ThreadLedger) {
   });
 }
 function threadFromRow(row: Record<string, unknown>): ThreadRecord { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), title: String(row.title), mode: String(row.mode) as AgentMode, createdAt: date(row.created_at), updatedAt: date(row.updated_at) }; }
+function projectThreadForRequest(thread: ThreadRecord, requestActorId: string): ThreadRecord { return { ...thread, actorId: requestActorId }; }
 function turnFromRow(row: Record<string, unknown>): ThreadTurnRecord { return { id: String(row.id), tenantId: String(row.tenant_id), threadId: String(row.thread_id), role: String(row.role) as ChatRole, content: safeText(String(row.content), 40_000), runId: row.run_id ? String(row.run_id) : undefined, createdAt: date(row.created_at) }; }
 function titleFrom(value: string) { const title = safeText(value, 90).replace(/\s+/g, " ").trim(); return title || "New conversation"; }
 function safeText(value: string, max: number) { return String(redactSensitive(value)).trim().slice(0, max); }

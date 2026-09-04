@@ -224,6 +224,15 @@ operation boundary. Derived briefs, notification state, background workers,
 portable data flows, and canonical writes remain outside the canary and must
 receive their own typed evidence when their operation boundaries change.
 
+The request-bound conversation-thread canary emits no domain event because it
+is read-only. It permits only validated canonical/current-email selection,
+projects the current request actor, and resolves the globally unique parent
+thread before reading child turns, linked memories, or thread-gated browser
+activity. Thread creation, turn append, agent/workflow continuation, execution
+scope, approvals, receipts, portable data, and canonical writes are unchanged;
+any later action-path identity cutover must carry typed evidence at that
+governed boundary.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
