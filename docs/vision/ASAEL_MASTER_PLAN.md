@@ -900,6 +900,20 @@ installation. Only then may narrowly required roles receive execute permission
 and the enrollment, memory, RAG, trace, graph, export, API, and worker surfaces
 cut over atomically.
 
+Migration v46 adds the first authoritative user-identity input without changing
+runtime ownership. Each auth user receives a generated, immutable, unique
+`actor:<auth-user-id>` value, while the active tenant membership remains the
+separate authorization fact. It does not translate the current email-shaped
+browser/mobile actor or bind arbitrary headers, service keys, agents, workers,
+cron, or system names. It also does not rewrite legacy owner columns, encrypted
+OAuth AAD, events, receipts, hashes, jobs, continuations, or approval records.
+A user ID is constrained to an opaque UUID and cannot be mutated, deleted,
+truncated, and later reassigned; future account erasure must preserve the
+pseudonymous actor identity as a tombstone.
+A later collision-audited alias/dual-read migration must preserve those records
+while live request contexts begin carrying the stable actor identity; the v45
+hook and v43 enrollment lock remain closed until that convergence is complete.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

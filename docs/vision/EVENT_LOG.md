@@ -165,6 +165,12 @@ grant, purpose, memory, or operation and has no runtime consumer. Typed memory
 authorization evidence begins only when authoritative records are resolved and
 held in the operation transaction during the later all-surface activation.
 
+Migration v46 emits no domain event. A generated auth-user actor ID is an
+additive identity projection, not an authorization decision or ownership
+mutation. Existing historical actor strings, execution scopes, events,
+receipts, and hashes remain unchanged; later live alias/ownership convergence
+must emit its own bounded evidence where it changes an operation boundary.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

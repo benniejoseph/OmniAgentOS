@@ -770,6 +770,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[44],
       up: ensureMemoryAccessAuthorizationDenyHook,
     },
+    {
+      ...databaseSchemaMigrations[45],
+      up: ensureCanonicalAuthUserActorIdsShadow,
+    },
   ];
 }
 
@@ -11446,6 +11450,539 @@ async function ensureMemoryAccessAuthorizationDenyHook(sql: SqlClient) {
             '%omni_memory_access_scope_v1_is_authorized%'
       ) THEN
         RAISE EXCEPTION 'A row policy depends on the dormant authorization hook'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureCanonicalAuthUserActorIdsShadow(sql: SqlClient) {
+  // A browser/mobile actor is still the historical email-shaped owner key.
+  // Add a stable, non-email pseudonymous identity without changing any served
+  // context, ownership query, ciphertext AAD, durable scope, or receipt.
+  await sql`
+    DO $migration$
+    DECLARE
+      actor_attribute RECORD;
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM omni_auth_users
+        WHERE id !~
+            '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          OR NOT public.omni_source_contract_id_is_valid('actor:' || id)
+      ) THEN
+        RAISE EXCEPTION 'An auth-user ID is not an opaque canonical UUID'
+          USING ERRCODE = '55000';
+      END IF;
+
+      SELECT
+        attribute.atttypid,
+        attribute.attgenerated,
+        pg_get_expr(attribute_default.adbin, attribute_default.adrelid)
+          AS generation_expression
+      INTO actor_attribute
+      FROM pg_attribute attribute
+      LEFT JOIN pg_attrdef attribute_default
+        ON attribute_default.adrelid = attribute.attrelid
+        AND attribute_default.adnum = attribute.attnum
+      WHERE attribute.attrelid = 'omni_auth_users'::regclass
+        AND attribute.attname = 'actor_id'
+        AND NOT attribute.attisdropped;
+
+      IF FOUND AND (
+        actor_attribute.atttypid <> 'text'::regtype
+        OR actor_attribute.attgenerated <> 's'
+        OR actor_attribute.generation_expression
+          IS DISTINCT FROM '(''actor:''::text || id)'
+      ) THEN
+        RAISE EXCEPTION 'Existing auth-user actor identity column is incompatible'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_auth_users
+    ADD COLUMN IF NOT EXISTS actor_id TEXT
+      GENERATED ALWAYS AS ('actor:'::TEXT || id) STORED
+  `;
+  await sql`
+    ALTER TABLE omni_auth_users
+    ALTER COLUMN actor_id SET NOT NULL
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_auth_users_id_uuid_check'
+          AND conrelid = 'omni_auth_users'::regclass
+      ) THEN
+        ALTER TABLE omni_auth_users
+        ADD CONSTRAINT omni_auth_users_id_uuid_check CHECK (
+          id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_auth_users
+    VALIDATE CONSTRAINT omni_auth_users_id_uuid_check
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_auth_users_id_uuid_check'
+          AND conrelid = 'omni_auth_users'::regclass
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid) =
+            '(id ~ ''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$''::text)'
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user UUID check is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_auth_users_actor_id_contract_check'
+          AND conrelid = 'omni_auth_users'::regclass
+      ) THEN
+        ALTER TABLE omni_auth_users
+        ADD CONSTRAINT omni_auth_users_actor_id_contract_check CHECK (
+          omni_source_contract_id_is_valid(actor_id)
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_auth_users
+    VALIDATE CONSTRAINT omni_auth_users_actor_id_contract_check
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_auth_users_actor_id_key'
+          AND conrelid = 'omni_auth_users'::regclass
+      ) THEN
+        ALTER TABLE omni_auth_users
+        ADD CONSTRAINT omni_auth_users_actor_id_key UNIQUE (actor_id);
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_auth_user_identity_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Canonical auth-user identity is immutable'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_auth_users'::regclass
+          AND tgname = 'omni_auth_users_actor_identity_immutable'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_auth_users_actor_identity_immutable
+        BEFORE UPDATE OF id OR DELETE ON omni_auth_users
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_reject_auth_user_identity_change();
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_auth_users'::regclass
+          AND tgname = 'omni_auth_users_actor_identity_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_auth_users_actor_identity_no_truncate
+        BEFORE TRUNCATE ON omni_auth_users
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_reject_auth_user_identity_change();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_reject_auth_user_identity_change()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE DELETE, TRUNCATE
+    ON TABLE omni_auth_users
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name = 'omni_reject_auth_user_identity_change'
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_reject_auth_user_identity_change() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `);
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_auth_users'
+          AND privilege_type IN ('DELETE', 'TRUNCATE')
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE DELETE, TRUNCATE ON TABLE %I.omni_auth_users FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `);
+
+  // v46 must create identity only. It neither maps a legacy owner nor makes
+  // the still-denying memory authorization hook reachable.
+  await sql`
+    DO $migration$
+    DECLARE
+      valid_scope JSONB;
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute attribute
+        JOIN pg_attrdef attribute_default
+          ON attribute_default.adrelid = attribute.attrelid
+          AND attribute_default.adnum = attribute.attnum
+        WHERE attribute.attrelid = 'omni_auth_users'::regclass
+          AND attribute.attname = 'actor_id'
+          AND NOT attribute.attisdropped
+          AND attribute.atttypid = 'text'::regtype
+          AND attribute.attnotnull
+          AND attribute.attgenerated = 's'
+          AND pg_get_expr(
+            attribute_default.adbin,
+            attribute_default.adrelid
+          ) = '(''actor:''::text || id)'
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user actor identity column is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_auth_users_actor_id_contract_check'
+          AND conrelid = 'omni_auth_users'::regclass
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid) =
+            'omni_source_contract_id_is_valid(actor_id)'
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user actor identity check is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_record
+        JOIN pg_index index_record
+          ON index_record.indexrelid = constraint_record.conindid
+        WHERE constraint_record.conname = 'omni_auth_users_actor_id_key'
+          AND constraint_record.conrelid = 'omni_auth_users'::regclass
+          AND constraint_record.contype = 'u'
+          AND constraint_record.convalidated
+          AND constraint_record.conkey = ARRAY[
+            (
+              SELECT attnum
+              FROM pg_attribute
+              WHERE attrelid = 'omni_auth_users'::regclass
+                AND attname = 'actor_id'
+                AND NOT attisdropped
+            )
+          ]::SMALLINT[]
+          AND index_record.indisunique
+          AND index_record.indisvalid
+          AND index_record.indisready
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user actor identity uniqueness is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM omni_auth_users
+        WHERE actor_id IS DISTINCT FROM 'actor:' || id
+          OR NOT public.omni_source_contract_id_is_valid(actor_id)
+      ) OR (
+        SELECT count(*) FROM omni_auth_users
+      ) IS DISTINCT FROM (
+        SELECT count(DISTINCT actor_id) FROM omni_auth_users
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user actor identity mapping is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'omni_auth_users'::regclass
+          AND trigger_record.tgname =
+            'omni_auth_users_actor_identity_immutable'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_reject_auth_user_identity_change()'
+          )
+          AND trigger_record.tgtype = 27
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND trigger_record.tgattr::TEXT = (
+            SELECT attnum::TEXT
+            FROM pg_attribute
+            WHERE attrelid = 'omni_auth_users'::regclass
+              AND attname = 'id'
+              AND NOT attisdropped
+          )
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger trigger_record
+        WHERE trigger_record.tgrelid = 'omni_auth_users'::regclass
+          AND trigger_record.tgname =
+            'omni_auth_users_actor_identity_no_truncate'
+          AND NOT trigger_record.tgisinternal
+          AND trigger_record.tgenabled = 'O'
+          AND trigger_record.tgfoid = to_regprocedure(
+            'public.omni_reject_auth_user_identity_change()'
+          )
+          AND trigger_record.tgtype = 34
+          AND trigger_record.tgqual IS NULL
+          AND trigger_record.tgnargs = 0
+          AND trigger_record.tgconstraint = 0
+          AND NOT trigger_record.tgdeferrable
+          AND NOT trigger_record.tginitdeferred
+          AND trigger_record.tgattr::TEXT = ''
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identity triggers are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc
+        WHERE oid = to_regprocedure(
+          'public.omni_reject_auth_user_identity_change()'
+        )
+          AND prorettype = 'trigger'::regtype
+          AND provolatile = 'v'
+          AND NOT prosecdef
+          AND proconfig @> ARRAY['search_path=pg_catalog, public']
+      ) OR EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name = 'omni_reject_auth_user_identity_change'
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identity function is exposed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_auth_users'
+          AND privilege_type IN ('DELETE', 'TRUNCATE')
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identities remain removable'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM omni_auth_memberships membership
+        LEFT JOIN omni_auth_users auth_user ON auth_user.id = membership.user_id
+        WHERE auth_user.id IS NULL
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_auth_sessions session_record
+        LEFT JOIN omni_auth_users auth_user ON auth_user.id = session_record.user_id
+        WHERE auth_user.id IS NULL
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_mobile_sessions mobile_session
+        LEFT JOIN omni_auth_users auth_user ON auth_user.id = mobile_session.user_id
+        WHERE auth_user.id IS NULL
+      ) THEN
+        RAISE EXCEPTION 'Canonical auth-user identity has orphaned references'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid = 'omni_auth_users'::regclass
+          AND (relrowsecurity OR relforcerowsecurity)
+      ) THEN
+        RAISE EXCEPTION 'Auth users cannot require tenant scope before login'
+          USING ERRCODE = '55000';
+      END IF;
+
+      valid_scope := jsonb_build_object(
+        'version', 1,
+        'tenantId', 'tenant:actor_identity_check',
+        'initiatingActorId', 'actor:actor_identity_check',
+        'executingPrincipalType', 'user',
+        'executingPrincipalId', 'actor:actor_identity_check',
+        'workspaceId', NULL,
+        'projectId', NULL,
+        'missionId', NULL,
+        'contextGrantIds', '[]'::JSONB,
+        'capabilityGrantIds', '[]'::JSONB,
+        'purposeId', 'memory:actor_identity_check',
+        'purpose', 'Canonical actor identity self-check'
+      );
+      IF public.omni_memory_access_scope_v1_is_valid(valid_scope)
+        IS DISTINCT FROM TRUE
+        OR public.omni_memory_access_scope_v1_is_authorized(valid_scope)
+          IS DISTINCT FROM FALSE
+      THEN
+        RAISE EXCEPTION 'Dormant memory authorization boundary changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_memory_access_scope_v1_is_authorized(jsonb)'
+        )
+          AND procedure.prorettype = 'boolean'::regtype
+          AND procedure.provolatile = 'v'
+          AND procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND NOT procedure.proleakproof
+          AND procedure.proconfig @> ARRAY['search_path=pg_catalog, public']
+          AND language.lanname = 'sql'
+      ) THEN
+        RAISE EXCEPTION 'Dormant memory authorization hook metadata changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name = 'omni_memory_access_scope_v1_is_authorized'
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Dormant memory authorization hook has serving grants'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE COALESCE(pg_get_expr(polqual, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_authorized%'
+          OR COALESCE(pg_get_expr(polwithcheck, polrelid), '') LIKE
+            '%omni_memory_access_scope_v1_is_authorized%'
+      ) THEN
+        RAISE EXCEPTION 'A row policy uses the dormant authorization hook'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_memories_access_enrollment_hold_check'
+          AND conrelid = 'omni_memories'::regclass
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid)
+            = '(access_contract_version = 0)'
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_memories
+        WHERE access_contract_version <> 0
+      ) THEN
+        RAISE EXCEPTION 'Memory access enrollment boundary changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_class
+        WHERE oid = 'omni_memories'::regclass
+          AND relrowsecurity
+          AND relforcerowsecurity
+      ) THEN
+        RAISE EXCEPTION 'Memory access forced RLS boundary changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid = 'omni_memories'::regclass
+          AND polname = 'omni_memory_access_scope_holdback'
+          AND NOT polpermissive
+          AND polcmd = '*'
+          AND polroles = ARRAY[0::OID]
+          AND polqual IS NOT NULL
+          AND polwithcheck IS NOT NULL
+          AND pg_get_expr(polqual, polrelid) =
+            '((access_contract_version = 0) OR omni_system_scope_enabled())'
+          AND pg_get_expr(polwithcheck, polrelid) =
+            '((access_contract_version = 0) OR omni_system_scope_enabled())'
+      ) THEN
+        RAISE EXCEPTION 'Memory access restrictive holdback changed'
           USING ERRCODE = '55000';
       END IF;
     END

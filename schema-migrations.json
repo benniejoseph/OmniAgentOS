@@ -223,5 +223,10 @@
     "version": 45,
     "name": "memory_access_authorization_deny_hook",
     "checksum": "739c26752e774c8d76d748d6f1c4cbf3302bfd85c9982585a827ff016d949b37"
+  },
+  {
+    "version": 46,
+    "name": "canonical_auth_user_actor_ids_shadow",
+    "checksum": "f817c08c92f511e7ba6e3d83e4ed49262997cec94e61f3dcb55d9d472fdd14b0"
   }
 ]

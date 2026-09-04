@@ -288,6 +288,21 @@ actor, principal, target, purpose, consent, and capability rows in the same
 transaction that installs the memory scope. No policy, store, worker, or API
 calls the v45 hook, and the v43 enrollment and RLS barriers remain unchanged.
 
+Migration v46 gives every auth user a stored, immutable, globally unique
+`actor:<auth-user-id>` shadow identity. It is deterministic, non-email, and
+pseudonymous personal data. It exists for disabled users so identity continuity
+is separate from current authorization. The auth-user table remains outside
+tenant RLS because login must find a user before discovering the tenant;
+future memory authorization
+must also lock and require the exact active tenant membership and active user.
+Auth user IDs are constrained to opaque UUIDs, and ID mutation, user deletion,
+and table truncation are rejected so a historical actor ID cannot be
+reassigned. A later account-erasure path must retain a pseudonymous identity
+tombstone.
+Browser/mobile contexts still expose the historical email-shaped actor, and
+no owner row, OAuth AAD, event, receipt, scope hash, job, continuation, approval
+comparison, or runtime query is rewritten or dual-read in this batch.
+
 The ledgers have different mutation semantics:
 
 - `omni_events` and security audit rows are inserted as history, but the database does not revoke update/delete privileges or provide WORM guarantees.

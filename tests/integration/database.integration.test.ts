@@ -408,7 +408,11 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     await admin`
       INSERT INTO omni_auth_users (id, email, password_hash)
-      VALUES ('retention-user', 'retention@example.test', 'test-password-hash')
+      VALUES (
+        '00000000-0000-4000-8000-000000000001',
+        'retention@example.test',
+        'test-password-hash'
+      )
     `;
     await admin`
       INSERT INTO omni_auth_sessions (
@@ -416,11 +420,13 @@ databaseDescribe("Postgres schema integration", () => {
       )
       VALUES
         (
-          'expired-auth-session', 'tenant_retention', 'retention-user',
+          'expired-auth-session', 'tenant_retention',
+          '00000000-0000-4000-8000-000000000001',
           'expired-auth-token', NOW() - INTERVAL '1 day'
         ),
         (
-          'active-auth-session', 'tenant_retention', 'retention-user',
+          'active-auth-session', 'tenant_retention',
+          '00000000-0000-4000-8000-000000000001',
           'active-auth-token', NOW() + INTERVAL '1 day'
         )
     `;
@@ -742,14 +748,28 @@ databaseDescribe("Postgres schema integration", () => {
     await admin`
       INSERT INTO omni_auth_users (id, email, password_hash)
       VALUES
-        ('integration-user-a', 'integration-a@example.test', 'test-only'),
-        ('integration-user-b', 'integration-b@example.test', 'test-only')
+        (
+          '00000000-0000-4000-8000-000000000010',
+          'integration-a@example.test',
+          'test-only'
+        ),
+        (
+          '00000000-0000-4000-8000-000000000011',
+          'integration-b@example.test',
+          'test-only'
+        )
     `;
     await admin`
       INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
       VALUES
-        ('integration-membership-a', 'tenant_a', 'integration-user-a', 'admin'),
-        ('integration-membership-b', 'tenant_b', 'integration-user-b', 'admin')
+        (
+          'integration-membership-a', 'tenant_a',
+          '00000000-0000-4000-8000-000000000010', 'admin'
+        ),
+        (
+          'integration-membership-b', 'tenant_b',
+          '00000000-0000-4000-8000-000000000011', 'admin'
+        )
     `;
     await admin`
       INSERT INTO omni_auth_sessions (
@@ -757,11 +777,13 @@ databaseDescribe("Postgres schema integration", () => {
       )
       VALUES
         (
-          'integration-session-a', 'tenant_a', 'integration-user-a',
+          'integration-session-a', 'tenant_a',
+          '00000000-0000-4000-8000-000000000010',
           'integration-token-a', NOW() + INTERVAL '1 day'
         ),
         (
-          'integration-session-b', 'tenant_b', 'integration-user-b',
+          'integration-session-b', 'tenant_b',
+          '00000000-0000-4000-8000-000000000011',
           'integration-token-b', NOW() + INTERVAL '1 day'
         )
     `;
