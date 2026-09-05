@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(),
+  claimLease: vi.fn(), getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(),
 }));
 vi.mock("@/lib/connectors/oauth-store", () => ({
+  claimOAuthSyncLease: mocks.claimLease,
   getOAuthGrantSecrets: mocks.getSecrets,
   saveOAuthGrant: mocks.saveGrant,
   updateOAuthSyncState: mocks.updateState,
@@ -42,6 +43,14 @@ describe("personal OAuth synchronization", () => {
       syncCursor: undefined,
     });
     mocks.updateState.mockResolvedValue({ syncStatus: "healthy" });
+    mocks.claimLease.mockResolvedValue({
+      status: "claimed",
+      lease: {
+        ownerId: "sync-owner",
+        generation: 1,
+        expiresAt: "2026-09-05T22:00:00.000Z",
+      },
+    });
     mocks.observeDrive.mockResolvedValue({ status: "shadow_observed" });
     mocks.observeCanonicalDrive.mockResolvedValue({ status: "settled" });
     mocks.ingest.mockResolvedValue({}); mocks.remove.mockResolvedValue("removed");
@@ -98,9 +107,16 @@ describe("personal OAuth synchronization", () => {
       }),
     );
     expect(mocks.remove).toHaveBeenCalledWith("oauth:google:calendar:e0", { tenantId: "personal" });
-    expect(mocks.updateState).toHaveBeenCalledTimes(5);
+    expect(mocks.updateState).toHaveBeenCalledTimes(4);
     expect(mocks.updateState).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: "healthy" }),
+      expect.objectContaining({
+        status: "healthy",
+        lease: expect.objectContaining({
+          ownerId: "sync-owner",
+          generation: 1,
+        }),
+        releaseLease: true,
+      }),
     );
   });
 
