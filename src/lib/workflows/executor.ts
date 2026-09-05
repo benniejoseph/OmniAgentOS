@@ -22,6 +22,7 @@ import { getDataPath } from "@/lib/storage/paths";
 import {
   EffectReceiptFinalizationError,
   executeGovernedTool,
+  governedToolOperationClass,
 } from "@/lib/tools/executor";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { getGovernedTool } from "@/lib/tools/registry";
@@ -564,9 +565,19 @@ async function executePlanNode({
       (executionScope?.executingPrincipalType === "system"
         ? executionScope.executingPrincipalId?.trim() || "omniagent-system"
         : "workflow");
+    const toolInput = buildToolInput({ detail, plan, planId, node, toolId });
+    const operationClass = tool
+      ? governedToolOperationClass(tool, toolInput)
+      : undefined;
+    const receiptEligibleEffect = Boolean(
+      (toolId === "memory.write" && node.toolIds.length === 1) ||
+      (tool &&
+        operationClass === "mutation" &&
+        ["connector", "mcp", "openapi"].includes(tool.category)),
+    );
     const execution = await executeGovernedTool({
       toolId,
-      input: buildToolInput({ detail, plan, planId, node, toolId }),
+      input: toolInput,
       dryRun,
       approved: workflowApproved && !dryRun,
       context: {
@@ -594,8 +605,7 @@ async function executePlanNode({
           })
         : undefined,
       effectBinding:
-        toolId === "memory.write" &&
-        node.toolIds.length === 1 &&
+        receiptEligibleEffect &&
         executionScope?.initiatingActorId?.trim() &&
         workflowApproved &&
         !dryRun
