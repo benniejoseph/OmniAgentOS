@@ -5,6 +5,7 @@ const routeMocks = vi.hoisted(() => ({
   processAllTenantAgentResumeQueues: vi.fn(),
   processAllTenantDurableSpecialistQueues: vi.fn(),
   processAllTenantWorkflowQueues: vi.fn(),
+  recordSecurityAudit: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
   recordWorkerHeartbeat: vi.fn(),
 }));
@@ -22,6 +23,11 @@ vi.mock("@/lib/db/client", async (importOriginal) => ({
 vi.mock("@/lib/security/guard", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/security/guard")>()),
   authorizeRequest: routeMocks.authorizeRequest,
+}));
+
+vi.mock("@/lib/security/audit-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/security/audit-store")>()),
+  recordSecurityAudit: routeMocks.recordSecurityAudit,
 }));
 
 vi.mock("@/lib/observability/store", async (importOriginal) => ({
@@ -104,6 +110,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue(emptySpecialistQueue);
   routeMocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
+  routeMocks.recordSecurityAudit.mockReset().mockResolvedValue(undefined);
   routeMocks.recordWorkerHeartbeat.mockReset().mockImplementation(async (input) => ({
     ...input,
     recordedAt: "2026-08-26T12:00:00.000Z",
