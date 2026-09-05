@@ -34,8 +34,9 @@ resurrection, or false success is a failure; this lane has no warning state.
 
 `baseline.v1.json` is the digest-bound current-system observation. Run
 `npm run check:p05-baseline` to reproduce it from the side-effect-free adapters
-in `src/lib/evals2/p05-observer.ts`. The result is intentionally red: 9 of 16
-cases pass (5,625 basis points). Tenant mismatch, canonical source ordering,
+in `src/lib/evals2/p05-observer.ts`. The result is intentionally red: 10 of 16
+cases pass (6,250 basis points). Tenant mismatch, transactional page retry,
+canonical source ordering,
 explicit-empty context selection, both terminal-receipt controls, and current
 supervisor routing are directly observable. Ambiguous destructive requests now
 fail closed on a clarification route without selecting a target or tool. The
