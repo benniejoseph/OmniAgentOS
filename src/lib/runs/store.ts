@@ -708,6 +708,14 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         ...hashedTextFields("acknowledgement", event.acknowledgement),
         ...hashedTextFields("reason", event.reason),
       };
+    case "clarification":
+      return {
+        schemaVersion,
+        type: event.type,
+        threadId: event.threadId,
+        reasonCode: event.reasonCode,
+        ...hashedTextFields("message", event.message),
+      };
     case "status":
       return {
         schemaVersion,

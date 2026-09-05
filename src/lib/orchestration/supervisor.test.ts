@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { adaptSupervisorDecision, compileThreadContext, routeAgentRequest } from "@/lib/orchestration/supervisor";
+import {
+  adaptSupervisorDecision,
+  analyzeAgentRequestAmbiguity,
+  applySupervisorStrategy,
+  compileThreadContext,
+  routeAgentRequest,
+} from "@/lib/orchestration/supervisor";
 import type { ThreadTurnRecord } from "@/lib/threads/types";
 
 describe("supervisor routing", () => {
@@ -32,6 +38,28 @@ describe("supervisor routing", () => {
 
   it("still routes explicitly recurring automation durably", () => {
     expect(routeAgentRequest("Run the GitHub workflow every week.", "orchestrate").route).toBe("durable_workflow");
+  });
+
+  it("fails closed when a destructive request has an ambiguous target", () => {
+    const decision = routeAgentRequest("Delete the old project", "orchestrate");
+    expect(decision).toMatchObject({
+      route: "clarify",
+      ambiguity: {
+        state: "detected",
+        reasonCode: "ambiguous_destructive_target",
+      },
+      requiresApproval: true,
+    });
+    expect(applySupervisorStrategy(decision, "direct").route).toBe("clarify");
+    expect(applySupervisorStrategy(decision, "durable").route).toBe("clarify");
+  });
+
+  it("does not invent ambiguity for exact targets, prohibitions, or explanatory questions", () => {
+    expect(analyzeAgentRequestAmbiguity("Delete project:one")).toEqual({ state: "none" });
+    expect(analyzeAgentRequestAmbiguity("Do not delete the old project")).toEqual({ state: "none" });
+    expect(analyzeAgentRequestAmbiguity("Explain how to delete the old project")).toEqual({ state: "none" });
+    expect(analyzeAgentRequestAmbiguity('Delete the project named "Old Portfolio"')).toEqual({ state: "none" });
+    expect(analyzeAgentRequestAmbiguity('Please delete the old project and say "okay"')).toMatchObject({ state: "detected" });
   });
 
   it("selects research, builder, and critic specialists from task intent", () => {

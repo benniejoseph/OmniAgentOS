@@ -1080,3 +1080,14 @@ type DomainEvent = {
 3. Retire the bespoke ledgers once their projection is event-sourced.
 
 This is deliberately staged so the system keeps shipping while the substrate is swapped underneath it — the same discipline applied everywhere in this codebase.
+
+## Ambiguous destructive intent clarification
+
+The supervisor now fails closed before agent or workflow execution when a
+destructive request refers only to a vague target, such as an old or previous
+project. Explicit direct or durable strategy selection cannot override this
+clarification route. The authenticated conversation stores the bounded
+clarification and appends `intent.clarification_requested` with the initiating
+actor, executing agent, correlation and causation IDs, a closed reason code,
+empty target/tool selections, and zero effects; it does not persist the raw
+request in the event payload.

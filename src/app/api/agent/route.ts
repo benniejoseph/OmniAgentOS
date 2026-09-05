@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AGENT_MAX_MESSAGE_CHARS, AGENT_MAX_MESSAGES, AGENT_RUNS_PER_MINUTE } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { appendScopedDomainEvent } from "@/lib/events/store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
   checkSharedRateLimit,
@@ -23,6 +24,7 @@ import { runAgent } from "@/lib/orchestration/agent-runner";
 import { getAgentPerformance } from "@/lib/agents/performance";
 import {
   adaptSupervisorDecision,
+  applySupervisorStrategy,
   compileThreadContext,
   routeAgentRequest,
 } from "@/lib/orchestration/supervisor";
@@ -183,11 +185,10 @@ async function POSTHandler(request: Request) {
     skills: customSkills.map(({ id, name, description, instructions, toolIds }) => ({ id, name, description, instructions, toolIds })),
   } : undefined;
   const inferredDecision = routeAgentRequest(requestMessage, mode, requestedBuiltInAgent);
-  const preliminaryDecision = parsed.data.strategy === "direct"
-    ? { ...inferredDecision, route: "direct" as const, reasons: ["Direct execution was explicitly selected."] }
-    : parsed.data.strategy === "durable"
-      ? { ...inferredDecision, route: "durable_workflow" as const, reasons: ["Durable execution was explicitly selected."] }
-      : inferredDecision;
+  const preliminaryDecision = applySupervisorStrategy(
+    inferredDecision,
+    parsed.data.strategy,
+  );
 
   if (preliminaryDecision.route === "durable_workflow") {
     try {
@@ -237,7 +238,7 @@ async function POSTHandler(request: Request) {
         if (mission) assertMissionAcceptsWork(mission);
         let missionTask: MissionTask | undefined;
         let durableSpecialists: PreparedDurableSpecialist[] = [];
-        if (parsed.data.message || decision.route === "durable_workflow") {
+        if (parsed.data.message || decision.route === "durable_workflow" || decision.route === "clarify") {
           const { appendThreadTurn, createThread, getThread, listThreadTurns } = await import("@/lib/threads/store");
           const safeMessage = String(redactSensitive(parsed.data.message || requestMessage));
           let thread = threadId ? await getThread(threadId, { tenantId: context.tenantId }) : null;
@@ -248,6 +249,48 @@ async function POSTHandler(request: Request) {
             threadId = thread.id;
           }
           const userTurn = await appendThreadTurn({ tenantId: context.tenantId, threadId: thread.id, role: "user", content: safeMessage });
+          if (decision.route === "clarify") {
+            const ambiguity = decision.ambiguity.state === "detected"
+              ? decision.ambiguity
+              : {
+                  reasonCode: "ambiguous_destructive_target" as const,
+                  clarificationPrompt: "Name or identify the exact item you want changed before I continue.",
+                };
+            await appendScopedDomainEvent({
+              streamId: `thread:${thread.id}`,
+              type: "intent.clarification_requested",
+              executionScope: executionScopeFromSecurityContext(context, {
+                executingPrincipalType: "agent",
+                executingPrincipalId: customAgent?.id || decision.primaryAgentId,
+                missionId: mission?.id,
+                correlationId: requestId,
+                causationId: userTurn.id,
+                purpose: "agent.intent.clarification",
+              }),
+              payload: {
+                schemaVersion: 1,
+                threadId: thread.id,
+                route: decision.route,
+                reasonCode: ambiguity.reasonCode,
+                selectedTargetIds: [],
+                selectedToolIds: [],
+                effectCount: 0,
+              },
+            });
+            await appendThreadTurn({
+              tenantId: context.tenantId,
+              threadId: thread.id,
+              role: "assistant",
+              content: ambiguity.clarificationPrompt,
+            });
+            controller.enqueue(encoder.encode(encodeSse({
+              type: "clarification",
+              threadId: thread.id,
+              message: ambiguity.clarificationPrompt,
+              reasonCode: ambiguity.reasonCode,
+            })));
+            return;
+          }
           const needsMission = Boolean(parsed.data.missionId) || decision.route === "durable_workflow";
           if (needsMission) {
             mission = mission || await createMission({

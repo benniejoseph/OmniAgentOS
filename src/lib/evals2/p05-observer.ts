@@ -89,23 +89,23 @@ function observeIntentRouting(testCase: P05Case): P05JsonValue {
   if (testCase.id === "intent-routing.portfolio-blog-automation") {
     const knownProcedure = jsonRecord(given.knownProcedure);
     return {
-      adapterId: "supervisor-route-v1",
+      adapterId: "supervisor-route-v2",
       adapterStatus: "observed",
       route: decision.route,
       workflowId: decision.route === "durable_workflow"
         ? text(knownProcedure.id) || null
         : null,
-      ambiguityState: "not_evaluated",
+      ambiguityState: decision.ambiguity.state,
       requiredToolIds: [],
       effectCountBeforeGovernedExecution: 0,
     };
   }
 
   return {
-    adapterId: "supervisor-route-v1",
+    adapterId: "supervisor-route-v2",
     adapterStatus: "observed",
     route: decision.route,
-    ambiguityState: "not_evaluated",
+    ambiguityState: decision.ambiguity.state,
     selectedTargetIds: [],
     selectedToolIds: [],
     effectCount: 0,

@@ -159,6 +159,7 @@ type StreamEvent =
   | { type: "waiting_approval"; executionId?: string; toolId?: string; message?: string }
   | { type: "done"; response?: string; grounding?: GroundingReport }
   | { type: "delegated"; threadId?: string; workflowId?: string; missionId?: string; acknowledgement?: string; reason?: string }
+  | { type: "clarification"; threadId?: string; message?: string; reasonCode?: "ambiguous_destructive_target" }
   | { type: "canceled"; message?: string }
   | { type: "error"; message?: string };
 
@@ -1232,7 +1233,7 @@ export function AgentRunsWorkspace({
         throw new Error(stringValue(asRecord(body).message || asRecord(body).error, `/api/agent returned ${response.status}`));
       }
 
-      let terminalEvent: "done" | "delegated" | "waiting_approval" | "error" | undefined;
+      let terminalEvent: "done" | "delegated" | "clarification" | "waiting_approval" | "error" | undefined;
       await readSse(response.body, (event) => {
         if (event.type === "run" && event.runId) {
           currentRunIdRef.current = event.runId;
@@ -1270,6 +1271,20 @@ export function AgentRunsWorkspace({
           setGoal("");
           void refreshThreads();
           setRunAnnouncement("Task moved to a durable background workflow.");
+        }
+        if (event.type === "clarification") {
+          terminalEvent = "clarification";
+          agentRequestIdRef.current = "";
+          const clarification = event.message || "Name or identify the exact item you want changed before I continue.";
+          if (event.threadId) setThreadId(event.threadId);
+          setAgentResponse(clarification);
+          setTurns((current) => [
+            ...current,
+            { id: `assistant-${Date.now()}`, role: "assistant", content: clarification, createdAt: new Date().toISOString() },
+          ]);
+          setGoal("");
+          void refreshThreads();
+          setRunAnnouncement("The agent needs an exact target before it can continue.");
         }
         if (event.type === "done") {
           terminalEvent = "done";
@@ -3802,6 +3817,9 @@ function streamEventLabel(event: StreamEvent) {
   if (event.type === "delegated") {
     return event.reason || "Task delegated to a durable workflow.";
   }
+  if (event.type === "clarification") {
+    return event.message || "The agent needs an exact target before it can continue.";
+  }
   if (event.type === "canceled") {
     return event.message || "Task canceled.";
   }
@@ -3843,6 +3861,7 @@ function activityTitle(event: StreamEvent) {
   if (event.type === "tool") return event.toolName || event.toolId || "Tool activity";
   if (event.type === "waiting_approval") return "Waiting for approval";
   if (event.type === "delegated") return "Moved to workflow";
+  if (event.type === "clarification") return "Clarification needed";
   if (event.type === "done") return "Task complete";
   if (event.type === "canceled") return "Task canceled";
   if (event.type === "error") return "Task failed";
@@ -3851,7 +3870,7 @@ function activityTitle(event: StreamEvent) {
 
 function activityDotTone(event: StreamEvent) {
   if (event.type === "error" || event.type === "canceled") return "bg-danger";
-  if (event.type === "waiting_approval") return "bg-warning";
+  if (event.type === "waiting_approval" || event.type === "clarification") return "bg-warning";
   if (event.type === "done" || event.type === "council_verdict") return "bg-success";
   if (event.type === "tool" && ["failed", "blocked"].includes(event.status || "")) return "bg-danger";
   return "bg-primary";

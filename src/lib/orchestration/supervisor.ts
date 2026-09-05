@@ -2,8 +2,16 @@ import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { AgentPerformance } from "@/lib/agents/performance";
 import type { ThreadTurnRecord } from "@/lib/threads/types";
 
-export type SupervisorRoute = "direct" | "durable_workflow";
+export type SupervisorRoute = "direct" | "durable_workflow" | "clarify";
 export type SupervisorAgentId = "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne";
+
+export type SupervisorAmbiguity =
+  | { state: "none" }
+  | {
+      state: "detected";
+      reasonCode: "ambiguous_destructive_target";
+      clarificationPrompt: string;
+    };
 
 export type SupervisorDecision = {
   route: SupervisorRoute;
@@ -12,6 +20,7 @@ export type SupervisorDecision = {
   requiresApproval: boolean;
   primaryAgentId: SupervisorAgentId;
   specialistIds: SupervisorAgentId[];
+  ambiguity: SupervisorAmbiguity;
   learning?: {
     state: "cold_start" | "observing" | "reinforced" | "supported";
     sampleSize: number;
@@ -33,14 +42,26 @@ export function routeAgentRequest(
   const boundedCapabilityAction = hasBoundedCapabilityAction(text);
   const actionIntent = /\b(create|update|send|publish|deploy|migrate|execute|implement|investigate|research|compare|coordinate|prepare|run|trigger|dispatch|start)\b/gi;
   const actions = text.match(actionIntent)?.length || 0;
-  const externalEffect = /\b(send|publish|deploy|delete|purchase|book|email|post|change external|update production|trigger|dispatch|re-?run)\b/i.test(text) ||
+  const externalEffect = /\b(send|publish|deploy|delete|remove|archive|cancel|revoke|purge|destroy|purchase|book|email|post|change external|update production|trigger|dispatch|re-?run)\b/i.test(text) ||
     /\brun\b[^.\n]{0,100}\b(action|automation|workflow|job|pipeline)\b/i.test(text);
+  const ambiguity = analyzeAgentRequestAmbiguity(text);
   const team = selectAgentTeam(
     text,
     mode,
     externalEffect && !boundedCapabilityAction,
     preferredAgentId,
   );
+
+  if (ambiguity.state === "detected") {
+    return {
+      route: "clarify",
+      score: 0,
+      reasons: ["A destructive request has no uniquely identified target."],
+      requiresApproval: externalEffect,
+      ambiguity,
+      ...team,
+    };
+  }
 
   if (durableIntent) { score += 4; reasons.push("Explicit durable or recurring work requested."); }
   if (boundedCapabilityAction && !durableIntent) reasons.push("A bounded workspace action can run directly through governed tools.");
@@ -57,8 +78,65 @@ export function routeAgentRequest(
     score,
     reasons,
     requiresApproval: externalEffect,
+    ambiguity,
     ...team,
   };
+}
+
+export function applySupervisorStrategy(
+  decision: SupervisorDecision,
+  strategy: "auto" | "direct" | "durable" | undefined,
+): SupervisorDecision {
+  if (decision.route === "clarify" || !strategy || strategy === "auto") {
+    return decision;
+  }
+  if (strategy === "direct") {
+    return {
+      ...decision,
+      route: "direct",
+      reasons: ["Direct execution was explicitly selected."],
+    };
+  }
+  return {
+    ...decision,
+    route: "durable_workflow",
+    reasons: ["Durable execution was explicitly selected."],
+  };
+}
+
+export function analyzeAgentRequestAmbiguity(message: string): SupervisorAmbiguity {
+  const text = message.replace(/\s+/g, " ").trim();
+  if (!text || isDestructiveActionDiscussion(text)) return { state: "none" };
+
+  const destructiveRequest = /^(?:please\s+)?(?:go ahead and\s+)?(?:delete|remove|archive|cancel|revoke|purge|destroy)\b/i.test(text) ||
+    /\b(?:please|can you|could you|would you|i (?:need|want) you to)\s+(?:delete|remove|archive|cancel|revoke|purge|destroy)\b/i.test(text);
+  const vagueTarget = /\b(?:the\s+)?(?:old|older|recent|previous|last|former)\b/i.test(text) ||
+    /\b(?:this|that|it|these|those|them)\b/i.test(text);
+  if (!destructiveRequest || !vagueTarget || hasExplicitTargetReference(text)) {
+    return { state: "none" };
+  }
+
+  return {
+    state: "detected",
+    reasonCode: "ambiguous_destructive_target",
+    clarificationPrompt: "Name or identify the exact item you want changed before I continue.",
+  };
+}
+
+function isDestructiveActionDiscussion(message: string) {
+  return /\b(?:how to|how would|what (?:would|happens?)|why (?:did|does|would)|explain(?: how)?|documentation (?:for|about))\b[^.!?\n]{0,120}\b(?:delete|remove|archive|cancel|revoke|purge|destroy)\b/i.test(message) ||
+    /\b(?:do not|don't|never)\s+(?:ever\s+)?(?:delete|remove|archive|cancel|revoke|purge|destroy)\b/i.test(message);
+}
+
+function hasExplicitTargetReference(message: string) {
+  const action = /\b(?:delete|remove|archive|cancel|revoke|purge|destroy)\b/i.exec(message);
+  if (!action || action.index === undefined) return false;
+  const target = message.slice(action.index + action[0].length, action.index + action[0].length + 240);
+  return /https?:\/\/\S+/i.test(target) ||
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i.test(target) ||
+    /\b(?:project|repository|repo|file|folder|record|row|issue|ticket|deployment|release|branch|environment|workflow|job|automation|message|email|event|meeting|document|page|contact):[a-z0-9][a-z0-9._-]*\b/i.test(target) ||
+    /^\s*(?:(?:the\s+)?(?:project|repository|repo|file|folder|record|row|issue|ticket|deployment|release|branch|environment|workflow|job|automation|message|email|event|meeting|document|page|contact)\s+(?:(?:named|called)\s+)?)?(?:"[^"]{1,160}"|'[^']{1,160}'|“[^”]{1,160}”)/i.test(target) ||
+    /\B#[1-9][0-9]*\b/.test(target);
 }
 
 function hasDurableExecutionIntent(message: string) {
