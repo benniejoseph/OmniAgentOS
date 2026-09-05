@@ -11,6 +11,7 @@ const internalSecret = (
 ).trim();
 const tenantId = required("SMOKE_TENANT_ID");
 const actorId = required("SMOKE_ACTOR_ID");
+const recoveryCanary = process.env.CHECKPOINT_RECOVERY_CANARY === "true";
 
 if (!internalSecret) {
   throw new Error(
@@ -47,8 +48,9 @@ try {
     name: `Checkpoint Approval ${suffix}`,
     role: "Checkpoint approval verifier",
     description: `Synthetic expanded-checkpoint approval verifier ${marker}`,
-    instructions:
-      "Call runs.list exactly once with limit 1 before answering. Do not call any other tool. After the tool result, reply with one short sentence and do not call the tool again.",
+    instructions: recoveryCanary
+      ? "Call runs.list exactly once with limit 1 before answering. Do not call any other tool. After the tool result, write a detailed 900-1200 word assessment of checkpoint recovery safety and do not call the tool again."
+      : "Call runs.list exactly once with limit 1 before answering. Do not call any other tool. After the tool result, reply with one short sentence and do not call the tool again.",
     autonomy: "assist",
     approvalPolicy: "always",
     toolIds: ["runs.list"],
@@ -59,7 +61,9 @@ try {
     requestId: approvalRequestId,
     mode: "orchestrate",
     message:
-      "List one recent run with the available tool and report that the controlled read completed.",
+      recoveryCanary
+        ? "List one recent run, then provide the requested detailed checkpoint recovery safety assessment."
+        : "List one recent run with the available tool and report that the controlled read completed.",
   });
   const approvalRunId = oneEvent(approvalEvents, "run").runId;
   const waiting = oneEvent(approvalEvents, "waiting_approval");
