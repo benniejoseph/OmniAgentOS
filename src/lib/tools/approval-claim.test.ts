@@ -483,6 +483,53 @@ describe("tool approval claims (file mode)", () => {
     expect(result.record.status).toBe("approval_required");
   });
 
+  it("preserves a risk-0 tool contract across forced approval", async () => {
+    const store = await import("@/lib/tools/audit-store");
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const context = {
+      tenantId: "tenant-a",
+      actorId: "operator-a",
+      role: "admin" as const,
+      source: "default",
+    };
+    const pending = await executeGovernedTool({
+      toolId: "runs.list",
+      input: { limit: 1 },
+      dryRun: false,
+      forceApproval: true,
+      context,
+    });
+    expect(pending.record).toMatchObject({
+      status: "approval_required",
+      approvalRequired: true,
+      riskLevel: 0,
+    });
+
+    const claimToken = "forced-risk-zero-claim";
+    const claim = await store.approveAndClaimToolExecution({
+      id: pending.record.id,
+      tenantId: pending.record.tenantId,
+      approvedBy: "operator-a",
+      approvedRole: "admin",
+      claimToken,
+    });
+    expect(claim.outcome).toBe("claimed");
+
+    const executed = await executeGovernedTool({
+      toolId: "runs.list",
+      input: { limit: 1 },
+      dryRun: false,
+      approved: true,
+      existingRecord: claim.record,
+      executionClaimToken: claimToken,
+      context,
+    });
+    expect(executed.record).toMatchObject({
+      status: "executed",
+      riskLevel: 0,
+    });
+  });
+
   it("closes a durable claim when approved input no longer validates", async () => {
     const store = await import("@/lib/tools/audit-store");
     const { executeGovernedTool } = await import("@/lib/tools/executor");
