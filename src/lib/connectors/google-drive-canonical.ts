@@ -397,8 +397,8 @@ function normalizedMetadata(
   providerItemKeySha256: string,
   observedAtInput?: string,
 ): CanonicalDriveMetadata {
-  const sourceCreatedAt = optionalProviderTimestamp(file.createdTime);
-  const sourceUpdatedAt = optionalProviderTimestamp(file.modifiedTime);
+  const { sourceCreatedAt, sourceUpdatedAt } =
+    canonicalDriveSourceTimestamps(file.createdTime, file.modifiedTime);
   const capturedAt = latestTimestamp(
     observedAtInput,
     sourceUpdatedAt,
@@ -417,6 +417,21 @@ function normalizedMetadata(
     providerContentByteLength: optionalProviderValue(file.size) || null,
   });
   return { sourceCreatedAt, sourceUpdatedAt, capturedAt, metadataSha256 };
+}
+
+export function canonicalDriveSourceTimestamps(
+  createdTime: unknown,
+  modifiedTime: unknown,
+) {
+  const sourceCreatedAt = optionalProviderTimestamp(createdTime);
+  const sourceUpdatedAt = optionalProviderTimestamp(modifiedTime);
+  return {
+    sourceCreatedAt:
+      sourceCreatedAt && sourceUpdatedAt && sourceCreatedAt > sourceUpdatedAt
+        ? null
+        : sourceCreatedAt,
+    sourceUpdatedAt,
+  };
 }
 
 function manifestItem(input: {
