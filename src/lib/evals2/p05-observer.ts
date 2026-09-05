@@ -18,6 +18,7 @@ import {
 } from "@/lib/runs/contracts";
 import {
   normalizeExplicitEvidenceIds,
+  resolveAuthorizedExplicitEvidenceIds,
   selectExplicitEvidenceIds,
 } from "@/lib/rag/evidence-selection";
 import { evaluateStructuredClaimSupport } from "@/lib/rag/structured-claim-support";
@@ -416,14 +417,18 @@ function observeExplicitContextSelection(testCase: P05Case): P05JsonValue {
   const automaticCandidates = strings(given.automaticCandidates);
   const unauthorizedIds = new Set(strings(given.unauthorizedIds));
   const normalized = normalizeExplicitEvidenceIds(explicitSelection) || [];
-  const retrievable = automaticCandidates.filter((id) => !unauthorizedIds.has(id));
-  const selectedEvidenceIds = selectExplicitEvidenceIds({
-    explicitEvidenceIds: normalized,
-    retrievableEvidenceIds: retrievable,
-  });
+  const selectedEvidenceIds = normalized.length === 0
+    ? selectExplicitEvidenceIds({
+        explicitEvidenceIds: normalized,
+        retrievableEvidenceIds: automaticCandidates,
+      })
+    : resolveAuthorizedExplicitEvidenceIds({
+        explicitEvidenceIds: normalized,
+        authorizedEvidenceIds: normalized.filter((id) => !unauthorizedIds.has(id)),
+      });
 
   return {
-    adapterId: "context-engine-explicit-selection-v1",
+    adapterId: "context-engine-explicit-selection-v2",
     adapterStatus: "observed",
     selectedEvidenceIds,
     retrievalInvoked: normalized.length > 0,
