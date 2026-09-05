@@ -687,11 +687,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the informed notice receipt and consent v2 shadow migration", () => {
+  it("pins the membership-management authority shadow migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 55,
-      name: "memory_informed_notice_receipts_and_consent_v2_shadow",
-      checksum: "a48279b78e473f2c452748aa09b87a874672d57a1d257392741159f1d9d4af55",
+      version: 56,
+      name: "tenant_actor_membership_management_authorities_shadow",
+      checksum: "8f60e058c5ed4f60ed70f8025d9ab472a0c6dcc0957673aa4319668526238c09",
     });
   });
 
