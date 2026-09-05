@@ -466,8 +466,8 @@ open until authorized semantic verification and user-facing adoption are
 implemented behind compatibility gates. The normative boundary is documented
 in [ClaimEvidenceMap v1](CLAIM_EVIDENCE.md).
 
-P1.6 now has a contract, persistence foundation, and first approval-wait
-shadow call site in
+P1.6 now has a contract, persistence foundation, and approval-boundary shadow
+chain in
 `src/lib/runs/checkpoints.ts` and `src/lib/runs/checkpoint-store.ts`. It defines
 a bounded, immutable,
 metadata-and-reference-only `RunCheckpointV1`, deterministic checkpoint
@@ -484,10 +484,14 @@ index, and appends one metadata-only `run.checkpoint.recorded` event. There is
 no checkpoint state loader, worker claim, or resume authority. Newly created
 agent runs can capture an exact active shadow rollout pin and atomically record
 their first governed approval-wait checkpoint with the legacy continuation.
+The governed approval transaction now records the exact approved or rejected
+successor; the approved record precedes effect execution, the rejected record
+is terminal, and both retain zero boundary effects. Strict matched comparison
+receipts cover both records while the legacy continuation remains authoritative.
 Unenrolled, preclaimed, file-mode, and existing runs remain unchanged. P1.6
-remains open until shadow comparison and approval-decision successors pass,
-and then every required boundary is checkpointed
-and fenced canary resume proves it cannot duplicate an effect. The normative
+remains open until stored production chains are reconciled, every required
+boundary is checkpointed, and fenced canary resume proves it cannot duplicate
+an effect. The normative
 boundary and activation order are documented in
 [RunCheckpoint v1](RUN_CHECKPOINTS.md).
 

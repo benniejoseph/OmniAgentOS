@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { hasDatabaseUrl } from "@/lib/db/client";
+import { appendDomainEvent } from "@/lib/events/store";
 import {
   getCurrentTenantCapabilityRollout,
   type TenantCapabilityRollout,
@@ -17,6 +18,7 @@ import {
 } from "@/lib/runs/checkpoint-store";
 import {
   buildRunCheckpointV1,
+  parseRunCheckpointV1,
   type RunCheckpointEnginePinV1,
   type RunCheckpointV1,
 } from "@/lib/runs/checkpoints";
@@ -92,6 +94,26 @@ export type ApprovalWaitingCheckpointShadowResult = Readonly<{
   outcome: "recorded" | "not_enrolled" | "already_recorded" | "prior_effects";
   resumeAuthorityGranted: false;
 }>;
+
+export type ApprovalDecisionCheckpointShadowResult = Readonly<{
+  checkpoint: RunCheckpointV1 | null;
+  outcome: "recorded" | "not_enrolled" | "waiting_checkpoint_missing";
+  resumeAuthorityGranted: false;
+}>;
+
+const approvalCheckpointComparisonPayloadSchema = z.object({
+  schemaVersion: z.literal(1),
+  checkpointId: runContractIdSchema,
+  checkpointSha256: runContractSha256Schema,
+  runId: runContractIdSchema,
+  boundaryKind: z.literal("approval"),
+  boundaryPhase: z.enum(["waiting", "after"]),
+  boundaryId: runContractIdSchema,
+  comparison: z.literal("matched"),
+  stateReferenceCount: z.number().int().min(1).max(64),
+  externalEffectCount: z.number().int().min(0),
+  resumeAuthorityGranted: z.literal(false),
+}).strict();
 
 /**
  * Enrolls only a newly starting Postgres run under the exact active shadow
@@ -448,6 +470,229 @@ export async function recordApprovalWaitingCheckpointShadow(
     recordedAt: input.recordedAt,
   });
   await recordRunCheckpointV1({ checkpoint, executionScope: scope }, sql);
+  await appendCheckpointComparisonEvent(checkpoint, scope, sql);
+  return Object.freeze({
+    checkpoint,
+    outcome: "recorded" as const,
+    resumeAuthorityGranted: false as const,
+  });
+}
+
+/**
+ * Records the matching approval decision before an approved effect executes,
+ * or alongside a rejected tool decision. The legacy run remains authoritative.
+ */
+export async function recordApprovalDecisionCheckpointShadow(
+  input: {
+    tenantId: string;
+    approvalExecutionId: string;
+    decision: "approved" | "rejected";
+  },
+  sql: RunCheckpointWriterSql,
+): Promise<ApprovalDecisionCheckpointShadowResult> {
+  if (!sql.transactionScoped) {
+    throw new Error("Approval checkpoint decision requires the tool transaction.");
+  }
+  const runRows = await sql.query(
+    `SELECT id, tenant_id, status, response, continuation, started_at
+     FROM omni_agent_runs
+     WHERE tenant_id = $1
+       AND status = 'waiting_approval'
+       AND continuation->'pendingToolCall'->>'executionId' = $2
+     ORDER BY id ASC
+     LIMIT 2
+     FOR SHARE`,
+    [input.tenantId, input.approvalExecutionId],
+  );
+  if (runRows.length === 0) return noDecisionCheckpoint("not_enrolled");
+  const runRow = exactlyOne(runRows, "approval decision run");
+  const continuation = objectValue(runRow.continuation);
+  const enrollment = parseApprovalCheckpointShadowEnrollment(
+    continuation.checkpointShadowEnrollment,
+  );
+  if (!enrollment) return noDecisionCheckpoint("not_enrolled");
+  const scope = parsePersistedExecutionScope(continuation.executionScope);
+  const envelope = parseRunContractEnvelopeV1(
+    continuation.runContractEnvelope,
+  );
+  if (!scope || !envelope) {
+    throw new Error("Approval decision checkpoint lost its exact contracts.");
+  }
+  assertEnrollmentBinding({
+    enrollment,
+    runId: String(runRow.id),
+    executionScope: scope,
+    runContractEnvelope: envelope,
+  });
+  if (scope.tenantId !== input.tenantId) {
+    throw new Error("Approval decision checkpoint changed tenant scope.");
+  }
+
+  const checkpointRows = await sql.query(
+    `SELECT checkpoint_json
+     FROM omni_run_checkpoints
+     WHERE tenant_id = $1 AND run_id = $2
+     ORDER BY sequence DESC
+     LIMIT 2
+     FOR SHARE`,
+    [scope.tenantId, String(runRow.id)],
+  );
+  if (checkpointRows.length === 0) {
+    return noDecisionCheckpoint("waiting_checkpoint_missing");
+  }
+  const parent = parseRunCheckpointV1(
+    exactlyOne(checkpointRows, "approval waiting checkpoint").checkpoint_json,
+  );
+  if (
+    parent.boundary.kind !== "approval" ||
+    parent.boundary.phase !== "waiting" ||
+    parent.boundary.boundaryId !== input.approvalExecutionId ||
+    parent.lifecycleState !== "waiting" ||
+    parent.resumeDisposition !== "awaiting_signal"
+  ) {
+    throw new Error("Approval decision checkpoint has the wrong waiting parent.");
+  }
+
+  const toolRows = await sql.query(
+    `SELECT id, tenant_id, actor_id, tool_id, tool_name, risk_level, status,
+            dry_run, approval_required, approval_decision, approved_by,
+            approved_at, input, output, reason, effect_receipt, created_at
+     FROM omni_tool_executions
+     WHERE id = $1 AND COALESCE(tenant_id, 'default') = $2
+     LIMIT 2
+     FOR SHARE`,
+    [input.approvalExecutionId, scope.tenantId],
+  );
+  const toolRow = exactlyOne(toolRows, "approval decision tool execution");
+  const expectedStatus = input.decision === "approved" ? "executing" : "rejected";
+  if (
+    String(toolRow.status) !== expectedStatus ||
+    String(toolRow.approval_decision) !== input.decision ||
+    toolRow.effect_receipt != null
+  ) {
+    throw new Error("Approval decision checkpoint observed an invalid tool state.");
+  }
+
+  const bindingPayload = await toolScopeBindingPayload(
+    sql,
+    scope.tenantId,
+    input.approvalExecutionId,
+  );
+  const pendingToolCall = objectValue(continuation.pendingToolCall);
+  const pendingCallId = typeof pendingToolCall.callId === "string"
+    ? pendingToolCall.callId.trim()
+    : "";
+  if (!pendingCallId) {
+    throw new Error("Approval decision continuation lost its tool call ID.");
+  }
+  const expectedToolScope = deriveExecutionScope(scope, {
+    causationId: pendingCallId,
+    purpose: "agent.tool.execute",
+  });
+  assertToolScopeBinding(bindingPayload, toolRow, expectedToolScope);
+
+  const decisionEventType = input.decision === "approved"
+    ? "tool.approval.recorded"
+    : "tool.approval.rejected";
+  const decisionOutcome = input.decision === "approved"
+    ? "execution_claimed"
+    : "rejected";
+  const decisionRows = await sql.query(
+    `SELECT id, type, actor_id, payload, at
+     FROM omni_events
+     WHERE tenant_id = $1
+       AND stream_id = $2
+       AND type = $3
+       AND payload->>'outcome' = $4
+     ORDER BY seq DESC
+     LIMIT 2
+     FOR SHARE`,
+    [
+      scope.tenantId,
+      `tool_execution:${input.approvalExecutionId}`,
+      decisionEventType,
+      decisionOutcome,
+    ],
+  );
+  const decisionRow = exactlyOne(
+    decisionRows,
+    "approval decision event",
+  );
+  const decisionPayload = objectValue(decisionRow.payload);
+  if (
+    String(decisionPayload.executionId) !== input.approvalExecutionId ||
+    String(decisionPayload.decision) !== input.decision
+  ) {
+    throw new Error("Approval decision event changed its execution binding.");
+  }
+
+  const toolExecutionSha256 = toolExecutionStateSha256(
+    toolRow,
+    bindingPayload,
+  );
+  const decisionSha256 = canonicalJsonSha256({
+    schemaVersion: 1,
+    eventId: decisionRow.id,
+    type: decisionRow.type,
+    actorId: decisionRow.actor_id,
+    payload: decisionPayload,
+    at: canonicalTimestamp(decisionRow.at),
+  });
+  const stateReferences = parent.stateReferences
+    .filter((reference) =>
+      reference.kind !== "tool_execution" &&
+      reference.kind !== "approval_decision"
+    )
+    .concat([
+      {
+        kind: "tool_execution" as const,
+        referenceId: input.approvalExecutionId,
+        referenceSha256: toolExecutionSha256,
+        versionId: "governed_tool_execution_v1",
+      },
+      {
+        kind: "approval_decision" as const,
+        referenceId: input.approvalExecutionId,
+        referenceSha256: decisionSha256,
+        versionId: "governed_tool_approval_v1",
+      },
+    ]);
+  const usage = parent.resourceUsage;
+  const checkpoint = buildRunCheckpointV1({
+    runId: parent.runId,
+    executionScope: scope,
+    boundary: {
+      ...parent.boundary,
+      phase: "after",
+    },
+    sequence: parent.sequence + 1,
+    parent: {
+      checkpointId: parent.checkpointId,
+      checkpointSha256: parent.checkpointSha256,
+      sequence: parent.sequence,
+    },
+    enginePin: enrollment.enginePin,
+    stateReferences,
+    toolBinding: null,
+    resourceUsage: {
+      modelCallCount: usage.modelCallCount,
+      modelInputTokenCount: usage.modelInputTokenCount,
+      modelOutputTokenCount: usage.modelOutputTokenCount,
+      cachedInputTokenCount: usage.cachedInputTokenCount,
+      toolCallCount: usage.toolCallCount,
+      toolResultByteCount: usage.toolResultByteCount,
+      externalEffectCount: usage.externalEffectCount,
+      boundaryExternalEffectCount: 0,
+      elapsedMs: usage.elapsedMs,
+    },
+    lifecycleState: input.decision === "approved" ? "active" : "terminal",
+    resumeDisposition: input.decision === "approved"
+      ? "resumable"
+      : "not_resumable",
+    recordedAt: canonicalTimestamp(decisionRow.at),
+  });
+  await recordRunCheckpointV1({ checkpoint, executionScope: scope }, sql);
+  await appendCheckpointComparisonEvent(checkpoint, scope, sql);
   return Object.freeze({
     checkpoint,
     outcome: "recorded" as const,
@@ -496,6 +741,100 @@ function assertEnrollmentBinding(input: {
   ) {
     throw new Error("Approval checkpoint enrollment binding changed.");
   }
+}
+
+async function toolScopeBindingPayload(
+  sql: RunCheckpointWriterSql,
+  tenantId: string,
+  executionId: string,
+) {
+  const bindingRows = await sql.query(
+    `SELECT payload
+     FROM omni_events
+     WHERE tenant_id = $1
+       AND stream_id = $2
+       AND type = 'tool.scope_bound'
+     ORDER BY seq ASC
+     LIMIT 2
+     FOR SHARE`,
+    [tenantId, `tool_execution:${executionId}`],
+  );
+  return objectValue(
+    exactlyOne(bindingRows, "approval checkpoint tool scope").payload,
+  );
+}
+
+function assertToolScopeBinding(
+  bindingPayload: Record<string, unknown>,
+  toolRow: Record<string, unknown>,
+  expectedToolScope: ExecutionScope,
+) {
+  const boundScope = parsePersistedExecutionScope(bindingPayload._executionScope);
+  if (
+    !boundScope ||
+    !executionScopesEqual(boundScope, expectedToolScope) ||
+    String(bindingPayload.toolId || "") !== String(toolRow.tool_id) ||
+    !runContractSha256Schema.safeParse(bindingPayload.inputSha256).success ||
+    !runContractSha256Schema.safeParse(bindingPayload.scopeSha256).success
+  ) {
+    throw new Error("Approval checkpoint tool scope binding is invalid.");
+  }
+}
+
+function toolExecutionStateSha256(
+  toolRow: Record<string, unknown>,
+  bindingPayload: Record<string, unknown>,
+) {
+  return canonicalJsonSha256({
+    schemaVersion: 1,
+    executionId: toolRow.id,
+    tenantId: toolRow.tenant_id,
+    actorId: toolRow.actor_id,
+    toolId: toolRow.tool_id,
+    riskLevel: toolRow.risk_level,
+    status: toolRow.status,
+    dryRun: toolRow.dry_run,
+    approvalRequired: toolRow.approval_required,
+    approvalDecision: toolRow.approval_decision || null,
+    approvedBy: toolRow.approved_by || null,
+    approvedAt: toolRow.approved_at
+      ? canonicalTimestamp(toolRow.approved_at)
+      : null,
+    inputSha256: bindingPayload.inputSha256,
+    scopeSha256: bindingPayload.scopeSha256,
+    createdAt: canonicalTimestamp(toolRow.created_at),
+  });
+}
+
+async function appendCheckpointComparisonEvent(
+  checkpoint: RunCheckpointV1,
+  executionScope: ExecutionScope,
+  sql: RunCheckpointWriterSql,
+) {
+  const payload = approvalCheckpointComparisonPayloadSchema.parse({
+    schemaVersion: 1,
+    checkpointId: checkpoint.checkpointId,
+    checkpointSha256: checkpoint.checkpointSha256,
+    runId: checkpoint.runId,
+    boundaryKind: "approval",
+    boundaryPhase: checkpoint.boundary.phase,
+    boundaryId: checkpoint.boundary.boundaryId,
+    comparison: "matched",
+    stateReferenceCount: checkpoint.stateReferences.length,
+    externalEffectCount: checkpoint.resourceUsage.externalEffectCount,
+    resumeAuthorityGranted: false,
+  });
+  await appendDomainEvent({
+    id: `run-checkpoint-shadow-compared:${checkpoint.checkpointSha256}`,
+    streamId: `run:${checkpoint.runId}`,
+    type: "run.checkpoint.shadow_compared",
+    tenantId: executionScope.tenantId,
+    actorId: executionScope.initiatingActorId || undefined,
+    correlationId: executionScope.correlationId,
+    causationId: executionScope.causationId || undefined,
+    executionScope,
+    payload,
+  }, { sql });
 }
 
 function checkpointUsage(
@@ -577,6 +916,16 @@ function exactlyOne(rows: Record<string, unknown>[], label: string) {
 function noCheckpoint(
   outcome: Exclude<ApprovalWaitingCheckpointShadowResult["outcome"], "recorded">,
 ): ApprovalWaitingCheckpointShadowResult {
+  return Object.freeze({
+    checkpoint: null,
+    outcome,
+    resumeAuthorityGranted: false as const,
+  });
+}
+
+function noDecisionCheckpoint(
+  outcome: Exclude<ApprovalDecisionCheckpointShadowResult["outcome"], "recorded">,
+): ApprovalDecisionCheckpointShadowResult {
   return Object.freeze({
     checkpoint: null,
     outcome,

@@ -184,7 +184,7 @@ derivation. It explicitly does not establish semantic truth, evidence-source
 or authorization-authority trust, source-head currentness, or decomposition
 completeness. See [ClaimEvidenceMap v1](vision/CLAIM_EVIDENCE.md).
 
-The first P1.6 slice is likewise dormant: `RunCheckpointV1` defines the
+The P1.6 foundation defines `RunCheckpointV1` as the
 immutable, metadata-only boundary a future resume worker must prove before it
 opens separately scoped state. It binds explicit tenant, initiating actor,
 executing principal, grants, purpose, run lineage, engine and rollout pins,
@@ -200,9 +200,14 @@ Migration v68 and the transaction-only writer provide the append-only,
 forced-RLS store and atomic metadata event boundary. New agent runs may now
 capture an exact active shadow rollout pin and atomically record their first
 governed approval-wait checkpoint with the still-authoritative legacy
-continuation. The checkpoint grants no resume authority. Shadow comparison,
-approval-decision successors, fenced claims, and canary resume remain later
-P1.6 gates. See [RunCheckpoint v1](vision/RUN_CHECKPOINTS.md).
+continuation. The governed approval transaction adds the exact approved or
+rejected successor and emits a matched comparison receipt for each approval
+boundary after validating its chain, references, scope, tool state, decision,
+and resource counters. Approved successors are written before effect execution;
+rejected successors are terminal. These checkpoints grant no resume authority.
+Stored production reconciliation, fenced claims, broader boundaries, and
+canary resume remain later P1.6 gates. See
+[RunCheckpoint v1](vision/RUN_CHECKPOINTS.md).
 
 ## Durable workflows
 
