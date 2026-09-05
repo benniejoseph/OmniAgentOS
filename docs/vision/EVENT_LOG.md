@@ -750,6 +750,17 @@ non-terminal runs canceled. File mode applies the same preview binding and
 scrubs descendant rows, but remains explicitly best-effort rather than a
 rollback-proof database guarantee.
 
+The maintenance worker treats every immutable Postgres deletion receipt as a
+durable physical-scrub manifest. It leases receipt rows with `SKIP LOCKED`,
+scrubs only a bounded number of descendant rows per tick, and resumes from the
+remaining non-canonical shells after interruption without storing forgotten
+content in a queue. When the entire manifest is physically scrubbed it appends
+the idempotent `memory.deletion_scrub.completed` event under a system execution
+principal causally bound to the original receipt. The event contains opaque
+IDs, counts, status, and SLA outcome only. The immediate receipt barrier stays
+authoritative during the scrub window; the default physical completion SLA is
+24 hours and overdue receipt IDs are surfaced in worker results.
+
 ## Event shape
 
 ```ts

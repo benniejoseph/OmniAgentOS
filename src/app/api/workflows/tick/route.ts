@@ -20,6 +20,7 @@ import { recordSecurityAudit } from "@/lib/security/audit-store";
 import { SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { processPendingMemoryGraphRebuilds } from "@/lib/security/retention";
+import { processPendingMemoryDeletionScrubs } from "@/lib/memory/deletion-scrub";
 import type { SecurityContext } from "@/lib/security/types";
 import {
   getOperationJobStats,
@@ -550,6 +551,9 @@ function summarizeScheduledOutcome(
     backgroundJobsCompleted: scheduled.backgroundJobs?.completed || 0,
     backgroundJobsFailed: scheduled.backgroundJobs?.failed || 0,
     memoryGraphRebuilds: scheduled.memoryGraphRebuilds?.processed || 0,
+    memoryDeletionScrubs: scheduled.memoryDeletionScrubs?.scrubbedMemories || 0,
+    overdueMemoryDeletionScrubs:
+      scheduled.memoryDeletionScrubs?.overdueReceiptIds.length || 0,
     maintenanceTenants: scheduled.maintenanceTenantIds.length,
   };
   const activityCount = Object.values(counts).reduce(
@@ -663,16 +667,20 @@ async function runAllTenantScheduledWork({
           jobs: [],
         }),
   ]);
-  const [memoryGraphRebuilds, page] =
+  const [memoryGraphRebuilds, memoryDeletionScrubs, page] =
     runMaintenance && Date.now() < deadlineAt
     ? await Promise.all([
         processPendingMemoryGraphRebuilds({ limit: 1 }),
+        processPendingMemoryDeletionScrubs({
+          receiptLimit: Math.min(maintenanceTenantLimit, 10),
+          memoryLimit: 100,
+        }),
         listMaintenanceTenantIds({
           after: tenantCursor,
           limit: Math.min(maintenanceTenantLimit + 1, 101),
         }),
       ])
-    : [undefined, [] as string[]];
+    : [undefined, undefined, [] as string[]];
   const maintenanceCandidates = page.slice(0, maintenanceTenantLimit);
   const maintenanceTenantIds: string[] = [];
   const maintenance: Array<{
@@ -723,6 +731,7 @@ async function runAllTenantScheduledWork({
     durableSpecialists,
     backgroundJobs,
     memoryGraphRebuilds,
+    memoryDeletionScrubs,
     maintenanceTenantIds,
     nextTenantCursor,
     maintenance,
