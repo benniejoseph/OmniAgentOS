@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import {
   appendDomainEvent,
-  appendDomainEventSafely,
+  appendScopedDomainEvent,
   listStreamEvents,
 } from "@/lib/events/store";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
@@ -28,6 +28,7 @@ import type {
   WorkflowStepRecord,
   WorkflowStepStatus,
 } from "@/lib/workflows/types";
+import { workflowDomainEventPayloadV1 } from "@/lib/workflows/events";
 
 export const AGENT_WORKFLOW_TYPE = "agent.workflow.v1";
 
@@ -164,13 +165,13 @@ export async function createWorkflowRun(
             ${event.payload}::jsonb, ${event.createdAt}
           )
         `;
-        await appendDomainEvent({
-          streamId: `workflow:${run.id}`,
-          type: "workflow.created",
+        await appendWorkflowDomainEvent(
+          event,
+          { goal: run.goal },
           tenantId,
-          payload: { goal: run.goal },
-          correlationId: run.id,
-        }, { sql });
+          executionAuthority?.executionScope,
+          sql,
+        );
         if (executionAuthority) {
           await appendWorkflowRunAuthorityBindingEvent(
             run.id,
@@ -193,6 +194,7 @@ export async function createWorkflowRun(
   }
 
   let created = false;
+  let creationEvent: WorkflowEventRecord | undefined;
   await mutateWorkflowLedger((ledger) => {
     if (ledger.runs.some((existing) => existing.id === run.id)) {
       return ledger;
@@ -200,16 +202,29 @@ export async function createWorkflowRun(
     created = true;
     ledger.runs.unshift(run);
     ledger.steps.push(...steps);
-    ledger.events.push(createWorkflowEventRecord(run.id, "workflow.created", { goal: run.goal }, tenantId));
+    creationEvent = createWorkflowEventRecord(
+      run.id,
+      "workflow.created",
+      { goal: run.goal },
+      tenantId,
+    );
+    ledger.events.push(creationEvent);
     return trimWorkflowLedger(ledger);
   });
   if (created) {
-    await appendDomainEventSafely({
-      streamId: `workflow:${run.id}`,
-      type: "workflow.created",
-      payload: { goal: run.goal },
-      correlationId: run.id,
-    });
+    try {
+      await appendWorkflowDomainEvent(
+        creationEvent!,
+        { goal: run.goal },
+        tenantId,
+        executionAuthority?.executionScope,
+      );
+    } catch (error) {
+      console.warn(
+        "Workflow creation event append failed.",
+        error instanceof Error ? error.message : "Unknown workflow event error.",
+      );
+    }
   }
 
   if (executionAuthority && created) {
@@ -1399,24 +1414,28 @@ export async function appendWorkflowEvent(
   type: string,
   payload: Record<string, unknown> = {},
 ) {
-  // Stage-1 event-log dual-write (docs/vision/EVENT_LOG.md).
-  await appendDomainEventSafely({
-    streamId: `workflow:${runId}`,
-    type: `workflow.${type.replace(/^workflow\./, "")}`,
-    payload,
-    correlationId: runId,
-  });
-
   let record: WorkflowEventRecord | undefined;
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const tenantId = await resolveWorkflowRunTenantId(runId);
     record = createWorkflowEventRecord(runId, type, payload, tenantId);
-    await getSql()`
-      INSERT INTO omni_workflow_events (id, tenant_id, workflow_run_id, type, payload, created_at)
-      VALUES (${record.id}, ${tenantId}, ${record.workflowRunId}, ${record.type}, ${record.payload}::jsonb, ${record.createdAt})
-    `;
+    const authority = await getWorkflowRunExecutionAuthority(runId, {
+      tenantId,
+    });
+    await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      await sql`
+        INSERT INTO omni_workflow_events (id, tenant_id, workflow_run_id, type, payload, created_at)
+        VALUES (${record!.id}, ${tenantId}, ${record!.workflowRunId}, ${record!.type}, ${record!.payload}::jsonb, ${record!.createdAt})
+      `;
+      await appendWorkflowDomainEvent(
+        record!,
+        payload,
+        tenantId,
+        authority?.executionScope,
+        sql,
+      );
+    });
     return record;
   }
 
@@ -1426,7 +1445,51 @@ export async function appendWorkflowEvent(
     ledger.events.push(record);
     return trimWorkflowLedger(ledger);
   });
+  const tenantId = normalizeTenantId(record?.tenantId);
+  const authority = await getWorkflowRunExecutionAuthority(runId, {
+    tenantId,
+  });
+  try {
+    await appendWorkflowDomainEvent(
+      record as WorkflowEventRecord,
+      payload,
+      tenantId,
+      authority?.executionScope,
+    );
+  } catch (error) {
+    console.warn(
+      "Workflow domain event append failed.",
+      error instanceof Error ? error.message : "Unknown workflow event error.",
+    );
+  }
   return record as WorkflowEventRecord;
+}
+
+async function appendWorkflowDomainEvent(
+  record: WorkflowEventRecord,
+  payload: Record<string, unknown>,
+  tenantId: string,
+  executionScope?: ExecutionScope,
+  sql?: ReturnType<typeof getSql>,
+) {
+  const input = {
+    id: `workflow_domain:${record.id}`,
+    streamId: `workflow:${record.workflowRunId}`,
+    type: `workflow.${record.type.replace(/^workflow\./, "")}`,
+    payload: workflowDomainEventPayloadV1(record.type, payload),
+  };
+  if (executionScope) {
+    await appendScopedDomainEvent({
+      ...input,
+      executionScope,
+    }, sql ? { sql } : {});
+    return;
+  }
+  await appendDomainEvent({
+    ...input,
+    tenantId,
+    correlationId: record.workflowRunId,
+  }, sql ? { sql } : {});
 }
 
 export async function listWorkflowRecoveryEvents(
