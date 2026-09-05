@@ -13,6 +13,9 @@ import {
   completeRunCheckpointResumeClaim,
   heartbeatRunCheckpointResumeClaim,
 } from "@/lib/runs/checkpoint-resume-claim";
+import {
+  RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256,
+} from "@/lib/runs/approval-checkpoint-shadow";
 import type { RunCheckpointWriterSql } from "@/lib/runs/checkpoint-store";
 import {
   buildRunCheckpointV1,
@@ -302,7 +305,114 @@ describe("checkpoint resume claims", () => {
       },
     });
   });
+
+  it("authorizes the approval fence behind a valid zero-effect full-boundary chain", async () => {
+    const [approval, latest] = expandedCheckpointChain();
+    const sql = fakeSql(approval, {
+      authorizeTransition: true,
+      resolveLatest: true,
+      checkpoints: [approval, latest],
+    });
+    const { checkpointId: _checkpointId, checkpointSha256: _digest, ...input } =
+      acquireInput(approval);
+
+    await expect(authorizeLatestAgentRunCheckpointResume(
+      input,
+      sql,
+    )).resolves.toMatchObject({
+      outcome: "authorized",
+      claim: {
+        checkpointId: approval.checkpointId,
+        checkpointSha256: approval.checkpointSha256,
+      },
+    });
+  });
+
+  it("rejects an older approval fence when the expanded chain is not exact", async () => {
+    const [approval, latest] = expandedCheckpointChain();
+    const changedLatest = buildRunCheckpointV1({
+      ...checkpointInput(latest),
+      parent: {
+        ...latest.parent!,
+        checkpointSha256: canonicalJsonSha256("wrong-parent"),
+      },
+    });
+    const sql = fakeSql(approval, { checkpoints: [approval, changedLatest] });
+
+    await expect(acquireRunCheckpointResumeClaim(
+      acquireInput(approval),
+      sql,
+    )).resolves.toMatchObject({
+      outcome: "paused",
+      reason: "checkpoint_not_latest",
+    });
+  });
 });
+
+function expandedCheckpointChain(): [RunCheckpointV1, RunCheckpointV1] {
+  const approval = buildRunCheckpointV1({
+    ...checkpointInput(checkpoint()),
+    sequence: 0,
+    parent: null,
+    enginePin: {
+      ...checkpoint().enginePin,
+      configurationSha256:
+        RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256,
+      rolloutGeneration: 4,
+    },
+  });
+  const latest = buildRunCheckpointV1({
+    ...checkpointInput(approval),
+    boundary: {
+      kind: "model",
+      phase: "before",
+      boundaryId: "model_checkpoint_after_approval",
+      attempt: 2,
+    },
+    sequence: 1,
+    parent: {
+      checkpointId: approval.checkpointId,
+      checkpointSha256: approval.checkpointSha256,
+      sequence: approval.sequence,
+    },
+    stateReferences: approval.stateReferences.concat({
+      kind: "model_turn",
+      referenceId: "model_checkpoint_after_approval",
+      referenceSha256: canonicalJsonSha256("model-after-approval"),
+      versionId: "model_turn_request_v1",
+    }),
+    recordedAt: "2026-09-05T18:00:01.000Z",
+  });
+  return [approval, latest];
+}
+
+function checkpointInput(value: RunCheckpointV1) {
+  return {
+    runId: value.runId,
+    executionScope: SCOPE,
+    boundary: value.boundary,
+    sequence: value.sequence,
+    parent: value.parent,
+    enginePin: value.enginePin,
+    stateReferences: value.stateReferences,
+    toolBinding: value.toolBinding,
+    resourceUsage: {
+      modelCallCount: value.resourceUsage.modelCallCount,
+      modelInputTokenCount: value.resourceUsage.modelInputTokenCount,
+      modelOutputTokenCount: value.resourceUsage.modelOutputTokenCount,
+      cachedInputTokenCount: value.resourceUsage.cachedInputTokenCount,
+      toolCallCount: value.resourceUsage.toolCallCount,
+      toolResultByteCount: value.resourceUsage.toolResultByteCount,
+      externalEffectCount: value.resourceUsage.externalEffectCount,
+      boundaryExternalEffectCount:
+        value.resourceUsage.boundaryExternalEffectCount,
+      elapsedMs: value.resourceUsage.elapsedMs,
+    },
+    lifecycleState: value.lifecycleState,
+    resumeDisposition: value.resumeDisposition,
+    recordedAt: value.recordedAt,
+  };
+}
 
 function acquireInput(value: RunCheckpointV1) {
   return {
@@ -329,6 +439,7 @@ function fakeSql(
     resolveLatest?: boolean;
     toolRiskLevel?: number;
     effectReceipt?: unknown;
+    checkpoints?: RunCheckpointV1[];
   } = {},
 ): RunCheckpointWriterSql {
   const query = async (text: string, params: unknown[] = []) => {
@@ -343,7 +454,9 @@ function fakeSql(
       }];
     }
     if (text.includes("FROM omni_run_checkpoints")) {
-      return [{ checkpoint_json: value }];
+      return (options.checkpoints || [value]).map((checkpoint) => ({
+        checkpoint_json: checkpoint,
+      }));
     }
     if (text.includes("FROM omni_tenant_capability_rollouts")) {
       return [{

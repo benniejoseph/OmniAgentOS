@@ -9,7 +9,11 @@ import {
   decideRunCheckpointCompatibilityV1,
   parseRunCheckpointV1,
   type RunCheckpointV1,
+  validateRunCheckpointSuccessorV1,
 } from "@/lib/runs/checkpoints";
+import {
+  RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256,
+} from "@/lib/runs/approval-checkpoint-shadow";
 import {
   parsePersistedExecutionScope,
   type ExecutionScope,
@@ -67,16 +71,22 @@ export async function authorizeLatestAgentRunCheckpointResume(
   requireTransaction(sql);
   const tenantId = runContractIdSchema.parse(input.tenantId);
   const runId = runContractIdSchema.parse(input.runId);
+  const approvalExecutionId = runContractIdSchema.parse(
+    input.approvalExecutionId,
+  );
   const rows = await sql.query(
     `SELECT checkpoint_id, checkpoint_sha256
      FROM omni_run_checkpoints
      WHERE tenant_id = $1 AND run_id = $2
+       AND checkpoint_json->'boundary'->>'kind' = 'approval'
+       AND checkpoint_json->'boundary'->>'phase' = 'after'
+       AND checkpoint_json->'boundary'->>'boundaryId' = $3
      ORDER BY sequence DESC
-     LIMIT 1
+     LIMIT 2
      FOR SHARE`,
-    [tenantId, runId],
+    [tenantId, runId, approvalExecutionId],
   );
-  if (rows.length === 0) return paused("checkpoint_not_latest");
+  if (rows.length !== 1) return paused("checkpoint_not_latest");
   return authorizeAgentRunCheckpointResume({
     ...input,
     tenantId,
@@ -211,19 +221,32 @@ export async function acquireRunCheckpointResumeClaim(
     `SELECT checkpoint_json
      FROM omni_run_checkpoints
      WHERE tenant_id = $1 AND run_id = $2
-     ORDER BY sequence DESC
-     LIMIT 2
+     ORDER BY sequence ASC
+     LIMIT 257
      FOR SHARE`,
     [tenantId, runId],
   );
-  if (checkpointRows.length === 0) {
+  if (checkpointRows.length === 0 || checkpointRows.length > 256) {
     return paused("checkpoint_not_latest");
   }
-  const checkpoint = parseRunCheckpointV1(checkpointRows[0]?.checkpoint_json);
+  const checkpoints = checkpointRows.map((row) =>
+    parseRunCheckpointV1(row?.checkpoint_json)
+  );
+  const checkpoint = checkpoints.find((candidate) =>
+    candidate.checkpointId === checkpointId &&
+    candidate.checkpointSha256 === checkpointSha256
+  );
+  const latestCheckpoint = checkpoints.at(-1);
   if (
-    checkpoint.checkpointId !== checkpointId ||
-    checkpoint.checkpointSha256 !== checkpointSha256 ||
+    !checkpoint ||
+    !latestCheckpoint ||
     checkpoint.boundary.boundaryId !== approvalExecutionId
+  ) {
+    return paused("checkpoint_not_latest");
+  }
+  if (
+    checkpoint.checkpointId !== latestCheckpoint.checkpointId &&
+    !isValidExpandedCanaryResumeChain(checkpoints, checkpoint)
   ) {
     return paused("checkpoint_not_latest");
   }
@@ -474,6 +497,52 @@ export async function completeRunCheckpointResumeClaim(
   );
   if (rows.length !== 1) return false;
   await appendClaimEvent("completed", checkpoint, input, executionScope, sql);
+  return true;
+}
+
+function isValidExpandedCanaryResumeChain(
+  checkpoints: readonly RunCheckpointV1[],
+  resumeCheckpoint: RunCheckpointV1,
+): boolean {
+  const first = checkpoints[0];
+  const latest = checkpoints.at(-1);
+  const resumeIndex = checkpoints.findIndex(
+    (checkpoint) => checkpoint.checkpointId === resumeCheckpoint.checkpointId,
+  );
+  if (
+    !first ||
+    !latest ||
+    resumeIndex < 0 ||
+    resumeIndex === checkpoints.length - 1 ||
+    first.sequence !== 0 ||
+    first.parent !== null ||
+    resumeCheckpoint.enginePin.rolloutMode !== "canary" ||
+    resumeCheckpoint.enginePin.configurationSha256 !==
+      RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256 ||
+    latest.lifecycleState !== "active" ||
+    latest.resumeDisposition !== "resumable"
+  ) {
+    return false;
+  }
+  if (checkpoints.some((checkpoint) =>
+    checkpoint.enginePin.rolloutMode !== "canary" ||
+    checkpoint.enginePin.configurationSha256 !==
+      RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256 ||
+    checkpoint.resourceUsage.externalEffectCount !== 0 ||
+    checkpoint.resourceUsage.boundaryExternalEffectCount !== 0
+  )) {
+    return false;
+  }
+  try {
+    for (let index = 1; index < checkpoints.length; index += 1) {
+      validateRunCheckpointSuccessorV1(
+        checkpoints[index - 1],
+        checkpoints[index],
+      );
+    }
+  } catch {
+    return false;
+  }
   return true;
 }
 
