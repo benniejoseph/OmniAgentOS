@@ -25,6 +25,11 @@ import {
   parseEffectReceiptV1,
   type EffectReceiptV1,
 } from "@/lib/tools/effect-receipt";
+import {
+  buildEffectIntentV2EventPayload,
+  parseEffectIntentV2,
+  type EffectIntentV2,
+} from "@/lib/tools/effect-intent-v2";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
 import {
   approvalSha256,
@@ -51,6 +56,10 @@ export type IdempotentToolExecutionClaimResult = {
   record: ToolExecutionRecord;
 };
 
+const EFFECT_INTENT_V2_OUTPUT_KEY = "__effectIntentV2";
+const APPROVAL_MATERIAL_BINDING_OUTPUT_KEY =
+  "__approvalMaterialBindingSha256";
+
 export function createToolExecutionRecord(
   input: Omit<ToolExecutionRecord, "id" | "createdAt">,
 ): ToolExecutionRecord {
@@ -75,7 +84,10 @@ export async function saveToolExecution(record: ToolExecutionRecord) {
 
   await updateJsonFile<ToolExecutionLedger>(getToolLedgerFile(), { records: [] }, (ledger) => {
     const existing = ledger.records.find((item) => item.id === record.id);
-    const nextRecord = preserveImmutableEffectReceipt(existing, record);
+    const nextRecord = preserveImmutableEffectReceipt(
+      existing,
+      preserveImmutableEffectIntentV2(existing, record),
+    );
     return {
       records: trimToolExecutionRecords([
         nextRecord,
@@ -396,8 +408,15 @@ export async function completeClaimedToolExecution(
           executionScope: options.executionScope,
         });
       }
-      await writeToolExecutionDb(sql, record, {
+      const hasEffectIntentV2 = Boolean(
+        parseObject(current.output)[EFFECT_INTENT_V2_OUTPUT_KEY],
+      );
+      const durableRecord = preserveImmutableEffectIntentV2(current, record, {
+        persistEffectIntentV2: hasEffectIntentV2,
+      });
+      await writeToolExecutionDb(sql, durableRecord, {
         finalizeEffectReceipt: Boolean(effectReceipt),
+        persistEffectIntentV2: hasEffectIntentV2,
       });
       if (effectReceipt && options.executionScope) {
         await appendToolEffectReceiptEvent(
@@ -406,7 +425,7 @@ export async function completeClaimedToolExecution(
           sql,
         );
       }
-      return record;
+      return durableRecord;
     }) as Promise<ToolExecutionRecord | undefined>;
   }
 
@@ -426,9 +445,16 @@ export async function completeClaimedToolExecution(
         executionScope: options.executionScope,
       });
     }
-    completed = preserveImmutableEffectReceipt(current, record, {
-      finalizeEffectReceipt: Boolean(effectReceipt),
-    });
+    const hasEffectIntentV2 = Boolean(
+      parseObject(current.output)[EFFECT_INTENT_V2_OUTPUT_KEY],
+    );
+    completed = preserveImmutableEffectReceipt(
+      current,
+      preserveImmutableEffectIntentV2(current, record, {
+        persistEffectIntentV2: hasEffectIntentV2,
+      }),
+      { finalizeEffectReceipt: Boolean(effectReceipt) },
+    );
     return replaceLedgerRecord(ledger, completed);
   });
   if (completed && effectReceipt && options.executionScope) {
@@ -450,10 +476,20 @@ export function sealToolExecutionInput(
     "id" | "tenantId" | "actorId" | "toolId" | "riskLevel"
   >,
   approvalFingerprint: string,
+  options: { approvalMaterialBindingSha256?: string } = {},
 ) {
+  const approvalMaterialBinding = options.approvalMaterialBindingSha256;
+  if (approvalMaterialBinding !== undefined && !isSha256(approvalMaterialBinding)) {
+    throw new Error(
+      "Approval material bindings require a canonical lowercase SHA-256 digest.",
+    );
+  }
   return {
     __approvalFingerprint: approvalFingerprint,
     __sealedInput: sealJsonPayload(input, toolExecutionInputBinding(record)),
+    ...(approvalMaterialBinding
+      ? { [APPROVAL_MATERIAL_BINDING_OUTPUT_KEY]: approvalMaterialBinding }
+      : {}),
   };
 }
 
@@ -473,6 +509,85 @@ export function getToolExecutionApprovalFingerprint(
 ) {
   const value = parseObject(record.output).__approvalFingerprint;
   return typeof value === "string" ? value : undefined;
+}
+
+export function getToolExecutionEffectIntentV2(
+  record: ToolExecutionRecord,
+): EffectIntentV2 | undefined {
+  const value = parseObject(record.output)[EFFECT_INTENT_V2_OUTPUT_KEY];
+  if (value === undefined) return undefined;
+  const intent = parseEffectIntentV2(value);
+  assertEffectIntentV2RecordBinding(record, intent);
+  return intent;
+}
+
+export async function persistClaimedToolEffectIntentV2(input: {
+  recordId: string;
+  tenantId: string;
+  claimToken: string;
+  intent: EffectIntentV2;
+  executionScope: ExecutionScope;
+}): Promise<ToolExecutionRecord | undefined> {
+  const tenantId = normalizeTenantId(input.tenantId);
+  assertExecutionScopeTenant(input.executionScope, tenantId);
+  const intent = parseEffectIntentV2(input.intent);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: SqlClient) => {
+      const rows = await sql`
+        SELECT *
+        FROM omni_tool_executions
+        WHERE id = ${input.recordId}
+          AND COALESCE(tenant_id, 'default') = ${tenantId}
+        FOR UPDATE
+      `;
+      const current = rows[0] ? recordFromRow(rows[0]) : undefined;
+      if (!current || !hasExecutionClaim(current, input.claimToken)) {
+        return undefined;
+      }
+      const next = bindEffectIntentV2ToClaimedRecord(
+        current,
+        intent,
+        input.executionScope,
+      );
+      await writeToolExecutionDb(sql, next, { persistEffectIntentV2: true });
+      await appendToolEffectIntentV2Event(intent, input.executionScope, sql);
+      return next;
+    }) as Promise<ToolExecutionRecord | undefined>;
+  }
+
+  let persisted: ToolExecutionRecord | undefined;
+  await updateJsonFile<ToolExecutionLedger>(
+    getToolLedgerFile(),
+    { records: [] },
+    (ledger) => {
+      const current = ledger.records.find(
+        (record) =>
+          record.id === input.recordId &&
+          normalizeTenantId(record.tenantId) === tenantId,
+      );
+      if (!current || !hasExecutionClaim(current, input.claimToken)) {
+        return ledger;
+      }
+      persisted = bindEffectIntentV2ToClaimedRecord(
+        current,
+        intent,
+        input.executionScope,
+      );
+      return replaceLedgerRecord(ledger, persisted);
+    },
+  );
+  if (persisted) {
+    try {
+      await appendToolEffectIntentV2Event(intent, input.executionScope);
+    } catch {
+      // File mode cannot atomically update two ledgers. The authoritative
+      // private intent is already durable and a same-key retry repairs the event.
+      console.error("Tool effect-intent event append failed in file mode.");
+    }
+  }
+  return persisted;
 }
 
 function toolExecutionInputBinding(
@@ -641,14 +756,17 @@ export async function recoverStaleToolExecutionClaims(
         WHERE status = 'executing'
           AND COALESCE(tenant_id, 'default') = ${tenantId}
           AND NOT (
-            tool_id = 'memory.write'
-            AND NOT dry_run
-            AND (
+            output ? ${EFFECT_INTENT_V2_OUTPUT_KEY}
+            OR (
+              tool_id = 'memory.write'
+              AND NOT dry_run
+              AND (
               output ? '__effectIdempotencyKeySha256'
               OR output ? '__effectInputSha256'
               OR output ? '__effectPlanSha256'
               OR output ? '__effectTargetId'
               OR output ? '__effectToolContractSha256'
+              )
             )
           )
           AND NOT (
@@ -934,6 +1052,8 @@ export function publicToolExecution(record: ToolExecutionRecord) {
     delete publicOutput.__executionClaim;
     delete publicOutput.__approvalFingerprint;
     delete publicOutput.__sealedInput;
+    delete publicOutput[APPROVAL_MATERIAL_BINDING_OUTPUT_KEY];
+    delete publicOutput[EFFECT_INTENT_V2_OUTPUT_KEY];
     delete publicOutput.__idempotencyKeyHash;
     delete publicOutput.__effectIdempotencyKeySha256;
     delete publicOutput.__effectInputSha256;
@@ -1135,6 +1255,119 @@ async function appendToolEffectReceiptEvent(
   }, sql ? { sql } : {});
 }
 
+async function appendToolEffectIntentV2Event(
+  intentValue: EffectIntentV2,
+  executionScope: ExecutionScope,
+  sql?: SqlClient,
+) {
+  const intent = parseEffectIntentV2(intentValue);
+  assertEffectIntentV2ScopeBinding(intent, executionScope);
+  await appendScopedDomainEvent({
+    id: `tool.effect_intent:${intent.effectIntentId}`,
+    streamId: `tool_execution:${intent.executionId}`,
+    type: "tool.effect_intent.recorded",
+    executionScope,
+    payload: buildEffectIntentV2EventPayload(intent),
+  }, sql ? { sql } : {});
+}
+
+function bindEffectIntentV2ToClaimedRecord(
+  record: ToolExecutionRecord,
+  intent: EffectIntentV2,
+  executionScope: ExecutionScope,
+) {
+  if (record.status !== "executing" || record.dryRun) {
+    throw new Error("Effect intent requires a claimed live tool execution.");
+  }
+  assertEffectIntentV2RecordBinding(record, intent);
+  assertEffectIntentV2ScopeBinding(intent, executionScope);
+  const output = parseObject(record.output);
+  const existingValue = output[EFFECT_INTENT_V2_OUTPUT_KEY];
+  if (existingValue !== undefined) {
+    const existing = parseEffectIntentV2(existingValue);
+    if (existing.effectIntentSha256 !== intent.effectIntentSha256) {
+      throw new Error("A persisted effect intent is immutable.");
+    }
+    return record;
+  }
+  return {
+    ...record,
+    output: {
+      ...output,
+      [EFFECT_INTENT_V2_OUTPUT_KEY]: intent,
+    },
+  } satisfies ToolExecutionRecord;
+}
+
+function assertEffectIntentV2RecordBinding(
+  record: ToolExecutionRecord,
+  intent: EffectIntentV2,
+) {
+  const output = parseObject(record.output);
+  const approvalMaterialBinding =
+    output[APPROVAL_MATERIAL_BINDING_OUTPUT_KEY];
+  const approvalFingerprint = getToolExecutionApprovalFingerprint(record);
+  const expectedToolContractSha256 = approvalFingerprint
+    ? canonicalJsonSha256({ approvalFingerprint })
+    : undefined;
+  if (
+    record.id !== intent.executionId ||
+    normalizeTenantId(record.tenantId) !== intent.tenantId ||
+    record.actorId !== intent.actorId ||
+    record.toolId !== intent.toolId ||
+    record.dryRun ||
+    toolInputSha256(record.input) !== intent.inputSha256
+  ) {
+    throw new Error(
+      "Effect intent does not match the claimed live tool execution.",
+    );
+  }
+  if (expectedToolContractSha256 !== intent.toolContractSha256) {
+    throw new Error(
+      "Effect-intent tool contract does not match the approved execution contract.",
+    );
+  }
+  if (record.approvalRequired) {
+    if (
+      record.approvalDecision !== "approved" ||
+      !record.approvedBy?.trim() ||
+      !record.approvedAt ||
+      intent.approvalState !== "approved" ||
+      !isSha256(approvalMaterialBinding) ||
+      approvalMaterialBinding !== intent.approvalBindingSha256
+    ) {
+      throw new Error(
+        "Effect intent does not match the exact approved material binding.",
+      );
+    }
+  } else if (
+    intent.approvalState !== "not_required" ||
+    intent.approvalBindingSha256 !== null
+  ) {
+    throw new Error(
+      "Effect intent approval metadata does not match the execution policy.",
+    );
+  }
+}
+
+function assertEffectIntentV2ScopeBinding(
+  intent: EffectIntentV2,
+  executionScope: ExecutionScope,
+) {
+  if (
+    !executionScope.initiatingActorId ||
+    !executionScope.executingPrincipalId ||
+    executionScope.tenantId !== intent.tenantId ||
+    executionScope.initiatingActorId !== intent.actorId ||
+    executionScope.executingPrincipalType !== intent.executingPrincipalType ||
+    executionScope.executingPrincipalId !== intent.executingPrincipalId
+  ) {
+    throw new Error(
+      "Effect intent does not match the authorized execution scope.",
+    );
+  }
+}
+
 function exactToolApprovalMutation(
   value: ToolApprovalMutationContext,
   tenantId: string,
@@ -1297,6 +1530,8 @@ function applyApprovalClaim(
   const internalOutput = parseObject(record.output);
   const sealedInput = internalOutput.__sealedInput;
   const approvalFingerprint = internalOutput.__approvalFingerprint;
+  const approvalMaterialBinding =
+    internalOutput[APPROVAL_MATERIAL_BINDING_OUTPUT_KEY];
   return {
     outcome: "claimed",
     record: {
@@ -1313,6 +1548,12 @@ function applyApprovalClaim(
           ? { __approvalFingerprint: approvalFingerprint }
           : {}),
         ...(sealedInput ? { __sealedInput: sealedInput } : {}),
+        ...(approvalMaterialBinding
+          ? {
+              [APPROVAL_MATERIAL_BINDING_OUTPUT_KEY]:
+                approvalMaterialBinding,
+            }
+          : {}),
         __executionClaim: {
           token: input.claimToken,
           claimedAt: now,
@@ -1404,16 +1645,16 @@ function effectExecutionIntentBindingFrom(
 
 function isEffectBoundExecutionIntent(record: ToolExecutionRecord) {
   const output = parseObject(record.output);
-  return record.toolId === "memory.write" &&
-    record.status === "executing" &&
+  return record.status === "executing" &&
     !record.dryRun &&
-    [
+    (Object.hasOwn(output, EFFECT_INTENT_V2_OUTPUT_KEY) ||
+      (record.toolId === "memory.write" && [
       "__effectIdempotencyKeySha256",
       "__effectInputSha256",
       "__effectPlanSha256",
       "__effectTargetId",
       "__effectToolContractSha256",
-    ].some((key) => Object.hasOwn(output, key));
+      ].some((key) => Object.hasOwn(output, key))));
 }
 
 function reclaimStaleEffectExecutionRecord(
@@ -1601,6 +1842,60 @@ function preserveImmutableEffectReceipt(
   return { ...next, effectReceipt: existingReceipt };
 }
 
+function preserveImmutableEffectIntentV2(
+  existing: ToolExecutionRecord | undefined,
+  next: ToolExecutionRecord,
+  options: { persistEffectIntentV2?: boolean } = {},
+) {
+  const existingValue = existing
+    ? parseObject(existing.output)[EFFECT_INTENT_V2_OUTPUT_KEY]
+    : undefined;
+  const nextValue = parseObject(next.output)[EFFECT_INTENT_V2_OUTPUT_KEY];
+  const existingIntent = existingValue === undefined
+    ? undefined
+    : parseEffectIntentV2(existingValue);
+  const nextIntent = nextValue === undefined
+    ? undefined
+    : parseEffectIntentV2(nextValue);
+  if (nextIntent && !options.persistEffectIntentV2) {
+    throw new Error(
+      "Effect intents may only be attached through the claimed-intent barrier.",
+    );
+  }
+  if (!existingIntent) return next;
+  if (!options.persistEffectIntentV2) {
+    throw new Error("A persisted effect intent cannot be erased or replaced.");
+  }
+  if (
+    nextIntent &&
+    nextIntent.effectIntentSha256 !== existingIntent.effectIntentSha256
+  ) {
+    throw new Error("A persisted effect intent is immutable.");
+  }
+  const existingOutput = parseObject(existing?.output);
+  const approvalFingerprint = existingOutput.__approvalFingerprint;
+  const approvalMaterialBinding =
+    existingOutput[APPROVAL_MATERIAL_BINDING_OUTPUT_KEY];
+  const durable = {
+    ...next,
+    output: {
+      ...parseObject(next.output),
+      ...(approvalFingerprint
+        ? { __approvalFingerprint: approvalFingerprint }
+        : {}),
+      ...(approvalMaterialBinding
+        ? {
+            [APPROVAL_MATERIAL_BINDING_OUTPUT_KEY]:
+              approvalMaterialBinding,
+          }
+        : {}),
+      [EFFECT_INTENT_V2_OUTPUT_KEY]: existingIntent,
+    },
+  } satisfies ToolExecutionRecord;
+  assertEffectIntentV2RecordBinding(durable, existingIntent);
+  return durable;
+}
+
 function trimToolExecutionRecords(records: ToolExecutionRecord[]) {
   const durable = records.filter(
     (record) => record.status === "approval_required" || record.status === "executing",
@@ -1614,12 +1909,24 @@ function trimToolExecutionRecords(records: ToolExecutionRecord[]) {
 async function writeToolExecutionDb(
   sql: SqlClient,
   record: ToolExecutionRecord,
-  options: { finalizeEffectReceipt?: boolean } = {},
+  options: {
+    finalizeEffectReceipt?: boolean;
+    persistEffectIntentV2?: boolean;
+  } = {},
 ) {
   const effectReceipt = parseRecordEffectReceipt(record);
+  const effectIntentValue = parseObject(record.output)[EFFECT_INTENT_V2_OUTPUT_KEY];
+  if (effectIntentValue !== undefined) {
+    parseEffectIntentV2(effectIntentValue);
+  }
   if (effectReceipt && !options.finalizeEffectReceipt) {
     throw new Error(
       "A generic tool-execution write cannot attach an effect receipt.",
+    );
+  }
+  if (effectIntentValue !== undefined && !options.persistEffectIntentV2) {
+    throw new Error(
+      "Effect intents may only be attached through the claimed-intent barrier.",
     );
   }
   const rows = await sql`
@@ -1661,19 +1968,29 @@ async function writeToolExecutionDb(
         ELSE omni_tool_executions.effect_receipt
       END,
       completed_at = EXCLUDED.completed_at
-    WHERE omni_tool_executions.effect_receipt IS NULL
-      OR (
-        ${options.finalizeEffectReceipt === true}
-        AND
-        EXCLUDED.status = 'executed'
-        AND NOT EXCLUDED.dry_run
-        AND omni_tool_executions.effect_receipt = EXCLUDED.effect_receipt
+    WHERE (
+        omni_tool_executions.effect_receipt IS NULL
+        OR (
+          ${options.finalizeEffectReceipt === true}
+          AND
+          EXCLUDED.status = 'executed'
+          AND NOT EXCLUDED.dry_run
+          AND omni_tool_executions.effect_receipt = EXCLUDED.effect_receipt
+        )
+      )
+      AND (
+        NOT (COALESCE(omni_tool_executions.output, '{}'::jsonb) ? ${EFFECT_INTENT_V2_OUTPUT_KEY})
+        OR (
+          ${options.persistEffectIntentV2 === true}
+          AND COALESCE(EXCLUDED.output, '{}'::jsonb) -> ${EFFECT_INTENT_V2_OUTPUT_KEY}
+            = COALESCE(omni_tool_executions.output, '{}'::jsonb) -> ${EFFECT_INTENT_V2_OUTPUT_KEY}
+        )
       )
     RETURNING id
   `;
   if (!rows[0]) {
     throw new Error(
-      "The tool-execution update would replace, erase, or invalidate an immutable effect receipt.",
+      "The tool-execution update would replace, erase, or invalidate immutable effect evidence.",
     );
   }
 }

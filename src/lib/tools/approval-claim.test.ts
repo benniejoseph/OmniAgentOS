@@ -7,6 +7,10 @@ import { getDataPath } from "@/lib/storage/paths";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
 import { listStreamEvents } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { approvalMaterialBindingSha256 } from "@/lib/tools/approval-binding";
+import { buildEffectIntentV2 } from "@/lib/tools/effect-intent-v2";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { toolInputSha256 } from "@/lib/tools/execution-scope";
 
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(path.join(tmpdir(), "omni-approval-"));
@@ -319,6 +323,122 @@ describe("tool approval claims (file mode)", () => {
       __executionClaim: { token: "replacement-effect-token" },
       ...effectBinding,
     });
+  });
+
+  it("durably binds a generic effect intent before provider execution", async () => {
+    const store = await import("@/lib/tools/audit-store");
+    const claimToken = "generic-effect-claim";
+    const approvalFingerprint = "reviewed-http-post-contract";
+    const targetSha256 = "6".repeat(64);
+    const approvalBindingSha256 = approvalMaterialBindingSha256({
+      targetSha256,
+      inputSha256: toolInputSha256(
+        pendingRecord("generic-effect", 2).input,
+      ),
+    });
+    const base = pendingRecord("generic-effect", 2);
+    const claimed: ToolExecutionRecord = {
+      ...base,
+      status: "executing",
+      approvalDecision: "approved",
+      approvedBy: "admin-a",
+      approvedAt: new Date().toISOString(),
+      output: {
+        ...store.sealToolExecutionInput(
+          base.input,
+          base,
+          approvalFingerprint,
+          { approvalMaterialBindingSha256: approvalBindingSha256 },
+        ),
+        __executionClaim: {
+          token: claimToken,
+          claimedAt: new Date().toISOString(),
+        },
+      },
+    };
+    await store.saveToolExecution(claimed);
+    const scope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "requester",
+      executingPrincipalType: "user",
+      executingPrincipalId: "requester",
+      correlationId: "generic-effect-request",
+      causationId: claimed.id,
+      purpose: "tool.effect.execute",
+    });
+    const effectIntentInput = {
+      effectMode: "live",
+      reversible: false,
+      executionKind: "direct",
+      executionId: claimed.id,
+      tenantId: "tenant-a",
+      actorId: "requester",
+      executingPrincipalType: "user",
+      executingPrincipalId: "requester",
+      workflowRunId: null,
+      planId: null,
+      planSha256: null,
+      planNodeId: null,
+      toolId: claimed.toolId,
+      toolContractSha256: canonicalJsonSha256({ approvalFingerprint }),
+      approvalState: "approved",
+      approvalBindingSha256,
+      inputSha256: toolInputSha256(claimed.input),
+      idempotencyKeySha256: "7".repeat(64),
+      targetType: "http_endpoint",
+      targetId: "http_target:generic-effect",
+      expectedTargetStateSha256: "8".repeat(64),
+    } as const;
+    const intent = buildEffectIntentV2(effectIntentInput);
+
+    const persisted = await store.persistClaimedToolEffectIntentV2({
+      recordId: claimed.id,
+      tenantId: "tenant-a",
+      claimToken,
+      intent,
+      executionScope: scope,
+    });
+    expect(store.getToolExecutionEffectIntentV2(persisted!)).toEqual(intent);
+    expect(store.publicToolExecution(persisted!).output).toEqual({});
+    await expect(store.recoverStaleToolExecutionClaim(claimed.id, {
+      tenantId: "tenant-a",
+      staleAfterMs: 60_000,
+    })).resolves.toBeUndefined();
+
+    await expect(store.persistClaimedToolEffectIntentV2({
+      recordId: claimed.id,
+      tenantId: "tenant-a",
+      claimToken,
+      intent: buildEffectIntentV2({
+        ...effectIntentInput,
+        targetId: "http_target:changed",
+      }),
+      executionScope: scope,
+    })).rejects.toThrow(/immutable/i);
+
+    const completed = await store.completeClaimedToolExecution({
+      ...persisted!,
+      status: "executed",
+      output: { ok: true },
+      completedAt: new Date().toISOString(),
+    }, claimToken);
+    expect(store.getToolExecutionEffectIntentV2(completed!)).toEqual(intent);
+    expect(store.publicToolExecution(completed!).output).toEqual({ ok: true });
+
+    const events = await listStreamEvents(`tool_execution:${claimed.id}`, {
+      tenantId: "tenant-a",
+      actorId: "requester",
+    });
+    expect(events).toEqual([
+      expect.objectContaining({
+        id: `tool.effect_intent:${intent.effectIntentId}`,
+        type: "tool.effect_intent.recorded",
+        payload: expect.objectContaining({
+          effectIntentId: intent.effectIntentId,
+          effectIntentSha256: intent.effectIntentSha256,
+        }),
+      }),
+    ]);
   });
 
   it("does not honor an approval record without a durable claim", async () => {

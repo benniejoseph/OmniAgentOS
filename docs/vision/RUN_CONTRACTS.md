@@ -203,10 +203,14 @@ state bindings without provider outcome fields. Its ID and body digest are
 deterministic. Finalization accepts only provider acknowledgement and
 read-after-write evidence, re-parses the persisted intent, and copies every
 material binding into the receipt; a caller cannot replace a target, input,
-approval, or plan during finalization. Persistence and executor activation
-remain separate gates. Its compact event projection carries only the exact
-allowlisted IDs, hashes, booleans, and enums needed to audit that pre-effect
-binding; it contains no provider outcome or raw input.
+approval, or plan during finalization. The tool audit store can now attach the
+intent only to the matching live execution claim, preserve it immutably on the
+private record, and append its scoped event in the same database transaction.
+File mode documents its non-atomic event boundary and repairs by deterministic
+event ID. Stale recovery will not replay an intent-bound effect. Executor and
+provider-adapter activation remain separate gates. The compact event projection
+carries only the exact allowlisted IDs, hashes, booleans, and enums needed to
+audit that pre-effect binding; it contains no provider outcome or raw input.
 
 ## Event payloads
 
