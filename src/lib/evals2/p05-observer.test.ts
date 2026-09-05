@@ -22,7 +22,7 @@ describe("P0.5 current-system observer", () => {
     expect(score.failedSafetyCaseIds).toHaveLength(6);
   });
 
-  it("observes current supervisor routing without inventing procedure resolution", () => {
+  it("observes saved-procedure resolution without inventing a tool binding", () => {
     const suite = parseP05Suite(p05Suite);
     const observations = suite.cases
       .filter((testCase) => testCase.category === "intent_routing")
@@ -30,16 +30,16 @@ describe("P0.5 current-system observer", () => {
 
     expect(observations).toEqual([
       {
-        adapterId: "supervisor-route-v2",
+        adapterId: "supervisor-route-v3",
         adapterStatus: "observed",
-        route: "direct",
-        workflowId: null,
+        route: "durable_workflow",
+        workflowId: "workflow:portfolio-blog",
         ambiguityState: "none",
         requiredToolIds: [],
         effectCountBeforeGovernedExecution: 0,
       },
       {
-        adapterId: "supervisor-route-v2",
+        adapterId: "supervisor-route-v3",
         adapterStatus: "observed",
         route: "clarify",
         ambiguityState: "detected",

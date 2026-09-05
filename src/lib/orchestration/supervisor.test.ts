@@ -4,6 +4,7 @@ import {
   analyzeAgentRequestAmbiguity,
   applySupervisorStrategy,
   compileThreadContext,
+  resolveKnownProcedure,
   routeAgentRequest,
 } from "@/lib/orchestration/supervisor";
 import type { ThreadTurnRecord } from "@/lib/threads/types";
@@ -38,6 +39,52 @@ describe("supervisor routing", () => {
 
   it("still routes explicitly recurring automation durably", () => {
     expect(routeAgentRequest("Run the GitHub workflow every week.", "orchestrate").route).toBe("durable_workflow");
+  });
+
+  it("binds an exact saved-procedure alias to its canonical workflow", () => {
+    const decision = routeAgentRequest(
+      "Run my portfolio blog automation.",
+      "orchestrate",
+      undefined,
+      [{
+        id: "workflow:portfolio-blog",
+        aliases: ["portfolio blog automation", "generate blog post"],
+        requiredToolIds: [],
+      }],
+    );
+
+    expect(decision).toMatchObject({
+      route: "durable_workflow",
+      ambiguity: { state: "none" },
+      procedure: {
+        workflowId: "workflow:portfolio-blog",
+        matchedAlias: "portfolio blog automation",
+        requiredToolIds: [],
+      },
+    });
+  });
+
+  it("clarifies saved-procedure alias collisions and does not accept partial words", () => {
+    const collision = routeAgentRequest(
+      "Run my publishing automation.",
+      "orchestrate",
+      undefined,
+      [
+        { id: "workflow:one", aliases: ["publishing automation"], requiredToolIds: [] },
+        { id: "workflow:two", aliases: ["publishing automation"], requiredToolIds: [] },
+      ],
+    );
+    expect(collision).toMatchObject({
+      route: "clarify",
+      ambiguity: { state: "detected", reasonCode: "ambiguous_known_procedure" },
+    });
+    expect(applySupervisorStrategy(collision, "direct").route).toBe("clarify");
+
+    expect(resolveKnownProcedure("Run my portfolio automation", [{
+      id: "workflow:partial",
+      aliases: ["port"],
+      requiredToolIds: [],
+    }])).toEqual({ state: "none" });
   });
 
   it("fails closed when a destructive request has an ambiguous target", () => {
