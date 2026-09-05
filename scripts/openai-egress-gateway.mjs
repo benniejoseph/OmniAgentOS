@@ -7,6 +7,11 @@ const MEBIBYTE = 1024 * 1024;
 const DEFAULT_PORT = 8080;
 const DEFAULT_CONCURRENCY = 8;
 const DEFAULT_SHUTDOWN_GRACE_MS = 280_000;
+const DEFAULT_OPENAI_UPSTREAM_HOST = "api.openai.com";
+const OPENAI_UPSTREAM_REGIONS = new Map([
+  ["api.openai.com", "global"],
+  ["us.api.openai.com", "us"],
+]);
 const TOKEN_PATTERN = /^[A-Za-z0-9._~-]{32,256}$/;
 const MODEL_PATH_PATTERN = /^\/v1\/models\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const upstreamAgent = new Agent({
@@ -66,7 +71,7 @@ class ClientClosedError extends Error {
 
 /**
  * Starts the authenticated OpenAI egress transport. Production always uses the
- * fixed api.openai.com origin; upstreamRequest is injectable only so tests can
+ * allowlisted OpenAI origin; upstreamRequest is injectable only so tests can
  * exercise byte-for-byte streaming without external network calls.
  */
 export async function startOpenAIEgressGateway(options = {}) {
@@ -97,6 +102,10 @@ export async function startOpenAIEgressGateway(options = {}) {
     digestToken(token),
     ...(previousToken ? [digestToken(previousToken)] : []),
   ];
+  const upstreamHostname = normalizeOpenAIUpstreamHost(
+    options.upstreamHostname ?? process.env.OMNIAGENT_OPENAI_UPSTREAM_HOST,
+  );
+  const upstreamRegion = OPENAI_UPSTREAM_REGIONS.get(upstreamHostname);
 
   const host = options.host || "0.0.0.0";
   const port = boundedInteger(
@@ -222,6 +231,7 @@ export async function startOpenAIEgressGateway(options = {}) {
         authorization,
         requestId,
         requestUpstream,
+        upstreamHostname,
         agent,
         logger,
         liveUpstreams,
@@ -247,6 +257,7 @@ export async function startOpenAIEgressGateway(options = {}) {
     host,
     port: address && typeof address === "object" ? address.port : port,
     maxConcurrency,
+    upstreamRegion,
     region: safeRuntimeValue(process.env.FLY_REGION),
     revision: safeRuntimeValue(process.env.OMNIAGENT_RELEASE_SHA),
   });
@@ -311,6 +322,7 @@ function proxyToOpenAI({
   authorization,
   requestId,
   requestUpstream,
+  upstreamHostname,
   agent,
   logger,
   liveUpstreams,
@@ -369,7 +381,7 @@ function proxyToOpenAI({
       upstream = requestUpstream(
         {
           protocol: "https:",
-          hostname: "api.openai.com",
+          hostname: upstreamHostname,
           port: 443,
           method: route.method,
           path: route.path,
@@ -635,6 +647,16 @@ function safeHeaderValue(value) {
 function safeRuntimeValue(value) {
   const normalized = String(value || "unknown").trim();
   return /^[A-Za-z0-9._:-]{1,160}$/.test(normalized) ? normalized : "unknown";
+}
+
+function normalizeOpenAIUpstreamHost(value) {
+  const hostname = String(value || DEFAULT_OPENAI_UPSTREAM_HOST).trim().toLowerCase();
+  if (!OPENAI_UPSTREAM_REGIONS.has(hostname)) {
+    throw new Error(
+      "OMNIAGENT_OPENAI_UPSTREAM_HOST must be api.openai.com or us.api.openai.com.",
+    );
+  }
+  return hostname;
 }
 
 function boundedInteger(value, fallback, minimum, maximum) {

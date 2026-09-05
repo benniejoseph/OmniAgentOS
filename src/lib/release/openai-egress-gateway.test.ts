@@ -79,7 +79,7 @@ describe("Fly OpenAI egress gateway", () => {
     expect(upstreamRequests).toBe(0);
   });
 
-  it("forwards only governed headers to the fixed OpenAI origin", async () => {
+  it("forwards only governed headers to the default allowlisted OpenAI origin", async () => {
     let receivedHeaders: IncomingHttpHeaders = {};
     let receivedBody = "";
     const observations: RequestOptions[] = [];
@@ -121,6 +121,28 @@ describe("Fly OpenAI egress gateway", () => {
     expect(receivedHeaders.cookie).toBeUndefined();
     expect(receivedHeaders["x-forwarded-for"]).toBeUndefined();
     expect(receivedBody).toContain("private prompt");
+  });
+
+  it("supports the allowlisted US OpenAI origin", async () => {
+    const observations: RequestOptions[] = [];
+    const upstream = await startServer(async (request, response) => {
+      for await (const chunk of request) void chunk;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"data":[]}');
+    });
+    const gateway = await startGateway(upstream.baseUrl, {
+      observations,
+      upstreamHostname: "us.api.openai.com",
+    });
+
+    const response = await fetch(`${gateway.baseUrl}/v1/embeddings`, {
+      method: "POST",
+      headers: gatewayHeaders(),
+      body: "{}",
+    });
+
+    expect(response.status).toBe(200);
+    expect(observations[0]?.hostname).toBe("us.api.openai.com");
   });
 
   it("accepts primary and previous tokens during a bounded rotation overlap", async () => {
@@ -322,6 +344,16 @@ describe("Fly OpenAI egress gateway", () => {
   it("rejects weak deployment tokens before binding a port", async () => {
     await expect(startOpenAIEgressGateway({ token: "too-short", port: 0 })).rejects.toThrow(
       "32-256 URL-safe characters",
+    );
+  });
+
+  it("rejects an arbitrary OpenAI upstream before binding a port", async () => {
+    await expect(startOpenAIEgressGateway({
+      token: gatewayToken,
+      upstreamHostname: "openai.example.com",
+      port: 0,
+    })).rejects.toThrow(
+      "OMNIAGENT_OPENAI_UPSTREAM_HOST must be api.openai.com or us.api.openai.com",
     );
   });
 
