@@ -1761,7 +1761,11 @@ calling canonical user's independently scoped private results into an
 ephemeral context pack; any request that enters that scope suppresses the
 tenant-wide retrieval trace because traces do not yet have an actor-aware
 contract. Migration v74 repairs the daily-brief memory-lineage column used by
-governed deletion invalidation. Agent-run consumption, private retrieval
+governed deletion invalidation. Migrations v75-v76 index immutable deletion
+barriers and remove redundant derived-row read scans after an integrity-gated
+cutover; the production scoped Retrieval Plan and governed-forget canary now
+passes without exposing embeddings or persisting a tenant-wide trace.
+Agent-run consumption, private retrieval
 traces, agent-private and mission/project/workspace-shared memory, standing
 consent-driven formation, actor-aware graph/worker consumption, and the full
 authority resolver remain pending. This canary therefore advances P3.1 without
