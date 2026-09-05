@@ -1746,6 +1746,21 @@ registry dependency and no runtime call site. It persists nothing, emits
 nothing, and leaves every writer, activation, ACL/RLS, and authority hold in
 place.
 
+The first active P3.1 delivery is deliberately smaller than the full phase.
+Migration v72 permits only canonical actor-owned `user_private` version-1
+rows. Restrictive row policies require the exact transaction-local tenant,
+actor, user principal, null shared-scope coordinates, allowed purpose, and
+operation-class purpose before a row can be read or changed. Authenticated
+session/mobile memory create, list, search, inspect, correction, reviewed
+forget, portable export, and portable restore use that scope; version-0 rows
+remain on an isolated compatibility query. Bound creation emits a
+metadata-only `memory.user_private.created` event in the same transaction.
+Private rows are not projected into the tenant-wide graph and are not consumed
+by the legacy RAG/context or background formation paths. Agent-private and
+mission/project/workspace-shared memory, standing consent-driven formation,
+actor-aware graph/context/worker consumption, and the full authority resolver
+remain pending. This canary therefore advances P3.1 without marking it done.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
