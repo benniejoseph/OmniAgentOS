@@ -786,8 +786,13 @@ Agent and system identities additionally require exactly one active v60
 principal generation controlled by that canonical actor, read with a bounded,
 deterministic `FOR SHARE` query. Missing, duplicate, held, revoked, malformed,
 or differently controlled principals remain unavailable. The canary still has
-no allow result, does not install a database access scope, and does not yet
-consume workspace, grant, or policy authority.
+no allow result and does not install a database access scope. Any scope with a
+workspace or project coordinate now also locks one active v61 workspace and
+one exact active membership. User membership is keyed to the canonical actor;
+agent and system membership must pin the resolved v60 principal generation.
+A project coordinate without its workspace, or any missing, duplicate,
+inactive, malformed, or generation-mismatched authority, denies before later
+purpose reads. Grant and policy authority remain unconsumed.
 
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that

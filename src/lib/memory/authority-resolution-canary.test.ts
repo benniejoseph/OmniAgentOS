@@ -80,10 +80,16 @@ const QUERY_STAGES = [
 ] as const;
 
 type StandardQueryStage = (typeof QUERY_STAGES)[number];
-type QueryStage = StandardQueryStage | "execution_principal";
+type QueryStage =
+  | StandardQueryStage
+  | "execution_principal"
+  | "workspace"
+  | "workspace_membership";
 type AuthorityStage = Exclude<StandardQueryStage, "preflight">;
 type QueryResponses = Record<StandardQueryStage, SqlRow[]> & {
   execution_principal?: SqlRow[];
+  workspace?: SqlRow[];
+  workspace_membership?: SqlRow[];
 };
 
 const AUTHORITY_STAGES = QUERY_STAGES.slice(1) as readonly AuthorityStage[];
@@ -449,6 +455,7 @@ describe("denial-only memory authority resolution canary", () => {
       "canonical_scope_actor",
       "canonical_actor",
       "tenant_membership",
+      "workspace_membership_authority",
       "membership_epoch",
       "purpose_contract",
       "tenant_entitlement",
@@ -552,6 +559,119 @@ describe("denial-only memory authority resolution canary", () => {
         "executing_principal_authority",
         ...BASELINE_UNAVAILABLE,
       ]);
+      expectCanonicalDiagnostics(result.unavailableAuthorities);
+    }
+  });
+
+  it("locks one active workspace and exact canonical-user membership", async () => {
+    const responses = coherentResponses();
+    responses.workspace = [activeWorkspace()];
+    responses.workspace_membership = [activeUserWorkspaceMembership()];
+    const { sql, calls } = fakeSql(handlerFor(responses));
+    dbMocks.getSql.mockReturnValue(sql);
+    const workspaceScope = Object.freeze({
+      ...ACCESS_SCOPE,
+      workspaceId: "workspace:authority-canary",
+    });
+
+    const result = await inspectMemoryAuthorityDenialCanary(
+      canaryInput(workspaceScope),
+    );
+
+    expect(result.unavailableAuthorities).toEqual(BASELINE_UNAVAILABLE);
+    expect(calls.map(({ text }) => stageForText(text))).toEqual([
+      "preflight",
+      "auth_user",
+      "membership",
+      "workspace",
+      "workspace_membership",
+      "epoch",
+      "purpose",
+      "entitlement",
+      "consent",
+      "receipt",
+      "notice_contract",
+    ]);
+    for (const stage of ["workspace", "workspace_membership"] as const) {
+      const call = calls.find(({ text }) => stageForText(text) === stage);
+      expect(call?.text).toContain("LIMIT 2");
+      expect(call?.text).toContain("FOR SHARE");
+    }
+    expectCanonicalDiagnostics(result.unavailableAuthorities);
+  });
+
+  it("denies a missing workspace or a project without its workspace coordinate", async () => {
+    const candidates = [
+      Object.freeze({
+        ...ACCESS_SCOPE,
+        workspaceId: "workspace:authority-canary",
+      }),
+      Object.freeze({
+        ...ACCESS_SCOPE,
+        projectId: "project:authority-canary",
+      }),
+    ];
+
+    for (const scope of candidates) {
+      const { sql, calls } = fakeSql(handlerFor(coherentResponses()));
+      dbMocks.getSql.mockReturnValue(sql);
+
+      const result = await inspectMemoryAuthorityDenialCanary(
+        canaryInput(scope),
+      );
+
+      expect(result.unavailableAuthorities).toEqual([
+        "workspace_membership_authority",
+        ...BASELINE_UNAVAILABLE,
+      ]);
+      expect(calls.map(({ text }) => stageForText(text))).toEqual(
+        scope.workspaceId === null
+          ? ["preflight", "auth_user", "membership"]
+          : ["preflight", "auth_user", "membership", "workspace"],
+      );
+      expectCanonicalDiagnostics(result.unavailableAuthorities);
+    }
+  });
+
+  it("pins an agent workspace membership to the resolved principal generation", async () => {
+    const agentScope = Object.freeze({
+      ...ACCESS_SCOPE,
+      executingPrincipalType: "agent" as const,
+      executingPrincipalId: "agent:asael",
+      workspaceId: "workspace:authority-canary",
+    });
+
+    for (const [generation, expectedAvailable] of [["3", true], ["4", false]] as const) {
+      const responses = coherentResponses();
+      responses.execution_principal = [activeAgentPrincipal()];
+      responses.workspace = [activeWorkspace()];
+      responses.workspace_membership = [
+        activeAgentWorkspaceMembership({
+          subject_execution_principal_generation: generation,
+        }),
+      ];
+      const { sql, calls } = fakeSql(handlerFor(responses));
+      dbMocks.getSql.mockReturnValue(sql);
+
+      const result = await inspectMemoryAuthorityDenialCanary(
+        canaryInput(agentScope),
+      );
+
+      expect(result.unavailableAuthorities).toEqual(
+        expectedAvailable
+          ? BASELINE_UNAVAILABLE
+          : ["workspace_membership_authority", ...BASELINE_UNAVAILABLE],
+      );
+      const stages = calls.map(({ text }) => stageForText(text));
+      expect(stages.slice(0, 6)).toEqual([
+        "preflight",
+        "auth_user",
+        "membership",
+        "execution_principal",
+        "workspace",
+        "workspace_membership",
+      ]);
+      expect(stages.includes("epoch")).toBe(expectedAvailable);
       expectCanonicalDiagnostics(result.unavailableAuthorities);
     }
   });
@@ -873,6 +993,53 @@ function activeAgentPrincipal(overrides: SqlRow = {}): SqlRow {
   };
 }
 
+function activeWorkspace(overrides: SqlRow = {}): SqlRow {
+  return {
+    schema_version: "1",
+    tenant_id: TENANT_ID,
+    workspace_id: "workspace:authority-canary",
+    state: "active",
+    lifecycle_revision: "1",
+    ...overrides,
+  };
+}
+
+function activeUserWorkspaceMembership(overrides: SqlRow = {}): SqlRow {
+  return {
+    schema_version: "1",
+    tenant_id: TENANT_ID,
+    workspace_id: "workspace:authority-canary",
+    subject_kind: "user",
+    subject_key: CANONICAL_ACTOR_ID,
+    subject_actor_id: CANONICAL_ACTOR_ID,
+    subject_execution_principal_id: null,
+    subject_execution_principal_generation: null,
+    membership_generation: "2",
+    access_level: "reader",
+    state: "active",
+    lifecycle_revision: "1",
+    ...overrides,
+  };
+}
+
+function activeAgentWorkspaceMembership(overrides: SqlRow = {}): SqlRow {
+  return {
+    schema_version: "1",
+    tenant_id: TENANT_ID,
+    workspace_id: "workspace:authority-canary",
+    subject_kind: "agent",
+    subject_key: "agent:asael",
+    subject_actor_id: null,
+    subject_execution_principal_id: "agent:asael",
+    subject_execution_principal_generation: "3",
+    membership_generation: "2",
+    access_level: "reader",
+    state: "active",
+    lifecycle_revision: "1",
+    ...overrides,
+  };
+}
+
 function handlerFor(responses: QueryResponses) {
   return (call: QueryCall): SqlRow[] =>
     (responses[stageForText(call.text)] ?? []).map((row) => ({ ...row }));
@@ -991,6 +1158,10 @@ function stageForText(text: string): QueryStage {
   if (text.includes("FROM public.omni_tenant_execution_principals")) {
     return "execution_principal";
   }
+  if (text.includes("FROM public.omni_tenant_workspace_memberships")) {
+    return "workspace_membership";
+  }
+  if (text.includes("FROM public.omni_tenant_workspaces")) return "workspace";
   if (text.includes("FROM public.omni_tenant_actor_membership_epochs")) {
     return "epoch";
   }
