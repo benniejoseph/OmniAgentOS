@@ -67,4 +67,31 @@ describe("result timeline", () => {
     expect(toneForResultStatus("failed")).toBe("danger");
     expect(toneForResultStatus("completed")).toBe("success");
   });
+
+  it("summarizes claim coverage instead of treating citation IDs as proof", () => {
+    const [item] = buildResultTimeline({
+      agentRuns: [{
+        id: "agent-claims",
+        prompt: "Check the plan",
+        status: "completed",
+        response: "One supported statement. One unsupported statement.",
+        completedAt: "2026-09-06T01:00:00.000Z",
+        grounding: {
+          status: "missing",
+          claimEvidence: {
+            coverage: {
+              materialClaimCount: 2,
+              supportedMaterialClaimCount: 1,
+              coverageBps: 5_000,
+            },
+          },
+        },
+      }],
+      workflowRuns: [],
+      approvalItems: [],
+    });
+
+    expect(item.meta).toContain("1/2 claims supported");
+    expect(item.meta).not.toContain("citation");
+  });
 });

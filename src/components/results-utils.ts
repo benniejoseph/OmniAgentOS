@@ -55,12 +55,26 @@ function agentTimelineItem(item: ResultRecord): ResultTimelineItem {
 }
 
 function groundingSummary(value: unknown) {
+  const materialClaimCount = numericValue(
+    readPath(value, "claimEvidence.coverage.materialClaimCount"),
+  );
+  const supportedMaterialClaimCount = numericValue(
+    readPath(value, "claimEvidence.coverage.supportedMaterialClaimCount"),
+  );
+  if (materialClaimCount !== null && supportedMaterialClaimCount !== null) {
+    if (materialClaimCount === 0) return "no material claims";
+    return `${supportedMaterialClaimCount}/${materialClaimCount} claims supported`;
+  }
   const status = stringValue(readPath(value, "status"));
   if (status === "verified") return "citations verified";
   if (status === "missing") return "citation needed";
   if (status === "invalid") return "invalid citation";
   if (status === "not_required") return "no retrieved sources";
   return "grounding unavailable";
+}
+
+function numericValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function workflowTimelineItem(item: ResultRecord): ResultTimelineItem {
