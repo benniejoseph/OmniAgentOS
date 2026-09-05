@@ -778,6 +778,17 @@ or event-store call site. The pure contract emits only metadata in
 governed authority writers, and atomic all-surface activation remain later
 P3.1 work.
 
+The denial-only P3.1 code canary now resolves the executing principal under
+the same owned transaction as its existing canonical actor and tenant
+membership locks. An exact canonical user is recognized only through the
+active auth-user and tenant-membership rows already locked by the canary.
+Agent and system identities additionally require exactly one active v60
+principal generation controlled by that canonical actor, read with a bounded,
+deterministic `FOR SHARE` query. Missing, duplicate, held, revoked, malformed,
+or differently controlled principals remain unavailable. The canary still has
+no allow result, does not install a database access scope, and does not yet
+consume workspace, grant, or policy authority.
+
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.

@@ -170,8 +170,9 @@ async function inspectInOwnedTransaction(
   if (scope.initiatingActorId !== actorBinding.canonicalActorId) {
     unavailable.add("canonical_scope_actor");
   }
-  // These authority models do not exist yet. Empty grant claims and a
-  // matching user principal therefore cannot be promoted into authority.
+  // The held grant and policy ledgers are not yet consumed by this canary.
+  // Keep those inputs unavailable until their exact target and request
+  // bindings are observed under the same transaction locks.
   unavailable.add("executing_principal_authority");
   unavailable.add("context_grant_authority");
   unavailable.add("capability_grant_authority");
@@ -214,6 +215,16 @@ async function inspectInOwnedTransaction(
     unavailable.add("tenant_membership");
     unavailable.add("executing_principal_authority");
     return deniedResult(unavailable);
+  }
+
+  if (
+    await hasActiveExecutingPrincipalAuthority(
+      sql,
+      scope,
+      actorBinding,
+    )
+  ) {
+    unavailable.delete("executing_principal_authority");
   }
 
   const epochRows = await sql`
@@ -273,6 +284,51 @@ async function inspectInOwnedTransaction(
   }
 
   return deniedResult(unavailable);
+}
+
+async function hasActiveExecutingPrincipalAuthority(
+  sql: CanarySql,
+  scope: DatabaseMemoryAccessScope,
+  actorBinding: CanonicalRequestActorBindingV1,
+): Promise<boolean> {
+  if (scope.executingPrincipalType === "user") {
+    return (
+      scope.initiatingActorId === actorBinding.canonicalActorId &&
+      scope.executingPrincipalId === actorBinding.canonicalActorId
+    );
+  }
+
+  const principalRows = await sql`
+    SELECT
+      schema_version,
+      tenant_id,
+      principal_kind,
+      principal_id,
+      principal_generation,
+      controller_actor_id,
+      state,
+      lifecycle_revision
+    FROM public.omni_tenant_execution_principals
+    WHERE tenant_id = ${scope.tenantId}
+      AND principal_kind = ${scope.executingPrincipalType}
+      AND principal_id = ${scope.executingPrincipalId}
+      AND state <> 'revoked'
+    ORDER BY principal_generation DESC
+    LIMIT 2
+    FOR SHARE
+  `;
+  const row = onlyRow(principalRows);
+  return Boolean(
+    row &&
+      numericValue(row.schema_version) === 1 &&
+      row.tenant_id === scope.tenantId &&
+      row.principal_kind === scope.executingPrincipalType &&
+      row.principal_id === scope.executingPrincipalId &&
+      positiveSafeInteger(row.principal_generation) !== undefined &&
+      row.controller_actor_id === actorBinding.canonicalActorId &&
+      row.state === "active" &&
+      numericValue(row.lifecycle_revision) === 1,
+  );
 }
 
 async function inspectStandingAuthorities(
