@@ -418,6 +418,18 @@ Each row is one reviewable vertical slice. “Reuse / Modify / Create” names h
 
 **Phase gate:** 100% new shadow operations are scoped; schema/event versions are explicit; no user-visible behavior changes.
 
+P0.6's seven required decisions are now accepted in ADRs 005–011: canonical
+truth, agent definition versus principal authority, tenant-scoped object
+storage, the internal delegation/A2A boundary, deterministic AP2 roles and key
+custody, the canonical Workspace hierarchy, and the server-authoritative native
+API. Each ADR fixes compatibility, migration/cutover, rollback, and permanent
+security floors. A2A protocol `1.0` and AP2 tag `v0.2.0` are design pins only;
+their accepted adapter-release sets remain empty. This closes the decision
+record required by P0.6 without implementing an adapter, payment path, object
+plane, Workspace cutover, native client, runtime grant, database change, or
+user-visible behavior. It does not complete the other Phase 0 rows or satisfy
+the aggregate Phase 0 gate.
+
 ### Phase 1 — Truthful events, evidence, completion, and recovery
 
 **Goal:** Make every result and status honest before increasing autonomy.
@@ -535,7 +547,7 @@ Each row is one reviewable vertical slice. “Reuse / Modify / Create” names h
 
 **Goal:** Enable real agent collaboration internally, then interoperate safely with external agents.
 
-The external adapter should track the current official [Agent2Agent Protocol specification](https://a2a-protocol.org/latest/specification/) while keeping Asael’s internal envelope stable. MCP remains the agent-to-tool/data layer; A2A is the agent-to-agent task layer.
+The first external adapter is designed against the official [Agent2Agent Protocol 1.0 specification](https://a2a-protocol.org/v1.0.0/specification/) while keeping Asael’s internal envelope stable. A rollout pins an exact reviewed adapter release and artifact digest; later protocol versions require a separately reviewed mapping instead of following a mutable `latest` target. MCP remains the agent-to-tool/data layer; A2A is the agent-to-agent task layer.
 
 | ID | Vertical slice | Reuse / Modify / Create | Isolation and compatibility | Done when |
 |---|---|---|---|---|
@@ -587,9 +599,9 @@ The external adapter should track the current official [Agent2Agent Protocol spe
 | P9.13 | Build notification outbox and delivery service for in-app, web push, email, and later mobile push. | Modify notification center/service worker; create outbox. | Preferences apply by user, urgency, workspace, project, customer, source, and channel. | Accepted notifications deliver once, defer through quiet hours, deep-link to cause, and expose acknowledgement/snooze/escalation. |
 | P9.14 | Define `PersonContactPolicy`, `CommunicationIntent`, `MessageDraft`, `DeliveryReceipt`, and `ConversationLink`; add draft-first outbound email/message/voice workflows and safe inbound reply mapping. | Reuse people/connector data; modify channel tools; create governed communication contract. | Person, channel, relationship, purpose, disclosure, consent, approval, anti-impersonation, frequency, quiet hours, and opt-out are explicit. | External communication cannot occur from a free-form model string; drafts, approvals, delivery, replies, and causal work links are attributable and reconciled. |
 
-#### AP2 — Agent Payments Protocol
+#### AP2 — Agentic Payment Protocol
 
-Asael should integrate the current official [Agent Payments Protocol (AP2)](https://github.com/google-agentic-commerce/AP2/blob/main/docs/ap2/specification.md) through a version-pinned adapter. AP2 secures agent-performed purchases with deterministic verification, signed Checkout and Payment Mandates, Trusted Surface consent, scoped payment credentials, and signed receipts. Payment credentials and signing keys must never enter model context, memory, connector output, or ordinary events.
+Asael should integrate the official [Agentic Payment Protocol (AP2) v0.2 specification](https://github.com/google-agentic-commerce/AP2/blob/v0.2.0/docs/ap2/specification.md) at the immutable `v0.2.0` tag and reviewed commit through a version-pinned adapter. AP2 secures agent-performed purchases with deterministic verification, signed Checkout and Payment Mandates, Trusted Surface consent, scoped payment credentials, and signed receipts. Payment credentials and signing keys must never enter model context, memory, connector output, or ordinary events.
 
 | ID | Vertical slice | Reuse / Modify / Create | Isolation and compatibility | Done when |
 |---|---|---|---|---|
