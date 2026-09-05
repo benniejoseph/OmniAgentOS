@@ -5,9 +5,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildRuntimeClaimEvidenceV1,
   decomposeMaterialClaimSpans,
+  parseRuntimeClaimEvidenceV1,
   publicClaimEvidenceV1,
 } from "@/lib/rag/claim-evidence-runtime";
 import { chunkText, normalizeTextForChunking } from "@/lib/rag/chunk";
+import {
+  buildClaimGroundingReport,
+  publicGroundingReport,
+} from "@/lib/rag/citations";
 import { createKnowledgeDocument } from "@/lib/rag/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { buildCanonicalTextSourceWrite } from "@/lib/sources/text-lineage";
@@ -100,9 +105,27 @@ describe("runtime claim evidence", () => {
     expect(result.claimEvidenceMap.coverage.coverageBps).toBe(5_000);
     expect(result.claimEvidenceMap.evidenceUnits).toHaveLength(1);
     expect(result.structuralVerification.verificationState).toBe("verified");
+    expect(
+      parseRuntimeClaimEvidenceV1(JSON.parse(JSON.stringify(result))),
+    ).toEqual(result);
     const publicReport = publicClaimEvidenceV1(result);
     expect(publicReport.claims).toHaveLength(2);
     expect(JSON.stringify(publicReport)).not.toContain("actor-runtime");
+
+    const grounding = await buildClaimGroundingReport({
+      runId: "run-runtime",
+      response: answer,
+      sources: [source],
+      executionScope,
+      evaluatedAt: "2026-09-06T01:00:00.000Z",
+    });
+    expect(grounding.citedIds).toEqual([source.citationId]);
+    expect(grounding.status).toBe("missing");
+    const publicGrounding = publicGroundingReport(grounding);
+    expect(publicGrounding.claimEvidence?.claims).toHaveLength(2);
+    expect(publicGrounding.claimEvidence).not.toHaveProperty(
+      "claimEvidenceMap",
+    );
   });
 
   it("does not expose evidence content to claim matching across actor scope", async () => {

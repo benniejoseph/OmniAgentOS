@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
+import {
+  buildRuntimeClaimEvidenceV1,
+  publicClaimEvidenceV1,
+  type PublicClaimEvidenceV1,
+  type RuntimeClaimEvidenceV1,
+} from "@/lib/rag/claim-evidence-runtime";
 import type { ContextEvidenceItem } from "@/lib/rag/types";
+import type { ExecutionScope } from "@/lib/security/execution-scope";
 
 export type CitationSource = {
   citationId: string;
@@ -17,6 +24,11 @@ export type GroundingReport = {
   citedIds: string[];
   invalidIds: string[];
   sources: CitationSource[];
+  claimEvidence?: RuntimeClaimEvidenceV1;
+};
+
+export type PublicGroundingReport = Omit<GroundingReport, "claimEvidence"> & {
+  claimEvidence?: PublicClaimEvidenceV1;
 };
 
 export function citationIdForEvidence(item: ContextEvidenceItem) {
@@ -87,6 +99,48 @@ export function verifyCitationSources(response: string, sources: CitationSource[
   if (!sources.length) return { status: "not_required", citedIds, invalidIds, sources };
   if (!citedIds.length) return { status: "missing", citedIds, invalidIds, sources };
   return { status: "verified", citedIds, invalidIds, sources };
+}
+
+/**
+ * Builds the served grounding result. Citation syntax remains diagnostic, but
+ * only claim-level checks over authorized canonical evidence can verify text.
+ */
+export async function buildClaimGroundingReport(input: {
+  runId: string;
+  response: string;
+  sources: CitationSource[];
+  executionScope: ExecutionScope;
+  evaluatedAt?: string;
+}): Promise<GroundingReport> {
+  const citationReport = verifyCitationSources(input.response, input.sources);
+  const claimEvidence = await buildRuntimeClaimEvidenceV1({
+    runId: input.runId,
+    answerText: input.response,
+    executionScope: input.executionScope,
+    citationSources: input.sources,
+    evaluatedAt: input.evaluatedAt,
+  });
+  const coverage = claimEvidence.claimEvidenceMap.coverage;
+  const status = citationReport.invalidIds.length
+    ? "invalid" as const
+    : coverage.materialClaimCount === 0
+      ? "not_required" as const
+      : coverage.coverageBps === 10_000
+        ? "verified" as const
+        : "missing" as const;
+  return { ...citationReport, status, claimEvidence };
+}
+
+export function publicGroundingReport(
+  report: GroundingReport,
+): PublicGroundingReport {
+  const { claimEvidence, ...legacy } = report;
+  return {
+    ...legacy,
+    claimEvidence: claimEvidence
+      ? publicClaimEvidenceV1(claimEvidence)
+      : undefined,
+  };
 }
 
 function normalizePublicWebUrl(value: string) {

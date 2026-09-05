@@ -19,6 +19,7 @@ import {
 } from "@/lib/security/execution-scope";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
+import { parseRuntimeClaimEvidenceV1 } from "@/lib/rag/claim-evidence-runtime";
 import {
   buildLegacyTerminalReceiptV1,
   buildRunContractEnvelopeV1,
@@ -822,6 +823,9 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
               status: event.grounding.status,
               citedIds: event.grounding.citedIds,
               invalidCitationCount: event.grounding.invalidIds.length,
+              claimEvidence: event.grounding.claimEvidence
+                ? claimEvidenceEventSummary(event.grounding.claimEvidence)
+                : undefined,
             }
           : undefined,
       };
@@ -835,6 +839,32 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
     case "delta":
       return { schemaVersion, type: event.type };
   }
+}
+
+function claimEvidenceEventSummary(
+  value: NonNullable<GroundingReport["claimEvidence"]>,
+) {
+  const map = value.claimEvidenceMap;
+  const byState = Object.fromEntries(
+    ["supported", "inferred", "disputed", "stale", "unsupported"].map(
+      (state) => [
+        state,
+        map.claims.filter((claim) => claim.supportState === state).length,
+      ],
+    ),
+  );
+  return {
+    schemaVersion: 1,
+    claimEvidenceMapId: map.claimEvidenceMapId,
+    claimEvidenceMapSha256: map.claimEvidenceMapSha256,
+    structuralVerificationId:
+      value.structuralVerification.structuralVerificationId,
+    claimCount: map.claims.length,
+    materialClaimCount: map.coverage.materialClaimCount,
+    supportedMaterialClaimCount: map.coverage.supportedMaterialClaimCount,
+    coverageBps: map.coverage.coverageBps,
+    byState,
+  };
 }
 
 function hashedTextFields(name: string, value?: string) {
@@ -1661,7 +1691,7 @@ function sanitizeAgentRunRecord(run: AgentRunRecord): AgentRunRecord {
       ? String(redactSensitive(run.response))
       : undefined,
     grounding: run.grounding
-      ? (redactSensitive(run.grounding) as GroundingReport)
+      ? sanitizeGroundingReport(run.grounding)
       : undefined,
     error: run.error
       ? String(redactSensitive(run.error)).slice(0, 2_000)
@@ -1675,17 +1705,40 @@ function sanitizeAgentRunRecord(run: AgentRunRecord): AgentRunRecord {
   };
 }
 
+function sanitizeGroundingReport(report: GroundingReport): GroundingReport {
+  const { claimEvidence, ...legacy } = report;
+  const sanitizedLegacy = redactSensitive(legacy) as Omit<
+    GroundingReport,
+    "claimEvidence"
+  >;
+  return {
+    ...sanitizedLegacy,
+    claimEvidence: claimEvidence
+      ? parseRuntimeClaimEvidenceV1(claimEvidence)
+      : undefined,
+  };
+}
+
 function parseGroundingReport(value: unknown): GroundingReport | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const candidate = value as Partial<GroundingReport>;
   if (!candidate.status || !["verified", "not_required", "missing", "invalid"].includes(candidate.status)) {
     return undefined;
   }
+  let claimEvidence: GroundingReport["claimEvidence"];
+  if (candidate.claimEvidence !== undefined) {
+    try {
+      claimEvidence = parseRuntimeClaimEvidenceV1(candidate.claimEvidence);
+    } catch {
+      claimEvidence = undefined;
+    }
+  }
   return {
     status: candidate.status,
     citedIds: parseCitationIds(candidate.citedIds),
     invalidIds: parseCitationIds(candidate.invalidIds),
     sources: parseCitationSources(candidate.sources),
+    claimEvidence,
   };
 }
 
