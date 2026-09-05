@@ -89,6 +89,7 @@ export const tenantRootPolicyTables = [
   "omni_tenant_actor_membership_management_authorities",
   "omni_membership_management_bootstrap_decisions",
   "omni_membership_management_bootstrap_attestations",
+  "omni_tenant_execution_principals",
   "omni_knowledge_documents",
   "omni_knowledge_chunks",
   "omni_retrieval_traces",
@@ -835,6 +836,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[58],
       up: ensureMemoryDeletionScrubLeaseContract,
+    },
+    {
+      ...databaseSchemaMigrations[59],
+      up: ensureTenantExecutionPrincipalsShadow,
     },
   ];
 }
@@ -33117,6 +33122,665 @@ async function ensureMembershipManagementBootstrapEvidenceShadow(
 
   await verifyBootstrapEvidenceSurface();
   await verifyBootstrapEvidencePredecessors();
+}
+
+async function ensureTenantExecutionPrincipalsShadow(sql: SqlClient) {
+  // v60 reserves stable agent and actor-bound system security identities. It
+  // enrolls nobody, grants no serving access, and leaves the memory resolver
+  // and v43/v45 activation holds closed.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Execution principal migration requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`SET LOCAL row_security = on`;
+
+  await sql`
+    LOCK TABLE
+      omni_auth_tenants,
+      omni_auth_users,
+      omni_auth_memberships,
+      omni_auth_user_actor_identifiers,
+      omni_custom_agents,
+      omni_memories
+    IN SHARE MODE
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version IS NOT NULL
+          AND version = 59
+          AND name = 'memory_deletion_scrub_lease_contract'
+          AND checksum =
+            'af5d06d4321e7e859f49c4edc7092f819954240b1d566fb79eadc22ef84874af'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Execution principal v59 predecessor marker is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'omni_memories'::regclass
+          AND conname = 'omni_memories_access_enrollment_hold_check'
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid) =
+            '(access_contract_version = 0)'
+      ) OR to_regprocedure(
+        'public.omni_memory_access_scope_v1_is_authorized(jsonb)'
+      ) IS NULL THEN
+        RAISE EXCEPTION 'Execution principal memory activation predecessor changed'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name = 'omni_memory_access_scope_v1_is_authorized'
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Execution principal memory authorization hook is exposed'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_custom_agents_tenant_id_id_key
+    ON omni_custom_agents (tenant_id, id)
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_execution_principal_row_is_valid(
+      candidate_schema_version SMALLINT,
+      candidate_tenant_id TEXT,
+      candidate_principal_kind TEXT,
+      candidate_principal_id TEXT,
+      candidate_principal_generation BIGINT,
+      candidate_controller_actor_id TEXT,
+      candidate_agent_definition_id TEXT,
+      candidate_system_principal_class TEXT,
+      candidate_state TEXT,
+      candidate_lifecycle_revision BIGINT,
+      candidate_created_by_actor_id TEXT,
+      candidate_activated_by_actor_id TEXT,
+      candidate_revoked_by_actor_id TEXT,
+      candidate_created_at TIMESTAMPTZ,
+      candidate_activated_at TIMESTAMPTZ,
+      candidate_revoked_at TIMESTAMPTZ,
+      candidate_updated_at TIMESTAMPTZ
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        candidate_schema_version = 1
+        AND public.omni_source_contract_id_is_valid(candidate_tenant_id)
+        AND candidate_principal_kind IN ('agent', 'system')
+        AND public.omni_source_contract_id_is_valid(candidate_principal_id)
+        AND candidate_principal_generation BETWEEN 1 AND 9007199254740991
+        AND candidate_controller_actor_id ~
+          '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        AND (
+          (
+            candidate_principal_kind = 'agent'
+            AND candidate_principal_id ~
+              '^agent:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+            AND public.omni_source_contract_id_is_valid(
+              candidate_agent_definition_id
+            )
+            AND candidate_system_principal_class IS NULL
+          )
+          OR (
+            candidate_principal_kind = 'system'
+            AND candidate_principal_id ~
+              '^service:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+            AND candidate_agent_definition_id IS NULL
+            AND candidate_system_principal_class IN (
+              'worker', 'scheduler', 'workflow', 'connector',
+              'internal_service'
+            )
+          )
+        )
+        AND candidate_state IN ('held', 'active', 'revoked')
+        AND candidate_lifecycle_revision BETWEEN 0 AND 9007199254740991
+        AND candidate_created_by_actor_id ~
+          '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        AND (
+          candidate_activated_by_actor_id IS NULL
+          OR candidate_activated_by_actor_id ~
+            '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        )
+        AND (
+          candidate_revoked_by_actor_id IS NULL
+          OR candidate_revoked_by_actor_id ~
+            '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        )
+        AND (candidate_activated_by_actor_id IS NULL) =
+          (candidate_activated_at IS NULL)
+        AND (candidate_revoked_by_actor_id IS NULL) =
+          (candidate_revoked_at IS NULL)
+        AND (
+          (
+            candidate_state = 'held'
+            AND candidate_lifecycle_revision = 0
+            AND candidate_activated_at IS NULL
+            AND candidate_revoked_at IS NULL
+          ) OR (
+            candidate_state = 'active'
+            AND candidate_lifecycle_revision = 1
+            AND candidate_activated_at IS NOT NULL
+            AND candidate_revoked_at IS NULL
+          ) OR (
+            candidate_state = 'revoked'
+            AND candidate_revoked_at IS NOT NULL
+            AND (
+              (
+                candidate_activated_at IS NULL
+                AND candidate_lifecycle_revision = 1
+              ) OR (
+                candidate_activated_at IS NOT NULL
+                AND candidate_lifecycle_revision = 2
+              )
+            )
+          )
+        )
+        AND candidate_created_at <= candidate_updated_at
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_created_at <= candidate_activated_at
+        )
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_activated_at <= candidate_updated_at
+        )
+        AND (
+          candidate_revoked_at IS NULL
+          OR candidate_created_at <= candidate_revoked_at
+        )
+        AND (
+          candidate_revoked_at IS NULL
+          OR candidate_revoked_at <= candidate_updated_at
+        )
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_revoked_at IS NULL
+          OR candidate_activated_at <= candidate_revoked_at
+        ),
+        FALSE
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_tenant_execution_principals (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      principal_kind TEXT NOT NULL,
+      principal_id TEXT NOT NULL,
+      principal_generation BIGINT NOT NULL,
+      controller_actor_id TEXT NOT NULL,
+      agent_definition_id TEXT,
+      system_principal_class TEXT,
+      state TEXT NOT NULL DEFAULT 'held',
+      lifecycle_revision BIGINT NOT NULL DEFAULT 0,
+      created_by_actor_id TEXT NOT NULL,
+      activated_by_actor_id TEXT,
+      revoked_by_actor_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      activated_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_execution_principals_pkey
+        PRIMARY KEY (tenant_id, principal_id, principal_generation),
+      CONSTRAINT omni_execution_principal_row_check CHECK (
+        omni_execution_principal_row_is_valid(
+          schema_version, tenant_id, principal_kind, principal_id,
+          principal_generation, controller_actor_id, agent_definition_id,
+          system_principal_class, state, lifecycle_revision,
+          created_by_actor_id, activated_by_actor_id, revoked_by_actor_id,
+          created_at, activated_at, revoked_at, updated_at
+        )
+      ),
+      CONSTRAINT omni_execution_principal_activation_hold_check
+        CHECK (state <> 'active'),
+      CONSTRAINT omni_execution_principal_tenant_fkey
+        FOREIGN KEY (tenant_id)
+        REFERENCES omni_auth_tenants (id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_execution_principal_controller_fkey
+        FOREIGN KEY (controller_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_execution_principal_created_actor_fkey
+        FOREIGN KEY (created_by_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_execution_principal_activated_actor_fkey
+        FOREIGN KEY (activated_by_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_execution_principal_revoked_actor_fkey
+        FOREIGN KEY (revoked_by_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_execution_principal_agent_definition_fkey
+        FOREIGN KEY (tenant_id, agent_definition_id)
+        REFERENCES omni_custom_agents (tenant_id, id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_execution_principals_current_idx
+    ON omni_tenant_execution_principals (tenant_id, principal_id)
+    WHERE state <> 'revoked'
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_execution_principals_controller_idx
+    ON omni_tenant_execution_principals (
+      tenant_id, controller_actor_id, principal_kind, state, principal_id
+    )
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_execution_principal_insert()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      expected_generation BIGINT;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id),
+        hashtext(NEW.principal_id)
+      );
+      IF NEW.state <> 'held'
+        OR NEW.lifecycle_revision <> 0
+        OR NEW.activated_by_actor_id IS NOT NULL
+        OR NEW.revoked_by_actor_id IS NOT NULL
+        OR NEW.activated_at IS NOT NULL
+        OR NEW.revoked_at IS NOT NULL
+      THEN
+        RAISE EXCEPTION 'Execution principals must start held'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.principal_kind = 'agent' AND NOT EXISTS (
+        SELECT 1
+        FROM public.omni_custom_agents definition
+        JOIN public.omni_auth_user_actor_identifiers identifier
+          ON identifier.actor_identifier COLLATE "C" =
+            definition.actor_id COLLATE "C"
+          AND identifier.canonical_actor_id = NEW.controller_actor_id
+        WHERE definition.tenant_id = NEW.tenant_id
+          AND definition.id = NEW.agent_definition_id
+      ) THEN
+        RAISE EXCEPTION 'Agent principal controller does not own its definition'
+          USING ERRCODE = '23503';
+      END IF;
+
+      SELECT COALESCE(MAX(principal_generation), 0) + 1
+      INTO expected_generation
+      FROM public.omni_tenant_execution_principals
+      WHERE tenant_id = NEW.tenant_id
+        AND principal_id = NEW.principal_id;
+      IF NEW.principal_generation IS DISTINCT FROM expected_generation THEN
+        RAISE EXCEPTION 'Execution principal generation is not next'
+          USING ERRCODE = '23514';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM public.omni_tenant_execution_principals
+        WHERE tenant_id = NEW.tenant_id
+          AND principal_id = NEW.principal_id
+          AND state <> 'revoked'
+      ) THEN
+        RAISE EXCEPTION 'Execution principal already has a current generation'
+          USING ERRCODE = '23514';
+      END IF;
+
+      NEW.created_at := statement_timestamp();
+      NEW.updated_at := NEW.created_at;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_execution_principal()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      transition_at TIMESTAMPTZ;
+    BEGIN
+      IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION 'Execution principal rows cannot be removed'
+          USING ERRCODE = '55000';
+      END IF;
+      PERFORM pg_advisory_xact_lock(
+        hashtext(OLD.tenant_id),
+        hashtext(OLD.principal_id)
+      );
+      IF OLD.state = 'revoked' THEN
+        RAISE EXCEPTION 'Revoked execution principals are immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      IF ROW(
+        NEW.schema_version, NEW.tenant_id, NEW.principal_kind,
+        NEW.principal_id, NEW.principal_generation,
+        NEW.controller_actor_id, NEW.agent_definition_id,
+        NEW.system_principal_class, NEW.created_by_actor_id, NEW.created_at
+      ) IS DISTINCT FROM ROW(
+        OLD.schema_version, OLD.tenant_id, OLD.principal_kind,
+        OLD.principal_id, OLD.principal_generation,
+        OLD.controller_actor_id, OLD.agent_definition_id,
+        OLD.system_principal_class, OLD.created_by_actor_id, OLD.created_at
+      ) THEN
+        RAISE EXCEPTION 'Execution principal identity is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT (
+        (OLD.state = 'held' AND NEW.state IN ('active', 'revoked'))
+        OR (OLD.state = 'active' AND NEW.state = 'revoked')
+      ) OR NEW.lifecycle_revision IS DISTINCT FROM OLD.lifecycle_revision + 1
+      THEN
+        RAISE EXCEPTION 'Execution principal transition is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      transition_at := GREATEST(
+        statement_timestamp(),
+        OLD.updated_at + INTERVAL '1 microsecond'
+      );
+      NEW.updated_at := transition_at;
+      IF NEW.state = 'active' THEN
+        IF NEW.activated_by_actor_id IS NULL
+          OR NEW.revoked_by_actor_id IS NOT NULL
+          OR NEW.revoked_at IS NOT NULL
+        THEN
+          RAISE EXCEPTION 'Execution principal activation attribution is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        NEW.activated_at := transition_at;
+      ELSE
+        IF NEW.revoked_by_actor_id IS NULL THEN
+          RAISE EXCEPTION 'Execution principal revocation attribution is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        NEW.revoked_at := transition_at;
+        IF OLD.activated_at IS NULL THEN
+          NEW.activated_by_actor_id := NULL;
+          NEW.activated_at := NULL;
+        ELSE
+          NEW.activated_by_actor_id := OLD.activated_by_actor_id;
+          NEW.activated_at := OLD.activated_at;
+        END IF;
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_tenant_execution_principals'::regclass
+          AND tgname = 'omni_execution_principal_validate_insert'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_execution_principal_validate_insert
+        BEFORE INSERT ON omni_tenant_execution_principals
+        FOR EACH ROW EXECUTE FUNCTION omni_validate_execution_principal_insert();
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_tenant_execution_principals'::regclass
+          AND tgname = 'omni_execution_principal_protect'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_execution_principal_protect
+        BEFORE UPDATE OR DELETE ON omni_tenant_execution_principals
+        FOR EACH ROW EXECUTE FUNCTION omni_protect_execution_principal();
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_tenant_execution_principals'::regclass
+          AND tgname = 'omni_execution_principal_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_execution_principal_no_truncate
+        BEFORE TRUNCATE ON omni_tenant_execution_principals
+        FOR EACH STATEMENT EXECUTE FUNCTION omni_protect_execution_principal();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql.query(`
+    REVOKE ALL ON TABLE omni_tenant_execution_principals FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL ON FUNCTION omni_execution_principal_row_is_valid(
+      SMALLINT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, BIGINT,
+      TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ
+    ) FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL ON FUNCTION omni_validate_execution_principal_insert()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL ON FUNCTION omni_protect_execution_principal() FROM PUBLIC
+  `);
+
+  await sql`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_execution_principals'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON TABLE %I.omni_tenant_execution_principals FROM %I',
+          current_schema(), grant_record.grantee
+        );
+      END LOOP;
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_execution_principal_row_is_valid',
+            'omni_validate_execution_principal_insert',
+            'omni_protect_execution_principal'
+          )
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_execution_principal_row_is_valid(' ||
+          'SMALLINT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, ' ||
+          'BIGINT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, ' ||
+          'TIMESTAMPTZ, TIMESTAMPTZ) FROM %I',
+          current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_validate_execution_principal_insert() FROM %I',
+          current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_protect_execution_principal() FROM %I',
+          current_schema(), grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `;
+
+  await sql`
+    ALTER TABLE omni_tenant_execution_principals ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_tenant_execution_principals FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    CREATE POLICY omni_tenant_isolation
+    ON omni_tenant_execution_principals
+    FOR ALL TO PUBLIC
+    USING (omni_tenant_visible(tenant_id))
+    WITH CHECK (omni_tenant_visible(tenant_id))
+  `;
+  await sql`
+    CREATE POLICY omni_execution_principal_holdback
+    ON omni_tenant_execution_principals
+    AS RESTRICTIVE FOR ALL TO PUBLIC
+    USING (omni_system_scope_enabled())
+    WITH CHECK (omni_system_scope_enabled())
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM omni_tenant_execution_principals) THEN
+        RAISE EXCEPTION 'Execution principal shadow must start empty'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_tenant_execution_principals'::regclass
+          AND relkind = 'r'
+          AND relpersistence = 'p'
+          AND relrowsecurity
+          AND relforcerowsecurity
+          AND relowner = (
+            SELECT relowner FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+      ) OR (
+        SELECT count(*) FROM pg_policy
+        WHERE polrelid = 'omni_tenant_execution_principals'::regclass
+      ) <> 2 OR NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_tenant_execution_principals'::regclass
+          AND polname = 'omni_tenant_isolation'
+          AND polpermissive
+          AND pg_get_expr(polqual, polrelid) =
+            'omni_tenant_visible(tenant_id)'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_tenant_execution_principals'::regclass
+          AND polname = 'omni_execution_principal_holdback'
+          AND NOT polpermissive
+          AND pg_get_expr(polqual, polrelid) =
+            'omni_system_scope_enabled()'
+      ) THEN
+        RAISE EXCEPTION 'Execution principal isolation boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_tenant_execution_principals'::regclass
+          AND conname = 'omni_execution_principal_activation_hold_check'
+          AND contype = 'c'
+          AND convalidated
+          AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_tenant_execution_principals'::regclass
+          AND conname = 'omni_execution_principal_row_check'
+          AND contype = 'c'
+          AND convalidated
+      ) THEN
+        RAISE EXCEPTION 'Execution principal row holds are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_execution_principals'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_execution_principals'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_execution_principal_row_is_valid',
+            'omni_validate_execution_principal_insert',
+            'omni_protect_execution_principal'
+          )
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Execution principal shadow grants non-owner access'
+          USING ERRCODE = '55000';
+      END IF;
+      IF (
+        SELECT count(*) FROM pg_trigger
+        WHERE tgrelid = 'omni_tenant_execution_principals'::regclass
+          AND NOT tgisinternal
+          AND tgname IN (
+            'omni_execution_principal_validate_insert',
+            'omni_execution_principal_protect',
+            'omni_execution_principal_no_truncate'
+          )
+      ) <> 3 THEN
+        RAISE EXCEPTION 'Execution principal lifecycle triggers are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_index
+        WHERE indexrelid =
+          'omni_custom_agents_tenant_id_id_key'::regclass
+          AND indrelid = 'omni_custom_agents'::regclass
+          AND indisunique AND indisvalid AND indisready
+      ) THEN
+        RAISE EXCEPTION 'Execution principal agent definition key is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
 }
 
 async function ensureCanonicalAuthUserActorIdentifiersShadow(sql: SqlClient) {

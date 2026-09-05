@@ -369,6 +369,48 @@ databaseDescribe("Postgres schema integration", () => {
     expect(rows.every((row) => row.relrowsecurity && row.relforcerowsecurity)).toBe(true);
   });
 
+  test("keeps the execution-principal registry empty, owner-only, and activation-held", async () => {
+    const [surface] = await admin`
+      SELECT
+        (SELECT count(*)::int FROM omni_tenant_execution_principals) AS rows,
+        (SELECT count(*)::int FROM pg_policy
+         WHERE polrelid = 'omni_tenant_execution_principals'::regclass) AS policies,
+        NOT EXISTS (
+          SELECT 1 FROM information_schema.table_privileges
+          WHERE table_schema = 'public'
+            AND table_name = 'omni_tenant_execution_principals'
+            AND grantee <> current_user
+        ) AS owner_only,
+        EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'omni_tenant_execution_principals'::regclass
+            AND conname = 'omni_execution_principal_activation_hold_check'
+            AND convalidated
+            AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
+        ) AS activation_held
+    `;
+
+    expect(surface).toEqual({
+      rows: 0,
+      policies: 2,
+      owner_only: true,
+      activation_held: true,
+    });
+    await expect(admin`
+      INSERT INTO omni_tenant_execution_principals (
+        tenant_id, principal_kind, principal_id, principal_generation,
+        controller_actor_id, agent_definition_id, system_principal_class,
+        state, lifecycle_revision, created_by_actor_id,
+        activated_by_actor_id, activated_at
+      ) VALUES (
+        'tenant:forbidden', 'system', 'service:forbidden', 1,
+        'actor:00000000-0000-4000-8000-000000000001', NULL, 'worker',
+        'active', 1, 'actor:00000000-0000-4000-8000-000000000001',
+        'actor:00000000-0000-4000-8000-000000000001', statement_timestamp()
+      )
+    `).rejects.toMatchObject({ code: "23514" });
+  });
+
   test("enforces shared limits atomically across concurrent requests", async () => {
     const key = `integration:${crypto.randomUUID()}`;
     const results = await Promise.all(
