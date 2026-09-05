@@ -66,3 +66,15 @@ grant no execution scope and do not authorize memory access. A future resolver
 must live-lock and validate the active authorities for the current request;
 `ExecutionScope` fields or a stored receipt alone cannot substitute for current
 membership, entitlement, consent, or revocation state.
+
+The denial-only memory-authority canary may consume an exact database memory
+scope and a frozen canonical request-actor binding only to inspect the future
+lock order. It first proves that tenant scope matches and that system scope and
+any previously installed memory scope are absent. A legacy request actor is
+never returned and is reported only as the coarse `canonical_scope_actor`
+prerequisite. The canary never installs the scope, calls the v45 hook, or turns
+`ExecutionScope` principal, context-grant, capability-grant, target, or purpose
+fields into authority. Its only result is `deny / activation_held`; export and
+forget additionally require a separate request-bound data-right authority.
+`FOR SHARE` row locks are transient observations, not permission or a durable
+mutation.

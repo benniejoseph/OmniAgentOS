@@ -1406,6 +1406,33 @@ writer, serving import/call site, event append, or row mutation; all v45 and
 v48-v55 database and runtime holds remain, including the need for reviewed
 legal/privacy notice copy before issuance can be enabled.
 
+The following denial-only authority-resolution canary exercises the future
+transaction boundary without enabling it. It accepts only the exact held memory
+access envelope and frozen canonical request binding, opens an ordinary
+tenant-scoped PostgreSQL transaction, rejects system/prior-memory scope, and
+attempts to lock each authority separately in this order: user, current
+membership, membership epoch, purpose, tenant entitlement, consent, the exact
+receipt, and notice contract. It stops at the first unavailable or malformed
+prerequisite. Every attempted lookup is explicit, sequential,
+ambiguity-bounded, and `FOR SHARE`; no authority row or legacy email is
+returned. Production serving roles currently lack `SELECT` on these owner-only
+shadows, so accidental use fails as a sanitized read failure. The restrictive
+v48-v55 policies remain an additional row-hiding hold for any future non-bypass,
+least-privilege reader.
+
+Every successfully returned observation remains `deny / activation_held` with
+coarse ordered missing-authority codes, even against coherent hypothetical
+active rows. Invalid input, missing PostgreSQL, rejected database scope, and
+database read failures produce fixed, sanitized errors instead. Export and
+forget stop before standing authorities and retain a distinct request-bound
+data-right prerequisite. The canary takes transient row locks but performs no
+durable write, event, audit/log, canary-specific metric, telemetry SQL, scope
+installation, v45 call, or file fallback and has no serving import or call
+site. It also leaves executing-principal, context-grant, capability-grant, and
+operation-policy authority explicitly unavailable. Those authorities, governed
+lifecycle writers, atomic typed events, and a shared lock protocol must exist
+before an allow path can be designed.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
