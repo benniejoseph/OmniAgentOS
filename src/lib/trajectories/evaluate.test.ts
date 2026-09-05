@@ -41,7 +41,7 @@ function trajectory(learning: Omit<RunTrajectory["learning"], "citedIds" | "inva
     run: { id: "run", mode: "execute", status: "completed", specialistIds: [], startedAt: new Date().toISOString() },
     request: { promptLength: 1, promptSha256: "a".repeat(64), messageCount: 1 },
     usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, totalTokens: 2, estimatedCostUsd: 0.01, costKnown: true, latencyMs: 20, fallbackCount: 0 },
-    providers: ["openai"], models: ["model"], toolExecutionIds: [], learning: {
+    providers: ["openai"], models: ["model"], toolExecutionIds: [], checkpoints: [], learning: {
       ...learning,
       citedIds: [],
       invalidCitationCount: 0,

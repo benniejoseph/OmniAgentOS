@@ -1,6 +1,7 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { listStreamEvents } from "@/lib/events/store";
 import { getAgentRun } from "@/lib/runs/store";
+import { listRunForkLineage } from "@/lib/runs/fork-store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { buildRunTrajectory } from "@/lib/trajectories/builder";
 import { evaluateTrajectoryLearning } from "@/lib/trajectories/evaluate";
@@ -35,10 +36,14 @@ async function GETHandler(
   });
   const trajectory = buildRunTrajectory(run, events);
   const verification = verifyRunTrajectory(trajectory, run);
+  const lineage = await listRunForkLineage(id, {
+    tenantId: auth.tenantId,
+  });
   return Response.json(
     {
       trajectory,
       verification,
+      lineage,
       learningEvaluation: evaluateTrajectoryLearning(trajectory, verification),
     },
     {

@@ -7,6 +7,7 @@ import {
 import type { AgentRunRecord } from "@/lib/runs/types";
 import type {
   RunTrajectory,
+  TrajectoryCheckpoint,
   TrajectoryEvent,
   TrajectoryUsage,
 } from "@/lib/trajectories/types";
@@ -97,6 +98,7 @@ export function buildRunTrajectory(
   const toolExecutionIds = unique(ordered
     .filter((event) => event.type === "run.tool" || event.type === "run.waiting_approval")
     .map((event) => optionalString(event.payload.executionId)));
+  const checkpoints = ordered.flatMap(toTrajectoryCheckpoint);
 
   return {
     version: 2,
@@ -123,6 +125,7 @@ export function buildRunTrajectory(
     providers,
     models,
     toolExecutionIds,
+    checkpoints,
     learning: {
       feedbackVerdict: run.feedback?.verdict,
       correctionLength: run.feedback?.correction?.length,
@@ -204,6 +207,29 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
     copy(receipt, payload, ["status", "score"]);
   } else if (event.type === "run.status") {
     copy(receipt, payload, ["label"]);
+  } else if (event.type === "run.checkpoint.recorded") {
+    copy(receipt, payload, [
+      "schemaVersion", "checkpointId", "checkpointSha256", "runId",
+      "sequence", "parentCheckpointId", "parentCheckpointSha256",
+      "boundaryKind", "boundaryPhase", "boundaryId", "boundaryAttempt",
+      "lifecycleState", "resumeDisposition", "stateReferenceCount",
+      "executionScopeVersion", "executionScopeSha256",
+      "executingPrincipalType", "executingPrincipalId", "workspaceId",
+      "projectId", "missionId", "delegationId", "purposeSha256",
+      "rolloutCapabilityId", "engineVersionId", "contractVersionId",
+      "configurationSha256", "rolloutMode", "rolloutLifecycleStatus",
+      "rolloutGeneration", "rolloutLifecycleRevision",
+    ]);
+  } else if (event.type === "run.fork.created" || event.type === "run.forked") {
+    copy(receipt, payload, [
+      "schemaVersion", "forkId", "sourceRunId", "sourceCheckpointId",
+      "sourceCheckpointSha256", "sourceCheckpointSequence",
+      "sourceEventPrefixCount", "sourceEventPrefixLastSeq",
+      "sourceEventPrefixSha256", "forkRunId", "executionScopeSha256",
+      "contextGrantIdsSha256", "capabilityGrantIdsSha256",
+      "correctionLength", "correctionSha256", "approvalInheritance",
+      "continuationInheritance",
+    ]);
   } else if (event.type === "run.error") {
     const message = optionalString(payload.message);
     if (message) {
@@ -212,6 +238,40 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
     }
   }
   return { seq: event.seq, type: event.type, at: event.at, receipt };
+}
+
+function toTrajectoryCheckpoint(event: DomainEvent): TrajectoryCheckpoint[] {
+  if (event.type !== "run.checkpoint.recorded") return [];
+  const payload = event.payload;
+  const checkpointId = optionalString(payload.checkpointId);
+  const checkpointSha256 = optionalString(payload.checkpointSha256);
+  const sequence = finiteInteger(payload.sequence);
+  const boundaryKind = optionalString(payload.boundaryKind);
+  const boundaryPhase = optionalString(payload.boundaryPhase);
+  const boundaryAttempt = finiteInteger(payload.boundaryAttempt);
+  const lifecycleState = optionalString(payload.lifecycleState);
+  const resumeDisposition = optionalString(payload.resumeDisposition);
+  if (
+    !checkpointId ||
+    !checkpointSha256 ||
+    sequence === undefined ||
+    boundaryAttempt === undefined ||
+    !isBoundaryKind(boundaryKind) ||
+    !isBoundaryPhase(boundaryPhase) ||
+    !isLifecycleState(lifecycleState) ||
+    !isResumeDisposition(resumeDisposition)
+  ) return [];
+  return [{
+    checkpointId,
+    checkpointSha256,
+    sequence,
+    boundaryKind,
+    boundaryPhase,
+    boundaryAttempt,
+    lifecycleState,
+    resumeDisposition,
+    recordedAt: event.at,
+  }];
 }
 
 function copy(
@@ -259,4 +319,26 @@ function optionalFinite(value: unknown) {
   return value === undefined || value === null || !Number.isFinite(number) || number < 0
     ? undefined
     : number;
+}
+
+function finiteInteger(value: unknown) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : undefined;
+}
+
+function isBoundaryKind(value: string | undefined): value is TrajectoryCheckpoint["boundaryKind"] {
+  return value === "model" || value === "tool" || value === "approval" ||
+    value === "delegation" || value === "verifier";
+}
+
+function isBoundaryPhase(value: string | undefined): value is TrajectoryCheckpoint["boundaryPhase"] {
+  return value === "before" || value === "waiting" || value === "after";
+}
+
+function isLifecycleState(value: string | undefined): value is TrajectoryCheckpoint["lifecycleState"] {
+  return value === "active" || value === "waiting" || value === "terminal";
+}
+
+function isResumeDisposition(value: string | undefined): value is TrajectoryCheckpoint["resumeDisposition"] {
+  return value === "resumable" || value === "awaiting_signal" || value === "not_resumable";
 }
