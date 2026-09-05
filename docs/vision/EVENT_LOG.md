@@ -697,6 +697,28 @@ itself. The v56 active-state constraint and every earlier P3.1 hold remain in
 force until the external trust registry, real ceremony evidence, and reviewed
 cutover exist.
 
+Migration v60 adds the missing non-user execution-principal identity shadow
+without enrolling a principal. `omni_tenant_execution_principals` separates a
+security principal from descriptive agent configuration and reserves only two
+closed kinds: `agent:<id>` principals bound to one same-tenant custom-agent
+definition, and actor-bound `service:<id>` principals with one closed system
+class. Every generation names a canonical controlling actor, starts held, and
+retains explicit lifecycle attribution. Definition ownership is checked through
+the append-only canonical/legacy actor-identifier registry; it does not infer
+authority from a persona, tool list, model policy, tenant role, or email.
+
+The table starts empty, is owner-only, uses forced tenant RLS plus a restrictive
+system-scope holdback, and has a validated active-state prohibition. Its
+generation and immutability triggers reserve held/active/revoked transitions,
+but no active row is currently reachable. The matching pure contract fixes the
+record shapes and metadata-only
+`security.execution_principal.{held,activated,revoked}` event family; it has no
+writer or event-store import. V60 grants no serving read or write, adds no
+resolver call site, does not seed Asael or worker identities, and leaves the v43
+memory enrollment lock and v45 denial hook unchanged. Canonical workspace
+membership, context/capability grants, operation policy, governed principal
+writers, activation, and the atomic memory cutover remain later P3.1 gates.
+
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.

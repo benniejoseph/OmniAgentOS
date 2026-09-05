@@ -691,11 +691,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the memory deletion scrub lease migration", () => {
+  it("pins the tenant execution-principal shadow migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 59,
-      name: "memory_deletion_scrub_lease_contract",
-      checksum: "af5d06d4321e7e859f49c4edc7092f819954240b1d566fb79eadc22ef84874af",
+      version: 60,
+      name: "tenant_execution_principals_shadow",
+      checksum: "7dfb17572f071bed7a483156a531fb69234cad2ccf71422a26147e0c63137d8e",
     });
   });
 
