@@ -94,6 +94,7 @@ export const tenantRootPolicyTables = [
   "omni_tenant_workspace_memberships",
   "omni_tenant_memory_access_grants",
   "omni_tenant_memory_operation_policies",
+  "omni_tenant_memory_data_right_requests",
   "omni_knowledge_documents",
   "omni_knowledge_chunks",
   "omni_retrieval_traces",
@@ -856,6 +857,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[62],
       up: ensureTenantMemoryOperationPoliciesShadow,
+    },
+    {
+      ...databaseSchemaMigrations[63],
+      up: ensureTenantMemoryDataRightRequestsShadow,
     },
   ];
 }
@@ -35758,6 +35763,510 @@ async function ensureTenantMemoryOperationPoliciesShadow(sql: SqlClient) {
           )
       ) <> 3 THEN
         RAISE EXCEPTION 'Memory operation policy hold triggers are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureTenantMemoryDataRightRequestsShadow(sql: SqlClient) {
+  // v64 supplies a one-time human request authority for export and forget.
+  // It starts empty and held; standing consent, tenant roles, and generic tool
+  // approval cannot be translated into this authority.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Memory data-right request migration requires schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`SET LOCAL row_security = on`;
+  await sql`
+    LOCK TABLE
+      omni_auth_tenants,
+      omni_auth_users,
+      omni_auth_memberships,
+      omni_memory_purpose_catalog,
+      omni_tenant_memory_operation_policies,
+      omni_tenant_memory_access_grants,
+      omni_memories
+    IN SHARE MODE
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*) FROM omni_schema_version
+        WHERE version = 63
+          AND name = 'tenant_memory_operation_policies_shadow'
+          AND checksum =
+            '6af56428280d777c2fffa9360543cb879542531a7463ce83e836dd6e88e4e207'
+      ) <> 1 OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_tenant_memory_operation_policies'::regclass
+          AND conname = 'omni_memory_operation_policy_activation_hold_check'
+          AND contype = 'c' AND convalidated
+          AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_memories'::regclass
+          AND conname = 'omni_memories_access_enrollment_hold_check'
+          AND contype = 'c' AND convalidated
+          AND pg_get_expr(conbin, conrelid) = '(access_contract_version = 0)'
+      ) THEN
+        RAISE EXCEPTION 'Memory data-right request predecessors changed'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_data_right_request_row_is_valid(
+      candidate_schema_version SMALLINT,
+      candidate_tenant_id TEXT,
+      candidate_request_id TEXT,
+      candidate_request_generation BIGINT,
+      candidate_purpose_id TEXT,
+      candidate_subject_actor_id TEXT,
+      candidate_executing_principal_type TEXT,
+      candidate_executing_principal_id TEXT,
+      candidate_confirmation_kind TEXT,
+      candidate_request_binding_sha256 TEXT,
+      candidate_resource_ids TEXT[],
+      candidate_not_before TIMESTAMPTZ,
+      candidate_expires_at TIMESTAMPTZ,
+      candidate_state TEXT,
+      candidate_lifecycle_revision BIGINT,
+      candidate_created_by_actor_id TEXT,
+      candidate_activated_by_actor_id TEXT,
+      candidate_consumed_by_actor_id TEXT,
+      candidate_revoked_by_actor_id TEXT,
+      candidate_created_at TIMESTAMPTZ,
+      candidate_activated_at TIMESTAMPTZ,
+      candidate_consumed_at TIMESTAMPTZ,
+      candidate_revoked_at TIMESTAMPTZ,
+      candidate_updated_at TIMESTAMPTZ
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        candidate_schema_version = 1
+        AND public.omni_source_contract_id_is_valid(candidate_tenant_id)
+        AND candidate_request_id ~
+          '^memory-data-right-request:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+        AND candidate_request_generation BETWEEN 1 AND 9007199254740991
+        AND candidate_purpose_id IN ('memory.export.v1', 'memory.forget.v1')
+        AND candidate_subject_actor_id ~
+          '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        AND candidate_executing_principal_type = 'user'
+        AND candidate_executing_principal_id = candidate_subject_actor_id
+        AND candidate_created_by_actor_id = candidate_subject_actor_id
+        AND candidate_confirmation_kind = CASE candidate_purpose_id
+          WHEN 'memory.forget.v1' THEN 'reviewed_deletion_preview'
+          ELSE 'explicit_export_request'
+        END
+        AND candidate_request_binding_sha256 ~ '^[0-9a-f]{64}$'
+        AND public.omni_source_id_array_is_canonical(
+          candidate_resource_ids, 256
+        )
+        AND COALESCE(array_length(candidate_resource_ids, 1), 0) >= 1
+        AND candidate_state IN ('held', 'active', 'consumed', 'revoked')
+        AND candidate_lifecycle_revision BETWEEN 0 AND 9007199254740991
+        AND (
+          candidate_activated_by_actor_id IS NULL
+          OR candidate_activated_by_actor_id = candidate_subject_actor_id
+        )
+        AND (
+          candidate_consumed_by_actor_id IS NULL
+          OR candidate_consumed_by_actor_id = candidate_subject_actor_id
+        )
+        AND (
+          candidate_revoked_by_actor_id IS NULL
+          OR candidate_revoked_by_actor_id = candidate_subject_actor_id
+        )
+        AND (candidate_activated_by_actor_id IS NULL) =
+          (candidate_activated_at IS NULL)
+        AND (candidate_consumed_by_actor_id IS NULL) =
+          (candidate_consumed_at IS NULL)
+        AND (candidate_revoked_by_actor_id IS NULL) =
+          (candidate_revoked_at IS NULL)
+        AND (
+          (
+            candidate_state = 'held' AND candidate_lifecycle_revision = 0
+            AND candidate_activated_at IS NULL
+            AND candidate_consumed_at IS NULL
+            AND candidate_revoked_at IS NULL
+          ) OR (
+            candidate_state = 'active' AND candidate_lifecycle_revision = 1
+            AND candidate_activated_at IS NOT NULL
+            AND candidate_consumed_at IS NULL
+            AND candidate_revoked_at IS NULL
+          ) OR (
+            candidate_state = 'consumed' AND candidate_lifecycle_revision = 2
+            AND candidate_activated_at IS NOT NULL
+            AND candidate_consumed_at IS NOT NULL
+            AND candidate_revoked_at IS NULL
+          ) OR (
+            candidate_state = 'revoked'
+            AND candidate_consumed_at IS NULL
+            AND candidate_revoked_at IS NOT NULL
+            AND (
+              (candidate_activated_at IS NULL AND candidate_lifecycle_revision = 1)
+              OR
+              (candidate_activated_at IS NOT NULL AND candidate_lifecycle_revision = 2)
+            )
+          )
+        )
+        AND candidate_created_at <= candidate_not_before
+        AND candidate_not_before < candidate_expires_at
+        AND candidate_created_at <= candidate_updated_at
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_activated_at BETWEEN candidate_not_before
+            AND candidate_expires_at
+          AND candidate_activated_at < candidate_expires_at
+          AND candidate_activated_at <= candidate_updated_at
+        )
+        AND (
+          candidate_consumed_at IS NULL
+          OR candidate_consumed_at BETWEEN candidate_activated_at
+            AND candidate_updated_at
+        )
+        AND (
+          candidate_revoked_at IS NULL
+          OR candidate_revoked_at BETWEEN candidate_created_at
+            AND candidate_updated_at
+        )
+        AND (
+          candidate_activated_at IS NULL OR candidate_revoked_at IS NULL
+          OR candidate_activated_at <= candidate_revoked_at
+        ),
+        FALSE
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_tenant_memory_data_right_requests (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      request_generation BIGINT NOT NULL,
+      purpose_id TEXT NOT NULL,
+      subject_actor_id TEXT NOT NULL,
+      executing_principal_type TEXT NOT NULL DEFAULT 'user',
+      executing_principal_id TEXT NOT NULL,
+      confirmation_kind TEXT NOT NULL,
+      request_binding_sha256 TEXT NOT NULL,
+      resource_ids TEXT[] NOT NULL,
+      not_before TIMESTAMPTZ NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      state TEXT NOT NULL DEFAULT 'held',
+      lifecycle_revision BIGINT NOT NULL DEFAULT 0,
+      created_by_actor_id TEXT NOT NULL,
+      activated_by_actor_id TEXT,
+      consumed_by_actor_id TEXT,
+      revoked_by_actor_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      activated_at TIMESTAMPTZ,
+      consumed_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_memory_data_right_requests_pkey PRIMARY KEY (
+        tenant_id, request_id, request_generation
+      ),
+      CONSTRAINT omni_memory_data_right_request_row_check CHECK (
+        omni_memory_data_right_request_row_is_valid(
+          schema_version, tenant_id, request_id, request_generation,
+          purpose_id, subject_actor_id, executing_principal_type,
+          executing_principal_id, confirmation_kind, request_binding_sha256,
+          resource_ids, not_before, expires_at, state, lifecycle_revision,
+          created_by_actor_id, activated_by_actor_id, consumed_by_actor_id,
+          revoked_by_actor_id, created_at, activated_at, consumed_at,
+          revoked_at, updated_at
+        )
+      ),
+      CONSTRAINT omni_memory_data_right_request_activation_hold_check
+        CHECK (state NOT IN ('active', 'consumed')),
+      CONSTRAINT omni_memory_data_right_request_tenant_fkey
+        FOREIGN KEY (tenant_id) REFERENCES omni_auth_tenants (id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_data_right_request_purpose_fkey
+        FOREIGN KEY (purpose_id) REFERENCES omni_memory_purpose_catalog (purpose_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_data_right_request_subject_fkey
+        FOREIGN KEY (subject_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_data_right_request_created_actor_fkey
+        FOREIGN KEY (created_by_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_data_right_request_activated_actor_fkey
+        FOREIGN KEY (activated_by_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_data_right_request_consumed_actor_fkey
+        FOREIGN KEY (consumed_by_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_data_right_request_revoked_actor_fkey
+        FOREIGN KEY (revoked_by_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_memory_data_right_requests_current_idx
+    ON omni_tenant_memory_data_right_requests (tenant_id, request_id)
+    WHERE state NOT IN ('consumed', 'revoked')
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_data_right_requests_subject_idx
+    ON omni_tenant_memory_data_right_requests (
+      tenant_id, subject_actor_id, purpose_id, state, expires_at
+    )
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_memory_data_right_request_insert()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      expected_generation BIGINT;
+      insertion_time TIMESTAMPTZ;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id), hashtext(NEW.request_id)
+      );
+      IF NEW.state <> 'held' OR NEW.lifecycle_revision <> 0
+        OR NEW.activated_by_actor_id IS NOT NULL
+        OR NEW.consumed_by_actor_id IS NOT NULL
+        OR NEW.revoked_by_actor_id IS NOT NULL
+        OR NEW.activated_at IS NOT NULL
+        OR NEW.consumed_at IS NOT NULL
+        OR NEW.revoked_at IS NOT NULL
+      THEN
+        RAISE EXCEPTION 'Memory data-right requests must start held'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NOT public.omni_actor_has_active_tenant_membership(
+        NEW.tenant_id, NEW.subject_actor_id
+      ) THEN
+        RAISE EXCEPTION 'Memory data-right request subject lacks tenant membership'
+          USING ERRCODE = '23503';
+      END IF;
+      insertion_time := statement_timestamp();
+      IF NEW.expires_at <= insertion_time OR NEW.not_before >= NEW.expires_at THEN
+        RAISE EXCEPTION 'Memory data-right request validity window is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      NEW.not_before := GREATEST(NEW.not_before, insertion_time);
+      SELECT COALESCE(MAX(request_generation), 0) + 1
+      INTO expected_generation
+      FROM public.omni_tenant_memory_data_right_requests
+      WHERE tenant_id = NEW.tenant_id AND request_id = NEW.request_id;
+      IF NEW.request_generation IS DISTINCT FROM expected_generation THEN
+        RAISE EXCEPTION 'Memory data-right request generation is not next'
+          USING ERRCODE = '23514';
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM public.omni_tenant_memory_data_right_requests
+        WHERE tenant_id = NEW.tenant_id AND request_id = NEW.request_id
+          AND state NOT IN ('consumed', 'revoked')
+      ) THEN
+        RAISE EXCEPTION 'Memory data-right request already has current authority'
+          USING ERRCODE = '23514';
+      END IF;
+      NEW.created_at := insertion_time;
+      NEW.updated_at := insertion_time;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_memory_data_right_request_mutation()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Memory data-right request lifecycle is held'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+  await sql`
+    CREATE TRIGGER omni_memory_data_right_request_validate_insert
+    BEFORE INSERT ON omni_tenant_memory_data_right_requests
+    FOR EACH ROW EXECUTE FUNCTION omni_validate_memory_data_right_request_insert()
+  `;
+  await sql`
+    CREATE TRIGGER omni_memory_data_right_request_mutation_hold
+    BEFORE UPDATE OR DELETE ON omni_tenant_memory_data_right_requests
+    FOR EACH ROW EXECUTE FUNCTION omni_reject_memory_data_right_request_mutation()
+  `;
+  await sql`
+    CREATE TRIGGER omni_memory_data_right_request_no_truncate
+    BEFORE TRUNCATE ON omni_tenant_memory_data_right_requests
+    FOR EACH STATEMENT EXECUTE FUNCTION omni_reject_memory_data_right_request_mutation()
+  `;
+
+  await sql.query(`
+    REVOKE ALL ON TABLE omni_tenant_memory_data_right_requests FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_memory_data_right_request_row_is_valid(
+      SMALLINT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT,
+      TEXT[], TIMESTAMPTZ, TIMESTAMPTZ, TEXT, BIGINT, TEXT, TEXT, TEXT,
+      TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ
+    ) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_validate_memory_data_right_request_insert()
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_reject_memory_data_right_request_mutation()
+      FROM PUBLIC
+  `);
+  await sql`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_memory_data_right_requests'
+          AND grantee <> current_user AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON TABLE %I.omni_tenant_memory_data_right_requests FROM %I',
+          current_schema(), grant_record.grantee
+        );
+      END LOOP;
+      FOR grant_record IN
+        SELECT DISTINCT grantee FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_memory_data_right_request_row_is_valid',
+            'omni_validate_memory_data_right_request_insert',
+            'omni_reject_memory_data_right_request_mutation'
+          ) AND grantee <> current_user AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_memory_data_right_request_row_is_valid(' ||
+          'SMALLINT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, ' ||
+          'TEXT[], TIMESTAMPTZ, TIMESTAMPTZ, TEXT, BIGINT, TEXT, TEXT, TEXT, ' ||
+          'TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ, ' ||
+          'TIMESTAMPTZ) FROM %I', current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_validate_memory_data_right_request_insert() ' ||
+          'FROM %I', current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_reject_memory_data_right_request_mutation() ' ||
+          'FROM %I', current_schema(), grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `;
+
+  await sql`
+    ALTER TABLE omni_tenant_memory_data_right_requests ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_tenant_memory_data_right_requests FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    CREATE POLICY omni_tenant_isolation
+    ON omni_tenant_memory_data_right_requests
+    FOR ALL TO PUBLIC
+    USING (omni_tenant_visible(tenant_id))
+    WITH CHECK (omni_tenant_visible(tenant_id))
+  `;
+  await sql`
+    CREATE POLICY omni_memory_data_right_request_holdback
+    ON omni_tenant_memory_data_right_requests
+    AS RESTRICTIVE FOR ALL TO PUBLIC
+    USING (omni_system_scope_enabled())
+    WITH CHECK (omni_system_scope_enabled())
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM omni_tenant_memory_data_right_requests) THEN
+        RAISE EXCEPTION 'Memory data-right request shadow must start empty'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_tenant_memory_data_right_requests'::regclass
+          AND relkind = 'r' AND relpersistence = 'p'
+          AND relrowsecurity AND relforcerowsecurity
+          AND relowner = (
+            SELECT relowner FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+      ) OR (
+        SELECT count(*) FROM pg_policy
+        WHERE polrelid = 'omni_tenant_memory_data_right_requests'::regclass
+      ) <> 2 OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_tenant_memory_data_right_requests'::regclass
+          AND conname = 'omni_memory_data_right_request_activation_hold_check'
+          AND contype = 'c' AND convalidated
+          AND pg_get_expr(conbin, conrelid) =
+            '(state <> ALL (ARRAY[''active''::text, ''consumed''::text]))'
+      ) THEN
+        RAISE EXCEPTION 'Memory data-right request boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_memory_data_right_requests'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_memory_data_right_requests'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_memory_data_right_request_row_is_valid',
+            'omni_validate_memory_data_right_request_insert',
+            'omni_reject_memory_data_right_request_mutation'
+          ) AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Memory data-right request grants non-owner access'
+          USING ERRCODE = '55000';
+      END IF;
+      IF (
+        SELECT count(*) FROM pg_trigger
+        WHERE tgrelid = 'omni_tenant_memory_data_right_requests'::regclass
+          AND NOT tgisinternal
+          AND tgname IN (
+            'omni_memory_data_right_request_validate_insert',
+            'omni_memory_data_right_request_mutation_hold',
+            'omni_memory_data_right_request_no_truncate'
+          )
+      ) <> 3 THEN
+        RAISE EXCEPTION 'Memory data-right request hold triggers are invalid'
           USING ERRCODE = '55000';
       END IF;
     END

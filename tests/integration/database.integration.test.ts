@@ -571,6 +571,94 @@ databaseDescribe("Postgres schema integration", () => {
     });
   });
 
+  test("keeps one-time memory data-right requests empty, owner-only, and inactive", async () => {
+    const [surface] = await admin`
+      SELECT
+        (SELECT count(*)::int FROM omni_tenant_memory_data_right_requests)
+          AS rows,
+        (SELECT count(*)::int FROM pg_policy
+         WHERE polrelid = 'omni_tenant_memory_data_right_requests'::regclass)
+          AS policies,
+        NOT EXISTS (
+          SELECT 1 FROM information_schema.table_privileges
+          WHERE table_schema = 'public'
+            AND table_name = 'omni_tenant_memory_data_right_requests'
+            AND grantee <> current_user
+        ) AS owner_only,
+        EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'omni_tenant_memory_data_right_requests'::regclass
+            AND conname = 'omni_memory_data_right_request_activation_hold_check'
+            AND convalidated
+        ) AS activation_held,
+        omni_memory_data_right_request_row_is_valid(
+          1::smallint, 'tenant:one'::text,
+          'memory-data-right-request:valid'::text, 1::bigint,
+          'memory.forget.v1'::text,
+          'actor:00000000-0000-4000-8000-000000000001'::text,
+          'user'::text,
+          'actor:00000000-0000-4000-8000-000000000001'::text,
+          'reviewed_deletion_preview'::text, repeat('a', 64)::text,
+          ARRAY['memory:one']::text[],
+          statement_timestamp()::timestamptz,
+          (statement_timestamp() + INTERVAL '1 hour')::timestamptz,
+          'held'::text, 0::bigint,
+          'actor:00000000-0000-4000-8000-000000000001'::text,
+          NULL::text, NULL::text, NULL::text,
+          statement_timestamp()::timestamptz,
+          NULL::timestamptz, NULL::timestamptz, NULL::timestamptz,
+          statement_timestamp()::timestamptz
+        ) AS valid_held_request,
+        omni_memory_data_right_request_row_is_valid(
+          1::smallint, 'tenant:one'::text,
+          'memory-data-right-request:unsafe'::text, 1::bigint,
+          'memory.forget.v1'::text,
+          'actor:00000000-0000-4000-8000-000000000001'::text,
+          'user'::text,
+          'actor:00000000-0000-4000-8000-000000000001'::text,
+          'explicit_export_request'::text, repeat('a', 64)::text,
+          ARRAY['memory:one']::text[],
+          statement_timestamp()::timestamptz,
+          (statement_timestamp() + INTERVAL '1 hour')::timestamptz,
+          'held'::text, 0::bigint,
+          'actor:00000000-0000-4000-8000-000000000001'::text,
+          NULL::text, NULL::text, NULL::text,
+          statement_timestamp()::timestamptz,
+          NULL::timestamptz, NULL::timestamptz, NULL::timestamptz,
+          statement_timestamp()::timestamptz
+        ) AS mismatched_confirmation_accepted
+    `;
+
+    expect(surface).toEqual({
+      rows: 0,
+      policies: 2,
+      owner_only: true,
+      activation_held: true,
+      valid_held_request: true,
+      mismatched_confirmation_accepted: false,
+    });
+    await expect(admin`
+      INSERT INTO omni_tenant_memory_data_right_requests (
+        tenant_id, request_id, request_generation, purpose_id,
+        subject_actor_id, executing_principal_type, executing_principal_id,
+        confirmation_kind, request_binding_sha256, resource_ids,
+        not_before, expires_at, state, lifecycle_revision,
+        created_by_actor_id, activated_by_actor_id, activated_at
+      ) VALUES (
+        'tenant:forbidden', 'memory-data-right-request:forbidden', 1,
+        'memory.forget.v1',
+        'actor:00000000-0000-4000-8000-000000000001', 'user',
+        'actor:00000000-0000-4000-8000-000000000001',
+        'reviewed_deletion_preview', ${"a".repeat(64)},
+        ARRAY['memory:forbidden'], statement_timestamp(),
+        statement_timestamp() + INTERVAL '1 hour', 'active', 1,
+        'actor:00000000-0000-4000-8000-000000000001',
+        'actor:00000000-0000-4000-8000-000000000001',
+        statement_timestamp()
+      )
+    `).rejects.toMatchObject({ code: "23514" });
+  });
+
   test("enforces shared limits atomically across concurrent requests", async () => {
     const key = `integration:${crypto.randomUUID()}`;
     const results = await Promise.all(
