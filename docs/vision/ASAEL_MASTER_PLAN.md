@@ -509,9 +509,12 @@ execution, no effect receipt, and a completed generation-2 fence. The expanded
 shadow implementation now chains model success/failure, governed tool,
 approval, council delegation, and verifier boundaries, and its bounded
 reconciler fails closed on missing phase coverage or successful mutations
-without exact receipts. P1.6 remains open until that configuration is deployed,
-registered as a new shadow generation, reconciled against a complete non-empty
-production sample, and proven under interruption before activation.
+without exact receipts. Generation 3 was deployed and registered in production
+shadow mode on 2026-09-06. A forced-approval read-only continuation and a
+tool-free council/Sentinel run covered all ten required phases; the post-cleanup
+sample matched 36 of 36 checkpoints and comparison receipts with no waiting
+approvals. P1.6 remains open only for the separately pinned full-boundary
+activation canary and its interrupted-run, no-duplicate-effect proof.
 The normative
 boundary and activation order are documented in
 [RunCheckpoint v1](RUN_CHECKPOINTS.md).
