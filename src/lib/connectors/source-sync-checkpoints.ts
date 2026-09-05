@@ -357,7 +357,7 @@ export async function commitSourceSyncPage(input: {
   const manifestSha256 = sourceContractSha256(
     items.map((item, ordinal) => ({ ordinal, ...item })),
   );
-  const observedAt = canonicalTimestamp(input.observedAt);
+  const observedAt = canonicalSourceSyncTimestamp(input.observedAt);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -405,7 +405,7 @@ export async function commitCanonicalSourceSyncPage(input: {
   const manifestSha256 = sourceContractSha256(
     items.map((item, ordinal) => ({ ordinal, ...item })),
   );
-  const observedAt = canonicalTimestamp(input.observedAt);
+  const observedAt = canonicalSourceSyncTimestamp(input.observedAt);
 
   requireCanonicalPostgres();
   await ensureDatabaseSchema();
@@ -1325,7 +1325,7 @@ function initialCheckpoint(
   identity: SourceSyncStreamIdentity,
   observedNow = new Date().toISOString(),
 ): StoredCheckpoint {
-  const now = canonicalTimestamp(observedNow);
+  const now = canonicalSourceSyncTimestamp(observedNow);
   return {
     id: checkpointId(identity, 0),
     schemaVersion: SOURCE_SYNC_SCHEMA_VERSION,
@@ -1535,7 +1535,8 @@ async function assertStoredCanonicalPageItems(
         (item.providerRevisionKeySha256 || null) ||
       row.manifest_item_sha256 !== item.manifestItemSha256 ||
       row.adapter_event_key_sha256 !== item.adapterEventKeySha256 ||
-      canonicalTimestamp(String(row.observed_at)) !== item.observedAt ||
+      canonicalSourceSyncTimestamp(row.observed_at as string | Date) !==
+        item.observedAt ||
       storedNullableString(row.delete_reason_code) !==
         (item.deleteReasonCode || null) ||
       row.outcome !== outcome
@@ -1850,7 +1851,7 @@ async function databaseTimestamp(sql: SourceSyncSqlClient) {
   if (rows.length !== 1) {
     throw new Error("Source sync database clock is unavailable.");
   }
-  return canonicalTimestamp(String(rows[0].current_time));
+  return canonicalSourceSyncTimestamp(rows[0].current_time as string | Date);
 }
 
 async function appendPageObservedEvent(
@@ -2393,7 +2394,7 @@ function validatedClaim(page: ClaimedSourceSyncPage) {
   if (page.phase !== "backfill" && page.phase !== "changes") {
     throw new Error("Source sync phase is invalid.");
   }
-  const leaseExpiresAt = canonicalTimestamp(page.leaseExpiresAt);
+  const leaseExpiresAt = canonicalSourceSyncTimestamp(page.leaseExpiresAt);
   const pageSequence = nonNegativeSafeInteger(
     page.pageSequence,
     "page sequence",
@@ -2482,7 +2483,7 @@ function validatedManifest(
           }
         : {}),
       adapterEventKeySha256,
-      observedAt: canonicalTimestamp(item.observedAt),
+      observedAt: canonicalSourceSyncTimestamp(item.observedAt),
       manifestItemSha256: sourceContractSha256Schema.parse(
         item.manifestItemSha256,
       ),
@@ -2765,7 +2766,7 @@ function boundedCursor(value: string, field: string) {
   return normalized;
 }
 
-function canonicalTimestamp(value: string) {
+export function canonicalSourceSyncTimestamp(value: string | Date) {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) {
     throw new Error("Source sync provider timestamp is invalid.");
