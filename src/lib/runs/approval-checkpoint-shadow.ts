@@ -212,6 +212,7 @@ export function buildApprovalWaitingCheckpointShadow(input: {
   executionScope: ExecutionScope;
   runContractEnvelope: RunContractEnvelopeV1;
   enrollment: ApprovalCheckpointShadowEnrollment;
+  parent?: RunCheckpointV1 | null;
   approvalExecutionId: string;
   state: ApprovalCheckpointState;
   resourceUsage: ApprovalCheckpointResourceUsage;
@@ -231,6 +232,19 @@ export function buildApprovalWaitingCheckpointShadow(input: {
     executionScope: scope,
     runContractEnvelope: envelope,
   });
+  const parent = input.parent || null;
+  if (
+    parent &&
+    (parent.runId !== input.runId ||
+      parent.executionScope.tenantId !== scope.tenantId ||
+      parent.enginePin.configurationSha256 !==
+        enrollment.enginePin.configurationSha256 ||
+      parent.lifecycleState !== "active" ||
+      parent.resumeDisposition !== "resumable" ||
+      parent.boundary.phase !== "after")
+  ) {
+    throw new Error("Approval checkpoint parent changed its active run binding.");
+  }
 
   return buildRunCheckpointV1({
     runId: input.runId,
@@ -241,8 +255,14 @@ export function buildApprovalWaitingCheckpointShadow(input: {
       boundaryId: input.approvalExecutionId,
       attempt: 1,
     },
-    sequence: 0,
-    parent: null,
+    sequence: parent ? parent.sequence + 1 : 0,
+    parent: parent
+      ? {
+          checkpointId: parent.checkpointId,
+          checkpointSha256: parent.checkpointSha256,
+          sequence: parent.sequence,
+        }
+      : null,
     enginePin: enrollment.enginePin,
     stateReferences: [
       {
@@ -331,7 +351,7 @@ export async function recordApprovalWaitingCheckpointShadow(
   });
 
   const existing = await sql.query(
-    `SELECT checkpoint_id
+    `SELECT checkpoint_json
      FROM omni_run_checkpoints
      WHERE tenant_id = $1 AND run_id = $2
      ORDER BY sequence DESC
@@ -339,7 +359,27 @@ export async function recordApprovalWaitingCheckpointShadow(
      FOR SHARE`,
     [scope.tenantId, input.runId],
   );
-  if (existing[0]) return noCheckpoint("already_recorded");
+  const parent = existing[0]
+    ? parseRunCheckpointV1(existing[0].checkpoint_json)
+    : null;
+  if (
+    parent &&
+    !isExpandedCheckpointShadowEnrollment(enrollment)
+  ) {
+    return noCheckpoint("already_recorded");
+  }
+  if (
+    parent &&
+    parent.boundary.kind === "approval" &&
+    parent.boundary.phase === "waiting" &&
+    parent.boundary.boundaryId === input.approvalExecutionId
+  ) {
+    return Object.freeze({
+      checkpoint: parent,
+      outcome: "recorded" as const,
+      resumeAuthorityGranted: false as const,
+    });
+  }
 
   const runRows = await sql.query(
     `SELECT id, tenant_id, status, response, continuation, started_at
@@ -443,7 +483,7 @@ export async function recordApprovalWaitingCheckpointShadow(
     String(runRow.started_at),
     input.recordedAt,
   );
-  if (usage.externalEffectCount !== 0) {
+  if (usage.externalEffectCount !== 0 && !parent) {
     return noCheckpoint("prior_effects");
   }
 
@@ -489,6 +529,7 @@ export async function recordApprovalWaitingCheckpointShadow(
     executionScope: scope,
     runContractEnvelope: envelope,
     enrollment,
+    parent,
     approvalExecutionId: input.approvalExecutionId,
     state: {
       runRecordSha256,

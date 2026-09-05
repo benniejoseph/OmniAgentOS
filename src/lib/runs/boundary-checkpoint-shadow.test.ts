@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildApprovalWaitingCheckpointShadow,
   RUN_CHECKPOINT_CAPABILITY_ID,
   RUN_CHECKPOINT_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_CONTRACT_VERSION_ID,
@@ -14,7 +15,10 @@ import {
   recordModelBeforeCheckpointShadow,
 } from "@/lib/runs/boundary-checkpoint-shadow";
 import { buildInitialShadowRunContract } from "@/lib/runs/contract-runtime";
-import type { RunCheckpointWriterSql } from "@/lib/runs/checkpoint-store";
+import {
+  recordRunCheckpointV1,
+  type RunCheckpointWriterSql,
+} from "@/lib/runs/checkpoint-store";
 import type { RunCheckpointV1 } from "@/lib/runs/checkpoints";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
@@ -217,6 +221,45 @@ describe("expanded boundary checkpoint shadow", () => {
     expect(checkpoints).toHaveLength(2);
     expect(domainEvents).toHaveLength(4);
     expect(JSON.stringify(after)).not.toContain("provider_request_private");
+
+    if (!after) throw new Error("Expected the model after checkpoint.");
+    const waiting = buildApprovalWaitingCheckpointShadow({
+      runId: RUN_ID,
+      executionScope: SCOPE,
+      runContractEnvelope: CONTRACT.envelope,
+      enrollment: enrollment(),
+      parent: after,
+      approvalExecutionId: "tool_execution_waiting_checkpoint_shadow_test",
+      state: {
+        runRecordSha256: canonicalJsonSha256("waiting run"),
+        approvalRequestSha256: canonicalJsonSha256("approval request"),
+        toolExecutionSha256: canonicalJsonSha256("tool execution"),
+        continuationSha256: canonicalJsonSha256("continuation"),
+      },
+      resourceUsage: {
+        modelCallCount: 1,
+        modelInputTokenCount: 12,
+        modelOutputTokenCount: 5,
+        cachedInputTokenCount: 3,
+        toolCallCount: 0,
+        toolResultByteCount: 0,
+        externalEffectCount: 0,
+        elapsedMs: 3_000,
+      },
+      recordedAt: "2026-09-06T08:00:03.000Z",
+    });
+    await recordRunCheckpointV1({ checkpoint: waiting, executionScope: SCOPE }, sql);
+
+    expect(waiting).toMatchObject({
+      sequence: 2,
+      parent: {
+        checkpointId: after.checkpointId,
+        checkpointSha256: after.checkpointSha256,
+        sequence: 1,
+      },
+      boundary: { kind: "approval", phase: "waiting" },
+    });
+    expect(checkpoints).toHaveLength(3);
   });
 
   it("stays dormant for the approval-only shadow generation", async () => {
