@@ -81,6 +81,12 @@ export type AgentEvent =
       acknowledgement: string;
       reason: string;
     }
+  | {
+      type: "clarification";
+      threadId: string;
+      message: string;
+      reasonCode: "ambiguous_destructive_target";
+    }
   | { type: "status"; label: string; detail?: string }
   | AgentHarnessEvent
   | { type: "delta"; text: string }

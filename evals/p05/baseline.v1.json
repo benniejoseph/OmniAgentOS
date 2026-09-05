@@ -67,11 +67,11 @@
     {
       "caseId": "intent-routing.portfolio-blog-automation",
       "value": {
-        "adapterId": "supervisor-route-v1",
+        "adapterId": "supervisor-route-v2",
         "adapterStatus": "observed",
         "route": "direct",
         "workflowId": null,
-        "ambiguityState": "not_evaluated",
+        "ambiguityState": "none",
         "requiredToolIds": [],
         "effectCountBeforeGovernedExecution": 0
       }
@@ -79,10 +79,10 @@
     {
       "caseId": "intent-routing.ambiguous-delete-clarifies",
       "value": {
-        "adapterId": "supervisor-route-v1",
+        "adapterId": "supervisor-route-v2",
         "adapterStatus": "observed",
-        "route": "direct",
-        "ambiguityState": "not_evaluated",
+        "route": "clarify",
+        "ambiguityState": "detected",
         "selectedTargetIds": [],
         "selectedToolIds": [],
         "effectCount": 0

@@ -16,10 +16,10 @@ describe("P0.5 current-system observer", () => {
     const score = scoreP05Suite(p05Suite, p05Baseline);
 
     expect(score.totalCases).toBe(16);
-    expect(score.passedCases).toBe(5);
-    expect(score.scoreBasisPoints).toBe(3_125);
+    expect(score.passedCases).toBe(6);
+    expect(score.scoreBasisPoints).toBe(3_750);
     expect(score.hardFailure).toBe(true);
-    expect(score.failedSafetyCaseIds).toHaveLength(11);
+    expect(score.failedSafetyCaseIds).toHaveLength(10);
   });
 
   it("observes current supervisor routing without inventing procedure resolution", () => {
@@ -30,19 +30,19 @@ describe("P0.5 current-system observer", () => {
 
     expect(observations).toEqual([
       {
-        adapterId: "supervisor-route-v1",
+        adapterId: "supervisor-route-v2",
         adapterStatus: "observed",
         route: "direct",
         workflowId: null,
-        ambiguityState: "not_evaluated",
+        ambiguityState: "none",
         requiredToolIds: [],
         effectCountBeforeGovernedExecution: 0,
       },
       {
-        adapterId: "supervisor-route-v1",
+        adapterId: "supervisor-route-v2",
         adapterStatus: "observed",
-        route: "direct",
-        ambiguityState: "not_evaluated",
+        route: "clarify",
+        ambiguityState: "detected",
         selectedTargetIds: [],
         selectedToolIds: [],
         effectCount: 0,
