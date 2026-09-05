@@ -180,6 +180,23 @@ the workflow contract remains `posthoc` and still cannot project `succeeded`.
 External providers, additional tools, and pre-execution requirement binding
 remain later P1.4 work.
 
+### Generic provider effect receipt v2
+
+`EffectReceiptV2` preserves v1 unchanged while defining the strict metadata
+contract needed by later first-party and external-provider mutations. It binds
+direct or workflow execution, tenant, actor, executing principal, complete
+workflow plan identity when present, generic governed tool and target IDs,
+tool/input/idempotency digests, and an exact approval-binding digest when
+approval was required. Acknowledgement and read-after-write states use closed
+enums; verified state is possible only when observed and expected target
+digests match exactly.
+
+The builder derives a deterministic receipt ID and body digest. Its compact
+event projection omits the provider request ID and cannot contain tool input,
+provider output, credentials, or an extensible metadata bag. This contract is
+not yet a serving adapter or permission: unregistered tools still receive no
+v2 receipt and no external effect is authorized by constructing one.
+
 ## Event payloads
 
 Keep a full envelope only on its intended private scoped record or active
