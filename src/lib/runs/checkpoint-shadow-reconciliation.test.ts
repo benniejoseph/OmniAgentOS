@@ -6,6 +6,7 @@ import {
   RUN_CHECKPOINT_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_CONTRACT_VERSION_ID,
   RUN_CHECKPOINT_ENGINE_VERSION_ID,
+  RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256,
   type ApprovalCheckpointShadowEnrollment,
 } from "@/lib/runs/approval-checkpoint-shadow";
@@ -317,16 +318,43 @@ describe("approval checkpoint shadow reconciliation", () => {
       missingBoundaryPhases: [],
     });
   });
+
+  it("reconciles the separately pinned full-boundary canary", async () => {
+    const checkpoints = expandedCheckpointChain("canary");
+    const report = await reconcileStoredApprovalCheckpointShadows(
+      { tenantId: SCOPE.tenantId, mode: "expanded_canary" },
+      fixtureSql({
+        checkpoints,
+        tool: {
+          id: EXECUTION_ID,
+          status: "executed",
+          approval_decision: "approved",
+          effect_receipt: null,
+        },
+      }),
+    );
+
+    expect(report).toMatchObject({
+      mode: "expanded_canary",
+      status: "matched",
+      matchedRunCount: 1,
+      checkpointCount: 14,
+      missingBoundaryPhases: [],
+      resumeAuthorityGranted: false,
+    });
+  });
 });
 
-function expandedCheckpointChain() {
+function expandedCheckpointChain(mode: "shadow" | "canary" = "shadow") {
   const expanded = {
     ...enrollment(),
     enginePin: {
       ...enrollment().enginePin,
-      configurationSha256:
-        RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256,
-      rolloutGeneration: 3,
+      configurationSha256: mode === "canary"
+        ? RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256
+        : RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256,
+      rolloutMode: mode,
+      rolloutGeneration: mode === "canary" ? 4 : 3,
     },
   };
   const checkpoints: RunCheckpointV1[] = [];
