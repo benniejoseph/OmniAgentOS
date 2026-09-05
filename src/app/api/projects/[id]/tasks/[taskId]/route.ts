@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { ProjectTransitionError, updateProjectTask } from "@/lib/projects/store";
+import { projectMutationFromRequest } from "@/lib/projects/request-mutation";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -19,7 +20,14 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "project_task", resourceId: taskId }); }
   catch (error) { return forbiddenResponse(error); }
   try {
-    const task = await updateProjectTask(id, taskId, parsed.data, { tenantId: context.tenantId, actorId: context.actorId });
+    const task = await updateProjectTask(id, taskId, parsed.data, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      mutation: projectMutationFromRequest(request, context, {
+        projectId: id,
+        purpose: "project.task.update",
+      }),
+    });
     return task ? Response.json({ task }) : Response.json({ error: "Project task not found." }, { status: 404 });
   } catch (error) {
     return error instanceof ProjectTransitionError

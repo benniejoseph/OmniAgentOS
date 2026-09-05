@@ -53,6 +53,18 @@ export function projectIdForIdempotencyKey(
   return `project_${projectMutationSha256({ tenantId, idempotencyKey }).slice(0, 40)}`;
 }
 
+export function projectTaskIdForIdempotencyKey(
+  tenantId: string,
+  projectId: string,
+  idempotencyKey: string,
+) {
+  return `project_task_${projectMutationSha256({
+    tenantId,
+    projectId,
+    idempotencyKey,
+  }).slice(0, 40)}`;
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value);

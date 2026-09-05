@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createProjectTasks, getProject } from "@/lib/projects/store";
+import { projectMutationFromRequest } from "@/lib/projects/request-mutation";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -21,6 +22,30 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   const project = await getProject(id, { tenantId: context.tenantId, actorId: context.actorId });
   if (!project) return Response.json({ error: "Project not found." }, { status: 404 });
   if (project.status !== "active") return Response.json({ error: "Tasks can only be added to an active project." }, { status: 409 });
-  const [task] = await createProjectTasks(id, [{ ...parsed.data, origin: "manual" }], { tenantId: context.tenantId });
-  return task ? Response.json({ task }, { status: 201 }) : Response.json({ error: "A task with this title already exists." }, { status: 409 });
+  try {
+    const [task] = await createProjectTasks(
+      id,
+      [{ ...parsed.data, origin: "manual" }],
+      {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        mutation: projectMutationFromRequest(request, context, {
+          projectId: id,
+          purpose: "project.task.create",
+        }),
+      },
+    );
+    return task
+      ? Response.json({ task }, { status: 201 })
+      : Response.json(
+          { error: "A task with this title already exists." },
+          { status: 409 },
+        );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Project task creation failed.";
+    return Response.json(
+      { error: message },
+      { status: message.startsWith("Idempotency-Key") ? 400 : 409 },
+    );
+  }
 }
