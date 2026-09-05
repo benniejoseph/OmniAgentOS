@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), observeDrive: vi.fn(), fetch: vi.fn(),
+  getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(),
 }));
 vi.mock("@/lib/connectors/oauth-store", () => ({
   getOAuthGrantSecrets: mocks.getSecrets,
@@ -14,6 +14,9 @@ vi.mock("@/lib/connectors/oauth-providers", async (importOriginal) => ({
 }));
 vi.mock("@/lib/connectors/google-drive-shadow", () => ({
   observeGoogleDriveShadow: mocks.observeDrive,
+}));
+vi.mock("@/lib/connectors/google-drive-canonical", () => ({
+  observeGoogleDriveCanonicalMetadata: mocks.observeCanonicalDrive,
 }));
 vi.mock("@/lib/rag/retriever", () => ({ ingestTextDocument: mocks.ingest }));
 vi.mock("@/lib/rag/store", () => ({ deleteKnowledgeDocumentByIdempotencyKey: mocks.remove }));
@@ -40,6 +43,7 @@ describe("personal OAuth synchronization", () => {
     });
     mocks.updateState.mockResolvedValue({ syncStatus: "healthy" });
     mocks.observeDrive.mockResolvedValue({ status: "shadow_observed" });
+    mocks.observeCanonicalDrive.mockResolvedValue({ status: "settled" });
     mocks.ingest.mockResolvedValue({}); mocks.remove.mockResolvedValue("removed");
   });
 
@@ -48,9 +52,9 @@ describe("personal OAuth synchronization", () => {
       const url = String(input);
       if (url.includes("/messages?")) return json({ messages: [{ id: "m1" }] });
       if (url.endsWith("/profile")) return json({ historyId: "h2" });
-      if (url.includes("/messages/m1")) return json({ id: "m1", snippet: "Decision made", payload: { headers: [{ name: "Subject", value: "Project decision" }, { name: "From", value: "a@example.com" }] } });
-      if (url.includes("calendar")) return json({ nextSyncToken: "c2", items: [{ id: "e1", summary: "Planning", status: "confirmed", start: { dateTime: "2026-08-26T10:00:00Z" }, end: { dateTime: "2026-08-26T11:00:00Z" } }, { id: "e0", status: "cancelled" }] });
-      if (url.includes("/drive/v3/files")) return json({ files: [{ id: "d1", name: "Project brief.pdf", mimeType: "application/pdf", modifiedTime: "2026-08-25T10:00:00Z", webViewLink: "https://drive.google.com/file/d1" }] });
+      if (url.includes("/messages/m1")) return json({ id: "m1", historyId: "h1", internalDate: "1787695200000", snippet: "Decision made", payload: { headers: [{ name: "Subject", value: "Project decision" }, { name: "From", value: "a@example.com" }] } });
+      if (url.includes("calendar")) return json({ nextSyncToken: "c2", items: [{ id: "e1", etag: "event-v1", created: "2026-08-25T10:00:00Z", updated: "2026-08-26T09:00:00Z", summary: "Planning", status: "confirmed", start: { dateTime: "2026-08-26T10:00:00Z" }, end: { dateTime: "2026-08-26T11:00:00Z" } }, { id: "e0", status: "cancelled" }] });
+      if (url.includes("/drive/v3/files")) return json({ files: [{ id: "d1", name: "Project brief.pdf", mimeType: "application/pdf", createdTime: "2026-08-24T10:00:00Z", modifiedTime: "2026-08-25T10:00:00Z", version: "7", webViewLink: "https://drive.google.com/file/d1" }] });
       throw new Error(`Unexpected URL ${url}`);
     });
     const result = await syncPersonalProvider({ tenantId: "personal", actorId: "owner", provider: "google" });
@@ -58,6 +62,41 @@ describe("personal OAuth synchronization", () => {
     expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "oauth:google:mail:m1" }));
     expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "oauth:google:calendar:e1" }));
     expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "oauth:google:drive:d1" }));
+    expect(mocks.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: "oauth:google:mail:m1",
+        sourceLineage: expect.objectContaining({
+          connectionId: "google-grant",
+          adapterId: "google.personal_sync.mail",
+          externalItemId: "mail:m1",
+          providerRevisionId: "h1",
+          sourceKind: "email",
+          capturedAt: "2026-08-25T22:00:00.000Z",
+        }),
+      }),
+    );
+    expect(mocks.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: "oauth:google:calendar:e1",
+        sourceLineage: expect.objectContaining({
+          adapterId: "google.personal_sync.calendar",
+          providerRevisionId: "event-v1",
+          sourceKind: "calendar_event",
+          capturedAt: "2026-08-26T09:00:00.000Z",
+        }),
+      }),
+    );
+    expect(mocks.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: "oauth:google:drive:d1",
+        sourceLineage: expect.objectContaining({
+          adapterId: "google.personal_sync.drive",
+          providerRevisionId: "7",
+          sourceKind: "file",
+          capturedAt: "2026-08-25T10:00:00.000Z",
+        }),
+      }),
+    );
     expect(mocks.remove).toHaveBeenCalledWith("oauth:google:calendar:e0", { tenantId: "personal" });
     expect(mocks.updateState).toHaveBeenLastCalledWith(expect.objectContaining({ status: "healthy", syncedItems: 3 }));
   });
@@ -90,7 +129,7 @@ describe("personal OAuth synchronization", () => {
       if (url.includes("/messages?")) return json({ messages: [] });
       if (url.endsWith("/profile")) return json({ historyId: "h4" });
       if (url.includes("calendar")) return json({ nextSyncToken: "c4", items: [] });
-      if (url.includes("/drive/v3/files?")) return json({ files: [{ id: "d404", name: "Moved brief", mimeType: "application/vnd.google-apps.document", modifiedTime: "2026-08-26T10:00:00Z" }] });
+      if (url.includes("/drive/v3/files?")) return json({ files: [{ id: "d404", name: "Moved brief", mimeType: "application/vnd.google-apps.document", createdTime: "2026-08-25T10:00:00Z", modifiedTime: "2026-08-26T10:00:00Z", version: "3" }] });
       if (url.includes("/drive/v3/files/d404/export")) return new Response("missing", { status: 404 });
       throw new Error(`Unexpected URL ${url}`);
     });
