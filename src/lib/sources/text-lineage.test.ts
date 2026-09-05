@@ -3,6 +3,7 @@ import { chunkText, normalizeTextForChunking } from "@/lib/rag/chunk";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { mergeCanonicalSourceLedger } from "@/lib/sources/store";
 import { buildCanonicalTextSourceWrite } from "@/lib/sources/text-lineage";
+import { CLAIM_EVIDENCE_PURPOSE_ID } from "@/lib/sources/purposes";
 
 describe("canonical text source lineage", () => {
   it("builds exact chunk evidence without retaining the raw external ID", () => {
@@ -34,6 +35,9 @@ describe("canonical text source lineage", () => {
 
     expect(JSON.stringify(write.adapterOutput)).not.toContain(externalItemId);
     expect(write.evidenceUnitIdsByChunkIndex).toHaveLength(1);
+    expect(write.adapterOutput.allowedPurposeIds).toContain(
+      CLAIM_EVIDENCE_PURPOSE_ID,
+    );
     expect(write.adapterOutput.evidenceUnits[0].locator).toMatchObject({
       kind: "text_span",
       startOffset: 0,

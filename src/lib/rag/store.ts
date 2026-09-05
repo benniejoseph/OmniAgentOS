@@ -33,9 +33,11 @@ import {
 import {
   sourceAdapterUpsertV1Schema,
   sourceContractSha256,
+  type EvidenceUnitV1,
 } from "@/lib/sources/contracts";
 import {
   assertCanonicalAdapterOutputReceipt,
+  evidenceUnitFromStoredRow,
   mergeCanonicalSourceLedger,
   persistCanonicalSourceWrite,
   storedAdapterEnvelopeMatches,
@@ -53,6 +55,11 @@ import {
 import { invalidateRunsForDeletedContext } from "@/lib/runs/context-invalidation";
 
 type RagSqlClient = ReturnType<typeof getSql>;
+
+export type CanonicalKnowledgeEvidence = Readonly<{
+  chunk: KnowledgeChunk;
+  evidenceUnit: EvidenceUnitV1;
+}>;
 
 type CreateKnowledgeDocumentInput = {
   idempotencyKey?: string;
@@ -651,6 +658,75 @@ export async function listKnowledgeChunks(limit = 20, options: { tenantId?: stri
     .filter((chunk) => normalizeTenantId(chunk.tenantId) === tenantId)
     .slice(0, limit)
     .map(sanitizeKnowledgeChunk);
+}
+
+/**
+ * Resolves only tenant-scoped knowledge chunks that retain an exact immutable
+ * EvidenceUnitV1 binding. Missing or legacy chunks are deliberately omitted.
+ */
+export async function getCanonicalKnowledgeEvidenceByChunkIds(
+  chunkIds: readonly string[],
+  options: { tenantId?: string } = {},
+): Promise<CanonicalKnowledgeEvidence[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const ids = [...new Set(
+    chunkIds
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )].slice(0, 128);
+  if (!ids.length) return [];
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT chunk.*, to_jsonb(evidence) AS canonical_evidence
+      FROM omni_knowledge_chunks AS chunk
+      INNER JOIN omni_evidence_units AS evidence
+        ON evidence.tenant_id = chunk.tenant_id
+       AND evidence.id = chunk.evidence_unit_id
+       AND evidence.source_revision_id = chunk.source_revision_id
+      WHERE chunk.tenant_id = ${tenantId}
+        AND chunk.id = ANY(${ids})
+    `;
+    return orderCanonicalKnowledgeEvidence(
+      rows.map((row) => ({
+        chunk: chunkFromRow(row),
+        evidenceUnit: evidenceUnitFromStoredRow(
+          storedRecord(row.canonical_evidence),
+        ),
+      })),
+      ids,
+      tenantId,
+    );
+  }
+
+  const ledger = await readKnowledgeLedger();
+  const evidenceById = new Map<string, EvidenceUnitV1>();
+  for (const outputCandidate of ledger.sourceLineage?.adapterOutputs || []) {
+    const output = sourceAdapterUpsertV1Schema.parse(outputCandidate);
+    if (output.tenantId !== tenantId) continue;
+    for (const evidenceUnit of output.evidenceUnits) {
+      evidenceById.set(evidenceUnit.evidenceUnitId, evidenceUnit);
+    }
+  }
+  const idSet = new Set(ids);
+  return orderCanonicalKnowledgeEvidence(
+    ledger.chunks
+      .filter((chunk) =>
+        idSet.has(chunk.id) &&
+        normalizeTenantId(chunk.tenantId) === tenantId &&
+        Boolean(chunk.evidenceUnitId),
+      )
+      .flatMap((chunk) => {
+        const evidenceUnit = evidenceById.get(chunk.evidenceUnitId!);
+        return evidenceUnit
+          ? [{ chunk: sanitizeKnowledgeChunk(chunk), evidenceUnit }]
+          : [];
+      }),
+    ids,
+    tenantId,
+  );
 }
 
 export async function searchKnowledge(
@@ -1570,6 +1646,44 @@ function inferSourceType(source: string): KnowledgeSourceType {
 
 function hashContent(content: string) {
   return createHash("sha256").update(content).digest("hex");
+}
+
+function storedRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Stored canonical evidence row is invalid.");
+  }
+  return value as Record<string, unknown>;
+}
+
+function orderCanonicalKnowledgeEvidence(
+  candidates: readonly CanonicalKnowledgeEvidence[],
+  chunkIds: readonly string[],
+  tenantId: string,
+) {
+  const byChunkId = new Map<string, CanonicalKnowledgeEvidence>();
+  for (const candidate of candidates) {
+    const { chunk, evidenceUnit } = candidate;
+    if (
+      normalizeTenantId(chunk.tenantId) !== tenantId ||
+      evidenceUnit.tenantId !== tenantId ||
+      chunk.evidenceUnitId !== evidenceUnit.evidenceUnitId ||
+      chunk.sourceRevisionId !== evidenceUnit.sourceRevisionId ||
+      evidenceUnit.evidenceContentSha256 !== hashContent(chunk.content) ||
+      evidenceUnit.evidenceByteLength !== Buffer.byteLength(chunk.content, "utf8")
+    ) {
+      throw new Error(
+        "Canonical knowledge evidence does not match its tenant-scoped chunk.",
+      );
+    }
+    if (byChunkId.has(chunk.id)) {
+      throw new Error("Canonical knowledge evidence resolved a duplicate chunk.");
+    }
+    byChunkId.set(chunk.id, candidate);
+  }
+  return chunkIds.flatMap((chunkId) => {
+    const candidate = byChunkId.get(chunkId);
+    return candidate ? [candidate] : [];
+  });
 }
 
 function estimateTokens(content: string) {

@@ -5,9 +5,11 @@ import {
   parsePersistedExecutionScope,
 } from "@/lib/security/execution-scope";
 import {
+  evidenceUnitV1Schema,
   sourceAdapterOutputV1Schema,
   sourceAdapterUpsertV1Schema,
   sourceContractSha256,
+  type EvidenceUnitV1,
   type SourceAdapterOutputV1,
   type SourceAdapterUpsertV1,
 } from "@/lib/sources/contracts";
@@ -26,6 +28,50 @@ export type PersistedKnowledgeLineage = Readonly<{
   sourceRevisionId: string;
   evidenceUnitIdsByChunkIndex: readonly string[];
 }>;
+
+/** Rebuilds and verifies one immutable canonical evidence contract from storage. */
+export function evidenceUnitFromStoredRow(
+  row: Readonly<Record<string, unknown>>,
+): EvidenceUnitV1 {
+  return evidenceUnitV1Schema.parse({
+    schemaVersion: Number(row.schema_version),
+    contractKind: row.contract_kind,
+    evidenceUnitId: row.id,
+    tenantId: row.tenant_id,
+    ownerActorId: row.owner_actor_id,
+    workspaceId: nullableStoredString(row.workspace_id),
+    projectId: nullableStoredString(row.project_id),
+    missionId: nullableStoredString(row.mission_id),
+    connectionId: row.connection_id,
+    visibility: row.visibility,
+    sensitivity: row.sensitivity,
+    permissionGrantIds: storedStringArray(row.permission_grant_ids),
+    allowedPurposeIds: storedStringArray(row.allowed_purpose_ids),
+    retentionPolicyId: row.retention_policy_id,
+    retentionExpiresAt: nullableStoredTimestamp(row.retention_expires_at),
+    permissionSetSha256: row.permission_set_sha256,
+    purposeSetSha256: row.purpose_set_sha256,
+    sourceItemId: row.source_item_id,
+    sourceRevisionId: row.source_revision_id,
+    sourceKind: row.source_kind,
+    providerItemKeySha256: row.provider_item_key_sha256,
+    evidenceContentSha256: row.evidence_content_sha256,
+    evidenceByteLength: Number(row.evidence_byte_length),
+    locator: row.locator,
+    locatorSha256: row.locator_sha256,
+    sourceCreatedAt: nullableStoredTimestamp(row.source_created_at),
+    sourceUpdatedAt: nullableStoredTimestamp(row.source_updated_at),
+    capturedAt: requiredStoredTimestamp(row.captured_at),
+    extractedAt: requiredStoredTimestamp(row.extracted_at),
+    extractorIdentity: {
+      extractorId: row.extractor_id,
+      extractorVersionId: row.extractor_version_id,
+      extractorConfigSha256: row.extractor_config_sha256,
+      modelVersionId: nullableStoredString(row.model_version_id),
+    },
+    evidenceUnitSha256: row.evidence_unit_sha256,
+  });
+}
 
 export async function persistCanonicalSourceWrite(
   sql: SourceSqlClient,
@@ -570,4 +616,23 @@ function canonicalStoredTimestamp(value: unknown) {
   }
   const timestamp = value instanceof Date ? value : new Date(value);
   return Number.isNaN(timestamp.getTime()) ? null : timestamp.toISOString();
+}
+
+function nullableStoredTimestamp(value: unknown) {
+  if (value === null || value === undefined) return null;
+  return canonicalStoredTimestamp(value);
+}
+
+function requiredStoredTimestamp(value: unknown) {
+  const timestamp = canonicalStoredTimestamp(value);
+  if (!timestamp) throw new Error("Stored evidence timestamp is invalid.");
+  return timestamp;
+}
+
+function nullableStoredString(value: unknown) {
+  return typeof value === "string" ? value : null;
+}
+
+function storedStringArray(value: unknown) {
+  return Array.isArray(value) ? value.map(String) : value;
 }

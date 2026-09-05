@@ -14,6 +14,7 @@ import {
   type SourceAdapterUpsertV1,
   type SourceItemV1,
 } from "@/lib/sources/contracts";
+import { CLAIM_EVIDENCE_PURPOSE_ID } from "@/lib/sources/purposes";
 
 export type TextSourceLineageInput = Readonly<{
   executionScope: ExecutionScope;
@@ -124,6 +125,7 @@ export function buildCanonicalTextSourceWrite(input: {
       ? input.lineage.allowedPurposeIds
       : [
           `purpose_${sourceContractSha256(executionScope.purpose).slice(0, 56)}`,
+          CLAIM_EVIDENCE_PURPOSE_ID,
         ],
   );
   const extractorIdentity = {
