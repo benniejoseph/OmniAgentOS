@@ -502,10 +502,12 @@ the exact claim, keeps the raw token process-local, heartbeats it, and passes th
 same token and generation through the runner. Terminal and next-wait writes now
 require the exact live claim and complete it in the same transaction, so a stale
 worker cannot commit run state or project mission progress. Unenrolled,
-preclaimed, file-mode, and existing runs remain unchanged, and production stays
-shadow-authoritative. P1.6 remains open until a non-empty production sample
-reconciles, a canary proves resume cannot duplicate an effect, and model, tool,
-delegation, and verifier boundaries are checkpointed. The normative
+preclaimed, file-mode, and existing runs remain unchanged. The non-empty
+production sample reconciled, and the active generation-2 risk-0 canary
+reclaimed a deliberately interrupted generation-1 resume with exactly one tool
+execution, no effect receipt, and a completed generation-2 fence. P1.6 remains
+open until model, tool, delegation, and verifier boundaries are checkpointed.
+The normative
 boundary and activation order are documented in
 [RunCheckpoint v1](RUN_CHECKPOINTS.md).
 

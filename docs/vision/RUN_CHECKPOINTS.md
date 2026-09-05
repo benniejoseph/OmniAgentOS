@@ -1,8 +1,8 @@
 # RunCheckpoint v1
 
-**Status:** P1.6 approval-boundary shadow chain and canary-ready resume fence
+**Status:** P1.6 approval-boundary shadow chain and production-proven resume fence
 
-**Runtime effect:** Approval shadow writes are active; fenced resume requires a separate canary rollout
+**Runtime effect:** Approval writes and the generation-2 risk-0 fenced-resume canary are active; broader boundary coverage remains pending
 
 `RunCheckpointV1` defines the immutable metadata and reference boundary that a
 future durable run must record before work can be resumed safely. Migration
@@ -61,6 +61,14 @@ checkpoint/job/generation metadata in the continuation and emits
 `run.checkpoint.resume_authorized`; the raw token remains process-local. The
 same token and generation fence every worker heartbeat and terminal/next-wait
 run write, so a stale worker cannot commit canonical completion.
+
+The generation-2 production gate passed on 2026-09-06. A bounded risk-0
+`runs.list` continuation was killed after generation 1 had transitioned the run
+to `resuming`. The expired fence was reclaimed as generation 2 and completed
+with two approval checkpoints, one governed tool execution, no effect receipt,
+and no duplicate tool or external effect. The event stream records claimed and
+authorized generation 1, reclaimed and authorized generation 2, and completed
+generation 2 in that order.
 
 ## Why this precedes resume
 
@@ -129,7 +137,7 @@ revalidate the live rollout, execution scope, grants, approval, tool/effect
 state, lease, and cancellation state inside the same transaction used to claim
 the continuation.
 
-## Remaining P1.6 activation gates
+## P1.6 activation gates
 
 The remaining slices must proceed in this order:
 
@@ -139,6 +147,8 @@ The remaining slices must proceed in this order:
 2. activate the implemented risk-0, read-only, no-effect canary and prove an
    interrupted resume without a duplicate effect; and
 3. expand separately to model, tool, delegation, and verifier boundaries.
+
+Gates 1 and 2 are complete. Gate 3 is the remaining P1.6 work.
 
 P1.6 remains open until all required boundaries checkpoint durably and an
 interrupted run resumes without duplicate side effects. Replay, fork, and user
