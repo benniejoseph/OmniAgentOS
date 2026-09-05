@@ -136,6 +136,17 @@ file store preserves the same validation and deterministic retry behavior but
 remains a development compatibility path rather than an atomic production
 claim.
 
+Authenticated tool approval decisions now use the same P1.1/P1.2 boundary.
+An approve or reject request carries the exact decision principal, execution
+causation, request correlation, and an idempotency binding into the row-locked
+tool-execution transaction. `tool.approval.recorded` distinguishes a pending
+risk-3 quorum from an execution claim; `tool.approval.rejected` records the
+terminal rejection. Their schema-version-1 payloads contain only execution and
+tool IDs, risk/quorum counts, closed outcome enums, and SHA-256 bindings.
+Approval reasons, sealed inputs, outputs, credentials, and claim tokens are
+excluded. Legacy internal callers remain compatible but do not receive a
+fabricated decision event without an explicit scope.
+
 The Drive generation-2 canary adds `source.sync.page.canonical_settled` in the
 same transaction as the page's canonical revisions, tombstones or ordered
 no-op decisions, terminal page items, committed checkpoint, and next encrypted

@@ -5,6 +5,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
+import { listStreamEvents } from "@/lib/events/store";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(path.join(tmpdir(), "omni-approval-"));
@@ -73,6 +75,95 @@ describe("tool approval claims (file mode)", () => {
     const claimed = outcomes.find((outcome) => outcome.outcome === "claimed");
     expect(new Set(claimed?.record?.approvals?.map((approval) => approval.by))).toEqual(
       new Set(["admin-a", "admin-b"]),
+    );
+  });
+
+  it("records scoped metadata-only approval and rejection decisions", async () => {
+    const store = await import("@/lib/tools/audit-store");
+    const approvedRecord = await store.saveToolExecution(
+      pendingRecord("scoped-approval", 2),
+    );
+    const approvalScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "admin-a",
+      executingPrincipalType: "user",
+      executingPrincipalId: "admin-a",
+      correlationId: "approval-request-a",
+      causationId: approvedRecord.id,
+      purpose: "tool.approval.approve",
+    });
+    const claim = await store.approveAndClaimToolExecution({
+      id: approvedRecord.id,
+      tenantId: approvedRecord.tenantId,
+      approvedBy: "admin-a",
+      approvedRole: "admin",
+      approvalReason: "Private approval rationale",
+      claimToken: "scoped-approval-claim",
+      mutation: {
+        executionScope: approvalScope,
+        idempotencyKey: "scoped-approval-key",
+      },
+    });
+    expect(claim.outcome).toBe("claimed");
+
+    const rejectedRecord = await store.saveToolExecution(
+      pendingRecord("scoped-rejection", 2),
+    );
+    const rejectionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "admin-b",
+      executingPrincipalType: "user",
+      executingPrincipalId: "admin-b",
+      correlationId: "rejection-request-b",
+      causationId: rejectedRecord.id,
+      purpose: "tool.approval.reject",
+    });
+    const rejection = await store.rejectPendingToolExecution({
+      id: rejectedRecord.id,
+      tenantId: rejectedRecord.tenantId,
+      rejectedBy: "admin-b",
+      reason: "Private rejection rationale",
+      mutation: {
+        executionScope: rejectionScope,
+        idempotencyKey: "scoped-rejection-key",
+      },
+    });
+    expect(rejection.outcome).toBe("rejected");
+
+    const approvalEvents = await listStreamEvents(
+      `tool_execution:${approvedRecord.id}`,
+      { tenantId: "tenant-a", actorId: "admin-a" },
+    );
+    expect(approvalEvents).toHaveLength(1);
+    expect(approvalEvents[0]).toMatchObject({
+      type: "tool.approval.recorded",
+      causationId: approvedRecord.id,
+      payload: {
+        schemaVersion: 1,
+        executionId: approvedRecord.id,
+        decision: "approved",
+        outcome: "execution_claimed",
+      },
+    });
+    const rejectionEvents = await listStreamEvents(
+      `tool_execution:${rejectedRecord.id}`,
+      { tenantId: "tenant-a", actorId: "admin-b" },
+    );
+    expect(rejectionEvents).toHaveLength(1);
+    expect(rejectionEvents[0]).toMatchObject({
+      type: "tool.approval.rejected",
+      payload: {
+        schemaVersion: 1,
+        executionId: rejectedRecord.id,
+        decision: "rejected",
+        outcome: "rejected",
+      },
+    });
+    expect(JSON.stringify(approvalEvents[0].payload)).not.toContain(
+      "Private approval rationale",
+    );
+    expect(JSON.stringify(rejectionEvents[0].payload)).not.toContain(
+      "Private rejection rationale",
     );
   });
 
