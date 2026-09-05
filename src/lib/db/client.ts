@@ -870,6 +870,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[65],
       up: ensureMemoryInformedNoticeGovernanceEvidenceShadow,
     },
+    {
+      ...databaseSchemaMigrations[66],
+      up: ensureMemoryInformedNoticeAnchorReviewEvidenceShadow,
+    },
   ];
 }
 
@@ -28754,6 +28758,330 @@ async function ensureMemoryInformedNoticeGovernanceEvidenceShadow(
 
   // A future writer migration must call this same verifier again immediately
   // before it changes any v55 hold. V66 itself changes none of those surfaces.
+  await verifyMemoryInformedNoticeAuthorityBoundary(sql);
+}
+
+async function ensureMemoryInformedNoticeAnchorReviewEvidenceShadow(
+  sql: SqlClient,
+) {
+  // V67 preserves the external human-independence review that authorizes use
+  // of a trust-manifest anchor. It keeps every v55/v66 persistence and runtime
+  // hold closed and cannot manufacture a review row on an empty table.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Informed notice anchor review migration requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM omni_schema_version
+        WHERE version = 66
+          AND name = 'memory_informed_notice_governance_evidence_shadow'
+          AND checksum =
+            '8e845ac8182b025d6dea8014ec3877c141e55ad2dc551054b1a885e4bb680f6e'
+      ) THEN
+        RAISE EXCEPTION 'Informed notice anchor review requires exact migration v66'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`SET LOCAL row_security = on`;
+  await verifyMemoryInformedNoticeAuthorityBoundary(sql);
+  await sql`
+    LOCK TABLE
+      omni_auth_users,
+      omni_memory_informed_notice_approval_batches,
+      omni_memory_informed_notice_approval_contracts,
+      omni_memory_informed_notice_review_attestations
+    IN ACCESS EXCLUSIVE MODE
+  `;
+
+  const stateRows = await sql`
+    SELECT
+      count(*) FILTER (WHERE attribute.attname IN (
+        'independence_review_id',
+        'independence_reviewed_by_actor_id',
+        'independence_reviewed_at',
+        'human_independence_reviewed'
+      ))::int AS installed_columns,
+      to_regprocedure(
+        'public.omni_notice_anchor_review_row_is_valid(text,text,timestamptz,timestamptz,timestamptz,boolean)'
+      ) IS NOT NULL AS validator_exists
+    FROM pg_attribute attribute
+    WHERE attribute.attrelid =
+        'omni_memory_informed_notice_approval_batches'::regclass
+      AND attribute.attnum > 0
+      AND NOT attribute.attisdropped
+  `;
+  const state = stateRows[0];
+  const installedColumns = Number(state?.installed_columns);
+  const validatorExists = state?.validator_exists;
+  if (
+    !Number.isInteger(installedColumns) ||
+    typeof validatorExists !== "boolean" ||
+    ![0, 4].includes(installedColumns) ||
+    validatorExists !== (installedColumns === 4)
+  ) {
+    throw new Error("Informed notice anchor review install is partial.");
+  }
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM omni_memory_informed_notice_approval_batches
+      ) OR EXISTS (
+        SELECT 1 FROM omni_memory_informed_notice_approval_contracts
+      ) OR EXISTS (
+        SELECT 1 FROM omni_memory_informed_notice_review_attestations
+      ) THEN
+        RAISE EXCEPTION 'Informed notice anchor review upgrade requires empty v66 shadows'
+          USING ERRCODE = '55000';
+      END IF;
+      IF (
+        SELECT count(*) FROM pg_constraint
+        WHERE conname IN (
+          'omni_notice_approval_batches_persistence_hold_check',
+          'omni_notice_approval_contracts_persistence_hold_check',
+          'omni_notice_review_attestations_persistence_hold_check'
+        ) AND contype = 'c' AND convalidated
+          AND pg_get_expr(conbin, conrelid) = 'false'
+      ) <> 3 THEN
+        RAISE EXCEPTION 'Informed notice anchor review v66 holds changed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name IN (
+            'omni_memory_informed_notice_approval_batches',
+            'omni_memory_informed_notice_approval_contracts',
+            'omni_memory_informed_notice_review_attestations'
+          ) AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Informed notice anchor review v66 boundary is exposed'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+
+  if (installedColumns === 0) {
+    await sql`
+      CREATE FUNCTION omni_notice_anchor_review_row_is_valid(
+        candidate_independence_review_id TEXT,
+        candidate_independence_reviewed_by_actor_id TEXT,
+        candidate_independence_reviewed_at TIMESTAMPTZ,
+        candidate_trust_manifest_issued_at TIMESTAMPTZ,
+        candidate_observed_at TIMESTAMPTZ,
+        candidate_human_independence_reviewed BOOLEAN
+      )
+      RETURNS BOOLEAN
+      LANGUAGE SQL
+      IMMUTABLE
+      SECURITY INVOKER
+      SET search_path = pg_catalog, public
+      AS $function$
+        SELECT COALESCE(
+          candidate_independence_review_id ~
+            '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'
+          AND candidate_independence_reviewed_by_actor_id ~
+            '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          AND candidate_trust_manifest_issued_at <=
+            candidate_independence_reviewed_at
+          AND candidate_independence_reviewed_at <= candidate_observed_at
+          AND candidate_human_independence_reviewed IS TRUE,
+          FALSE
+        )
+      $function$
+    `;
+    await sql`
+      ALTER TABLE omni_memory_informed_notice_approval_batches
+        ADD COLUMN independence_review_id TEXT NOT NULL,
+        ADD COLUMN independence_reviewed_by_actor_id TEXT NOT NULL,
+        ADD COLUMN independence_reviewed_at TIMESTAMPTZ NOT NULL,
+        ADD COLUMN human_independence_reviewed BOOLEAN NOT NULL,
+        ADD CONSTRAINT omni_notice_approval_batches_independence_review_key
+          UNIQUE (independence_review_id),
+        ADD CONSTRAINT omni_notice_approval_batch_anchor_review_check CHECK (
+          omni_notice_anchor_review_row_is_valid(
+            independence_review_id,
+            independence_reviewed_by_actor_id,
+            independence_reviewed_at,
+            trust_manifest_issued_at,
+            observed_at,
+            human_independence_reviewed
+          )
+        ),
+        ADD CONSTRAINT omni_notice_approval_batch_independence_actor_fkey
+          FOREIGN KEY (independence_reviewed_by_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT ON DELETE RESTRICT
+    `;
+    await sql.query(`
+      REVOKE ALL ON FUNCTION omni_notice_anchor_review_row_is_valid(
+        TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ, BOOLEAN
+      ) FROM PUBLIC
+    `);
+  }
+
+  await sql`
+    DO $migration$
+    DECLARE
+      owner_oid OID;
+    BEGIN
+      SELECT relowner INTO owner_oid
+      FROM pg_class
+      WHERE oid = 'omni_schema_version'::regclass;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class relation
+        WHERE relation.oid =
+            'omni_memory_informed_notice_approval_batches'::regclass
+          AND relation.relkind = 'r'
+          AND relation.relpersistence = 'p'
+          AND relation.relowner = owner_oid
+          AND relation.relrowsecurity
+          AND relation.relforcerowsecurity
+      ) OR (
+        SELECT count(*) FROM pg_attribute attribute
+        WHERE attribute.attrelid =
+            'omni_memory_informed_notice_approval_batches'::regclass
+          AND attribute.attnum > 0 AND NOT attribute.attisdropped
+      ) <> 20 OR EXISTS (
+        SELECT 1 FROM (
+          VALUES
+            ('independence_review_id', 'text'::REGTYPE),
+            ('independence_reviewed_by_actor_id', 'text'::REGTYPE),
+            ('independence_reviewed_at', 'timestamptz'::REGTYPE),
+            ('human_independence_reviewed', 'boolean'::REGTYPE)
+        ) expected(column_name, type_oid)
+        LEFT JOIN pg_attribute attribute
+          ON attribute.attrelid =
+            'omni_memory_informed_notice_approval_batches'::regclass
+          AND attribute.attname = expected.column_name
+          AND NOT attribute.attisdropped
+        WHERE attribute.attname IS NULL
+          OR attribute.atttypid <> expected.type_oid
+          OR NOT attribute.attnotnull
+          OR attribute.atthasdef
+          OR attribute.attgenerated <> ''
+      ) THEN
+        RAISE EXCEPTION 'Informed notice anchor review columns are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_proc procedure
+        JOIN pg_language language ON language.oid = procedure.prolang
+        WHERE procedure.oid = to_regprocedure(
+          'public.omni_notice_anchor_review_row_is_valid(text,text,timestamptz,timestamptz,timestamptz,boolean)'
+        )
+          AND procedure.prorettype = 'boolean'::regtype
+          AND procedure.provolatile = 'i'
+          AND NOT procedure.proisstrict
+          AND NOT procedure.prosecdef
+          AND procedure.proowner = owner_oid
+          AND language.lanname = 'sql'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid =
+            'omni_memory_informed_notice_approval_batches'::regclass
+          AND conname = 'omni_notice_approval_batch_anchor_review_check'
+          AND contype = 'c' AND convalidated
+          AND pg_get_expr(conbin, conrelid) =
+            'omni_notice_anchor_review_row_is_valid(independence_review_id, independence_reviewed_by_actor_id, independence_reviewed_at, trust_manifest_issued_at, observed_at, human_independence_reviewed)'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid =
+            'omni_memory_informed_notice_approval_batches'::regclass
+          AND conname =
+            'omni_notice_approval_batches_independence_review_key'
+          AND contype = 'u' AND convalidated
+          AND conkey = ARRAY[
+            (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid =
+                  'omni_memory_informed_notice_approval_batches'::regclass
+                AND attname = 'independence_review_id'
+                AND NOT attisdropped
+            )
+          ]::SMALLINT[]
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid =
+            'omni_memory_informed_notice_approval_batches'::regclass
+          AND conname =
+            'omni_notice_approval_batch_independence_actor_fkey'
+          AND contype = 'f' AND convalidated
+          AND confrelid = 'omni_auth_users'::regclass
+          AND confupdtype = 'r' AND confdeltype = 'r'
+          AND NOT condeferrable AND NOT condeferred
+          AND conkey = ARRAY[
+            (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid =
+                  'omni_memory_informed_notice_approval_batches'::regclass
+                AND attname = 'independence_reviewed_by_actor_id'
+                AND NOT attisdropped
+            )
+          ]::SMALLINT[]
+          AND confkey = ARRAY[
+            (
+              SELECT attnum FROM pg_attribute
+              WHERE attrelid = 'omni_auth_users'::regclass
+                AND attname = 'actor_id' AND NOT attisdropped
+            )
+          ]::SMALLINT[]
+      ) THEN
+        RAISE EXCEPTION 'Informed notice anchor review constraints are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1 FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name = 'omni_notice_anchor_review_row_is_valid'
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name IN (
+            'omni_memory_informed_notice_approval_batches',
+            'omni_memory_informed_notice_approval_contracts',
+            'omni_memory_informed_notice_review_attestations'
+          ) AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Informed notice anchor review boundary is exposed'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1 FROM omni_memory_informed_notice_approval_batches
+      ) OR EXISTS (
+        SELECT 1 FROM omni_memory_informed_notice_approval_contracts
+      ) OR EXISTS (
+        SELECT 1 FROM omni_memory_informed_notice_review_attestations
+      ) OR public.omni_notice_anchor_review_row_is_valid(
+        'review:v67'::text,
+        'actor:00000000-0000-4000-8000-000000000001'::text,
+        statement_timestamp() + INTERVAL '1 second',
+        statement_timestamp(), statement_timestamp(), TRUE
+      ) IS DISTINCT FROM FALSE THEN
+        RAISE EXCEPTION 'Informed notice anchor review hold is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+
   await verifyMemoryInformedNoticeAuthorityBoundary(sql);
 }
 

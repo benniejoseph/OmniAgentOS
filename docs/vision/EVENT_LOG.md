@@ -922,6 +922,32 @@ real externally anchored evidence, remove only these evidence/catalog holds,
 live-lock all coordinates, and commit the approved batch atomically; receipt
 and consent issuance remain independent future gates.
 
+Migration v67 closes the remaining durable-evidence gap without changing the
+v66 marker: the still-empty approval-batch shadow now requires the exact
+external trust-anchor independence-review ID, canonical reviewer actor, review
+time, and literal reviewed decision. A separate immutable validator binds that
+review between manifest issue and observation time; a canonical-actor foreign
+key and unique review identity prevent an anonymous or reused review from
+standing in for the external ceremony. V67 requires the schema owner, exact v66
+marker, empty owner-only shadows, and all three `CHECK (FALSE)` holds before the
+append-only upgrade, then re-runs the v65 boundary verifier. It seeds no row,
+removes no hold, grants no runtime access, and emits no event.
+
+The matching transaction-only writer contract accepts an explicitly global
+human governance scope rather than borrowing a tenant's authority. It resolves
+the trust anchor through a caller-supplied rollback-protected registry,
+requires a third canonical independence reviewer after both signed reviews,
+serializes all batches with one advisory key and a fixed four-table lock order,
+re-verifies both Ed25519 signatures at the database-observed time, and persists
+the batch, exact notice copy, signatures, public-key fingerprints, independence
+review, and live catalog rows idempotently in one transaction. Its preflight
+requires exact v67 plus a separately reviewed future cutover where only the
+v55 catalog and v66 evidence persistence holds have been removed; receipt,
+consent, membership, and entitlement holds must remain exact. Consequently the
+writer cannot succeed against v67 as installed and has no client, route,
+environment lookup, default trust resolver, event append, or serving call site.
+It returns `authorityGranted: false` and `runtimeAccepted: false`.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
