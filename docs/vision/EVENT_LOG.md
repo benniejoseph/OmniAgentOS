@@ -1166,3 +1166,17 @@ P0.5 now observes both the changed-binding denial and exact-binding admission
 through this runtime policy. Exact admission selects the governed executor but
 still records no synthetic calendar effect or receipt, so the positive effect
 case remains red until a real connector mutation is reconciled and verified.
+
+## Lost-acknowledgement reconciliation probe
+
+The idempotent-delivery harness now models the failure where a provider accepts
+a mutation but the acknowledgement is lost. A later scheduler attempt must
+perform read-after-write reconciliation against the exact material binding
+before considering another delivery. A matching observation emits one bounded
+receipt and preserves one provider effect; a missing or mismatched observation
+cannot verify completion. Retry counts and binding digests are strictly
+validated.
+
+P0.5 uses this side-effect-free fault probe for the calendar-shaped lost-ack
+case. It proves the retry ordering and receipt invariant without claiming that
+a live calendar write connector exists or touching a provider.
