@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildEffectIntentV2,
+  buildEffectIntentV2EventPayload,
   finalizeEffectIntentV2,
   parseEffectIntentV2,
   type BuildEffectIntentV2Input,
@@ -42,6 +43,14 @@ describe("effect intent v2", () => {
     const intent = buildEffectIntentV2(intentInput());
     expect(buildEffectIntentV2(intentInput())).toEqual(intent);
     expect(parseEffectIntentV2(intent)).toEqual(intent);
+    expect(buildEffectIntentV2EventPayload(intent)).toMatchObject({
+      schemaVersion: 2,
+      payloadKind: "effect_intent",
+      effectIntentId: intent.effectIntentId,
+      effectIntentSha256: intent.effectIntentSha256,
+      executionId: intent.executionId,
+      approvalBindingSha256: intent.approvalBindingSha256,
+    });
 
     const receipt = finalizeEffectIntentV2(intent, {
       providerAcknowledgement: "provider_response",
