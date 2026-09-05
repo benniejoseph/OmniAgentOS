@@ -34,6 +34,10 @@ import {
 } from "@/lib/sources/convergence-store";
 import { evaluateSourceSyncPageRetry } from "@/lib/connectors/source-sync-page-transaction";
 import { routeAgentRequest } from "@/lib/orchestration/supervisor";
+import {
+  approvalMaterialBindingSha256,
+  evaluateApprovalBinding,
+} from "@/lib/tools/approval-binding";
 
 /**
  * Versioned, side-effect-free probes of behavior that the current runtime can
@@ -82,12 +86,58 @@ export function observeP05Case(
       return observeStructuredClaimSupport(testCase);
     case "temporal.as-of-selects-valid-interval":
       return observeTemporalSelection(testCase);
+    case "approvals.material-change-invalidates":
+    case "approvals.exact-binding-permits-governed-effect":
+      return observeApprovalBinding(testCase);
     case "false-completion.legacy-completed-is-unverified":
       return observeLegacyCompletion(testCase);
     case "false-completion.verified-live-positive-control":
       return observeVerifiedCompletion(testCase);
     default:
       return unavailableObservation(testCase);
+  }
+}
+
+function observeApprovalBinding(testCase: P05Case): P05JsonValue {
+  const given = jsonRecord(testCase.given);
+  try {
+    if (testCase.id === "approvals.material-change-invalidates") {
+      const approvalBinding = jsonRecord(given.approvalBinding);
+      const requestedBinding = jsonRecord(given.requestedBinding);
+      const decision = evaluateApprovalBinding({
+        approvedBindingSha256: approvalMaterialBindingSha256({
+          targetSha256: text(approvalBinding.targetSha256) || "",
+          inputSha256: text(approvalBinding.inputSha256) || "",
+        }),
+        requestedBindingSha256: approvalMaterialBindingSha256({
+          targetSha256: text(requestedBinding.targetSha256) || "",
+          inputSha256: text(requestedBinding.inputSha256) || "",
+        }),
+      });
+      return {
+        adapterId: "approval-material-binding-v1",
+        adapterStatus: "observed",
+        approvalAccepted: decision.accepted,
+        status: decision.accepted ? "executing" : "waiting_approval",
+        reason: decision.reason,
+        effectCount: 0,
+      };
+    }
+
+    const decision = evaluateApprovalBinding({
+      approvedBindingSha256: text(given.approvalBindingSha256) || "",
+      requestedBindingSha256: text(given.requestedBindingSha256) || "",
+    });
+    return {
+      adapterId: "approval-material-binding-v1",
+      adapterStatus: "observed",
+      approvalAccepted: decision.accepted,
+      executor: decision.accepted ? "governed_tool_executor" : null,
+      effectCount: 0,
+      effectReceiptId: null,
+    };
+  } catch {
+    return unavailableObservation(testCase);
   }
 }
 

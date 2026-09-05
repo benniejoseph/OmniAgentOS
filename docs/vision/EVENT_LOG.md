@@ -1153,3 +1153,16 @@ policy regression without activating the dormant database enrollment or
 claiming that legacy unattributed production rows have been migrated; that
 cutover still requires authoritative owner attribution and coordinated RLS
 activation.
+
+## Exact approval material binding
+
+Approval comparison now uses a canonical digest over both the target digest
+and input digest, followed by an exact constant-time SHA-256 comparison.
+Malformed or non-canonical digests fail closed. A changed target or input is
+classified as `material_binding_changed`, remains `waiting_approval`, and
+cannot produce an effect.
+
+P0.5 now observes both the changed-binding denial and exact-binding admission
+through this runtime policy. Exact admission selects the governed executor but
+still records no synthetic calendar effect or receipt, so the positive effect
+case remains red until a real connector mutation is reconciled and verified.

@@ -177,17 +177,23 @@
     {
       "caseId": "approvals.material-change-invalidates",
       "value": {
-        "adapterId": "p0.5-observer-v1:approvals",
-        "adapterStatus": "not_observable_offline",
-        "reasonCode": "no_side_effect_free_current_system_adapter"
+        "adapterId": "approval-material-binding-v1",
+        "adapterStatus": "observed",
+        "approvalAccepted": false,
+        "status": "waiting_approval",
+        "reason": "material_binding_changed",
+        "effectCount": 0
       }
     },
     {
       "caseId": "approvals.exact-binding-permits-governed-effect",
       "value": {
-        "adapterId": "p0.5-observer-v1:approvals",
-        "adapterStatus": "not_observable_offline",
-        "reasonCode": "no_side_effect_free_current_system_adapter"
+        "adapterId": "approval-material-binding-v1",
+        "adapterStatus": "observed",
+        "approvalAccepted": true,
+        "executor": "governed_tool_executor",
+        "effectCount": 0,
+        "effectReceiptId": null
       }
     },
     {
