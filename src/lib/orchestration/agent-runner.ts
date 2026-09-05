@@ -60,6 +60,7 @@ import {
   buildClaimGroundingReport,
   buildWebCitationSources,
   mergeCitationSources,
+  publicGroundingReport,
   type CitationSource,
 } from "@/lib/rag/citations";
 import type { ContextPack } from "@/lib/rag/types";
@@ -355,6 +356,12 @@ export async function* runAgent(
       } catch (error) {
         logRunContractShadowFailure("checkpoint_model_after", error);
       }
+    }
+    if (event.type === "done" && event.grounding && safeEvent.type === "done") {
+      return {
+        ...safeEvent,
+        grounding: publicGroundingReport(event.grounding),
+      } as unknown as AgentEvent;
     }
     return safeEvent;
   }

@@ -53,6 +53,12 @@ type ThreadSummary = { id: string; title: string; updatedAt: string; mode: Agent
 type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string; runId?: string };
 type AgentMode = "orchestrate" | "research" | "execute" | "learn";
 type AgentId = string;
+type ClaimSupportState =
+  | "supported"
+  | "inferred"
+  | "disputed"
+  | "stale"
+  | "unsupported";
 type GroundingReport = {
   status: "verified" | "not_required" | "missing" | "invalid";
   citedIds: string[];
@@ -66,6 +72,25 @@ type GroundingReport = {
     snippet?: string;
     accessedAt?: string;
   }>;
+  claimEvidence?: {
+    schemaVersion: 1;
+    claimEvidenceMapId: string;
+    evaluatedAt: string;
+    coverage: {
+      materialClaimCount: number;
+      supportedMaterialClaimCount: number;
+      coverageBps: number | null;
+    };
+    claims: Array<{
+      claimId: string;
+      startUtf16: number;
+      endUtf16Exclusive: number;
+      materiality: "material" | "non_material";
+      supportState: ClaimSupportState;
+      supportReason: string;
+      evidenceUnitIds: string[];
+    }>;
+  };
 };
 type RunFeedback = {
   verdict: "useful" | "needs_work";
@@ -1857,7 +1882,7 @@ export function AgentRunsWorkspace({
                       </button>
                       {grounding ? (
                         <span className="inline-flex min-h-9 items-center rounded-full bg-surface-raised px-3 text-xs font-medium text-muted">
-                          {groundingLabel(grounding.status)}
+                          {groundingLabel(grounding)}
                         </span>
                       ) : null}
                       {activeAgentRunId ? (
@@ -1913,9 +1938,17 @@ export function AgentRunsWorkspace({
                         </div>
                       </details>
                     ) : null}
+                    {grounding?.claimEvidence ? (
+                      <ClaimEvidencePanel
+                        content={currentAssistantResponse}
+                        claimEvidence={grounding.claimEvidence}
+                      />
+                    ) : null}
                     {grounding?.status === "missing" ? (
                       <p className="mt-3 rounded-lg border border-warning/25 bg-warning/5 px-3 py-2 text-xs leading-5 text-muted" role="status">
-                        Evidence was available, but this response did not cite it. Open Evidence to review the captured sources.
+                        {grounding.claimEvidence
+                          ? "Some material claims are not supported by authorized evidence. Open Claim evidence to see which statements need verification."
+                          : "Evidence was available, but this response did not cite it. Open Evidence to review the captured sources."}
                       </p>
                     ) : null}
                     {grounding?.invalidIds.length ? (
@@ -3913,10 +3946,82 @@ function workflowEventLabel(type: string) {
   return labels[type] || type.replaceAll(".", " · ").replaceAll("_", " ");
 }
 
-function groundingLabel(status: GroundingReport["status"]) {
-  if (status === "verified") return "Sources cited";
-  if (status === "not_required") return "No citations required";
-  if (status === "invalid") return "Invalid source";
+function ClaimEvidencePanel({
+  content,
+  claimEvidence,
+}: {
+  content: string;
+  claimEvidence: NonNullable<GroundingReport["claimEvidence"]>;
+}) {
+  const coverage = claimEvidence.coverage;
+  return (
+    <details className="mt-3 rounded-xl border border-line/80 bg-background px-3">
+      <summary className="flex min-h-10 cursor-pointer items-center justify-between gap-3 text-xs font-semibold">
+        <span>Claim evidence</span>
+        <span className="text-muted">
+          {coverage.supportedMaterialClaimCount}/{coverage.materialClaimCount} supported
+        </span>
+      </summary>
+      <ol className="max-h-96 space-y-2 overflow-y-auto border-t border-line/70 py-3">
+        {claimEvidence.claims.map((claim) => {
+          const claimText = content.slice(
+            claim.startUtf16,
+            claim.endUtf16Exclusive,
+          );
+          return (
+            <li key={claim.claimId} className="rounded-lg bg-surface px-3 py-2.5 text-xs">
+              <div className="flex items-start justify-between gap-3">
+                <p className="min-w-0 leading-5 text-foreground">{claimText}</p>
+                <span className={clsx(
+                  "shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                  claimSupportTone(claim.supportState),
+                )}>
+                  {claimSupportLabel(claim.supportState)}
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] text-muted">
+                {claim.evidenceUnitIds.length
+                  ? `${claim.evidenceUnitIds.length} authorized evidence ${claim.evidenceUnitIds.length === 1 ? "unit" : "units"}`
+                  : "No authorized evidence established support"}
+              </p>
+            </li>
+          );
+        })}
+      </ol>
+    </details>
+  );
+}
+
+function claimSupportLabel(state: ClaimSupportState) {
+  return state === "supported"
+    ? "Supported"
+    : state === "inferred"
+      ? "Inferred"
+      : state === "disputed"
+        ? "Disputed"
+        : state === "stale"
+          ? "Stale"
+          : "Unsupported";
+}
+
+function claimSupportTone(state: ClaimSupportState) {
+  if (state === "supported") return "bg-success/10 text-success";
+  if (state === "inferred") return "bg-primary/10 text-primary";
+  if (state === "disputed") return "bg-danger/10 text-danger";
+  if (state === "stale") return "bg-warning/10 text-warning";
+  return "bg-surface-raised text-muted";
+}
+
+function groundingLabel(grounding: GroundingReport) {
+  const coverage = grounding.claimEvidence?.coverage;
+  if (coverage) {
+    if (coverage.materialClaimCount === 0) return "No material claims";
+    if (coverage.coverageBps === 10_000) return "Claims supported";
+    return `${coverage.supportedMaterialClaimCount}/${coverage.materialClaimCount} claims supported`;
+  }
+  if (grounding.status === "verified") return "Sources cited";
+  if (grounding.status === "not_required") return "No citations required";
+  if (grounding.status === "invalid") return "Invalid source";
   return "Citation needed";
 }
 
