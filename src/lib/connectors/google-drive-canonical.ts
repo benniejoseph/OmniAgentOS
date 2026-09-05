@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   claimCanonicalSourceSyncPage,
+  canonicalSourceSyncFailureStage,
   commitCanonicalSourceSyncPage,
   failSourceSyncPage,
   pinCanonicalSourceSyncBackfillFence,
@@ -144,6 +145,7 @@ export async function observeGoogleDriveCanonicalMetadata(
 
   let page = claim.page;
   const signal = boundedSignal(input.abortSignal);
+  let stage = "pin_fence";
   try {
     if (page.phase === "backfill" && !page.requestCursor?.fenceToken) {
       const fenceToken = await fetchStartPageToken(accessToken, signal);
@@ -154,9 +156,11 @@ export async function observeGoogleDriveCanonicalMetadata(
       );
     }
 
+    stage = "observe_page";
     const observed = page.phase === "backfill"
       ? await observeBackfillPage(accessToken, page, signal)
       : await observeChangesPage(accessToken, page, signal);
+    stage = "commit_page";
     return await commitCanonicalSourceSyncPage({
       page,
       rolloutBinding: GOOGLE_DRIVE_CANONICAL_ROLLOUT_BINDING,
@@ -186,6 +190,7 @@ export async function observeGoogleDriveCanonicalMetadata(
       level: "warn",
       event: "google_drive.canonical_metadata.failed",
       phase: page.phase,
+      stage: canonicalSourceSyncFailureStage(error) || stage,
       code,
       diagnostic: safeFailureDiagnostic(error),
     }));
