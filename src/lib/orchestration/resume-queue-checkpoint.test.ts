@@ -30,6 +30,7 @@ vi.mock("@/lib/operations/job-queue", () => ({
 }));
 
 vi.mock("@/lib/orchestration/agent-runner", () => ({
+  CheckpointResumeInterruptedError: class extends Error {},
   rejectAgentRunApproval: vi.fn(),
   resumeAgentRunAfterToolApproval: mocks.resumeRun,
 }));
@@ -58,6 +59,7 @@ vi.mock("@/lib/tools/audit-store", () => ({
 }));
 
 import { processAgentResumeQueue } from "@/lib/orchestration/resume-queue";
+import { CheckpointResumeInterruptedError } from "@/lib/orchestration/agent-runner";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const TENANT_ID = "tenant_checkpoint_queue";
@@ -197,5 +199,21 @@ describe("agent resume checkpoint canary", () => {
       JOB.leaseOwner,
       expect.objectContaining({ reason: expect.stringContaining("active_claim") }),
     );
+  });
+
+  it("leaves interrupted canary leases stale for fenced recovery", async () => {
+    mocks.resumeRun.mockRejectedValue(new CheckpointResumeInterruptedError());
+
+    const result = await processAgentResumeQueue({ tenantId: TENANT_ID });
+
+    expect(result).toMatchObject({
+      completed: 0,
+      deferred: 0,
+      failed: 0,
+      stale: 1,
+    });
+    expect(mocks.completeJob).not.toHaveBeenCalled();
+    expect(mocks.deferJob).not.toHaveBeenCalled();
+    expect(mocks.failJob).not.toHaveBeenCalled();
   });
 });

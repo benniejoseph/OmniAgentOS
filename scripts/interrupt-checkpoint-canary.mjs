@@ -38,21 +38,15 @@ try {
     "fly",
     [
       "machine",
-      "stop",
+      "kill",
       flyMachineId,
       "--app",
       flyApp,
-      "--signal",
-      "SIGKILL",
-      "--timeout",
-      "0",
-      "--wait-timeout",
-      "20s",
     ],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   );
   if (stop.status !== 0) {
-    throw new Error("Fly could not stop the fenced checkpoint canary worker.");
+    throw new Error("Fly could not kill the fenced checkpoint canary worker.");
   }
   const start = spawnSync(
     "fly",
