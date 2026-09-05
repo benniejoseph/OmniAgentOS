@@ -8,7 +8,10 @@ import type { ToolExecutionRecord } from "@/lib/tools/types";
 import { listStreamEvents } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { approvalMaterialBindingSha256 } from "@/lib/tools/approval-binding";
-import { buildEffectIntentV2 } from "@/lib/tools/effect-intent-v2";
+import {
+  buildEffectIntentV2,
+  finalizeEffectIntentV2,
+} from "@/lib/tools/effect-intent-v2";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
 
@@ -416,14 +419,25 @@ describe("tool approval claims (file mode)", () => {
       executionScope: scope,
     })).rejects.toThrow(/immutable/i);
 
+    const receipt = finalizeEffectIntentV2(intent, {
+      providerAcknowledgement: "provider_response",
+      providerAcknowledgementId: "provider:generic-effect",
+      providerAcknowledgementSha256: "9".repeat(64),
+      verificationMethod: "read_after_write",
+      verificationState: "unverifiable",
+      verificationReasonCode: "read_unavailable",
+      observedTargetStateSha256: null,
+    });
     const completed = await store.completeClaimedToolExecution({
       ...persisted!,
       status: "executed",
       output: { ok: true },
+      effectReceipt: receipt,
       completedAt: new Date().toISOString(),
-    }, claimToken);
+    }, claimToken, { executionScope: scope });
     expect(store.getToolExecutionEffectIntentV2(completed!)).toEqual(intent);
     expect(store.publicToolExecution(completed!).output).toEqual({ ok: true });
+    expect(store.publicToolExecution(completed!).effectReceipt).toEqual(receipt);
 
     const events = await listStreamEvents(`tool_execution:${claimed.id}`, {
       tenantId: "tenant-a",
@@ -436,6 +450,14 @@ describe("tool approval claims (file mode)", () => {
         payload: expect.objectContaining({
           effectIntentId: intent.effectIntentId,
           effectIntentSha256: intent.effectIntentSha256,
+        }),
+      }),
+      expect.objectContaining({
+        id: `tool.effect_receipt:${receipt.effectReceiptId}`,
+        type: "tool.effect_receipt.recorded",
+        payload: expect.objectContaining({
+          effectReceiptId: receipt.effectReceiptId,
+          effectReceiptSha256: receipt.receiptSha256,
         }),
       }),
     ]);

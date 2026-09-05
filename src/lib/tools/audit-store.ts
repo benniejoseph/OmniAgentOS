@@ -30,6 +30,11 @@ import {
   parseEffectIntentV2,
   type EffectIntentV2,
 } from "@/lib/tools/effect-intent-v2";
+import {
+  buildEffectReceiptV2EventPayload,
+  parseEffectReceiptV2,
+  type EffectReceiptV2,
+} from "@/lib/tools/effect-receipt-v2";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
 import {
   approvalSha256,
@@ -43,6 +48,7 @@ import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM, type ToolExecutionLedger, type ToolExecutionRecord } from "@/lib/tools/types";
 
 type SqlClient = ReturnType<typeof getSql>;
+type EffectReceipt = EffectReceiptV1 | EffectReceiptV2;
 
 const DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS = 5 * 60_000;
 
@@ -1075,9 +1081,25 @@ function parseStoredEffectReceipt(
     actorId?: string;
     toolId: string;
   },
-): EffectReceiptV1 | undefined {
+): EffectReceipt | undefined {
   if (value === undefined) {
     return undefined;
+  }
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).schemaVersion === 2
+  ) {
+    if (bindings.toolId === "memory.write") {
+      throw new Error("memory.write remains bound to the frozen v1 receipt.");
+    }
+    return parseEffectReceiptV2(value, {
+      executionId: bindings.executionId,
+      tenantId: bindings.tenantId,
+      ...(bindings.actorId ? { actorId: bindings.actorId } : {}),
+      toolId: bindings.toolId,
+    });
   }
   if (bindings.toolId !== "memory.write") {
     throw new Error("Only memory.write may carry a v1 effect receipt.");
@@ -1092,7 +1114,7 @@ function parseStoredEffectReceipt(
 
 function parseRecordEffectReceipt(
   record: ToolExecutionRecord,
-): EffectReceiptV1 | undefined {
+): EffectReceipt | undefined {
   const receipt = parseStoredEffectReceipt(record.effectReceipt, {
     executionId: record.id,
     tenantId: normalizeTenantId(record.tenantId),
@@ -1120,12 +1142,21 @@ function omitEffectReceipt(record: ToolExecutionRecord): ToolExecutionRecord {
 }
 
 function assertEffectReceiptFinalization(input: {
-  receipt: EffectReceiptV1;
+  receipt: EffectReceipt;
   current: ToolExecutionRecord;
   terminal: ToolExecutionRecord;
   executionScope: ExecutionScope;
 }) {
   const { receipt, current, terminal, executionScope } = input;
+  if (receipt.schemaVersion === 2) {
+    assertEffectReceiptV2Finalization(input as {
+      receipt: EffectReceiptV2;
+      current: ToolExecutionRecord;
+      terminal: ToolExecutionRecord;
+      executionScope: ExecutionScope;
+    });
+    return;
+  }
   const actorId = executionScope.initiatingActorId;
   if (!actorId) {
     throw new Error("Effect-receipt finalization requires a bound actor.");
@@ -1221,11 +1252,136 @@ function assertEffectReceiptFinalization(input: {
   }
 }
 
+function assertEffectReceiptV2Finalization(input: {
+  receipt: EffectReceiptV2;
+  current: ToolExecutionRecord;
+  terminal: ToolExecutionRecord;
+  executionScope: ExecutionScope;
+}) {
+  const { receipt, current, terminal, executionScope } = input;
+  const actorId = executionScope.initiatingActorId;
+  const principalId = executionScope.executingPrincipalId;
+  if (!actorId || !principalId) {
+    throw new Error(
+      "Effect-receipt v2 finalization requires a bound actor and principal.",
+    );
+  }
+  const validated = parseEffectReceiptV2(receipt, {
+    executionId: current.id,
+    tenantId: executionScope.tenantId,
+    actorId,
+    executingPrincipalType: executionScope.executingPrincipalType,
+    executingPrincipalId: principalId,
+    toolId: current.toolId,
+  });
+  if (!validated) throw new Error("Effect receipt v2 is missing.");
+  const intent = getToolExecutionEffectIntentV2(current);
+  if (!intent) {
+    throw new Error(
+      "Effect receipt v2 cannot finalize without its persisted pre-effect intent.",
+    );
+  }
+  if (
+    terminal.id !== current.id ||
+    normalizeTenantId(terminal.tenantId) !== validated.tenantId ||
+    terminal.actorId !== validated.actorId ||
+    terminal.toolId !== validated.toolId ||
+    terminal.status !== "executed" ||
+    terminal.dryRun ||
+    toolInputSha256(terminal.input) !== validated.inputSha256
+  ) {
+    throw new Error(
+      "Effect-receipt v2 does not match the claimed terminal execution.",
+    );
+  }
+  const immutableReceiptBinding = {
+    effectMode: validated.effectMode,
+    reversible: validated.reversible,
+    executionKind: validated.executionKind,
+    executionId: validated.executionId,
+    tenantId: validated.tenantId,
+    actorId: validated.actorId,
+    executingPrincipalType: validated.executingPrincipalType,
+    executingPrincipalId: validated.executingPrincipalId,
+    workflowRunId: validated.workflowRunId,
+    planId: validated.planId,
+    planSha256: validated.planSha256,
+    planNodeId: validated.planNodeId,
+    toolId: validated.toolId,
+    toolContractSha256: validated.toolContractSha256,
+    approvalState: validated.approvalState,
+    approvalBindingSha256: validated.approvalBindingSha256,
+    inputSha256: validated.inputSha256,
+    idempotencyKeySha256: validated.idempotencyKeySha256,
+    targetType: validated.targetType,
+    targetId: validated.targetId,
+    expectedTargetStateSha256: validated.expectedTargetStateSha256,
+  };
+  const immutableIntentBinding = {
+    effectMode: intent.effectMode,
+    reversible: intent.reversible,
+    executionKind: intent.executionKind,
+    executionId: intent.executionId,
+    tenantId: intent.tenantId,
+    actorId: intent.actorId,
+    executingPrincipalType: intent.executingPrincipalType,
+    executingPrincipalId: intent.executingPrincipalId,
+    workflowRunId: intent.workflowRunId,
+    planId: intent.planId,
+    planSha256: intent.planSha256,
+    planNodeId: intent.planNodeId,
+    toolId: intent.toolId,
+    toolContractSha256: intent.toolContractSha256,
+    approvalState: intent.approvalState,
+    approvalBindingSha256: intent.approvalBindingSha256,
+    inputSha256: intent.inputSha256,
+    idempotencyKeySha256: intent.idempotencyKeySha256,
+    targetType: intent.targetType,
+    targetId: intent.targetId,
+    expectedTargetStateSha256: intent.expectedTargetStateSha256,
+  };
+  if (
+    canonicalJsonSha256(immutableReceiptBinding) !==
+    canonicalJsonSha256(immutableIntentBinding)
+  ) {
+    throw new Error(
+      "Effect receipt v2 does not finalize the exact persisted intent.",
+    );
+  }
+}
+
 async function appendToolEffectReceiptEvent(
-  receipt: EffectReceiptV1,
+  receipt: EffectReceipt,
   executionScope: ExecutionScope,
   sql?: SqlClient,
 ) {
+  if (receipt.schemaVersion === 2) {
+    if (
+      !executionScope.initiatingActorId ||
+      !executionScope.executingPrincipalId
+    ) {
+      throw new Error(
+        "Effect-receipt v2 events require a bound actor and principal.",
+      );
+    }
+    const validated = parseEffectReceiptV2(receipt, {
+      executionId: receipt.executionId,
+      tenantId: executionScope.tenantId,
+      actorId: executionScope.initiatingActorId,
+      executingPrincipalType: executionScope.executingPrincipalType,
+      executingPrincipalId: executionScope.executingPrincipalId,
+      toolId: receipt.toolId,
+    });
+    if (!validated) throw new Error("Effect-receipt v2 event is missing.");
+    await appendScopedDomainEvent({
+      id: `tool.effect_receipt:${validated.effectReceiptId}`,
+      streamId: `tool_execution:${validated.executionId}`,
+      type: "tool.effect_receipt.recorded",
+      executionScope,
+      payload: buildEffectReceiptV2EventPayload(validated),
+    }, sql ? { sql } : {});
+    return;
+  }
   if (
     !executionScope.initiatingActorId ||
     executionScope.executingPrincipalType !== "system" ||

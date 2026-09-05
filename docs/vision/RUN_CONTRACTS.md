@@ -193,9 +193,12 @@ digests match exactly.
 
 The builder derives a deterministic receipt ID and body digest. Its compact
 event projection omits the provider request ID and cannot contain tool input,
-provider output, credentials, or an extensible metadata bag. This contract is
-not yet a serving adapter or permission: unregistered tools still receive no
-v2 receipt and no external effect is authorized by constructing one.
+provider output, credentials, or an extensible metadata bag. The audit store
+now accepts a v2 receipt only when it exactly finalizes the claimed record's
+persisted v2 intent, preserves it immutably, and appends the compact receipt
+event in the same database transaction. This is not yet a serving adapter or
+permission: unregistered tools still receive no v2 receipt and no external
+effect is authorized by constructing one.
 
 Before a v2 effect can run, `EffectIntentV2` records the same immutable
 execution, scope, plan, tool, approval, input, idempotency, target, and expected

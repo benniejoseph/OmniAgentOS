@@ -1,4 +1,5 @@
 import type { EffectReceiptV1 } from "@/lib/tools/effect-receipt";
+import type { EffectReceiptV2 } from "@/lib/tools/effect-receipt-v2";
 
 export type ToolRiskLevel = 0 | 1 | 2 | 3;
 
@@ -56,7 +57,7 @@ export type ToolExecutionRecord = {
   approvedAt?: string;
   approvalReason?: string;
   /** Strict metadata-only proof for a supported live side effect. */
-  effectReceipt?: EffectReceiptV1;
+  effectReceipt?: EffectReceiptV1 | EffectReceiptV2;
   createdAt: string;
   completedAt?: string;
 };
