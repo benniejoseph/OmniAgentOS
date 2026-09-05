@@ -774,6 +774,7 @@ function safeFailureDiagnostic(error: unknown) {
     return { name: "UnknownError" };
   }
   const record = error as Record<string, unknown>;
+  const schemaIssues = safeSchemaIssues(record.issues);
   return {
     name: safeDiagnosticIdentifier(record.name, "UnknownError"),
     ...(safeDiagnosticIdentifier(record.code) ? {
@@ -788,7 +789,25 @@ function safeFailureDiagnostic(error: unknown) {
     ...(safeDiagnosticIdentifier(record.routine) ? {
       routine: safeDiagnosticIdentifier(record.routine),
     } : {}),
+    ...(schemaIssues.length ? { schemaIssues } : {}),
   };
+}
+
+function safeSchemaIssues(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 5).flatMap((issue) => {
+    if (!issue || typeof issue !== "object") return [];
+    const record = issue as Record<string, unknown>;
+    const code = safeDiagnosticIdentifier(record.code);
+    const path = Array.isArray(record.path)
+      ? record.path.slice(0, 8).map((segment) =>
+          typeof segment === "number"
+            ? String(segment)
+            : safeDiagnosticIdentifier(segment)
+        ).filter((segment): segment is string => Boolean(segment)).join(".")
+      : "";
+    return code && path ? [{ code, path }] : [];
+  });
 }
 
 function safeDiagnosticIdentifier(value: unknown, fallback?: string) {
