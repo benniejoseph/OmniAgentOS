@@ -76,6 +76,7 @@ function memoryResult(
       claimStatus: "active",
       createdAt: "2026-09-06T00:00:00.000Z",
       updatedAt: "2026-09-06T00:00:00.000Z",
+      embedding: [0.1, 0.3],
     },
     score,
     reasons: ["matched preference"],
@@ -112,6 +113,12 @@ describe("actor-scoped context retrieval", () => {
       "legacy-memory",
     ]);
     expect(pack.contextBlock).toContain("Private preference");
+    expect(pack.memoryResults.every((result) =>
+      result.record.embedding === undefined
+    )).toBe(true);
+    expect(pack.results.every((item) =>
+      item.kind !== "memory" || item.result.record.embedding === undefined
+    )).toBe(true);
     expect(pack.trace).toBeUndefined();
     expect(mocks.getSql).not.toHaveBeenCalled();
     expect(mocks.updateJsonFile).not.toHaveBeenCalled();
