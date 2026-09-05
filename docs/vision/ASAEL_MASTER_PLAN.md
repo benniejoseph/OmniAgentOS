@@ -1533,6 +1533,27 @@ anchored verifier, governed atomic writer/event integration, a reviewed
 least-privilege cutover, and a separate v56 activation migration remain future
 gates.
 
+The next pure contract slice mirrors v57 without consuming it. It defines
+strict frozen held-decision and attestation records, canonical actors and
+timestamps, the fixed action and two slots, canonical SHA-256 coordinates, and
+the exact unpadded Ed25519 signature encoding. Decision hashing uses a
+versioned domain separator and fixed-order uint32-big-endian UTF-8 field-name
+and value frames—not object property order. The signed coordinates include the
+governance-decision ID, logical database identity, exact authority target,
+ceremony policy, trust-manifest/nonce/evidence digests, and validity window;
+operational recording and lifecycle placeholders are excluded. Future Ed25519
+verification signs those exact preimage bytes, not the hexadecimal digest or a
+second hash.
+
+Its digest assertion is recomputation only. One attestation can be bound only
+to its parent coordinates and half-open window, while a complete evidence
+bundle requires both stable slots and distinct key IDs. These checks do not
+authenticate Ed25519, resolve external trust, prove human independence or
+same-tenant authority, read the current time, or prevent clone replay. The
+module adds no database/auth/event-store/serving/key-registry import, writer,
+route, event, row, or call site. V57 remains empty and owner-only as installed;
+v56 and every predecessor hold remain closed.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

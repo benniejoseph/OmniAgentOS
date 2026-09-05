@@ -156,3 +156,19 @@ system scope, database-owner status, and other scope coordinates are not trust
 roots. External human approval and the two signatures, an externally anchored
 verifier, governed atomic writer/event integration, reviewed least-privilege
 cutover, and a separate v56 activation migration remain future gates.
+
+The following bootstrap-governance contract does not add a scope coordinate or
+permission. It serializes the exact signed decision coordinates with a
+versioned domain and fixed-order uint32-big-endian UTF-8 framing, recomputes a
+SHA-256 digest, structurally binds each attestation to its decision/window, and
+forms the two fixed slots in stable order with distinct key IDs. Operational
+recording attribution and lifecycle placeholders are deliberately unsigned;
+future Ed25519 verification targets the exact preimage bytes, not the hex
+digest or a second hash.
+
+These are content-free equality checks, not Ed25519 verification, trust-anchor
+resolution, human-independence proof, same-tenant authority, clock validation,
+or clone-replay protection. The pure module imports no database, auth,
+event-store, serving, or key registry and has no route, writer, event append,
+scope installer, or runtime call site. It leaves v57 empty, v56
+active-forbidden, and every earlier hold unchanged.

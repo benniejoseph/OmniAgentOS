@@ -541,6 +541,28 @@ signatures, an externally anchored verifier, atomic writer/event integration,
 a reviewed least-privilege cutover, and a separate v56 activation migration
 remain future gates.
 
+The following contract-only slice gives v57 a deterministic, content-free
+application representation without making it authoritative. Strict frozen
+records preserve the held decision and attestation shapes, canonical actor
+identifiers, fixed action and slots, bounded timestamps, SHA-256 coordinates,
+and canonical Ed25519 signature encoding. The signed decision preimage includes
+the governance-decision ID, logical database identity, exact target authority
+tuple, ceremony-policy coordinates, trust-manifest/nonce/evidence digests, and
+validity window. It uses a versioned domain separator plus fixed-order,
+uint32-big-endian UTF-8 name/value framing; unordered JSON serialization is not
+part of the contract. Future Ed25519 verification must use those exact preimage
+bytes, not the hexadecimal digest or a second hash. Operational recorder attribution and held lifecycle
+placeholders are intentionally outside that signed preimage.
+
+The digest helper only recomputes and compares SHA-256. Attestation binding
+proves only the exact tenant, decision ID/digest, and half-open decision window;
+the two-slot bundle adds stable slot order and distinct key IDs. Neither helper
+verifies Ed25519, resolves a trust manifest, proves two independent people,
+establishes same-tenant authority, consults a clock, or prevents logical-lineage
+replay into a restored clone. The module has no database, auth, event-store,
+serving, route, or key-registry import or call site. It writes no row or event
+and leaves v57 empty, v56 active-forbidden, and all earlier holds unchanged.
+
 Migration v50 adds an owner-only, append-only auth-user actor-identifier
 shadow. It records each v46 canonical actor as a self identifier and each exact
 current auth email as the initial legacy identifier, while an auth-user trigger
