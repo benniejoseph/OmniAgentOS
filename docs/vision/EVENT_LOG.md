@@ -1249,3 +1249,14 @@ Generic HTTP, MCP, and OpenAPI adapters record a metadata-only provider
 acknowledgement and the explicit `unverifiable/read_unavailable` state because
 they have no uniform safe read operation. An uncertain delivery or
 finalization stays intent-bound and is not automatically replayed.
+
+## Claim-evidence completion summary
+
+Agent completion now derives `run.done.payload.grounding.claimEvidence` from
+the persisted `ClaimEvidenceMapV1`. The event payload contains only schema
+version, map and structural-verification identities, counts, coverage, and the
+five-state histogram. It does not contain answer text, claim text, evidence
+content, authorization receipts, actor identity, source metadata, or private
+reasoning. The full metadata-only map stays in the tenant-scoped run grounding
+projection; public run and stream responses receive a bounded claim-state
+projection instead.

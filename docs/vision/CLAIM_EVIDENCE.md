@@ -1,14 +1,25 @@
 # ClaimEvidenceMap v1
 
-**Status:** Dormant additive P1.5 contract foundation
+**Status:** Active P1.5 serving contract
 
-**Runtime effect:** None
+**Runtime effect:** Every completed agent answer is decomposed and checked
 
-`ClaimEvidenceMapV1` defines how a future answer can bind exact claims to
-authorized evidence and honest support states. The contract and its structural
-verifier are pure, metadata-only code. They are not imported by RAG serving,
-do not change the legacy `GroundingReport`, do not read a database, and do not
-alter API, event, worker, or UI behavior.
+`ClaimEvidenceMapV1` binds each served answer to exact claims, authorized
+canonical evidence, and honest support states. The complete private map is
+stored inside the run's existing grounding projection. `run.done` carries only
+a typed metadata summary, and the public run/stream projection exposes claim
+spans, state, coverage, and opaque evidence-unit IDs without actor,
+authorization, or source-binding internals.
+
+The runtime deterministically segments prose, excluding Markdown headings and
+fenced code. It resolves only tenant-scoped knowledge chunks with an exact
+immutable `EvidenceUnitV1`, verifies the chunk content hash and byte length,
+then applies the owner-and-scope authorization policy before claim text is
+compared with evidence content. Strong runtime support currently requires a
+normalized exact claim span in authorized evidence. A citation ID, model
+assertion, memory/graph result, web result, or legacy chunk cannot establish
+support. Such sources remain visible for compatibility while the associated
+claim stays unsupported.
 
 ## Contract boundary
 
@@ -93,10 +104,10 @@ and verifier execution scopes. It explicitly does not prove:
 - trust in the evidence source, extractor, authorization authority, resolver,
   verifier, policy, or its current key/configuration;
 - source-head currentness or independence between sources;
-- completeness or materiality quality of claim decomposition; or
-- that any live answer path currently emits or enforces this contract.
+- completeness or materiality quality of claim decomposition.
 
-Those are activation gates for later P1.5 batches. Runtime adoption must remain
-additive, preserve legacy readability, resolve authorization before any model
-claim check, emit typed metadata-only events, and expose unsupported or
-unverified states without upgrading them to success.
+Runtime adoption is additive: old grounding remains readable, but serving no
+longer upgrades an answer merely because its citation markers resolve. Full
+legacy or non-canonical evidence enrollment is not inferred or backfilled;
+those claims remain explicitly unsupported until canonical evidence carrying
+the answer-verification purpose is available.
