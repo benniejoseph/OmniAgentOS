@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { refreshOAuthAccess, type OAuthProvider } from "@/lib/connectors/oauth-providers";
-import { getOAuthGrantSecrets, listOAuthGrantsForTenant, saveOAuthGrant, updateOAuthSyncState } from "@/lib/connectors/oauth-store";
+import { claimOAuthSyncLease, getOAuthGrantSecrets, listOAuthGrantsForTenant, saveOAuthGrant, updateOAuthSyncState } from "@/lib/connectors/oauth-store";
 import { observeGoogleDriveCanonicalMetadata } from "@/lib/connectors/google-drive-canonical";
 import { observeGoogleDriveShadow } from "@/lib/connectors/google-drive-shadow";
 import { extractCaptureFile } from "@/lib/capture/files";
@@ -75,7 +75,11 @@ export async function syncDuePersonalProviders(options: { tenantId: string; limi
 export async function syncPersonalProvider(input: { tenantId: string; actorId: string; provider: OAuthProvider; abortSignal?: AbortSignal }) {
   const secrets = await getOAuthGrantSecrets(input.tenantId, input.actorId, input.provider);
   if (!secrets) throw new Error("Connected source not found.");
-  await updateOAuthSyncState({ ...input, status: "syncing" });
+  const claim = await claimOAuthSyncLease(input);
+  if (claim.status !== "claimed") {
+    throw new Error("Connected source synchronization is already running.");
+  }
+  const lease = claim.lease;
   let shadowAccessToken: string | undefined;
   let shadowObservation: Promise<unknown> | undefined;
   let canonicalObservation: Promise<unknown> | undefined;
@@ -193,6 +197,7 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
           status: "syncing",
           cursor: JSON.stringify(candidateCursor),
           syncedItems: sourceImported,
+          lease,
         });
         if (!checkpoint) {
           throw new Error("Connected source was revoked during synchronization.");
@@ -228,7 +233,12 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
       status: status === "healthy" ? "healthy" : "error",
       cursor: JSON.stringify(nextCursor),
       error,
+      lease,
+      releaseLease: true,
     });
+    if (!grant) {
+      throw new Error("Connected source synchronization lost its lease.");
+    }
     return {
       provider: input.provider,
       status,
@@ -240,7 +250,13 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
       grant,
     };
   } catch (error) {
-    await updateOAuthSyncState({ ...input, status: "error", error: error instanceof Error ? error.message : "Sync failed." });
+    await updateOAuthSyncState({
+      ...input,
+      status: "error",
+      error: error instanceof Error ? error.message : "Sync failed.",
+      lease,
+      releaseLease: true,
+    });
     throw error;
   } finally {
     if (shadowAccessToken) {
