@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { refreshOAuthAccess, type OAuthProvider } from "@/lib/connectors/oauth-providers";
 import { getOAuthGrantSecrets, listOAuthGrantsForTenant, saveOAuthGrant, updateOAuthSyncState } from "@/lib/connectors/oauth-store";
 import { observeGoogleDriveCanonicalMetadata } from "@/lib/connectors/google-drive-canonical";
@@ -5,9 +7,20 @@ import { observeGoogleDriveShadow } from "@/lib/connectors/google-drive-shadow";
 import { extractCaptureFile } from "@/lib/capture/files";
 import { ingestTextDocument } from "@/lib/rag/retriever";
 import { deleteKnowledgeDocumentByIdempotencyKey } from "@/lib/rag/store";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 type SyncCursor = { calendar?: string; gmailHistoryId?: string; driveModifiedAfter?: string };
-type SyncItem = { id: string; kind: "mail" | "calendar" | "drive"; title: string; content: string; deleted?: boolean };
+type SyncItem = {
+  id: string;
+  kind: "mail" | "calendar" | "drive";
+  title: string;
+  content: string;
+  deleted?: boolean;
+  providerRevisionId?: string;
+  sourceCreatedAt?: string;
+  sourceUpdatedAt?: string;
+  capturedAt?: string;
+};
 
 export async function syncDuePersonalProviders(options: { tenantId: string; limit?: number; staleAfterMs?: number } ) {
   const limit = Math.min(Math.max(options.limit || 2, 1), 5);
@@ -70,6 +83,15 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
       input.abortSignal,
       { tenantId: input.tenantId, actorId: input.actorId, provider: input.provider },
     );
+    const sourceExecutionScope = createExecutionScope({
+      tenantId: input.tenantId,
+      initiatingActorId: input.actorId,
+      executingPrincipalType: "system",
+      executingPrincipalId: "connector.google.personal_sync",
+      correlationId: `google-personal-sync:${randomUUID()}`,
+      contextGrantIds: [secrets.grant.id],
+      purpose: "connector.google.personal_sync.ingest",
+    });
     let imported = 0;
     let removed = 0;
     for (const item of result.items.slice(0, 40)) {
@@ -80,6 +102,11 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
         continue;
       }
       if (!item.content.trim()) continue;
+      if (!item.capturedAt) {
+        throw new Error(
+          `Google ${item.kind} item is missing a canonical provider timestamp.`,
+        );
+      }
       await ingestTextDocument({
         idempotencyKey,
         tenantId: input.tenantId,
@@ -96,6 +123,18 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
           operation: "embedding",
           purpose: `connector.${input.provider}.${item.kind}.ingest`,
           credentialSource: "deployment_environment",
+        },
+        sourceLineage: {
+          executionScope: sourceExecutionScope,
+          connectionId: secrets.grant.id,
+          adapterId: `google.personal_sync.${item.kind}`,
+          adapterVersionId: "1",
+          externalItemId: `${item.kind}:${item.id}`,
+          providerRevisionId: item.providerRevisionId || null,
+          sourceKind: personalSourceKind(item.kind),
+          sourceCreatedAt: item.sourceCreatedAt || null,
+          sourceUpdatedAt: item.sourceUpdatedAt || null,
+          capturedAt: item.capturedAt,
         },
       });
       imported += 1;
@@ -199,7 +238,7 @@ async function googleDrive(
   const url = new URL("https://www.googleapis.com/drive/v3/files");
   url.searchParams.set("pageSize", "20");
   url.searchParams.set("orderBy", "modifiedTime desc");
-  url.searchParams.set("fields", "files(id,name,mimeType,modifiedTime,webViewLink,description,trashed,size,fileExtension)");
+  url.searchParams.set("fields", "files(id,name,mimeType,createdTime,modifiedTime,version,headRevisionId,webViewLink,description,trashed,size,fileExtension)");
   url.searchParams.set("q", `trashed = false and modifiedTime > '${modifiedAfter || new Date(Date.now() - 30 * 86_400_000).toISOString()}'`);
   const payload = (await providerJson(url.toString(), headers, signal)).body;
   const files = array(payload.files).map(record);
@@ -244,10 +283,21 @@ async function googleDrive(
         }
       }
     }
+    const sourceCreatedAt = optionalCanonicalProviderTimestamp(file.createdTime);
+    const sourceUpdatedAt = canonicalProviderTimestamp(
+      file.modifiedTime,
+      "Drive modifiedTime",
+    );
     return {
       id,
       kind: "drive",
       title: String(file.name || "Google Drive file"),
+      providerRevisionId: String(
+        file.headRevisionId || file.version || file.modifiedTime || id,
+      ),
+      sourceCreatedAt,
+      sourceUpdatedAt,
+      capturedAt: sourceUpdatedAt,
       content: [
         `File: ${String(file.name || "Untitled")}`,
         `Type: ${mimeType}`,
@@ -268,9 +318,46 @@ function googleMessage(value: Record<string, unknown>): SyncItem {
   const payload = record(value.payload);
   const body = gmailText(payload).slice(0, 100_000);
   const attachments = gmailAttachments(payload);
-  return { id: String(value.id), kind: "mail", title: header("Subject") || "Email", content: [`Subject: ${header("Subject")}`, `From: ${header("From")}`, `To: ${header("To")}`, `Cc: ${header("Cc")}`, `Date: ${header("Date")}`, `Labels: ${array(value.labelIds).map(String).join(", ")}`, body ? `Body:\n${body}` : `Snippet: ${String(value.snippet || "")}`, attachments.length ? `Attachments:\n${attachments.join("\n")}` : ""].filter(Boolean).join("\n") };
+  const observedAt = canonicalProviderEpochMilliseconds(
+    value.internalDate,
+    "Gmail internalDate",
+  );
+  return {
+    id: String(value.id),
+    kind: "mail",
+    title: header("Subject") || "Email",
+    providerRevisionId: String(value.historyId || value.internalDate || value.id),
+    sourceCreatedAt: observedAt,
+    sourceUpdatedAt: observedAt,
+    capturedAt: observedAt,
+    content: [`Subject: ${header("Subject")}`, `From: ${header("From")}`, `To: ${header("To")}`, `Cc: ${header("Cc")}`, `Date: ${header("Date")}`, `Labels: ${array(value.labelIds).map(String).join(", ")}`, body ? `Body:\n${body}` : `Snippet: ${String(value.snippet || "")}`, attachments.length ? `Attachments:\n${attachments.join("\n")}` : ""].filter(Boolean).join("\n"),
+  };
 }
-function googleEvent(value: Record<string, unknown>): SyncItem { const start = record(value.start); const end = record(value.end); const organizer = record(value.organizer); const conference = record(value.conferenceData); return { id: String(value.id), kind: "calendar", title: String(value.summary || "Calendar event"), deleted: value.status === "cancelled", content: [`Event: ${String(value.summary || "Untitled")}`, `Status: ${String(value.status || "")}`, `Start: ${String(start.dateTime || start.date || "")}`, `End: ${String(end.dateTime || end.date || "")}`, `Timezone: ${String(start.timeZone || end.timeZone || "")}`, `Location: ${String(value.location || "")}`, `Organizer: ${String(organizer.email || "")}`, `Meeting: ${String(value.hangoutLink || conference.conferenceId || "")}`, `Recurrence: ${array(value.recurrence).map(String).join("; ")}`, `Description: ${String(value.description || "")}`, `Attendees: ${array(value.attendees).map((item) => { const attendee = record(item); return `${String(attendee.email || "")} (${String(attendee.responseStatus || "unknown")})`; }).filter(Boolean).join(", ")}`].join("\n") }; }
+function googleEvent(value: Record<string, unknown>): SyncItem {
+  const start = record(value.start);
+  const end = record(value.end);
+  const organizer = record(value.organizer);
+  const conference = record(value.conferenceData);
+  const deleted = value.status === "cancelled";
+  const sourceCreatedAt = optionalCanonicalProviderTimestamp(value.created);
+  const sourceUpdatedAt = value.updated
+    ? canonicalProviderTimestamp(value.updated, "Calendar updated")
+    : undefined;
+  if (!deleted && !sourceUpdatedAt) {
+    throw new Error("Google Calendar item is missing a canonical updated timestamp.");
+  }
+  return {
+    id: String(value.id),
+    kind: "calendar",
+    title: String(value.summary || "Calendar event"),
+    deleted,
+    providerRevisionId: String(value.etag || value.updated || value.id),
+    sourceCreatedAt,
+    sourceUpdatedAt,
+    capturedAt: sourceUpdatedAt,
+    content: [`Event: ${String(value.summary || "Untitled")}`, `Status: ${String(value.status || "")}`, `Start: ${String(start.dateTime || start.date || "")}`, `End: ${String(end.dateTime || end.date || "")}`, `Timezone: ${String(start.timeZone || end.timeZone || "")}`, `Location: ${String(value.location || "")}`, `Organizer: ${String(organizer.email || "")}`, `Meeting: ${String(value.hangoutLink || conference.conferenceId || "")}`, `Recurrence: ${array(value.recurrence).map(String).join("; ")}`, `Description: ${String(value.description || "")}`, `Attendees: ${array(value.attendees).map((item) => { const attendee = record(item); return `${String(attendee.email || "")} (${String(attendee.responseStatus || "unknown")})`; }).filter(Boolean).join(", ")}`].join("\n"),
+  };
+}
 
 async function providerJson(url: string, headers: Record<string, string>, signal?: AbortSignal, accepted: number[] = []) { const response = await fetch(url, { headers, signal }); const body = await response.json().catch(() => ({})) as Record<string, unknown>; if (!response.ok && !accepted.includes(response.status)) throw new Error(`Connected source returned ${response.status}.`); return { status: response.status, body }; }
 async function providerText(url: string, headers: Record<string, string>, signal?: AbortSignal) { const parsed = new URL(url); if (parsed.protocol !== "https:" || parsed.hostname !== "www.googleapis.com") throw new Error("Provider returned an unsafe document URL."); const response = await fetch(url, { headers, signal }); if (!response.ok) throw new Error(`Connected source returned ${response.status}.`); return response.text(); }
@@ -311,3 +398,33 @@ function parseCursor(value?: string): SyncCursor { if (!value) return {}; try { 
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function array(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
 function unique(values: string[]) { return [...new Set(values)]; }
+
+function personalSourceKind(kind: SyncItem["kind"]) {
+  if (kind === "mail") return "email" as const;
+  if (kind === "calendar") return "calendar_event" as const;
+  return "file" as const;
+}
+
+function canonicalProviderEpochMilliseconds(value: unknown, field: string) {
+  const milliseconds = Number(value);
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) {
+    throw new Error(`Google ${field} is invalid.`);
+  }
+  return canonicalProviderTimestamp(milliseconds, field);
+}
+
+function canonicalProviderTimestamp(value: unknown, field: string) {
+  const timestamp = new Date(
+    typeof value === "number" ? value : String(value || ""),
+  );
+  if (!Number.isFinite(timestamp.getTime())) {
+    throw new Error(`Google ${field} is invalid.`);
+  }
+  return timestamp.toISOString();
+}
+
+function optionalCanonicalProviderTimestamp(value: unknown) {
+  return value === null || value === undefined || value === ""
+    ? undefined
+    : canonicalProviderTimestamp(value, "provider timestamp");
+}
