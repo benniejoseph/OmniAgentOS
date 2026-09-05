@@ -862,6 +862,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[63],
       up: ensureTenantMemoryDataRightRequestsShadow,
     },
+    {
+      ...databaseSchemaMigrations[64],
+      up: ensureMemoryInformedNoticeAuthorityBoundaryVerification,
+    },
   ];
 }
 
@@ -24843,6 +24847,51 @@ async function ensureMemoryInformedNoticeReceiptsAndConsentV2Shadow(
     $migration$
   `;
 
+  await verifyMemoryInformedNoticeAuthorityBoundary(sql);
+}
+
+/**
+ * Re-proves the exact dormant v55 notice, receipt, and consent boundary.
+ *
+ * This verifier performs no durable write, grants no privilege, and does not
+ * make an authority available to runtime code. The locks keep every catalog
+ * and zero-row observation stable for the rest of the migration transaction.
+ */
+async function verifyMemoryInformedNoticeAuthorityBoundary(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Memory informed notice boundary verification requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+
+      IF NOT omni_system_scope_enabled() THEN
+        RAISE EXCEPTION 'Memory informed notice boundary verification requires system scope'
+          USING ERRCODE = '42501';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`SET LOCAL row_security = on`;
+  await sql`
+    LOCK TABLE
+      omni_auth_tenants,
+      omni_auth_users,
+      omni_auth_memberships,
+      omni_memory_purpose_catalog,
+      omni_tenant_memory_purpose_entitlements,
+      omni_tenant_actor_membership_epochs,
+      omni_memory_informed_notice_contracts,
+      omni_tenant_actor_memory_notice_receipts,
+      omni_tenant_actor_memory_purpose_consents
+    IN SHARE MODE
+  `;
+
   await sql`
     DO $migration$
     BEGIN
@@ -27891,6 +27940,33 @@ async function ensureMemoryInformedNoticeReceiptsAndConsentV2Shadow(
     END
     $migration$
   `;
+}
+
+async function ensureMemoryInformedNoticeAuthorityBoundaryVerification(
+  sql: SqlClient,
+) {
+  // Existing databases already recorded v55, so the reusable verifier must be
+  // anchored to that exact immutable migration identity before a later writer
+  // migration is allowed to depend on it.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM omni_schema_version
+        WHERE version = 55
+          AND name = 'memory_informed_notice_receipts_and_consent_v2_shadow'
+          AND checksum =
+            'a48279b78e473f2c452748aa09b87a874672d57a1d257392741159f1d9d4af55'
+      ) THEN
+        RAISE EXCEPTION 'Memory informed notice boundary requires exact migration v55'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+
+  await verifyMemoryInformedNoticeAuthorityBoundary(sql);
 }
 
 async function ensureTenantActorMembershipManagementAuthoritiesShadow(

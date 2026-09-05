@@ -855,6 +855,18 @@ Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.
 
+Migration v65 extracts that complete v55 structural postflight into the shared
+read-only `verifyMemoryInformedNoticeAuthorityBoundary` migration verifier. It
+requires schema-owner system scope, stabilizes the identity, purpose,
+entitlement, membership-epoch, notice, receipt, and consent surfaces under
+shared locks, and re-runs the exact relation, column, default, constraint,
+function, trigger, policy, ACL, zero-row, and predecessor-hold checks. Fresh v55
+installs use the same verifier, while v65 additionally pins the exact immutable
+v55 marker before verifying an existing database. It creates no database
+object, authority row, event, writer, serving grant, or runtime call site; a
+future notice, receipt, or consent writer migration must invoke this verifier
+again at its own boundary.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

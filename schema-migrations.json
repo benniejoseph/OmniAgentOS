@@ -318,5 +318,10 @@
     "version": 64,
     "name": "tenant_memory_data_right_requests_shadow",
     "checksum": "5a9480a12b1a3211bddc076fec7fa802f92080798efec56c6703435ee8b66525"
+  },
+  {
+    "version": 65,
+    "name": "memory_informed_notice_authority_boundary_verification",
+    "checksum": "6dacefc682e876fe123701a039428a11ba160a225025da0a86ef27045bcad476"
   }
 ]

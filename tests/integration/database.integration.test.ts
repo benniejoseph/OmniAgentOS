@@ -579,6 +579,46 @@ databaseDescribe("Postgres schema integration", () => {
     });
   });
 
+  test("re-verifies the exact dormant informed-notice authority boundary", async () => {
+    const [surface] = await admin`
+      SELECT
+        EXISTS (
+          SELECT 1
+          FROM omni_schema_version
+          WHERE version = 65
+            AND name =
+              'memory_informed_notice_authority_boundary_verification'
+            AND checksum =
+              '6dacefc682e876fe123701a039428a11ba160a225025da0a86ef27045bcad476'
+        ) AS verifier_recorded,
+        (SELECT count(*)::int
+         FROM omni_memory_informed_notice_contracts) AS notice_contracts,
+        (SELECT count(*)::int
+         FROM omni_tenant_actor_memory_notice_receipts) AS notice_receipts,
+        (SELECT count(*)::int
+         FROM omni_tenant_actor_memory_purpose_consents) AS purpose_consents,
+        NOT EXISTS (
+          SELECT 1
+          FROM information_schema.table_privileges
+          WHERE table_schema = 'public'
+            AND table_name IN (
+              'omni_memory_informed_notice_contracts',
+              'omni_tenant_actor_memory_notice_receipts',
+              'omni_tenant_actor_memory_purpose_consents'
+            )
+            AND grantee <> current_user
+        ) AS owner_only
+    `;
+
+    expect(surface).toEqual({
+      verifier_recorded: true,
+      notice_contracts: 0,
+      notice_receipts: 0,
+      purpose_consents: 0,
+      owner_only: true,
+    });
+  });
+
   test("keeps one-time memory data-right requests empty, owner-only, and inactive", async () => {
     const [surface] = await admin`
       SELECT
