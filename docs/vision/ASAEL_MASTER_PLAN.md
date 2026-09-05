@@ -495,14 +495,17 @@ Migration v69 and `checkpoint-resume-claim.ts` add a dormant, forced-RLS fence
 store with exact checkpoint-digest foreign keys, hashed credentials, monotonic
 lease generations, expired-only reclaim, and token-fenced heartbeat/completion.
 Acquisition revalidates the live rollout, scope, waiting run, approval decision,
-terminal tool state, and effect receipt, but no runtime calls it and every claim
-receipt still denies resume authority. A dormant binder can atomically acquire
-that fence and move the exact run to `resuming`, emitting authority only in the
-same transaction and persisting no raw token. The worker is not wired to it.
-Unenrolled, preclaimed, file-mode, and existing runs remain unchanged. P1.6
-remains open until a non-empty production sample reconciles, every required
-boundary is checkpointed, worker writes are token-fenced, and canary resume
-proves it cannot duplicate an effect. The normative
+terminal tool state, and effect receipt. A distinct canary configuration may
+enrol only risk-0, read-only, no-effect continuations. The resume worker never
+falls back to the legacy path for such a pin: it atomically acquires and binds
+the exact claim, keeps the raw token process-local, heartbeats it, and passes the
+same token and generation through the runner. Terminal and next-wait writes now
+require the exact live claim and complete it in the same transaction, so a stale
+worker cannot commit run state or project mission progress. Unenrolled,
+preclaimed, file-mode, and existing runs remain unchanged, and production stays
+shadow-authoritative. P1.6 remains open until a non-empty production sample
+reconciles, a canary proves resume cannot duplicate an effect, and model, tool,
+delegation, and verifier boundaries are checkpointed. The normative
 boundary and activation order are documented in
 [RunCheckpoint v1](RUN_CHECKPOINTS.md).
 
