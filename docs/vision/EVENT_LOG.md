@@ -166,6 +166,18 @@ and are not copied to `omni_events`. Mission mutations still use the legacy
 best-effort dual-write boundary in this slice; transactional conversion and an
 explicit executing-principal scope remain open P1.1/P1.2 work.
 
+Run lifecycle projections now apply a typed field allowlist instead of copying
+the `AgentEvent` object. Status/detail text, memory titles, delegation reasons,
+tool summaries, council prose, approval messages, errors, cancellations, and
+completed response text are retained only as bounded lengths and SHA-256
+bindings. Completed grounding retains its closed status, authorized citation
+IDs, and invalid-citation count but not source titles, URLs, snippets, or
+evidence text. Model usage and harness policy fields needed for metering,
+trajectory verification, and replay remain explicit metadata. New run event
+payloads carry schema version 1; replay accepts both legacy plaintext terminal
+errors and the new length/hash representation without weakening the status or
+response-integrity check.
+
 The Drive generation-2 canary adds `source.sync.page.canonical_settled` in the
 same transaction as the page's canonical revisions, tombstones or ordered
 no-op decisions, terminal page items, committed checkpoint, and next encrypted

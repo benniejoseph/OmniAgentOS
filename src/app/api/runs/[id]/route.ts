@@ -69,12 +69,17 @@ async function GETHandler(
     ? replayed.responseLength === response.length &&
       replayed.responseSha256 === createHash("sha256").update(response).digest("hex")
     : replayed.response === response;
+  const runError = run.error || "";
+  const errorMatches = replayed.errorSha256
+    ? replayed.errorLength === runError.length &&
+      replayed.errorSha256 === createHash("sha256").update(runError).digest("hex")
+    : replayed.error === run.error;
   // Terminal states are fully determined by run.done/run.error/run.canceled;
   // waiting_approval/running/resuming carry continuation state not on the log.
   const consistent =
     replayed.status === run.status &&
     (replayed.status !== "completed" || responseMatches) &&
-    (replayed.status !== "failed" || replayed.error === run.error);
+    (replayed.status !== "failed" || errorMatches);
 
   return Response.json({
     run: publicAgentRun(run),

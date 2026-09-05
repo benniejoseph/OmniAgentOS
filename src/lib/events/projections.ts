@@ -78,6 +78,8 @@ export type RunProjection = {
   responseLength?: number;
   responseSha256?: string;
   error?: string;
+  errorLength?: number;
+  errorSha256?: string;
   memoryContextCount: number;
   toolCalls: RunToolCallProjection[];
   waitingApproval?: { executionId: string; toolId: string; message: string };
@@ -203,12 +205,28 @@ export function foldRunProjection(events: DomainEvent[]): RunProjection {
         break;
       case "error":
         projection.status = "failed";
-        projection.error = String(payload.message || "");
+        projection.error = typeof payload.message === "string"
+          ? payload.message
+          : undefined;
+        projection.errorLength = typeof payload.messageLength === "number"
+          ? payload.messageLength
+          : projection.error?.length;
+        projection.errorSha256 = typeof payload.messageSha256 === "string"
+          ? payload.messageSha256
+          : undefined;
         projection.waitingApproval = undefined;
         break;
       case "canceled":
         projection.status = "canceled";
-        projection.error = String(payload.message || "Canceled.");
+        projection.error = typeof payload.message === "string"
+          ? payload.message
+          : undefined;
+        projection.errorLength = typeof payload.messageLength === "number"
+          ? payload.messageLength
+          : projection.error?.length;
+        projection.errorSha256 = typeof payload.messageSha256 === "string"
+          ? payload.messageSha256
+          : undefined;
         projection.waitingApproval = undefined;
         break;
       default:

@@ -315,6 +315,60 @@ describe("agent run approval continuations (file mode)", () => {
     expect(event.payload.responseSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("keeps non-terminal run prose out of the long-lived domain event log", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({
+      tenantId: "run-event-privacy",
+      mode: "orchestrate",
+      prompt: "private prompt",
+      messages: [{ role: "user", content: "private prompt" }],
+    });
+    await store.appendRunEvent(run.id, {
+      type: "status",
+      label: "Private status label",
+      detail: "Private status detail",
+    }, { tenantId: "run-event-privacy" });
+    await store.appendRunEvent(run.id, {
+      type: "tool",
+      toolId: "memory.search",
+      toolName: "Private tool display name",
+      status: "executed",
+      summary: "Private tool result summary",
+      executionId: "execution-private-prose",
+    }, { tenantId: "run-event-privacy" });
+    await store.appendRunEvent(run.id, {
+      type: "error",
+      message: "Private provider failure detail",
+    }, { tenantId: "run-event-privacy" });
+
+    const events = await listStreamEvents(`run:${run.id}`, {
+      tenantId: "run-event-privacy",
+    });
+    expect(events).toHaveLength(3);
+    expect(events.every((item) => item.payload.schemaVersion === 1)).toBe(true);
+    expect(events[0].payload).toMatchObject({
+      type: "status",
+      labelLength: 20,
+      labelSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      detailSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(events[1].payload).toMatchObject({
+      type: "tool",
+      toolId: "memory.search",
+      status: "executed",
+      executionId: "execution-private-prose",
+      summarySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(events[2].payload).toMatchObject({
+      type: "error",
+      messageSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain("Private status");
+    expect(serialized).not.toContain("Private tool");
+    expect(serialized).not.toContain("Private provider");
+  });
+
   it("persists reversible outcome feedback and returns recent correction guidance", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({
