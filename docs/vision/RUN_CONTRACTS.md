@@ -204,7 +204,9 @@ deterministic. Finalization accepts only provider acknowledgement and
 read-after-write evidence, re-parses the persisted intent, and copies every
 material binding into the receipt; a caller cannot replace a target, input,
 approval, or plan during finalization. Persistence and executor activation
-remain separate gates.
+remain separate gates. Its compact event projection carries only the exact
+allowlisted IDs, hashes, booleans, and enums needed to audit that pre-effect
+binding; it contains no provider outcome or raw input.
 
 ## Event payloads
 

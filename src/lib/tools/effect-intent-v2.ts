@@ -11,6 +11,7 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export const EFFECT_INTENT_V2_SCHEMA_VERSION = 2 as const;
 export const MAX_EFFECT_INTENT_V2_BYTES = 14_000;
+export const MAX_EFFECT_INTENT_V2_EVENT_BYTES = 8_000;
 
 const principalTypeSchema = z.enum(["user", "agent", "system"]);
 const executionKindSchema = z.enum(["direct", "workflow"]);
@@ -99,6 +100,81 @@ export function buildEffectIntentV2(
 
 export function parseEffectIntentV2(value: unknown): EffectIntentV2 {
   return effectIntentV2Schema.parse(value);
+}
+
+const effectIntentV2EventPayloadSchema = z.object({
+  schemaVersion: z.literal(EFFECT_INTENT_V2_SCHEMA_VERSION),
+  payloadKind: z.literal("effect_intent"),
+  effectIntentId: runContractIdSchema,
+  effectIntentSha256: runContractSha256Schema,
+  effectMode: z.literal("live"),
+  reversible: z.boolean(),
+  executionKind: executionKindSchema,
+  executionId: runContractIdSchema,
+  tenantId: runContractIdSchema,
+  actorId: runContractIdSchema,
+  executingPrincipalType: principalTypeSchema,
+  executingPrincipalId: runContractIdSchema,
+  workflowRunId: runContractIdSchema.nullable(),
+  planId: runContractIdSchema.nullable(),
+  planSha256: runContractSha256Schema.nullable(),
+  planNodeId: runContractIdSchema.nullable(),
+  toolId: runContractIdSchema,
+  toolContractSha256: runContractSha256Schema,
+  approvalState: approvalStateSchema,
+  approvalBindingSha256: runContractSha256Schema.nullable(),
+  inputSha256: runContractSha256Schema,
+  idempotencyKeySha256: runContractSha256Schema,
+  targetType: runContractIdSchema,
+  targetId: runContractIdSchema,
+  expectedTargetStateSha256: runContractSha256Schema,
+}).strict().superRefine((value, context) => {
+  if (
+    Buffer.byteLength(JSON.stringify(value), "utf8") >
+    MAX_EFFECT_INTENT_V2_EVENT_BYTES
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: `Effect-intent v2 event exceeds ${MAX_EFFECT_INTENT_V2_EVENT_BYTES} bytes.`,
+    });
+  }
+});
+
+export type EffectIntentV2EventPayload = z.infer<
+  typeof effectIntentV2EventPayloadSchema
+>;
+
+export function buildEffectIntentV2EventPayload(
+  value: EffectIntentV2,
+): EffectIntentV2EventPayload {
+  const intent = parseEffectIntentV2(value);
+  return effectIntentV2EventPayloadSchema.parse({
+    schemaVersion: intent.schemaVersion,
+    payloadKind: "effect_intent",
+    effectIntentId: intent.effectIntentId,
+    effectIntentSha256: intent.effectIntentSha256,
+    effectMode: intent.effectMode,
+    reversible: intent.reversible,
+    executionKind: intent.executionKind,
+    executionId: intent.executionId,
+    tenantId: intent.tenantId,
+    actorId: intent.actorId,
+    executingPrincipalType: intent.executingPrincipalType,
+    executingPrincipalId: intent.executingPrincipalId,
+    workflowRunId: intent.workflowRunId,
+    planId: intent.planId,
+    planSha256: intent.planSha256,
+    planNodeId: intent.planNodeId,
+    toolId: intent.toolId,
+    toolContractSha256: intent.toolContractSha256,
+    approvalState: intent.approvalState,
+    approvalBindingSha256: intent.approvalBindingSha256,
+    inputSha256: intent.inputSha256,
+    idempotencyKeySha256: intent.idempotencyKeySha256,
+    targetType: intent.targetType,
+    targetId: intent.targetId,
+    expectedTargetStateSha256: intent.expectedTargetStateSha256,
+  });
 }
 
 const finalizationEvidenceSchema = z.object({
