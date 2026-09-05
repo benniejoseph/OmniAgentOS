@@ -165,6 +165,25 @@ that exact plan digest. The canary proves which persisted plan executed after
 workflow approval, not that the digest itself was presented and signed; that
 pre-execution approval binding remains a later success gate.
 
+The first P1.5 slice is a dormant, pure `ClaimEvidenceMapV1` contract and
+structural verifier. It binds one exact answer to UTF-16 claim spans, canonical
+evidence snapshots, one pre-resolved authorization decision per evidence unit,
+versioned semantic-assessment receipts with one common tenant/run/purpose/scope
+and policy, bounded inference parents and aggregate claim span work, an
+explicit historical `asOfTime`, deterministic support states, and
+declared-claim-set coverage. Authorization must be active at assessment and
+evaluation, while retention expiry remains a hard privacy barrier. Weak
+citation-ID or model assertions never become support. Public parsers reject
+unbounded or non-plain inputs before semantic traversal and return deeply
+frozen contracts.
+
+The slice has no store, migration, route, event, worker, UI, or serving import
+and does not replace the legacy `GroundingReport`. Its verification receipt
+proves only hashes, bindings, windows, graph structure, and deterministic
+derivation. It explicitly does not establish semantic truth, evidence-source
+or authorization-authority trust, source-head currentness, or decomposition
+completeness. See [ClaimEvidenceMap v1](vision/CLAIM_EVIDENCE.md).
+
 ## Durable workflows
 
 Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured output), persisted, and executed node-by-node through queue leases (`omni_operation_jobs`): lease → tick → retry with backoff (max 5 attempts) → recovery for stale leases. Approval nodes pause until signaled. The daily cron plus `after()` drains advance work; see [deployment.md](deployment.md) for cadence options.

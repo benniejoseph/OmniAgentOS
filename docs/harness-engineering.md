@@ -62,6 +62,21 @@ normative fixture is not evidence that the current application passes it; P0.5
 remains open until category adapters have produced a checked-in observed
 baseline through an explicitly authorized evaluation run.
 
+## Claim evidence is stronger than citation presence
+
+The dormant P1.5 `ClaimEvidenceMapV1` contract in
+`src/lib/rag/claim-evidence-map.ts` binds exact answer spans to canonical
+evidence snapshots, pre-resolved authorization decisions, versioned semantic
+assessment receipts, temporal state, and bounded inference. Weak methods such
+as citation-ID matching and model assertion remain inspectable but cannot
+produce a supported claim. Coverage is explicitly limited to the declared
+material-claim set.
+
+Its verifier is structural only. A verified receipt does not establish factual
+truth, source or resolver trust, claim-decomposition completeness, or live RAG
+adoption. The complete boundary and later activation gates are documented in
+[ClaimEvidenceMap v1](vision/CLAIM_EVIDENCE.md).
+
 ## One harness receipt per run
 
 Every new agent run emits a durable `run.harness` event after context and
