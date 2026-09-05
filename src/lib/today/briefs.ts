@@ -6,6 +6,7 @@ import {
   getDatabaseTenantContext,
   getSql,
   hasDatabaseUrl,
+  runWithDatabaseActorScope,
 } from "@/lib/db/client";
 import { listMemories } from "@/lib/memory/store";
 import { createStructuredResponse } from "@/lib/openai/client";
@@ -630,11 +631,15 @@ export async function processDueDailyBriefs(options: {
       localDate,
     });
     if (!existing) {
-      generated.push(await generateDailyBrief({
-        tenantId: preference.tenantId,
-        actorId: preference.actorId,
-        now,
-      }));
+      generated.push(await runWithDatabaseActorScope(
+        preference.tenantId,
+        [preference.actorId],
+        () => generateDailyBrief({
+          tenantId: preference.tenantId,
+          actorId: preference.actorId,
+          now,
+        }),
+      ));
     }
   }
   return generated;

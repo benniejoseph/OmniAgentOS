@@ -7,6 +7,7 @@ import type { AgentRunRecord } from "@/lib/runs/types";
 const run: AgentRunRecord = {
   id: "run-1",
   tenantId: "personal",
+  ownerActorId: "owner",
   threadId: "thread-1",
   mode: "execute",
   status: "completed",

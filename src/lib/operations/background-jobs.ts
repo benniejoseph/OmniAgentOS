@@ -9,7 +9,10 @@ import {
   markCaptureRecordingIndexed,
   resolveCaptureRecordingActorForIngestJob,
 } from "@/lib/capture/recordings";
-import { runWithDatabaseTenantScope } from "@/lib/db/client";
+import {
+  runWithDatabaseActorScope,
+  runWithDatabaseTenantScope,
+} from "@/lib/db/client";
 import { runEvaluationSuite } from "@/lib/evaluations/runner";
 import {
   consolidateAgentRunMemory,
@@ -71,7 +74,7 @@ const memoryConsolidationJobRequestSchema = z
     runId: z.string().min(1).max(200),
     mode: z.enum(["orchestrate", "research", "execute", "learn"]),
     // Optional only so jobs queued by a previous release can still finish.
-    actorId: z.string().min(1).max(256).optional(),
+    actorId: z.string().min(1).max(320).optional(),
   })
   .strict();
 
@@ -337,7 +340,10 @@ async function processBackgroundOperationJob(
       { tenantId: job.tenantId },
     );
     assertLeaseMutation(started, job.id);
-    const result = await executeBackgroundOperation(job, guard.signal);
+    const result = await executeBackgroundOperationInAccessScope(
+      job,
+      guard.signal,
+    );
     guard.assertActive();
     const updated = await updateOperationJobPayload(
       job.id,
@@ -390,6 +396,22 @@ async function processBackgroundOperationJob(
   } finally {
     guard.stop();
   }
+}
+
+function executeBackgroundOperationInAccessScope(
+  job: OperationJobRecord,
+  abortSignal: AbortSignal,
+) {
+  if (job.type !== "memory.consolidate") {
+    return executeBackgroundOperation(job, abortSignal);
+  }
+  const parsed = memoryConsolidationJobRequestSchema.parse(job.payload.request);
+  if (!parsed.actorId) {
+    throw new Error("Memory consolidation job is missing its owner actor binding.");
+  }
+  return runWithDatabaseActorScope(job.tenantId, [parsed.actorId], () =>
+    executeBackgroundOperation(job, abortSignal)
+  );
 }
 
 async function cleanCanceledCaptureIngestSafely(job: OperationJobRecord) {

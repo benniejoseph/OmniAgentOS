@@ -1,4 +1,5 @@
 import { WORKFLOW_EXECUTOR_TIMEOUT_MS } from "@/lib/config";
+import { runWithDatabaseActorScope } from "@/lib/db/client";
 import { saveMemory } from "@/lib/memory/store";
 import { generateModelStructured } from "@/lib/models/gateway";
 import { embedTexts } from "@/lib/openai/client";
@@ -1242,17 +1243,24 @@ async function completeWorkflow(
     const threadId = detail?.run.input.metadata?.threadId;
     if (typeof threadId === "string" && threadId) {
       try {
-        await appendThreadTurn({
-          tenantId,
-          threadId,
-          role: "user",
-          content: detail.run.goal,
-        });
-        await appendThreadTurn({
-          tenantId,
-          threadId,
-          role: "assistant",
-          content: String(reportOutput?.report || "Workflow completed."),
+        const { actorId } = await workflowAttribution(detail);
+        const threadTenantId = detail.run.tenantId || tenantId;
+        if (!actorId || !threadTenantId) {
+          throw new Error("Workflow thread result has no owner actor binding.");
+        }
+        await runWithDatabaseActorScope(threadTenantId, [actorId], async () => {
+          await appendThreadTurn({
+            tenantId: threadTenantId,
+            threadId,
+            role: "user",
+            content: detail.run.goal,
+          });
+          await appendThreadTurn({
+            tenantId: threadTenantId,
+            threadId,
+            role: "assistant",
+            content: String(reportOutput?.report || "Workflow completed."),
+          });
         });
       } catch (error) {
         console.error("Workflow thread result persistence failed.", error instanceof Error ? error.message : "Unknown persistence error.");

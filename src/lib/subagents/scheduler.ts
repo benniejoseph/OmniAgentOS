@@ -110,6 +110,7 @@ export async function prepareDurableSpecialistDelegation(input: {
     const run = await createQueuedAgentRun({
       id: runId,
       tenantId: input.owner.tenantId,
+      actorId: input.owner.actorId,
       mode: input.mode,
       prompt,
       messages: [{ role: "user", content: prompt }],

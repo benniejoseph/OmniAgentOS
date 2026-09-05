@@ -180,18 +180,19 @@ export async function createRunForkFromCheckpoint(
 
     const insertedRuns = await sql.query(
       `INSERT INTO omni_agent_runs (
-         id, tenant_id, thread_id, mode, status, prompt, messages, model,
+         id, tenant_id, owner_actor_id, thread_id, mode, status, prompt, messages, model,
          agent_id, specialist_ids, memory_context_count, consolidation_count,
          continuation, started_at
        ) VALUES (
-         $1, $2, $3, $4, 'queued', $5, $6::jsonb, $7, $8, $9, 0, 0,
-         NULL, $10
+         $1, $2, $3, $4, $5, 'queued', $6, $7::jsonb, $8, $9, $10, 0, 0,
+         NULL, $11
        )
        ON CONFLICT (id) DO NOTHING
        RETURNING id`,
       [
         lineage.target.runId,
         tenantId,
+        actorId,
         forkThreadId,
         mode,
         prompt,

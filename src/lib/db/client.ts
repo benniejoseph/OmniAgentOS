@@ -427,10 +427,15 @@ export function runWithDatabaseTenantScope<T>(
   if (!normalized) {
     throw new Error("A tenant id is required for tenant-scoped database work.");
   }
+  const existing = databaseScope.getStore();
+  const inheritedActorIds = existing?.kind === "tenant" &&
+      existing.tenantId === normalized
+    ? existing.actorIds
+    : [];
   return Promise.resolve(databaseScope.run({
     kind: "tenant",
     tenantId: normalized,
-    actorIds: [],
+    actorIds: [...inheritedActorIds],
   }, operation));
 }
 
@@ -979,6 +984,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[79],
       up: ensureMemoryAccessScopeInitplanPolicies,
+    },
+    {
+      ...databaseSchemaMigrations[80],
+      up: ensureActorPrivateRunThreadLedgers,
     },
   ];
 }
@@ -4091,6 +4100,426 @@ async function ensureMemoryAccessScopeInitplanPolicies(sql: SqlClient) {
       )
     `);
   }
+}
+
+async function ensureActorPrivateRunThreadLedgers(sql: SqlClient) {
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_current_actor_scope_v1()
+    RETURNS JSONB
+    LANGUAGE plpgsql
+    STABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      raw_scope TEXT;
+      actor_scope JSONB;
+      actor_count INTEGER;
+      distinct_actor_count INTEGER;
+    BEGIN
+      raw_scope := NULLIF(
+        current_setting('omni.actor_scope_v1', TRUE),
+        ''
+      );
+      IF raw_scope IS NULL THEN
+        RETURN NULL;
+      END IF;
+      actor_scope := raw_scope::JSONB;
+      IF jsonb_typeof(actor_scope) <> 'object'
+        OR actor_scope ->> 'version' <> '1'
+        OR actor_scope ->> 'tenantId' IS DISTINCT FROM
+          NULLIF(current_setting('omni.tenant_id', TRUE), '')
+        OR jsonb_typeof(actor_scope -> 'actorIds') <> 'array'
+      THEN
+        RETURN NULL;
+      END IF;
+      actor_count := jsonb_array_length(actor_scope -> 'actorIds');
+      IF actor_count NOT BETWEEN 1 AND 8 THEN
+        RETURN NULL;
+      END IF;
+      SELECT count(*), count(DISTINCT actor_id COLLATE "C")
+      INTO actor_count, distinct_actor_count
+      FROM jsonb_array_elements(actor_scope -> 'actorIds') actor(actor_value)
+      CROSS JOIN LATERAL (
+        SELECT actor.actor_value #>> '{}' AS actor_id
+      ) value
+      WHERE jsonb_typeof(actor.actor_value) = 'string'
+        AND value.actor_id = btrim(value.actor_id)
+        AND char_length(value.actor_id) BETWEEN 1 AND 320;
+      IF actor_count <> jsonb_array_length(actor_scope -> 'actorIds')
+        OR distinct_actor_count <> actor_count
+      THEN
+        RETURN NULL;
+      END IF;
+      RETURN actor_scope;
+    EXCEPTION WHEN OTHERS THEN
+      RETURN NULL;
+    END
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_actor_scope_v1_allows_validated(
+      actor_scope JSONB,
+      row_tenant_id TEXT,
+      row_actor_id TEXT
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    STRICT
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        actor_scope ->> 'tenantId' = row_tenant_id
+        AND EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements_text(actor_scope -> 'actorIds') actor(actor_id)
+          WHERE actor.actor_id COLLATE "C" = row_actor_id COLLATE "C"
+        ),
+        FALSE
+      )
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_actor_scope_v1_allows(
+      row_tenant_id TEXT,
+      row_actor_id TEXT
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT public.omni_actor_scope_v1_allows_validated(
+        public.omni_current_actor_scope_v1(),
+        row_tenant_id,
+        row_actor_id
+      )
+    $function$
+  `;
+
+  await sql`
+    ALTER TABLE omni_agent_runs
+    ADD COLUMN IF NOT EXISTS owner_actor_id TEXT
+  `;
+  await sql`
+    UPDATE omni_agent_runs run
+    SET owner_actor_id = COALESCE(
+      (
+        SELECT NULLIF(btrim(thread.actor_id), '')
+        FROM omni_threads thread
+        WHERE thread.tenant_id = run.tenant_id
+          AND thread.id = run.thread_id
+        LIMIT 1
+      ),
+      NULLIF(btrim(run.continuation #>> '{context,actorId}'), ''),
+      (
+        SELECT NULLIF(
+          btrim(candidate.payload #>> '{_executionScope,initiatingActorId}'),
+          ''
+        )
+        FROM omni_events candidate
+        WHERE candidate.tenant_id = run.tenant_id
+          AND candidate.stream_id = 'run:' || run.id
+          AND candidate.payload ? '_executionScope'
+        ORDER BY
+          CASE WHEN candidate.type = 'run.scope_bound' THEN 0 ELSE 1 END,
+          candidate.seq ASC
+        LIMIT 1
+      ),
+      'quarantine:run:' || left(run.id, 300)
+    )
+    WHERE run.owner_actor_id IS NULL
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_bind_agent_run_owner()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      actor_scope JSONB;
+    BEGIN
+      IF NEW.owner_actor_id IS NOT NULL THEN
+        RETURN NEW;
+      END IF;
+      actor_scope := omni_current_actor_scope_v1();
+      IF actor_scope IS NOT NULL THEN
+        NEW.owner_actor_id := actor_scope -> 'actorIds' ->>
+          (jsonb_array_length(actor_scope -> 'actorIds') - 1);
+      END IF;
+      IF NEW.owner_actor_id IS NULL AND NEW.thread_id IS NOT NULL THEN
+        SELECT thread.actor_id
+        INTO NEW.owner_actor_id
+        FROM omni_threads thread
+        WHERE thread.tenant_id = NEW.tenant_id
+          AND thread.id = NEW.thread_id
+        LIMIT 1;
+      END IF;
+      IF NEW.owner_actor_id IS NULL THEN
+        RAISE EXCEPTION 'Agent run requires an actor-bound database scope'
+          USING ERRCODE = '42501';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_agent_runs_bind_owner
+    ON omni_agent_runs
+  `;
+  await sql`
+    CREATE TRIGGER omni_agent_runs_bind_owner
+    BEFORE INSERT
+    ON omni_agent_runs
+    FOR EACH ROW
+    EXECUTE FUNCTION omni_bind_agent_run_owner()
+  `;
+  await sql`
+    ALTER TABLE omni_agent_runs
+    ALTER COLUMN owner_actor_id SET NOT NULL
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_agent_runs'::regclass
+          AND conname = 'omni_agent_runs_owner_actor_check'
+      ) THEN
+        ALTER TABLE omni_agent_runs
+        ADD CONSTRAINT omni_agent_runs_owner_actor_check CHECK (
+          owner_actor_id = btrim(owner_actor_id)
+          AND char_length(owner_actor_id) BETWEEN 1 AND 320
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_agent_runs
+    VALIDATE CONSTRAINT omni_agent_runs_owner_actor_check
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_agent_runs_actor_started_idx
+    ON omni_agent_runs (tenant_id, owner_actor_id, started_at DESC)
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_agent_run_owner_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF ROW(OLD.tenant_id, OLD.owner_actor_id)
+        IS DISTINCT FROM ROW(NEW.tenant_id, NEW.owner_actor_id)
+      THEN
+        RAISE EXCEPTION 'Agent run ownership is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_agent_runs_owner_immutable
+    ON omni_agent_runs
+  `;
+  await sql`
+    CREATE TRIGGER omni_agent_runs_owner_immutable
+    BEFORE UPDATE OF tenant_id, owner_actor_id
+    ON omni_agent_runs
+    FOR EACH ROW
+    EXECUTE FUNCTION omni_reject_agent_run_owner_change()
+  `;
+
+  const policies = [
+    [
+      "omni_agent_runs",
+      "omni_agent_runs_actor_scope",
+      `omni_system_scope_enabled() OR public.omni_actor_scope_v1_allows_validated(
+        (SELECT public.omni_current_actor_scope_v1()),
+        tenant_id,
+        owner_actor_id
+      )`,
+    ],
+    [
+      "omni_threads",
+      "omni_threads_actor_scope",
+      `omni_system_scope_enabled() OR public.omni_actor_scope_v1_allows_validated(
+        (SELECT public.omni_current_actor_scope_v1()),
+        tenant_id,
+        actor_id
+      )`,
+    ],
+    [
+      "omni_agent_events",
+      "omni_agent_events_actor_scope",
+      `omni_system_scope_enabled() OR EXISTS (
+        SELECT 1 FROM omni_agent_runs parent_run
+        WHERE parent_run.tenant_id = omni_agent_events.tenant_id
+          AND parent_run.id = omni_agent_events.run_id
+      )`,
+    ],
+    [
+      "omni_thread_turns",
+      "omni_thread_turns_actor_scope",
+      `omni_system_scope_enabled() OR EXISTS (
+        SELECT 1 FROM omni_threads parent_thread
+        WHERE parent_thread.tenant_id = omni_thread_turns.tenant_id
+          AND parent_thread.id = omni_thread_turns.thread_id
+      )`,
+    ],
+    [
+      "omni_events",
+      "omni_run_events_actor_scope",
+      `omni_system_scope_enabled()
+        OR left(stream_id, 4) <> 'run:'
+        OR EXISTS (
+          SELECT 1 FROM omni_agent_runs parent_run
+          WHERE parent_run.tenant_id = omni_events.tenant_id
+            AND parent_run.id = substr(omni_events.stream_id, 5)
+        )`,
+    ],
+    [
+      "omni_run_checkpoints",
+      "omni_run_checkpoints_actor_scope",
+      `omni_system_scope_enabled() OR public.omni_actor_scope_v1_allows_validated(
+        (SELECT public.omni_current_actor_scope_v1()),
+        tenant_id,
+        actor_id
+      )`,
+    ],
+    [
+      "omni_run_checkpoint_state_references",
+      "omni_run_checkpoint_references_actor_scope",
+      `omni_system_scope_enabled() OR EXISTS (
+        SELECT 1 FROM omni_run_checkpoints parent_checkpoint
+        WHERE parent_checkpoint.tenant_id =
+            omni_run_checkpoint_state_references.tenant_id
+          AND parent_checkpoint.run_id =
+            omni_run_checkpoint_state_references.run_id
+          AND parent_checkpoint.checkpoint_id =
+            omni_run_checkpoint_state_references.checkpoint_id
+      )`,
+    ],
+    [
+      "omni_run_checkpoint_resume_claims",
+      "omni_run_checkpoint_resume_claims_actor_scope",
+      `omni_system_scope_enabled() OR EXISTS (
+        SELECT 1 FROM omni_run_checkpoints parent_checkpoint
+        WHERE parent_checkpoint.tenant_id =
+            omni_run_checkpoint_resume_claims.tenant_id
+          AND parent_checkpoint.run_id =
+            omni_run_checkpoint_resume_claims.run_id
+          AND parent_checkpoint.checkpoint_id =
+            omni_run_checkpoint_resume_claims.checkpoint_id
+      )`,
+    ],
+    [
+      "omni_run_forks",
+      "omni_run_forks_actor_scope",
+      `omni_system_scope_enabled() OR public.omni_actor_scope_v1_allows_validated(
+        (SELECT public.omni_current_actor_scope_v1()),
+        tenant_id,
+        initiating_actor_id
+      )`,
+    ],
+  ] as const;
+  for (const [tableName, policyName, predicate] of policies) {
+    await sql.query(`DROP POLICY IF EXISTS ${policyName} ON ${tableName}`);
+    await sql.query(`
+      CREATE POLICY ${policyName}
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR ALL
+      USING (${predicate})
+      WITH CHECK (${predicate})
+    `);
+  }
+
+  await sql`
+    UPDATE omni_operation_jobs job
+    SET payload = jsonb_set(
+      job.payload,
+      '{actorId}',
+      to_jsonb(run.owner_actor_id),
+      TRUE
+    )
+    FROM omni_agent_runs run
+    WHERE job.type = 'agent.resume'
+      AND NOT job.payload ? 'actorId'
+      AND run.tenant_id = job.tenant_id
+      AND run.id = job.payload ->> 'agentRunId'
+  `;
+  await sql`
+    UPDATE omni_operation_jobs job
+    SET payload = jsonb_set(
+      job.payload,
+      '{request,actorId}',
+      to_jsonb(run.owner_actor_id),
+      TRUE
+    )
+    FROM omni_agent_runs run
+    WHERE job.type = 'memory.consolidate'
+      AND NULLIF(btrim(job.payload #>> '{request,actorId}'), '') IS NULL
+      AND run.tenant_id = job.tenant_id
+      AND run.id = job.payload #>> '{request,runId}'
+  `;
+
+  await sql`
+    DO $migration$
+    DECLARE
+      protected_table TEXT;
+      protected_policy TEXT;
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM omni_agent_runs
+        WHERE owner_actor_id IS NULL
+          OR owner_actor_id IS DISTINCT FROM btrim(owner_actor_id)
+          OR char_length(owner_actor_id) NOT BETWEEN 1 AND 320
+      ) THEN
+        RAISE EXCEPTION 'Agent run ownership backfill is incomplete'
+          USING ERRCODE = '55000';
+      END IF;
+      FOR protected_table, protected_policy IN
+        SELECT * FROM (VALUES
+          ('omni_agent_runs', 'omni_agent_runs_actor_scope'),
+          ('omni_threads', 'omni_threads_actor_scope'),
+          ('omni_agent_events', 'omni_agent_events_actor_scope'),
+          ('omni_thread_turns', 'omni_thread_turns_actor_scope'),
+          ('omni_events', 'omni_run_events_actor_scope'),
+          ('omni_run_checkpoints', 'omni_run_checkpoints_actor_scope'),
+          (
+            'omni_run_checkpoint_state_references',
+            'omni_run_checkpoint_references_actor_scope'
+          ),
+          (
+            'omni_run_checkpoint_resume_claims',
+            'omni_run_checkpoint_resume_claims_actor_scope'
+          ),
+          ('omni_run_forks', 'omni_run_forks_actor_scope')
+        ) expected(table_name, policy_name)
+      LOOP
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_class
+          WHERE oid = protected_table::regclass
+            AND relrowsecurity
+            AND relforcerowsecurity
+        ) OR NOT EXISTS (
+          SELECT 1 FROM pg_policy
+          WHERE polrelid = protected_table::regclass
+            AND polname = protected_policy
+            AND NOT polpermissive
+            AND polcmd = '*'
+        ) THEN
+          RAISE EXCEPTION 'Actor-private policy is missing for %', protected_table
+            USING ERRCODE = '55000';
+        END IF;
+      END LOOP;
+    END
+    $migration$
+  `;
 }
 
 async function ensurePersonalNotificationCenter(sql: SqlClient) {

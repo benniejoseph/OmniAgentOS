@@ -251,7 +251,11 @@ describe("agent run approval continuations (file mode)", () => {
       tenantId: "default",
       type: "agent.resume",
       dedupeKey: queue.getAgentResumeJobDedupeKey(executionId),
-      payload: { agentRunId: run.id, executionId },
+      payload: {
+        agentRunId: run.id,
+        executionId,
+        actorId: run.ownerActorId,
+      },
     });
 
     const result = await resumeQueue.processAgentResumeQueue({

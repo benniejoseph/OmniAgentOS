@@ -15,6 +15,7 @@ import {
   getDatabaseTenantContext,
   getPendingSchemaMigrationVersions,
   isDatabaseMutation,
+  runWithDatabaseTenantScope,
   validateSchemaMigrationMarkers,
   verifyDatabaseSchemaWithClient,
   withDatabaseRequestScope,
@@ -698,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the memory access scope initplan migration", () => {
+  it("pins the actor-private run and thread ledger migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 80,
-      name: "memory_access_scope_initplan_policies",
-      checksum: "bf42db947ea5b5382b3be6917cebb515d40ed260aa1365237aad62039203a290",
+      version: 81,
+      name: "actor_private_run_thread_ledgers",
+      checksum: "054f7272a176fcd7acc2d6f2f79dfc17b6cbbe068d241bf41a0ef87600a6c1b5",
     });
   });
 
@@ -924,6 +925,18 @@ describe("ordered database schema versions", () => {
       actorIds: ["actor:canonical", "legacy@example.test"],
     });
     expect(getDatabaseActorContext()).toEqual([]);
+  });
+
+  it("preserves an actor scope through a same-tenant nested boundary", async () => {
+    const nestedActor = withDatabaseRequestScope(async () => {
+      enterDatabaseActorContext("tenant-a", ["actor-a"]);
+      return runWithDatabaseTenantScope(
+        "tenant-a",
+        () => getDatabaseActorContext(),
+      );
+    });
+
+    await expect(nestedActor()).resolves.toEqual(["actor-a"]);
   });
 
   it("isolates tenants resolved concurrently in separate request scopes", async () => {

@@ -1,5 +1,9 @@
 import { OPERATION_QUEUE_LEASE_SECONDS } from "@/lib/config";
-import { getSql, runWithDatabaseTenantScope } from "@/lib/db/client";
+import {
+  getSql,
+  runWithDatabaseActorScope,
+  runWithDatabaseTenantScope,
+} from "@/lib/db/client";
 import {
   completeOperationJob,
   deferOperationJob,
@@ -141,6 +145,26 @@ async function processAgentResumeJob(
   if (!agentRunId || !executionId) {
     return failResumeJob(job, "Agent resume job payload is incomplete.", base);
   }
+
+  const actorId = String(job.payload.actorId || "").trim();
+  if (!actorId) {
+    return failResumeJob(
+      job,
+      "Agent resume job is missing its owner actor binding.",
+      base,
+    );
+  }
+  return runWithDatabaseActorScope(job.tenantId, [actorId], () =>
+    processAgentResumeJobInActorScope(job, base)
+  );
+}
+
+async function processAgentResumeJobInActorScope(
+  job: OperationJobRecord,
+  base: Pick<AgentResumeJobResult, "job" | "agentRunId" | "executionId">,
+): Promise<AgentResumeJobResult> {
+  const agentRunId = base.agentRunId || "";
+  const executionId = base.executionId || "";
 
   try {
     const run = await getAgentRun(agentRunId, { tenantId: job.tenantId });

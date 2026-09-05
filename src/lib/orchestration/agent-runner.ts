@@ -212,6 +212,10 @@ export async function* runAgent(
       })
     : await createAgentRun({
         tenantId: request.tenantId,
+        actorId:
+          request.executionScope?.initiatingActorId ||
+          request.actorId ||
+          "",
         threadId: request.threadId,
         mode,
         prompt: query,
@@ -1153,7 +1157,7 @@ export async function* runAgent(
           category: "api",
           action: `${result.provider}.response`,
           tenantId: request.tenantId,
-          actorId: request.actorId,
+          actorId: run.ownerActorId,
           resourceType: "agent_run",
           resourceId: run.id,
           correlationId: run.id,

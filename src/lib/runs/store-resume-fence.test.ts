@@ -141,6 +141,7 @@ describe("agent run checkpoint resume write fences", () => {
         payload: {
           agentRunId: RUN_ID,
           executionId: EXECUTION_ID,
+          actorId: "actor_resume_fence",
         },
       }),
       { sql: expect.objectContaining({ query: mocks.txQuery }) },

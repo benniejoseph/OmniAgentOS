@@ -16,6 +16,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/db/client", () => ({
   getSql: () => ({ transaction: mocks.transaction }),
+  runWithDatabaseActorScope: (
+    _tenantId: string,
+    _actorIds: readonly string[],
+    operation: () => unknown,
+  ) => Promise.resolve(operation()),
   runWithDatabaseTenantScope: (_tenantId: string, operation: () => unknown) =>
     Promise.resolve(operation()),
 }));
@@ -81,7 +86,11 @@ const JOB = {
   tenantId: TENANT_ID,
   type: "agent.resume" as const,
   status: "running" as const,
-  payload: { agentRunId: RUN_ID, executionId: EXECUTION_ID },
+  payload: {
+    agentRunId: RUN_ID,
+    executionId: EXECUTION_ID,
+    actorId: SCOPE.initiatingActorId,
+  },
   priority: 20,
   attempt: 1,
   maxAttempts: 10,

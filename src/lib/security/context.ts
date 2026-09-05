@@ -137,7 +137,7 @@ export function getSecurityContext(request?: Request): SecurityContext {
     role,
     source: trustedHeaders.source,
   };
-  enterResolvedDatabaseContext(context);
+  enterDatabaseSecurityContext(context);
   return context;
 }
 
@@ -158,7 +158,7 @@ export async function resolveSecurityContext(request?: Request): Promise<Securit
     if (!mobileIdentity) {
       throw new SecurityPolicyError("Authentication required.", 401);
     }
-    enterResolvedDatabaseContext(mobileIdentity.context);
+    enterDatabaseSecurityContext(mobileIdentity.context);
     return mobileIdentity.context;
   }
 
@@ -171,11 +171,11 @@ export async function resolveSecurityContext(request?: Request): Promise<Securit
     throw new SecurityPolicyError("Authentication required.", 401);
   }
 
-  enterResolvedDatabaseContext(identity.context);
+  enterDatabaseSecurityContext(identity.context);
   return identity.context;
 }
 
-function enterResolvedDatabaseContext(context: SecurityContext) {
+export function enterDatabaseSecurityContext(context: SecurityContext) {
   const binding = canonicalRequestActorBindingFromSecurityContext(context);
   enterDatabaseActorContext(
     context.tenantId,
