@@ -79,7 +79,7 @@ adoption. The complete boundary and later activation gates are documented in
 
 ## Checkpoints are compatibility evidence, not execution authority
 
-The dormant P1.6 `RunCheckpointV1` contract in
+The active P1.6 `RunCheckpointV1` contract in
 `src/lib/runs/checkpoints.ts` records only immutable metadata and canonical
 references at model, tool, approval, delegation, and verifier boundaries. It
 binds the exact run scope, grants, purpose, engine and rollout generation,
@@ -115,10 +115,11 @@ shadow. It rereads one tenant's stored rows, reference indexes, typed events,
 approval decision, and effect-receipt state; it does not open continuation
 contents. Empty and mismatched samples fail closed.
 
-Passing `expanded` as the command's final argument selects only the dormant
-full-boundary configuration. That mode additionally requires model, tool,
-approval, delegation, and verifier phase coverage; checks their exact pairs,
-chain and cumulative counters; and revalidates terminal tool/effect receipts.
+Passing `expanded` or `expanded_canary` as the command's final argument selects
+the exact full-boundary shadow or canary configuration. Those modes additionally
+require model, tool, approval, delegation, and verifier phase coverage; check
+their exact pairs, chain and cumulative counters; and revalidate terminal
+tool/effect receipts.
 Incomplete coverage is a failing gate even when every observed row is valid.
 
 Migration v69 provides the resume fence. Claims bind the exact
@@ -129,9 +130,10 @@ tool state transactionally. Claim receipts explicitly deny resume authority.
 The queue may call the binder only for the separately configured risk-0,
 read-only, no-effect canary pin. It co-commits the fence and run transition
 without storing the raw token; the same token and generation then fence claim
-heartbeat and every terminal or next-wait run write. Production must remain on
-shadow until the bounded reconciliation command returns a non-empty matched
-sample.
+heartbeat and every terminal or next-wait run write. Generation 4 is active for
+read-only canary runs after non-empty shadow and canary reconciliation plus a
+hard-kill generation-reclaim proof; mutable and unsupported runs remain outside
+that path.
 
 ## One harness receipt per run
 

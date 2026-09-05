@@ -481,9 +481,9 @@ effect-receipt identities rather than embedding provider state or trusting a
 model assertion. Migration v68 adds append-only tenant-scoped checkpoint and
 state-reference tables with forced RLS. A transaction-only writer rebinds the
 exact scope, locks and validates the parent, persists the record and reference
-index, and appends one metadata-only `run.checkpoint.recorded` event. There is
-no checkpoint state loader, worker claim, or resume authority. Newly created
-agent runs can capture an exact active shadow rollout pin and atomically record
+index, and appends one metadata-only `run.checkpoint.recorded` event. The writer
+does not itself load referenced state, claim work, or grant resume authority.
+Newly created agent runs can capture an exact active shadow rollout pin and atomically record
 their first governed approval-wait checkpoint with the legacy continuation.
 The governed approval transaction now records the exact approved or rejected
 successor; the approved record precedes effect execution, the rejected record
@@ -492,7 +492,7 @@ receipts cover both records while the legacy continuation remains authoritative.
 The bounded tenant-scoped operator check now reconciles persisted checkpoint
 rows, reference indexes, events, decision state, and effect receipts; it fails
 closed on an empty or mismatched sample and never opens continuation contents.
-Migration v69 and `checkpoint-resume-claim.ts` add a dormant, forced-RLS fence
+Migration v69 and `checkpoint-resume-claim.ts` add a forced-RLS fence
 store with exact checkpoint-digest foreign keys, hashed credentials, monotonic
 lease generations, expired-only reclaim, and token-fenced heartbeat/completion.
 Acquisition revalidates the live rollout, scope, waiting run, approval decision,
@@ -514,9 +514,15 @@ without exact receipts. Generation 3 was deployed and registered in production
 shadow mode on 2026-09-06. A forced-approval read-only continuation and a
 tool-free council/Sentinel run covered all ten required phases; the post-cleanup
 sample matched 36 of 36 checkpoints and comparison receipts with no waiting
-approvals. P1.6 remains open only for the separately pinned full-boundary
-activation canary and its interrupted-run, no-duplicate-effect proof.
-The normative
+approvals. The separately pinned generation-4 canary then activated the full
+boundary chain for read-only runs. Its final production sample matched 86 of 86
+checkpoints across eight runs with all ten phases and no effect receipts. A
+hard-killed generation-1 continuation reclaimed the exact approval fence as
+generation 2 behind its valid zero-effect descendant chain and completed with
+one reclaim event, zero external effects, and zero effect receipts. Transport
+interruption now preserves stale leases for expired-only fenced recovery, while
+ordinary execution and checkpoint failures remain fail closed. P1.6 is
+complete. The normative
 boundary and activation order are documented in
 [RunCheckpoint v1](RUN_CHECKPOINTS.md).
 
@@ -877,14 +883,14 @@ cannot project `succeeded`. The later v2 adapter expansion covers the registered
 external mutation surface; pre-execution outcome-requirement binding remains
 separate P1.3/P1.5 work.
 
-The first executable P1.6 path is implemented behind a distinct checkpoint
-canary configuration. It atomically claims the exact approval successor and
-run transition, keeps the raw lease token process-local, and uses that same
-token and generation for worker heartbeat plus terminal or next-wait writes.
-It is intentionally limited to risk-0, read-only, no-effect continuations;
-shadow remains the production mode until a non-empty stored checkpoint sample
-passes the bounded reconciliation gate. Model, tool, delegation, and verifier
-boundary expansion remains pending P1.6 work.
+P1.6 is complete behind exact rollout pins. Generation 3 established the
+full-boundary production shadow, and active generation 4 applies that chain to
+risk-0, read-only, no-effect continuations. It atomically claims the exact
+approval successor and run transition, keeps the raw lease token process-local,
+and uses that same token and generation for worker heartbeat plus terminal or
+next-wait writes. A hard-kill gate proved expired-only generation reclaim and
+completion without a duplicate effect; unsupported or mutable continuations do
+not enter this path.
 
 The first P2.1 slice is an additive, write-only lineage shadow for newly
 accepted API, Capture, portable-restore, and governed knowledge-tool text. It
