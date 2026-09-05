@@ -717,6 +717,22 @@ or deletion commits first and the stale writer fails closed. File fallback
 remains a non-atomic development compatibility path. Broader P2.7 propagation
 and physical scrub completion remain open.
 
+## Pending-run deletion barrier
+
+Memory, governed connected-source, and capture deletion now resolve the exact
+retrieval traces being scrubbed while holding the tenant memory-graph lock.
+Non-terminal agent and workflow runs that admitted one of those traces are
+canceled in the same transaction, approval continuations are cleared, and
+`run.context_invalidated` or `workflow.context_invalidated` is appended with
+the deleting actor's execution scope. The event retains only bounded counts,
+closed reason/source codes, and a source-reference digest.
+
+Context admission takes a row lock on the retrieval trace and rejects a trace
+that disappeared or contains a memory deletion barrier. Therefore admission
+either commits first and becomes visible to deletion, or deletion commits first
+and the stale run or workflow fails closed. Terminal run transitions already
+exclude canceled rows, so delayed workers cannot resurrect invalidated work.
+
 ## Event shape
 
 ```ts

@@ -408,6 +408,13 @@ export async function appendRunEvent(
       assertExecutionScopeTenant(options.executionScope, tenantId);
     }
     await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      if (redactedEvent.type === "harness" && redactedEvent.contextTraceId) {
+        await lockActiveRetrievalTrace(
+          sql,
+          tenantId,
+          redactedEvent.contextTraceId,
+        );
+      }
       const persistedDomainEvent = await appendDomainEvent(
         { ...domainEvent, tenantId },
         { sql },
@@ -561,6 +568,26 @@ export async function appendRunEvent(
     options.runContractEnvelope,
   );
   return record;
+}
+
+async function lockActiveRetrievalTrace(
+  sql: ReturnType<typeof getSql>,
+  tenantId: string,
+  retrievalTraceId: string,
+) {
+  const rows = await sql`
+    SELECT id
+    FROM omni_retrieval_traces
+    WHERE tenant_id = ${tenantId}
+      AND id = ${retrievalTraceId}
+      AND NOT omni_memory_ids_have_deletion_barrier(tenant_id, memory_ids)
+    FOR KEY SHARE
+  `;
+  if (!rows[0]) {
+    throw new Error(
+      "Run context was invalidated before it could be admitted.",
+    );
+  }
 }
 
 async function appendLegacyRunTerminalReceiptSafely(
