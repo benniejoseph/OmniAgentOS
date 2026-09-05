@@ -740,6 +740,26 @@ event-store call site, serving grant, default workspace, or resolver behavior.
 Governed workspace and membership lifecycle writers, context/capability grant
 authorities, operation policy, and the atomic P3.1 cutover remain held.
 
+Migration v62 adds the single canonical ledger that distinguishes memory
+`context:<id>` grants from `capability:<id>` grants. Every generation binds an
+exact tenant, user or pinned non-user principal generation, v47 purpose,
+visibility-compatible memory target, sorted resource-ID set, validity window,
+and explicit bounds. Context grants are limited to read/retrieve purposes and
+carry item/byte bounds without operation authority. Capability grants instead
+carry a sorted operation set plus invocation, cost, and duration ceilings. A
+targeted agent-private scope pins the exact owner-agent principal generation;
+project sharing also requires an explicit workspace coordinate.
+
+The ledger starts empty, is schema-owner-only, has forced tenant RLS plus a
+restrictive system holdback, and retains a validated active-state prohibition
+and hard mutation hold. Creation validation requires live same-tenant human
+attribution and checks exact non-user principals, but no writer or serving role
+can reach it. OAuth grants, tenant capability rollouts, tenant roles, previous
+access, matching labels, and persona/tool declarations are not translated.
+The pure contract emits metadata-only `memory.access_grant.*` events without an
+event-store dependency. A governed lifecycle writer, operation policy,
+transactional resolver, and all-surface activation are still required.
+
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.
