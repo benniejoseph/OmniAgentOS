@@ -18,6 +18,7 @@ export const MEMORY_AUTHORITY_UNAVAILABLE_CODES = Object.freeze([
   "canonical_scope_actor",
   "canonical_actor",
   "tenant_membership",
+  "workspace_membership_authority",
   "membership_epoch",
   "purpose_contract",
   "tenant_entitlement",
@@ -217,14 +218,26 @@ async function inspectInOwnedTransaction(
     return deniedResult(unavailable);
   }
 
+  const principalGeneration = await resolveActiveExecutingPrincipalGeneration(
+    sql,
+    scope,
+    actorBinding,
+  );
+  if (principalGeneration !== undefined) {
+    unavailable.delete("executing_principal_authority");
+  }
+
   if (
-    await hasActiveExecutingPrincipalAuthority(
+    requiresWorkspaceMembership(scope) &&
+    !await hasActiveWorkspaceMembershipAuthority(
       sql,
       scope,
       actorBinding,
+      principalGeneration,
     )
   ) {
-    unavailable.delete("executing_principal_authority");
+    unavailable.add("workspace_membership_authority");
+    return deniedResult(unavailable);
   }
 
   const epochRows = await sql`
@@ -286,16 +299,16 @@ async function inspectInOwnedTransaction(
   return deniedResult(unavailable);
 }
 
-async function hasActiveExecutingPrincipalAuthority(
+async function resolveActiveExecutingPrincipalGeneration(
   sql: CanarySql,
   scope: DatabaseMemoryAccessScope,
   actorBinding: CanonicalRequestActorBindingV1,
-): Promise<boolean> {
+): Promise<number | null | undefined> {
   if (scope.executingPrincipalType === "user") {
     return (
       scope.initiatingActorId === actorBinding.canonicalActorId &&
       scope.executingPrincipalId === actorBinding.canonicalActorId
-    );
+    ) ? null : undefined;
   }
 
   const principalRows = await sql`
@@ -318,16 +331,116 @@ async function hasActiveExecutingPrincipalAuthority(
     FOR SHARE
   `;
   const row = onlyRow(principalRows);
+  const principalGeneration = positiveSafeInteger(row?.principal_generation);
+  if (
+    !row ||
+    numericValue(row.schema_version) !== 1 ||
+    row.tenant_id !== scope.tenantId ||
+    row.principal_kind !== scope.executingPrincipalType ||
+    row.principal_id !== scope.executingPrincipalId ||
+    principalGeneration === undefined ||
+    row.controller_actor_id !== actorBinding.canonicalActorId ||
+    row.state !== "active" ||
+    numericValue(row.lifecycle_revision) !== 1
+  ) {
+    return undefined;
+  }
+  return principalGeneration;
+}
+
+function requiresWorkspaceMembership(
+  scope: DatabaseMemoryAccessScope,
+): boolean {
+  return scope.workspaceId !== null || scope.projectId !== null;
+}
+
+async function hasActiveWorkspaceMembershipAuthority(
+  sql: CanarySql,
+  scope: DatabaseMemoryAccessScope,
+  actorBinding: CanonicalRequestActorBindingV1,
+  principalGeneration: number | null | undefined,
+): Promise<boolean> {
+  if (scope.workspaceId === null || principalGeneration === undefined) {
+    return false;
+  }
+
+  const workspaceRows = await sql`
+    SELECT schema_version, tenant_id, workspace_id, state, lifecycle_revision
+    FROM public.omni_tenant_workspaces
+    WHERE tenant_id = ${scope.tenantId}
+      AND workspace_id = ${scope.workspaceId}
+    ORDER BY workspace_id ASC
+    LIMIT 2
+    FOR SHARE
+  `;
+  const workspace = onlyRow(workspaceRows);
+  if (
+    !workspace ||
+    numericValue(workspace.schema_version) !== 1 ||
+    workspace.tenant_id !== scope.tenantId ||
+    workspace.workspace_id !== scope.workspaceId ||
+    workspace.state !== "active" ||
+    numericValue(workspace.lifecycle_revision) !== 1
+  ) {
+    return false;
+  }
+
+  const subjectKey = scope.executingPrincipalType === "user"
+    ? actorBinding.canonicalActorId
+    : scope.executingPrincipalId;
+  const membershipRows = await sql`
+    SELECT
+      schema_version,
+      tenant_id,
+      workspace_id,
+      subject_kind,
+      subject_key,
+      subject_actor_id,
+      subject_execution_principal_id,
+      subject_execution_principal_generation,
+      membership_generation,
+      access_level,
+      state,
+      lifecycle_revision
+    FROM public.omni_tenant_workspace_memberships
+    WHERE tenant_id = ${scope.tenantId}
+      AND workspace_id = ${scope.workspaceId}
+      AND subject_kind = ${scope.executingPrincipalType}
+      AND subject_key = ${subjectKey}
+      AND state <> 'revoked'
+    ORDER BY membership_generation DESC
+    LIMIT 2
+    FOR SHARE
+  `;
+  const membership = onlyRow(membershipRows);
+  const membershipGeneration = positiveSafeInteger(
+    membership?.membership_generation,
+  );
+  const storedPrincipalGeneration = membership?.subject_execution_principal_generation === null
+    ? null
+    : positiveSafeInteger(membership?.subject_execution_principal_generation);
+  const expectedActorId = scope.executingPrincipalType === "user"
+    ? actorBinding.canonicalActorId
+    : null;
+  const expectedPrincipalId = scope.executingPrincipalType === "user"
+    ? null
+    : scope.executingPrincipalId;
   return Boolean(
-    row &&
-      numericValue(row.schema_version) === 1 &&
-      row.tenant_id === scope.tenantId &&
-      row.principal_kind === scope.executingPrincipalType &&
-      row.principal_id === scope.executingPrincipalId &&
-      positiveSafeInteger(row.principal_generation) !== undefined &&
-      row.controller_actor_id === actorBinding.canonicalActorId &&
-      row.state === "active" &&
-      numericValue(row.lifecycle_revision) === 1,
+    membership &&
+      numericValue(membership.schema_version) === 1 &&
+      membership.tenant_id === scope.tenantId &&
+      membership.workspace_id === scope.workspaceId &&
+      membership.subject_kind === scope.executingPrincipalType &&
+      membership.subject_key === subjectKey &&
+      membership.subject_actor_id === expectedActorId &&
+      membership.subject_execution_principal_id === expectedPrincipalId &&
+      storedPrincipalGeneration === principalGeneration &&
+      membershipGeneration !== undefined &&
+      ["reader", "contributor", "manager"].includes(
+        String(membership.access_level),
+      ) &&
+      membership.state === "active" &&
+      numericValue(membership.lifecycle_revision) === 1,
   );
 }
 
