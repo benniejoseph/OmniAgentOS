@@ -4,7 +4,10 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { publicMemoryDeletionReceiptV1 } from "@/lib/memory/deletion-receipt";
-import { queueMemoryGraphRebuild } from "@/lib/memory/graph";
+import {
+  indexUserPrivateMemoryGraphRecords,
+  queueMemoryGraphRebuild,
+} from "@/lib/memory/graph";
 import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import {
   correctMemory,
@@ -133,7 +136,16 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
       : undefined,
   });
   if (!result) return Response.json({ error: "Memory not found." }, { status: 404 });
-  if (!result.corrected.accessBinding) {
+  if (result.corrected.accessBinding && requestAccess) {
+    await indexUserPrivateMemoryGraphRecords(
+      [result.corrected],
+      "memory.manual.correct",
+      {
+        tenantId: context.tenantId,
+        accessScope: requestAccess.databaseAccessScope,
+      },
+    );
+  } else if (!result.corrected.accessBinding) {
     await queueMemoryGraphRebuild({ tenantId: context.tenantId });
   }
   return Response.json({ previous: publicMemory(result.previous), corrected: publicMemory(result.corrected) });

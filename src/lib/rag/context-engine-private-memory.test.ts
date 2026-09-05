@@ -132,6 +132,10 @@ describe("actor-scoped context retrieval", () => {
       expect.any(String),
       expect.objectContaining({ accessScope: accessScope() }),
     );
+    expect(mocks.searchMemoryGraph).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ accessScope: accessScope() }),
+    );
     expect(pack.memoryResults.map((result) => result.record.id)).toEqual([
       "private-memory",
       "legacy-memory",

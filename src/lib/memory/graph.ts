@@ -7,11 +7,23 @@ import {
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
 import {
+  parseDatabaseMemoryAccessScope,
+  setTransactionLocalDatabaseMemoryAccessScope,
+  type DatabaseMemoryAccessScope,
+} from "@/lib/db/memory-access-scope";
+import {
   assertCaptureIngestSource,
   lockActiveCaptureIngest,
   type CaptureIngestGuard,
 } from "@/lib/capture/ingest-guard";
 import { listMemories } from "@/lib/memory/store";
+import {
+  buildUserPrivateMemoryAccessBindingV1,
+  memoryAccessBindingAllows,
+  memoryAccessBindingV1Schema,
+  MEMORY_PURPOSE_IDS,
+  type MemoryAccessBindingV1,
+} from "@/lib/memory/access-binding";
 import type {
   MemoryGraphBuildRecord,
   MemoryGraphEdge,
@@ -45,6 +57,12 @@ type SearchMemoryGraphOptions = {
   tenantId?: string;
   limit?: number;
   nodeLimit?: number;
+  accessScope?: DatabaseMemoryAccessScope;
+};
+
+type GraphReadOptions = {
+  tenantId?: string;
+  accessScope?: DatabaseMemoryAccessScope;
 };
 
 type GraphSqlClient = ReturnType<typeof getSql>;
@@ -84,6 +102,15 @@ type GraphAggregate = {
   nodes: Map<string, MemoryGraphNode>;
   edges: Map<string, MemoryGraphEdge>;
 };
+
+const USER_PRIVATE_GRAPH_PURPOSE_IDS = Object.freeze([
+  MEMORY_PURPOSE_IDS.read,
+  MEMORY_PURPOSE_IDS.retrieve,
+  MEMORY_PURPOSE_IDS.write,
+  MEMORY_PURPOSE_IDS.correct,
+  MEMORY_PURPOSE_IDS.forget,
+  MEMORY_PURPOSE_IDS.export,
+]);
 
 const stopWords = new Set([
   "about",
@@ -332,6 +359,83 @@ export async function indexMemoryGraphRecords(
   );
 }
 
+export async function indexUserPrivateMemoryGraphRecords(
+  records: MemoryRecord[],
+  _source = "memory.user_private.write",
+  options: {
+    tenantId?: string;
+    accessScope: DatabaseMemoryAccessScope;
+  },
+) {
+  if (!records.length) {
+    return { indexedMemoryCount: 0, nodeCount: 0, edgeCount: 0 };
+  }
+  const tenantId = normalizeTenantId(options.tenantId || records[0]?.tenantId);
+  const accessScope = requireUserPrivateGraphAccessScope(
+    options.accessScope,
+    tenantId,
+    [MEMORY_PURPOSE_IDS.write, MEMORY_PURPOSE_IDS.correct],
+  );
+  const ownerActorId = accessScope.initiatingActorId;
+  if (records.some((record) =>
+    normalizeTenantId(record.tenantId) !== tenantId ||
+    record.accessBinding?.visibility !== "user_private" ||
+    record.accessBinding.ownerActorId !== ownerActorId ||
+    !memoryAccessBindingAllows(accessScope, record.accessBinding)
+  )) {
+    throw new Error(
+      "User-private graph indexing requires one authorized actor-owned cohort.",
+    );
+  }
+
+  const accessBoundAt = new Date().toISOString();
+  const accessBinding = buildUserPrivateMemoryAccessBindingV1({
+    tenantId,
+    ownerActorId,
+    originPurpose: "memory.graph.projection",
+    allowedPurposeIds: USER_PRIVATE_GRAPH_PURPOSE_IDS,
+    accessBoundAt,
+  });
+  const identityNamespace = userPrivateGraphIdentityNamespace(
+    tenantId,
+    ownerActorId,
+  );
+  const aggregate = aggregateGraph(records, [], tenantId, identityNamespace);
+  for (const node of aggregate.nodes.values()) {
+    node.accessBinding = accessBinding;
+  }
+  for (const edge of aggregate.edges.values()) {
+    edge.accessBinding = accessBinding;
+  }
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    await runWithGraphAccessScope(
+      accessScope,
+      tenantId,
+      [MEMORY_PURPOSE_IDS.write, MEMORY_PURPOSE_IDS.correct],
+      async (sql) => {
+        await sql`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${"memory-graph:" + tenantId}, 0)
+          )
+        `;
+        await upsertGraphNodes([...aggregate.nodes.values()], sql);
+        await upsertGraphEdges([...aggregate.edges.values()], sql);
+      },
+    );
+  } else {
+    await mutateGraphLedger((ledger) =>
+      mergePrivateGraphLedger(ledger, aggregate)
+    );
+  }
+  return {
+    indexedMemoryCount: records.length,
+    nodeCount: aggregate.nodes.size,
+    edgeCount: aggregate.edges.size,
+  };
+}
+
 async function indexMemoryGraphRecordsForTenant(
   records: MemoryRecord[],
   source: string,
@@ -394,8 +498,14 @@ async function searchMemoryGraphForTenant(
   const tenantId = normalizeTenantId(options.tenantId);
   const limit = Math.min(Math.max(options.limit || 6, 1), 24);
   const [nodes, edges] = await Promise.all([
-    listMemoryGraphNodes(options.nodeLimit || 600, { tenantId }),
-    listMemoryGraphEdges((options.nodeLimit || 600) * 3, { tenantId }),
+    listMemoryGraphNodes(options.nodeLimit || 600, {
+      tenantId,
+      accessScope: options.accessScope,
+    }),
+    listMemoryGraphEdges((options.nodeLimit || 600) * 3, {
+      tenantId,
+      accessScope: options.accessScope,
+    }),
   ]);
   if (!nodes.length) {
     return [];
@@ -469,77 +579,134 @@ async function searchMemoryGraphForTenant(
 
 export async function listMemoryGraphNodes(
   limit = 100,
-  options: { tenantId?: string } = {},
+  options: GraphReadOptions = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   return runWithDatabaseTenantScope(tenantId, () =>
-    listMemoryGraphNodesForTenant(limit, tenantId),
+    listMemoryGraphNodesForTenant(limit, tenantId, options.accessScope),
   );
 }
 
-async function listMemoryGraphNodesForTenant(limit: number, tenantId: string) {
+async function listMemoryGraphNodesForTenant(
+  limit: number,
+  tenantId: string,
+  accessScope?: DatabaseMemoryAccessScope,
+) {
+  const boundedLimit = Math.min(Math.max(limit, 1), 2000);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
+    const legacyRows = await getSql()`
       SELECT *
       FROM omni_memory_graph_nodes
       WHERE tenant_id = ${tenantId}
       ORDER BY weight DESC, source_count DESC, updated_at DESC
-      LIMIT ${Math.min(Math.max(limit, 1), 2000)}
+      LIMIT ${boundedLimit}
     `;
-    return rows.map(memoryGraphNodeFromRow);
+    const scopedRows = accessScope
+      ? await runWithGraphAccessScope(
+          accessScope,
+          tenantId,
+          [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
+          (sql) => sql`
+            SELECT *
+            FROM omni_memory_graph_nodes
+            WHERE tenant_id = ${tenantId}
+            ORDER BY weight DESC, source_count DESC, updated_at DESC
+            LIMIT ${boundedLimit}
+          `,
+        )
+      : [];
+    return mergeGraphRows(
+      legacyRows.map(memoryGraphNodeFromRow),
+      scopedRows.map(memoryGraphNodeFromRow),
+      boundedLimit,
+      sortNodes,
+    );
   }
 
   return (await readGraphLedger()).nodes
-    .filter((node) => graphTenantId(node) === tenantId)
+    .filter((node) =>
+      graphTenantId(node) === tenantId &&
+      graphRecordVisibleForScope(node, accessScope)
+    )
     .map((node) => ({ ...node, tenantId }))
-    .slice(0, limit);
+    .sort(sortNodes)
+    .slice(0, boundedLimit);
 }
 
 export async function listMemoryGraphEdges(
   limit = 200,
-  options: { tenantId?: string } = {},
+  options: GraphReadOptions = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   return runWithDatabaseTenantScope(tenantId, () =>
-    listMemoryGraphEdgesForTenant(limit, tenantId),
+    listMemoryGraphEdgesForTenant(limit, tenantId, options.accessScope),
   );
 }
 
-async function listMemoryGraphEdgesForTenant(limit: number, tenantId: string) {
+async function listMemoryGraphEdgesForTenant(
+  limit: number,
+  tenantId: string,
+  accessScope?: DatabaseMemoryAccessScope,
+) {
+  const boundedLimit = Math.min(Math.max(limit, 1), 5000);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
+    const legacyRows = await getSql()`
       SELECT *
       FROM omni_memory_graph_edges
       WHERE tenant_id = ${tenantId}
       ORDER BY weight DESC, evidence_count DESC, updated_at DESC
-      LIMIT ${Math.min(Math.max(limit, 1), 5000)}
+      LIMIT ${boundedLimit}
     `;
-    return rows.map(memoryGraphEdgeFromRow);
+    const scopedRows = accessScope
+      ? await runWithGraphAccessScope(
+          accessScope,
+          tenantId,
+          [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
+          (sql) => sql`
+            SELECT *
+            FROM omni_memory_graph_edges
+            WHERE tenant_id = ${tenantId}
+            ORDER BY weight DESC, evidence_count DESC, updated_at DESC
+            LIMIT ${boundedLimit}
+          `,
+        )
+      : [];
+    return mergeGraphRows(
+      legacyRows.map(memoryGraphEdgeFromRow),
+      scopedRows.map(memoryGraphEdgeFromRow),
+      boundedLimit,
+      sortEdges,
+    );
   }
 
   return (await readGraphLedger()).edges
-    .filter((edge) => graphTenantId(edge) === tenantId)
+    .filter((edge) =>
+      graphTenantId(edge) === tenantId &&
+      graphRecordVisibleForScope(edge, accessScope)
+    )
     .map((edge) => ({ ...edge, tenantId }))
-    .slice(0, limit);
+    .sort(sortEdges)
+    .slice(0, boundedLimit);
 }
 
 export async function getMemoryGraphStats(
-  options: { tenantId?: string } = {},
+  options: GraphReadOptions = {},
 ): Promise<MemoryGraphStats> {
   const tenantId = normalizeTenantId(options.tenantId);
   return runWithDatabaseTenantScope(tenantId, () =>
-    getMemoryGraphStatsForTenant(tenantId),
+    getMemoryGraphStatsForTenant(tenantId, options.accessScope),
   );
 }
 
 async function getMemoryGraphStatsForTenant(
   tenantId: string,
+  accessScope?: DatabaseMemoryAccessScope,
 ): Promise<MemoryGraphStats> {
   const [nodes, edges, latestBuild] = await Promise.all([
-    listMemoryGraphNodes(1000, { tenantId }),
-    listMemoryGraphEdges(3000, { tenantId }),
+    listMemoryGraphNodes(1000, { tenantId, accessScope }),
+    listMemoryGraphEdges(3000, { tenantId, accessScope }),
     getLatestGraphBuild(tenantId),
   ]);
   const communities = componentIds(nodes, edges);
@@ -559,6 +726,7 @@ function aggregateGraph(
   memories: MemoryRecord[],
   traces: TraceSeed[],
   tenantId: string,
+  identityNamespace = tenantId,
 ): GraphAggregate {
   const now = new Date().toISOString();
   const aggregate: GraphAggregate = {
@@ -581,7 +749,7 @@ function aggregateGraph(
         memoryIds: [memory.id],
         traceIds: [],
         tags: [...candidate.tags, ...memory.tags],
-      }));
+      }, identityNamespace));
     }
 
     for (const [left, right] of boundedPairs(candidates.slice(0, 8))) {
@@ -591,7 +759,7 @@ function aggregateGraph(
           weight: (left.weight + right.weight + memory.importance) / 3,
           memoryIds: [memory.id],
           traceIds: [],
-        }),
+        }, identityNamespace),
       );
     }
   }
@@ -612,7 +780,7 @@ function aggregateGraph(
         memoryIds: [],
         traceIds: [trace.id],
         tags: candidate.tags,
-      }));
+      }, identityNamespace));
     }
 
     for (const [left, right] of boundedPairs(candidates.slice(0, 7))) {
@@ -622,7 +790,7 @@ function aggregateGraph(
           weight: (left.weight + right.weight) / 2,
           memoryIds: [],
           traceIds: [trace.id],
-        }),
+        }, identityNamespace),
       );
     }
   }
@@ -752,9 +920,10 @@ function nodeFromCandidate(
     traceIds: string[];
     tags: string[];
   },
+  identityNamespace = tenantId,
 ): MemoryGraphNode {
   return {
-    id: nodeId(candidate.slug, tenantId),
+    id: nodeId(candidate.slug, identityNamespace),
     tenantId,
     kind: candidate.kind,
     label: candidate.label,
@@ -783,13 +952,14 @@ function edgeFromCandidates(
     memoryIds: string[];
     traceIds: string[];
   },
+  identityNamespace = tenantId,
 ): MemoryGraphEdge {
   const [sourceNodeId, targetNodeId] = [
-    nodeId(left.slug, tenantId),
-    nodeId(right.slug, tenantId),
+    nodeId(left.slug, identityNamespace),
+    nodeId(right.slug, identityNamespace),
   ].sort();
   return {
-    id: edgeId(sourceNodeId, targetNodeId, relation, tenantId),
+    id: edgeId(sourceNodeId, targetNodeId, relation, identityNamespace),
     tenantId,
     sourceNodeId,
     targetNodeId,
@@ -886,7 +1056,7 @@ async function upsertGraphNodes(
     tenant_id: node.tenantId,
     kind: node.kind,
     label: node.label,
-    slug: storageGraphSlug(node.tenantId, node.slug),
+    slug: storageGraphSlug(node.tenantId, node.slug, node.accessBinding),
     aliases: node.aliases,
     summary: node.summary,
     weight: node.weight,
@@ -897,15 +1067,22 @@ async function upsertGraphNodes(
     metadata: node.metadata,
     created_at: node.createdAt,
     updated_at: node.updatedAt,
+    ...graphAccessBindingRow(node.accessBinding),
   }));
   await sql`
     INSERT INTO omni_memory_graph_nodes (
       id, tenant_id, kind, label, slug, aliases, summary, weight, source_count,
-      memory_ids, trace_ids, tags, metadata, created_at, updated_at
+      memory_ids, trace_ids, tags, metadata, created_at, updated_at,
+      access_contract_version, access_state, owner_actor_id, owner_agent_id,
+      workspace_id, project_id, mission_id, visibility, sensitivity,
+      origin_purpose, allowed_purpose_ids, access_scope_sha256, access_bound_at
     )
     SELECT
       id, tenant_id, kind, label, slug, aliases, summary, weight, source_count,
-      memory_ids, trace_ids, tags, metadata, created_at, updated_at
+      memory_ids, trace_ids, tags, metadata, created_at, updated_at,
+      access_contract_version, access_state, owner_actor_id, owner_agent_id,
+      workspace_id, project_id, mission_id, visibility, sensitivity,
+      origin_purpose, allowed_purpose_ids, access_scope_sha256, access_bound_at
     FROM jsonb_to_recordset(${jsonbSafeStringify(payload)}::text::jsonb) AS input(
       id text,
       tenant_id text,
@@ -921,7 +1098,20 @@ async function upsertGraphNodes(
       tags text[],
       metadata jsonb,
       created_at timestamptz,
-      updated_at timestamptz
+      updated_at timestamptz,
+      access_contract_version smallint,
+      access_state text,
+      owner_actor_id text,
+      owner_agent_id text,
+      workspace_id text,
+      project_id text,
+      mission_id text,
+      visibility text,
+      sensitivity text,
+      origin_purpose text,
+      allowed_purpose_ids text[],
+      access_scope_sha256 text,
+      access_bound_at timestamptz
     )
     ON CONFLICT (id) DO UPDATE SET
       aliases = ARRAY(SELECT DISTINCT unnest(omni_memory_graph_nodes.aliases || EXCLUDED.aliases)),
@@ -967,15 +1157,22 @@ async function upsertGraphEdges(
     metadata: edge.metadata,
     created_at: edge.createdAt,
     updated_at: edge.updatedAt,
+    ...graphAccessBindingRow(edge.accessBinding),
   }));
   await sql`
     INSERT INTO omni_memory_graph_edges (
       id, tenant_id, source_node_id, target_node_id, relation, weight, evidence_count,
-      memory_ids, trace_ids, metadata, created_at, updated_at
+      memory_ids, trace_ids, metadata, created_at, updated_at,
+      access_contract_version, access_state, owner_actor_id, owner_agent_id,
+      workspace_id, project_id, mission_id, visibility, sensitivity,
+      origin_purpose, allowed_purpose_ids, access_scope_sha256, access_bound_at
     )
     SELECT
       id, tenant_id, source_node_id, target_node_id, relation, weight,
-      evidence_count, memory_ids, trace_ids, metadata, created_at, updated_at
+      evidence_count, memory_ids, trace_ids, metadata, created_at, updated_at,
+      access_contract_version, access_state, owner_actor_id, owner_agent_id,
+      workspace_id, project_id, mission_id, visibility, sensitivity,
+      origin_purpose, allowed_purpose_ids, access_scope_sha256, access_bound_at
     FROM jsonb_to_recordset(${jsonbSafeStringify(payload)}::text::jsonb) AS input(
       id text,
       tenant_id text,
@@ -988,7 +1185,20 @@ async function upsertGraphEdges(
       trace_ids text[],
       metadata jsonb,
       created_at timestamptz,
-      updated_at timestamptz
+      updated_at timestamptz,
+      access_contract_version smallint,
+      access_state text,
+      owner_actor_id text,
+      owner_agent_id text,
+      workspace_id text,
+      project_id text,
+      mission_id text,
+      visibility text,
+      sensitivity text,
+      origin_purpose text,
+      allowed_purpose_ids text[],
+      access_scope_sha256 text,
+      access_bound_at timestamptz
     )
     ON CONFLICT (id) DO UPDATE SET
       weight = GREATEST(omni_memory_graph_edges.weight, EXCLUDED.weight),
@@ -1015,7 +1225,7 @@ async function insertGraphNode(node: MemoryGraphNode, sql: GraphSqlClient = getS
     )
     VALUES (
       ${node.id}, ${node.tenantId}, ${node.kind}, ${node.label},
-      ${storageGraphSlug(node.tenantId, node.slug)}, ${node.aliases},
+      ${storageGraphSlug(node.tenantId, node.slug, node.accessBinding)}, ${node.aliases},
       ${node.summary}, ${node.weight}, ${node.sourceCount}, ${node.memoryIds},
       ${node.traceIds}, ${node.tags}, ${jsonbSafeStringify(node.metadata)}::text::jsonb,
       ${node.createdAt}, ${node.updatedAt}
@@ -1127,6 +1337,21 @@ function mergeLedger(
   };
 }
 
+function mergePrivateGraphLedger(
+  ledger: MemoryGraphLedger,
+  aggregate: GraphAggregate,
+): MemoryGraphLedger {
+  const nodes = new Map(ledger.nodes.map((node) => [node.id, node]));
+  const edges = new Map(ledger.edges.map((edge) => [edge.id, edge]));
+  for (const node of aggregate.nodes.values()) mergeNode(nodes, node);
+  for (const edge of aggregate.edges.values()) mergeEdge(edges, edge);
+  return {
+    nodes: [...nodes.values()].sort(sortNodes).slice(0, 2000),
+    edges: [...edges.values()].sort(sortEdges).slice(0, 5000),
+    builds: ledger.builds,
+  };
+}
+
 async function readGraphLedger() {
   return readJsonFile<MemoryGraphLedger>(getGraphFile(), { nodes: [], edges: [], builds: [] });
 }
@@ -1148,12 +1373,18 @@ async function mutateGraphLedger(mutator: (ledger: MemoryGraphLedger) => MemoryG
 
 function memoryGraphNodeFromRow(row: Record<string, unknown>): MemoryGraphNode {
   const tenantId = storedTenantId(row.tenant_id ? String(row.tenant_id) : undefined);
+  const accessBinding = graphAccessBindingFromRow(row);
   return {
     id: String(row.id),
     tenantId,
+    ...(accessBinding ? { accessBinding } : {}),
     kind: normalizeKind(String(row.kind || "concept")),
     label: String(row.label || ""),
-    slug: logicalGraphSlug(tenantId, String(row.slug || "")),
+    slug: logicalGraphSlug(
+      tenantId,
+      String(row.slug || ""),
+      accessBinding,
+    ),
     aliases: stringArray(row.aliases),
     summary: String(row.summary || ""),
     weight: Number(row.weight || 0),
@@ -1168,9 +1399,11 @@ function memoryGraphNodeFromRow(row: Record<string, unknown>): MemoryGraphNode {
 }
 
 function memoryGraphEdgeFromRow(row: Record<string, unknown>): MemoryGraphEdge {
+  const accessBinding = graphAccessBindingFromRow(row);
   return {
     id: String(row.id),
     tenantId: storedTenantId(row.tenant_id ? String(row.tenant_id) : undefined),
+    ...(accessBinding ? { accessBinding } : {}),
     sourceNodeId: String(row.source_node_id || ""),
     targetNodeId: String(row.target_node_id || ""),
     relation: normalizeRelation(String(row.relation || "co_occurs")),
@@ -1210,6 +1443,108 @@ function traceSeedFromRow(row: Record<string, unknown>): TraceSeed {
     results,
     createdAt: normalizeDate(row.created_at || row.createdAt),
   };
+}
+
+function graphAccessBindingFromRow(
+  row: Record<string, unknown>,
+): MemoryAccessBindingV1 | undefined {
+  if (Number(row.access_contract_version || 0) === 0) return undefined;
+  return memoryAccessBindingV1Schema.parse({
+    version: 1,
+    state: row.access_state,
+    tenantId: row.tenant_id,
+    ownerActorId: row.owner_actor_id,
+    ownerAgentId: row.owner_agent_id ?? null,
+    workspaceId: row.workspace_id ?? null,
+    projectId: row.project_id ?? null,
+    missionId: row.mission_id ?? null,
+    visibility: row.visibility,
+    sensitivity: row.sensitivity,
+    originPurpose: row.origin_purpose,
+    allowedPurposeIds: row.allowed_purpose_ids,
+    accessScopeSha256: row.access_scope_sha256,
+    accessBoundAt: normalizeDate(row.access_bound_at),
+  });
+}
+
+function graphAccessBindingRow(accessBinding?: MemoryAccessBindingV1) {
+  return {
+    access_contract_version: accessBinding?.version || 0,
+    access_state: accessBinding?.state || "legacy_unattributed",
+    owner_actor_id: accessBinding?.ownerActorId || null,
+    owner_agent_id: accessBinding?.ownerAgentId || null,
+    workspace_id: accessBinding?.workspaceId || null,
+    project_id: accessBinding?.projectId || null,
+    mission_id: accessBinding?.missionId || null,
+    visibility: accessBinding?.visibility || null,
+    sensitivity: accessBinding?.sensitivity || null,
+    origin_purpose: accessBinding?.originPurpose || null,
+    allowed_purpose_ids: accessBinding?.allowedPurposeIds || null,
+    access_scope_sha256: accessBinding?.accessScopeSha256 || null,
+    access_bound_at: accessBinding?.accessBoundAt || null,
+  };
+}
+
+function requireUserPrivateGraphAccessScope(
+  value: DatabaseMemoryAccessScope,
+  tenantId: string,
+  allowedPurposeIds: readonly string[],
+) {
+  const accessScope = parseDatabaseMemoryAccessScope(value);
+  if (
+    accessScope.tenantId !== tenantId ||
+    !allowedPurposeIds.includes(accessScope.purposeId) ||
+    accessScope.executingPrincipalType !== "user" ||
+    accessScope.executingPrincipalId !== accessScope.initiatingActorId ||
+    accessScope.workspaceId !== null ||
+    accessScope.projectId !== null ||
+    accessScope.missionId !== null
+  ) {
+    throw new Error(
+      "User-private graph access requires the canonical user scope and purpose.",
+    );
+  }
+  return accessScope;
+}
+
+async function runWithGraphAccessScope<T>(
+  accessScope: DatabaseMemoryAccessScope,
+  tenantId: string,
+  allowedPurposeIds: readonly string[],
+  operation: (sql: GraphSqlClient) => Promise<T>,
+) {
+  const parsedScope = requireUserPrivateGraphAccessScope(
+    accessScope,
+    tenantId,
+    allowedPurposeIds,
+  );
+  return getSql().transaction(async (sql: GraphSqlClient) => {
+    await setTransactionLocalDatabaseMemoryAccessScope(sql, parsedScope);
+    return operation(sql);
+  }) as Promise<T>;
+}
+
+function graphRecordVisibleForScope(
+  record: { accessBinding?: MemoryAccessBindingV1 },
+  accessScope?: DatabaseMemoryAccessScope,
+) {
+  if (!record.accessBinding) return true;
+  return accessScope
+    ? memoryAccessBindingAllows(accessScope, record.accessBinding)
+    : false;
+}
+
+function mergeGraphRows<T extends { id: string }>(
+  legacyRows: T[],
+  scopedRows: T[],
+  limit: number,
+  compare: (left: T, right: T) => number,
+) {
+  return [...new Map(
+    [...legacyRows, ...scopedRows].map((row) => [row.id, row] as const),
+  ).values()]
+    .sort(compare)
+    .slice(0, limit);
 }
 
 function buildAdjacency(edges: MemoryGraphEdge[]) {
@@ -1466,15 +1801,43 @@ function tenantNamespace(tenantId: string) {
   return createHash("sha256").update(tenantId).digest("hex").slice(0, 16);
 }
 
-function storageGraphSlug(tenantId: string, slug: string) {
-  return tenantId === "default" ? slug : `${tenantNamespace(tenantId)}-${slug}`.slice(0, 120);
+function userPrivateGraphIdentityNamespace(
+  tenantId: string,
+  ownerActorId: string,
+) {
+  return `${tenantId}\0user_private\0${ownerActorId}`;
 }
 
-function logicalGraphSlug(tenantId: string, slug: string) {
-  if (tenantId === "default") {
+function graphStorageNamespace(
+  tenantId: string,
+  accessBinding?: MemoryAccessBindingV1,
+) {
+  return accessBinding?.visibility === "user_private"
+    ? userPrivateGraphIdentityNamespace(tenantId, accessBinding.ownerActorId)
+    : tenantId;
+}
+
+function storageGraphSlug(
+  tenantId: string,
+  slug: string,
+  accessBinding?: MemoryAccessBindingV1,
+) {
+  const namespace = graphStorageNamespace(tenantId, accessBinding);
+  return namespace === "default"
+    ? slug
+    : `${tenantNamespace(namespace)}-${slug}`.slice(0, 120);
+}
+
+function logicalGraphSlug(
+  tenantId: string,
+  slug: string,
+  accessBinding?: MemoryAccessBindingV1,
+) {
+  const namespace = graphStorageNamespace(tenantId, accessBinding);
+  if (namespace === "default") {
     return slug;
   }
-  const prefix = `${tenantNamespace(tenantId)}-`;
+  const prefix = `${tenantNamespace(namespace)}-`;
   return slug.startsWith(prefix) ? slug.slice(prefix.length) : slug;
 }
 

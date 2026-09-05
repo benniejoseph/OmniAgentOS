@@ -2,6 +2,10 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
+import {
+  buildUserPrivateMemoryAccessBindingV1,
+  MEMORY_PURPOSE_IDS,
+} from "@/lib/memory/access-binding";
 import type { MemoryRecord } from "@/lib/memory/types";
 
 let dataDir: string;
@@ -26,6 +30,27 @@ function memory(tenantId: string, id: string): MemoryRecord {
     importance: 0.8,
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+function userPrivateScope(
+  tenantId: string,
+  actorId: string,
+  purposeId: string,
+) {
+  return {
+    version: 1 as const,
+    tenantId,
+    initiatingActorId: actorId,
+    executingPrincipalType: "user" as const,
+    executingPrincipalId: actorId,
+    workspaceId: null,
+    projectId: null,
+    missionId: null,
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+    purposeId,
+    purpose: "test.private.graph",
   };
 }
 
@@ -120,6 +145,55 @@ describe("memory graph tenant isolation (file mode)", () => {
         { tenantId: "tenant-a" },
       ),
     ).rejects.toThrow("cannot mix records from different tenants");
+  });
+
+  it("keeps actor-private graph projections out of compatibility reads", async () => {
+    const graph = await import("@/lib/memory/graph");
+    const tenantId = "tenant-private-graph";
+    const ownerActorId = "actor:private-graph-owner";
+    const otherActorId = "actor:private-graph-other";
+    const binding = buildUserPrivateMemoryAccessBindingV1({
+      tenantId,
+      ownerActorId,
+      originPurpose: "api.memory.write",
+    });
+    const record = {
+      ...memory(tenantId, "private-graph-memory"),
+      accessBinding: binding,
+    };
+
+    await graph.indexUserPrivateMemoryGraphRecords([record], "test", {
+      tenantId,
+      accessScope: userPrivateScope(
+        tenantId,
+        ownerActorId,
+        MEMORY_PURPOSE_IDS.write,
+      ),
+    });
+
+    expect(await graph.listMemoryGraphNodes(100, { tenantId })).toEqual([]);
+    const ownerNodes = await graph.listMemoryGraphNodes(100, {
+      tenantId,
+      accessScope: userPrivateScope(
+        tenantId,
+        ownerActorId,
+        MEMORY_PURPOSE_IDS.read,
+      ),
+    });
+    const otherNodes = await graph.listMemoryGraphNodes(100, {
+      tenantId,
+      accessScope: userPrivateScope(
+        tenantId,
+        otherActorId,
+        MEMORY_PURPOSE_IDS.read,
+      ),
+    });
+    expect(ownerNodes.length).toBeGreaterThan(0);
+    expect(ownerNodes.every((node) =>
+      node.accessBinding?.ownerActorId === ownerActorId &&
+      node.memoryIds.includes(record.id)
+    )).toBe(true);
+    expect(otherNodes).toEqual([]);
   });
 
   it("rebuilds immediately when the durable queue is unavailable", async () => {

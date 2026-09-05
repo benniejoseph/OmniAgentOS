@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
@@ -12,6 +13,8 @@ import {
   rebuildMemoryGraph,
   searchMemoryGraph,
 } from "@/lib/memory/graph";
+import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
+import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -42,21 +45,43 @@ async function GETHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const requestAccess = requestMemoryAccessFromSecurityContext(context, {
+    purposeId: query
+      ? MEMORY_PURPOSE_IDS.retrieve
+      : MEMORY_PURPOSE_IDS.read,
+    auditPurpose: query
+      ? "api.memory.graph.search"
+      : "api.memory.graph.read",
+    correlationId: `memory_graph_read_${randomUUID()}`,
+  });
 
   if (query) {
     return Response.json({
       results: await searchMemoryGraph(query, {
         tenantId: context.tenantId,
         limit: Math.min(limit, 24),
+        accessScope: requestAccess?.databaseAccessScope,
       }),
-      stats: await getMemoryGraphStats({ tenantId: context.tenantId }),
+      stats: await getMemoryGraphStats({
+        tenantId: context.tenantId,
+        accessScope: requestAccess?.databaseAccessScope,
+      }),
     });
   }
 
   const [nodes, edges, stats] = await Promise.all([
-    listMemoryGraphNodes(limit, { tenantId: context.tenantId }),
-    listMemoryGraphEdges(limit * 2, { tenantId: context.tenantId }),
-    getMemoryGraphStats({ tenantId: context.tenantId }),
+    listMemoryGraphNodes(limit, {
+      tenantId: context.tenantId,
+      accessScope: requestAccess?.databaseAccessScope,
+    }),
+    listMemoryGraphEdges(limit * 2, {
+      tenantId: context.tenantId,
+      accessScope: requestAccess?.databaseAccessScope,
+    }),
+    getMemoryGraphStats({
+      tenantId: context.tenantId,
+      accessScope: requestAccess?.databaseAccessScope,
+    }),
   ]);
 
   return Response.json({ nodes, edges, stats });
