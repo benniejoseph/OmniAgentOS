@@ -172,3 +172,21 @@ or clone-replay protection. The pure module imports no database, auth,
 event-store, serving, or key registry and has no route, writer, event append,
 scope installer, or runtime call site. It leaves v57 empty, v56
 active-forbidden, and every earlier hold unchanged.
+
+The next offline verifier still does not create an `ExecutionScope`. The caller
+must provide a strict external trust manifest, its independently trusted digest,
+the expected logical database identity, and a canonical observation time. The
+manifest's own domain-separated fixed framing binds the tenant, lineage, fixed
+bootstrap action, ceremony policy, windows, and exactly two ordered Ed25519 key
+records. The verifier then requires equality for all shared
+manifest/decision/bundle coordinates, full manifest/key-window coverage of the
+decision window, and valid observation ordering and revocation state before it
+verifies both signatures over the canonical decision-preimage bytes.
+
+Its frozen result explicitly grants no authority and is not accepted by any
+runtime. It does not establish anchor freshness, a trustworthy clock, signed
+attestation time, independent humans, controller membership, or physical
+database uniqueness. No environment, database, auth, event-store, serving, or
+registry lookup; writer; route; event; row; scope installer; ACL/RLS cutover;
+or authority activation is introduced. All v45 and v48-v57 holds remain
+unchanged.

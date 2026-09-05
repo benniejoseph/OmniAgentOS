@@ -563,6 +563,32 @@ replay into a restored clone. The module has no database, auth, event-store,
 serving, route, or key-registry import or call site. It writes no row or event
 and leaves v57 empty, v56 active-forbidden, and all earlier holds unchanged.
 
+The next offline-only verifier contract accepts, rather than discovers, an
+external trust manifest, its independently trusted SHA-256 anchor, the expected
+logical database identity, and an explicit observation time. The strict
+manifest binds one tenant, database lineage, fixed bootstrap action, ceremony
+policy, and validity window to the two ordered Ed25519 slots. Each slot names a
+distinct key ID, canonical actor controller, canonical raw public key, key
+window, and optional revocation time. The manifest is hashed with its own
+versioned domain and fixed uint32-big-endian UTF-8 framing; JSON property order
+is never a trust coordinate.
+
+Verification requires the computed manifest digest, the external anchor, and
+the decision's pinned digest to be identical; requires exact equality for
+shared manifest/decision coordinates and full manifest/key-window coverage of
+the decision window; checks caller-supplied observation and claimed attestation
+times against the applicable half-open windows; and verifies both signatures
+over the exact canonical decision-preimage bytes. Its deeply frozen
+result deliberately says `authorityGranted: false` and `runtimeAccepted: false`.
+It contains only coordinates, public-key fingerprints, and positive signature
+checks—not signatures or key material. This proves offline cryptographic
+consistency only. The caller still owns trust-anchor freshness and observation
+time; attestation time is not signed; distinct actors and keys do not prove two
+independent humans; and a restored clone can share the logical database ID.
+There is still no environment lookup, database/event/auth/serving import,
+writer, route, registry, runtime call site, authority activation, ACL/RLS
+cutover, row, or event.
+
 Migration v50 adds an owner-only, append-only auth-user actor-identifier
 shadow. It records each v46 canonical actor as a self identifier and each exact
 current auth email as the initial legacy identifier, while an auth-user trigger

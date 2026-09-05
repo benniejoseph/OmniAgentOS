@@ -593,6 +593,26 @@ physical-instance uniqueness. No database or event-store writer/import, event
 append, registry, serving route, or call site is added. The v57 evidence tables
 stay empty and all v45 and v48-v57 holds remain intact.
 
+The following offline verifier contract also emits no domain event. It accepts
+an external two-key manifest, an independently trusted manifest digest, the
+expected logical database identity, and an explicit observation time. A
+separately domain-separated, fixed-frame manifest digest covers the tenant,
+database lineage, fixed action, ceremony policy, validity interval, ordered
+slots, distinct key and controller coordinates, canonical raw Ed25519 public
+keys, key windows, and revocation values. Verification requires that digest to
+match both the external anchor and the decision, binds every shared manifest
+and bundle coordinate exactly, requires the manifest and key windows to cover
+the complete decision window, and verifies each signature over the exact
+decision preimage—not its hexadecimal digest.
+
+Successful output is frozen non-authorizing evidence with fingerprints rather
+than signatures or public keys. It is not a bootstrap-decision lifecycle event,
+authority grant, consumption receipt, or revocation receipt. Trust-anchor
+freshness, the caller-asserted time, unsigned claimed attestation times, actual
+human independence, same-tenant controller authority, and restored-clone
+identity remain outside what it proves. No row, event append, writer, runtime
+import/call site, environment key, ACL/RLS change, or activation is added.
+
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.
