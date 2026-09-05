@@ -28466,6 +28466,7 @@ async function ensureMemoryInformedNoticeGovernanceEvidenceShadow(
     DECLARE
       grant_record RECORD;
       relation_name TEXT;
+      procedure_record RECORD;
     BEGIN
       FOR relation_name IN SELECT unnest(ARRAY[
         'omni_memory_informed_notice_approval_batches',
@@ -28483,6 +28484,42 @@ async function ensureMemoryInformedNoticeGovernanceEvidenceShadow(
           EXECUTE format(
             'REVOKE ALL ON TABLE %I.%I FROM %I',
             current_schema(), relation_name, grant_record.grantee
+          );
+        END LOOP;
+      END LOOP;
+
+      FOR procedure_record IN
+        SELECT procedure.oid::regprocedure::TEXT AS procedure_identity,
+               procedure.proname
+        FROM pg_proc procedure
+        WHERE procedure.oid IN (
+          to_regprocedure(
+            'public.omni_notice_approval_batch_row_is_valid(smallint,text,text,text,bigint,text,text,smallint,text,text,bigint,text,timestamptz,timestamptz,text,timestamptz)'
+          ),
+          to_regprocedure(
+            'public.omni_notice_approval_contract_row_is_valid(smallint,text,text,smallint,smallint,text,text,smallint,text,text,text)'
+          ),
+          to_regprocedure(
+            'public.omni_notice_review_attestation_row_is_valid(smallint,text,text,text,bigint,text,timestamptz,timestamptz,text,text,text,timestamptz,text,text,text,text)'
+          ),
+          to_regprocedure(
+            'public.omni_protect_notice_governance_evidence()'
+          )
+        )
+      LOOP
+        FOR grant_record IN
+          SELECT DISTINCT grantee
+          FROM information_schema.routine_privileges
+          WHERE routine_schema = current_schema()
+            AND routine_name = procedure_record.proname
+            AND privilege_type = 'EXECUTE'
+            AND grantee <> current_user
+            AND grantee <> 'PUBLIC'
+        LOOP
+          EXECUTE format(
+            'REVOKE ALL ON FUNCTION %s FROM %I',
+            procedure_record.procedure_identity,
+            grant_record.grantee
           );
         END LOOP;
       END LOOP;
@@ -28936,6 +28973,38 @@ async function ensureMemoryInformedNoticeAnchorReviewEvidenceShadow(
       ) FROM PUBLIC
     `);
   }
+
+  await sql`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+      procedure_identity TEXT;
+    BEGIN
+      SELECT procedure.oid::regprocedure::TEXT
+      INTO procedure_identity
+      FROM pg_proc procedure
+      WHERE procedure.oid = to_regprocedure(
+        'public.omni_notice_anchor_review_row_is_valid(text,text,timestamptz,timestamptz,timestamptz,boolean)'
+      );
+
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name = 'omni_notice_anchor_review_row_is_valid'
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %s FROM %I',
+          procedure_identity,
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `;
 
   await sql`
     DO $migration$
