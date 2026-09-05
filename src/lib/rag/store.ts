@@ -5,8 +5,13 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
+import { appendScopedDomainEvent } from "@/lib/events/store";
 import { getDataPath } from "@/lib/storage/paths";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  assertExecutionScopeTenant,
+  parsePersistedExecutionScope,
+} from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
 import { normalizeTextForChunking } from "@/lib/rag/chunk";
@@ -31,6 +36,14 @@ import {
   type PersistedKnowledgeLineage,
 } from "@/lib/sources/store";
 import type { CanonicalTextSourceWrite } from "@/lib/sources/text-lineage";
+import {
+  KNOWLEDGE_DELETION_EVENT_SCHEMA_VERSION,
+  knowledgeDeletionEventId,
+  knowledgeDeletionEventPayloadSchema,
+  knowledgeDeletionSha256,
+  knowledgeDeletionTargetId,
+  type KnowledgeDeletionMutationContext,
+} from "@/lib/rag/deletion-events";
 
 type RagSqlClient = ReturnType<typeof getSql>;
 
@@ -290,10 +303,22 @@ export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: st
   return documentId;
 }
 
-export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: string, options: { tenantId?: string } = {}) {
+export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: string, options: {
+  tenantId?: string;
+  actorId?: string;
+  mutation?: KnowledgeDeletionMutationContext;
+} = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
   const prefix = String(redactSensitive(sourcePrefix)).trim().slice(0, 500);
   if (!prefix) throw new Error("A source prefix is required.");
+  const mutation = options.mutation
+    ? exactKnowledgeDeletionMutation(
+        options.mutation,
+        tenantId,
+        options.actorId,
+        prefix,
+      )
+    : undefined;
   const retiredAt = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -320,6 +345,9 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
         memoryIds,
         retiredAt,
       );
+      if (mutation) {
+        await appendKnowledgeDeletionEvent(prefix, mutation, sql);
+      }
       return { documents: ids.length, memories: retired.length };
     });
   }
@@ -342,7 +370,76 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
   }));
   const { queueMemoryGraphRebuild } = await import("@/lib/memory/graph");
   await queueMemoryGraphRebuild({ tenantId });
+  if (mutation) {
+    await appendKnowledgeDeletionEvent(prefix, mutation);
+  }
   return { documents: ids.size, memories };
+}
+
+function exactKnowledgeDeletionMutation(
+  value: KnowledgeDeletionMutationContext,
+  tenantId: string,
+  actorId: string | undefined,
+  sourcePrefix: string,
+) {
+  const executionScope = parsePersistedExecutionScope(value.executionScope);
+  if (!executionScope || !actorId) {
+    throw new Error("Knowledge deletion requires an authenticated execution scope.");
+  }
+  assertExecutionScopeTenant(executionScope, tenantId);
+  if (
+    executionScope.initiatingActorId !== actorId ||
+    executionScope.executingPrincipalType !== "user" ||
+    executionScope.executingPrincipalId !== actorId ||
+    executionScope.causationId !== knowledgeDeletionTargetId(sourcePrefix) ||
+    executionScope.purpose !== "knowledge.delete_source"
+  ) {
+    throw new Error(
+      "Knowledge deletion scope must bind the authenticated user and source target.",
+    );
+  }
+  const idempotencyKey = value.idempotencyKey.trim();
+  if (
+    !idempotencyKey ||
+    idempotencyKey.length > 200 ||
+    !/^[A-Za-z0-9._:-]+$/.test(idempotencyKey)
+  ) {
+    throw new Error(
+      "Knowledge deletion Idempotency-Key must use 1-200 letters, numbers, dots, underscores, colons, or hyphens.",
+    );
+  }
+  return { executionScope, idempotencyKey } as const;
+}
+
+async function appendKnowledgeDeletionEvent(
+  sourcePrefix: string,
+  mutation: ReturnType<typeof exactKnowledgeDeletionMutation>,
+  sql?: RagSqlClient,
+) {
+  const { executionScope, idempotencyKey } = mutation;
+  const actorId = executionScope.initiatingActorId;
+  if (!actorId) throw new Error("Knowledge deletion event is missing its actor.");
+  const payload = knowledgeDeletionEventPayloadSchema.parse({
+    schemaVersion: KNOWLEDGE_DELETION_EVENT_SCHEMA_VERSION,
+    operation: "delete_source_prefix",
+    sourcePrefixSha256: knowledgeDeletionSha256(sourcePrefix),
+    idempotencyKeySha256: knowledgeDeletionSha256({
+      tenantId: executionScope.tenantId,
+      actorId,
+      idempotencyKey,
+    }),
+  });
+  await appendScopedDomainEvent({
+    id: knowledgeDeletionEventId({
+      tenantId: executionScope.tenantId,
+      actorId,
+      idempotencyKey,
+    }),
+    streamId: knowledgeDeletionTargetId(sourcePrefix),
+    type: "knowledge.source_deleted",
+    executionScope,
+    payload,
+  }, sql ? { sql } : {});
 }
 
 async function lockKnowledgeMemoryGraph(sql: RagSqlClient, tenantId: string) {
