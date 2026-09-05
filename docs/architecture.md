@@ -156,9 +156,14 @@ historical evidence.
 
 This is tool-level evidence only. P1.3 projects the ID of a strictly bound,
 verified canary receipt into its evidence and terminal receipt, but evaluation
-remains `posthoc` and canonical `succeeded` is still impossible. External
-providers, broader tool coverage, and outcome requirements bound before
-execution remain future P1.4 work.
+remains `posthoc` and canonical `succeeded` is still impossible. P1.4 now also
+routes HTTP mutations, Google Calendar creation, governed OpenAPI non-read
+methods, and governed MCP mutation tools through immutable v2 intent and
+receipt barriers. Direct calls bind the initiating user; workflow effects bind
+the exact persisted plan and node. Calendar can verify provider state, while
+generic HTTP, MCP, and OpenAPI effects truthfully remain
+`unverifiable/read_unavailable` after a bounded provider acknowledgement.
+Uncertain intent-bound deliveries are never replayed automatically.
 
 The existing workflow approval timestamp is not a cryptographic approval of
 that exact plan digest. The canary proves which persisted plan executed after

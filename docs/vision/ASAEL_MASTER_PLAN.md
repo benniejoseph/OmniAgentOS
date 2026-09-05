@@ -519,6 +519,18 @@ The normative
 boundary and activation order are documented in
 [RunCheckpoint v1](RUN_CHECKPOINTS.md).
 
+P1.4 is complete for the registered external mutation surface. Google Calendar
+creation records deterministic provider acknowledgement plus verified
+read-after-write state. HTTP POST/PUT/PATCH/DELETE, governed OpenAPI non-read
+methods, and governed MCP mutation tools persist an immutable, scoped v2 intent
+before delivery and a provider-response receipt afterward. Direct effects bind
+the initiating user; workflow effects bind the exact persisted workflow, plan
+digest, and node. Providers without a uniform safe read operation are recorded
+as `unverifiable/read_unavailable`, never as verified, and an uncertain
+intent-bound delivery is not replayed. Connector mutation classification is
+part of the reviewed tool contract. Provider-specific reconciliation adapters
+may strengthen generic receipts later without reopening this coverage gate.
+
 ### Phase 2 — Convergent sources, canonical assets, and privacy lifecycle
 
 **Goal:** Ensure the system knows exactly what it has, which version it has, and what must disappear.
@@ -849,7 +861,7 @@ canonical outcome beside legacy status, and existing workflow controls remain
 unchanged. Strong effect verification and broader terminal-path convergence
 continue in P1.4 and later P1.3 expansion slices.
 
-The first P1.4 canary is also additive and does not complete the phase. Only
+The first P1.4 canary was additive and did not by itself complete the phase. Only
 live `memory.write` from a single-tool plan node in an approved workflow with
 explicit tenant and initiating-actor scope receives a deterministic target and a strict
 metadata/hash-only effect receipt. It records
@@ -860,8 +872,9 @@ best-effort development path. Legacy records, system-triggered workflows
 without an initiating actor, dry runs, direct calls, and other tools are
 unchanged. P1.3 may surface the ID of a strictly bound, verified
 canary receipt as additive evidence, but its contract stays `posthoc` and
-cannot project `succeeded`; external effects and broader requirement binding
-remain future P1.4 work.
+cannot project `succeeded`. The later v2 adapter expansion covers the registered
+external mutation surface; pre-execution outcome-requirement binding remains
+separate P1.3/P1.5 work.
 
 The first executable P1.6 path is implemented behind a distinct checkpoint
 canary configuration. It atomically claims the exact approval successor and
