@@ -411,6 +411,62 @@ databaseDescribe("Postgres schema integration", () => {
     `).rejects.toMatchObject({ code: "23514" });
   });
 
+  test("keeps workspace membership explicit, empty, owner-only, and activation-held", async () => {
+    const [surface] = await admin`
+      SELECT
+        (SELECT count(*)::int FROM omni_tenant_workspaces) AS workspaces,
+        (SELECT count(*)::int FROM omni_tenant_workspace_memberships)
+          AS memberships,
+        (SELECT count(*)::int FROM pg_policy
+         WHERE polrelid IN (
+           'omni_tenant_workspaces'::regclass,
+           'omni_tenant_workspace_memberships'::regclass
+         )) AS policies,
+        NOT EXISTS (
+          SELECT 1 FROM information_schema.table_privileges
+          WHERE table_schema = 'public'
+            AND table_name IN (
+              'omni_tenant_workspaces',
+              'omni_tenant_workspace_memberships'
+            )
+            AND grantee <> current_user
+        ) AS owner_only,
+        (
+          SELECT count(*)::int FROM pg_constraint
+          WHERE (conrelid, conname) IN (
+            (
+              'omni_tenant_workspaces'::regclass,
+              'omni_workspace_activation_hold_check'
+            ),
+            (
+              'omni_tenant_workspace_memberships'::regclass,
+              'omni_workspace_membership_activation_hold_check'
+            )
+          ) AND convalidated
+            AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
+        ) AS activation_holds
+    `;
+
+    expect(surface).toEqual({
+      workspaces: 0,
+      memberships: 0,
+      policies: 4,
+      owner_only: true,
+      activation_holds: 2,
+    });
+    await expect(admin`
+      INSERT INTO omni_tenant_workspaces (
+        tenant_id, workspace_id, state, lifecycle_revision,
+        created_by_actor_id, activated_by_actor_id, activated_at
+      ) VALUES (
+        'tenant:forbidden', 'workspace:forbidden', 'active', 1,
+        'actor:00000000-0000-4000-8000-000000000001',
+        'actor:00000000-0000-4000-8000-000000000001',
+        statement_timestamp()
+      )
+    `).rejects.toMatchObject({ code: "23514" });
+  });
+
   test("enforces shared limits atomically across concurrent requests", async () => {
     const key = `integration:${crypto.randomUUID()}`;
     const results = await Promise.all(

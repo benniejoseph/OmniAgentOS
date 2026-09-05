@@ -719,6 +719,27 @@ memory enrollment lock and v45 denial hook unchanged. Canonical workspace
 membership, context/capability grants, operation policy, governed principal
 writers, activation, and the atomic memory cutover remain later P3.1 gates.
 
+Migration v61 adds the canonical workspace and workspace-membership authority
+inputs without creating a workspace or treating an existing tenant member as a
+workspace member. `omni_tenant_workspaces` and
+`omni_tenant_workspace_memberships` start empty, remain schema-owner-only, and
+use forced tenant RLS plus restrictive system-scope holdbacks. User membership
+binds an exact canonical actor that still has an active same-tenant auth
+membership. Agent and actor-bound system membership instead pins an exact
+same-tenant execution-principal generation and kind. These identities are
+structurally disjoint; project ownership, mission ownership, OAuth grants,
+connector access, tenant roles, and matching labels create no membership.
+
+Both authorities have validated active-state constraints and hard mutation
+holds. The closed membership access levels (`reader`, `contributor`, and
+`manager`) establish only the workspace membership coordinate: they grant no
+project, asset, memory, tool, approval, or administrative operation. The pure
+record contracts add metadata-only `security.workspace.*` and
+`security.workspace_membership.*` lifecycle events, but v61 installs no writer,
+event-store call site, serving grant, default workspace, or resolver behavior.
+Governed workspace and membership lifecycle writers, context/capability grant
+authorities, operation policy, and the atomic P3.1 cutover remain held.
+
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.

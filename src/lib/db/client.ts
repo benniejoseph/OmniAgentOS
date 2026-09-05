@@ -90,6 +90,8 @@ export const tenantRootPolicyTables = [
   "omni_membership_management_bootstrap_decisions",
   "omni_membership_management_bootstrap_attestations",
   "omni_tenant_execution_principals",
+  "omni_tenant_workspaces",
+  "omni_tenant_workspace_memberships",
   "omni_knowledge_documents",
   "omni_knowledge_chunks",
   "omni_retrieval_traces",
@@ -840,6 +842,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[59],
       up: ensureTenantExecutionPrincipalsShadow,
+    },
+    {
+      ...databaseSchemaMigrations[60],
+      up: ensureTenantWorkspaceMembershipAuthorityShadow,
     },
   ];
 }
@@ -33776,6 +33782,781 @@ async function ensureTenantExecutionPrincipalsShadow(sql: SqlClient) {
           AND indisunique AND indisvalid AND indisready
       ) THEN
         RAISE EXCEPTION 'Execution principal agent definition key is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureTenantWorkspaceMembershipAuthorityShadow(sql: SqlClient) {
+  // v61 creates the canonical workspace and membership authorization inputs
+  // without creating a workspace, inferring tenant members, or enabling an
+  // authorization decision. Both active states remain constraint-held.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Workspace authority migration requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`SET LOCAL row_security = on`;
+  await sql`
+    LOCK TABLE
+      omni_auth_tenants,
+      omni_auth_users,
+      omni_auth_memberships,
+      omni_tenant_execution_principals,
+      omni_memories
+    IN SHARE MODE
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 60
+          AND name = 'tenant_execution_principals_shadow'
+          AND checksum =
+            '7dfb17572f071bed7a483156a531fb69234cad2ccf71422a26147e0c63137d8e'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Workspace authority v60 predecessor marker is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_tenant_execution_principals'::regclass
+          AND conname = 'omni_execution_principal_activation_hold_check'
+          AND contype = 'c' AND convalidated
+          AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_memories'::regclass
+          AND conname = 'omni_memories_access_enrollment_hold_check'
+          AND contype = 'c' AND convalidated
+          AND pg_get_expr(conbin, conrelid) = '(access_contract_version = 0)'
+      ) THEN
+        RAISE EXCEPTION 'Workspace authority activation predecessors changed'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_workspace_authority_row_is_valid(
+      candidate_schema_version SMALLINT,
+      candidate_tenant_id TEXT,
+      candidate_workspace_id TEXT,
+      candidate_state TEXT,
+      candidate_lifecycle_revision BIGINT,
+      candidate_created_by_actor_id TEXT,
+      candidate_activated_by_actor_id TEXT,
+      candidate_archived_by_actor_id TEXT,
+      candidate_created_at TIMESTAMPTZ,
+      candidate_activated_at TIMESTAMPTZ,
+      candidate_archived_at TIMESTAMPTZ,
+      candidate_updated_at TIMESTAMPTZ
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        candidate_schema_version = 1
+        AND public.omni_source_contract_id_is_valid(candidate_tenant_id)
+        AND candidate_workspace_id ~
+          '^workspace:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+        AND candidate_state IN ('held', 'active', 'archived')
+        AND candidate_lifecycle_revision BETWEEN 0 AND 9007199254740991
+        AND candidate_created_by_actor_id ~
+          '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        AND (
+          candidate_activated_by_actor_id IS NULL
+          OR candidate_activated_by_actor_id ~
+            '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        )
+        AND (
+          candidate_archived_by_actor_id IS NULL
+          OR candidate_archived_by_actor_id ~
+            '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        )
+        AND (candidate_activated_by_actor_id IS NULL) =
+          (candidate_activated_at IS NULL)
+        AND (candidate_archived_by_actor_id IS NULL) =
+          (candidate_archived_at IS NULL)
+        AND (
+          (
+            candidate_state = 'held'
+            AND candidate_lifecycle_revision = 0
+            AND candidate_activated_at IS NULL
+            AND candidate_archived_at IS NULL
+          ) OR (
+            candidate_state = 'active'
+            AND candidate_lifecycle_revision = 1
+            AND candidate_activated_at IS NOT NULL
+            AND candidate_archived_at IS NULL
+          ) OR (
+            candidate_state = 'archived'
+            AND candidate_archived_at IS NOT NULL
+            AND (
+              (candidate_activated_at IS NULL AND candidate_lifecycle_revision = 1)
+              OR
+              (candidate_activated_at IS NOT NULL AND candidate_lifecycle_revision = 2)
+            )
+          )
+        )
+        AND candidate_created_at <= candidate_updated_at
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_activated_at BETWEEN candidate_created_at AND candidate_updated_at
+        )
+        AND (
+          candidate_archived_at IS NULL
+          OR candidate_archived_at BETWEEN candidate_created_at AND candidate_updated_at
+        )
+        AND (
+          candidate_activated_at IS NULL OR candidate_archived_at IS NULL
+          OR candidate_activated_at <= candidate_archived_at
+        ),
+        FALSE
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_workspace_membership_row_is_valid(
+      candidate_schema_version SMALLINT,
+      candidate_tenant_id TEXT,
+      candidate_workspace_id TEXT,
+      candidate_subject_kind TEXT,
+      candidate_subject_key TEXT,
+      candidate_subject_actor_id TEXT,
+      candidate_subject_execution_principal_id TEXT,
+      candidate_subject_execution_principal_generation BIGINT,
+      candidate_membership_generation BIGINT,
+      candidate_access_level TEXT,
+      candidate_state TEXT,
+      candidate_lifecycle_revision BIGINT,
+      candidate_created_by_actor_id TEXT,
+      candidate_activated_by_actor_id TEXT,
+      candidate_revoked_by_actor_id TEXT,
+      candidate_created_at TIMESTAMPTZ,
+      candidate_activated_at TIMESTAMPTZ,
+      candidate_revoked_at TIMESTAMPTZ,
+      candidate_updated_at TIMESTAMPTZ
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        candidate_schema_version = 1
+        AND public.omni_source_contract_id_is_valid(candidate_tenant_id)
+        AND candidate_workspace_id ~
+          '^workspace:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+        AND candidate_subject_kind IN ('user', 'agent', 'system')
+        AND public.omni_source_contract_id_is_valid(candidate_subject_key)
+        AND (
+          (
+            candidate_subject_kind = 'user'
+            AND candidate_subject_key = candidate_subject_actor_id
+            AND candidate_subject_actor_id ~
+              '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            AND candidate_subject_execution_principal_id IS NULL
+            AND candidate_subject_execution_principal_generation IS NULL
+          ) OR (
+            candidate_subject_kind = 'agent'
+            AND candidate_subject_actor_id IS NULL
+            AND candidate_subject_key = candidate_subject_execution_principal_id
+            AND candidate_subject_execution_principal_id ~
+              '^agent:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+            AND candidate_subject_execution_principal_generation
+              BETWEEN 1 AND 9007199254740991
+          ) OR (
+            candidate_subject_kind = 'system'
+            AND candidate_subject_actor_id IS NULL
+            AND candidate_subject_key = candidate_subject_execution_principal_id
+            AND candidate_subject_execution_principal_id ~
+              '^service:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+            AND candidate_subject_execution_principal_generation
+              BETWEEN 1 AND 9007199254740991
+          )
+        )
+        AND candidate_membership_generation BETWEEN 1 AND 9007199254740991
+        AND candidate_access_level IN ('reader', 'contributor', 'manager')
+        AND candidate_state IN ('held', 'active', 'revoked')
+        AND candidate_lifecycle_revision BETWEEN 0 AND 9007199254740991
+        AND candidate_created_by_actor_id ~
+          '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        AND (
+          candidate_activated_by_actor_id IS NULL
+          OR candidate_activated_by_actor_id ~
+            '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        )
+        AND (
+          candidate_revoked_by_actor_id IS NULL
+          OR candidate_revoked_by_actor_id ~
+            '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        )
+        AND (candidate_activated_by_actor_id IS NULL) =
+          (candidate_activated_at IS NULL)
+        AND (candidate_revoked_by_actor_id IS NULL) =
+          (candidate_revoked_at IS NULL)
+        AND (
+          (
+            candidate_state = 'held'
+            AND candidate_lifecycle_revision = 0
+            AND candidate_activated_at IS NULL
+            AND candidate_revoked_at IS NULL
+          ) OR (
+            candidate_state = 'active'
+            AND candidate_lifecycle_revision = 1
+            AND candidate_activated_at IS NOT NULL
+            AND candidate_revoked_at IS NULL
+          ) OR (
+            candidate_state = 'revoked'
+            AND candidate_revoked_at IS NOT NULL
+            AND (
+              (candidate_activated_at IS NULL AND candidate_lifecycle_revision = 1)
+              OR
+              (candidate_activated_at IS NOT NULL AND candidate_lifecycle_revision = 2)
+            )
+          )
+        )
+        AND candidate_created_at <= candidate_updated_at
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_activated_at BETWEEN candidate_created_at AND candidate_updated_at
+        )
+        AND (
+          candidate_revoked_at IS NULL
+          OR candidate_revoked_at BETWEEN candidate_created_at AND candidate_updated_at
+        )
+        AND (
+          candidate_activated_at IS NULL OR candidate_revoked_at IS NULL
+          OR candidate_activated_at <= candidate_revoked_at
+        ),
+        FALSE
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_tenant_workspaces (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'held',
+      lifecycle_revision BIGINT NOT NULL DEFAULT 0,
+      created_by_actor_id TEXT NOT NULL,
+      activated_by_actor_id TEXT,
+      archived_by_actor_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      activated_at TIMESTAMPTZ,
+      archived_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_tenant_workspaces_pkey PRIMARY KEY (tenant_id, workspace_id),
+      CONSTRAINT omni_workspace_authority_row_check CHECK (
+        omni_workspace_authority_row_is_valid(
+          schema_version, tenant_id, workspace_id, state, lifecycle_revision,
+          created_by_actor_id, activated_by_actor_id, archived_by_actor_id,
+          created_at, activated_at, archived_at, updated_at
+        )
+      ),
+      CONSTRAINT omni_workspace_activation_hold_check CHECK (state <> 'active'),
+      CONSTRAINT omni_workspace_tenant_fkey FOREIGN KEY (tenant_id)
+        REFERENCES omni_auth_tenants (id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_workspace_created_actor_fkey FOREIGN KEY (created_by_actor_id)
+        REFERENCES omni_auth_users (actor_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_workspace_activated_actor_fkey FOREIGN KEY (activated_by_actor_id)
+        REFERENCES omni_auth_users (actor_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_workspace_archived_actor_fkey FOREIGN KEY (archived_by_actor_id)
+        REFERENCES omni_auth_users (actor_id) ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_tenant_workspace_memberships (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      subject_kind TEXT NOT NULL,
+      subject_key TEXT NOT NULL,
+      subject_actor_id TEXT,
+      subject_execution_principal_id TEXT,
+      subject_execution_principal_generation BIGINT,
+      membership_generation BIGINT NOT NULL,
+      access_level TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'held',
+      lifecycle_revision BIGINT NOT NULL DEFAULT 0,
+      created_by_actor_id TEXT NOT NULL,
+      activated_by_actor_id TEXT,
+      revoked_by_actor_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      activated_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_workspace_memberships_pkey PRIMARY KEY (
+        tenant_id, workspace_id, subject_key, membership_generation
+      ),
+      CONSTRAINT omni_workspace_membership_row_check CHECK (
+        omni_workspace_membership_row_is_valid(
+          schema_version, tenant_id, workspace_id, subject_kind, subject_key,
+          subject_actor_id, subject_execution_principal_id,
+          subject_execution_principal_generation, membership_generation,
+          access_level, state, lifecycle_revision, created_by_actor_id,
+          activated_by_actor_id, revoked_by_actor_id, created_at, activated_at,
+          revoked_at, updated_at
+        )
+      ),
+      CONSTRAINT omni_workspace_membership_activation_hold_check
+        CHECK (state <> 'active'),
+      CONSTRAINT omni_workspace_membership_workspace_fkey
+        FOREIGN KEY (tenant_id, workspace_id)
+        REFERENCES omni_tenant_workspaces (tenant_id, workspace_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_workspace_membership_subject_actor_fkey
+        FOREIGN KEY (subject_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_workspace_membership_subject_principal_fkey
+        FOREIGN KEY (
+          tenant_id, subject_execution_principal_id,
+          subject_execution_principal_generation
+        ) REFERENCES omni_tenant_execution_principals (
+          tenant_id, principal_id, principal_generation
+        ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_workspace_membership_created_actor_fkey
+        FOREIGN KEY (created_by_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_workspace_membership_activated_actor_fkey
+        FOREIGN KEY (activated_by_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_workspace_membership_revoked_actor_fkey
+        FOREIGN KEY (revoked_by_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_workspace_memberships_current_idx
+    ON omni_tenant_workspace_memberships (
+      tenant_id, workspace_id, subject_key
+    ) WHERE state <> 'revoked'
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_workspace_memberships_subject_idx
+    ON omni_tenant_workspace_memberships (
+      tenant_id, subject_kind, subject_key, workspace_id, state
+    )
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_actor_has_active_tenant_membership(
+      candidate_tenant_id TEXT,
+      candidate_actor_id TEXT
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT EXISTS (
+        SELECT 1
+        FROM public.omni_auth_users auth_user
+        JOIN public.omni_auth_memberships membership
+          ON membership.user_id = auth_user.id
+        WHERE auth_user.actor_id = candidate_actor_id
+          AND auth_user.status = 'active'
+          AND membership.tenant_id = candidate_tenant_id
+          AND membership.status = 'active'
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_workspace_authority_insert()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF NEW.state <> 'held' OR NEW.lifecycle_revision <> 0
+        OR NEW.activated_by_actor_id IS NOT NULL
+        OR NEW.archived_by_actor_id IS NOT NULL
+        OR NEW.activated_at IS NOT NULL OR NEW.archived_at IS NOT NULL
+      THEN
+        RAISE EXCEPTION 'Workspace authorities must start held'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NOT public.omni_actor_has_active_tenant_membership(
+        NEW.tenant_id, NEW.created_by_actor_id
+      ) THEN
+        RAISE EXCEPTION 'Workspace creator lacks active tenant membership'
+          USING ERRCODE = '23503';
+      END IF;
+      NEW.created_at := statement_timestamp();
+      NEW.updated_at := NEW.created_at;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_workspace_membership_insert()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      expected_generation BIGINT;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id || ':' || NEW.workspace_id),
+        hashtext(NEW.subject_key)
+      );
+      IF NEW.state <> 'held' OR NEW.lifecycle_revision <> 0
+        OR NEW.activated_by_actor_id IS NOT NULL
+        OR NEW.revoked_by_actor_id IS NOT NULL
+        OR NEW.activated_at IS NOT NULL OR NEW.revoked_at IS NOT NULL
+      THEN
+        RAISE EXCEPTION 'Workspace memberships must start held'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NOT public.omni_actor_has_active_tenant_membership(
+        NEW.tenant_id, NEW.created_by_actor_id
+      ) THEN
+        RAISE EXCEPTION 'Workspace membership creator lacks active tenant membership'
+          USING ERRCODE = '23503';
+      END IF;
+      IF NEW.subject_kind = 'user' AND NOT
+        public.omni_actor_has_active_tenant_membership(
+          NEW.tenant_id, NEW.subject_actor_id
+        )
+      THEN
+        RAISE EXCEPTION 'Workspace user lacks active tenant membership'
+          USING ERRCODE = '23503';
+      END IF;
+      IF NEW.subject_kind IN ('agent', 'system') AND NOT EXISTS (
+        SELECT 1
+        FROM public.omni_tenant_execution_principals principal
+        WHERE principal.tenant_id = NEW.tenant_id
+          AND principal.principal_id = NEW.subject_execution_principal_id
+          AND principal.principal_generation =
+            NEW.subject_execution_principal_generation
+          AND principal.principal_kind = NEW.subject_kind
+          AND principal.state <> 'revoked'
+      ) THEN
+        RAISE EXCEPTION 'Workspace execution principal is unavailable'
+          USING ERRCODE = '23503';
+      END IF;
+      SELECT COALESCE(MAX(membership_generation), 0) + 1
+      INTO expected_generation
+      FROM public.omni_tenant_workspace_memberships
+      WHERE tenant_id = NEW.tenant_id
+        AND workspace_id = NEW.workspace_id
+        AND subject_key = NEW.subject_key;
+      IF NEW.membership_generation IS DISTINCT FROM expected_generation THEN
+        RAISE EXCEPTION 'Workspace membership generation is not next'
+          USING ERRCODE = '23514';
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM public.omni_tenant_workspace_memberships
+        WHERE tenant_id = NEW.tenant_id
+          AND workspace_id = NEW.workspace_id
+          AND subject_key = NEW.subject_key
+          AND state <> 'revoked'
+      ) THEN
+        RAISE EXCEPTION 'Workspace subject already has a current membership'
+          USING ERRCODE = '23514';
+      END IF;
+      NEW.created_at := statement_timestamp();
+      NEW.updated_at := NEW.created_at;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_workspace_authority_mutation()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Workspace authority lifecycle is held'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      CREATE TRIGGER omni_workspace_validate_insert
+      BEFORE INSERT ON omni_tenant_workspaces
+      FOR EACH ROW EXECUTE FUNCTION omni_validate_workspace_authority_insert();
+      CREATE TRIGGER omni_workspace_mutation_hold
+      BEFORE UPDATE OR DELETE ON omni_tenant_workspaces
+      FOR EACH ROW EXECUTE FUNCTION omni_reject_workspace_authority_mutation();
+      CREATE TRIGGER omni_workspace_no_truncate
+      BEFORE TRUNCATE ON omni_tenant_workspaces
+      FOR EACH STATEMENT EXECUTE FUNCTION omni_reject_workspace_authority_mutation();
+      CREATE TRIGGER omni_workspace_membership_validate_insert
+      BEFORE INSERT ON omni_tenant_workspace_memberships
+      FOR EACH ROW EXECUTE FUNCTION omni_validate_workspace_membership_insert();
+      CREATE TRIGGER omni_workspace_membership_mutation_hold
+      BEFORE UPDATE OR DELETE ON omni_tenant_workspace_memberships
+      FOR EACH ROW EXECUTE FUNCTION omni_reject_workspace_authority_mutation();
+      CREATE TRIGGER omni_workspace_membership_no_truncate
+      BEFORE TRUNCATE ON omni_tenant_workspace_memberships
+      FOR EACH STATEMENT EXECUTE FUNCTION omni_reject_workspace_authority_mutation();
+    END
+    $migration$
+  `;
+
+  await sql.query(`
+    REVOKE ALL ON TABLE omni_tenant_workspaces FROM PUBLIC;
+    REVOKE ALL ON TABLE omni_tenant_workspace_memberships FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_workspace_authority_row_is_valid(
+      SMALLINT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT,
+      TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ
+    ) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_workspace_membership_row_is_valid(
+      SMALLINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT, TEXT,
+      TEXT, BIGINT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ,
+      TIMESTAMPTZ, TIMESTAMPTZ
+    ) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_actor_has_active_tenant_membership(TEXT, TEXT)
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_validate_workspace_authority_insert()
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_validate_workspace_membership_insert()
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_reject_workspace_authority_mutation()
+      FROM PUBLIC
+  `);
+
+  await sql`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name IN (
+            'omni_tenant_workspaces',
+            'omni_tenant_workspace_memberships'
+          )
+          AND grantee <> current_user AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON TABLE %I.omni_tenant_workspaces FROM %I',
+          current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON TABLE %I.omni_tenant_workspace_memberships FROM %I',
+          current_schema(), grant_record.grantee
+        );
+      END LOOP;
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_workspace_authority_row_is_valid',
+            'omni_workspace_membership_row_is_valid',
+            'omni_actor_has_active_tenant_membership',
+            'omni_validate_workspace_authority_insert',
+            'omni_validate_workspace_membership_insert',
+            'omni_reject_workspace_authority_mutation'
+          )
+          AND grantee <> current_user AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_workspace_authority_row_is_valid(' ||
+          'SMALLINT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, ' ||
+          'TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ) FROM %I',
+          current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_workspace_membership_row_is_valid(' ||
+          'SMALLINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT, ' ||
+          'TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, ' ||
+          'TIMESTAMPTZ, TIMESTAMPTZ) FROM %I',
+          current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_actor_has_active_tenant_membership(' ||
+          'TEXT, TEXT) FROM %I', current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_validate_workspace_authority_insert() ' ||
+          'FROM %I', current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_validate_workspace_membership_insert() ' ||
+          'FROM %I', current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_reject_workspace_authority_mutation() ' ||
+          'FROM %I', current_schema(), grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `;
+
+  await sql`
+    ALTER TABLE omni_tenant_workspaces ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_tenant_workspaces FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_tenant_workspace_memberships ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_tenant_workspace_memberships FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    CREATE POLICY omni_tenant_isolation ON omni_tenant_workspaces
+    FOR ALL TO PUBLIC
+    USING (omni_tenant_visible(tenant_id))
+    WITH CHECK (omni_tenant_visible(tenant_id))
+  `;
+  await sql`
+    CREATE POLICY omni_workspace_authority_holdback ON omni_tenant_workspaces
+    AS RESTRICTIVE FOR ALL TO PUBLIC
+    USING (omni_system_scope_enabled())
+    WITH CHECK (omni_system_scope_enabled())
+  `;
+  await sql`
+    CREATE POLICY omni_tenant_isolation ON omni_tenant_workspace_memberships
+    FOR ALL TO PUBLIC
+    USING (omni_tenant_visible(tenant_id))
+    WITH CHECK (omni_tenant_visible(tenant_id))
+  `;
+  await sql`
+    CREATE POLICY omni_workspace_membership_holdback
+    ON omni_tenant_workspace_memberships
+    AS RESTRICTIVE FOR ALL TO PUBLIC
+    USING (omni_system_scope_enabled())
+    WITH CHECK (omni_system_scope_enabled())
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM omni_tenant_workspaces)
+        OR EXISTS (SELECT 1 FROM omni_tenant_workspace_memberships)
+      THEN
+        RAISE EXCEPTION 'Workspace authority shadow must start empty'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name IN (
+            'omni_tenant_workspaces',
+            'omni_tenant_workspace_memberships'
+          ) AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name IN (
+            'omni_tenant_workspaces',
+            'omni_tenant_workspace_memberships'
+          ) AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_workspace_authority_row_is_valid',
+            'omni_workspace_membership_row_is_valid',
+            'omni_actor_has_active_tenant_membership',
+            'omni_validate_workspace_authority_insert',
+            'omni_validate_workspace_membership_insert',
+            'omni_reject_workspace_authority_mutation'
+          ) AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Workspace authority shadow grants non-owner access'
+          USING ERRCODE = '55000';
+      END IF;
+      IF (
+        SELECT count(*) FROM pg_class
+        WHERE oid IN (
+          'omni_tenant_workspaces'::regclass,
+          'omni_tenant_workspace_memberships'::regclass
+        ) AND relkind = 'r' AND relpersistence = 'p'
+          AND relrowsecurity AND relforcerowsecurity
+          AND relowner = (
+            SELECT relowner FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+      ) <> 2 OR (
+        SELECT count(*) FROM pg_policy
+        WHERE polrelid IN (
+          'omni_tenant_workspaces'::regclass,
+          'omni_tenant_workspace_memberships'::regclass
+        )
+      ) <> 4 THEN
+        RAISE EXCEPTION 'Workspace authority isolation boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_tenant_workspaces'::regclass
+          AND conname = 'omni_workspace_activation_hold_check'
+          AND contype = 'c' AND convalidated
+          AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_tenant_workspace_memberships'::regclass
+          AND conname = 'omni_workspace_membership_activation_hold_check'
+          AND contype = 'c' AND convalidated
+          AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
+      ) THEN
+        RAISE EXCEPTION 'Workspace authority active-state holds are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF (
+        SELECT count(*) FROM pg_trigger
+        WHERE tgrelid IN (
+          'omni_tenant_workspaces'::regclass,
+          'omni_tenant_workspace_memberships'::regclass
+        ) AND NOT tgisinternal
+          AND tgname IN (
+            'omni_workspace_validate_insert',
+            'omni_workspace_mutation_hold',
+            'omni_workspace_no_truncate',
+            'omni_workspace_membership_validate_insert',
+            'omni_workspace_membership_mutation_hold',
+            'omni_workspace_membership_no_truncate'
+          )
+      ) <> 6 THEN
+        RAISE EXCEPTION 'Workspace authority hold triggers are invalid'
           USING ERRCODE = '55000';
       END IF;
     END
