@@ -1,8 +1,8 @@
 # RunCheckpoint v1
 
-**Status:** P1.6 full-boundary shadow implemented; expanded production proof pending
+**Status:** P1.6 full-boundary shadow deployed and reconciled; expanded activation/interruption gate pending
 
-**Runtime effect:** Approval writes and the generation-2 risk-0 fenced-resume canary are active; the expanded model/tool/delegation/verifier generation remains dormant until a separately registered shadow rollout
+**Runtime effect:** Approval writes and the generation-2 risk-0 fenced-resume canary are active; generation 3 records model/tool/approval/delegation/verifier boundaries in shadow mode without granting resume authority
 
 `RunCheckpointV1` defines the immutable metadata and reference boundary that a
 future durable run must record before work can be resumed safely. Migration
@@ -86,6 +86,14 @@ receipts, and all ten required before/waiting/after phase observations. An
 otherwise valid but incomplete sample returns `incomplete_coverage`, not a
 passing result.
 
+The generation-3 production shadow gate passed on 2026-09-06. The exact
+expanded configuration was registered and activated in shadow mode, then the
+targeted `scripts/smoke-expanded-checkpoints.mjs` gate completed one forced-
+approval `runs.list` continuation and one tool-free council/Sentinel run. The
+post-cleanup reconciliation matched all 36 checkpoints and comparison receipts
+across five bounded sample runs, observed every required phase, reported zero
+mismatches and zero waiting approvals, and still granted no resume authority.
+
 ## Why this precedes resume
 
 The current agent approval continuation is useful compatibility state, but it
@@ -164,10 +172,10 @@ The remaining slices must proceed in this order:
    interrupted resume without a duplicate effect; and
 3. expand separately to model, tool, delegation, and verifier boundaries.
 
-Gates 1 and 2 are complete. Gate 3 is implemented in code and remains open for
-deployment, an exact expanded shadow registration, a non-empty production
-sample covering every required phase, reconciliation, and an interrupted-run
-proof before activation.
+Gates 1 and 2 are complete. Gate 3 is deployed, registered as generation 3,
+and reconciled against a non-empty production sample covering every required
+phase. It remains shadow-only until its separately pinned activation canary
+proves interruption recovery without duplicate effects.
 
 P1.6 remains open until all required boundaries checkpoint durably and an
 interrupted run resumes without duplicate side effects. Replay, fork, and user
