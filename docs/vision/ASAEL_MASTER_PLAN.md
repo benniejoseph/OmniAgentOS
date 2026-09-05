@@ -1554,6 +1554,28 @@ module adds no database/auth/event-store/serving/key-registry import, writer,
 route, event, row, or call site. V57 remains empty and owner-only as installed;
 v56 and every predecessor hold remain closed.
 
+The next pure verifier slice consumes only caller-supplied values. A strict
+external manifest binds the logical database lineage, tenant, fixed action,
+ceremony policy, and validity interval to exactly two ordered Ed25519 keys with
+distinct key IDs, canonical actor controllers, raw public keys, key windows,
+and optional revocation times. Its digest uses a separate versioned domain and
+fixed uint32-big-endian UTF-8 framing. Verification requires that computed
+digest to equal both an independently supplied trusted anchor and the digest
+pinned by the decision, then checks equality for shared decision/manifest
+coordinates, full manifest/key-window coverage of the decision window,
+explicit observation ordering, revocation, and both signatures over the
+canonical decision-preimage bytes.
+
+The returned frozen evidence is expressly non-authorizing and contains no
+signature or public-key material. It cannot prove the freshness or provenance
+of the caller's trust anchor or clock, authenticate the unsigned attestation
+time, establish human independence or tenant membership from distinct actor
+IDs, or distinguish a restored clone that retained the logical database ID.
+The verifier has no environment, database, auth, event-store, serving, or
+registry dependency and no runtime call site. It persists nothing, emits
+nothing, and leaves every writer, activation, ACL/RLS, and authority hold in
+place.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
