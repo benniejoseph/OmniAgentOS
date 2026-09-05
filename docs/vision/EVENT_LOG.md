@@ -1209,3 +1209,11 @@ omits provider request identity. This slice registers no adapter, changes no
 executor path, performs no effect, and grants no authority; it is the stable
 contract required before a connector-specific acknowledgement and verifier can
 be activated.
+
+`EffectIntentV2` now supplies the matching pre-effect half of that boundary.
+It deterministically binds the full execution/scope/plan/tool/approval/input/
+idempotency/target identity and expected state before any provider fields
+exist. The finalizer revalidates the immutable intent and accepts only bounded
+acknowledgement and verification evidence, preventing post-effect rebinding.
+It still has no store or executor call site, so an intent object alone cannot
+cause or authorize an effect.
