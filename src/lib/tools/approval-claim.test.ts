@@ -490,7 +490,7 @@ describe("tool approval claims (file mode)", () => {
       tenantId: "tenant-a",
       actorId: "operator-a",
       role: "admin" as const,
-      source: "default",
+      source: "default" as const,
     };
     const pending = await executeGovernedTool({
       toolId: "runs.list",
