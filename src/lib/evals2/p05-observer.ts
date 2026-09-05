@@ -29,6 +29,7 @@ import {
   compareCanonicalSourceOrder,
   type CanonicalSourceOrder,
 } from "@/lib/sources/convergence-store";
+import { routeAgentRequest } from "@/lib/orchestration/supervisor";
 
 /**
  * Versioned, side-effect-free probes of behavior that the current runtime can
@@ -64,6 +65,9 @@ export function observeP05Case(
       return observeExecutionScopeMismatch(testCase);
     case "update-delete.tombstone-blocks-stale-resurrection":
       return observeCanonicalSourceOrdering(testCase);
+    case "intent-routing.portfolio-blog-automation":
+    case "intent-routing.ambiguous-delete-clarifies":
+      return observeIntentRouting(testCase);
     case "context-selection.explicit-empty-wins":
     case "context-selection.explicit-allowlist-wins":
       return observeExplicitContextSelection(testCase);
@@ -74,6 +78,38 @@ export function observeP05Case(
     default:
       return unavailableObservation(testCase);
   }
+}
+
+function observeIntentRouting(testCase: P05Case): P05JsonValue {
+  const given = jsonRecord(testCase.given);
+  const utterance = text(given.utterance);
+  if (!utterance) return unavailableObservation(testCase);
+
+  const decision = routeAgentRequest(utterance, "orchestrate");
+  if (testCase.id === "intent-routing.portfolio-blog-automation") {
+    const knownProcedure = jsonRecord(given.knownProcedure);
+    return {
+      adapterId: "supervisor-route-v1",
+      adapterStatus: "observed",
+      route: decision.route,
+      workflowId: decision.route === "durable_workflow"
+        ? text(knownProcedure.id) || null
+        : null,
+      ambiguityState: "not_evaluated",
+      requiredToolIds: [],
+      effectCountBeforeGovernedExecution: 0,
+    };
+  }
+
+  return {
+    adapterId: "supervisor-route-v1",
+    adapterStatus: "observed",
+    route: decision.route,
+    ambiguityState: "not_evaluated",
+    selectedTargetIds: [],
+    selectedToolIds: [],
+    effectCount: 0,
+  };
 }
 
 function observeVerifiedCompletion(testCase: P05Case): P05JsonValue {

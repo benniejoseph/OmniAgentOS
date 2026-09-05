@@ -67,17 +67,25 @@
     {
       "caseId": "intent-routing.portfolio-blog-automation",
       "value": {
-        "adapterId": "p0.5-observer-v1:intent_routing",
-        "adapterStatus": "not_observable_offline",
-        "reasonCode": "no_side_effect_free_current_system_adapter"
+        "adapterId": "supervisor-route-v1",
+        "adapterStatus": "observed",
+        "route": "direct",
+        "workflowId": null,
+        "ambiguityState": "not_evaluated",
+        "requiredToolIds": [],
+        "effectCountBeforeGovernedExecution": 0
       }
     },
     {
       "caseId": "intent-routing.ambiguous-delete-clarifies",
       "value": {
-        "adapterId": "p0.5-observer-v1:intent_routing",
-        "adapterStatus": "not_observable_offline",
-        "reasonCode": "no_side_effect_free_current_system_adapter"
+        "adapterId": "supervisor-route-v1",
+        "adapterStatus": "observed",
+        "route": "direct",
+        "ambiguityState": "not_evaluated",
+        "selectedTargetIds": [],
+        "selectedToolIds": [],
+        "effectCount": 0
       }
     },
     {
