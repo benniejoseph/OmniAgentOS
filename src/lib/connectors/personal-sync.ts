@@ -9,7 +9,21 @@ import { ingestTextDocument } from "@/lib/rag/retriever";
 import { deleteKnowledgeDocumentByIdempotencyKey } from "@/lib/rag/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
-type SyncCursor = { calendar?: string; gmailHistoryId?: string; driveModifiedAfter?: string };
+type SyncCursor = {
+  calendar?: string;
+  calendarPageToken?: string;
+  calendarTimeMin?: string;
+  calendarTimeMax?: string;
+  gmailHistoryId?: string;
+  gmailPageToken?: string;
+  gmailPendingHistoryId?: string;
+  gmailBackfillPageToken?: string;
+  gmailBackfillHistoryId?: string;
+  driveModifiedAfter?: string;
+  drivePageToken?: string;
+  driveWindowStart?: string;
+  driveWindowEnd?: string;
+};
 type SyncItem = {
   id: string;
   kind: "mail" | "calendar" | "drive";
@@ -126,7 +140,7 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
       let sourceImported = 0;
       let sourceRemoved = 0;
       try {
-        for (const item of observation.value.items.slice(0, 40)) {
+        for (const item of observation.value.items) {
           const idempotencyKey = `oauth:${input.provider}:${item.kind}:${item.id}`;
           if (item.deleted) {
             await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
@@ -259,9 +273,9 @@ async function observeGoogleSources(
 ) {
   const headers = { authorization: `Bearer ${accessToken}`, accept: "application/json" };
   const settled = await Promise.allSettled([
-    googleMail(headers, cursor.gmailHistoryId, signal),
-    googleCalendar(headers, cursor.calendar, signal),
-    googleDrive(headers, cursor.driveModifiedAfter, signal, identity),
+    googleMail(headers, cursor, signal),
+    googleCalendar(headers, cursor, signal),
+    googleDrive(headers, cursor, signal, identity),
   ] as const);
   const mail = settled[0].status === "fulfilled"
     ? {
@@ -270,7 +284,7 @@ async function observeGoogleSources(
         value: {
           source: "mail" as const,
           items: settled[0].value.items,
-          cursor: { gmailHistoryId: settled[0].value.historyId },
+          cursor: settled[0].value.cursor,
         } satisfies GoogleSourceObservation,
       }
     : {
@@ -285,7 +299,7 @@ async function observeGoogleSources(
         value: {
           source: "calendar" as const,
           items: settled[1].value.items,
-          cursor: { calendar: settled[1].value.syncToken },
+          cursor: settled[1].value.cursor,
         } satisfies GoogleSourceObservation,
       }
     : {
@@ -300,7 +314,7 @@ async function observeGoogleSources(
         value: {
           source: "drive" as const,
           items: settled[2].value.items,
-          cursor: { driveModifiedAfter: settled[2].value.modifiedAfter },
+          cursor: settled[2].value.cursor,
         } satisfies GoogleSourceObservation,
       }
     : {
@@ -311,24 +325,119 @@ async function observeGoogleSources(
   return [mail, calendar, drive] as const;
 }
 
-async function googleMail(headers: Record<string, string>, historyId?: string, signal?: AbortSignal) {
-  let ids: string[] = [];
-  let nextHistoryId = historyId;
-  if (historyId) {
+async function googleMail(
+  headers: Record<string, string>,
+  cursor: SyncCursor,
+  signal?: AbortSignal,
+) {
+  let addedIds: string[] = [];
+  let deletedIds: string[] = [];
+  if (cursor.gmailHistoryId) {
     const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/history");
-    url.searchParams.set("startHistoryId", historyId); url.searchParams.set("historyTypes", "messageAdded"); url.searchParams.set("maxResults", "50");
+    url.searchParams.set("startHistoryId", cursor.gmailHistoryId);
+    url.searchParams.set("maxResults", "50");
+    if (cursor.gmailPageToken) {
+      url.searchParams.set("pageToken", cursor.gmailPageToken);
+    }
     const response = await providerJson(url.toString(), headers, signal, [404]);
-    if (response.status === 404) return googleMail(headers, undefined, signal);
+    if (response.status === 404) return googleMail(headers, {}, signal);
     const payload = response.body;
-    ids = unique((array(payload.history).flatMap((entry) => array(record(entry).messagesAdded).map((added) => String(record(record(added).message).id || ""))))).filter(Boolean);
-    nextHistoryId = String(payload.historyId || historyId);
-  } else {
-    const list = await providerJson("https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20&q=newer_than%3A30d", headers, signal);
-    ids = array(list.body.messages).map((item) => String(record(item).id || "")).filter(Boolean);
-    const profile = await providerJson("https://gmail.googleapis.com/gmail/v1/users/me/profile", headers, signal);
-    nextHistoryId = String(profile.body.historyId || "") || undefined;
+    addedIds = unique(array(payload.history).flatMap((entry) =>
+      array(record(entry).messagesAdded).map((added) =>
+        String(record(record(added).message).id || "")
+      )
+    )).filter(Boolean);
+    deletedIds = unique(array(payload.history).flatMap((entry) =>
+      array(record(entry).messagesDeleted).map((deleted) =>
+        String(record(record(deleted).message).id || "")
+      )
+    )).filter(Boolean);
+    const nextPageToken = optionalProviderString(payload.nextPageToken);
+    const pendingHistoryId = String(
+      payload.historyId || cursor.gmailPendingHistoryId || cursor.gmailHistoryId,
+    );
+    const items = await gmailItems(
+      headers,
+      addedIds.filter((id) => !deletedIds.includes(id)),
+      deletedIds,
+      signal,
+    );
+    return {
+      items,
+      cursor: nextPageToken
+        ? {
+            gmailHistoryId: cursor.gmailHistoryId,
+            gmailPageToken: nextPageToken,
+            gmailPendingHistoryId: pendingHistoryId,
+            gmailBackfillPageToken: undefined,
+            gmailBackfillHistoryId: undefined,
+          }
+        : {
+            gmailHistoryId: pendingHistoryId,
+            gmailPageToken: undefined,
+            gmailPendingHistoryId: undefined,
+            gmailBackfillPageToken: undefined,
+            gmailBackfillHistoryId: undefined,
+          },
+    };
   }
-  const items = await Promise.all(ids.slice(0, 20).map(async (id): Promise<SyncItem> => {
+
+  const historyFence = cursor.gmailBackfillHistoryId || String(
+    (await providerJson(
+      "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+      headers,
+      signal,
+    )).body.historyId || "",
+  );
+  if (!historyFence) throw new Error("Gmail profile returned no history fence.");
+  const listUrl = new URL(
+    "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+  );
+  listUrl.searchParams.set("maxResults", "20");
+  listUrl.searchParams.set("q", "newer_than:30d");
+  if (cursor.gmailBackfillPageToken) {
+    listUrl.searchParams.set("pageToken", cursor.gmailBackfillPageToken);
+  }
+  const list = await providerJson(listUrl.toString(), headers, signal);
+  const listedMessages = array(list.body.messages);
+  if (listedMessages.length > 20) {
+    throw new Error("Gmail backfill page exceeds the requested item limit.");
+  }
+  addedIds = listedMessages
+    .map((item) => String(record(item).id || ""))
+    .filter(Boolean);
+  const items = await gmailItems(headers, addedIds, [], signal);
+  const nextPageToken = optionalProviderString(list.body.nextPageToken);
+  return {
+    items,
+    cursor: nextPageToken
+      ? {
+          gmailHistoryId: undefined,
+          gmailPageToken: undefined,
+          gmailPendingHistoryId: undefined,
+          gmailBackfillPageToken: nextPageToken,
+          gmailBackfillHistoryId: historyFence,
+        }
+      : {
+          gmailHistoryId: historyFence,
+          gmailPageToken: undefined,
+          gmailPendingHistoryId: undefined,
+          gmailBackfillPageToken: undefined,
+          gmailBackfillHistoryId: undefined,
+        },
+  };
+}
+
+async function gmailItems(
+  headers: Record<string, string>,
+  addedIds: string[],
+  deletedIds: string[],
+  signal?: AbortSignal,
+) {
+  if (addedIds.length + deletedIds.length > 200) {
+    throw new Error("Gmail page exceeds the bounded item limit.");
+  }
+  const added = await Promise.all(addedIds.map(async (id): Promise<SyncItem> => {
     const response = await providerJson(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`,
       headers,
@@ -339,38 +448,86 @@ async function googleMail(headers: Record<string, string>, historyId?: string, s
       ? { id, kind: "mail", title: "Removed email", content: "", deleted: true }
       : googleMessage(response.body);
   }));
-  return { historyId: nextHistoryId, items };
+  return [
+    ...added,
+    ...deletedIds.map((id): SyncItem => ({
+      id,
+      kind: "mail",
+      title: "Removed email",
+      content: "",
+      deleted: true,
+    })),
+  ];
 }
 
-async function googleCalendar(headers: Record<string, string>, syncToken?: string, signal?: AbortSignal) {
+async function googleCalendar(
+  headers: Record<string, string>,
+  cursor: SyncCursor,
+  signal?: AbortSignal,
+) {
   const initial = new URL("https://www.googleapis.com/calendar/v3/calendars/primary/events");
   initial.searchParams.set("maxResults", "100"); initial.searchParams.set("singleEvents", "true"); initial.searchParams.set("showDeleted", "true"); initial.searchParams.set("conferenceDataVersion", "1");
-  if (syncToken) initial.searchParams.set("syncToken", syncToken);
-  else { initial.searchParams.set("timeMin", new Date(Date.now() - 30 * 86_400_000).toISOString()); initial.searchParams.set("timeMax", new Date(Date.now() + 365 * 86_400_000).toISOString()); }
-  const first = await providerJson(initial.toString(), headers, signal, [410]);
-  if (first.status === 410) return googleCalendar(headers, undefined, signal);
-  let payload = first.body; const items = array(payload.items).map((item) => googleEvent(record(item))); let pages = 1;
-  while (payload.nextPageToken && pages < 3) {
-    initial.searchParams.set("pageToken", String(payload.nextPageToken));
-    payload = (await providerJson(initial.toString(), headers, signal)).body;
-    items.push(...array(payload.items).map((item) => googleEvent(record(item)))); pages += 1;
+  const timeMin = cursor.calendarTimeMin || new Date(Date.now() - 30 * 86_400_000).toISOString();
+  const timeMax = cursor.calendarTimeMax || new Date(Date.now() + 365 * 86_400_000).toISOString();
+  if (cursor.calendar) initial.searchParams.set("syncToken", cursor.calendar);
+  else {
+    initial.searchParams.set("timeMin", timeMin);
+    initial.searchParams.set("timeMax", timeMax);
   }
-  return { items, syncToken: String(payload.nextSyncToken || syncToken || "") || undefined };
+  if (cursor.calendarPageToken) {
+    initial.searchParams.set("pageToken", cursor.calendarPageToken);
+  }
+  const first = await providerJson(initial.toString(), headers, signal, [410]);
+  if (first.status === 410) {
+    return googleCalendar(headers, {}, signal);
+  }
+  const payload = first.body;
+  const providerItems = array(payload.items);
+  if (providerItems.length > 100) {
+    throw new Error("Google Calendar page exceeds the requested item limit.");
+  }
+  const items = providerItems.map((item) => googleEvent(record(item)));
+  const nextPageToken = optionalProviderString(payload.nextPageToken);
+  return {
+    items,
+    cursor: nextPageToken
+      ? {
+          calendar: cursor.calendar,
+          calendarPageToken: nextPageToken,
+          calendarTimeMin: cursor.calendar ? undefined : timeMin,
+          calendarTimeMax: cursor.calendar ? undefined : timeMax,
+        }
+      : {
+          calendar: String(payload.nextSyncToken || cursor.calendar || "") || undefined,
+          calendarPageToken: undefined,
+          calendarTimeMin: undefined,
+          calendarTimeMax: undefined,
+        },
+  };
 }
 
 async function googleDrive(
   headers: Record<string, string>,
-  modifiedAfter?: string,
+  cursor: SyncCursor,
   signal?: AbortSignal,
   identity?: { tenantId: string; actorId: string; provider: OAuthProvider },
 ) {
+  const windowStart = cursor.driveWindowStart || cursor.driveModifiedAfter ||
+    new Date(Date.now() - 30 * 86_400_000).toISOString();
+  const windowEnd = cursor.driveWindowEnd || new Date().toISOString();
   const url = new URL("https://www.googleapis.com/drive/v3/files");
   url.searchParams.set("pageSize", "20");
-  url.searchParams.set("orderBy", "modifiedTime desc");
-  url.searchParams.set("fields", "files(id,name,mimeType,createdTime,modifiedTime,version,headRevisionId,webViewLink,description,trashed,size,fileExtension)");
-  url.searchParams.set("q", `trashed = false and modifiedTime > '${modifiedAfter || new Date(Date.now() - 30 * 86_400_000).toISOString()}'`);
+  url.searchParams.set("orderBy", "modifiedTime,name");
+  url.searchParams.set("fields", "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,version,headRevisionId,webViewLink,description,trashed,size,fileExtension)");
+  url.searchParams.set("q", `trashed = false and modifiedTime > '${windowStart}' and modifiedTime <= '${windowEnd}'`);
+  if (cursor.drivePageToken) {
+    url.searchParams.set("pageToken", cursor.drivePageToken);
+  }
   const payload = (await providerJson(url.toString(), headers, signal)).body;
   const files = array(payload.files).map(record);
+  if (files.length > 20) {
+    throw new Error("Google Drive page exceeds the requested item limit.");
+  }
   const items = await Promise.all(files.slice(0, 20).map(async (file): Promise<SyncItem> => {
     const id = String(file.id || "");
     const mimeType = String(file.mimeType || "");
@@ -437,8 +594,23 @@ async function googleDrive(
       ].filter(Boolean).join("\n"),
     };
   }));
-  const newest = files.map((file) => String(file.modifiedTime || "")).filter(Boolean).sort().at(-1);
-  return { items: items.filter((item) => item.id), modifiedAfter: newest || modifiedAfter || new Date().toISOString() };
+  const nextPageToken = optionalProviderString(payload.nextPageToken);
+  return {
+    items: items.filter((item) => item.id),
+    cursor: nextPageToken
+      ? {
+          driveModifiedAfter: cursor.driveModifiedAfter,
+          drivePageToken: nextPageToken,
+          driveWindowStart: windowStart,
+          driveWindowEnd: windowEnd,
+        }
+      : {
+          driveModifiedAfter: windowEnd,
+          drivePageToken: undefined,
+          driveWindowStart: undefined,
+          driveWindowEnd: undefined,
+        },
+  };
 }
 
 function googleMessage(value: Record<string, unknown>): SyncItem {
@@ -527,6 +699,15 @@ function parseCursor(value?: string): SyncCursor { if (!value) return {}; try { 
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function array(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
 function unique(values: string[]) { return [...new Set(values)]; }
+
+function optionalProviderString(value: unknown) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return undefined;
+  if (text.length > 8_000 || /[\u0000-\u001f]/.test(text)) {
+    throw new Error("Google returned an invalid pagination token.");
+  }
+  return text;
+}
 
 function personalSourceKind(kind: SyncItem["kind"]) {
   if (kind === "mail") return "email" as const;

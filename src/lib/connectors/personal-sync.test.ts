@@ -214,9 +214,107 @@ describe("personal OAuth synchronization", () => {
         error: expect.stringContaining("mail:"),
       }),
     );
-    expect(mocks.updateState.mock.calls.at(-1)?.[0].cursor).toContain(
-      "2026-08-26T10:00:00Z",
-    );
+    const finalCursor = JSON.parse(
+      mocks.updateState.mock.calls.at(-1)?.[0].cursor,
+    ) as Record<string, unknown>;
+    expect(finalCursor).toMatchObject({ calendar: "calendar-partial" });
+    expect(finalCursor.driveModifiedAfter).toEqual(expect.any(String));
+    expect(finalCursor).not.toHaveProperty("gmailHistoryId");
+  });
+
+  it("does not advance a source cursor past a failed item page", async () => {
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/messages?")) return json({ messages: [] });
+      if (url.endsWith("/profile")) return json({ historyId: "mail-safe" });
+      if (url.includes("calendar")) {
+        return json({ nextSyncToken: "calendar-safe", items: [] });
+      }
+      if (url.includes("/drive/v3/files")) {
+        return json({
+          files: [{
+            id: "drive-fails",
+            name: "Failing item.txt",
+            mimeType: "text/plain",
+            createdTime: "2026-08-25T10:00:00Z",
+            modifiedTime: "2026-08-26T10:00:00Z",
+            version: "4",
+            size: "0",
+          }],
+        });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+    mocks.ingest.mockImplementation(async (input: { idempotencyKey: string }) => {
+      if (input.idempotencyKey.endsWith(":drive:drive-fails")) {
+        throw new Error("Injected mid-page failure.");
+      }
+      return {};
+    });
+
+    const result = await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+    });
+
+    expect(result).toMatchObject({
+      status: "partial",
+      sources: [
+        { source: "mail", status: "healthy" },
+        { source: "calendar", status: "healthy" },
+        { source: "drive", status: "error" },
+      ],
+    });
+    const finalCursor = JSON.parse(
+      mocks.updateState.mock.calls.at(-1)?.[0].cursor,
+    ) as Record<string, unknown>;
+    expect(finalCursor).toMatchObject({
+      gmailHistoryId: "mail-safe",
+      calendar: "calendar-safe",
+    });
+    expect(finalCursor).not.toHaveProperty("driveModifiedAfter");
+    expect(finalCursor).not.toHaveProperty("drivePageToken");
+  });
+
+  it("persists independent continuation tokens after one bounded page", async () => {
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/messages?")) {
+        return json({ messages: [], nextPageToken: "gmail-page-2" });
+      }
+      if (url.endsWith("/profile")) return json({ historyId: "gmail-fence" });
+      if (url.includes("calendar")) {
+        return json({ items: [], nextPageToken: "calendar-page-2" });
+      }
+      if (url.includes("/drive/v3/files")) {
+        return json({ files: [], nextPageToken: "drive-page-2" });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+    });
+
+    const finalCursor = JSON.parse(
+      mocks.updateState.mock.calls.at(-1)?.[0].cursor,
+    ) as Record<string, unknown>;
+    expect(finalCursor).toMatchObject({
+      gmailBackfillPageToken: "gmail-page-2",
+      gmailBackfillHistoryId: "gmail-fence",
+      calendarPageToken: "calendar-page-2",
+      drivePageToken: "drive-page-2",
+    });
+    expect(finalCursor.calendarTimeMin).toEqual(expect.any(String));
+    expect(finalCursor.calendarTimeMax).toEqual(expect.any(String));
+    expect(finalCursor.driveWindowStart).toEqual(expect.any(String));
+    expect(finalCursor.driveWindowEnd).toEqual(expect.any(String));
+    expect(finalCursor).not.toHaveProperty("gmailHistoryId");
+    expect(finalCursor).not.toHaveProperty("calendar");
+    expect(finalCursor).not.toHaveProperty("driveModifiedAfter");
   });
 });
 
