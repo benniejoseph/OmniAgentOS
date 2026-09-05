@@ -28,6 +28,10 @@ import {
   type RunContractEnvelopeV1,
   type RunContractEventPayloadV1,
 } from "@/lib/runs/contracts";
+import {
+  parseApprovalCheckpointShadowEnrollment,
+  recordApprovalWaitingCheckpointShadow,
+} from "@/lib/runs/approval-checkpoint-shadow";
 import type { AgentRunContinuation, AgentRunEventRecord, AgentRunFeedback, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
@@ -1107,6 +1111,16 @@ export async function markAgentRunWaitingForApproval(
           return { parked: false, resumeJob: undefined };
         }
         const resumeJob = await enqueueOperationJob(resumeJobInput, { sql });
+        await recordApprovalWaitingCheckpointShadow({
+          runId,
+          continuation: values.continuation,
+          executionScope: values.continuation.executionScope,
+          runContractEnvelope: values.continuation.runContractEnvelope,
+          enrollment: values.continuation.checkpointShadowEnrollment,
+          approvalExecutionId: executionId,
+          response: values.response,
+          recordedAt: values.continuation.createdAt,
+        }, sql);
         return { parked: true, resumeJob };
       },
     ) as Promise<{
@@ -1602,10 +1616,20 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
   } catch {
     return undefined;
   }
+  let checkpointShadowEnrollment:
+    | AgentRunContinuation["checkpointShadowEnrollment"];
+  try {
+    checkpointShadowEnrollment = parseApprovalCheckpointShadowEnrollment(
+      candidate.checkpointShadowEnrollment,
+    );
+  } catch {
+    return undefined;
+  }
 
   return {
     executionScope,
     runContractEnvelope,
+    checkpointShadowEnrollment,
     conversationItems: Array.isArray(candidate.conversationItems)
       ? (candidate.conversationItems as Array<Record<string, unknown>>)
       : [],

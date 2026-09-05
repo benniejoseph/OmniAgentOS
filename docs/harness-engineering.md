@@ -98,9 +98,11 @@ by a later resume worker. The complete contract and staged activation gates are 
 
 Migration v68 and the transaction-only writer persist one exact parent-bound
 checkpoint, its state-reference index, and `run.checkpoint.recorded` event in a
-single existing transaction. The writer deliberately has no transaction opener
-or call site and returns `resumeAuthorityGranted: false`; persistence evidence
-must not be mistaken for an executable continuation.
+single existing transaction. New runs enrolled under the exact active shadow
+generation use that writer for their first governed approval-wait boundary in
+the canonical continuation transaction. It has no transaction opener and
+returns `resumeAuthorityGranted: false`; persistence evidence must not be
+mistaken for an executable continuation.
 
 ## One harness receipt per run
 
