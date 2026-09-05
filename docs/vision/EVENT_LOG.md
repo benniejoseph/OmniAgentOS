@@ -1180,3 +1180,16 @@ validated.
 P0.5 uses this side-effect-free fault probe for the calendar-shaped lost-ack
 case. It proves the retry ordering and receipt invariant without claiming that
 a live calendar write connector exists or touching a provider.
+
+## Explicit evidence ID resolution
+
+Explicit saved-context selection now has a separate exact-ID resolver. It
+intersects the normalized user allowlist with independently authorized IDs in
+the user's original order and never substitutes higher-scoring semantic
+candidates. Empty selection remains an authoritative request for no saved
+context, and malformed or unauthorized IDs are excluded.
+
+P0.5 exercises this policy without loading evidence content. Live context-pack
+integration remains gated on actor-aware exact-ID retrieval, so the selector
+does not broaden the current tenant-only memory store or bypass its dormant
+database access cutover.

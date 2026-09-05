@@ -105,7 +105,7 @@
     {
       "caseId": "context-selection.explicit-empty-wins",
       "value": {
-        "adapterId": "context-engine-explicit-selection-v1",
+        "adapterId": "context-engine-explicit-selection-v2",
         "adapterStatus": "observed",
         "selectedEvidenceIds": [],
         "retrievalInvoked": false,
@@ -116,9 +116,11 @@
     {
       "caseId": "context-selection.explicit-allowlist-wins",
       "value": {
-        "adapterId": "context-engine-explicit-selection-v1",
+        "adapterId": "context-engine-explicit-selection-v2",
         "adapterStatus": "observed",
-        "selectedEvidenceIds": [],
+        "selectedEvidenceIds": [
+          "memory:selected"
+        ],
         "retrievalInvoked": true,
         "disclosureBoundary": "explicit_allowlist",
         "scopeViolationCount": 0

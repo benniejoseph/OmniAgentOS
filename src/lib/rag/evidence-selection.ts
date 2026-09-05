@@ -26,3 +26,19 @@ export function selectExplicitEvidenceIds(input: {
   const allowed = new Set(normalizeExplicitEvidenceIds(input.explicitEvidenceIds));
   return input.retrievableEvidenceIds.filter((id) => allowed.has(id));
 }
+
+/**
+ * Resolves an explicit allowlist against independently authorized exact IDs.
+ * Semantic ranking candidates are deliberately not consulted: selecting an
+ * exact saved item and discovering related items are different operations.
+ */
+export function resolveAuthorizedExplicitEvidenceIds(input: {
+  explicitEvidenceIds: readonly string[];
+  authorizedEvidenceIds: readonly string[];
+}): string[] {
+  const explicit = normalizeExplicitEvidenceIds(input.explicitEvidenceIds) || [];
+  const authorized = new Set(
+    normalizeExplicitEvidenceIds(input.authorizedEvidenceIds) || [],
+  );
+  return explicit.filter((id) => authorized.has(id));
+}

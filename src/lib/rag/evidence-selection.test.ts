@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeExplicitEvidenceIds,
+  resolveAuthorizedExplicitEvidenceIds,
   selectExplicitEvidenceIds,
 } from "@/lib/rag/evidence-selection";
 
@@ -36,5 +37,12 @@ describe("explicit evidence selection", () => {
         retrievableEvidenceIds: ["memory:other", "memory:selected"],
       }),
     ).toEqual(["memory:selected"]);
+  });
+
+  it("resolves explicit IDs independently of semantic ranking candidates", () => {
+    expect(resolveAuthorizedExplicitEvidenceIds({
+      explicitEvidenceIds: ["memory:selected", "memory:forbidden"],
+      authorizedEvidenceIds: ["memory:selected", "memory:higher-score"],
+    })).toEqual(["memory:selected"]);
   });
 });
