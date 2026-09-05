@@ -6,6 +6,12 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
+import {
+  parseDatabaseMemoryAccessScope,
+  serializeDatabaseMemoryAccessScope,
+  setTransactionLocalDatabaseMemoryAccessScope,
+  type DatabaseMemoryAccessScope,
+} from "@/lib/db/memory-access-scope";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
   buildMemoryDeletionReceiptV1,
@@ -30,11 +36,11 @@ import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type { MemoryRecord, MemorySearchResult, MemoryType } from "@/lib/memory/types";
 import { isTemporalIntervalActive } from "@/lib/memory/temporal";
 import {
+  MEMORY_PURPOSE_IDS,
   memoryAccessBindingAllows,
   memoryAccessBindingV1Schema,
   type MemoryAccessBindingV1,
 } from "@/lib/memory/access-binding";
-import type { DatabaseMemoryAccessScope } from "@/lib/db/memory-access-scope";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
 import {
   assertCaptureIngestSource,
@@ -63,6 +69,7 @@ export type CreateMemoryInput = {
   contradictionOfId?: string;
   embedding?: number[];
   accessBinding?: MemoryAccessBindingV1;
+  databaseAccessScope?: DatabaseMemoryAccessScope;
 };
 
 type TenantScopedOptions = {
@@ -84,14 +91,30 @@ export async function listMemories(options: TenantScopedOptions = {}) {
     if (!options.sql) {
       await ensureDatabaseSchema();
     }
-    const sql = options.sql || getSql();
-    const rows = options.includeInactive
+    if (options.sql && options.accessScope) {
+      throw new Error(
+        "Scoped memory reads must own their database transaction.",
+      );
+    }
+    const readRows = async (sql: MemorySqlClient) => options.includeInactive
       ? options.type
-        ? await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND type = ${options.type} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
-        : await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
+        ? sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND type = ${options.type} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
+        : sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
       : options.type
-        ? await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND type = ${options.type} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`
-        : await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`;
+        ? sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND type = ${options.type} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`
+        : sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`;
+    const rows = options.accessScope
+      ? await runWithDatabaseMemoryAccessScope(
+          options.accessScope,
+          tenantId,
+          readRows,
+          [
+            MEMORY_PURPOSE_IDS.read,
+            MEMORY_PURPOSE_IDS.retrieve,
+            MEMORY_PURPOSE_IDS.export,
+          ],
+        )
+      : await readRows(options.sql || getSql());
     return rows.map(memoryFromRow);
   }
 
@@ -121,16 +144,28 @@ export async function listThreadMemories(
     if (!options.sql) {
       await ensureDatabaseSchema();
     }
-    const sql = options.sql || getSql();
-    const rows = await sql`
-      SELECT *
-      FROM omni_memories
-      WHERE tenant_id = ${tenantId}
-        AND claim_status <> 'forgotten'
-        AND ${evidenceRef} = ANY(evidence_refs)
-      ORDER BY updated_at DESC
-      LIMIT ${limit}
-    `;
+    if (options.sql && options.accessScope) {
+      throw new Error(
+        "Scoped memory reads must own their database transaction.",
+      );
+    }
+    const readRows = (sql: MemorySqlClient) => sql`
+        SELECT *
+        FROM omni_memories
+        WHERE tenant_id = ${tenantId}
+          AND claim_status <> 'forgotten'
+          AND ${evidenceRef} = ANY(evidence_refs)
+        ORDER BY updated_at DESC
+        LIMIT ${limit}
+      `;
+    const rows = options.accessScope
+      ? await runWithDatabaseMemoryAccessScope(
+          options.accessScope,
+          tenantId,
+          readRows,
+          [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
+        )
+      : await readRows(options.sql || getSql());
     return rows.map(memoryFromRow);
   }
 
@@ -232,9 +267,14 @@ async function saveMemoriesWithCommitStatus(
   ) {
     throw new Error("Bulk memory persistence cannot mix tenants.");
   }
-  if (hasDatabaseUrl() && records.some((record) => record.accessBinding)) {
+  const databaseAccessScope = resolveDatabaseMemoryWriteScope(
+    inputs,
+    records,
+    tenantId,
+  );
+  if (options.captureIngestGuard && databaseAccessScope) {
     throw new Error(
-      "Scope-bound memory persistence is not activated for Postgres.",
+      "Capture ingestion cannot enter the user-private memory canary.",
     );
   }
   if (options.captureIngestGuard) {
@@ -268,6 +308,19 @@ async function saveMemoriesWithCommitStatus(
       supersedes_id: record.supersedesId || null,
       contradiction_of_id: record.contradictionOfId || null,
       embedding: record.embedding || null,
+      access_contract_version: record.accessBinding?.version || 0,
+      access_state: record.accessBinding?.state || "legacy_unattributed",
+      owner_actor_id: record.accessBinding?.ownerActorId || null,
+      owner_agent_id: record.accessBinding?.ownerAgentId || null,
+      workspace_id: record.accessBinding?.workspaceId || null,
+      project_id: record.accessBinding?.projectId || null,
+      mission_id: record.accessBinding?.missionId || null,
+      visibility: record.accessBinding?.visibility || null,
+      sensitivity: record.accessBinding?.sensitivity || null,
+      origin_purpose: record.accessBinding?.originPurpose || null,
+      allowed_purpose_ids: record.accessBinding?.allowedPurposeIds || null,
+      access_scope_sha256: record.accessBinding?.accessScopeSha256 || null,
+      access_bound_at: record.accessBinding?.accessBoundAt || null,
       created_at: record.createdAt,
       updated_at: record.updatedAt,
     }));
@@ -293,6 +346,19 @@ async function saveMemoriesWithCommitStatus(
           supersedes_id text,
           contradiction_of_id text,
           embedding jsonb,
+          access_contract_version smallint,
+          access_state text,
+          owner_actor_id text,
+          owner_agent_id text,
+          workspace_id text,
+          project_id text,
+          mission_id text,
+          visibility text,
+          sensitivity text,
+          origin_purpose text,
+          allowed_purpose_ids text[],
+          access_scope_sha256 text,
+          access_bound_at timestamptz,
           created_at timestamptz,
           updated_at timestamptz
         )
@@ -301,12 +367,20 @@ async function saveMemoriesWithCommitStatus(
         INSERT INTO omni_memories (
           id, tenant_id, type, title, content, tags, scope, source, importance,
           confidence, claim_status, asserted_by, evidence_refs, valid_from, valid_to,
-          supersedes_id, contradiction_of_id, embedding, created_at, updated_at
+          supersedes_id, contradiction_of_id, embedding,
+          access_contract_version, access_state, owner_actor_id, owner_agent_id,
+          workspace_id, project_id, mission_id, visibility, sensitivity,
+          origin_purpose, allowed_purpose_ids, access_scope_sha256,
+          access_bound_at, created_at, updated_at
         )
         SELECT
           id, tenant_id, type, title, content, tags, scope, source, importance,
           confidence, claim_status, asserted_by, evidence_refs, valid_from, valid_to,
-          supersedes_id, contradiction_of_id, embedding, created_at, updated_at
+          supersedes_id, contradiction_of_id, embedding,
+          access_contract_version, access_state, owner_actor_id, owner_agent_id,
+          workspace_id, project_id, mission_id, visibility, sensitivity,
+          origin_purpose, allowed_purpose_ids, access_scope_sha256,
+          access_bound_at, created_at, updated_at
         FROM input_rows
         ON CONFLICT (id) DO NOTHING
         RETURNING omni_memories.*, TRUE AS _inserted
@@ -319,12 +393,25 @@ async function saveMemoriesWithCommitStatus(
         ON memory.id = input.id
        AND memory.tenant_id = input.tenant_id
     `;
-    const rows = options.captureIngestGuard
-      ? await getSql().transaction(async (sql: MemorySqlClient) => {
-          await lockActiveCaptureIngest(sql, options.captureIngestGuard!);
-          return persistRows(sql);
-        }) as Array<Record<string, unknown>>
-      : await persistRows(getSql());
+    let rows: Array<Record<string, unknown>>;
+    if (options.captureIngestGuard) {
+      rows = await getSql().transaction(async (sql: MemorySqlClient) => {
+        await lockActiveCaptureIngest(sql, options.captureIngestGuard!);
+        return persistRows(sql);
+      }) as Array<Record<string, unknown>>;
+    } else if (databaseAccessScope) {
+      rows = await getSql().transaction(async (sql: MemorySqlClient) => {
+        await setTransactionLocalDatabaseMemoryAccessScope(
+          sql,
+          databaseAccessScope,
+        );
+        const persistedRows = await persistRows(sql);
+        await updateInsertedMemoryVectors(sql, persistedRows, records, tenantId);
+        return persistedRows;
+      }) as Array<Record<string, unknown>>;
+    } else {
+      rows = await persistRows(getSql());
+    }
     if (rows.length !== records.length) {
       throw new Error("Memory idempotency key collided with another tenant.");
     }
@@ -337,31 +424,8 @@ async function saveMemoriesWithCommitStatus(
         },
       ] as const),
     );
-    const insertedVectors = rows
-      .filter((row) => Boolean(row._inserted))
-      .map((row) => {
-        const record = records.find((item) => item.id === String(row.id));
-        const embedding = toVectorLiteral(record?.embedding);
-        return embedding ? { id: String(row.id), embedding } : null;
-      })
-      .filter(
-        (item): item is { id: string; embedding: string } => Boolean(item),
-      );
-    if (insertedVectors.length) {
-      try {
-        await getSql()`
-          UPDATE omni_memories memory
-          SET embedding_vector = vectors.embedding::vector
-          FROM jsonb_to_recordset(${insertedVectors}::jsonb) AS vectors(
-            id text,
-            embedding text
-          )
-          WHERE memory.id = vectors.id
-            AND memory.tenant_id = ${tenantId}
-        `;
-      } catch {
-        // pgvector is optional; JSON embeddings remain available.
-      }
+    if (!databaseAccessScope) {
+      await updateInsertedMemoryVectors(getSql(), rows, records, tenantId);
     }
     return records.map((record) => {
       const result = byId.get(record.id);
@@ -412,7 +476,7 @@ export async function searchMemories(
     accessScope?: DatabaseMemoryAccessScope;
   } = {},
 ): Promise<MemorySearchResult[]> {
-  if (hasDatabaseUrl()) {
+  if (hasDatabaseUrl() && !options.accessScope) {
     const results = await searchMemoriesDb(query, options);
     if (results.length) {
       return results;
@@ -465,7 +529,20 @@ export async function getMemory(
   const tenantId = normalizeTenantId(options.tenantId);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`SELECT * FROM omni_memories WHERE id = ${id} AND tenant_id = ${tenantId} LIMIT 1`;
+    const readRows = (sql: MemorySqlClient) =>
+      sql`SELECT * FROM omni_memories WHERE id = ${id} AND tenant_id = ${tenantId} LIMIT 1`;
+    const rows = options.accessScope
+      ? await runWithDatabaseMemoryAccessScope(
+          options.accessScope,
+          tenantId,
+          readRows,
+          [
+            MEMORY_PURPOSE_IDS.read,
+            MEMORY_PURPOSE_IDS.correct,
+            MEMORY_PURPOSE_IDS.forget,
+          ],
+        )
+      : await readRows(getSql());
     return rows[0] ? memoryFromRow(rows[0]) : null;
   }
   const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
@@ -508,10 +585,27 @@ export async function correctMemory(
     contradictionOfId: correction.contradiction ? existing.id : undefined,
     embedding: correction.embedding,
     accessBinding: existing.accessBinding,
+    databaseAccessScope: existing.accessBinding
+      ? options.accessScope
+      : undefined,
   });
   const oldStatus: NonNullable<MemoryRecord["claimStatus"]> = correction.contradiction ? "contradicted" : "superseded";
   if (hasDatabaseUrl()) {
-    await getSql()`UPDATE omni_memories SET claim_status = ${oldStatus}, valid_to = COALESCE(valid_to, NOW()), updated_at = NOW() WHERE id = ${id} AND tenant_id = ${tenantId} AND claim_status <> 'forgotten'`;
+    const updatePrevious = (sql: MemorySqlClient) =>
+      sql`UPDATE omni_memories SET claim_status = ${oldStatus}, valid_to = COALESCE(valid_to, NOW()), updated_at = NOW() WHERE id = ${id} AND tenant_id = ${tenantId} AND claim_status <> 'forgotten'`;
+    if (existing.accessBinding) {
+      if (!options.accessScope) {
+        throw new Error("Scoped memory correction requires an access scope.");
+      }
+      await runWithDatabaseMemoryAccessScope(
+        options.accessScope,
+        tenantId,
+        updatePrevious,
+        [MEMORY_PURPOSE_IDS.correct],
+      );
+    } else {
+      await updatePrevious(getSql());
+    }
   } else {
     await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) => memories.map((memory) =>
       memory.id === id && normalizeTenantId(memory.tenantId) === tenantId
@@ -544,12 +638,15 @@ export class MemoryDeletionPreviewConflictError extends Error {
 
 export async function previewMemoryDeletion(
   id: string,
-  options: { tenantId?: string } = {},
+  options: {
+    tenantId?: string;
+    accessScope?: DatabaseMemoryAccessScope;
+  } = {},
 ): Promise<MemoryDeletionPreviewV1 | null> {
   const tenantId = normalizeTenantId(options.tenantId);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    return getSql().transaction(async (sql: MemorySqlClient) => {
+    const buildPreview = async (sql: MemorySqlClient) => {
       await lockMemoryDeletionScope(sql, tenantId, id);
       const memoryRows = await sql`
         SELECT *
@@ -607,12 +704,21 @@ export async function previewMemoryDeletion(
         pendingAgentRunIds: pendingRuns.agentRunIds,
         pendingWorkflowRunIds: pendingRuns.workflowRunIds,
       });
-    }) as Promise<MemoryDeletionPreviewV1 | null>;
+    };
+    return options.accessScope
+      ? runWithDatabaseMemoryAccessScope(
+          options.accessScope,
+          tenantId,
+          buildPreview,
+          [MEMORY_PURPOSE_IDS.forget],
+        )
+      : getSql().transaction(buildPreview) as Promise<MemoryDeletionPreviewV1 | null>;
   }
 
   const memories = (await readJsonFile<MemoryRecord[]>(getMemoryFile(), []))
     .map(sanitizeMemoryRecord)
-    .filter((memory) => normalizeTenantId(memory.tenantId) === tenantId);
+    .filter((memory) => normalizeTenantId(memory.tenantId) === tenantId)
+    .filter((memory) => memoryVisibleForScope(memory, options.accessScope));
   const memory = memories.find((item) => item.id === id);
   if (!memory) return null;
   const descendantMemories = collectFileMemoryDescendants(memories, id);
@@ -663,6 +769,7 @@ export async function forgetMemory(
     tenantId?: string;
     executionScope?: ExecutionScope;
     expectedDescendantManifestSha256?: string;
+    accessScope?: DatabaseMemoryAccessScope;
   } = {},
 ) {
   return (await forgetMemoryWithReceipt(id, options))?.memory || null;
@@ -674,6 +781,7 @@ export async function forgetMemoryWithReceipt(
     tenantId?: string;
     executionScope?: ExecutionScope;
     expectedDescendantManifestSha256?: string;
+    accessScope?: DatabaseMemoryAccessScope;
   } = {},
 ): Promise<ForgetMemoryWithReceiptResult | null> {
   const tenantId = normalizeTenantId(options.tenantId);
@@ -696,7 +804,7 @@ export async function forgetMemoryWithReceipt(
       throw new Error("Postgres memory deletion requires a non-null initiating actor.");
     }
 
-    return getSql().transaction(async (sql: MemorySqlClient) => {
+    const forgetInTransaction = async (sql: MemorySqlClient) => {
       await lockMemoryDeletionScope(sql, tenantId, id);
 
       const memoryRows = await sql`
@@ -715,6 +823,7 @@ export async function forgetMemoryWithReceipt(
       if (receiptRows[0]) {
         const receipt = memoryDeletionReceiptFromRow(receiptRows[0]);
         if (!memoryRows[0]) {
+          if (options.accessScope) return null;
           throw new Error(
             "Memory deletion receipt is missing its canonical forgotten shell.",
           );
@@ -885,9 +994,20 @@ export async function forgetMemoryWithReceipt(
         invalidatedWorkflowRunCount: invalidatedRuns.workflowRunIds.length,
         invalidatedDailyBriefCount,
       };
-    }) as Promise<ForgetMemoryWithReceiptResult | null>;
+    };
+    return options.accessScope
+      ? runWithDatabaseMemoryAccessScope(
+          options.accessScope,
+          tenantId,
+          forgetInTransaction,
+          [MEMORY_PURPOSE_IDS.forget],
+        )
+      : getSql().transaction(forgetInTransaction) as Promise<ForgetMemoryWithReceiptResult | null>;
   }
-  const filePreview = await previewMemoryDeletion(id, { tenantId });
+  const filePreview = await previewMemoryDeletion(id, {
+    tenantId,
+    accessScope: options.accessScope,
+  });
   if (!filePreview) return null;
   if (expectedManifestSha256) {
     assertExpectedDeletionManifest(
@@ -1434,7 +1554,113 @@ async function searchMemoriesLexicalDb(query: string, limit: number, tenantId: s
   return rows.map(memorySearchResultFromRow);
 }
 
+async function runWithDatabaseMemoryAccessScope<T>(
+  accessScope: DatabaseMemoryAccessScope,
+  tenantId: string,
+  operation: (sql: MemorySqlClient) => Promise<T>,
+  allowedPurposeIds: readonly string[],
+): Promise<T> {
+  const parsedScope = parseDatabaseMemoryAccessScope(accessScope);
+  if (
+    parsedScope.tenantId !== tenantId ||
+    !allowedPurposeIds.includes(parsedScope.purposeId)
+  ) {
+    throw new Error("Memory access scope does not match this operation.");
+  }
+  return getSql().transaction(async (sql: MemorySqlClient) => {
+    await setTransactionLocalDatabaseMemoryAccessScope(sql, parsedScope);
+    return operation(sql);
+  }) as Promise<T>;
+}
+
+function resolveDatabaseMemoryWriteScope(
+  inputs: readonly CreateMemoryInput[],
+  records: readonly MemoryRecord[],
+  tenantId: string,
+): DatabaseMemoryAccessScope | undefined {
+  const hasBinding = records.some((record) => Boolean(record.accessBinding));
+  const hasDatabaseScope = inputs.some((input) => Boolean(input.databaseAccessScope));
+  if (!hasBinding && !hasDatabaseScope) return undefined;
+  if (!hasDatabaseUrl() && hasBinding && !hasDatabaseScope) return undefined;
+  if (
+    inputs.length !== records.length ||
+    inputs.some((input, index) =>
+      Boolean(input.databaseAccessScope) !== Boolean(records[index]?.accessBinding)
+    )
+  ) {
+    throw new Error(
+      "Every scope-bound memory write requires one matching database scope.",
+    );
+  }
+
+  const firstScope = parseDatabaseMemoryAccessScope(
+    inputs[0]?.databaseAccessScope,
+  );
+  const serializedScope = serializeDatabaseMemoryAccessScope(firstScope);
+  const writePurposes = new Set<string>([
+    MEMORY_PURPOSE_IDS.write,
+    MEMORY_PURPOSE_IDS.correct,
+    MEMORY_PURPOSE_IDS.formation,
+  ]);
+  if (
+    firstScope.tenantId !== tenantId ||
+    !writePurposes.has(firstScope.purposeId)
+  ) {
+    throw new Error("Memory write scope is not authorized for this operation.");
+  }
+
+  for (let index = 0; index < records.length; index += 1) {
+    const binding = records[index]?.accessBinding;
+    const scope = parseDatabaseMemoryAccessScope(
+      inputs[index]?.databaseAccessScope,
+    );
+    if (
+      !binding ||
+      binding.visibility !== "user_private" ||
+      serializeDatabaseMemoryAccessScope(scope) !== serializedScope ||
+      !memoryAccessBindingAllows(scope, binding)
+    ) {
+      throw new Error("Memory access binding does not authorize this write.");
+    }
+  }
+  return firstScope;
+}
+
+async function updateInsertedMemoryVectors(
+  sql: MemorySqlClient,
+  rows: readonly Record<string, unknown>[],
+  records: readonly MemoryRecord[],
+  tenantId: string,
+) {
+  const insertedVectors = rows
+    .filter((row) => Boolean(row._inserted))
+    .map((row) => {
+      const record = records.find((item) => item.id === String(row.id));
+      const embedding = toVectorLiteral(record?.embedding);
+      return embedding ? { id: String(row.id), embedding } : null;
+    })
+    .filter(
+      (item): item is { id: string; embedding: string } => Boolean(item),
+    );
+  if (!insertedVectors.length) return;
+  try {
+    await sql`
+      UPDATE omni_memories memory
+      SET embedding_vector = vectors.embedding::vector
+      FROM jsonb_to_recordset(${insertedVectors}::jsonb) AS vectors(
+        id text,
+        embedding text
+      )
+      WHERE memory.id = vectors.id
+        AND memory.tenant_id = ${tenantId}
+    `;
+  } catch {
+    // pgvector is optional; JSON embeddings remain available.
+  }
+}
+
 function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
+  const accessBinding = memoryAccessBindingFromRow(row);
   return sanitizeMemoryRecord({
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
@@ -1457,6 +1683,33 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
     embedding: parseEmbedding(row.embedding),
+    ...(accessBinding ? { accessBinding } : {}),
+  });
+}
+
+function memoryAccessBindingFromRow(
+  row: Record<string, unknown>,
+): MemoryAccessBindingV1 | undefined {
+  const version = Number(row.access_contract_version || 0);
+  if (version === 0) return undefined;
+  if (version !== 1) {
+    throw new Error("Memory row uses an unsupported access contract.");
+  }
+  return memoryAccessBindingV1Schema.parse({
+    version,
+    state: row.access_state,
+    tenantId: row.tenant_id,
+    ownerActorId: row.owner_actor_id,
+    ownerAgentId: row.owner_agent_id ?? null,
+    workspaceId: row.workspace_id ?? null,
+    projectId: row.project_id ?? null,
+    missionId: row.mission_id ?? null,
+    visibility: row.visibility,
+    sensitivity: row.sensitivity,
+    originPurpose: row.origin_purpose,
+    allowedPurposeIds: row.allowed_purpose_ids,
+    accessScopeSha256: row.access_scope_sha256,
+    accessBoundAt: normalizeDate(row.access_bound_at),
   });
 }
 
