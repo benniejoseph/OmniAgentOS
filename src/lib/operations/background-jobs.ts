@@ -558,10 +558,7 @@ async function executeBackgroundOperation(
     const parsed = knowledgeIngestJobRequestSchema.parse(request);
     const captureTarget = captureIngestTarget(parsed);
     const actorId = await resolveKnowledgeIngestActorId(job, parsed);
-    const persistedExecutionScope = parsePersistedExecutionScope(
-      job.payload.executionScope,
-    );
-    const sourceExecutionScope = actorId && (captureTarget || persistedExecutionScope)
+    const sourceExecutionScope = actorId
       ? knowledgeIngestSourceExecutionScope(job, actorId, Boolean(captureTarget))
       : undefined;
     const captureExecutionScope = actorId && captureTarget
