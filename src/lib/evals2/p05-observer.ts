@@ -20,6 +20,7 @@ import {
   normalizeExplicitEvidenceIds,
   selectExplicitEvidenceIds,
 } from "@/lib/rag/evidence-selection";
+import { evaluateStructuredClaimSupport } from "@/lib/rag/structured-claim-support";
 import {
   assertExecutionScopeTenant,
   createExecutionScope,
@@ -71,6 +72,9 @@ export function observeP05Case(
     case "context-selection.explicit-empty-wins":
     case "context-selection.explicit-allowlist-wins":
       return observeExplicitContextSelection(testCase);
+    case "citations.valid-id-wrong-claim":
+    case "citations.full-material-support":
+      return observeStructuredClaimSupport(testCase);
     case "false-completion.legacy-completed-is-unverified":
       return observeLegacyCompletion(testCase);
     case "false-completion.verified-live-positive-control":
@@ -191,6 +195,56 @@ function observeVerifiedCompletion(testCase: P05Case): P05JsonValue {
     succeeded: canonical.status === "succeeded",
     reasonCode: receipt.reasonCode,
   };
+}
+
+function observeStructuredClaimSupport(testCase: P05Case): P05JsonValue {
+  const given = jsonRecord(testCase.given);
+  const claimRecords = jsonRecords(given.claims);
+  const singleClaim = jsonRecord(given.claim);
+  const claims = claimRecords.length
+    ? claimRecords
+    : Object.keys(singleClaim).length
+      ? [singleClaim]
+      : [];
+  const evidenceRecords = jsonRecords(given.evidenceUnits);
+  const singleEvidence = jsonRecord(given.citation);
+  const evidenceUnits = evidenceRecords.length
+    ? evidenceRecords
+    : Object.keys(singleEvidence).length
+      ? [singleEvidence]
+      : [];
+  const candidateLinkRecords = jsonRecords(given.candidateLinks);
+  const singleCandidateLink = jsonRecord(given.candidateLink);
+  const candidateLinks = candidateLinkRecords.length
+    ? candidateLinkRecords
+    : Object.keys(singleCandidateLink).length
+      ? [singleCandidateLink]
+      : [];
+
+  try {
+    const result = evaluateStructuredClaimSupport({
+      claims,
+      evidenceUnits,
+      candidateLinks,
+      authorizedEvidenceIds: evidenceUnits
+        .map((evidence) => text(evidence.id))
+        .filter((id): id is string => Boolean(id)),
+    });
+    return {
+      adapterId: "structured-claim-support-v1",
+      adapterStatus: "observed",
+      claims: result.claims.map((claim) => ({
+        id: claim.id,
+        supportState: claim.supportState,
+        verified: claim.verified,
+        evidenceIds: [...claim.evidenceIds],
+      })),
+      materialCoverageBasisPoints: result.materialCoverageBasisPoints,
+      unauthorizedEvidenceCount: result.unauthorizedEvidenceCount,
+    };
+  } catch {
+    return unavailableObservation(testCase);
+  }
 }
 
 function observeExplicitContextSelection(testCase: P05Case): P05JsonValue {
