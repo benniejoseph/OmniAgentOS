@@ -156,9 +156,13 @@
     {
       "caseId": "false-completion.verified-live-positive-control",
       "value": {
-        "adapterId": "p0.5-observer-v1:false_completion",
-        "adapterStatus": "not_observable_offline",
-        "reasonCode": "no_side_effect_free_current_system_adapter"
+        "adapterId": "run-contract-verified-terminal-v1",
+        "adapterStatus": "observed",
+        "disposition": "succeeded",
+        "canonicalStatus": "succeeded",
+        "verificationState": "verified",
+        "succeeded": true,
+        "reasonCode": "all_requirements_verified"
       }
     }
   ]
