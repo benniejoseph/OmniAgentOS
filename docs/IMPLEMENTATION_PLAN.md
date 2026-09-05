@@ -212,3 +212,4 @@ flowchart TD
 45. Release gates: add production-ready security smoke tests, package scripts, and signed evaluation report release-gate decisions that distinguish signature integrity from release approval. Done.
 46. RAG/memory hardening: make Postgres the source of truth when configured, add tenant-scoped JSON-embedding fallback inside Postgres, enforce tag filters, and add overlapping chunk boundaries. Done.
 47. Command Center safety/accessibility: add high-risk action confirmations, duplicate-submit locks, disabled states, and ARIA live/log regions for operator feedback. Done.
+48. P1.6 expanded checkpoint shadow: chain model success/failure, governed tool, approval, council delegation, and verifier boundaries; add fail-closed complete-phase reconciliation while preserving older rollout behavior. Implemented; production registration, sample reconciliation, and interruption proof pending.

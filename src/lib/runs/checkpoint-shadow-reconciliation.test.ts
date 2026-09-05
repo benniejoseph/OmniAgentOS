@@ -6,6 +6,7 @@ import {
   RUN_CHECKPOINT_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_CONTRACT_VERSION_ID,
   RUN_CHECKPOINT_ENGINE_VERSION_ID,
+  RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256,
   type ApprovalCheckpointShadowEnrollment,
 } from "@/lib/runs/approval-checkpoint-shadow";
 import {
@@ -261,7 +262,219 @@ describe("approval checkpoint shadow reconciliation", () => {
       "comparison_receipt_mismatch",
     ]);
   });
+
+  it("fails closed when an expanded sample lacks required boundary coverage", async () => {
+    const checkpoints = expandedCheckpointChain().slice(0, 4);
+    const report = await reconcileStoredApprovalCheckpointShadows(
+      { tenantId: SCOPE.tenantId, mode: "expanded" },
+      fixtureSql({
+        checkpoints,
+        tool: {
+          id: EXECUTION_ID,
+          status: "executed",
+          approval_decision: "approved",
+          effect_receipt: null,
+        },
+      }),
+    );
+
+    expect(report).toMatchObject({
+      mode: "expanded",
+      status: "incomplete_coverage",
+      matchedRunCount: 1,
+      observedBoundaryPhases: [
+        "delegation:after",
+        "delegation:before",
+        "model:after",
+        "model:before",
+      ],
+    });
+    expect(report.missingBoundaryPhases).toContain("tool:before");
+  });
+
+  it("passes a complete expanded boundary sample", async () => {
+    const checkpoints = expandedCheckpointChain();
+    const report = await reconcileStoredApprovalCheckpointShadows(
+      { tenantId: SCOPE.tenantId, mode: "expanded" },
+      fixtureSql({
+        checkpoints,
+        tool: {
+          id: EXECUTION_ID,
+          status: "executed",
+          approval_decision: "approved",
+          effect_receipt: null,
+        },
+      }),
+    );
+
+    expect(report).toMatchObject({
+      mode: "expanded",
+      status: "matched",
+      sampledRunCount: 1,
+      matchedRunCount: 1,
+      checkpointCount: 14,
+      comparisonReceiptCount: 14,
+      missingBoundaryPhases: [],
+    });
+  });
 });
+
+function expandedCheckpointChain() {
+  const expanded = {
+    ...enrollment(),
+    enginePin: {
+      ...enrollment().enginePin,
+      configurationSha256:
+        RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256,
+      rolloutGeneration: 3,
+    },
+  };
+  const checkpoints: RunCheckpointV1[] = [];
+  let modelCallCount = 0;
+  let modelInputTokenCount = 0;
+  let modelOutputTokenCount = 0;
+  let toolCallCount = 0;
+  const append = (
+    boundary: RunCheckpointV1["boundary"],
+    referenceKind: RunCheckpointV1["stateReferences"][number]["kind"],
+  ) => {
+    const parent = checkpoints.at(-1) || null;
+    if (boundary.kind === "model" && boundary.phase === "after") {
+      modelCallCount += 1;
+      modelInputTokenCount += 2;
+      modelOutputTokenCount += 1;
+    }
+    if (boundary.kind === "tool" && boundary.phase === "after") {
+      toolCallCount += 1;
+    }
+    const toolExecutionSha256 = canonicalJsonSha256({
+      executionId: boundary.boundaryId,
+      state: boundary.phase,
+    });
+    const toolBinding = boundary.kind === "tool"
+      ? {
+          operationClass: "read_only" as const,
+          toolExecutionId: boundary.boundaryId,
+          toolExecutionSha256,
+          toolId: "runs.list",
+          toolContractSha256: canonicalJsonSha256("runs.list contract"),
+          inputSha256: canonicalJsonSha256("runs.list input"),
+          idempotencyKeySha256: null,
+          effectState: "not_applicable" as const,
+          effectIntent: null,
+          effectReceipt: null,
+        }
+      : null;
+    const checkpoint = buildRunCheckpointV1({
+      runId: RUN_ID,
+      executionScope: SCOPE,
+      boundary,
+      sequence: checkpoints.length,
+      parent: parent
+        ? {
+            checkpointId: parent.checkpointId,
+            checkpointSha256: parent.checkpointSha256,
+            sequence: parent.sequence,
+          }
+        : null,
+      enginePin: expanded.enginePin,
+      stateReferences: [
+        {
+          kind: "run_record",
+          referenceId: RUN_ID,
+          referenceSha256: canonicalJsonSha256("expanded run"),
+          versionId: "agent_run_v1",
+        },
+        {
+          kind: referenceKind,
+          referenceId: boundary.boundaryId,
+          referenceSha256: boundary.kind === "tool"
+            ? toolExecutionSha256
+            : canonicalJsonSha256({ boundary }),
+          versionId: "expanded_boundary_test_v1",
+        },
+      ],
+      toolBinding,
+      resourceUsage: {
+        modelCallCount,
+        modelInputTokenCount,
+        modelOutputTokenCount,
+        cachedInputTokenCount: 0,
+        toolCallCount,
+        toolResultByteCount: 0,
+        externalEffectCount: 0,
+        boundaryExternalEffectCount: 0,
+        elapsedMs: checkpoints.length * 1_000,
+      },
+      lifecycleState: boundary.phase === "waiting" ? "waiting" : "active",
+      resumeDisposition: boundary.phase === "waiting"
+        ? "awaiting_signal"
+        : "resumable",
+      recordedAt: new Date(
+        Date.parse(WAITING_AT) + checkpoints.length * 1_000,
+      ).toISOString(),
+    });
+    checkpoints.push(checkpoint);
+  };
+
+  append(
+    { kind: "delegation", phase: "before", boundaryId: `${RUN_ID}:delegation:scout:1`, attempt: 1 },
+    "delegation",
+  );
+  append(
+    { kind: "model", phase: "before", boundaryId: `${RUN_ID}:model:1`, attempt: 1 },
+    "model_turn",
+  );
+  append(
+    { kind: "model", phase: "after", boundaryId: `${RUN_ID}:model:1`, attempt: 1 },
+    "model_turn",
+  );
+  append(
+    { kind: "delegation", phase: "after", boundaryId: `${RUN_ID}:delegation:scout:1`, attempt: 1 },
+    "delegation_signal",
+  );
+  append(
+    { kind: "verifier", phase: "before", boundaryId: `${RUN_ID}:verifier:1`, attempt: 1 },
+    "verifier_request",
+  );
+  append(
+    { kind: "model", phase: "before", boundaryId: `${RUN_ID}:model:2`, attempt: 2 },
+    "model_turn",
+  );
+  append(
+    { kind: "model", phase: "after", boundaryId: `${RUN_ID}:model:2`, attempt: 2 },
+    "model_turn",
+  );
+  append(
+    { kind: "verifier", phase: "after", boundaryId: `${RUN_ID}:verifier:1`, attempt: 1 },
+    "verifier_receipt",
+  );
+  append(
+    { kind: "model", phase: "before", boundaryId: `${RUN_ID}:model:3`, attempt: 3 },
+    "model_turn",
+  );
+  append(
+    { kind: "model", phase: "after", boundaryId: `${RUN_ID}:model:3`, attempt: 3 },
+    "model_turn",
+  );
+  append(
+    { kind: "approval", phase: "waiting", boundaryId: EXECUTION_ID, attempt: 1 },
+    "approval_request",
+  );
+  append(
+    { kind: "approval", phase: "after", boundaryId: EXECUTION_ID, attempt: 1 },
+    "approval_decision",
+  );
+  append(
+    { kind: "tool", phase: "before", boundaryId: EXECUTION_ID, attempt: 1 },
+    "tool_execution",
+  );
+  append(
+    { kind: "tool", phase: "after", boundaryId: EXECUTION_ID, attempt: 1 },
+    "tool_execution",
+  );
+  return checkpoints;
+}
 
 function fixtureSql(input: {
   checkpoints: RunCheckpointV1[];
@@ -368,7 +581,7 @@ function comparisonEvent(checkpoint: RunCheckpointV1) {
       checkpointId: checkpoint.checkpointId,
       checkpointSha256: checkpoint.checkpointSha256,
       runId: checkpoint.runId,
-      boundaryKind: "approval",
+      boundaryKind: checkpoint.boundary.kind,
       boundaryPhase: checkpoint.boundary.phase,
       boundaryId: checkpoint.boundary.boundaryId,
       comparison: "matched",

@@ -5,6 +5,7 @@ import {
   RUN_CHECKPOINT_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_CONTRACT_VERSION_ID,
   RUN_CHECKPOINT_ENGINE_VERSION_ID,
+  RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256,
 } from "@/lib/runs/approval-checkpoint-shadow";
 import { runContractIdSchema } from "@/lib/runs/contracts";
 import {
@@ -34,7 +35,23 @@ export type ApprovalCheckpointShadowIssueCode =
   | "approval_boundary_mismatch"
   | "approval_decision_successor_missing"
   | "tool_execution_mismatch"
-  | "tool_effect_receipt_mismatch";
+  | "tool_effect_receipt_mismatch"
+  | "boundary_pair_mismatch";
+
+export type CheckpointShadowReconciliationMode = "approval" | "expanded";
+
+const expandedBoundaryPhases = Object.freeze([
+  "model:before",
+  "model:after",
+  "tool:before",
+  "tool:after",
+  "approval:waiting",
+  "approval:after",
+  "delegation:before",
+  "delegation:after",
+  "verifier:before",
+  "verifier:after",
+] as const);
 
 export type ApprovalCheckpointShadowRunReconciliation = Readonly<{
   runId: string;
@@ -49,6 +66,7 @@ export type ApprovalCheckpointShadowRunReconciliation = Readonly<{
     | "terminal_without_receipt"
     | "rejected_without_effect"
     | "unknown";
+  boundaryPhases: readonly string[];
   issues: readonly Readonly<{
     code: ApprovalCheckpointShadowIssueCode;
     checkpointId?: string;
@@ -69,7 +87,10 @@ export type ApprovalCheckpointShadowReconciliationReport = Readonly<{
   approvedRunCount: number;
   rejectedRunCount: number;
   effectReceiptCount: number;
-  status: "matched" | "mismatch" | "no_sample";
+  mode: CheckpointShadowReconciliationMode;
+  observedBoundaryPhases: readonly string[];
+  missingBoundaryPhases: readonly string[];
+  status: "matched" | "mismatch" | "no_sample" | "incomplete_coverage";
   resumeAuthorityGranted: false;
   runs: readonly ApprovalCheckpointShadowRunReconciliation[];
 }>;
@@ -81,21 +102,35 @@ const sampleLimitSchema = z.number().int().min(1).max(500);
  * continuation contents or granting checkpoint resume authority.
  */
 export async function reconcileStoredApprovalCheckpointShadows(
-  input: { tenantId: string; limit?: number },
+  input: {
+    tenantId: string;
+    limit?: number;
+    mode?: CheckpointShadowReconciliationMode;
+  },
   sql: RunCheckpointReconciliationSql,
 ): Promise<ApprovalCheckpointShadowReconciliationReport> {
   const tenantId = runContractIdSchema.parse(input.tenantId);
   const limit = sampleLimitSchema.parse(input.limit ?? 100);
+  const mode = input.mode || "approval";
+  const configurationSha256 = mode === "expanded"
+    ? RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256
+    : RUN_CHECKPOINT_CONFIGURATION_SHA256;
   const runRows = await sql.query(
     `SELECT run_id, MAX(recorded_at) AS latest_recorded_at
      FROM omni_run_checkpoints
      WHERE tenant_id = $1
        AND rollout_capability_id = $2
-       AND boundary_kind = 'approval'
+       AND configuration_sha256 = $3
+       ${mode === "approval" ? "AND boundary_kind = 'approval'" : ""}
      GROUP BY run_id
      ORDER BY latest_recorded_at DESC, run_id ASC
-     LIMIT $3`,
-    [tenantId, RUN_CHECKPOINT_CAPABILITY_ID, limit],
+     LIMIT $4`,
+    [
+      tenantId,
+      RUN_CHECKPOINT_CAPABILITY_ID,
+      configurationSha256,
+      limit,
+    ],
   );
   const runIds = runRows.map((row) => runContractIdSchema.parse(row.run_id));
   if (new Set(runIds).size !== runIds.length) {
@@ -104,7 +139,7 @@ export async function reconcileStoredApprovalCheckpointShadows(
 
   const runs: ApprovalCheckpointShadowRunReconciliation[] = [];
   for (const runId of runIds) {
-    runs.push(await reconcileRun(tenantId, runId, sql));
+    runs.push(await reconcileRun(tenantId, runId, mode, sql));
   }
 
   const matchedRunCount = runs.filter((run) => run.status === "matched").length;
@@ -113,11 +148,23 @@ export async function reconcileStoredApprovalCheckpointShadows(
   const effectReceiptCount = runs.filter(
     (run) => run.effectState === "receipt_recorded",
   ).length;
+  const observedBoundaryPhases = Object.freeze([...new Set(
+    runs.flatMap((run) => run.boundaryPhases),
+  )].sort());
+  const missingBoundaryPhases = Object.freeze(
+    mode === "expanded"
+      ? expandedBoundaryPhases.filter(
+          (phase) => !observedBoundaryPhases.includes(phase),
+        )
+      : [],
+  );
+  const hasMismatch = matchedRunCount !== runs.length;
 
   return Object.freeze({
     schemaVersion: 1 as const,
     capabilityId: RUN_CHECKPOINT_CAPABILITY_ID,
     tenantId,
+    mode,
     sampleLimit: limit,
     sampledRunCount: runs.length,
     matchedRunCount,
@@ -131,11 +178,15 @@ export async function reconcileStoredApprovalCheckpointShadows(
     approvedRunCount: decisionCount("approved"),
     rejectedRunCount: decisionCount("rejected"),
     effectReceiptCount,
+    observedBoundaryPhases,
+    missingBoundaryPhases,
     status: runs.length === 0
       ? "no_sample" as const
-      : matchedRunCount === runs.length
-        ? "matched" as const
-        : "mismatch" as const,
+      : hasMismatch
+        ? "mismatch" as const
+        : missingBoundaryPhases.length
+          ? "incomplete_coverage" as const
+          : "matched" as const,
     resumeAuthorityGranted: false as const,
     runs: Object.freeze(runs),
   });
@@ -144,6 +195,7 @@ export async function reconcileStoredApprovalCheckpointShadows(
 async function reconcileRun(
   tenantId: string,
   runId: string,
+  mode: CheckpointShadowReconciliationMode,
   sql: RunCheckpointReconciliationSql,
 ): Promise<ApprovalCheckpointShadowRunReconciliation> {
   const [checkpointRows, referenceRows, eventRows] = await Promise.all([
@@ -192,7 +244,7 @@ async function reconcileRun(
       if (!checkpointRowMatches(row, checkpoint, tenantId, runId)) {
         addIssue(issues, "checkpoint_row_mismatch", checkpoint.checkpointId);
       }
-      if (!supportedShadowPin(checkpoint)) {
+      if (!supportedShadowPin(checkpoint, mode)) {
         addIssue(issues, "checkpoint_pin_mismatch", checkpoint.checkpointId);
       }
     } catch {
@@ -201,7 +253,15 @@ async function reconcileRun(
   }
 
   if (checkpoints.length !== checkpointRows.length) {
-    return runReport(runId, checkpointRows.length, 0, "unknown", "unknown", issues);
+    return runReport(
+      runId,
+      checkpointRows.length,
+      0,
+      "unknown",
+      "unknown",
+      [],
+      issues,
+    );
   }
   for (let index = 0; index < checkpoints.length; index += 1) {
     const checkpoint = checkpoints[index] as RunCheckpointV1;
@@ -225,12 +285,22 @@ async function reconcileRun(
       addIssue(issues, "comparison_receipt_mismatch", checkpoint.checkpointId);
     }
   }
+  if (mode === "expanded") validateBoundaryPairs(checkpoints, issues);
 
   const approvalCheckpoints = checkpoints.filter(
     (checkpoint) => checkpoint.boundary.kind === "approval",
   );
+  const boundaryPhases = checkpoints.map(
+    (checkpoint) =>
+      `${checkpoint.boundary.kind}:${checkpoint.boundary.phase}`,
+  );
+  const toolCheckpoints = checkpoints.filter(
+    (checkpoint) => checkpoint.boundary.kind === "tool",
+  );
   const boundaryIds = [...new Set(
-    approvalCheckpoints.map((checkpoint) => checkpoint.boundary.boundaryId),
+    [...approvalCheckpoints, ...toolCheckpoints].map(
+      (checkpoint) => checkpoint.boundary.boundaryId,
+    ),
   )];
   const toolRows = boundaryIds.length
     ? await sql.query(
@@ -242,12 +312,16 @@ async function reconcileRun(
         [tenantId, boundaryIds],
       )
     : [];
-  const decision = reconcileApprovalBoundary(
+  const decision = reconcileApprovalBoundaries(
     tenantId,
     approvalCheckpoints,
     toolRows,
+    mode,
     issues,
   );
+  if (mode === "expanded") {
+    reconcileToolBoundaries(tenantId, toolCheckpoints, toolRows, issues);
+  }
   const comparisonReceiptCount = checkpoints.filter((checkpoint) =>
     comparisonEventMatches(checkpoint, eventRows)
   ).length;
@@ -257,18 +331,155 @@ async function reconcileRun(
     comparisonReceiptCount,
     decision.decisionState,
     decision.effectState,
+    boundaryPhases,
     issues,
   );
+}
+
+function validateBoundaryPairs(
+  checkpoints: RunCheckpointV1[],
+  issues: Array<{ code: ApprovalCheckpointShadowIssueCode; checkpointId?: string }>,
+) {
+  const grouped = new Map<string, RunCheckpointV1[]>();
+  for (const checkpoint of checkpoints) {
+    const key = [
+      checkpoint.boundary.kind,
+      checkpoint.boundary.boundaryId,
+      checkpoint.boundary.attempt,
+    ].join("\0");
+    const values = grouped.get(key) || [];
+    values.push(checkpoint);
+    grouped.set(key, values);
+  }
+  for (const values of grouped.values()) {
+    const first = values[0];
+    if (!first) continue;
+    const phases = values.map((checkpoint) => checkpoint.boundary.phase);
+    let valid: boolean;
+    if (first.boundary.kind === "approval") {
+      valid = (phases.length === 1 && phases[0] === "waiting") ||
+        (phases.length === 2 &&
+          phases[0] === "waiting" &&
+          phases[1] === "after");
+    } else if (
+      first.boundary.kind === "delegation" &&
+      phases[0] === "waiting"
+    ) {
+      valid = phases.length === 1 ||
+        (phases.length === 2 && phases[1] === "after");
+    } else {
+      valid = phases.length === 2 &&
+        phases[0] === "before" &&
+        phases[1] === "after";
+    }
+    if (!valid) addIssue(issues, "boundary_pair_mismatch", first.checkpointId);
+  }
+}
+
+function reconcileToolBoundaries(
+  tenantId: string,
+  checkpoints: RunCheckpointV1[],
+  toolRows: SqlRow[],
+  issues: Array<{ code: ApprovalCheckpointShadowIssueCode; checkpointId?: string }>,
+) {
+  const afterCheckpoints = checkpoints.filter(
+    (checkpoint) => checkpoint.boundary.phase === "after",
+  );
+  for (const checkpoint of afterCheckpoints) {
+    const binding = checkpoint.toolBinding;
+    const matches = toolRows.filter(
+      (row) => String(row.id) === checkpoint.boundary.boundaryId,
+    );
+    if (
+      !binding ||
+      binding.toolExecutionId !== checkpoint.boundary.boundaryId ||
+      matches.length !== 1
+    ) {
+      addIssue(issues, "tool_execution_mismatch", checkpoint.checkpointId);
+      continue;
+    }
+    const row = matches[0] as SqlRow;
+    const status = String(row.status || "");
+    if (!["executed", "failed", "blocked", "rejected"].includes(status)) {
+      addIssue(issues, "tool_execution_mismatch", checkpoint.checkpointId);
+    }
+    if (binding.operationClass === "mutation" && status === "executed") {
+      if (
+        binding.effectState !== "effect_recorded" ||
+        !binding.effectReceipt ||
+        !effectReceiptReferenceMatches(
+          row.effect_receipt,
+          tenantId,
+          checkpoint.boundary.boundaryId,
+          binding.effectReceipt,
+        )
+      ) {
+        addIssue(
+          issues,
+          "tool_effect_receipt_mismatch",
+          checkpoint.checkpointId,
+        );
+      }
+    } else if (binding.effectReceipt && !effectReceiptReferenceMatches(
+      row.effect_receipt,
+      tenantId,
+      checkpoint.boundary.boundaryId,
+      binding.effectReceipt,
+    )) {
+      addIssue(
+        issues,
+        "tool_effect_receipt_mismatch",
+        checkpoint.checkpointId,
+      );
+    }
+  }
+}
+
+function reconcileApprovalBoundaries(
+  tenantId: string,
+  checkpoints: RunCheckpointV1[],
+  toolRows: SqlRow[],
+  mode: CheckpointShadowReconciliationMode,
+  issues: Array<{ code: ApprovalCheckpointShadowIssueCode; checkpointId?: string }>,
+): Pick<ApprovalCheckpointShadowRunReconciliation, "decisionState" | "effectState"> {
+  if (!checkpoints.length) {
+    return { decisionState: "unknown", effectState: "not_started" };
+  }
+  const boundaryIds = [...new Set(
+    checkpoints.map((checkpoint) => checkpoint.boundary.boundaryId),
+  )];
+  const decisions = boundaryIds.map((boundaryId) =>
+    reconcileApprovalBoundary(
+      tenantId,
+      checkpoints.filter(
+        (checkpoint) => checkpoint.boundary.boundaryId === boundaryId,
+      ),
+      toolRows,
+      mode === "approval",
+      issues,
+    )
+  );
+  if (decisions.some((decision) => decision.decisionState === "unknown")) {
+    return { decisionState: "unknown", effectState: "unknown" };
+  }
+  const latest = decisions.at(-1);
+  if (!latest) return { decisionState: "unknown", effectState: "unknown" };
+  return latest;
 }
 
 function reconcileApprovalBoundary(
   tenantId: string,
   checkpoints: RunCheckpointV1[],
   toolRows: SqlRow[],
+  requireZeroPriorEffects: boolean,
   issues: Array<{ code: ApprovalCheckpointShadowIssueCode; checkpointId?: string }>,
 ): Pick<ApprovalCheckpointShadowRunReconciliation, "decisionState" | "effectState"> {
-  const waiting = checkpoints[0];
-  const successor = checkpoints[1];
+  const waiting = checkpoints.find(
+    (checkpoint) => checkpoint.boundary.phase === "waiting",
+  );
+  const successor = checkpoints.find(
+    (checkpoint) => checkpoint.boundary.phase === "after",
+  );
   if (
     checkpoints.length < 1 ||
     checkpoints.length > 2 ||
@@ -276,14 +487,16 @@ function reconcileApprovalBoundary(
     waiting.boundary.phase !== "waiting" ||
     waiting.lifecycleState !== "waiting" ||
     waiting.resumeDisposition !== "awaiting_signal" ||
-    waiting.resourceUsage.externalEffectCount !== 0 ||
+    (requireZeroPriorEffects &&
+      waiting.resourceUsage.externalEffectCount !== 0) ||
     waiting.resourceUsage.boundaryExternalEffectCount !== 0 ||
     (
       successor &&
       (
         successor.boundary.phase !== "after" ||
         successor.boundary.boundaryId !== waiting.boundary.boundaryId ||
-        successor.resourceUsage.externalEffectCount !== 0 ||
+        successor.resourceUsage.externalEffectCount !==
+          waiting.resourceUsage.externalEffectCount ||
         successor.resourceUsage.boundaryExternalEffectCount !== 0
       )
     )
@@ -385,13 +598,18 @@ function checkpointRowMatches(
   );
 }
 
-function supportedShadowPin(checkpoint: RunCheckpointV1): boolean {
+function supportedShadowPin(
+  checkpoint: RunCheckpointV1,
+  mode: CheckpointShadowReconciliationMode,
+): boolean {
   const pin = checkpoint.enginePin;
   return (
     pin.rolloutCapabilityId === RUN_CHECKPOINT_CAPABILITY_ID &&
     pin.engineVersionId === RUN_CHECKPOINT_ENGINE_VERSION_ID &&
     pin.contractVersionId === RUN_CHECKPOINT_CONTRACT_VERSION_ID &&
-    pin.configurationSha256 === RUN_CHECKPOINT_CONFIGURATION_SHA256 &&
+    pin.configurationSha256 === (mode === "expanded"
+      ? RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256
+      : RUN_CHECKPOINT_CONFIGURATION_SHA256) &&
     pin.rolloutMode === "shadow" &&
     pin.rolloutLifecycleStatus === "active"
   );
@@ -477,7 +695,7 @@ function comparisonEventMatches(
     payload.checkpointId === checkpoint.checkpointId &&
     payload.checkpointSha256 === checkpoint.checkpointSha256 &&
     payload.runId === checkpoint.runId &&
-    payload.boundaryKind === "approval" &&
+    payload.boundaryKind === checkpoint.boundary.kind &&
     payload.boundaryPhase === checkpoint.boundary.phase &&
     payload.boundaryId === checkpoint.boundary.boundaryId &&
     payload.comparison === "matched" &&
@@ -538,12 +756,27 @@ function effectReceiptMatches(value: unknown, tenantId: string, executionId: str
   return false;
 }
 
+function effectReceiptReferenceMatches(
+  value: unknown,
+  tenantId: string,
+  executionId: string,
+  expected: Readonly<{ referenceId: string; referenceSha256: string }>,
+) {
+  const receipt = plainRecord(value);
+  if (!receipt || !effectReceiptMatches(value, tenantId, executionId)) {
+    return false;
+  }
+  return receipt.effectReceiptId === expected.referenceId &&
+    receipt.receiptSha256 === expected.referenceSha256;
+}
+
 function runReport(
   runId: string,
   checkpointCount: number,
   comparisonReceiptCount: number,
   decisionState: ApprovalCheckpointShadowRunReconciliation["decisionState"],
   effectState: ApprovalCheckpointShadowRunReconciliation["effectState"],
+  boundaryPhases: string[],
   issues: Array<{ code: ApprovalCheckpointShadowIssueCode; checkpointId?: string }>,
 ): ApprovalCheckpointShadowRunReconciliation {
   return Object.freeze({
@@ -553,6 +786,7 @@ function runReport(
     comparisonReceiptCount,
     decisionState,
     effectState,
+    boundaryPhases: Object.freeze([...new Set(boundaryPhases)].sort()),
     issues: Object.freeze(issues.map((issue) => Object.freeze({ ...issue }))),
   });
 }

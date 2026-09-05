@@ -235,6 +235,15 @@ function toolBinding(
   const receipt = phase === "after" && input.record.effectReceipt
     ? parseEffectReceipt(input.record.effectReceipt)
     : null;
+  if (
+    phase === "after" &&
+    input.record.status === "executed" &&
+    !receipt
+  ) {
+    throw new Error(
+      "A successful mutation tool checkpoint requires its exact effect receipt.",
+    );
+  }
   if (receipt && receipt.effectReceiptId === intent.effectIntentId) {
     throw new Error("Mutation intent and receipt identities must be distinct.");
   }
