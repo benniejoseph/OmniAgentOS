@@ -890,6 +890,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[69],
       up: ensureRunCheckpointForkLineage,
     },
+    {
+      ...databaseSchemaMigrations[70],
+      up: ensureOAuthSourceSyncFencedLeases,
+    },
   ];
 }
 
@@ -3168,6 +3172,58 @@ async function ensureOAuthIncrementalSyncHealth(sql: SqlClient) {
   await sql`ALTER TABLE omni_oauth_grants ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`;
   await sql`ALTER TABLE omni_oauth_grants ADD COLUMN IF NOT EXISTS synced_items INTEGER NOT NULL DEFAULT 0`;
   await sql`CREATE INDEX IF NOT EXISTS omni_oauth_grants_sync_health_idx ON omni_oauth_grants (tenant_id, actor_id, sync_status, last_synced_at DESC)`;
+}
+
+async function ensureOAuthSourceSyncFencedLeases(sql: SqlClient) {
+  await ensureOAuthIncrementalSyncHealth(sql);
+  await sql`
+    ALTER TABLE omni_oauth_grants
+    ADD COLUMN IF NOT EXISTS sync_lease_owner_id TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_oauth_grants
+    ADD COLUMN IF NOT EXISTS sync_lease_expires_at TIMESTAMPTZ
+  `;
+  await sql`
+    ALTER TABLE omni_oauth_grants
+    ADD COLUMN IF NOT EXISTS sync_lease_generation INTEGER NOT NULL DEFAULT 0
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'omni_oauth_grants_sync_lease_pair_check'
+      ) THEN
+        ALTER TABLE omni_oauth_grants
+        ADD CONSTRAINT omni_oauth_grants_sync_lease_pair_check CHECK (
+          (sync_lease_owner_id IS NULL AND sync_lease_expires_at IS NULL)
+          OR
+          (sync_lease_owner_id IS NOT NULL AND sync_lease_expires_at IS NOT NULL)
+        );
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'omni_oauth_grants_sync_lease_generation_check'
+      ) THEN
+        ALTER TABLE omni_oauth_grants
+        ADD CONSTRAINT omni_oauth_grants_sync_lease_generation_check CHECK (
+          sync_lease_generation >= 0
+        );
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_oauth_grants_sync_lease_idx
+    ON omni_oauth_grants (
+      tenant_id,
+      actor_id,
+      provider,
+      sync_lease_expires_at
+    )
+    WHERE sync_lease_owner_id IS NOT NULL
+  `;
 }
 
 async function ensureAgentSkillStudio(sql: SqlClient) {

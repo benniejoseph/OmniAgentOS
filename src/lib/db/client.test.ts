@@ -690,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the run checkpoint fork-lineage migration", () => {
+  it("pins the OAuth source-sync fenced-lease migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 70,
-      name: "run_checkpoint_fork_lineage",
-      checksum: "8bdc17f17f5c51ee1e646e3e6d9a230c5fe051e80611dd90cd8b2b35152e7115",
+      version: 71,
+      name: "oauth_source_sync_fenced_leases",
+      checksum: "1d128700ad7a4b01f0ba7a4e78521a778ff7e49da52e820f87e973f30ea9ce15",
     });
   });
 
