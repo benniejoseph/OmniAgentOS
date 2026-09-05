@@ -492,6 +492,55 @@ no database or event-store import, writer, event append, registry or serving
 import, or call site. It leaves the v56 activation constraint, RLS/ACL barriers,
 zero-row state, and every earlier physical and runtime hold unchanged.
 
+Migration v57 models the still-missing bootstrap-governance evidence boundary
+as two empty persistent tables that are owner-only as installed:
+`omni_membership_management_bootstrap_decisions` and
+`omni_membership_management_bootstrap_attestations`. A held, revision-0
+decision pins `database_identity_id` and binds `tenant_id`, `subject_actor_id`,
+`grantee_actor_id`, `management_authority_id`, and `authority_generation` to
+the single fixed action `create_held_membership_management_authority`. The
+tenant/subject/grantee/authority tuple mirrors the exact would-be v56 held
+record; database identity is an additional ceremony coordinate, and no v56 row
+is created. That database identity is logical lineage preserved by restore, not
+proof of one physical instance, so it cannot prevent replay into a clone by
+itself.
+The decision stores only its opaque ID, ceremony-policy coordinates, trust
+manifest, nonce, evidence, and decision SHA-256 digests, a validity window, and
+operational recording attribution. Its window must be nonempty and cannot
+exceed 15 minutes (`expires_at <= not_before + INTERVAL '15 minutes'`), and
+the trigger-authored `recorded_at` must fall in the half-open interval
+`[not_before, expires_at)`. Verification, consumption, and revocation
+attribution stays null in v57, and the decision cannot become active or
+advance its lifecycle revision.
+
+The attestation table reserves exactly the `organization_custodian` and
+`independent_reviewer` slots. Any future rows must use distinct
+`attester_key_id` values, repeat the exact parent `decision_sha256`, declare
+`ed25519`, and carry only its canonical 86-character unpadded base64url
+signature ending in `[AQgw]` plus caller-supplied `attested_at`. The insert
+guard requires both the claimed time and the database statement time to fall in
+the half-open parent interval `[not_before, expires_at)`; it does not prove when
+signing occurred. These encoding and time checks are structural evidence only.
+V57 does not require the two rows, authenticate a signature, resolve a key, or
+establish governance; those remain verifier and writer obligations.
+`trust_manifest_sha256` records only the digest of an
+external trust manifest. Public trust anchors and key material remain outside
+the database. Actor foreign keys prove canonical identities only, not signer
+trust or same-tenant authority. Neither table accepts private evidence,
+narrative approval text, private keys, credentials, or other secret material.
+
+Both tables are empty at v57 postflight and remain behind forced tenant RLS, a
+restrictive system-scope holdback, and owner-only ACLs. V57 seeds no row,
+grants no serving access, emits no event, and adds no route, writer, runtime
+import, or call site. It leaves the v56 zero-row postflight and
+active-forbidden constraint, as well as all earlier holds, unchanged. Broad
+development permission is not a signed
+bootstrap-governance decision, and administrator, session, system-scope, and
+database-owner status are not trust roots. External human approval and the two
+signatures, an externally anchored verifier, atomic writer/event integration,
+a reviewed least-privilege cutover, and a separate v56 activation migration
+remain future gates.
+
 Migration v50 adds an owner-only, append-only auth-user actor-identifier
 shadow. It records each v46 canonical actor as a self identifier and each exact
 current auth email as the initial legacy identifier, while an auth-user trigger

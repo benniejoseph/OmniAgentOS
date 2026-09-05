@@ -87,6 +87,8 @@ export const tenantRootPolicyTables = [
   "omni_tenant_actor_memory_notice_receipts",
   "omni_tenant_actor_membership_epochs",
   "omni_tenant_actor_membership_management_authorities",
+  "omni_membership_management_bootstrap_decisions",
+  "omni_membership_management_bootstrap_attestations",
   "omni_knowledge_documents",
   "omni_knowledge_chunks",
   "omni_retrieval_traces",
@@ -821,6 +823,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[55],
       up: ensureTenantActorMembershipManagementAuthoritiesShadow,
+    },
+    {
+      ...databaseSchemaMigrations[56],
+      up: ensureMembershipManagementBootstrapEvidenceShadow,
     },
   ];
 }
@@ -30173,6 +30179,2728 @@ async function ensureTenantActorMembershipManagementAuthoritiesShadow(
 
   await verifyMembershipManagementAuthoritySurface();
   await verifyPrecedingAuthorityBoundary();
+}
+
+async function ensureMembershipManagementBootstrapEvidenceShadow(
+  sql: SqlClient,
+) {
+  // v57 installs only immutable, held bootstrap-governance evidence shapes.
+  // It creates no decision, attestation, trust root, key registry, authority,
+  // writer, serving grant, or event and cannot activate the v56 ledger.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Membership bootstrap evidence migration requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`SET LOCAL row_security = on`;
+
+  // Hold the canonical database, tenant, actor, mutable membership, and every
+  // dormant memory-authority predecessor stable across both audit passes.
+  await sql`
+    LOCK TABLE
+      omni_database_identity,
+      omni_auth_tenants,
+      omni_auth_users,
+      omni_auth_memberships,
+      omni_memories,
+      omni_memory_informed_notice_contracts,
+      omni_tenant_actor_memory_notice_receipts,
+      omni_tenant_actor_memory_purpose_consents,
+      omni_tenant_memory_purpose_entitlements,
+      omni_tenant_actor_membership_epochs,
+      omni_tenant_actor_membership_management_authorities
+    IN SHARE MODE
+  `;
+
+  const verifyBootstrapEvidencePredecessors = async () => {
+    await sql`
+      DO $migration$
+      DECLARE
+        valid_scope JSONB;
+      BEGIN
+        IF public.omni_system_scope_enabled() IS DISTINCT FROM TRUE
+          OR public.omni_tenant_visible(
+            'tenant:v57_bootstrap_evidence_check'
+          ) IS DISTINCT FROM TRUE
+        THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence system scope is unavailable'
+            USING ERRCODE = '55000';
+        END IF;
+
+        -- Ignore historical timestamp-only rows whose version remains NULL.
+        IF (
+          SELECT count(*)
+          FROM omni_schema_version
+          WHERE version IS NOT NULL
+            AND version = 56
+            AND name =
+              'tenant_actor_membership_management_authorities_shadow'
+            AND checksum =
+              '8f60e058c5ed4f60ed70f8025d9ab472a0c6dcc0957673aa4319668526238c09'
+        ) <> 1 THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence v56 marker is invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF (
+          SELECT count(*)
+          FROM pg_class relation
+          JOIN pg_namespace namespace
+            ON namespace.oid = relation.relnamespace
+          WHERE relation.oid IN (
+              'omni_database_identity'::regclass,
+              'omni_auth_tenants'::regclass,
+              'omni_auth_users'::regclass,
+              'omni_auth_memberships'::regclass,
+              'omni_memories'::regclass,
+              'omni_memory_informed_notice_contracts'::regclass,
+              'omni_tenant_actor_memory_notice_receipts'::regclass,
+              'omni_tenant_actor_memory_purpose_consents'::regclass,
+              'omni_tenant_memory_purpose_entitlements'::regclass,
+              'omni_tenant_actor_membership_epochs'::regclass,
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            )
+            AND namespace.nspname = current_schema()
+            AND relation.relkind = 'r'
+            AND relation.relpersistence = 'p'
+            AND relation.relowner = (
+              SELECT relowner
+              FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+        ) <> 11 THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence predecessor relations changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF (
+          SELECT count(*)
+          FROM omni_database_identity
+          WHERE singleton IS TRUE
+            AND id ~ '^[0-9a-f]{32}$'
+        ) <> 1 OR (
+          SELECT count(*) FROM omni_database_identity
+        ) <> 1 THEN
+          RAISE EXCEPTION 'Membership bootstrap database identity is invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          JOIN pg_index index_record
+            ON index_record.indexrelid = constraint_record.conindid
+          WHERE constraint_record.conrelid =
+              'omni_database_identity'::regclass
+            AND constraint_record.conname =
+              'omni_database_identity_pkey'
+            AND constraint_record.contype = 'p'
+            AND constraint_record.convalidated
+            AND constraint_record.conkey = ARRAY[
+              (
+                SELECT attnum FROM pg_attribute
+                WHERE attrelid = 'omni_database_identity'::regclass
+                  AND attname = 'singleton'
+                  AND NOT attisdropped
+              )
+            ]::SMALLINT[]
+            AND index_record.indisprimary
+            AND index_record.indisunique
+            AND index_record.indisvalid
+            AND index_record.indisready
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          JOIN pg_index index_record
+            ON index_record.indexrelid = constraint_record.conindid
+          WHERE constraint_record.conrelid =
+              'omni_database_identity'::regclass
+            AND constraint_record.conname =
+              'omni_database_identity_id_key'
+            AND constraint_record.contype = 'u'
+            AND constraint_record.convalidated
+            AND constraint_record.conkey = ARRAY[
+              (
+                SELECT attnum FROM pg_attribute
+                WHERE attrelid = 'omni_database_identity'::regclass
+                  AND attname = 'id'
+                  AND NOT attisdropped
+              )
+            ]::SMALLINT[]
+            AND index_record.indisunique
+            AND index_record.indisvalid
+            AND index_record.indisready
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conrelid =
+              'omni_database_identity'::regclass
+            AND constraint_record.conname =
+              'omni_database_identity_singleton_check'
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND pg_get_expr(
+              constraint_record.conbin,
+              constraint_record.conrelid
+            ) = 'singleton'
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap database identity keys changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid = 'omni_auth_users'::regclass
+            AND attribute.attname = 'actor_id'
+            AND NOT attribute.attisdropped
+            AND attribute.atttypid = 'text'::regtype
+            AND attribute.attnotnull
+            AND attribute.attgenerated = 's'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) = '(''actor:''::text || id)'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          JOIN pg_index index_record
+            ON index_record.indexrelid = constraint_record.conindid
+          WHERE constraint_record.conrelid = 'omni_auth_users'::regclass
+            AND constraint_record.conname = 'omni_auth_users_actor_id_key'
+            AND constraint_record.contype = 'u'
+            AND constraint_record.convalidated
+            AND constraint_record.conkey = ARRAY[
+              (
+                SELECT attnum FROM pg_attribute
+                WHERE attrelid = 'omni_auth_users'::regclass
+                  AND attname = 'actor_id'
+                  AND NOT attisdropped
+              )
+            ]::SMALLINT[]
+            AND index_record.indisunique
+            AND index_record.indisvalid
+            AND index_record.indisready
+        ) OR EXISTS (
+          SELECT 1
+          FROM omni_auth_users
+          WHERE actor_id IS DISTINCT FROM 'actor:' || id
+            OR NOT public.omni_source_contract_id_is_valid(actor_id)
+        ) OR (
+          SELECT count(*) FROM omni_auth_users
+        ) IS DISTINCT FROM (
+          SELECT count(DISTINCT actor_id) FROM omni_auth_users
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap canonical actor identity changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              ('tenant_id', 'text'::REGTYPE, TRUE),
+              ('subject_actor_id', 'text'::REGTYPE, TRUE),
+              ('grantee_actor_id', 'text'::REGTYPE, TRUE),
+              ('management_authority_id', 'text'::REGTYPE, TRUE),
+              ('authority_generation', 'bigint'::REGTYPE, TRUE)
+          ) expected(column_name, type_oid, not_null)
+          LEFT JOIN pg_attribute attribute
+            ON attribute.attrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND attribute.attname = expected.column_name
+            AND NOT attribute.attisdropped
+          WHERE attribute.attname IS NULL
+            OR attribute.atttypid <> expected.type_oid
+            OR attribute.attnotnull IS DISTINCT FROM expected.not_null
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND constraint_record.conname =
+              'omni_membership_management_authorities_pkey'
+            AND constraint_record.contype = 'p'
+            AND constraint_record.convalidated
+            AND (
+              SELECT array_agg(
+                attribute.attname::TEXT ORDER BY key.ordinality
+              )
+              FROM unnest(constraint_record.conkey)
+                WITH ORDINALITY AS key(attnum, ordinality)
+              JOIN pg_attribute attribute
+                ON attribute.attrelid = constraint_record.conrelid
+                AND attribute.attnum = key.attnum
+                AND NOT attribute.attisdropped
+            ) = ARRAY[
+              'tenant_id', 'subject_actor_id', 'grantee_actor_id',
+              'authority_generation'
+            ]::TEXT[]
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND constraint_record.conname =
+              'omni_membership_management_authority_id_key'
+            AND constraint_record.contype = 'u'
+            AND constraint_record.convalidated
+            AND (
+              SELECT array_agg(
+                attribute.attname::TEXT ORDER BY key.ordinality
+              )
+              FROM unnest(constraint_record.conkey)
+                WITH ORDINALITY AS key(attnum, ordinality)
+              JOIN pg_attribute attribute
+                ON attribute.attrelid = constraint_record.conrelid
+                AND attribute.attnum = key.attnum
+                AND NOT attribute.attisdropped
+            ) = ARRAY['tenant_id', 'management_authority_id']::TEXT[]
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND constraint_record.conname =
+              'omni_membership_management_authority_row_check'
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND pg_get_expr(
+              constraint_record.conbin,
+              constraint_record.conrelid
+            ) =
+              'omni_membership_management_authority_row_is_valid(schema_version, tenant_id, subject_actor_id, grantee_actor_id, management_authority_id, authority_generation, state, lifecycle_revision, created_by_actor_id, activated_by_actor_id, revoked_by_actor_id, created_at, activated_at, revoked_at, updated_at)'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_language language ON language.oid = procedure.prolang
+          WHERE procedure.oid = to_regprocedure(
+            'public.omni_membership_management_authority_row_is_valid(smallint,text,text,text,text,bigint,text,bigint,text,text,text,timestamptz,timestamptz,timestamptz,timestamptz)'
+          )
+            AND procedure.prorettype = 'boolean'::regtype
+            AND procedure.provolatile = 'i'
+            AND NOT procedure.proisstrict
+            AND NOT procedure.prosecdef
+            AND language.lanname = 'sql'
+            AND procedure.proowner = (
+              SELECT relowner FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap v56 target identity changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conname =
+              'omni_membership_management_authority_activation_hold_check'
+            AND constraint_record.conrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND NOT constraint_record.connoinherit
+            AND pg_get_expr(
+              constraint_record.conbin,
+              constraint_record.conrelid
+            ) = '(state <> ''active''::text)'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_class relation
+          WHERE relation.oid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND relation.relrowsecurity
+            AND relation.relforcerowsecurity
+        ) OR (
+          SELECT count(*)
+          FROM pg_policy
+          WHERE polrelid =
+            'omni_tenant_actor_membership_management_authorities'::regclass
+        ) <> 2 OR NOT EXISTS (
+          SELECT 1
+          FROM pg_policy
+          WHERE polrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND polname = 'omni_tenant_isolation'
+            AND polpermissive
+            AND polcmd = '*'
+            AND polroles = ARRAY[0::OID]
+            AND pg_get_expr(polqual, polrelid) =
+              'omni_tenant_visible(tenant_id)'
+            AND pg_get_expr(polwithcheck, polrelid) =
+              'omni_tenant_visible(tenant_id)'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_policy
+          WHERE polrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND polname =
+              'omni_membership_management_authority_holdback'
+            AND NOT polpermissive
+            AND polcmd = '*'
+            AND polroles = ARRAY[0::OID]
+            AND pg_get_expr(polqual, polrelid) =
+              'omni_system_scope_enabled()'
+            AND pg_get_expr(polwithcheck, polrelid) =
+              'omni_system_scope_enabled()'
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap v56 activation hold changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              (
+                'omni_tenant_memory_purpose_entitlements'::REGCLASS,
+                'omni_memory_purpose_entitlements_activation_hold_check',
+                '(state <> ''active''::text)'
+              ),
+              (
+                'omni_tenant_actor_memory_purpose_consents'::REGCLASS,
+                'omni_actor_memory_purpose_consents_grant_hold_check',
+                '(state <> ''granted''::text)'
+              ),
+              (
+                'omni_tenant_actor_membership_epochs'::REGCLASS,
+                'omni_actor_membership_epochs_activation_hold_check',
+                '(state <> ''active''::text)'
+              ),
+              (
+                'omni_memory_informed_notice_contracts'::REGCLASS,
+                'omni_memory_informed_notice_contracts_seed_hold_check',
+                'false'
+              ),
+              (
+                'omni_tenant_actor_memory_notice_receipts'::REGCLASS,
+                'omni_actor_memory_notice_receipts_issuance_hold_check',
+                'false'
+              )
+          ) expected(relation_oid, constraint_name, expression)
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint constraint_record
+            WHERE constraint_record.conrelid = expected.relation_oid
+              AND constraint_record.conname = expected.constraint_name
+              AND constraint_record.contype = 'c'
+              AND constraint_record.convalidated
+              AND COALESCE(
+                (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+                TRUE
+              )
+              AND NOT constraint_record.connoinherit
+              AND pg_get_expr(
+                constraint_record.conbin,
+                constraint_record.conrelid
+              ) = expected.expression
+          )
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap predecessor constraints changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              (
+                'omni_tenant_memory_purpose_entitlements'::REGCLASS,
+                'omni_memory_purpose_entitlement_holdback'
+              ),
+              (
+                'omni_tenant_actor_memory_purpose_consents'::REGCLASS,
+                'omni_actor_memory_purpose_consent_holdback'
+              ),
+              (
+                'omni_tenant_actor_membership_epochs'::REGCLASS,
+                'omni_actor_membership_epoch_holdback'
+              ),
+              (
+                'omni_tenant_actor_memory_notice_receipts'::REGCLASS,
+                'omni_memory_notice_receipt_holdback'
+              )
+          ) expected(relation_oid, holdback_policy)
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_class relation
+            WHERE relation.oid = expected.relation_oid
+              AND relation.relrowsecurity
+              AND relation.relforcerowsecurity
+          ) OR (
+            SELECT count(*)
+            FROM pg_policy
+            WHERE polrelid = expected.relation_oid
+          ) <> 2 OR NOT EXISTS (
+            SELECT 1
+            FROM pg_policy
+            WHERE polrelid = expected.relation_oid
+              AND polname = 'omni_tenant_isolation'
+              AND polpermissive
+              AND polcmd = '*'
+              AND polroles = ARRAY[0::OID]
+              AND pg_get_expr(polqual, polrelid) =
+                'omni_tenant_visible(tenant_id)'
+              AND pg_get_expr(polwithcheck, polrelid) =
+                'omni_tenant_visible(tenant_id)'
+          ) OR NOT EXISTS (
+            SELECT 1
+            FROM pg_policy
+            WHERE polrelid = expected.relation_oid
+              AND polname = expected.holdback_policy
+              AND NOT polpermissive
+              AND polcmd = '*'
+              AND polroles = ARRAY[0::OID]
+              AND pg_get_expr(polqual, polrelid) =
+                'omni_system_scope_enabled()'
+              AND pg_get_expr(polwithcheck, polrelid) =
+                'omni_system_scope_enabled()'
+          )
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap predecessor policies changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conname =
+              'omni_memories_access_enrollment_hold_check'
+            AND constraint_record.conrelid = 'omni_memories'::regclass
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND pg_get_expr(
+              constraint_record.conbin,
+              constraint_record.conrelid
+            ) = '(access_contract_version = 0)'
+        ) OR EXISTS (
+          SELECT 1
+          FROM omni_memories
+          WHERE access_contract_version IS DISTINCT FROM 0
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_policy
+          WHERE polrelid = 'omni_memories'::regclass
+            AND polname = 'omni_memory_access_scope_holdback'
+            AND NOT polpermissive
+            AND polcmd = '*'
+            AND polroles = ARRAY[0::OID]
+            AND pg_get_expr(polqual, polrelid) =
+              '((access_contract_version = 0) OR omni_system_scope_enabled())'
+            AND pg_get_expr(polwithcheck, polrelid) =
+              '((access_contract_version = 0) OR omni_system_scope_enabled())'
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap memory enrollment hold changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        valid_scope := jsonb_build_object(
+          'version', 1,
+          'tenantId', 'tenant:v57_bootstrap_evidence_check',
+          'initiatingActorId', 'actor:v57_bootstrap_recorder',
+          'executingPrincipalType', 'user',
+          'executingPrincipalId', 'actor:v57_bootstrap_recorder',
+          'workspaceId', NULL,
+          'projectId', NULL,
+          'missionId', NULL,
+          'contextGrantIds', '[]'::JSONB,
+          'capabilityGrantIds', '[]'::JSONB,
+          'purposeId', 'memory.read.v1',
+          'purpose', 'Bootstrap evidence hold self-check'
+        );
+
+        IF public.omni_memory_access_scope_v1_is_valid(valid_scope)
+            IS DISTINCT FROM TRUE
+          OR public.omni_memory_access_scope_v1_is_authorized(valid_scope)
+            IS DISTINCT FROM FALSE
+          OR EXISTS (
+            SELECT 1
+            FROM information_schema.routine_privileges
+            WHERE routine_schema = current_schema()
+              AND routine_name =
+                'omni_memory_access_scope_v1_is_authorized'
+              AND privilege_type = 'EXECUTE'
+              AND grantee <> current_user
+          )
+        THEN
+          RAISE EXCEPTION 'Membership bootstrap dormant authorization changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1 FROM omni_memory_informed_notice_contracts
+        ) OR EXISTS (
+          SELECT 1 FROM omni_tenant_actor_memory_notice_receipts
+        ) OR EXISTS (
+          SELECT 1 FROM omni_tenant_actor_memory_purpose_consents
+        ) OR EXISTS (
+          SELECT 1 FROM omni_tenant_memory_purpose_entitlements
+        ) OR EXISTS (
+          SELECT 1 FROM omni_tenant_actor_membership_epochs
+        ) OR EXISTS (
+          SELECT 1
+          FROM omni_tenant_actor_membership_management_authorities
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap predecessor shadows are not empty'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.table_privileges
+          WHERE table_schema = current_schema()
+            AND table_name IN (
+              'omni_memory_informed_notice_contracts',
+              'omni_tenant_actor_memory_notice_receipts',
+              'omni_tenant_actor_memory_purpose_consents',
+              'omni_tenant_memory_purpose_entitlements',
+              'omni_tenant_actor_membership_epochs',
+              'omni_tenant_actor_membership_management_authorities'
+            )
+            AND grantee <> current_user
+        ) OR EXISTS (
+          SELECT 1
+          FROM information_schema.column_privileges
+          WHERE table_schema = current_schema()
+            AND table_name IN (
+              'omni_memory_informed_notice_contracts',
+              'omni_tenant_actor_memory_notice_receipts',
+              'omni_tenant_actor_memory_purpose_consents',
+              'omni_tenant_memory_purpose_entitlements',
+              'omni_tenant_actor_membership_epochs',
+              'omni_tenant_actor_membership_management_authorities'
+            )
+            AND grantee <> current_user
+        ) OR EXISTS (
+          SELECT 1
+          FROM information_schema.routine_privileges
+          WHERE routine_schema = current_schema()
+            AND routine_name IN (
+              'omni_memory_informed_notice_contract_row_is_valid',
+              'omni_reject_memory_informed_notice_contract_change',
+              'omni_actor_memory_notice_receipt_row_is_valid',
+              'omni_validate_actor_memory_notice_receipt_insert',
+              'omni_reject_actor_memory_notice_receipt_change',
+              'omni_actor_memory_purpose_consent_row_is_valid',
+              'omni_validate_actor_memory_purpose_consent_insert',
+              'omni_protect_actor_memory_purpose_consent',
+              'omni_memory_purpose_entitlement_row_is_valid',
+              'omni_validate_memory_purpose_entitlement_insert',
+              'omni_protect_memory_purpose_entitlement',
+              'omni_actor_membership_epoch_row_is_valid',
+              'omni_validate_actor_membership_epoch_insert',
+              'omni_protect_actor_membership_epoch',
+              'omni_membership_management_authority_row_is_valid',
+              'omni_validate_membership_management_authority_insert',
+              'omni_protect_membership_management_authority'
+            )
+            AND privilege_type = 'EXECUTE'
+            AND grantee <> current_user
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap predecessor boundary is exposed'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+  };
+
+  const verifyBootstrapEvidenceSurface = async () => {
+    await sql`
+      DO $migration$
+      BEGIN
+        IF (
+          SELECT count(*)
+          FROM pg_class relation
+          JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+          WHERE relation.oid IN (
+              'omni_membership_management_bootstrap_decisions'::regclass,
+              'omni_membership_management_bootstrap_attestations'::regclass
+            )
+            AND namespace.nspname = current_schema()
+            AND relation.relkind = 'r'
+            AND relation.relpersistence = 'p'
+            AND relation.relrowsecurity
+            AND relation.relforcerowsecurity
+            AND relation.relowner = (
+              SELECT relowner
+              FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+        ) <> 2 THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence relations are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'schema_version', 1, 'smallint'::REGTYPE, 0::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'tenant_id', 2, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'governance_decision_id', 3, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'database_identity_id', 4, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'subject_actor_id', 5, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'grantee_actor_id', 6, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'management_authority_id', 7, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'authority_generation', 8, 'bigint'::REGTYPE, 0::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'decision_action', 9, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'ceremony_policy_id', 10, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'ceremony_policy_version', 11, 'smallint'::REGTYPE, 0::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'trust_manifest_sha256', 12, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'decision_nonce_sha256', 13, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'evidence_sha256', 14, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'decision_sha256', 15, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'not_before', 16, 'timestamp with time zone'::REGTYPE, 0::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'expires_at', 17, 'timestamp with time zone'::REGTYPE, 0::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'state', 18, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'lifecycle_revision', 19, 'bigint'::REGTYPE, 0::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'recorded_by_actor_id', 20, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'recorded_at', 21, 'timestamp with time zone'::REGTYPE, 0::OID, TRUE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'verified_by_actor_id', 22, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, FALSE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'verified_at', 23, 'timestamp with time zone'::REGTYPE, 0::OID, FALSE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'consumed_by_actor_id', 24, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, FALSE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'consumed_at', 25, 'timestamp with time zone'::REGTYPE, 0::OID, FALSE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'revoked_by_actor_id', 26, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, FALSE),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'revoked_at', 27, 'timestamp with time zone'::REGTYPE, 0::OID, FALSE),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'schema_version', 1, 'smallint'::REGTYPE, 0::OID, TRUE),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'tenant_id', 2, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'governance_decision_id', 3, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'decision_sha256', 4, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'attester_slot', 5, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'attester_key_id', 6, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'signature_algorithm', 7, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'signature_base64url', 8, 'text'::REGTYPE, 'pg_catalog.default'::REGCOLLATION::OID, TRUE),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'attested_at', 9, 'timestamp with time zone'::REGTYPE, 0::OID, TRUE)
+          ) expected(
+            relation_oid,
+            column_name,
+            ordinal_position,
+            type_oid,
+            collation_oid,
+            not_null
+          )
+          LEFT JOIN pg_attribute attribute
+            ON attribute.attrelid = expected.relation_oid
+            AND attribute.attname = expected.column_name
+            AND NOT attribute.attisdropped
+          WHERE attribute.attname IS NULL
+            OR attribute.attnum <> expected.ordinal_position
+            OR attribute.atttypid <> expected.type_oid
+            OR attribute.attcollation <> expected.collation_oid
+            OR attribute.attnotnull IS DISTINCT FROM expected.not_null
+            OR attribute.attgenerated <> ''
+            OR attribute.attidentity <> ''
+        ) OR (
+          SELECT count(*)
+          FROM pg_attribute
+          WHERE attrelid =
+              'omni_membership_management_bootstrap_decisions'::regclass
+            AND attnum > 0
+            AND NOT attisdropped
+        ) <> 27 OR (
+          SELECT count(*)
+          FROM pg_attribute
+          WHERE attrelid =
+              'omni_membership_management_bootstrap_attestations'::regclass
+            AND attnum > 0
+            AND NOT attisdropped
+        ) <> 9 THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence columns are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF (
+          SELECT count(*)
+          FROM pg_attrdef
+          WHERE adrelid =
+            'omni_membership_management_bootstrap_decisions'::regclass
+        ) <> 5 OR (
+          SELECT count(*)
+          FROM pg_attrdef
+          WHERE adrelid =
+            'omni_membership_management_bootstrap_attestations'::regclass
+        ) <> 2 OR NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_membership_management_bootstrap_decisions'::regclass
+            AND attribute.attname = 'schema_version'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) IN ('1', '1::smallint', '(1)::smallint')
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_membership_management_bootstrap_decisions'::regclass
+            AND attribute.attname = 'decision_action'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) = '''create_held_membership_management_authority''::text'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_membership_management_bootstrap_decisions'::regclass
+            AND attribute.attname = 'state'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) = '''held''::text'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_membership_management_bootstrap_decisions'::regclass
+            AND attribute.attname = 'lifecycle_revision'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) IN ('0', '0::bigint', '(0)::bigint')
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_membership_management_bootstrap_decisions'::regclass
+            AND attribute.attname = 'recorded_at'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) = 'now()'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_membership_management_bootstrap_attestations'::regclass
+            AND attribute.attname = 'schema_version'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) IN ('1', '1::smallint', '(1)::smallint')
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_membership_management_bootstrap_attestations'::regclass
+            AND attribute.attname = 'signature_algorithm'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) = '''ed25519''::text'
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence defaults are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+
+    await sql`
+      DO $migration$
+      BEGIN
+        IF (
+          SELECT count(*)
+          FROM pg_constraint
+          WHERE conrelid =
+              'omni_membership_management_bootstrap_decisions'::regclass
+            AND contype <> 'n'
+        ) <> 15 OR (
+          SELECT count(*)
+          FROM pg_constraint
+          WHERE conrelid =
+              'omni_membership_management_bootstrap_attestations'::regclass
+            AND contype <> 'n'
+        ) <> 5 OR EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decisions_pkey', 'p'::"char", ARRAY['tenant_id', 'governance_decision_id']::TEXT[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_identity_nonce_key', 'u'::"char", ARRAY['database_identity_id', 'decision_nonce_sha256']::TEXT[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_identity_digest_key', 'u'::"char", ARRAY['database_identity_id', 'decision_sha256']::TEXT[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_child_binding_key', 'u'::"char", ARRAY['tenant_id', 'governance_decision_id', 'decision_sha256']::TEXT[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_target_binding_key', 'u'::"char", ARRAY['tenant_id', 'governance_decision_id', 'decision_sha256', 'subject_actor_id', 'grantee_actor_id', 'management_authority_id', 'authority_generation']::TEXT[]),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'omni_mm_bootstrap_attestations_pkey', 'p'::"char", ARRAY['tenant_id', 'governance_decision_id', 'attester_slot']::TEXT[]),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'omni_mm_bootstrap_attestation_key_key', 'u'::"char", ARRAY['tenant_id', 'governance_decision_id', 'attester_key_id']::TEXT[])
+          ) expected(relation_oid, constraint_name, constraint_type, columns)
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint constraint_record
+            JOIN pg_index index_record
+              ON index_record.indexrelid = constraint_record.conindid
+            JOIN pg_class index_relation
+              ON index_relation.oid = index_record.indexrelid
+            WHERE constraint_record.conrelid = expected.relation_oid
+              AND constraint_record.conname = expected.constraint_name
+              AND constraint_record.contype = expected.constraint_type
+              AND constraint_record.convalidated
+              AND COALESCE(
+                (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+                TRUE
+              )
+              AND NOT constraint_record.condeferrable
+              AND NOT constraint_record.condeferred
+              AND index_relation.relname = expected.constraint_name
+              AND (
+                SELECT array_agg(
+                  attribute.attname::TEXT ORDER BY key.ordinality
+                )
+                FROM unnest(constraint_record.conkey)
+                  WITH ORDINALITY AS key(attnum, ordinality)
+                JOIN pg_attribute attribute
+                  ON attribute.attrelid = constraint_record.conrelid
+                  AND attribute.attnum = key.attnum
+                  AND NOT attribute.attisdropped
+              ) = expected.columns
+          )
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence key constraints are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conrelid =
+              'omni_membership_management_bootstrap_decisions'::regclass
+            AND constraint_record.conname =
+              'omni_mm_bootstrap_decision_row_check'
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND NOT constraint_record.connoinherit
+            AND pg_get_expr(
+              constraint_record.conbin,
+              constraint_record.conrelid
+            ) =
+              'omni_mm_bootstrap_decision_row_is_valid(schema_version, tenant_id, governance_decision_id, database_identity_id, subject_actor_id, grantee_actor_id, management_authority_id, authority_generation, decision_action, ceremony_policy_id, ceremony_policy_version, trust_manifest_sha256, decision_nonce_sha256, evidence_sha256, decision_sha256, not_before, expires_at, state, lifecycle_revision, recorded_by_actor_id, recorded_at, verified_by_actor_id, verified_at, consumed_by_actor_id, consumed_at, revoked_by_actor_id, revoked_at)'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conrelid =
+              'omni_membership_management_bootstrap_decisions'::regclass
+            AND constraint_record.conname =
+              'omni_mm_bootstrap_decision_state_hold_check'
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND NOT constraint_record.connoinherit
+            AND pg_get_expr(
+              constraint_record.conbin,
+              constraint_record.conrelid
+            ) = '(state = ''held''::text)'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conrelid =
+              'omni_membership_management_bootstrap_attestations'::regclass
+            AND constraint_record.conname =
+              'omni_mm_bootstrap_attestation_row_check'
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND NOT constraint_record.connoinherit
+            AND pg_get_expr(
+              constraint_record.conbin,
+              constraint_record.conrelid
+            ) =
+              'omni_mm_bootstrap_attestation_row_is_valid(schema_version, tenant_id, governance_decision_id, decision_sha256, attester_slot, attester_key_id, signature_algorithm, signature_base64url, attested_at)'
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence check constraints are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_tenant_fkey', ARRAY['tenant_id']::TEXT[], 'omni_auth_tenants'::REGCLASS, ARRAY['id']::TEXT[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_database_fkey', ARRAY['database_identity_id']::TEXT[], 'omni_database_identity'::REGCLASS, ARRAY['id']::TEXT[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_subject_fkey', ARRAY['subject_actor_id']::TEXT[], 'omni_auth_users'::REGCLASS, ARRAY['actor_id']::TEXT[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_grantee_fkey', ARRAY['grantee_actor_id']::TEXT[], 'omni_auth_users'::REGCLASS, ARRAY['actor_id']::TEXT[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_recorded_actor_fkey', ARRAY['recorded_by_actor_id']::TEXT[], 'omni_auth_users'::REGCLASS, ARRAY['actor_id']::TEXT[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_verified_actor_fkey', ARRAY['verified_by_actor_id']::TEXT[], 'omni_auth_users'::REGCLASS, ARRAY['actor_id']::TEXT[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_consumed_actor_fkey', ARRAY['consumed_by_actor_id']::TEXT[], 'omni_auth_users'::REGCLASS, ARRAY['actor_id']::TEXT[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_revoked_actor_fkey', ARRAY['revoked_by_actor_id']::TEXT[], 'omni_auth_users'::REGCLASS, ARRAY['actor_id']::TEXT[]),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'omni_mm_bootstrap_attestation_tenant_fkey', ARRAY['tenant_id']::TEXT[], 'omni_auth_tenants'::REGCLASS, ARRAY['id']::TEXT[]),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'omni_mm_bootstrap_attestation_parent_fkey', ARRAY['tenant_id', 'governance_decision_id', 'decision_sha256']::TEXT[], 'omni_membership_management_bootstrap_decisions'::REGCLASS, ARRAY['tenant_id', 'governance_decision_id', 'decision_sha256']::TEXT[])
+          ) expected(
+            relation_oid,
+            constraint_name,
+            local_columns,
+            foreign_relation,
+            foreign_columns
+          )
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint constraint_record
+            WHERE constraint_record.conrelid = expected.relation_oid
+              AND constraint_record.conname = expected.constraint_name
+              AND constraint_record.contype = 'f'
+              AND constraint_record.convalidated
+              AND COALESCE(
+                (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+                TRUE
+              )
+              AND NOT constraint_record.condeferrable
+              AND NOT constraint_record.condeferred
+              AND constraint_record.confrelid = expected.foreign_relation
+              AND constraint_record.confupdtype = 'r'
+              AND constraint_record.confdeltype = 'r'
+              AND constraint_record.confmatchtype = 's'
+              AND (
+                SELECT array_agg(
+                  attribute.attname::TEXT ORDER BY key.ordinality
+                )
+                FROM unnest(constraint_record.conkey)
+                  WITH ORDINALITY AS key(attnum, ordinality)
+                JOIN pg_attribute attribute
+                  ON attribute.attrelid = constraint_record.conrelid
+                  AND attribute.attnum = key.attnum
+                  AND NOT attribute.attisdropped
+              ) = expected.local_columns
+              AND (
+                SELECT array_agg(
+                  attribute.attname::TEXT ORDER BY key.ordinality
+                )
+                FROM unnest(constraint_record.confkey)
+                  WITH ORDINALITY AS key(attnum, ordinality)
+                JOIN pg_attribute attribute
+                  ON attribute.attrelid = constraint_record.confrelid
+                  AND attribute.attnum = key.attnum
+                  AND NOT attribute.attisdropped
+              ) = expected.foreign_columns
+          )
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence references are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+
+    await sql`
+      DO $migration$
+      BEGIN
+        IF (
+          SELECT count(*)
+          FROM pg_index
+          WHERE indrelid =
+            'omni_membership_management_bootstrap_decisions'::regclass
+        ) <> 5 OR (
+          SELECT count(*)
+          FROM pg_index
+          WHERE indrelid =
+            'omni_membership_management_bootstrap_attestations'::regclass
+        ) <> 2 OR EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decisions_pkey', TRUE, ARRAY['tenant_id', 'governance_decision_id']::TEXT[], ARRAY['pg_catalog.text_ops', 'pg_catalog.text_ops']::TEXT[], ARRAY['pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID]::OID[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_identity_nonce_key', FALSE, ARRAY['database_identity_id', 'decision_nonce_sha256']::TEXT[], ARRAY['pg_catalog.text_ops', 'pg_catalog.text_ops']::TEXT[], ARRAY['pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID]::OID[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_identity_digest_key', FALSE, ARRAY['database_identity_id', 'decision_sha256']::TEXT[], ARRAY['pg_catalog.text_ops', 'pg_catalog.text_ops']::TEXT[], ARRAY['pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID]::OID[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_child_binding_key', FALSE, ARRAY['tenant_id', 'governance_decision_id', 'decision_sha256']::TEXT[], ARRAY['pg_catalog.text_ops', 'pg_catalog.text_ops', 'pg_catalog.text_ops']::TEXT[], ARRAY['pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID]::OID[]),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_target_binding_key', FALSE, ARRAY['tenant_id', 'governance_decision_id', 'decision_sha256', 'subject_actor_id', 'grantee_actor_id', 'management_authority_id', 'authority_generation']::TEXT[], ARRAY['pg_catalog.text_ops', 'pg_catalog.text_ops', 'pg_catalog.text_ops', 'pg_catalog.text_ops', 'pg_catalog.text_ops', 'pg_catalog.text_ops', 'pg_catalog.int8_ops']::TEXT[], ARRAY['pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID, 0::OID]::OID[]),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'omni_mm_bootstrap_attestations_pkey', TRUE, ARRAY['tenant_id', 'governance_decision_id', 'attester_slot']::TEXT[], ARRAY['pg_catalog.text_ops', 'pg_catalog.text_ops', 'pg_catalog.text_ops']::TEXT[], ARRAY['pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID]::OID[]),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'omni_mm_bootstrap_attestation_key_key', FALSE, ARRAY['tenant_id', 'governance_decision_id', 'attester_key_id']::TEXT[], ARRAY['pg_catalog.text_ops', 'pg_catalog.text_ops', 'pg_catalog.text_ops']::TEXT[], ARRAY['pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID, 'pg_catalog.default'::REGCOLLATION::OID]::OID[])
+          ) expected(
+            relation_oid,
+            index_name,
+            is_primary,
+            columns,
+            operator_classes,
+            collations
+          )
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_index index_record
+            JOIN pg_class index_relation
+              ON index_relation.oid = index_record.indexrelid
+            JOIN pg_namespace index_namespace
+              ON index_namespace.oid = index_relation.relnamespace
+            JOIN pg_am access_method
+              ON access_method.oid = index_relation.relam
+            WHERE index_record.indrelid = expected.relation_oid
+              AND index_relation.relname = expected.index_name
+              AND index_namespace.nspname = current_schema()
+              AND index_relation.relkind = 'i'
+              AND access_method.amname = 'btree'
+              AND index_record.indisunique
+              AND index_record.indisprimary IS NOT DISTINCT FROM
+                expected.is_primary
+              AND index_record.indisvalid
+              AND index_record.indisready
+              AND index_record.indislive
+              AND index_record.indimmediate
+              AND NOT index_record.indisclustered
+              AND NOT index_record.indisreplident
+              AND NOT index_record.indisexclusion
+              AND index_record.indnkeyatts = cardinality(expected.columns)
+              AND index_record.indnatts = cardinality(expected.columns)
+              AND index_record.indexprs IS NULL
+              AND index_record.indpred IS NULL
+              AND (
+                SELECT array_agg(
+                  attribute.attname::TEXT ORDER BY key.ordinality
+                )
+                FROM unnest(index_record.indkey)
+                  WITH ORDINALITY AS key(attnum, ordinality)
+                JOIN pg_attribute attribute
+                  ON attribute.attrelid = index_record.indrelid
+                  AND attribute.attnum = key.attnum
+                  AND NOT attribute.attisdropped
+              ) = expected.columns
+              AND (
+                SELECT array_agg(
+                  operator_namespace.nspname || '.' ||
+                    operator_class.opcname
+                  ORDER BY key.ordinality
+                )
+                FROM unnest(index_record.indclass)
+                  WITH ORDINALITY AS key(operator_class_oid, ordinality)
+                JOIN pg_opclass operator_class
+                  ON operator_class.oid = key.operator_class_oid
+                JOIN pg_namespace operator_namespace
+                  ON operator_namespace.oid = operator_class.opcnamespace
+              ) = expected.operator_classes
+              AND (
+                SELECT array_agg(collation_oid ORDER BY key.ordinality)
+                FROM unnest(index_record.indcollation)
+                  WITH ORDINALITY AS key(collation_oid, ordinality)
+              ) = expected.collations
+              AND (
+                SELECT count(*) = cardinality(expected.columns)
+                  AND bool_and(index_option = 0)
+                FROM unnest(index_record.indoption)
+                  AS options(index_option)
+              )
+          )
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence indexes are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+
+    await sql`
+      DO $migration$
+      DECLARE
+        observed_at TIMESTAMPTZ := statement_timestamp();
+      BEGIN
+        IF public.omni_mm_bootstrap_decision_row_is_valid(
+          1::SMALLINT,
+          'tenant:v57_check',
+          'governance_decision:v57_check',
+          '0123456789abcdef0123456789abcdef',
+          'actor:v57_subject',
+          'actor:v57_grantee',
+          'membership_authority:v57_target',
+          1::BIGINT,
+          'create_held_membership_management_authority',
+          'ceremony_policy:v57_check',
+          1::SMALLINT,
+          repeat('a', 64),
+          repeat('b', 64),
+          repeat('c', 64),
+          repeat('d', 64),
+          observed_at - INTERVAL '5 minutes',
+          observed_at + INTERVAL '10 minutes',
+          'held',
+          0::BIGINT,
+          'actor:v57_recorder',
+          observed_at,
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+          NULL
+        ) IS DISTINCT FROM TRUE OR
+          public.omni_mm_bootstrap_decision_row_is_valid(
+            1::SMALLINT,
+            'tenant:v57_check',
+            'governance_decision:v57_check',
+            '0123456789abcdef0123456789abcdef',
+            'actor:v57_subject',
+            'actor:v57_grantee',
+            'membership_authority:v57_target',
+            1::BIGINT,
+            'create_held_membership_management_authority',
+            'ceremony_policy:v57_check',
+            1::SMALLINT,
+            repeat('a', 64),
+            repeat('b', 64),
+            repeat('c', 64),
+            repeat('d', 64),
+            observed_at - INTERVAL '5 minutes',
+            observed_at + INTERVAL '10 minutes 1 microsecond',
+            'held',
+            0::BIGINT,
+            'actor:v57_recorder',
+            observed_at,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL
+          ) IS DISTINCT FROM FALSE OR
+          public.omni_mm_bootstrap_decision_row_is_valid(
+            1::SMALLINT,
+            'tenant:v57_check',
+            'governance_decision:v57_check',
+            '0123456789abcdef0123456789abcdef',
+            'actor:v57_subject',
+            'actor:v57_grantee',
+            'membership_authority:v57_target',
+            1::BIGINT,
+            'create_held_membership_management_authority',
+            'ceremony_policy:v57_check',
+            1::SMALLINT,
+            repeat('A', 64),
+            repeat('b', 64),
+            repeat('c', 64),
+            repeat('d', 64),
+            observed_at - INTERVAL '5 minutes',
+            observed_at + INTERVAL '10 minutes',
+            'held',
+            0::BIGINT,
+            'actor:v57_recorder',
+            observed_at,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL
+          ) IS DISTINCT FROM FALSE OR
+          public.omni_mm_bootstrap_decision_row_is_valid(
+            1::SMALLINT,
+            'tenant:v57_check',
+            'governance_decision:v57_check',
+            '0123456789abcdef0123456789abcdef',
+            'actor:v57_subject',
+            'actor:v57_grantee',
+            'membership_authority:v57_target',
+            1::BIGINT,
+            'create_held_membership_management_authority',
+            'ceremony_policy:v57_check',
+            1::SMALLINT,
+            repeat('a', 64),
+            repeat('b', 64),
+            repeat('c', 64),
+            repeat('d', 64),
+            observed_at - INTERVAL '5 minutes',
+            observed_at + INTERVAL '10 minutes',
+            'held',
+            0::BIGINT,
+            'actor:v57_recorder',
+            observed_at,
+            'actor:v57_verifier',
+            observed_at,
+            NULL,
+            NULL,
+            NULL,
+            NULL
+          ) IS DISTINCT FROM FALSE
+        THEN
+          RAISE EXCEPTION 'Membership bootstrap decision validator is invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF public.omni_mm_bootstrap_attestation_row_is_valid(
+          1::SMALLINT,
+          'tenant:v57_check',
+          'governance_decision:v57_check',
+          repeat('d', 64),
+          'organization_custodian',
+          'attester_key:v57_custodian',
+          'ed25519',
+          repeat('A', 86),
+          observed_at
+        ) IS DISTINCT FROM TRUE OR
+          public.omni_mm_bootstrap_attestation_row_is_valid(
+            1::SMALLINT,
+            'tenant:v57_check',
+            'governance_decision:v57_check',
+            repeat('d', 64),
+            'independent_reviewer',
+            'attester_key:v57_reviewer',
+            'ed25519',
+            repeat('A', 85) || 'w',
+            observed_at
+          ) IS DISTINCT FROM TRUE OR
+          public.omni_mm_bootstrap_attestation_row_is_valid(
+            1::SMALLINT,
+            'tenant:v57_check',
+            'governance_decision:v57_check',
+            repeat('d', 64),
+            'independent_reviewer',
+            'attester_key:v57_reviewer',
+            'ed25519',
+            repeat('A', 85) || 'B',
+            observed_at
+          ) IS DISTINCT FROM FALSE OR
+          public.omni_mm_bootstrap_attestation_row_is_valid(
+            1::SMALLINT,
+            'tenant:v57_check',
+            'governance_decision:v57_check',
+            repeat('d', 64),
+            'tenant_administrator',
+            'attester_key:v57_reviewer',
+            'ed25519',
+            repeat('A', 86),
+            observed_at
+          ) IS DISTINCT FROM FALSE
+        THEN
+          RAISE EXCEPTION 'Membership bootstrap attestation validator is invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF (
+          SELECT count(*)
+          FROM pg_proc procedure
+          JOIN pg_namespace namespace
+            ON namespace.oid = procedure.pronamespace
+          WHERE namespace.nspname = current_schema()
+            AND procedure.proname IN (
+              'omni_mm_bootstrap_decision_row_is_valid',
+              'omni_mm_bootstrap_attestation_row_is_valid',
+              'omni_validate_mm_bootstrap_decision_insert',
+              'omni_validate_mm_bootstrap_attestation_insert',
+              'omni_protect_mm_bootstrap_decision',
+              'omni_protect_mm_bootstrap_attestation'
+            )
+        ) <> 6 THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence function set is invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+
+    await sql`
+      DO $migration$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_language language ON language.oid = procedure.prolang
+          WHERE procedure.oid = to_regprocedure(
+            'public.omni_mm_bootstrap_decision_row_is_valid(smallint,text,text,text,text,text,text,bigint,text,text,smallint,text,text,text,text,timestamptz,timestamptz,text,bigint,text,timestamptz,text,timestamptz,text,timestamptz,text,timestamptz)'
+          )
+            AND procedure.prorettype = 'boolean'::regtype
+            AND procedure.provolatile = 'i'
+            AND NOT procedure.proisstrict
+            AND NOT procedure.prosecdef
+            AND NOT procedure.proleakproof
+            AND procedure.proconfig =
+              ARRAY['search_path=pg_catalog, public']
+            AND procedure.proowner = (
+              SELECT relowner FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+            AND language.lanname = 'sql'
+            AND procedure.prosrc = $expected$
+      SELECT COALESCE(
+        candidate_schema_version = 1
+        AND public.omni_source_contract_id_is_valid(candidate_tenant_id)
+        AND public.omni_source_contract_id_is_valid(
+          candidate_governance_decision_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_database_identity_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_subject_actor_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_grantee_actor_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_management_authority_id
+        )
+        AND candidate_authority_generation BETWEEN 1 AND 9007199254740991
+        AND candidate_decision_action =
+          'create_held_membership_management_authority'
+        AND public.omni_source_contract_id_is_valid(
+          candidate_ceremony_policy_id
+        )
+        AND candidate_ceremony_policy_version BETWEEN 1 AND 32767
+        AND candidate_trust_manifest_sha256 ~ '^[0-9a-f]{64}$'
+        AND candidate_decision_nonce_sha256 ~ '^[0-9a-f]{64}$'
+        AND candidate_evidence_sha256 ~ '^[0-9a-f]{64}$'
+        AND candidate_decision_sha256 ~ '^[0-9a-f]{64}$'
+        AND isfinite(candidate_not_before)
+        AND isfinite(candidate_expires_at)
+        AND isfinite(candidate_recorded_at)
+        AND candidate_expires_at > candidate_not_before
+        AND candidate_expires_at <=
+          candidate_not_before + INTERVAL '15 minutes'
+        AND candidate_recorded_at >= candidate_not_before
+        AND candidate_recorded_at < candidate_expires_at
+        AND candidate_state = 'held'
+        AND candidate_lifecycle_revision = 0
+        AND public.omni_source_contract_id_is_valid(
+          candidate_recorded_by_actor_id
+        )
+        AND candidate_verified_by_actor_id IS NULL
+        AND candidate_verified_at IS NULL
+        AND candidate_consumed_by_actor_id IS NULL
+        AND candidate_consumed_at IS NULL
+        AND candidate_revoked_by_actor_id IS NULL
+        AND candidate_revoked_at IS NULL,
+        FALSE
+      )
+    $expected$
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_language language ON language.oid = procedure.prolang
+          WHERE procedure.oid = to_regprocedure(
+            'public.omni_mm_bootstrap_attestation_row_is_valid(smallint,text,text,text,text,text,text,text,timestamptz)'
+          )
+            AND procedure.prorettype = 'boolean'::regtype
+            AND procedure.provolatile = 'i'
+            AND NOT procedure.proisstrict
+            AND NOT procedure.prosecdef
+            AND NOT procedure.proleakproof
+            AND procedure.proconfig =
+              ARRAY['search_path=pg_catalog, public']
+            AND procedure.proowner = (
+              SELECT relowner FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+            AND language.lanname = 'sql'
+            AND procedure.prosrc = $expected$
+      SELECT COALESCE(
+        candidate_schema_version = 1
+        AND public.omni_source_contract_id_is_valid(candidate_tenant_id)
+        AND public.omni_source_contract_id_is_valid(
+          candidate_governance_decision_id
+        )
+        AND candidate_decision_sha256 ~ '^[0-9a-f]{64}$'
+        AND candidate_attester_slot IN (
+          'organization_custodian',
+          'independent_reviewer'
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_attester_key_id
+        )
+        AND candidate_signature_algorithm = 'ed25519'
+        AND candidate_signature_base64url ~
+          '^[A-Za-z0-9_-]{85}[AQgw]$'
+        AND isfinite(candidate_attested_at),
+        FALSE
+      )
+    $expected$
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence row functions are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+
+    await sql`
+      DO $migration$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_language language ON language.oid = procedure.prolang
+          WHERE procedure.oid = to_regprocedure(
+            'public.omni_validate_mm_bootstrap_decision_insert()'
+          )
+            AND procedure.prorettype = 'trigger'::regtype
+            AND procedure.provolatile = 'v'
+            AND NOT procedure.proisstrict
+            AND NOT procedure.prosecdef
+            AND NOT procedure.proleakproof
+            AND procedure.proconfig =
+              ARRAY['search_path=pg_catalog, public']
+            AND procedure.proowner = (
+              SELECT relowner FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+            AND language.lanname = 'plpgsql'
+            AND procedure.prosrc = $expected$
+    BEGIN
+      NEW.recorded_at := statement_timestamp();
+
+      IF NOT public.omni_mm_bootstrap_decision_row_is_valid(
+        NEW.schema_version,
+        NEW.tenant_id,
+        NEW.governance_decision_id,
+        NEW.database_identity_id,
+        NEW.subject_actor_id,
+        NEW.grantee_actor_id,
+        NEW.management_authority_id,
+        NEW.authority_generation,
+        NEW.decision_action,
+        NEW.ceremony_policy_id,
+        NEW.ceremony_policy_version,
+        NEW.trust_manifest_sha256,
+        NEW.decision_nonce_sha256,
+        NEW.evidence_sha256,
+        NEW.decision_sha256,
+        NEW.not_before,
+        NEW.expires_at,
+        NEW.state,
+        NEW.lifecycle_revision,
+        NEW.recorded_by_actor_id,
+        NEW.recorded_at,
+        NEW.verified_by_actor_id,
+        NEW.verified_at,
+        NEW.consumed_by_actor_id,
+        NEW.consumed_at,
+        NEW.revoked_by_actor_id,
+        NEW.revoked_at
+      ) THEN
+        RAISE EXCEPTION 'Membership bootstrap decision row is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $expected$
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_language language ON language.oid = procedure.prolang
+          WHERE procedure.oid = to_regprocedure(
+            'public.omni_validate_mm_bootstrap_attestation_insert()'
+          )
+            AND procedure.prorettype = 'trigger'::regtype
+            AND procedure.provolatile = 'v'
+            AND NOT procedure.proisstrict
+            AND NOT procedure.prosecdef
+            AND NOT procedure.proleakproof
+            AND procedure.proconfig =
+              ARRAY['search_path=pg_catalog, public']
+            AND procedure.proowner = (
+              SELECT relowner FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+            AND language.lanname = 'plpgsql'
+            AND procedure.prosrc = $expected$
+    DECLARE
+      parent_not_before TIMESTAMPTZ;
+      parent_expires_at TIMESTAMPTZ;
+      parent_state TEXT;
+      parent_lifecycle_revision BIGINT;
+      observed_at TIMESTAMPTZ := statement_timestamp();
+    BEGIN
+      IF NOT public.omni_mm_bootstrap_attestation_row_is_valid(
+        NEW.schema_version,
+        NEW.tenant_id,
+        NEW.governance_decision_id,
+        NEW.decision_sha256,
+        NEW.attester_slot,
+        NEW.attester_key_id,
+        NEW.signature_algorithm,
+        NEW.signature_base64url,
+        NEW.attested_at
+      ) THEN
+        RAISE EXCEPTION 'Membership bootstrap attestation row is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      SELECT
+        decision.not_before,
+        decision.expires_at,
+        decision.state,
+        decision.lifecycle_revision
+      INTO STRICT
+        parent_not_before,
+        parent_expires_at,
+        parent_state,
+        parent_lifecycle_revision
+      FROM public.omni_membership_management_bootstrap_decisions decision
+      WHERE decision.tenant_id = NEW.tenant_id
+        AND decision.governance_decision_id = NEW.governance_decision_id
+        AND decision.decision_sha256 = NEW.decision_sha256
+      FOR KEY SHARE;
+
+      IF parent_state <> 'held' OR parent_lifecycle_revision <> 0 THEN
+        RAISE EXCEPTION 'Membership bootstrap decision is not held'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.attested_at < parent_not_before
+        OR NEW.attested_at >= parent_expires_at
+        OR observed_at < parent_not_before
+        OR observed_at >= parent_expires_at
+      THEN
+        RAISE EXCEPTION 'Membership bootstrap attestation is outside the decision window'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        RAISE EXCEPTION 'Membership bootstrap decision does not exist'
+          USING ERRCODE = '23503';
+      WHEN TOO_MANY_ROWS THEN
+        RAISE EXCEPTION 'Membership bootstrap decision binding is ambiguous'
+          USING ERRCODE = '23514';
+    END
+    $expected$
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_language language ON language.oid = procedure.prolang
+          WHERE procedure.oid = to_regprocedure(
+            'public.omni_protect_mm_bootstrap_decision()'
+          )
+            AND procedure.prorettype = 'trigger'::regtype
+            AND procedure.provolatile = 'v'
+            AND NOT procedure.proisstrict
+            AND NOT procedure.prosecdef
+            AND NOT procedure.proleakproof
+            AND procedure.proconfig =
+              ARRAY['search_path=pg_catalog, public']
+            AND procedure.proowner = (
+              SELECT relowner FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+            AND language.lanname = 'plpgsql'
+            AND procedure.prosrc = $expected$
+    BEGIN
+      RAISE EXCEPTION 'Membership bootstrap decision rows are immutable'
+        USING ERRCODE = '55000';
+    END
+    $expected$
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_language language ON language.oid = procedure.prolang
+          WHERE procedure.oid = to_regprocedure(
+            'public.omni_protect_mm_bootstrap_attestation()'
+          )
+            AND procedure.prorettype = 'trigger'::regtype
+            AND procedure.provolatile = 'v'
+            AND NOT procedure.proisstrict
+            AND NOT procedure.prosecdef
+            AND NOT procedure.proleakproof
+            AND procedure.proconfig =
+              ARRAY['search_path=pg_catalog, public']
+            AND procedure.proowner = (
+              SELECT relowner FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+            AND language.lanname = 'plpgsql'
+            AND procedure.prosrc = $expected$
+    BEGIN
+      RAISE EXCEPTION 'Membership bootstrap attestation rows are immutable'
+        USING ERRCODE = '55000';
+    END
+    $expected$
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence trigger functions are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+
+    await sql`
+      DO $migration$
+      BEGIN
+        IF (
+          SELECT count(*)
+          FROM pg_trigger
+          WHERE tgrelid =
+              'omni_membership_management_bootstrap_decisions'::regclass
+            AND NOT tgisinternal
+        ) <> 3 OR (
+          SELECT count(*)
+          FROM pg_trigger
+          WHERE tgrelid =
+              'omni_membership_management_bootstrap_attestations'::regclass
+            AND NOT tgisinternal
+        ) <> 3 OR EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_validate_insert', to_regprocedure('public.omni_validate_mm_bootstrap_decision_insert()'), 7),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_protect', to_regprocedure('public.omni_protect_mm_bootstrap_decision()'), 27),
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_no_truncate', to_regprocedure('public.omni_protect_mm_bootstrap_decision()'), 34),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'omni_mm_bootstrap_attestation_validate_insert', to_regprocedure('public.omni_validate_mm_bootstrap_attestation_insert()'), 7),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'omni_mm_bootstrap_attestation_protect', to_regprocedure('public.omni_protect_mm_bootstrap_attestation()'), 27),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'omni_mm_bootstrap_attestation_no_truncate', to_regprocedure('public.omni_protect_mm_bootstrap_attestation()'), 34)
+          ) expected(
+            relation_oid,
+            trigger_name,
+            procedure_oid,
+            trigger_type
+          )
+          WHERE expected.procedure_oid IS NULL OR NOT EXISTS (
+            SELECT 1
+            FROM pg_trigger trigger_record
+            WHERE trigger_record.tgrelid = expected.relation_oid
+              AND trigger_record.tgname = expected.trigger_name
+              AND NOT trigger_record.tgisinternal
+              AND trigger_record.tgenabled = 'O'
+              AND trigger_record.tgfoid = expected.procedure_oid
+              AND trigger_record.tgtype = expected.trigger_type
+              AND trigger_record.tgqual IS NULL
+              AND trigger_record.tgnargs = 0
+              AND trigger_record.tgconstraint = 0
+              AND NOT trigger_record.tgdeferrable
+              AND NOT trigger_record.tginitdeferred
+              AND trigger_record.tgattr::TEXT = ''
+          )
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence triggers are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              ('omni_membership_management_bootstrap_decisions'::REGCLASS, 'omni_mm_bootstrap_decision_holdback'),
+              ('omni_membership_management_bootstrap_attestations'::REGCLASS, 'omni_mm_bootstrap_attestation_holdback')
+          ) expected(relation_oid, holdback_policy)
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_class relation
+            WHERE relation.oid = expected.relation_oid
+              AND relation.relrowsecurity
+              AND relation.relforcerowsecurity
+          ) OR (
+            SELECT count(*)
+            FROM pg_policy
+            WHERE polrelid = expected.relation_oid
+          ) <> 2 OR NOT EXISTS (
+            SELECT 1
+            FROM pg_policy
+            WHERE polrelid = expected.relation_oid
+              AND polname = 'omni_tenant_isolation'
+              AND polpermissive
+              AND polcmd = '*'
+              AND polroles = ARRAY[0::OID]
+              AND pg_get_expr(polqual, polrelid) =
+                'omni_tenant_visible(tenant_id)'
+              AND pg_get_expr(polwithcheck, polrelid) =
+                'omni_tenant_visible(tenant_id)'
+          ) OR NOT EXISTS (
+            SELECT 1
+            FROM pg_policy
+            WHERE polrelid = expected.relation_oid
+              AND polname = expected.holdback_policy
+              AND NOT polpermissive
+              AND polcmd = '*'
+              AND polroles = ARRAY[0::OID]
+              AND pg_get_expr(polqual, polrelid) =
+                'omni_system_scope_enabled()'
+              AND pg_get_expr(polwithcheck, polrelid) =
+                'omni_system_scope_enabled()'
+          )
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence policies are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.table_privileges
+          WHERE table_schema = current_schema()
+            AND table_name IN (
+              'omni_membership_management_bootstrap_decisions',
+              'omni_membership_management_bootstrap_attestations'
+            )
+            AND grantee <> current_user
+        ) OR EXISTS (
+          SELECT 1
+          FROM information_schema.column_privileges
+          WHERE table_schema = current_schema()
+            AND table_name IN (
+              'omni_membership_management_bootstrap_decisions',
+              'omni_membership_management_bootstrap_attestations'
+            )
+            AND grantee <> current_user
+        ) OR EXISTS (
+          SELECT 1
+          FROM information_schema.routine_privileges
+          WHERE routine_schema = current_schema()
+            AND routine_name IN (
+              'omni_mm_bootstrap_decision_row_is_valid',
+              'omni_mm_bootstrap_attestation_row_is_valid',
+              'omni_validate_mm_bootstrap_decision_insert',
+              'omni_validate_mm_bootstrap_attestation_insert',
+              'omni_protect_mm_bootstrap_decision',
+              'omni_protect_mm_bootstrap_attestation'
+            )
+            AND privilege_type = 'EXECUTE'
+            AND grantee <> current_user
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence boundary is exposed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1 FROM omni_membership_management_bootstrap_decisions
+        ) OR EXISTS (
+          SELECT 1 FROM omni_membership_management_bootstrap_attestations
+        ) THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence shadows are not empty'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+  };
+
+  await verifyBootstrapEvidencePredecessors();
+
+  const targetRelationState = await sql`
+    SELECT
+      to_regclass(
+        'public.omni_membership_management_bootstrap_decisions'
+      ) IS NOT NULL AS decisions_exist,
+      to_regclass(
+        'public.omni_membership_management_bootstrap_attestations'
+      ) IS NOT NULL AS attestations_exist
+  `;
+  const decisionsExist = targetRelationState[0]?.decisions_exist;
+  const attestationsExist = targetRelationState[0]?.attestations_exist;
+  if (
+    targetRelationState.length !== 1 ||
+    typeof decisionsExist !== "boolean" ||
+    typeof attestationsExist !== "boolean"
+  ) {
+    throw new Error("Membership bootstrap evidence retry state is invalid.");
+  }
+
+  if (decisionsExist || attestationsExist) {
+    if (!decisionsExist || !attestationsExist) {
+      throw new Error("Membership bootstrap evidence install is partial.");
+    }
+    await sql`
+      LOCK TABLE
+        omni_membership_management_bootstrap_decisions,
+        omni_membership_management_bootstrap_attestations
+      IN ACCESS EXCLUSIVE MODE
+    `;
+    await verifyBootstrapEvidenceSurface();
+  } else {
+    await sql`
+      DO $migration$
+      BEGIN
+        IF EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_namespace namespace
+            ON namespace.oid = procedure.pronamespace
+          WHERE namespace.nspname = current_schema()
+            AND procedure.proname IN (
+              'omni_mm_bootstrap_decision_row_is_valid',
+              'omni_mm_bootstrap_attestation_row_is_valid',
+              'omni_validate_mm_bootstrap_decision_insert',
+              'omni_validate_mm_bootstrap_attestation_insert',
+              'omni_protect_mm_bootstrap_decision',
+              'omni_protect_mm_bootstrap_attestation'
+            )
+        ) OR to_regclass(
+          'public.omni_mm_bootstrap_decisions_pkey'
+        ) IS NOT NULL OR to_regclass(
+          'public.omni_mm_bootstrap_decision_identity_nonce_key'
+        ) IS NOT NULL OR to_regclass(
+          'public.omni_mm_bootstrap_decision_identity_digest_key'
+        ) IS NOT NULL OR to_regclass(
+          'public.omni_mm_bootstrap_decision_child_binding_key'
+        ) IS NOT NULL OR to_regclass(
+          'public.omni_mm_bootstrap_decision_target_binding_key'
+        ) IS NOT NULL OR to_regclass(
+          'public.omni_mm_bootstrap_attestations_pkey'
+        ) IS NOT NULL OR to_regclass(
+          'public.omni_mm_bootstrap_attestation_key_key'
+        ) IS NOT NULL THEN
+          RAISE EXCEPTION 'Membership bootstrap evidence install is partial'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+  }
+
+  await sql`
+    CREATE OR REPLACE FUNCTION
+      omni_mm_bootstrap_decision_row_is_valid(
+        candidate_schema_version SMALLINT,
+        candidate_tenant_id TEXT,
+        candidate_governance_decision_id TEXT,
+        candidate_database_identity_id TEXT,
+        candidate_subject_actor_id TEXT,
+        candidate_grantee_actor_id TEXT,
+        candidate_management_authority_id TEXT,
+        candidate_authority_generation BIGINT,
+        candidate_decision_action TEXT,
+        candidate_ceremony_policy_id TEXT,
+        candidate_ceremony_policy_version SMALLINT,
+        candidate_trust_manifest_sha256 TEXT,
+        candidate_decision_nonce_sha256 TEXT,
+        candidate_evidence_sha256 TEXT,
+        candidate_decision_sha256 TEXT,
+        candidate_not_before TIMESTAMPTZ,
+        candidate_expires_at TIMESTAMPTZ,
+        candidate_state TEXT,
+        candidate_lifecycle_revision BIGINT,
+        candidate_recorded_by_actor_id TEXT,
+        candidate_recorded_at TIMESTAMPTZ,
+        candidate_verified_by_actor_id TEXT,
+        candidate_verified_at TIMESTAMPTZ,
+        candidate_consumed_by_actor_id TEXT,
+        candidate_consumed_at TIMESTAMPTZ,
+        candidate_revoked_by_actor_id TEXT,
+        candidate_revoked_at TIMESTAMPTZ
+      )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        candidate_schema_version = 1
+        AND public.omni_source_contract_id_is_valid(candidate_tenant_id)
+        AND public.omni_source_contract_id_is_valid(
+          candidate_governance_decision_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_database_identity_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_subject_actor_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_grantee_actor_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_management_authority_id
+        )
+        AND candidate_authority_generation BETWEEN 1 AND 9007199254740991
+        AND candidate_decision_action =
+          'create_held_membership_management_authority'
+        AND public.omni_source_contract_id_is_valid(
+          candidate_ceremony_policy_id
+        )
+        AND candidate_ceremony_policy_version BETWEEN 1 AND 32767
+        AND candidate_trust_manifest_sha256 ~ '^[0-9a-f]{64}$'
+        AND candidate_decision_nonce_sha256 ~ '^[0-9a-f]{64}$'
+        AND candidate_evidence_sha256 ~ '^[0-9a-f]{64}$'
+        AND candidate_decision_sha256 ~ '^[0-9a-f]{64}$'
+        AND isfinite(candidate_not_before)
+        AND isfinite(candidate_expires_at)
+        AND isfinite(candidate_recorded_at)
+        AND candidate_expires_at > candidate_not_before
+        AND candidate_expires_at <=
+          candidate_not_before + INTERVAL '15 minutes'
+        AND candidate_recorded_at >= candidate_not_before
+        AND candidate_recorded_at < candidate_expires_at
+        AND candidate_state = 'held'
+        AND candidate_lifecycle_revision = 0
+        AND public.omni_source_contract_id_is_valid(
+          candidate_recorded_by_actor_id
+        )
+        AND candidate_verified_by_actor_id IS NULL
+        AND candidate_verified_at IS NULL
+        AND candidate_consumed_by_actor_id IS NULL
+        AND candidate_consumed_at IS NULL
+        AND candidate_revoked_by_actor_id IS NULL
+        AND candidate_revoked_at IS NULL,
+        FALSE
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION
+      omni_mm_bootstrap_attestation_row_is_valid(
+        candidate_schema_version SMALLINT,
+        candidate_tenant_id TEXT,
+        candidate_governance_decision_id TEXT,
+        candidate_decision_sha256 TEXT,
+        candidate_attester_slot TEXT,
+        candidate_attester_key_id TEXT,
+        candidate_signature_algorithm TEXT,
+        candidate_signature_base64url TEXT,
+        candidate_attested_at TIMESTAMPTZ
+      )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        candidate_schema_version = 1
+        AND public.omni_source_contract_id_is_valid(candidate_tenant_id)
+        AND public.omni_source_contract_id_is_valid(
+          candidate_governance_decision_id
+        )
+        AND candidate_decision_sha256 ~ '^[0-9a-f]{64}$'
+        AND candidate_attester_slot IN (
+          'organization_custodian',
+          'independent_reviewer'
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_attester_key_id
+        )
+        AND candidate_signature_algorithm = 'ed25519'
+        AND candidate_signature_base64url ~
+          '^[A-Za-z0-9_-]{85}[AQgw]$'
+        AND isfinite(candidate_attested_at),
+        FALSE
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS
+      omni_membership_management_bootstrap_decisions (
+        schema_version SMALLINT NOT NULL DEFAULT 1,
+        tenant_id TEXT NOT NULL,
+        governance_decision_id TEXT NOT NULL,
+        database_identity_id TEXT NOT NULL,
+        subject_actor_id TEXT NOT NULL,
+        grantee_actor_id TEXT NOT NULL,
+        management_authority_id TEXT NOT NULL,
+        authority_generation BIGINT NOT NULL,
+        decision_action TEXT NOT NULL DEFAULT
+          'create_held_membership_management_authority',
+        ceremony_policy_id TEXT NOT NULL,
+        ceremony_policy_version SMALLINT NOT NULL,
+        trust_manifest_sha256 TEXT NOT NULL,
+        decision_nonce_sha256 TEXT NOT NULL,
+        evidence_sha256 TEXT NOT NULL,
+        decision_sha256 TEXT NOT NULL,
+        not_before TIMESTAMPTZ NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        state TEXT NOT NULL DEFAULT 'held',
+        lifecycle_revision BIGINT NOT NULL DEFAULT 0,
+        recorded_by_actor_id TEXT NOT NULL,
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        verified_by_actor_id TEXT,
+        verified_at TIMESTAMPTZ,
+        consumed_by_actor_id TEXT,
+        consumed_at TIMESTAMPTZ,
+        revoked_by_actor_id TEXT,
+        revoked_at TIMESTAMPTZ,
+        CONSTRAINT omni_mm_bootstrap_decisions_pkey
+          PRIMARY KEY (tenant_id, governance_decision_id),
+        CONSTRAINT omni_mm_bootstrap_decision_identity_nonce_key
+          UNIQUE (database_identity_id, decision_nonce_sha256),
+        CONSTRAINT omni_mm_bootstrap_decision_identity_digest_key
+          UNIQUE (database_identity_id, decision_sha256),
+        CONSTRAINT omni_mm_bootstrap_decision_child_binding_key
+          UNIQUE (
+            tenant_id,
+            governance_decision_id,
+            decision_sha256
+          ),
+        CONSTRAINT omni_mm_bootstrap_decision_target_binding_key
+          UNIQUE (
+            tenant_id,
+            governance_decision_id,
+            decision_sha256,
+            subject_actor_id,
+            grantee_actor_id,
+            management_authority_id,
+            authority_generation
+          ),
+        CONSTRAINT omni_mm_bootstrap_decision_row_check CHECK (
+          omni_mm_bootstrap_decision_row_is_valid(
+            schema_version,
+            tenant_id,
+            governance_decision_id,
+            database_identity_id,
+            subject_actor_id,
+            grantee_actor_id,
+            management_authority_id,
+            authority_generation,
+            decision_action,
+            ceremony_policy_id,
+            ceremony_policy_version,
+            trust_manifest_sha256,
+            decision_nonce_sha256,
+            evidence_sha256,
+            decision_sha256,
+            not_before,
+            expires_at,
+            state,
+            lifecycle_revision,
+            recorded_by_actor_id,
+            recorded_at,
+            verified_by_actor_id,
+            verified_at,
+            consumed_by_actor_id,
+            consumed_at,
+            revoked_by_actor_id,
+            revoked_at
+          )
+        ),
+        CONSTRAINT omni_mm_bootstrap_decision_state_hold_check
+          CHECK (state = 'held'),
+        CONSTRAINT omni_mm_bootstrap_decision_tenant_fkey
+          FOREIGN KEY (tenant_id)
+          REFERENCES omni_auth_tenants (id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_mm_bootstrap_decision_database_fkey
+          FOREIGN KEY (database_identity_id)
+          REFERENCES omni_database_identity (id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_mm_bootstrap_decision_subject_fkey
+          FOREIGN KEY (subject_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_mm_bootstrap_decision_grantee_fkey
+          FOREIGN KEY (grantee_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_mm_bootstrap_decision_recorded_actor_fkey
+          FOREIGN KEY (recorded_by_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_mm_bootstrap_decision_verified_actor_fkey
+          FOREIGN KEY (verified_by_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_mm_bootstrap_decision_consumed_actor_fkey
+          FOREIGN KEY (consumed_by_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_mm_bootstrap_decision_revoked_actor_fkey
+          FOREIGN KEY (revoked_by_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT
+      )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS
+      omni_membership_management_bootstrap_attestations (
+        schema_version SMALLINT NOT NULL DEFAULT 1,
+        tenant_id TEXT NOT NULL,
+        governance_decision_id TEXT NOT NULL,
+        decision_sha256 TEXT NOT NULL,
+        attester_slot TEXT NOT NULL,
+        attester_key_id TEXT NOT NULL,
+        signature_algorithm TEXT NOT NULL DEFAULT 'ed25519',
+        signature_base64url TEXT NOT NULL,
+        attested_at TIMESTAMPTZ NOT NULL,
+        CONSTRAINT omni_mm_bootstrap_attestations_pkey
+          PRIMARY KEY (
+            tenant_id,
+            governance_decision_id,
+            attester_slot
+          ),
+        CONSTRAINT omni_mm_bootstrap_attestation_key_key
+          UNIQUE (
+            tenant_id,
+            governance_decision_id,
+            attester_key_id
+          ),
+        CONSTRAINT omni_mm_bootstrap_attestation_row_check CHECK (
+          omni_mm_bootstrap_attestation_row_is_valid(
+            schema_version,
+            tenant_id,
+            governance_decision_id,
+            decision_sha256,
+            attester_slot,
+            attester_key_id,
+            signature_algorithm,
+            signature_base64url,
+            attested_at
+          )
+        ),
+        CONSTRAINT omni_mm_bootstrap_attestation_tenant_fkey
+          FOREIGN KEY (tenant_id)
+          REFERENCES omni_auth_tenants (id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_mm_bootstrap_attestation_parent_fkey
+          FOREIGN KEY (
+            tenant_id,
+            governance_decision_id,
+            decision_sha256
+          )
+          REFERENCES omni_membership_management_bootstrap_decisions (
+            tenant_id,
+            governance_decision_id,
+            decision_sha256
+          )
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT
+      )
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION
+      omni_validate_mm_bootstrap_decision_insert()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      NEW.recorded_at := statement_timestamp();
+
+      IF NOT public.omni_mm_bootstrap_decision_row_is_valid(
+        NEW.schema_version,
+        NEW.tenant_id,
+        NEW.governance_decision_id,
+        NEW.database_identity_id,
+        NEW.subject_actor_id,
+        NEW.grantee_actor_id,
+        NEW.management_authority_id,
+        NEW.authority_generation,
+        NEW.decision_action,
+        NEW.ceremony_policy_id,
+        NEW.ceremony_policy_version,
+        NEW.trust_manifest_sha256,
+        NEW.decision_nonce_sha256,
+        NEW.evidence_sha256,
+        NEW.decision_sha256,
+        NEW.not_before,
+        NEW.expires_at,
+        NEW.state,
+        NEW.lifecycle_revision,
+        NEW.recorded_by_actor_id,
+        NEW.recorded_at,
+        NEW.verified_by_actor_id,
+        NEW.verified_at,
+        NEW.consumed_by_actor_id,
+        NEW.consumed_at,
+        NEW.revoked_by_actor_id,
+        NEW.revoked_at
+      ) THEN
+        RAISE EXCEPTION 'Membership bootstrap decision row is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION
+      omni_validate_mm_bootstrap_attestation_insert()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      parent_not_before TIMESTAMPTZ;
+      parent_expires_at TIMESTAMPTZ;
+      parent_state TEXT;
+      parent_lifecycle_revision BIGINT;
+      observed_at TIMESTAMPTZ := statement_timestamp();
+    BEGIN
+      IF NOT public.omni_mm_bootstrap_attestation_row_is_valid(
+        NEW.schema_version,
+        NEW.tenant_id,
+        NEW.governance_decision_id,
+        NEW.decision_sha256,
+        NEW.attester_slot,
+        NEW.attester_key_id,
+        NEW.signature_algorithm,
+        NEW.signature_base64url,
+        NEW.attested_at
+      ) THEN
+        RAISE EXCEPTION 'Membership bootstrap attestation row is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      SELECT
+        decision.not_before,
+        decision.expires_at,
+        decision.state,
+        decision.lifecycle_revision
+      INTO STRICT
+        parent_not_before,
+        parent_expires_at,
+        parent_state,
+        parent_lifecycle_revision
+      FROM public.omni_membership_management_bootstrap_decisions decision
+      WHERE decision.tenant_id = NEW.tenant_id
+        AND decision.governance_decision_id = NEW.governance_decision_id
+        AND decision.decision_sha256 = NEW.decision_sha256
+      FOR KEY SHARE;
+
+      IF parent_state <> 'held' OR parent_lifecycle_revision <> 0 THEN
+        RAISE EXCEPTION 'Membership bootstrap decision is not held'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.attested_at < parent_not_before
+        OR NEW.attested_at >= parent_expires_at
+        OR observed_at < parent_not_before
+        OR observed_at >= parent_expires_at
+      THEN
+        RAISE EXCEPTION 'Membership bootstrap attestation is outside the decision window'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        RAISE EXCEPTION 'Membership bootstrap decision does not exist'
+          USING ERRCODE = '23503';
+      WHEN TOO_MANY_ROWS THEN
+        RAISE EXCEPTION 'Membership bootstrap decision binding is ambiguous'
+          USING ERRCODE = '23514';
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_mm_bootstrap_decision()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Membership bootstrap decision rows are immutable'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_mm_bootstrap_attestation()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Membership bootstrap attestation rows are immutable'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid =
+            'omni_membership_management_bootstrap_decisions'::regclass
+          AND tgname = 'omni_mm_bootstrap_decision_validate_insert'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_mm_bootstrap_decision_validate_insert
+        BEFORE INSERT
+        ON omni_membership_management_bootstrap_decisions
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_mm_bootstrap_decision_insert();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid =
+            'omni_membership_management_bootstrap_decisions'::regclass
+          AND tgname = 'omni_mm_bootstrap_decision_protect'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_mm_bootstrap_decision_protect
+        BEFORE UPDATE OR DELETE
+        ON omni_membership_management_bootstrap_decisions
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_protect_mm_bootstrap_decision();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid =
+            'omni_membership_management_bootstrap_decisions'::regclass
+          AND tgname = 'omni_mm_bootstrap_decision_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_mm_bootstrap_decision_no_truncate
+        BEFORE TRUNCATE
+        ON omni_membership_management_bootstrap_decisions
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_protect_mm_bootstrap_decision();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid =
+            'omni_membership_management_bootstrap_attestations'::regclass
+          AND tgname = 'omni_mm_bootstrap_attestation_validate_insert'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_mm_bootstrap_attestation_validate_insert
+        BEFORE INSERT
+        ON omni_membership_management_bootstrap_attestations
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_validate_mm_bootstrap_attestation_insert();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid =
+            'omni_membership_management_bootstrap_attestations'::regclass
+          AND tgname = 'omni_mm_bootstrap_attestation_protect'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_mm_bootstrap_attestation_protect
+        BEFORE UPDATE OR DELETE
+        ON omni_membership_management_bootstrap_attestations
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_protect_mm_bootstrap_attestation();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid =
+            'omni_membership_management_bootstrap_attestations'::regclass
+          AND tgname = 'omni_mm_bootstrap_attestation_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_mm_bootstrap_attestation_no_truncate
+        BEFORE TRUNCATE
+        ON omni_membership_management_bootstrap_attestations
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_protect_mm_bootstrap_attestation();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql.query(`
+    REVOKE ALL
+    ON TABLE
+      omni_membership_management_bootstrap_decisions,
+      omni_membership_management_bootstrap_attestations
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_mm_bootstrap_decision_row_is_valid(
+      SMALLINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT,
+      SMALLINT, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TEXT,
+      BIGINT, TEXT, TIMESTAMPTZ, TEXT, TIMESTAMPTZ, TEXT, TIMESTAMPTZ,
+      TEXT, TIMESTAMPTZ
+    )
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_mm_bootstrap_attestation_row_is_valid(
+      SMALLINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ
+    )
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_validate_mm_bootstrap_decision_insert()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_validate_mm_bootstrap_attestation_insert()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_protect_mm_bootstrap_decision()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_protect_mm_bootstrap_attestation()
+    FROM PUBLIC
+  `);
+
+  await sql`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT table_name, grantee
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name IN (
+            'omni_membership_management_bootstrap_decisions',
+            'omni_membership_management_bootstrap_attestations'
+          )
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON TABLE %I.%I FROM %I',
+          current_schema(),
+          grant_record.table_name,
+          grant_record.grantee
+        );
+      END LOOP;
+
+      FOR grant_record IN
+        SELECT DISTINCT table_name, grantee, privilege_type, column_name
+        FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name IN (
+            'omni_membership_management_bootstrap_decisions',
+            'omni_membership_management_bootstrap_attestations'
+          )
+          AND grantee <> current_user
+      LOOP
+        EXECUTE format(
+          'REVOKE %s (%I) ON TABLE %I.%I FROM %s',
+          grant_record.privilege_type,
+          grant_record.column_name,
+          current_schema(),
+          grant_record.table_name,
+          CASE
+            WHEN grant_record.grantee = 'PUBLIC' THEN 'PUBLIC'
+            ELSE quote_ident(grant_record.grantee)
+          END
+        );
+      END LOOP;
+
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_mm_bootstrap_decision_row_is_valid',
+            'omni_mm_bootstrap_attestation_row_is_valid',
+            'omni_validate_mm_bootstrap_decision_insert',
+            'omni_validate_mm_bootstrap_attestation_insert',
+            'omni_protect_mm_bootstrap_decision',
+            'omni_protect_mm_bootstrap_attestation'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_mm_bootstrap_decision_row_is_valid(' ||
+          'SMALLINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, ' ||
+          'TEXT, TEXT, SMALLINT, TEXT, TEXT, TEXT, TEXT, ' ||
+          'TIMESTAMPTZ, TIMESTAMPTZ, TEXT, BIGINT, TEXT, ' ||
+          'TIMESTAMPTZ, TEXT, TIMESTAMPTZ, TEXT, TIMESTAMPTZ, ' ||
+          'TEXT, TIMESTAMPTZ) FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_mm_bootstrap_attestation_row_is_valid(' ||
+          'SMALLINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, ' ||
+          'TIMESTAMPTZ) FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_validate_mm_bootstrap_decision_insert() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_validate_mm_bootstrap_attestation_insert() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_protect_mm_bootstrap_decision() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_protect_mm_bootstrap_attestation() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `;
+
+  await sql`
+    ALTER TABLE omni_membership_management_bootstrap_decisions
+      ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_membership_management_bootstrap_decisions
+      FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_membership_management_bootstrap_attestations
+      ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_membership_management_bootstrap_attestations
+      FORCE ROW LEVEL SECURITY
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid =
+            'omni_membership_management_bootstrap_decisions'::regclass
+          AND polname = 'omni_tenant_isolation'
+      ) THEN
+        ALTER POLICY omni_tenant_isolation
+        ON omni_membership_management_bootstrap_decisions
+        USING (omni_tenant_visible(tenant_id))
+        WITH CHECK (omni_tenant_visible(tenant_id));
+      ELSE
+        CREATE POLICY omni_tenant_isolation
+        ON omni_membership_management_bootstrap_decisions
+        FOR ALL
+        TO PUBLIC
+        USING (omni_tenant_visible(tenant_id))
+        WITH CHECK (omni_tenant_visible(tenant_id));
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid =
+            'omni_membership_management_bootstrap_attestations'::regclass
+          AND polname = 'omni_tenant_isolation'
+      ) THEN
+        ALTER POLICY omni_tenant_isolation
+        ON omni_membership_management_bootstrap_attestations
+        USING (omni_tenant_visible(tenant_id))
+        WITH CHECK (omni_tenant_visible(tenant_id));
+      ELSE
+        CREATE POLICY omni_tenant_isolation
+        ON omni_membership_management_bootstrap_attestations
+        FOR ALL
+        TO PUBLIC
+        USING (omni_tenant_visible(tenant_id))
+        WITH CHECK (omni_tenant_visible(tenant_id));
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid =
+            'omni_membership_management_bootstrap_decisions'::regclass
+          AND polname = 'omni_mm_bootstrap_decision_holdback'
+      ) THEN
+        CREATE POLICY omni_mm_bootstrap_decision_holdback
+        ON omni_membership_management_bootstrap_decisions
+        AS RESTRICTIVE
+        FOR ALL
+        TO PUBLIC
+        USING (omni_system_scope_enabled())
+        WITH CHECK (omni_system_scope_enabled());
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid =
+            'omni_membership_management_bootstrap_attestations'::regclass
+          AND polname = 'omni_mm_bootstrap_attestation_holdback'
+      ) THEN
+        CREATE POLICY omni_mm_bootstrap_attestation_holdback
+        ON omni_membership_management_bootstrap_attestations
+        AS RESTRICTIVE
+        FOR ALL
+        TO PUBLIC
+        USING (omni_system_scope_enabled())
+        WITH CHECK (omni_system_scope_enabled());
+      END IF;
+    END
+    $migration$
+  `;
+
+  await verifyBootstrapEvidenceSurface();
+  await verifyBootstrapEvidencePredecessors();
 }
 
 async function ensureCanonicalAuthUserActorIdentifiersShadow(sql: SqlClient) {

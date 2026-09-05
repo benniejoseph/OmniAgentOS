@@ -1489,6 +1489,50 @@ the opaque ID cannot substitute for it. The slice adds no writer, event append,
 database or event-store import, serving import or call site, grant, or authority
 row, and changes none of the v45 or v48-v56 physical and runtime holds.
 
+Migration v57 is the next held prerequisite, not an authority activation. It
+adds empty persistent tables that are owner-only as installed:
+`omni_membership_management_bootstrap_decisions` and
+`omni_membership_management_bootstrap_attestations` evidence tables. Each
+decision is fixed at held revision 0, pins the database identity, and binds
+one tenant, subject, grantee, management-authority ID, and generation to
+`create_held_membership_management_authority`. The latter tuple exactly mirrors
+the target coordinates of the would-be v56 held row without inserting that
+row; database identity is an additional ceremony coordinate. It is logical
+lineage preserved by restore rather than proof of one physical instance, so it
+does not prevent replay into a clone by itself. The remaining
+persisted material is limited to an opaque decision ID,
+ceremony-policy coordinates, trust-manifest, nonce, evidence, and decision
+SHA-256 digests, a nonempty validity interval capped at 15 minutes, and
+operational recording attribution. The trigger authors `recorded_at` inside the
+half-open interval `[not_before, expires_at)`. Verification, consumption, and
+revocation attribution fields are null in v57.
+
+The child table models only the two attester slots
+`organization_custodian` and `independent_reviewer`. Their key IDs must be
+distinct; each possible row is structurally bound to the parent's decision
+digest and window and contains only its slot and key coordinates, the fixed
+`ed25519` algorithm, a canonical 86-character unpadded base64url signature
+ending in `[AQgw]`, and caller-supplied attestation time. Its insert guard
+requires both the claimed time and the database statement time to fall in the
+half-open interval `[not_before, expires_at)`, but does not prove when signing
+occurred. Those checks are structural evidence only. The migration does not
+require the pair, cryptographically authenticate either
+signature, resolve either key, or prove governance. `trust_manifest_sha256` is
+only a digest; public trust anchors remain outside the database. Actor foreign
+keys prove canonical identities only, not signer trust or same-tenant
+authority. Raw or private evidence, prose, private keys, and credentials do
+not belong in either table.
+
+V57 seeds no rows, grants no serving access, emits no event, and adds no route,
+writer, runtime import, or call site. Forced RLS and owner-only ACLs preserve
+the hold, while v56 remains empty and active-forbidden and all prior holds stay
+closed. Broad development permission is not a signed bootstrap-governance
+decision, and administrator, session, system-scope, or database-owner roles
+are not trust roots. External human approval and signatures, an externally
+anchored verifier, governed atomic writer/event integration, a reviewed
+least-privilege cutover, and a separate v56 activation migration remain future
+gates.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

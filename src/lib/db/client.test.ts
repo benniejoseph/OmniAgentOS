@@ -687,11 +687,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the membership-management authority shadow migration", () => {
+  it("pins the membership-management bootstrap evidence shadow migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 56,
-      name: "tenant_actor_membership_management_authorities_shadow",
-      checksum: "8f60e058c5ed4f60ed70f8025d9ab472a0c6dcc0957673aa4319668526238c09",
+      version: 57,
+      name: "membership_management_bootstrap_evidence_shadow",
+      checksum: "8a06a730f9da8eea20b3c1abf9937369451550865ecbdf27c0019047b80f151b",
     });
   });
 

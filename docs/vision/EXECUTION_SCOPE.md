@@ -115,3 +115,44 @@ has no database or event-store import, writer, event append, serving import or
 call site, scope installer, grant, or row mutation. The v56 activation hold,
 restrictive RLS, owner-only ACLs, zero-row state, and all v45 and v48-v55 holds
 remain unchanged.
+
+Migration v57 does not turn bootstrap governance into an `ExecutionScope`
+field or permission. Its empty persistent, owner-only-as-installed
+`omni_membership_management_bootstrap_decisions` table holds at most evidence
+coordinates for a held revision-0 decision: the exact tenant, database
+identity, subject, grantee, management-authority ID, and generation; the fixed
+action `create_held_membership_management_authority`; ceremony-policy
+coordinates;
+trust-manifest, nonce, evidence, and decision SHA-256 digests; a nonempty
+validity window capped at 15 minutes; and operational recording attribution.
+The trigger authors `recorded_at` inside the half-open interval
+`[not_before, expires_at)`.
+The tenant/subject/grantee/authority tuple mirrors the target v56 row while the
+database identity binds the ceremony to logical database lineage. Restore
+preserves that ID, so it cannot prevent replay into a clone by itself. The
+authority row remains absent, and verification, consumption, and revocation
+attribution remains null.
+
+The empty `omni_membership_management_bootstrap_attestations` table reserves
+only the `organization_custodian` and `independent_reviewer` slots with
+distinct key IDs, the fixed `ed25519` algorithm, an exact parent decision
+digest, a canonical 86-character unpadded base64url signature ending in
+`[AQgw]`, and caller-supplied `attested_at`. The insert guard requires both the
+claimed time and the database statement time to fall in the half-open interval
+`[not_before, expires_at)`, but does not prove when signing occurred. These
+checks are structural evidence only. It does not require the pair, authenticate
+a signature, or establish governance.
+`trust_manifest_sha256` is only a digest; trust anchors stay outside the
+database. Actor foreign keys prove canonical identities only, not signer trust
+or same-tenant authority. Neither table stores raw or private evidence,
+narrative approval, private keys, or credentials.
+
+Forced RLS and owner-only ACLs preserve the hold. V57 seeds no rows, grants no
+serving access, emits no event, and adds no route, writer, runtime import, call
+site, or scope installer. It leaves v56 empty and active-forbidden and all
+earlier holds unchanged. Broad development permission is not a signed
+bootstrap-governance decision; administrator roles, authenticated sessions,
+system scope, database-owner status, and other scope coordinates are not trust
+roots. External human approval and the two signatures, an externally anchored
+verifier, governed atomic writer/event integration, reviewed least-privilege
+cutover, and a separate v56 activation migration remain future gates.
