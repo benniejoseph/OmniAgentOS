@@ -147,6 +147,16 @@ Approval reasons, sealed inputs, outputs, credentials, and claim tokens are
 excluded. Legacy internal callers remain compatible but do not receive a
 fabricated decision event without an explicit scope.
 
+Workflow dual-writes no longer copy goals, reports, errors, model output, or
+arbitrary workflow payloads into `omni_events`. The canonical projection is a
+strict schema-version-1 envelope containing only the event type, bounded field
+count, and a canonical SHA-256 payload binding. When a workflow has a bound
+execution authority, canonical events inherit its actor/principal, scope,
+correlation, causation, and grants. `appendWorkflowEvent` now commits its
+private workflow-history row and metadata-only canonical event in one Postgres
+transaction. Legacy workflows without an authority remain explicitly legacy
+attributed; this privacy correction does not invent an owner for them.
+
 The Drive generation-2 canary adds `source.sync.page.canonical_settled` in the
 same transaction as the page's canonical revisions, tombstones or ordered
 no-op decisions, terminal page items, committed checkpoint, and next encrypted

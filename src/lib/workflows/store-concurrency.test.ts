@@ -2,6 +2,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
+import { listStreamEvents } from "@/lib/events/store";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(path.join(tmpdir(), "omni-workflow-cas-"));
@@ -9,6 +11,59 @@ beforeAll(async () => {
 });
 
 describe("workflow conditional transitions (file mode)", () => {
+  it("keeps private workflow payloads out of the canonical event log", async () => {
+    const store = await import("@/lib/workflows/store");
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-workflow-events",
+      initiatingActorId: "workflow-owner",
+      executingPrincipalType: "user",
+      executingPrincipalId: "workflow-owner",
+      correlationId: "workflow-request-1",
+      purpose: "workflow.run",
+    });
+    const detail = await store.createWorkflowRun({
+      tenantId: "tenant-workflow-events",
+      goal: "Private workflow objective",
+      executionAuthority: {
+        executionScope,
+        requesterRole: "admin",
+      },
+    });
+    await store.appendWorkflowEvent(
+      detail.run.id,
+      "workflow.private_result_observed",
+      { report: "Private generated report", status: "completed" },
+    );
+
+    const events = await listStreamEvents(`workflow:${detail.run.id}`, {
+      tenantId: "tenant-workflow-events",
+    });
+    const created = events.find((event) => event.type === "workflow.created");
+    const observed = events.find(
+      (event) => event.type === "workflow.private_result_observed",
+    );
+    expect(created).toMatchObject({
+      actorId: "workflow-owner",
+      correlationId: "workflow-request-1",
+      payload: {
+        schemaVersion: 1,
+        eventType: "workflow.created",
+        payloadFieldCount: 1,
+      },
+    });
+    expect(observed).toMatchObject({
+      actorId: "workflow-owner",
+      correlationId: "workflow-request-1",
+      payload: {
+        schemaVersion: 1,
+        eventType: "workflow.private_result_observed",
+        payloadFieldCount: 2,
+      },
+    });
+    expect(JSON.stringify(events)).not.toContain("Private workflow objective");
+    expect(JSON.stringify(events)).not.toContain("Private generated report");
+  });
+
   it("returns a tenant-scoped status projection without workflow history", async () => {
     const store = await import("@/lib/workflows/store");
     const detail = await store.createWorkflowRun({
