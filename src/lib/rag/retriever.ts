@@ -44,6 +44,11 @@ export async function ingestTextDocument({
   sourceLineage?: TextSourceLineageInput;
   captureIngestGuard?: CaptureIngestGuard;
 }) {
+  if ((usageScope?.actorId || captureIngestGuard?.actorId) && !sourceLineage) {
+    throw new Error(
+      "Actor-attributed knowledge ingestion requires canonical source lineage.",
+    );
+  }
   const safeTitle = jsonbSafeTruncate(String(redactSensitive(title)), 240);
   const safeContent = jsonbSafeTruncate(
     String(redactSensitive(content)),
