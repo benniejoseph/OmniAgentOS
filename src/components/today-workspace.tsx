@@ -26,6 +26,8 @@ import {
 import { clsx } from "clsx";
 import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefetch-link";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
+import { useWorkspaceReadiness } from "@/components/app-shell/use-workspace-readiness";
+import { WorkspaceReadinessCard } from "@/components/app-shell/workspace-readiness-card";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import {
   formatTodayDue,
@@ -110,6 +112,7 @@ export function TodayWorkspace({
   );
   const briefAttemptRef = useRef("");
   const workspaceAvailable = Boolean(session && (!session.authEnabled || session.authenticated));
+  const readiness = useWorkspaceReadiness({ enabled: workspaceAvailable });
 
   const runs = sourceData(summary, "runs");
   const workflows = sourceData(summary, "workflows");
@@ -450,6 +453,13 @@ export function TodayWorkspace({
           </Link>
         </div>
       </header>
+
+      {workspaceAvailable ? (
+        <WorkspaceReadinessCard
+          state={readiness.state}
+          onRefresh={readiness.refresh}
+        />
+      ) : null}
 
       {todayError || summaryError ? (
         <div className="today-error" role="alert">

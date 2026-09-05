@@ -4,6 +4,8 @@ import {
   type BrowserContext,
   type Page,
 } from "@playwright/test";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import budgets from "../../performance-budgets.json";
 
 const adminEmail = "playwright-admin@example.invalid";
@@ -12,6 +14,12 @@ type BrowserCookie = Awaited<ReturnType<BrowserContext["cookies"]>>[number];
 let cachedSessionCookies: BrowserCookie[] = [];
 
 async function signIn(page: Page) {
+  const sessionCachePath = process.env.OMNIAGENT_E2E_SESSION_FILE;
+  if (!cachedSessionCookies.length && sessionCachePath) {
+    cachedSessionCookies = await readFile(sessionCachePath, "utf8")
+      .then((contents) => JSON.parse(contents) as BrowserCookie[])
+      .catch(() => []);
+  }
   if (cachedSessionCookies.length) {
     await page.context().addCookies(cachedSessionCookies);
     await page.goto("/app");
@@ -27,6 +35,9 @@ async function signIn(page: Page) {
       return;
     }
     cachedSessionCookies = [];
+    if (sessionCachePath) {
+      await unlink(sessionCachePath).catch(() => undefined);
+    }
   }
   const login = await page.request.post("/api/auth/login", {
     data: { email: adminEmail, password: adminPassword },
@@ -37,6 +48,10 @@ async function signIn(page: Page) {
   cachedSessionCookies = (await page.context().cookies()).filter(
     (cookie) => cookie.name === "asael_session" || cookie.name === "__Host-asael_session",
   );
+  if (sessionCachePath) {
+    await mkdir(dirname(sessionCachePath), { recursive: true });
+    await writeFile(sessionCachePath, JSON.stringify(cachedSessionCookies), "utf8");
+  }
 }
 
 test("API performance telemetry stays observable and asynchronous", async ({
@@ -178,7 +193,7 @@ test("homepage presents the private owner operating story responsively", async (
 
   for (const preference of ["light", "dark"] as const) {
     await page.evaluate((theme) => {
-      window.localStorage.setItem("omniagent-theme", theme);
+      window.localStorage.setItem("asael-theme", theme);
     }, preference);
     await page.reload();
     await expect(page.locator("html")).toHaveAttribute(
@@ -244,24 +259,24 @@ test("public and mobile application navigation stay usable", async ({ page }) =>
   await expect(mobileNavigation).toBeVisible();
   await expect(mobileNavigation.getByRole("link")).toHaveCount(5);
   await expect(mobileNavigation.getByRole("link", { name: "Today" })).toBeVisible();
-  await expect(mobileNavigation.getByRole("link", { name: "Talk" })).toBeVisible();
+  await expect(mobileNavigation.getByRole("link", { name: "Command" })).toBeVisible();
   await expect(mobileNavigation.getByRole("link", { name: "Capture" })).toBeVisible();
   await page.getByRole("button", { name: "Open workspace menu" }).click();
   await expect(page.getByRole("navigation", { name: "Complete workspace navigation" }).getByRole("link", { name: "Inbox" })).toBeVisible();
   await page.getByRole("button", { name: "Close workspace menu" }).last().click();
-  await mobileNavigation.getByRole("link", { name: "Talk" }).click();
+  await mobileNavigation.getByRole("link", { name: "Command" }).click();
   await expect(page).toHaveURL(/\/app\/command$/);
 });
 
 test("capture inbox queues a note and a text file", async ({ page }) => {
   await signIn(page);
   await page.goto("/app/capture", { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: "Save it before it disappears." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Turn anything worth keeping into usable context." })).toBeVisible();
 
-  await page.getByLabel("Note content").fill("The weekly review happens every Friday afternoon.");
+  await page.getByLabel("Note", { exact: true }).fill("The weekly review happens every Friday afternoon.");
   await page.getByLabel("Title").fill("Weekly review cadence");
-  await page.getByRole("button", { name: "Save to memory" }).click();
-  await expect(page.getByText(/is queued for indexing/)).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Store and index" }).click();
+  await expect(page.getByText(/Weekly review cadence.*stored and queued for indexing/)).toBeVisible({ timeout: 20_000 });
 
   await page.getByTestId("capture-file-input").setInputFiles({
     name: "project-notes.md",
@@ -269,8 +284,8 @@ test("capture inbox queues a note and a text file", async ({ page }) => {
     buffer: Buffer.from("# Project notes\n\nUse source-backed answers."),
   });
   await expect(page.getByText("project-notes.md")).toBeVisible();
-  await page.getByRole("button", { name: "Save to memory" }).click();
-  await expect(page.getByText(/project notes.*queued for indexing/i)).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Store and index" }).click();
+  await expect(page.getByText(/project notes.*stored and queued for indexing/i)).toBeVisible({ timeout: 20_000 });
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
@@ -305,22 +320,22 @@ test("agent arsenal stays navigable across themes and viewports", async ({ page 
   for (const [index, viewport] of [{ width: 1440, height: 900 }, { width: 390, height: 844 }].entries()) {
     await page.setViewportSize(viewport);
     await page.goto("/app/agents", { waitUntil: "networkidle" });
-    await expect(page.getByRole("heading", { name: "Your working intelligence." })).toBeVisible();
-    await page.getByRole("button", { name: /Scout, Research/ }).click();
+    await expect(page.getByRole("heading", { name: "Your Arsenal" })).toBeVisible();
+    await page.getByRole("navigation", { name: "Agent roster" }).getByRole("button", { name: /Scout, Research/ }).click();
     await expect(page.getByRole("heading", { name: "Scout" })).toBeVisible();
     await expect(page.getByText("Reads broadly, never performs external mutations.")).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     if (index === 0) {
       await page.getByRole("link", { name: "Assign work to Scout" }).click();
       await expect(page).toHaveURL(/\/app\/command\?agent=scout$/);
-      await expect(page.getByText("Scout is leading this task")).toBeVisible();
+      await expect(page.getByText("Working with Scout")).toBeVisible();
       await page.goto("/app/agents", { waitUntil: "networkidle" });
     }
   }
-  await page.evaluate(() => localStorage.setItem("omniagent-theme", "dark"));
+  await page.evaluate(() => localStorage.setItem("asael-theme", "dark"));
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect(page.getByRole("button", { name: /Atlas, Supervisor/ })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Agent roster" }).getByRole("button", { name: /Atlas, Supervisor/ })).toBeVisible();
 });
 
 test("Today captures and reversibly completes a focus item", async ({ page }) => {
@@ -336,7 +351,7 @@ test("Today captures and reversibly completes a focus item", async ({ page }) =>
     }
   });
   await signIn(page);
-  await expect(page.getByText(/things deserve your attention|Your field is clear/)).toBeVisible();
+  await expect(page.getByText(/items? needs? your attention|Everything is clear/)).toBeVisible();
   await page.waitForTimeout(250);
   expect(hydrationRequests).toEqual([]);
   await page.getByLabel("Add a focus item").fill(taskTitle);
@@ -345,7 +360,7 @@ test("Today captures and reversibly completes a focus item", async ({ page }) =>
   const focusItem = page.locator(".today-focus-list .today-focus-item").filter({ hasText: taskTitle }).last();
   await expect(focusItem).toBeVisible();
   const dailyBrief = page.locator(".today-generated-brief");
-  await expect(dailyBrief.getByRole("heading", { name: "A clear starting point" })).toBeVisible();
+  await expect(dailyBrief.getByRole("heading", { name: "Daily brief" })).toBeVisible();
   const briefAction = dailyBrief.getByRole("button", { name: /Generate brief|Refresh/ });
   await expect(briefAction).toBeVisible();
   await briefAction.click();
@@ -601,7 +616,7 @@ test("Missions creates a durable outcome without exposing executor internals", a
 
   await page.getByRole("button", { name: "New mission" }).first().click();
   const title = `Mission QA ${Date.now().toString(36)}`;
-  await page.getByRole("textbox", { name: "Mission", exact: true }).fill(title);
+  await page.getByRole("textbox", { name: "Mission title" }).fill(title);
   await page.getByRole("textbox", { name: "Observable outcome" }).fill("Produce a concise operating brief with evidence receipts.");
   const missionRouteReloads: string[] = [];
   page.on("request", (request) => {
@@ -625,10 +640,10 @@ test("Missions creates a durable outcome without exposing executor internals", a
   await expect(page).toHaveURL(/\/app\/missions\/[0-9a-f-]+$/);
   await expect(page.getByRole("heading", { level: 2, name: title })).toBeVisible();
   expect(missionRouteReloads).toEqual([]);
-  await expect(page.getByRole("heading", { name: "Live work surfaces" })).toBeVisible();
-  await expect(page.getByText("Terminal", { exact: true })).toBeVisible();
-  await expect(page.getByText("Files", { exact: true })).toBeVisible();
-  await expect(page.getByText("Browser", { exact: true })).toBeVisible();
+  await expect(page.getByText("Ledger live", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Board" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Canvas" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "List" })).toBeVisible();
 
   const detailIsSafe = await page.evaluate(async () => {
     const response = await fetch(window.location.pathname.replace("/app/", "/api/"));
@@ -738,14 +753,8 @@ test("private login is form-first, theme-aware, and rate-limit safe", async ({
     page.getByText("Private workspace · No public registration"),
   ).toBeVisible();
 
-  const initialPreference = await page
-    .locator("html")
-    .getAttribute("data-theme-preference");
-  await page.getByRole("button", { name: /^Theme:/ }).click();
-  const changedPreference = await page
-    .locator("html")
-    .getAttribute("data-theme-preference");
-  expect(changedPreference).not.toBe(initialPreference);
+  await page.getByRole("group", { name: "Color theme" }).getByTitle("Use dark theme").click();
+  const changedPreference = "dark";
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute(
     "data-theme-preference",
@@ -814,33 +823,33 @@ test("agent work streams a clearly labeled fallback into results", async ({ page
     }).then((response) => response.text());
   });
   await page
-    .getByRole("textbox", { name: /^Task outcome/ })
+    .getByRole("textbox", { name: "Message Asael" })
     .fill("Summarize the release posture without making external changes.");
   const startedAt = Date.now();
-  await page.getByRole("button", { name: "Run task" }).click();
-  const executionPanel = page.getByRole("tabpanel");
-  await expect(
-    executionPanel.getByText("status", { exact: true }).first(),
-  ).toBeVisible();
+  await page.getByRole("button", { name: "Send message" }).click();
+  const runAnnouncement = page.locator('p[role="status"][aria-live="polite"]').first();
+  await expect(runAnnouncement).toContainText(/Starting|Agent run/);
   expect(Date.now() - startedAt).toBeLessThan(budgets.firstSseStatusMs);
-  await expect(executionPanel).toContainText("[Simulated response]");
+  const workspace = page.getByTestId("work-workspace");
+  await expect(workspace).toContainText("[Simulated response]");
   expect(Date.now() - startedAt).toBeLessThan(
     budgets.completionVisibilityMs,
   );
-  await expect(executionPanel).toContainText(
+  await expect(workspace).toContainText(
     "OPENAI_API_KEY is not configured, so no model ran.",
   );
 
-  await executionPanel.getByRole("button", { name: "Needs work" }).click();
-  await executionPanel
+  await workspace.getByRole("button", { name: "Needs work" }).click();
+  await workspace
     .getByLabel("What should change next time?")
     .fill("Lead with the recommendation and make the evidence easier to scan.");
-  await executionPanel.getByRole("button", { name: "Save feedback" }).click();
-  await expect(executionPanel.getByText(/Correction saved/)).toBeVisible();
-  await executionPanel.getByRole("button", { name: "Useful" }).click();
-  await expect(executionPanel.getByText(/Useful outcome saved/)).toBeVisible();
+  await workspace.getByRole("button", { name: "Save feedback" }).click();
+  await expect(workspace.getByText(/Correction saved/)).toBeVisible();
+  await workspace.getByRole("button", { name: "Useful" }).click();
+  await expect(workspace.getByText(/Useful outcome saved/)).toBeVisible();
 
-  await page.getByRole("tab", { name: "Result" }).click();
+  await page.getByRole("button", { name: /Evidence/ }).click();
+  await expect(page.getByRole("tab", { name: "Result" })).toHaveAttribute("aria-selected", "true");
   const resultsLink = page.getByRole("link", { name: "Open Results" });
   await expect(resultsLink).toHaveAttribute(
     "href",
@@ -867,7 +876,7 @@ test("Start avoids admin evidence requests on its critical path", async ({
 
   await page.goto("/app/command");
   await expect(
-    page.getByRole("textbox", { name: /^Task outcome/ }),
+    page.getByRole("textbox", { name: "Message Asael" }),
   ).toBeVisible();
   await page.waitForLoadState("networkidle");
   expect(adminRequests).toEqual([]);
@@ -906,7 +915,7 @@ test("dashboard presents dismissible first-run readiness without blocking work",
   await expect(reopen).toBeFocused();
   expect(
     await page.evaluate(() =>
-      window.localStorage.getItem("omniagent.workspace-readiness.compact.v1"),
+      window.localStorage.getItem("asael.workspace-readiness.compact.v1"),
     ),
   ).toBe("1");
 
@@ -917,7 +926,7 @@ test("dashboard presents dismissible first-run readiness without blocking work",
   await expect(page.getByRole("button", { name: "Dismiss setup for now" })).toBeFocused();
   expect(
     await page.evaluate(() =>
-      window.localStorage.getItem("omniagent.workspace-readiness.compact.v1"),
+      window.localStorage.getItem("asael.workspace-readiness.compact.v1"),
     ),
   ).toBeNull();
 });
@@ -927,7 +936,7 @@ test("persisted readiness dismissal survives failed reload", async ({ page }) =>
   await signIn(page);
   await page.evaluate(() => {
     window.localStorage.setItem(
-      "omniagent.workspace-readiness.compact.v1",
+      "asael.workspace-readiness.compact.v1",
       "1",
     );
   });
@@ -960,7 +969,7 @@ test("persisted readiness dismissal survives failed reload", async ({ page }) =>
   await expect(page.getByTestId("workspace-readiness-focus")).toBeFocused();
   expect(
     await page.evaluate(() =>
-      window.localStorage.getItem("omniagent.workspace-readiness.compact.v1"),
+      window.localStorage.getItem("asael.workspace-readiness.compact.v1"),
     ),
   ).toBeNull();
 });
@@ -1137,7 +1146,7 @@ test("readiness preserves stale data and can compact after refresh failure", asy
   await expect(reopen).toBeFocused();
   expect(
     await page.evaluate(() =>
-      window.localStorage.getItem("omniagent.workspace-readiness.compact.v1"),
+      window.localStorage.getItem("asael.workspace-readiness.compact.v1"),
     ),
   ).toBe("1");
 });
@@ -1246,6 +1255,7 @@ test("workspace summary panels settle independently", async ({ page }) => {
   await expect(
     page.getByText("Independent panel result").first(),
   ).toBeVisible();
+  await page.getByText("Could not refresh workflows").click();
   await expect(
     page.getByText("Workflow source is temporarily slow."),
   ).toBeVisible();
@@ -1255,12 +1265,18 @@ test("reviewed workflow plans bind to one visible run", async ({ page }) => {
   await signIn(page);
   await page.goto("/app/command");
 
-  await page.getByRole("textbox", { name: /^Task outcome/ }).fill(
+  await page.getByRole("textbox", { name: "Message Asael" }).fill(
     "Summarize recent workflow evidence and produce a bounded verification report.",
   );
-  await page.getByRole("button", { name: "Preview plan" }).click();
+  await page.getByRole("button", { name: "Plan" }).click();
+  await expect(page.getByRole("dialog", { name: "Task details" })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText(
+    "Context preparation finished",
+  );
+  await page.getByRole("tab", { name: "Plan" }).click();
+  await page.getByRole("button", { name: "Generate plan" }).click();
   await expect(
-    page.getByRole("heading", { name: "Workflow plan" }),
+    page.getByRole("tabpanel", { name: "Plan" }),
   ).toBeVisible();
 
   const start = page.getByRole("button", { name: "Start reviewed plan" });
@@ -1532,8 +1548,8 @@ test("owner can compose a skill, create an agent, and assign work from the visua
   const agentName = `Compass ${suffix}`;
 
   await page.goto("/app/agents");
-  await expect(page.getByRole("heading", { name: "Your working intelligence." })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Skill Studio" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Your Arsenal" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Skills" })).toBeVisible();
 
   await page.getByRole("button", { name: "New skill" }).click();
   const skillDialog = page.getByRole("dialog", { name: "Skill" });
@@ -1572,7 +1588,8 @@ test("owner can compose a skill, create an agent, and assign work from the visua
   );
   await page.getByRole("link", { name: `Assign work to ${agentName}` }).click();
   await expect(page).toHaveURL(/\/app\/command\?agent=/);
-  await expect(page.getByText(`${agentName} is leading this task`)).toBeVisible();
+  const composer = page.getByRole("region", { name: "Message Asael" });
+  await expect(composer.getByText(agentName, { exact: true })).toBeVisible();
 
   const created = await page.evaluate(async ({ skillName, agentName }) => {
     const [skills, agents] = await Promise.all([
