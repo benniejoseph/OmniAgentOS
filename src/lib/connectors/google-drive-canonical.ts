@@ -182,6 +182,13 @@ export async function observeGoogleDriveCanonicalMetadata(
     });
   } catch (error) {
     const code = failureCode(error, signal);
+    console.warn(JSON.stringify({
+      level: "warn",
+      event: "google_drive.canonical_metadata.failed",
+      phase: page.phase,
+      code,
+      diagnostic: safeFailureDiagnostic(error),
+    }));
     await failSourceSyncPage({
       page,
       code,
@@ -752,6 +759,35 @@ function failureCode(
     return "provider_unauthorized";
   }
   return "unexpected_failure";
+}
+
+function safeFailureDiagnostic(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return { name: "UnknownError" };
+  }
+  const record = error as Record<string, unknown>;
+  return {
+    name: safeDiagnosticIdentifier(record.name, "UnknownError"),
+    ...(safeDiagnosticIdentifier(record.code) ? {
+      databaseCode: safeDiagnosticIdentifier(record.code),
+    } : {}),
+    ...(safeDiagnosticIdentifier(record.constraint) ? {
+      constraint: safeDiagnosticIdentifier(record.constraint),
+    } : {}),
+    ...(safeDiagnosticIdentifier(record.table) ? {
+      table: safeDiagnosticIdentifier(record.table),
+    } : {}),
+    ...(safeDiagnosticIdentifier(record.routine) ? {
+      routine: safeDiagnosticIdentifier(record.routine),
+    } : {}),
+  };
+}
+
+function safeDiagnosticIdentifier(value: unknown, fallback?: string) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return /^[A-Za-z0-9_.:-]{1,120}$/.test(normalized)
+    ? normalized
+    : fallback;
 }
 
 class GoogleDriveProviderError extends Error {
