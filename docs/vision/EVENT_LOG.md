@@ -792,7 +792,21 @@ one exact active membership. User membership is keyed to the canonical actor;
 agent and system membership must pin the resolved v60 principal generation.
 A project coordinate without its workspace, or any missing, duplicate,
 inactive, malformed, or generation-mismatched authority, denies before later
-purpose reads. Grant and policy authority remain unconsumed.
+purpose reads. After the immutable purpose row is locked, the canary also
+locks exactly one active v63 policy generation and rechecks its fixed risk,
+principal, context-grant, capability-grant, request-binding, and human-approval
+gates before standing consent is inspected. Missing, duplicate, inactive,
+under-classified, unsorted, or gate-weakening policy rows remain unavailable.
+For non-data-right purposes with valid standing authority, claimed v62 context
+and capability grants are now locked in canonical ID order and matched to the
+exact tenant, purpose, principal generation, owner, target coordinates,
+policy visibility, resource set, operation set, quantitative bounds, active
+lifecycle, and database-observed validity window. Extra context claims are not
+accepted when the policy does not require them. Any missing, duplicate,
+expired, inactive, malformed, cross-principal, or scope-drifted grant remains
+unavailable. Export and forget still stop at the request-bound authority gate
+before standing grants can be considered. Even with every observable input
+coherent, the canary's only decision remains `deny`.
 
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that

@@ -73,6 +73,7 @@ const QUERY_STAGES = [
   "membership",
   "epoch",
   "purpose",
+  "operation_policy",
   "entitlement",
   "consent",
   "receipt",
@@ -84,12 +85,15 @@ type QueryStage =
   | StandardQueryStage
   | "execution_principal"
   | "workspace"
-  | "workspace_membership";
+  | "workspace_membership"
+  | "memory_grant";
 type AuthorityStage = Exclude<StandardQueryStage, "preflight">;
 type QueryResponses = Record<StandardQueryStage, SqlRow[]> & {
   execution_principal?: SqlRow[];
   workspace?: SqlRow[];
   workspace_membership?: SqlRow[];
+  context_grant?: SqlRow[];
+  capability_grant?: SqlRow[];
 };
 
 const AUTHORITY_STAGES = QUERY_STAGES.slice(1) as readonly AuthorityStage[];
@@ -97,7 +101,6 @@ const AUTHORITY_STAGES = QUERY_STAGES.slice(1) as readonly AuthorityStage[];
 const BASELINE_UNAVAILABLE = [
   "context_grant_authority",
   "capability_grant_authority",
-  "operation_policy_authority",
 ] as const;
 
 const EXPECTED_COLUMNS = {
@@ -112,6 +115,24 @@ const EXPECTED_COLUMNS = {
     "lifecycle_revision",
   ],
   purpose: ["purpose_id", "contract_version", "operation_class"],
+  operation_policy: [
+    "schema_version",
+    "tenant_id",
+    "policy_id",
+    "policy_generation",
+    "purpose_id",
+    "operation_class",
+    "risk_class",
+    "allowed_principal_kinds",
+    "allowed_visibilities",
+    "allowed_sensitivities",
+    "requires_context_grant",
+    "requires_capability_grant",
+    "requires_request_binding",
+    "requires_human_approval",
+    "state",
+    "lifecycle_revision",
+  ],
   entitlement: [
     "schema_version",
     "tenant_id",
@@ -162,6 +183,8 @@ const EXPECTED_WHERE = {
   epoch:
     "WHERE tenant_id = ? AND subject_actor_id = ? AND state <> 'revoked'",
   purpose: "WHERE purpose_id = ?",
+  operation_policy:
+    "WHERE tenant_id = ? AND purpose_id = ? AND state <> 'revoked'",
   entitlement:
     "WHERE tenant_id = ? AND purpose_id = ? AND state <> 'revoked'",
   consent:
@@ -180,6 +203,7 @@ const EXPECTED_ORDER_BY = {
   membership: "ORDER BY id ASC",
   epoch: "ORDER BY membership_epoch DESC",
   purpose: "ORDER BY purpose_id ASC, contract_version ASC",
+  operation_policy: "ORDER BY policy_generation DESC",
   entitlement: "ORDER BY entitlement_generation DESC",
   consent: "ORDER BY consent_generation DESC",
   receipt: [
@@ -195,6 +219,7 @@ const EXPECTED_PARAMS = {
   membership: [TENANT_ID, AUTH_USER_ID],
   epoch: [TENANT_ID, CANONICAL_ACTOR_ID],
   purpose: [PURPOSE_ID],
+  operation_policy: [TENANT_ID, PURPOSE_ID],
   entitlement: [TENANT_ID, PURPOSE_ID],
   consent: [TENANT_ID, CANONICAL_ACTOR_ID, PURPOSE_ID],
   receipt: [
@@ -490,6 +515,42 @@ describe("denial-only memory authority resolution canary", () => {
       .toBe(false);
   });
 
+  it("rejects operation policies that weaken or misbind any fixed gate", async () => {
+    const invalidPolicies: SqlRow[] = [
+      { risk_class: "medium" },
+      { allowed_principal_kinds: ["agent", "system"] },
+      { allowed_principal_kinds: ["user", "agent"] },
+      { allowed_visibilities: ["unknown"] },
+      { allowed_sensitivities: ["public", "internal"] },
+      { requires_context_grant: false },
+      { requires_capability_grant: false },
+      { requires_request_binding: true },
+      { requires_human_approval: true },
+      { state: "held", lifecycle_revision: "0" },
+    ];
+
+    for (const override of invalidPolicies) {
+      const responses = coherentResponses();
+      responses.operation_policy = [{
+        ...responses.operation_policy[0],
+        ...override,
+      }];
+      const { sql, calls } = fakeSql(handlerFor(responses));
+      dbMocks.getSql.mockReturnValue(sql);
+
+      const result = await inspectMemoryAuthorityDenialCanary(canaryInput());
+
+      expect(result.unavailableAuthorities).toEqual([
+        ...BASELINE_UNAVAILABLE,
+        "operation_policy_authority",
+      ]);
+      expect(calls.map(({ text }) => stageForText(text))).toEqual(
+        QUERY_STAGES.slice(0, QUERY_STAGES.indexOf("entitlement")),
+      );
+      expectCanonicalDiagnostics(result.unavailableAuthorities);
+    }
+  });
+
   it("locks and accepts one actor-controlled active agent principal", async () => {
     const responses = coherentResponses();
     responses.execution_principal = [{
@@ -502,6 +563,8 @@ describe("denial-only memory authority resolution canary", () => {
       state: "active",
       lifecycle_revision: "1",
     }];
+    responses.context_grant = [activeAgentGrant("context")];
+    responses.capability_grant = [activeAgentGrant("capability")];
     const { sql, calls } = fakeSql(handlerFor(responses));
     dbMocks.getSql.mockReturnValue(sql);
     const scopeWithClaims = Object.freeze({
@@ -516,7 +579,7 @@ describe("denial-only memory authority resolution canary", () => {
       canaryInput(scopeWithClaims),
     );
 
-    expect(result.unavailableAuthorities).toEqual(BASELINE_UNAVAILABLE);
+    expect(result.unavailableAuthorities).toEqual([]);
     const principalCall = calls.find(({ text }) =>
       stageForText(text) === "execution_principal"
     );
@@ -528,6 +591,100 @@ describe("denial-only memory authority resolution canary", () => {
       "agent",
       "agent:asael",
     ]);
+    expect(calls.filter(({ text }) => stageForText(text) === "memory_grant"))
+      .toHaveLength(2);
+    expectCanonicalDiagnostics(result.unavailableAuthorities);
+  });
+
+  it("locks exact active context and capability grants and rejects drift", async () => {
+    const claimedScope = Object.freeze({
+      ...ACCESS_SCOPE,
+      contextGrantIds: Object.freeze(["context:one"]),
+      capabilityGrantIds: Object.freeze(["capability:one"]),
+    });
+    const invalidVariants = [
+      { kind: "context" as const, rows: [] },
+      {
+        kind: "context" as const,
+        rows: [activeUserGrant("context"), activeUserGrant("context")],
+      },
+      {
+        kind: "context" as const,
+        rows: [activeUserGrant("context", { owner_actor_id: "actor:22222222-2222-4222-8222-222222222222" })],
+      },
+      {
+        kind: "context" as const,
+        rows: [activeUserGrant("context", { resource_ids: ["memory:b", "memory:a"] })],
+      },
+      {
+        kind: "capability" as const,
+        rows: [activeUserGrant("capability", { operation_ids: null })],
+      },
+      {
+        kind: "capability" as const,
+        rows: [activeUserGrant("capability", { observed_at: "2026-09-05T11:00:00.000Z" })],
+      },
+      {
+        kind: "capability" as const,
+        rows: [activeUserGrant("capability", { state: "held", lifecycle_revision: "0" })],
+      },
+    ];
+
+    for (const variant of invalidVariants) {
+      const responses = coherentResponses();
+      responses.context_grant = variant.kind === "context"
+        ? variant.rows
+        : [activeUserGrant("context")];
+      responses.capability_grant = variant.kind === "capability"
+        ? variant.rows
+        : [activeUserGrant("capability")];
+      const { sql, calls } = fakeSql(handlerFor(responses));
+      dbMocks.getSql.mockReturnValue(sql);
+
+      const result = await inspectMemoryAuthorityDenialCanary(
+        canaryInput(claimedScope),
+      );
+
+      expect(result.unavailableAuthorities).toEqual([
+        variant.kind === "context"
+          ? "context_grant_authority"
+          : "capability_grant_authority",
+      ]);
+      const grantCalls = calls.filter(({ text }) =>
+        stageForText(text) === "memory_grant"
+      );
+      expect(grantCalls).toHaveLength(2);
+      expect(grantCalls.every(({ text }) =>
+        text.includes("FOR SHARE") && text.includes("LIMIT ?")
+      )).toBe(true);
+      expect(grantCalls.map(({ params }) => params)).toEqual([
+        [TENANT_ID, "context", ["context:one"], 2],
+        [TENANT_ID, "capability", ["capability:one"], 2],
+      ]);
+      expectCanonicalDiagnostics(result.unavailableAuthorities);
+    }
+  });
+
+  it("does not promote grants outside the active policy visibility set", async () => {
+    const responses = coherentResponses();
+    responses.operation_policy = [{
+      ...responses.operation_policy[0],
+      allowed_visibilities: ["agent_private"],
+    }];
+    responses.context_grant = [activeUserGrant("context")];
+    responses.capability_grant = [activeUserGrant("capability")];
+    const { sql } = fakeSql(handlerFor(responses));
+    dbMocks.getSql.mockReturnValue(sql);
+
+    const result = await inspectMemoryAuthorityDenialCanary(canaryInput(
+      Object.freeze({
+        ...ACCESS_SCOPE,
+        contextGrantIds: Object.freeze(["context:one"]),
+        capabilityGrantIds: Object.freeze(["capability:one"]),
+      }),
+    ));
+
+    expect(result.unavailableAuthorities).toEqual(BASELINE_UNAVAILABLE);
     expectCanonicalDiagnostics(result.unavailableAuthorities);
   });
 
@@ -587,6 +744,7 @@ describe("denial-only memory authority resolution canary", () => {
       "workspace_membership",
       "epoch",
       "purpose",
+      "operation_policy",
       "entitlement",
       "consent",
       "receipt",
@@ -623,6 +781,7 @@ describe("denial-only memory authority resolution canary", () => {
       expect(result.unavailableAuthorities).toEqual([
         "workspace_membership_authority",
         ...BASELINE_UNAVAILABLE,
+        "operation_policy_authority",
       ]);
       expect(calls.map(({ text }) => stageForText(text))).toEqual(
         scope.workspaceId === null
@@ -660,7 +819,11 @@ describe("denial-only memory authority resolution canary", () => {
       expect(result.unavailableAuthorities).toEqual(
         expectedAvailable
           ? BASELINE_UNAVAILABLE
-          : ["workspace_membership_authority", ...BASELINE_UNAVAILABLE],
+          : [
+              "workspace_membership_authority",
+              ...BASELINE_UNAVAILABLE,
+              "operation_policy_authority",
+            ],
       );
       const stages = calls.map(({ text }) => stageForText(text));
       expect(stages.slice(0, 6)).toEqual([
@@ -713,6 +876,7 @@ describe("denial-only memory authority resolution canary", () => {
       membership: ["tenant_membership"],
       epoch: ["membership_epoch"],
       purpose: ["purpose_contract"],
+      operation_policy: ["operation_policy_authority"],
       entitlement: ["tenant_entitlement"],
       consent: ["standing_consent", "informed_notice_evidence"],
       receipt: ["informed_notice_evidence"],
@@ -814,6 +978,7 @@ describe("denial-only memory authority resolution canary", () => {
       expect(result.unavailableAuthorities).toEqual([
         "membership_epoch",
         ...BASELINE_UNAVAILABLE,
+        "operation_policy_authority",
       ]);
       expectCanonicalDiagnostics(result.unavailableAuthorities);
     }
@@ -831,7 +996,7 @@ describe("denial-only memory authority resolution canary", () => {
       );
 
       expect(calls.map(({ text }) => stageForText(text))).toEqual(
-        QUERY_STAGES.slice(0, QUERY_STAGES.indexOf("purpose") + 1),
+        QUERY_STAGES.slice(0, QUERY_STAGES.indexOf("operation_policy") + 1),
       );
       expect(result.unavailableAuthorities).toEqual([
         ...BASELINE_UNAVAILABLE,
@@ -934,6 +1099,37 @@ function coherentResponses(
       contract_version: "1",
       operation_class: operationClass,
     }],
+    operation_policy: [{
+      schema_version: "1",
+      tenant_id: TENANT_ID,
+      policy_id: `memory-policy:${operationClass}`,
+      policy_generation: "2",
+      purpose_id: purposeId,
+      operation_class: operationClass,
+      risk_class: riskForOperationClass(operationClass),
+      allowed_principal_kinds: ["agent", "system", "user"],
+      allowed_visibilities: [
+        "agent_private",
+        "mission_shared",
+        "project_shared",
+        "user_private",
+        "workspace_shared",
+      ],
+      allowed_sensitivities: [
+        "confidential",
+        "internal",
+        "public",
+        "restricted",
+      ],
+      requires_context_grant: ["read", "retrieve", "formation"].includes(
+        operationClass,
+      ),
+      requires_capability_grant: true,
+      requires_request_binding: ["forget", "export"].includes(operationClass),
+      requires_human_approval: ["forget", "export"].includes(operationClass),
+      state: "active",
+      lifecycle_revision: "1",
+    }],
     entitlement: [{
       schema_version: "1",
       tenant_id: TENANT_ID,
@@ -979,6 +1175,13 @@ function coherentResponses(
   };
 }
 
+function riskForOperationClass(operationClass: string): string {
+  if (["read", "retrieve"].includes(operationClass)) return "low";
+  if (["write", "formation"].includes(operationClass)) return "medium";
+  if (["correct", "maintenance"].includes(operationClass)) return "high";
+  return "critical";
+}
+
 function activeAgentPrincipal(overrides: SqlRow = {}): SqlRow {
   return {
     schema_version: "1",
@@ -991,6 +1194,63 @@ function activeAgentPrincipal(overrides: SqlRow = {}): SqlRow {
     lifecycle_revision: "1",
     ...overrides,
   };
+}
+
+function activeUserGrant(
+  grantKind: "context" | "capability",
+  overrides: SqlRow = {},
+): SqlRow {
+  const context = grantKind === "context";
+  return {
+    schema_version: "1",
+    tenant_id: TENANT_ID,
+    grant_kind: grantKind,
+    grant_id: `${grantKind}:one`,
+    grant_generation: "2",
+    grantee_kind: "user",
+    grantee_key: CANONICAL_ACTOR_ID,
+    grantee_actor_id: CANONICAL_ACTOR_ID,
+    grantee_execution_principal_id: null,
+    grantee_execution_principal_generation: null,
+    purpose_id: PURPOSE_ID,
+    target_visibility: "user_private",
+    owner_actor_id: CANONICAL_ACTOR_ID,
+    owner_agent_id: null,
+    owner_agent_principal_generation: null,
+    workspace_id: null,
+    project_id: null,
+    mission_id: null,
+    resource_ids: ["memory:one"],
+    operation_ids: context ? null : ["memory:read"],
+    max_items: context ? "25" : null,
+    max_bytes: context ? "65536" : null,
+    max_invocations: context ? null : "5",
+    max_cost_microusd: context ? null : "100000",
+    max_duration_ms: context ? null : "30000",
+    not_before: "2026-09-05T08:00:00.000Z",
+    expires_at: "2026-09-05T10:00:00.000Z",
+    state: "active",
+    lifecycle_revision: "1",
+    observed_at: "2026-09-05T09:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function activeAgentGrant(
+  grantKind: "context" | "capability",
+  overrides: SqlRow = {},
+): SqlRow {
+  return activeUserGrant(grantKind, {
+    grantee_kind: "agent",
+    grantee_key: "agent:asael",
+    grantee_actor_id: null,
+    grantee_execution_principal_id: "agent:asael",
+    grantee_execution_principal_generation: "3",
+    target_visibility: "agent_private",
+    owner_agent_id: "agent:asael",
+    owner_agent_principal_generation: "3",
+    ...overrides,
+  });
 }
 
 function activeWorkspace(overrides: SqlRow = {}): SqlRow {
@@ -1041,8 +1301,16 @@ function activeAgentWorkspaceMembership(overrides: SqlRow = {}): SqlRow {
 }
 
 function handlerFor(responses: QueryResponses) {
-  return (call: QueryCall): SqlRow[] =>
-    (responses[stageForText(call.text)] ?? []).map((row) => ({ ...row }));
+  return (call: QueryCall): SqlRow[] => {
+    const stage = stageForText(call.text);
+    if (stage === "memory_grant") {
+      const rows = call.params[1] === "context"
+        ? responses.context_grant
+        : responses.capability_grant;
+      return (rows ?? []).map((row) => ({ ...row }));
+    }
+    return (responses[stage] ?? []).map((row) => ({ ...row }));
+  };
 }
 
 function corruptedRows(
@@ -1070,6 +1338,8 @@ function wrongCoordinate(stage: AuthorityStage): SqlRow {
       };
     case "purpose":
       return { purpose_id: "memory.write.v1" };
+    case "operation_policy":
+      return { tenant_id: "tenant:other" };
     case "entitlement":
       return { purpose_id: "memory.write.v1" };
     case "consent":
@@ -1091,6 +1361,8 @@ function malformedCoordinate(stage: AuthorityStage): SqlRow {
       return { membership_epoch: "01" };
     case "purpose":
       return { operation_class: 42 };
+    case "operation_policy":
+      return { allowed_principal_kinds: ["user", "agent"] };
     case "entitlement":
       return { lifecycle_revision: "2" };
     case "consent":
@@ -1166,6 +1438,12 @@ function stageForText(text: string): QueryStage {
     return "epoch";
   }
   if (text.includes("FROM public.omni_memory_purpose_catalog")) return "purpose";
+  if (text.includes("FROM public.omni_tenant_memory_operation_policies")) {
+    return "operation_policy";
+  }
+  if (text.includes("FROM public.omni_tenant_memory_access_grants")) {
+    return "memory_grant";
+  }
   if (
     text.includes("FROM public.omni_tenant_memory_purpose_entitlements")
   ) {

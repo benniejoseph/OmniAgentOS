@@ -84,6 +84,12 @@ type ObservedNoticeContractCoordinates = Readonly<{
   noticeContractVersion: number;
 }>;
 
+type ActiveOperationPolicyRequirements = Readonly<{
+  requiresContextGrant: boolean;
+  requiresCapabilityGrant: true;
+  allowedVisibilities: readonly string[];
+}>;
+
 const INPUT_KEYS = ["accessScope", "actorBinding"] as const;
 const ACTOR_BINDING_KEYS = [
   "version",
@@ -274,8 +280,9 @@ async function inspectInOwnedTransaction(
     LIMIT 2
     FOR SHARE
   `;
+  const purposeRow = onlyRow(purposeRows);
   const purposeAvailable = isPurposeContract(
-    onlyRow(purposeRows),
+    purposeRow,
     scope.purposeId,
   );
   if (!purposeAvailable) {
@@ -283,20 +290,322 @@ async function inspectInOwnedTransaction(
     return deniedResult(unavailable);
   }
 
+  const policyRequirements = await resolveActiveOperationPolicyRequirements(
+    sql,
+    scope,
+    String(purposeRow?.operation_class),
+  );
+  if (policyRequirements) {
+    unavailable.delete("operation_policy_authority");
+  } else {
+    return deniedResult(unavailable);
+  }
+
   if (isRequestBoundDataRight(scope.purposeId)) {
     unavailable.add("request_bound_data_right_authority");
     return deniedResult(unavailable);
-  } else {
-    await inspectStandingAuthorities(
+  }
+
+  if (!await inspectStandingAuthorities(
+    sql,
+    scope,
+    actorBinding,
+    membershipEpoch,
+    unavailable,
+  )) {
+    return deniedResult(unavailable);
+  }
+
+  if (
+    !policyRequirements.requiresContextGrant &&
+    scope.contextGrantIds.length === 0
+  ) {
+    unavailable.delete("context_grant_authority");
+  } else if (
+    policyRequirements.requiresContextGrant &&
+    await hasActiveClaimedGrantAuthority(
       sql,
       scope,
       actorBinding,
-      membershipEpoch,
-      unavailable,
-    );
+      principalGeneration,
+      "context",
+      scope.contextGrantIds,
+      policyRequirements.allowedVisibilities,
+    )
+  ) {
+    unavailable.delete("context_grant_authority");
+  }
+  if (
+    policyRequirements.requiresCapabilityGrant &&
+    await hasActiveClaimedGrantAuthority(
+      sql,
+      scope,
+      actorBinding,
+      principalGeneration,
+      "capability",
+      scope.capabilityGrantIds,
+      policyRequirements.allowedVisibilities,
+    )
+  ) {
+    unavailable.delete("capability_grant_authority");
   }
 
   return deniedResult(unavailable);
+}
+
+async function resolveActiveOperationPolicyRequirements(
+  sql: CanarySql,
+  scope: DatabaseMemoryAccessScope,
+  operationClass: string,
+): Promise<ActiveOperationPolicyRequirements | undefined> {
+  const policyRows = await sql`
+    SELECT
+      schema_version,
+      tenant_id,
+      policy_id,
+      policy_generation,
+      purpose_id,
+      operation_class,
+      risk_class,
+      allowed_principal_kinds,
+      allowed_visibilities,
+      allowed_sensitivities,
+      requires_context_grant,
+      requires_capability_grant,
+      requires_request_binding,
+      requires_human_approval,
+      state,
+      lifecycle_revision
+    FROM public.omni_tenant_memory_operation_policies
+    WHERE tenant_id = ${scope.tenantId}
+      AND purpose_id = ${scope.purposeId}
+      AND state <> 'revoked'
+    ORDER BY policy_generation DESC
+    LIMIT 2
+    FOR SHARE
+  `;
+  const row = onlyRow(policyRows);
+  const expectedRisk = riskForMemoryOperation(operationClass);
+  const isDataRight = ["forget", "export"].includes(operationClass);
+  const requiresContext = ["read", "retrieve", "formation"].includes(
+    operationClass,
+  );
+  if (
+    !row ||
+    numericValue(row.schema_version) !== 1 ||
+    row.tenant_id !== scope.tenantId ||
+    !isContractId(row.policy_id) ||
+    !row.policy_id.startsWith("memory-policy:") ||
+    positiveSafeInteger(row.policy_generation) === undefined ||
+    row.purpose_id !== scope.purposeId ||
+    row.operation_class !== operationClass ||
+    row.risk_class !== expectedRisk ||
+    !isCanonicalPolicySet(
+      row.allowed_principal_kinds,
+      new Set(["agent", "system", "user"]),
+    ) ||
+    !row.allowed_principal_kinds.includes(scope.executingPrincipalType) ||
+    !isCanonicalPolicySet(
+      row.allowed_visibilities,
+      new Set([
+        "agent_private",
+        "mission_shared",
+        "project_shared",
+        "user_private",
+        "workspace_shared",
+      ]),
+    ) ||
+    !isCanonicalPolicySet(
+      row.allowed_sensitivities,
+      new Set(["confidential", "internal", "public", "restricted"]),
+    ) ||
+    row.requires_context_grant !== requiresContext ||
+    row.requires_capability_grant !== true ||
+    row.requires_request_binding !== isDataRight ||
+    row.requires_human_approval !== isDataRight ||
+    row.state !== "active" ||
+    numericValue(row.lifecycle_revision) !== 1
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    requiresContextGrant: requiresContext,
+    requiresCapabilityGrant: true as const,
+    allowedVisibilities: Object.freeze([...row.allowed_visibilities]),
+  });
+}
+
+async function hasActiveClaimedGrantAuthority(
+  sql: CanarySql,
+  scope: DatabaseMemoryAccessScope,
+  actorBinding: CanonicalRequestActorBindingV1,
+  principalGeneration: number | null | undefined,
+  grantKind: "context" | "capability",
+  grantIds: readonly string[],
+  allowedVisibilities: readonly string[],
+): Promise<boolean> {
+  if (principalGeneration === undefined || grantIds.length === 0) return false;
+  const grantRows = await sql`
+    SELECT
+      schema_version,
+      tenant_id,
+      grant_kind,
+      grant_id,
+      grant_generation,
+      grantee_kind,
+      grantee_key,
+      grantee_actor_id,
+      grantee_execution_principal_id,
+      grantee_execution_principal_generation,
+      purpose_id,
+      target_visibility,
+      owner_actor_id,
+      owner_agent_id,
+      owner_agent_principal_generation,
+      workspace_id,
+      project_id,
+      mission_id,
+      resource_ids,
+      operation_ids,
+      max_items,
+      max_bytes,
+      max_invocations,
+      max_cost_microusd,
+      max_duration_ms,
+      not_before,
+      expires_at,
+      state,
+      lifecycle_revision,
+      statement_timestamp() AS observed_at
+    FROM public.omni_tenant_memory_access_grants
+    WHERE tenant_id = ${scope.tenantId}
+      AND grant_kind = ${grantKind}
+      AND grant_id = ANY(${grantIds}::TEXT[])
+      AND state <> 'revoked'
+    ORDER BY grant_id ASC, grant_generation DESC
+    LIMIT ${grantIds.length + 1}
+    FOR SHARE
+  `;
+  if (grantRows.length !== grantIds.length) return false;
+  return grantRows.every((row, index) =>
+    isActiveClaimedGrant(
+      row,
+      scope,
+      actorBinding,
+      principalGeneration,
+      grantKind,
+      grantIds[index],
+      allowedVisibilities,
+    )
+  );
+}
+
+function isActiveClaimedGrant(
+  row: SqlRow,
+  scope: DatabaseMemoryAccessScope,
+  actorBinding: CanonicalRequestActorBindingV1,
+  principalGeneration: number | null,
+  grantKind: "context" | "capability",
+  grantId: string,
+  allowedVisibilities: readonly string[],
+): boolean {
+  const observedAt = timestampMilliseconds(row.observed_at);
+  const notBefore = timestampMilliseconds(row.not_before);
+  const expiresAt = timestampMilliseconds(row.expires_at);
+  const expectedActorId = scope.executingPrincipalType === "user"
+    ? actorBinding.canonicalActorId
+    : null;
+  const expectedPrincipalId = scope.executingPrincipalType === "user"
+    ? null
+    : scope.executingPrincipalId;
+  const storedPrincipalGeneration = row.grantee_execution_principal_generation === null
+    ? null
+    : positiveSafeInteger(row.grantee_execution_principal_generation);
+  if (
+    numericValue(row.schema_version) !== 1 ||
+    row.tenant_id !== scope.tenantId ||
+    row.grant_kind !== grantKind ||
+    row.grant_id !== grantId ||
+    !grantId.startsWith(`${grantKind}:`) ||
+    positiveSafeInteger(row.grant_generation) === undefined ||
+    row.grantee_kind !== scope.executingPrincipalType ||
+    row.grantee_key !== (expectedActorId ?? expectedPrincipalId) ||
+    row.grantee_actor_id !== expectedActorId ||
+    row.grantee_execution_principal_id !== expectedPrincipalId ||
+    storedPrincipalGeneration !== principalGeneration ||
+    row.purpose_id !== scope.purposeId ||
+    !allowedVisibilities.includes(String(row.target_visibility)) ||
+    row.owner_actor_id !== actorBinding.canonicalActorId ||
+    row.workspace_id !== scope.workspaceId ||
+    row.project_id !== scope.projectId ||
+    row.mission_id !== scope.missionId ||
+    !isCanonicalIdArray(row.resource_ids, 256) ||
+    row.state !== "active" ||
+    numericValue(row.lifecycle_revision) !== 1 ||
+    observedAt === undefined ||
+    notBefore === undefined ||
+    expiresAt === undefined ||
+    notBefore > observedAt ||
+    observedAt >= expiresAt ||
+    !hasConsistentGrantTarget(row, scope, principalGeneration)
+  ) {
+    return false;
+  }
+
+  if (grantKind === "context") {
+    return (
+      row.operation_ids === null &&
+      positiveSafeInteger(row.max_items) !== undefined &&
+      positiveSafeInteger(row.max_bytes) !== undefined &&
+      row.max_invocations === null &&
+      row.max_cost_microusd === null &&
+      row.max_duration_ms === null
+    );
+  }
+  return (
+    isCanonicalIdArray(row.operation_ids, 256) &&
+    row.max_items === null &&
+    row.max_bytes === null &&
+    positiveSafeInteger(row.max_invocations) !== undefined &&
+    positiveSafeInteger(row.max_cost_microusd) !== undefined &&
+    positiveSafeInteger(row.max_duration_ms) !== undefined
+  );
+}
+
+function hasConsistentGrantTarget(
+  row: SqlRow,
+  scope: DatabaseMemoryAccessScope,
+  principalGeneration: number | null,
+): boolean {
+  if (scope.workspaceId !== null && scope.projectId !== null && scope.missionId === null) {
+    return row.target_visibility === "project_shared" &&
+      row.owner_agent_id === null &&
+      row.owner_agent_principal_generation === null;
+  }
+  if (scope.workspaceId !== null && scope.projectId === null && scope.missionId === null) {
+    return row.target_visibility === "workspace_shared" &&
+      row.owner_agent_id === null &&
+      row.owner_agent_principal_generation === null;
+  }
+  if (scope.workspaceId === null && scope.projectId === null && scope.missionId !== null) {
+    return row.target_visibility === "mission_shared" &&
+      row.owner_agent_id === null &&
+      row.owner_agent_principal_generation === null;
+  }
+  if (scope.workspaceId !== null || scope.projectId !== null || scope.missionId !== null) {
+    return false;
+  }
+  if (row.owner_agent_id === null) {
+    return row.target_visibility === "user_private" &&
+      row.owner_agent_principal_generation === null;
+  }
+  return (
+    scope.executingPrincipalType === "agent" &&
+    row.target_visibility === "agent_private" &&
+    row.owner_agent_id === scope.executingPrincipalId &&
+    positiveSafeInteger(row.owner_agent_principal_generation) ===
+      principalGeneration
+  );
 }
 
 async function resolveActiveExecutingPrincipalGeneration(
@@ -450,7 +759,7 @@ async function inspectStandingAuthorities(
   actorBinding: CanonicalRequestActorBindingV1,
   membershipEpoch: number | undefined,
   unavailable: Set<MemoryAuthorityUnavailable>,
-): Promise<void> {
+): Promise<boolean> {
   const entitlementRows = await sql`
     SELECT
       schema_version,
@@ -469,7 +778,7 @@ async function inspectStandingAuthorities(
   `;
   if (!isActiveEntitlement(onlyRow(entitlementRows), scope)) {
     unavailable.add("tenant_entitlement");
-    return;
+    return false;
   }
 
   const consentRows = await sql`
@@ -503,7 +812,7 @@ async function inspectStandingAuthorities(
   if (!consentCoordinates) {
     unavailable.add("standing_consent");
     unavailable.add("informed_notice_evidence");
-    return;
+    return false;
   }
 
   const receiptRows = await sql`
@@ -545,7 +854,7 @@ async function inspectStandingAuthorities(
   );
   if (!noticeContractCoordinates) {
     unavailable.add("informed_notice_evidence");
-    return;
+    return false;
   }
 
   const noticeContractRows = await sql`
@@ -574,7 +883,9 @@ async function inspectStandingAuthorities(
     )
   ) {
     unavailable.add("informed_notice_evidence");
+    return false;
   }
+  return true;
 }
 
 async function assertTransactionScope(
@@ -889,6 +1200,54 @@ function isRequestBoundDataRight(purposeId: string): boolean {
     purposeId.startsWith("memory.export.v") ||
     purposeId.startsWith("memory.forget.v")
   );
+}
+
+function riskForMemoryOperation(operationClass: string): string | undefined {
+  switch (operationClass) {
+    case "read":
+    case "retrieve":
+      return "low";
+    case "write":
+    case "formation":
+      return "medium";
+    case "correct":
+    case "maintenance":
+      return "high";
+    case "forget":
+    case "export":
+      return "critical";
+    default:
+      return undefined;
+  }
+}
+
+function isCanonicalPolicySet(
+  value: unknown,
+  allowed: ReadonlySet<string>,
+): value is string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > allowed.size) {
+    return false;
+  }
+  return value.every(
+    (entry, index) =>
+      typeof entry === "string" &&
+      allowed.has(entry) &&
+      (index === 0 || String(value[index - 1]) < entry),
+  );
+}
+
+function isCanonicalIdArray(
+  value: unknown,
+  maximumEntries: number,
+): value is string[] {
+  return Array.isArray(value) &&
+    value.length >= 1 &&
+    value.length <= maximumEntries &&
+    value.every(
+      (entry, index) =>
+        isContractId(entry) &&
+        (index === 0 || String(value[index - 1]) < entry),
+    );
 }
 
 function isContractId(value: unknown): value is string {
