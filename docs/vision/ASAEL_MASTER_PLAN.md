@@ -1758,15 +1758,17 @@ metadata-only `memory.user_private.created` event in the same transaction.
 Private rows are not projected into the tenant-wide graph or consumed by
 background formation. The authenticated Retrieval Plan API may now merge the
 calling canonical user's independently scoped private results into an
-ephemeral context pack; any request that enters that scope suppresses the
-tenant-wide retrieval trace because traces do not yet have an actor-aware
-contract. Migration v74 repairs the daily-brief memory-lineage column used by
-governed deletion invalidation. Migrations v75-v76 index immutable deletion
-barriers and remove redundant derived-row read scans after an integrity-gated
-cutover; the production scoped Retrieval Plan and governed-forget canary now
-passes without exposing embeddings or persisting a tenant-wide trace.
-Agent-run consumption, private retrieval
-traces, agent-private and mission/project/workspace-shared memory, standing
+context pack. Migration v77 gives retrieval traces the same immutable
+user-private binding: a scoped request persists only its private-memory
+evidence component in an owner-only trace, while its legacy, knowledge, and
+graph evidence remains outside that trace. The tenant compatibility trace and
+unscoped graph/worker readers cannot observe the scoped query or result.
+Migration v74 repairs the daily-brief memory-lineage column used by governed
+deletion invalidation. Migrations v75-v76 index immutable deletion barriers and
+remove redundant derived-row read scans after an integrity-gated cutover; the
+production scoped Retrieval Plan and governed-forget canary passes without
+exposing embeddings. Agent-run consumption, agent-private and
+mission/project/workspace-shared memory, standing
 consent-driven formation, actor-aware graph/worker consumption, and the full
 authority resolver remain pending. This canary therefore advances P3.1 without
 marking it done.
