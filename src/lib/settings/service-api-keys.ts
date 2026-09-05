@@ -20,6 +20,7 @@ import {
   type ServiceApiKeyPrincipal,
   type ServiceApiScope,
 } from "@/lib/settings/types";
+import { serviceApiKeyPreviewTenantSegmentV2 } from "@/lib/settings/service-api-key-preview";
 
 export { SERVICE_API_SCOPES } from "@/lib/settings/types";
 export type {
@@ -66,6 +67,9 @@ export async function createServiceApiKey(input: {
   const id = randomUUID();
   const secret = randomBytes(32).toString("base64url");
   const tenantSegment = Buffer.from(input.tenantId, "utf8").toString("base64url");
+  const previewTenantSegment = serviceApiKeyPreviewTenantSegmentV2(
+    input.tenantId,
+  );
   const token = `${TOKEN_PREFIX}_${tenantSegment}.${id}.${secret}`;
   const now = new Date().toISOString();
   const internal = await insertServiceApiKey({
@@ -74,7 +78,7 @@ export async function createServiceApiKey(input: {
     actorId: input.actorId,
     name,
     tokenHash: tokenDigest(token, TOKEN_PREFIX),
-    tokenPrefix: `${TOKEN_PREFIX}_${tenantSegment.slice(0, 10)}…${id.slice(0, 8)}`,
+    tokenPrefix: `${TOKEN_PREFIX}_${previewTenantSegment}…${id.slice(0, 8)}`,
     tokenLastFour: secret.slice(-4),
     scopes,
     status: "active",

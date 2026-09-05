@@ -49,6 +49,7 @@ import {
   SettingsStoreError,
   listServiceApiKeyRecordsForRequest,
 } from "@/lib/settings/store";
+import { serviceApiKeyPreviewTenantSegmentV2 } from "@/lib/settings/service-api-key-preview";
 
 const authUserId = "11111111-1111-4111-8111-111111111111";
 const actorId = "settings-owner@example.test";
@@ -163,7 +164,7 @@ describe("request-bound service API key records", () => {
     const id = "77777777-7777-4777-8777-777777777777";
     const base = serviceKeyRow(id, actorId);
     const invalidPreviews = [
-      `asael_sk_${Buffer.from("tenant-b", "utf8").toString("base64url").slice(0, 10)}…${id.slice(0, 8)}`,
+      `asael_sk_${serviceApiKeyPreviewTenantSegmentV2("tenant-b")}…${id.slice(0, 8)}`,
       `${base.token_prefix.slice(0, -8)}99999999`,
       `${base.token_prefix}extra`,
     ];
@@ -231,9 +232,7 @@ describe("request-bound service API key records", () => {
 });
 
 function serviceKeyRow(id: string, ownerActorId: string) {
-  const tenantSegment = Buffer.from("tenant-a", "utf8")
-    .toString("base64url")
-    .slice(0, 10);
+  const tenantSegment = serviceApiKeyPreviewTenantSegmentV2("tenant-a");
   return {
     id,
     tenant_id: "tenant-a",
@@ -252,9 +251,7 @@ function serviceKeyRow(id: string, ownerActorId: string) {
 }
 
 function fileServiceKey(id: string, ownerActorId: string) {
-  const tenantSegment = Buffer.from("tenant-a", "utf8")
-    .toString("base64url")
-    .slice(0, 10);
+  const tenantSegment = serviceApiKeyPreviewTenantSegmentV2("tenant-a");
   return {
     id,
     tenantId: "tenant-a",

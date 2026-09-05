@@ -172,7 +172,9 @@ describe("Postgres Today snapshot", () => {
     const statement = dbMocks.statements[1];
     expect(statement.text).not.toContain("set_config('statement_timeout'");
     expect(statement.text).toContain("INSERT INTO omni_today_preferences");
-    expect(statement.text).toContain("WHERE NOT EXISTS (SELECT 1 FROM existing_preferences)");
+    expect(statement.text).toMatch(
+      /WHERE[\s\S]*?NOT EXISTS \(SELECT 1 FROM existing_preferences\)/,
+    );
     expect(statement.text).toContain("ON CONFLICT (tenant_id, actor_id) DO UPDATE");
     expect(statement.text).toContain("LIMIT 500");
     expect(statement.text).toMatch(
@@ -214,10 +216,10 @@ describe("Postgres Today snapshot", () => {
       /CROSS JOIN brief_guard_state brief_guard[\s\S]*?WHERE state\.preference_match_count = 0[\s\S]*?AND NOT brief_guard\.brief_owner_collision[\s\S]*?AND NOT brief_guard\.brief_content_malformed/,
     );
     expect(statement.text).toMatch(
-      /brief_rows AS MATERIALIZED \([\s\S]*?FROM matched_brief_rows briefs[\s\S]*?ORDER BY briefs\.local_date ASC, briefs\.generated_at DESC, briefs\.id ASC[\s\S]*?LIMIT 3/,
+      /(?:^|\n)\s*brief_rows AS MATERIALIZED \([\s\S]*?FROM matched_brief_rows briefs[\s\S]*?ORDER BY briefs\.local_date ASC, briefs\.generated_at DESC, briefs\.id ASC[\s\S]*?LIMIT 3/,
     );
     const publicBriefRows = statement.text.match(
-      /brief_rows AS MATERIALIZED \(\s*SELECT([\s\S]*?)FROM matched_brief_rows briefs/,
+      /(?:^|\n)\s*brief_rows AS MATERIALIZED \(\s*SELECT([\s\S]*?)FROM matched_brief_rows briefs/,
     );
     expect(publicBriefRows).not.toBeNull();
     expect(publicBriefRows?.[1]).not.toContain("tenant_id");
@@ -406,7 +408,7 @@ describe("Postgres Today snapshot", () => {
     expect(dbMocks.commit).not.toHaveBeenCalled();
     const statement = dbMocks.statements[1];
     expect(statement.text.indexOf("brief_guard_state AS MATERIALIZED")).toBeLessThan(
-      statement.text.indexOf("brief_rows AS MATERIALIZED"),
+      statement.text.indexOf(",\n      brief_rows AS MATERIALIZED"),
     );
   });
 

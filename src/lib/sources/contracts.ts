@@ -137,8 +137,8 @@ const sourceBindingShape = {
   purposeSetSha256: sourceContractSha256Schema,
 };
 
-const sourceBindingInputBaseSchema = z.object(sourceBindingInputShape).strict();
-type SourceBindingInput = z.infer<typeof sourceBindingInputBaseSchema>;
+const _sourceBindingInputBaseSchema = z.object(sourceBindingInputShape).strict();
+type SourceBindingInput = z.infer<typeof _sourceBindingInputBaseSchema>;
 
 const sourceBindingBaseSchema = z.object(sourceBindingShape).strict();
 type SourceBindingBase = z.infer<typeof sourceBindingBaseSchema>;

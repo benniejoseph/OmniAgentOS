@@ -256,19 +256,26 @@ export function AgentRunsWorkspace({
   const conversationsSheetRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
+    let stateTimer: number | undefined;
     if (!initialAgentId) {
-      setPreferredAgentId(undefined);
-      setPreferredAgentName(undefined);
-      return;
+      stateTimer = window.setTimeout(() => {
+        setPreferredAgentId(undefined);
+        setPreferredAgentName(undefined);
+      }, 0);
+      return () => window.clearTimeout(stateTimer);
     }
     if (agentDisplayName(initialAgentId) !== "Custom agent") {
-      setPreferredAgentId(initialAgentId);
-      setPreferredAgentName(agentDisplayName(initialAgentId));
-      return;
+      stateTimer = window.setTimeout(() => {
+        setPreferredAgentId(initialAgentId);
+        setPreferredAgentName(agentDisplayName(initialAgentId));
+      }, 0);
+      return () => window.clearTimeout(stateTimer);
     }
-    setPreferredAgentId(undefined);
-    setPreferredAgentName(undefined);
-    const controller = new AbortController();
+    stateTimer = window.setTimeout(() => {
+      setPreferredAgentId(undefined);
+      setPreferredAgentName(undefined);
+    }, 0);
     void readJson(`/api/agents/${encodeURIComponent(initialAgentId)}`, { signal: controller.signal })
       .then((payload) => {
         if (controller.signal.aborted) return;
@@ -278,7 +285,10 @@ export function AgentRunsWorkspace({
         setPreferredAgentName(stringValue(agent.name, "Custom agent"));
       })
       .catch(() => undefined);
-    return () => controller.abort();
+    return () => {
+      window.clearTimeout(stateTimer);
+      controller.abort();
+    };
   }, [initialAgentId]);
 
   const planNodes = arrayPath(workflowPlan, "plan.plan.nodes");
@@ -2871,14 +2881,12 @@ function BrowserActivityTimeline({
 }) {
   const framedItems = useMemo(() => items.filter((item) => item.frame), [items]);
   const latestFrameId = framedItems.at(-1)?.frame?.id || "";
-  const [selectedFrameId, setSelectedFrameId] = useState("");
-  useEffect(() => {
-    setSelectedFrameId((current) =>
-      !live && current && framedItems.some((item) => item.frame?.id === current)
-        ? current
-        : latestFrameId
-    );
-  }, [framedItems, latestFrameId, live]);
+  const [requestedFrameId, setRequestedFrameId] = useState("");
+  const selectedFrameId = !live && framedItems.some(
+    (item) => item.frame?.id === requestedFrameId,
+  )
+    ? requestedFrameId
+    : latestFrameId;
   if (!runId) return null;
   const selectedIndex = Math.max(
     0,
@@ -2888,7 +2896,7 @@ function BrowserActivityTimeline({
   const selectedFrame = selectedItem?.frame;
   const selectRelativeFrame = (offset: number) => {
     const next = framedItems[selectedIndex + offset]?.frame;
-    if (next) setSelectedFrameId(next.id);
+    if (next) setRequestedFrameId(next.id);
   };
 
   return (
@@ -3012,7 +3020,7 @@ function BrowserActivityTimeline({
                     <button
                       type="button"
                       key={frame.id}
-                      onClick={() => setSelectedFrameId(frame.id)}
+                      onClick={() => setRequestedFrameId(frame.id)}
                       className={workspaceStyles.browserFilmstripItem}
                       aria-label={`Show browser frame ${index + 1}: ${item.action}`}
                       aria-current={selected ? "true" : undefined}
@@ -3047,7 +3055,7 @@ function BrowserActivityTimeline({
                   <li key={item.id}>
                     <button
                       type="button"
-                      onClick={() => item.frame && setSelectedFrameId(item.frame.id)}
+                      onClick={() => item.frame && setRequestedFrameId(item.frame.id)}
                       disabled={!item.frame}
                       className={clsx(workspaceStyles.browserAction, selected && workspaceStyles.browserActionSelected)}
                       aria-current={selected ? "step" : undefined}

@@ -52,7 +52,7 @@ const nullableTimestampSchema = sourceTimestampSchema.nullable();
 const boundedCountSchema = z.number().int().min(0).max(1_000_000_000);
 const basisPointsSchema = z.number().int().min(0).max(10_000);
 
-const DIGEST_DOMAINS = [
+const _DIGEST_DOMAINS = [
   "answer_text",
   "claim_text",
   "claim_binding",
@@ -75,7 +75,7 @@ const DIGEST_DOMAINS = [
   "structural_verification_receipt",
 ] as const;
 
-export type ClaimEvidenceDigestDomainV1 = (typeof DIGEST_DOMAINS)[number];
+export type ClaimEvidenceDigestDomainV1 = (typeof _DIGEST_DOMAINS)[number];
 
 export const claimMaterialitySchema = z.enum(["material", "non_material"]);
 export const claimSupportStateSchema = z.enum([

@@ -651,7 +651,7 @@ function fileExtension(value: string) { return safeFilename(value).split(".").po
 function normalizeTags(values: string[]) { return [...new Set(values.map((value) => safeText(value, 80).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")).filter(Boolean))].slice(0, 50); }
 function sanitizeMetadata(value?: Record<string, unknown>) { return record(redactSensitive(value || {})); }
 function safeText(value: unknown, limit: number) { return String(redactSensitive(String(value || ""))).trim().slice(0, limit); }
-function safeMetadataLookup(value: string, label: string) { const normalized = value.trim(); if (!/^[a-zA-Z][a-zA-Z0-9]{0,63}$/.test(normalized)) throw new CaptureAssetError(`Invalid ${label}.`); return normalized; }
+function safeMetadataLookup(value: string, label: string) { const normalized = value.trim(); if (!/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(normalized)) throw new CaptureAssetError(`Invalid ${label}.`); return normalized; }
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function optionalString(value: unknown) { const text = String(value || "").trim(); return text || undefined; }
 function sha256Text(value: string) { return createHash("sha256").update(value).digest("hex"); }
