@@ -430,6 +430,16 @@ plane, Workspace cutover, native client, runtime grant, database change, or
 user-visible behavior. It does not complete the other Phase 0 rows or satisfy
 the aggregate Phase 0 gate.
 
+P0.5 now has a first dormant contract foundation in
+`evals/p05/suite.v1.json` and `src/lib/evals2/p05.ts`. Sixteen bounded,
+synthetic cases cover all ten required categories with explicit execution scope
+and exact structural assertions. This lane is isolated from live models,
+providers, tools, databases, connectors, clocks, and production state; it has no
+warning result and grants no runtime authority. No observed baseline or
+category adapter is claimed by this slice, so P0.5 remains open until those
+later batches are implemented and an explicitly authorized baseline is
+recorded.
+
 ### Phase 1 — Truthful events, evidence, completion, and recovery
 
 **Goal:** Make every result and status honest before increasing autonomy.

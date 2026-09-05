@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "description": "Golden agent tasks score answer content plus citations, tool trajectory, latency, fallbacks, and configured cost budgets. Keep tasks small, real, and gradeable.",
+  "description": "Live-model golden tasks score answer content plus citations, tool trajectory, latency, fallbacks, and configured cost budgets. Running this suite calls /api/agent and may consume provider capacity; it is not the offline P0.5 truth baseline.",
   "tasks": [
     {
       "id": "memory-summary",

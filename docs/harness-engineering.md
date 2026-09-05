@@ -40,6 +40,28 @@ The harness is deliberately split into readable parts:
 | Run events and replay | `src/lib/events/`, `src/lib/runs/`, `src/lib/trajectories/` |
 | Deterministic and governed evaluation | `src/lib/evaluations/`, `src/lib/evals2/`, `evals/` |
 
+## Three evaluation lanes
+
+Evaluation surfaces have different effect boundaries and must not be treated as
+interchangeable:
+
+1. `evals/golden-tasks.json` and `scripts/run-evals.mjs` are the live model lane.
+   They call `/api/agent` and may consume provider capacity.
+2. `src/lib/evaluations/` is the governed operational lane. It persists runs and
+   may exercise database, queue, connector, or workflow behavior according to
+   each case's governance metadata.
+3. `evals/p05/suite.v1.json` and `src/lib/evals2/p05.ts` are the offline
+   truth-regression lane. They accept only bounded synthetic fixtures and exact
+   structured observations; parsing and scoring have no application side
+   effects.
+
+The offline lane has no warning result. Every declared assertion is required,
+and its domain-separated suite digest plus declared scorer version are intended
+to bind later observed baselines. Scoring changes must bump that version. A
+normative fixture is not evidence that the current application passes it; P0.5
+remains open until category adapters have produced a checked-in observed
+baseline through an explicitly authorized evaluation run.
+
 ## One harness receipt per run
 
 Every new agent run emits a durable `run.harness` event after context and
