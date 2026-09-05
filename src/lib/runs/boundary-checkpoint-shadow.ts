@@ -30,6 +30,8 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 type ModelCheckpointEvent = Readonly<{
   id: string;
   createdAt: string;
+  status?: "completed" | "failed";
+  failureKind?: string;
   model: string;
   provider?: string;
   tier: "fast" | "reasoning";
@@ -95,14 +97,17 @@ export async function recordModelBeforeCheckpointShadow(
 ) {
   if (!isExpandedCheckpointShadowEnrollment(input.enrollment)) return null;
   const common = await loadCommonState(input, sql);
-  const boundaryId = modelCheckpointBoundaryId(input.runId, input.attempt);
+  const attempt = common.parent
+    ? common.parent.resourceUsage.modelCallCount + 1
+    : 1;
+  const boundaryId = modelCheckpointBoundaryId(input.runId, attempt);
   const existing = await existingBoundary(sql, common.scope.tenantId, input.runId, boundaryId, "before");
   if (existing) return existing;
   assertCanAppendModelBefore(common.parent);
   const checkpoint = buildRunCheckpointV1({
     runId: input.runId,
     executionScope: common.scope,
-    boundary: { kind: "model", phase: "before", boundaryId, attempt: input.attempt },
+    boundary: { kind: "model", phase: "before", boundaryId, attempt },
     sequence: common.parent ? common.parent.sequence + 1 : 0,
     parent: parentReference(common.parent),
     enginePin: input.enrollment.enginePin,
@@ -114,7 +119,8 @@ export async function recordModelBeforeCheckpointShadow(
         phase: "before",
         runId: input.runId,
         boundaryId,
-        attempt: input.attempt,
+        attempt,
+        callerAttempt: input.attempt,
         provider: input.provider,
         model: input.model,
         tier: input.tier,
@@ -143,21 +149,19 @@ export async function recordModelAfterCheckpointShadow(
   sql: RunCheckpointWriterSql,
 ) {
   if (!isExpandedCheckpointShadowEnrollment(input.enrollment)) return null;
-  const attempt = input.event.iteration || 1;
   const common = await loadCommonState(input, sql);
-  const boundaryId = modelCheckpointBoundaryId(input.runId, attempt);
-  const existing = await existingBoundary(sql, common.scope.tenantId, input.runId, boundaryId, "after");
-  if (existing) return existing;
   const parent = common.parent;
   if (
     !parent ||
     parent.boundary.kind !== "model" ||
-    parent.boundary.phase !== "before" ||
-    parent.boundary.boundaryId !== boundaryId ||
-    parent.boundary.attempt !== attempt
+    parent.boundary.phase !== "before"
   ) {
     throw new Error("Model after-checkpoint lacks its exact before boundary.");
   }
+  const attempt = parent.boundary.attempt;
+  const boundaryId = parent.boundary.boundaryId;
+  const existing = await existingBoundary(sql, common.scope.tenantId, input.runId, boundaryId, "after");
+  if (existing) return existing;
   const eventTimestamp = canonicalTimestamp(input.event.createdAt);
   const checkpoint = buildRunCheckpointV1({
     runId: input.runId,
@@ -176,6 +180,8 @@ export async function recordModelAfterCheckpointShadow(
         boundaryId,
         attempt,
         eventId: input.event.id,
+        status: input.event.status || "completed",
+        failureKind: input.event.failureKind || null,
         provider: input.event.provider || "unknown",
         model: input.event.model,
         tier: input.event.tier,
@@ -332,7 +338,9 @@ function assertCanAppendModelBefore(parent: RunCheckpointV1 | null) {
     parent &&
     (parent.lifecycleState !== "active" ||
       parent.resumeDisposition !== "resumable" ||
-      parent.boundary.phase === "before" ||
+      (parent.boundary.phase === "before" &&
+        (parent.boundary.kind === "model" ||
+          parent.boundary.kind === "tool")) ||
       parent.boundary.phase === "waiting")
   ) {
     throw new Error("Model before-checkpoint cannot follow an unresolved boundary.");
