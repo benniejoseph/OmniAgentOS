@@ -161,6 +161,12 @@ export type CanonicalSourceSyncFailureStage =
   | "assert_next_checkpoint"
   | "append_settlement_event";
 
+export type SourceSyncDiagnosticStage =
+  | "pin_fence"
+  | "observe_page"
+  | "commit_page"
+  | CanonicalSourceSyncFailureStage;
+
 const canonicalSourceSyncFailureStages = new WeakMap<
   object,
   CanonicalSourceSyncFailureStage
@@ -421,15 +427,17 @@ export async function failSourceSyncPage(input: {
   page: ClaimedSourceSyncPage;
   code: SourceSyncFailureCode;
   failureSha256: string;
+  diagnosticStage?: SourceSyncDiagnosticStage;
 }) {
   const page = validatedClaim(input.page);
   const code = sourceSyncFailureCode(input.code);
   const failureSha256 = sourceContractSha256Schema.parse(input.failureSha256);
+  const diagnosticStage = input.diagnosticStage;
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     return runWithDatabaseTenantScope(
       page.identity.tenantId,
-      () => failSourceSyncPageDb({ page, code, failureSha256 }),
+      () => failSourceSyncPageDb({ page, code, failureSha256, diagnosticStage }),
     );
   }
   assertLegacySourceSyncGeneration(page.identity);
@@ -1030,8 +1038,9 @@ async function failSourceSyncPageDb(input: {
   page: ClaimedSourceSyncPage;
   code: SourceSyncFailureCode;
   failureSha256: string;
+  diagnosticStage?: SourceSyncDiagnosticStage;
 }) {
-  const { page, code, failureSha256 } = input;
+  const { page, code, failureSha256, diagnosticStage } = input;
   return await getSql().transaction(async (sql: SourceSyncSqlClient) => {
     await lockStream(sql, page.identity);
     const status = page.attempts >= MAX_PAGE_ATTEMPTS
@@ -1090,7 +1099,14 @@ async function failSourceSyncPageDb(input: {
         RETURNING id
       `;
     if (rows.length !== 1) return { status: "lease_lost" as const };
-    await appendFailureEvent(sql, page, code, failureSha256, status);
+    await appendFailureEvent(
+      sql,
+      page,
+      code,
+      failureSha256,
+      status,
+      diagnosticStage,
+    );
     return { status };
   });
 }
@@ -1966,6 +1982,7 @@ async function appendFailureEvent(
   code: SourceSyncFailureCode,
   failureSha256: string,
   status: "open" | "dead_letter",
+  diagnosticStage?: SourceSyncDiagnosticStage,
 ) {
   await appendScopedDomainEvent({
     id: `source_sync_event_${sourceContractSha256({
@@ -1997,6 +2014,7 @@ async function appendFailureEvent(
       leaseGeneration: page.leaseGeneration,
       failureCode: code,
       failureSha256,
+      ...(diagnosticStage ? { diagnosticStage } : {}),
       status,
     },
   }, sql ? { sql } : {});
