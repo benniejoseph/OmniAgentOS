@@ -1171,21 +1171,7 @@ async function collectMemoryDeletionLineage(
         SELECT id
         FROM omni_retrieval_traces trace
         WHERE trace.tenant_id = ${tenantId}
-          AND (
-            trace.memory_ids && ${affectedMemoryIds}::text[]
-            OR EXISTS (
-              SELECT 1
-              FROM jsonb_array_elements(
-                CASE
-                  WHEN jsonb_typeof(trace.results) = 'array'
-                    THEN trace.results
-                  ELSE '[]'::jsonb
-                END
-              ) result
-              WHERE result ->> 'kind' = 'memory'
-                AND result ->> 'id' = ANY(${affectedMemoryIds}::text[])
-            )
-          )
+          AND trace.memory_ids && ${affectedMemoryIds}::text[]
         ORDER BY id COLLATE "C"
         FOR UPDATE
       `
@@ -1193,21 +1179,7 @@ async function collectMemoryDeletionLineage(
         SELECT id
         FROM omni_retrieval_traces trace
         WHERE trace.tenant_id = ${tenantId}
-          AND (
-            trace.memory_ids && ${affectedMemoryIds}::text[]
-            OR EXISTS (
-              SELECT 1
-              FROM jsonb_array_elements(
-                CASE
-                  WHEN jsonb_typeof(trace.results) = 'array'
-                    THEN trace.results
-                  ELSE '[]'::jsonb
-                END
-              ) result
-              WHERE result ->> 'kind' = 'memory'
-                AND result ->> 'id' = ANY(${affectedMemoryIds}::text[])
-            )
-          )
+          AND trace.memory_ids && ${affectedMemoryIds}::text[]
         ORDER BY id COLLATE "C"
         FOR SHARE
       `;

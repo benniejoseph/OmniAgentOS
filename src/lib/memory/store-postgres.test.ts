@@ -19,7 +19,10 @@ function createSql(transactionScoped = false) {
         (row) => ({ ...row, _inserted: true }),
       );
     }
-    if (query.includes("SELECT * FROM omni_memories")) {
+    if (
+      query.includes("SELECT *") &&
+      query.includes("FROM omni_memories")
+    ) {
       return mocks.returnedMemoryRows;
     }
     return [];
@@ -58,7 +61,12 @@ import {
   buildUserPrivateMemoryAccessBindingV1,
   MEMORY_PURPOSE_IDS,
 } from "@/lib/memory/access-binding";
-import { listMemories, saveMemory, searchMemories } from "@/lib/memory/store";
+import {
+  listMemories,
+  previewMemoryDeletion,
+  saveMemory,
+  searchMemories,
+} from "@/lib/memory/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const ownerActorId = "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6";
@@ -156,5 +164,34 @@ describe("Postgres memory recall", () => {
       databaseAccessScope: accessScope(MEMORY_PURPOSE_IDS.read),
       executionScope: executionScope(MEMORY_PURPOSE_IDS.read),
     })).rejects.toThrow("not authorized for this operation");
+  });
+
+  it("uses indexed trace lineage for governed deletion previews", async () => {
+    mocks.returnedMemoryRows.push({
+      id: "private-memory-a",
+      tenant_id: "tenant-a",
+      type: "preference",
+      title: "Private preference",
+      content: "Keep this isolated.",
+      tags: [],
+      evidence_refs: [],
+      claim_status: "active",
+      asserted_by: "user",
+      created_at: "2026-09-06T00:00:00.000Z",
+      updated_at: "2026-09-06T00:00:00.000Z",
+    });
+
+    await expect(previewMemoryDeletion("private-memory-a", {
+      tenantId: "tenant-a",
+      accessScope: accessScope(MEMORY_PURPOSE_IDS.forget),
+    })).resolves.toMatchObject({
+      memory: { id: "private-memory-a" },
+    });
+
+    const traceQuery = mocks.queries.find((query) =>
+      query.includes("FROM omni_retrieval_traces trace"),
+    );
+    expect(traceQuery).toContain("trace.memory_ids &&");
+    expect(traceQuery).not.toContain("jsonb_array_elements");
   });
 });
