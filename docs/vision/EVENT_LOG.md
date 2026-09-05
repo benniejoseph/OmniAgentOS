@@ -1054,10 +1054,22 @@ rollout coordinates, grants, and counts; raw purpose, prompts, messages,
 provider continuation data, tool input/output, credentials, and private
 reasoning are excluded.
 
-This is persistence evidence only. The module has no transaction opener,
-route, state loader, continuation claim, or worker call site and always returns
-`resumeAuthorityGranted: false`. Approval shadow writes, comparison, fenced
-resume, and the other boundary kinds remain later P1.6 gates.
+The initial v68 slice was persistence evidence only: the writer had no
+transaction opener, route, state loader, continuation claim, or worker call
+site and always returned `resumeAuthorityGranted: false`.
+
+The completed P1.6 runtime adds approval decisions, model, governed tool,
+delegation, and verifier checkpoints on the same immutable chain. Comparison
+receipts still grant no authority. Migration v69 adds hashed, expiring resume
+claims and the metadata-only `run.checkpoint.resume_claimed`,
+`run.checkpoint.resume_authorized`, `run.checkpoint.resume_reclaimed`, and
+`run.checkpoint.resume_completed` events. Active read-only canary runs may
+resume only through the exact live rollout, approval checkpoint, execution
+scope, operation job, token, and lease generation. A transport interruption
+leaves the run and both leases stale; after expiry, generation reclaim is
+evented before the same fenced runner can commit. The 2026-09-06 production
+hard-kill gate completed at generation 2 with one reclaim event and no external
+effect or effect receipt.
 
 ## Event shape
 

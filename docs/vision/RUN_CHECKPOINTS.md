@@ -1,11 +1,11 @@
 # RunCheckpoint v1
 
-**Status:** P1.6 full-boundary shadow deployed and reconciled; expanded activation/interruption gate pending
+**Status:** P1.6 complete; full-boundary generation 4 is active and its interruption gate passed
 
-**Runtime effect:** Approval writes and the generation-2 risk-0 fenced-resume canary are active; generation 3 records model/tool/approval/delegation/verifier boundaries in shadow mode without granting resume authority
+**Runtime effect:** Read-only generation-4 canary runs persist model/tool/approval/delegation/verifier boundaries and use token-fenced resume authority; unsupported, mutable, unenrolled, and older pinned runs retain their closed or legacy behavior
 
 `RunCheckpointV1` defines the immutable metadata and reference boundary that a
-future durable run must record before work can be resumed safely. Migration
+durable run must record before work can be resumed safely. Migration
 v68 creates forced-RLS, append-only checkpoint and state-reference tables. A
 transaction-only writer verifies the exact scope, locks and validates the
 parent, stores the immutable record and reference index, and appends a
@@ -14,8 +14,8 @@ transaction. The approval shadow call sites use that writer, but nothing loads
 referenced state, claims a resume, or grants resume authority. The legacy
 continuation remains authoritative.
 
-New agent runs capture an exact active `agent_run_checkpoints` shadow rollout
-pin after their resolved run contract is built. If such a run pauses on its
+Enrolled agent runs capture an exact active `agent_run_checkpoints` rollout pin
+after their resolved run contract is built. If such a run pauses on its
 first governed tool approval, the canonical continuation transaction also
 records a metadata-only waiting checkpoint. The writer re-verifies the stored
 run, governed tool request, immutable tool-scope binding, contract hashes, and
@@ -46,11 +46,14 @@ per tenant/run is bound by an exact checkpoint ID and digest foreign key,
 operation job, hashed token and owner, monotonic lease generation, and expiry.
 Only an expired generation can be reclaimed; heartbeat and completion require
 the exact unexpired generation and token. Claim acquisition revalidates the
-latest resumable checkpoint, its full execution scope, the exact active live
-rollout pin, waiting run, approved terminal risk-0 tool, decision reference,
-and absence of an external effect in one caller-owned transaction. Raw lease
-credentials never enter storage or events. Claim events remain metadata-only
-and explicitly set `resumeAuthorityGranted: false`.
+exact approval successor, its full execution scope, the exact active live
+rollout pin, waiting or exactly fenced resuming run, approved terminal risk-0
+tool, decision reference, and absence of an external effect in one caller-owned
+transaction. For generation 4, a later checkpoint may exist only when the
+complete root-to-latest chain is contiguous, uses the same canary pin, remains
+active/resumable, and records zero effects. Raw lease credentials never enter
+storage or events. Claim events remain metadata-only and explicitly set
+`resumeAuthorityGranted: false`.
 
 The resume queue calls this store only for a separately pinned, active canary
 generation whose dedicated configuration limits execution to risk-0,
@@ -79,10 +82,10 @@ existing approval-only and canary generations keep their prior execution
 behavior. Successful mutation tool checkpoints fail closed unless the exact
 persisted intent and effect receipt are present.
 
-The reconciliation command accepts `expanded` as its final argument. Expanded
-mode samples only the exact expanded configuration, revalidates rows,
-references, events, pins, parent/resource transitions, boundary pairs, tool
-receipts, and all ten required before/waiting/after phase observations. An
+The reconciliation command accepts `expanded` or `expanded_canary` as its final
+argument. Each mode samples only its exact expanded configuration and
+revalidates rows, references, events, pins, parent/resource transitions,
+boundary pairs, tool receipts, and all ten required before/waiting/after phase observations. An
 otherwise valid but incomplete sample returns `incomplete_coverage`, not a
 passing result.
 
@@ -94,15 +97,28 @@ post-cleanup reconciliation matched all 36 checkpoints and comparison receipts
 across five bounded sample runs, observed every required phase, reported zero
 mismatches and zero waiting approvals, and still granted no resume authority.
 
+The full-boundary generation-4 production gate passed on 2026-09-06. The exact
+canary configuration was activated for the default tenant after deployment.
+The read-only forced-approval and council smoke completed, and reconciliation
+matched 86 of 86 checkpoints and comparison receipts across eight bounded
+canary runs with all ten phases, zero mismatches, and zero effect receipts. Run
+`ecaafb3d-c415-46a3-b647-ed8792f8f9ab` was hard-killed after its generation-1
+resume fence was authorized. The worker restarted, allowed both leases to
+expire, reclaimed the exact approval checkpoint as generation 2 behind a valid
+zero-effect descendant chain, and completed. Its proof contains one reclaim
+event, zero external effects, and zero effect receipts. Transport interruption
+now leaves the canary leases stale instead of failing the run; ordinary model
+or checkpoint failures still fail closed.
+
 ## Why this precedes resume
 
-The current agent approval continuation is useful compatibility state, but it
-contains provider-shaped conversation data and is interpreted by current
-runtime code. Interrupted claimed resumes deliberately fail rather than risk
-repeating an external effect. Generic recovery cannot become authoritative
-until the system can prove which exact engine and contract created the state,
-which boundary was crossed, which durable references it owns, and which tool
-intent or effect receipt already exists.
+The agent approval continuation is useful compatibility state, but it contains
+provider-shaped conversation data and is interpreted by pinned runtime code.
+Unsupported or mutable interrupted resumes deliberately fail rather than risk
+repeating an external effect. Only the exact read-only canary may reclaim after
+the system proves which engine and contract created the state, which boundary
+was crossed, which durable references it owns, and that no effect receipt
+exists.
 
 A checkpoint is therefore evidence about resumable state, not the state bytes
 themselves and not permission to execute.
@@ -163,7 +179,7 @@ the continuation.
 
 ## P1.6 activation gates
 
-The remaining slices must proceed in this order:
+The slices proceeded in this order:
 
 1. accumulate a non-empty production approval-boundary sample and pass the
    stored chain/reference/resource reconciliation operator check before
@@ -172,11 +188,8 @@ The remaining slices must proceed in this order:
    interrupted resume without a duplicate effect; and
 3. expand separately to model, tool, delegation, and verifier boundaries.
 
-Gates 1 and 2 are complete. Gate 3 is deployed, registered as generation 3,
-and reconciled against a non-empty production sample covering every required
-phase. It remains shadow-only until its separately pinned activation canary
-proves interruption recovery without duplicate effects.
-
-P1.6 remains open until all required boundaries checkpoint durably and an
-interrupted run resumes without duplicate side effects. Replay, fork, and user
-correction are P1.7 concerns and are intentionally absent from v1.
+All three gates are complete. Generation 3 established full shadow coverage;
+the separately pinned generation-4 activation then proved durable boundaries,
+expired-only generation reclaim, and completion without a duplicate effect.
+Replay, fork, and user correction are P1.7 concerns and are intentionally
+absent from v1.
