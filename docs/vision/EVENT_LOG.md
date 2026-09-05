@@ -1103,3 +1103,12 @@ evidence is counted and excluded, and duplicate claim or evidence identities
 fail closed. The P0.5 observer uses this runtime adapter for both the
 wrong-claim and complete-material-support regressions without network, model,
 database, or external effects.
+
+## Half-open temporal fact selection
+
+Memory validity now uses one shared half-open interval rule:
+`validFrom <= asOf < validTo`. A bounded as-of selector returns every fact that
+is valid at the requested instant and reports no match or overlap instead of
+choosing an arbitrary answer. The same predicate now filters live active
+memory and drives the P0.5 temporal regression, where the selected answer keeps
+its exact evidence ID and uncertainty state without invoking a model or tool.

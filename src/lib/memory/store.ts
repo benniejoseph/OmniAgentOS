@@ -28,6 +28,7 @@ import {
 } from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type { MemoryRecord, MemorySearchResult, MemoryType } from "@/lib/memory/types";
+import { isTemporalIntervalActive } from "@/lib/memory/temporal";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
 import {
   assertCaptureIngestSource,
@@ -1579,10 +1580,7 @@ function normalizeAssertedBy(value: unknown): NonNullable<MemoryRecord["asserted
 
 function isActiveMemory(memory: MemoryRecord) {
   if (memory.claimStatus !== "active") return false;
-  const now = Date.now();
-  const validFrom = memory.validFrom ? Date.parse(memory.validFrom) : undefined;
-  const validTo = memory.validTo ? Date.parse(memory.validTo) : undefined;
-  return !(validFrom && validFrom > now) && !(validTo && validTo <= now);
+  return isTemporalIntervalActive(memory, Date.now());
 }
 
 function clamp01(value: number) {

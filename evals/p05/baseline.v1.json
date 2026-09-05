@@ -157,9 +157,13 @@
     {
       "caseId": "temporal.as-of-selects-valid-interval",
       "value": {
-        "adapterId": "p0.5-observer-v1:temporal",
-        "adapterStatus": "not_observable_offline",
-        "reasonCode": "no_side_effect_free_current_system_adapter"
+        "adapterId": "memory-temporal-selection-v1",
+        "adapterStatus": "observed",
+        "answer": "Friday",
+        "selectedEvidenceIds": [
+          "evidence:friday"
+        ],
+        "uncertainty": "none"
       }
     },
     {
