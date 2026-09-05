@@ -2,6 +2,7 @@ import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { RunContractEnvelopeV1 } from "@/lib/runs/contracts";
+import type { ApprovalCheckpointShadowEnrollment } from "@/lib/runs/approval-checkpoint-shadow";
 import type {
   ModelToolCall,
   ModelToolContinuation,
@@ -42,6 +43,8 @@ export type AgentRunContinuation = {
   executionScope?: ExecutionScope;
   /** P0.2 shadow snapshot retained only while an approval-paused run resumes. */
   runContractEnvelope?: RunContractEnvelopeV1;
+  /** New-run-only P1.6 shadow pin. It never grants resume authority. */
+  checkpointShadowEnrollment?: ApprovalCheckpointShadowEnrollment;
   /** Full conversation array for ZDR-safe resume (replaces previousResponseId). */
   conversationItems: Array<Record<string, unknown>>;
   instructions: string;

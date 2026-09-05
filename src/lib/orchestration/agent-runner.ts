@@ -89,6 +89,10 @@ import {
   resolveShadowRunContract,
   type ShadowRunContractSnapshot,
 } from "@/lib/runs/contract-runtime";
+import {
+  resolveApprovalCheckpointShadowEnrollment,
+  type ApprovalCheckpointShadowEnrollment,
+} from "@/lib/runs/approval-checkpoint-shadow";
 import type {
   AgentProviderToolContinuation,
   AgentRunContinuation,
@@ -218,6 +222,9 @@ export async function* runAgent(
     throw error;
   }
   let shadowRunContract: ShadowRunContractSnapshot | undefined;
+  let checkpointShadowEnrollment:
+    | ApprovalCheckpointShadowEnrollment
+    | undefined;
   try {
     shadowRunContract = buildInitialShadowRunContract({
       runId,
@@ -609,6 +616,19 @@ export async function* runAgent(
         logRunContractShadowFailure("resolved", error);
       }
     }
+    if (!request.preclaimedRunId && shadowRunContract) {
+      try {
+        checkpointShadowEnrollment =
+          await resolveApprovalCheckpointShadowEnrollment({
+            runId,
+            tenantId: runTenantId,
+            executionScope,
+            runContractEnvelope: shadowRunContract.envelope,
+          });
+      } catch (error) {
+        logRunContractShadowFailure("checkpoint_enrollment", error);
+      }
+    }
     yield await emit({
       type: "harness",
       version: 2,
@@ -829,6 +849,7 @@ export async function* runAgent(
           const continuation: AgentRunContinuation = {
             executionScope,
             runContractEnvelope: shadowRunContract?.envelope,
+            checkpointShadowEnrollment,
             conversationItems: [],
             instructions,
             response,
@@ -1146,6 +1167,7 @@ export async function* runAgent(
             const continuation: AgentRunContinuation = {
               executionScope,
               runContractEnvelope: shadowRunContract?.envelope,
+              checkpointShadowEnrollment,
               conversationItems: withContinuationQueue(
                 conversationItems ?? [],
                 queuedCallsAfterPause(turn.functionCalls, callIndex),
@@ -2091,6 +2113,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
           continuation: {
             executionScope,
             runContractEnvelope: continuation.runContractEnvelope,
+            checkpointShadowEnrollment:
+              continuation.checkpointShadowEnrollment,
             conversationItems: withContinuationQueue(
               conversationItems,
               queuedCalls.slice(queueIndex + 1),
@@ -2312,6 +2336,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
             continuation: {
               executionScope,
               runContractEnvelope: continuation.runContractEnvelope,
+              checkpointShadowEnrollment:
+                continuation.checkpointShadowEnrollment,
               conversationItems: withContinuationQueue(
                 conversationItems,
                 queuedCallsAfterPause(turn.functionCalls, callIndex),
@@ -2620,6 +2646,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     const nextContinuation: AgentRunContinuation = {
       executionScope,
       runContractEnvelope: continuation.runContractEnvelope,
+      checkpointShadowEnrollment: continuation.checkpointShadowEnrollment,
       conversationItems: [],
       instructions: continuation.instructions,
       response,
@@ -3567,7 +3594,7 @@ function runContractScopeDecision(
 }
 
 function logRunContractShadowFailure(
-  phase: "initial" | "resolved",
+  phase: "initial" | "resolved" | "checkpoint_enrollment",
   error: unknown,
 ) {
   console.warn(

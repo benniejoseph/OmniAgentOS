@@ -1,8 +1,8 @@
 # RunCheckpoint v1
 
-**Status:** Dormant additive P1.6 contract and persistence foundation
+**Status:** P1.6 approval-wait shadow enrollment
 
-**Runtime effect:** Migration and transaction-only writer; no call site or resume
+**Runtime effect:** New-run-only approval-wait shadow write; no checkpoint resume
 
 `RunCheckpointV1` defines the immutable metadata and reference boundary that a
 future durable run must record before work can be resumed safely. Migration
@@ -11,7 +11,17 @@ transaction-only writer verifies the exact scope, locks and validates the
 parent, stores the immutable record and reference index, and appends a
 metadata-only `run.checkpoint.recorded` event in the same caller-owned
 transaction. Nothing calls the writer, loads referenced state, claims a resume,
-or changes an API, worker, workflow, tool, model, verifier, delegation, or UI.
+or grants resume authority. The legacy continuation remains authoritative.
+
+New agent runs capture an exact active `agent_run_checkpoints` shadow rollout
+pin after their resolved run contract is built. If such a run pauses on its
+first governed tool approval, the canonical continuation transaction also
+records a metadata-only waiting checkpoint. The writer re-verifies the stored
+run, governed tool request, immutable tool-scope binding, contract hashes, and
+observable resource counters. File-mode, preclaimed, unenrolled, mismatched,
+and already-checkpointed runs keep legacy behavior. A run with an earlier
+external effect is not admitted at this late genesis boundary; broader model
+and tool boundary coverage must establish its checkpoint chain earlier.
 
 ## Why this precedes resume
 
@@ -84,11 +94,10 @@ the continuation.
 
 The remaining slices must proceed in this order:
 
-1. shadow-write the governed approval boundary for newly enrolled runs while
-   the legacy continuation remains authoritative;
-2. compare checkpoint chains, references, and tool-effect reconciliation;
-3. canary resume only exact supported pins after a fenced claim; and
-4. expand separately to model, tool, delegation, and verifier boundaries.
+1. compare first approval-wait shadows, references, and resource/effect
+   reconciliation, then add the approval-decision successor;
+2. canary resume only exact supported pins after a fenced claim; and
+3. expand separately to model, tool, delegation, and verifier boundaries.
 
 P1.6 remains open until all required boundaries checkpoint durably and an
 interrupted run resumes without duplicate side effects. Replay, fork, and user
