@@ -326,6 +326,14 @@ keeps its original IDs, cursor binding, terminal outcomes, and file fallback.
 The legacy Google cursor, sync health, knowledge writes, and served RAG remain
 authoritative during this canary.
 
+Drive canonical adapter contract v2 adds the hashed parent set to normalized
+metadata and requests exact parent coordinates from both backfill and change
+pages. A folder move therefore creates a new immutable revision even when no
+file bytes change; parent identifiers are never retained. Creates, edits,
+deletes, moves, retries, restores, and delayed observations still settle
+through the same transaction and five-field ordered head. No tenant rollout
+or read cutover is inferred from installing this adapter version.
+
 Migration v71 fences live Google personal-source synchronization with an
 expiring lease owner and monotonic lease generation on the OAuth grant. Gmail,
 Calendar, and Drive keep independent page coordinates in the sealed sync
@@ -351,6 +359,16 @@ rollback-proof guarantee. Retention and source-projection cleanup retire and
 scrub derived memories without claiming an explicit user-forget receipt, and
 invalidate their materialized trace/graph rows before retirement. Source-wide
 deletion propagation and the physical scrub worker remain later P2.7 slices.
+
+Those later P2.7 slices are now installed on the registered surfaces. Source
+and Capture deletion retire linked knowledge and memories, invalidate affected
+continuations, and fence delayed Capture ingestion. User memory deletion is
+bound to a reviewed impact digest, also invalidates generated briefs, and is
+processed by the v59 maintenance-only leased scrub contract. The recurring
+workflow tick handles bounded receipt and descendant batches, emits one
+idempotent metadata-only completion event, and reports overdue work against a
+24-hour default SLA. Portable export and all served memory reads exclude the
+permanently barriered rows.
 
 Migration v43 begins the P3.1 memory-access foundation without changing a
 served read or write. Existing and rollback-created memories remain explicit

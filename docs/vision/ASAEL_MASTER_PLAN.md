@@ -991,6 +991,15 @@ non-canonical outcomes fail closed. The schema still enrolls no tenant and the
 legacy connector remains the production read/write path until a later,
 separately measured read cutover.
 
+The Drive P2.3 convergence pilot is implemented for its registered metadata
+surface. Adapter contract v2 observes creates, content/version edits, hashed
+parent-set moves, provider deletes, and restores; the five-field canonical
+order makes retries and delayed concurrent observations settle to one head.
+All provider identifiers and parent coordinates remain hash-only. The bounded
+rollout, checkpoint, and convergence fixtures pass. Production has migration
+v41 but no enrolled tenant or Google grant, so live-provider canary evidence
+and any read-authority promotion remain pending rather than inferred.
+
 The first P2.7 slice hardens the already-live `memory.forget` path before
 expanding deletion to every source. A permanent Postgres receipt, canonical
 scrub, materialized trace/graph memory lineage, restrictive query policies,
@@ -1001,6 +1010,18 @@ fabricated actor. This is the immediate memory canary, not completion of P2.7:
 knowledge/source/capture propagation, pending-run invalidation, readable
 preview/receipt UX, and the bounded physical scrub worker still follow before
 the phase gate can pass.
+
+P2.7 is complete for the registered deletion surfaces. Reviewed explicit
+memory forgets install an immutable immediate query/export barrier, scrub the
+selected memory, invalidate derived traces, graph rows, pending agent/workflow
+runs, and generated briefs, and queue bounded leased descendant scrubbing with
+a 24-hour default SLA. Connected-source and Capture removal retire linked
+knowledge and memories transactionally with their owning record or scoped
+deletion event; delayed Capture ingestion is fenced. Canonical provider
+deletes create immutable receipt-bound source tombstones, and ordered absence
+heads prevent delayed upserts from resurrecting deleted state. File mode stays
+best-effort development compatibility and does not claim the rollback-proof
+Postgres guarantee.
 
 The first P3.1 slice is a dormant access-envelope shadow. Migration v43 adds
 nullable actor, agent, workspace, project, mission, visibility, sensitivity,
