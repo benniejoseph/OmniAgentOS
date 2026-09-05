@@ -939,6 +939,20 @@ start a new rollout generation, replay Drive from a fresh fence, and apply the
 observed upsert/delete records to canonical revisions and tombstones; this
 shadow generation is not promoted in place.
 
+P2.2 is complete for the registered Google personal-source surface. Gmail,
+Calendar, and Drive now observe and settle one bounded page independently,
+persist their own continuation coordinate in an authenticated, encrypted
+envelope only after every item in that page has converged, and continue
+settling healthy siblings when one source fails.
+Gmail history deletion observations are retained, Calendar reuses exact
+initial-window coordinates across pages, and Drive uses a fixed start/end
+window so advancing a page cannot skip older items. An expiring generation
+lease fences concurrent workers; reconnect increments authorization generation,
+invalidates the old cursor and lease, and starts a new backfill. Fault-injection
+fixtures prove a mid-page failure leaves that source cursor unchanged while
+successful sibling cursors commit. Migration v71 is applied in production;
+there is currently no Google grant to exercise against live provider data.
+
 The first P2.3 foundation slice is additive and inactive. It introduces an
 immutable, receipt-bound source tombstone, a single lexicographically ordered
 head per canonical SourceItem, exact page settlement bindings, and

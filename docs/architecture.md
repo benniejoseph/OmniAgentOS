@@ -326,6 +326,15 @@ keeps its original IDs, cursor binding, terminal outcomes, and file fallback.
 The legacy Google cursor, sync health, knowledge writes, and served RAG remain
 authoritative during this canary.
 
+Migration v71 fences live Google personal-source synchronization with an
+expiring lease owner and monotonic lease generation on the OAuth grant. Gmail,
+Calendar, and Drive keep independent page coordinates in the sealed sync
+cursor envelope and settle in isolation. A coordinate is written only after
+its bounded page has completed, with the exact lease owner and generation in
+the update predicate. A failed page therefore retries idempotently without
+cursor overrun, healthy sibling sources continue, concurrent workers cannot
+clobber progress, and reauthorization clears both the old cursor and lease.
+
 Migration v42 begins P2.7 at the existing live `memory.forget` boundary. A
 tenant-and-memory-scoped deletion receipt is a permanent database barrier, not
 a reversible provider tombstone. New forgets require an exact execution scope
