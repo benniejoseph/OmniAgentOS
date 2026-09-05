@@ -115,6 +115,13 @@ shadow. It rereads one tenant's stored rows, reference indexes, typed events,
 approval decision, and effect-receipt state; it does not open continuation
 contents. Empty and mismatched samples fail closed.
 
+Migration v69 provides the dormant resume fence. Claims bind the exact
+checkpoint digest and operation job, persist only hashed credentials, advance
+their generation only after expiry, and require the exact live token for
+heartbeat or completion. Acquisition rechecks rollout, scope, run, decision,
+tool, and effect state transactionally. No harness path invokes it yet, and its
+typed receipts explicitly deny resume authority.
+
 ## One harness receipt per run
 
 Every new agent run emits a durable `run.harness` event after context and

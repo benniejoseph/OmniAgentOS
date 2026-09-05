@@ -690,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the run checkpoint store migration", () => {
+  it("pins the run checkpoint resume-claim migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 68,
-      name: "run_checkpoint_store",
-      checksum: "669a3ee086669d481f1dfdb35417f4b61283ee0236825ef937925682eb6dad29",
+      version: 69,
+      name: "run_checkpoint_resume_claims",
+      checksum: "785b00a77fee946278bf0d5ee9fa5d42df2285c80ec14764d9ea5849953cb637",
     });
   });
 

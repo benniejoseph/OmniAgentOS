@@ -1,8 +1,8 @@
 # RunCheckpoint v1
 
-**Status:** P1.6 approval-boundary shadow chain
+**Status:** P1.6 approval-boundary shadow chain and dormant resume fence
 
-**Runtime effect:** New-run-only approval waiting/decision shadow writes; no checkpoint resume
+**Runtime effect:** Approval waiting/decision shadow writes; resume fence is not called
 
 `RunCheckpointV1` defines the immutable metadata and reference boundary that a
 future durable run must record before work can be resumed safely. Migration
@@ -40,6 +40,21 @@ events, decision successor, governed tool state, and any effect receipt. It
 returns closed mismatch codes without loading continuation contents. An empty
 sample is `no_sample`, not a successful comparison, and the command exits
 nonzero for both empty and mismatched samples.
+
+Migration v69 adds the dormant checkpoint resume-claim store. One active claim
+per tenant/run is bound by an exact checkpoint ID and digest foreign key,
+operation job, hashed token and owner, monotonic lease generation, and expiry.
+Only an expired generation can be reclaimed; heartbeat and completion require
+the exact unexpired generation and token. Claim acquisition revalidates the
+latest resumable checkpoint, its full execution scope, the exact active live
+rollout pin, waiting run, approved terminal tool, decision reference, and any
+effect receipt in one caller-owned transaction. Raw lease credentials never
+enter storage or events. Claim events remain metadata-only and explicitly set
+`resumeAuthorityGranted: false`.
+
+No runtime calls this claim store. It cannot transition a run, open referenced
+state, execute a model or tool, or resume a continuation until the non-empty
+shadow gate passes and the legacy transition is atomically bound to the fence.
 
 ## Why this precedes resume
 
@@ -114,7 +129,8 @@ The remaining slices must proceed in this order:
 
 1. accumulate a non-empty production approval-boundary sample and pass the
    stored chain/reference/resource reconciliation operator check;
-2. canary resume only exact supported pins after a fenced claim; and
+2. bind the legacy resume transition to the exact fence, then canary only
+   supported pins after a non-empty shadow pass; and
 3. expand separately to model, tool, delegation, and verifier boundaries.
 
 P1.6 remains open until all required boundaries checkpoint durably and an
