@@ -7,7 +7,7 @@
     {
       "caseId": "scope.boundary-matrix",
       "value": {
-        "adapterId": "p0.1-legacy-tenant-memory-read-v1",
+        "adapterId": "memory-access-policy-v1",
         "adapterStatus": "observed",
         "scope": {
           "tenantId": "synthetic:tenant:alpha",
@@ -15,10 +15,9 @@
         },
         "visibleIds": [
           "memory:own",
-          "memory:shared",
-          "memory:sibling-private"
+          "memory:shared"
         ],
-        "leakedReadCount": 1,
+        "leakedReadCount": 0,
         "effectCount": 0
       }
     },
