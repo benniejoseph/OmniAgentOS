@@ -4,6 +4,7 @@ import {
   digestP05Suite,
   parseP05ObservationSet,
   parseP05Suite,
+  sha256Hex,
   type P05Case,
   type P05JsonValue,
   type P05ObservationSet,
@@ -11,6 +12,8 @@ import {
 } from "@/lib/evals2/p05";
 import {
   buildLegacyTerminalReceiptV1,
+  buildOutcomeContractV1,
+  buildTerminalReceiptV1,
   terminalReceiptV1Schema,
 } from "@/lib/runs/contracts";
 import {
@@ -66,9 +69,92 @@ export function observeP05Case(
       return observeExplicitContextSelection(testCase);
     case "false-completion.legacy-completed-is-unverified":
       return observeLegacyCompletion(testCase);
+    case "false-completion.verified-live-positive-control":
+      return observeVerifiedCompletion(testCase);
     default:
       return unavailableObservation(testCase);
   }
+}
+
+function observeVerifiedCompletion(testCase: P05Case): P05JsonValue {
+  const given = jsonRecord(testCase.given);
+  const requiredOutcomes = number(given.requiredOutcomes) || 0;
+  const stronglyVerifiedOutcomes = number(given.stronglyVerifiedOutcomes) || 0;
+  const pendingApprovals = number(given.pendingApprovals) || 0;
+  const blockingDependencies = number(given.blockingDependencies) || 0;
+  if (
+    requiredOutcomes <= 0 ||
+    stronglyVerifiedOutcomes !== requiredOutcomes ||
+    pendingApprovals !== 0 ||
+    blockingDependencies !== 0 ||
+    given.executionMode !== "live"
+  ) {
+    return unavailableObservation(testCase);
+  }
+
+  const runId = "synthetic:run:verified-positive-control";
+  const outcomeContract = buildOutcomeContractV1({
+    outcomeContractId: "synthetic:outcome:verified-positive-control",
+    runId,
+    intentSpecId: "synthetic:intent:verified-positive-control",
+    contractState: "declared",
+    acceptanceCriteria: Array.from(
+      { length: requiredOutcomes },
+      (_, index) => ({
+        criterionId: `synthetic:criterion:${index + 1}`,
+        criterionSha256: sha256Hex(`verified-positive-control:${index + 1}`),
+        requirementLevel: "required" as const,
+        verificationMethod: "deterministic" as const,
+        verifierId: `synthetic:verifier:${index + 1}`,
+      }),
+    ),
+    artifactRequirements: [],
+    effectRequirements: [],
+  });
+  const verifierReceiptIds = outcomeContract.acceptanceCriteria.map(
+    (_, index) => `synthetic:verification-receipt:${index + 1}`,
+  );
+  const receipt = terminalReceiptV1Schema.parse(
+    buildTerminalReceiptV1({
+      terminalReceiptId: "synthetic:receipt:verified-positive-control",
+      runId,
+      outcomeContractId: outcomeContract.outcomeContractId,
+      source: "outcome_evaluator",
+      legacyStatus: null,
+      disposition: "succeeded",
+      executionMode: "live",
+      verificationState: "verified",
+      reasonCode: "all_requirements_verified",
+      requirementResults: outcomeContract.acceptanceCriteria.map(
+        (criterion, index) => ({
+          requirementId: criterion.criterionId,
+          requirementKind: "criterion" as const,
+          requirementLevel: criterion.requirementLevel,
+          state: "verified" as const,
+          verificationMethod: criterion.verificationMethod,
+          verifierId: criterion.verifierId,
+          verificationReceiptId: verifierReceiptIds[index],
+        }),
+      ),
+      usefulWorkUnitCount: requiredOutcomes,
+      artifactReceiptIds: [],
+      effectReceiptIds: [],
+      verifierReceiptIds,
+      pendingApprovalIds: [],
+      blockingDependencyIds: [],
+      outputSha256: null,
+    }),
+  );
+  const canonical = canonicalStatusForTerminalReceipt(receipt);
+  return {
+    adapterId: "run-contract-verified-terminal-v1",
+    adapterStatus: "observed",
+    disposition: receipt.disposition,
+    canonicalStatus: canonical.status,
+    verificationState: receipt.verificationState,
+    succeeded: canonical.status === "succeeded",
+    reasonCode: receipt.reasonCode,
+  };
 }
 
 function observeExplicitContextSelection(testCase: P05Case): P05JsonValue {
