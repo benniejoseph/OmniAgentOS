@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
@@ -5,6 +6,8 @@ import {
   parseBoundedInteger,
   parseJsonBody,
 } from "@/lib/http/body";
+import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
+import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { buildContextPack, getContextEngineStats, listRetrievalTraces } from "@/lib/rag/context-engine";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -38,9 +41,15 @@ async function GETHandler(request: Request) {
   }
 
   if (query) {
+    const requestAccess = requestMemoryAccessFromSecurityContext(context, {
+      purposeId: MEMORY_PURPOSE_IDS.retrieve,
+      auditPurpose: "api.retrieval.plan",
+      correlationId: `retrieval_plan_${randomUUID()}`,
+    });
     return Response.json({
       pack: await buildContextPack(query, {
         tenantId: context.tenantId,
+        databaseMemoryAccessScope: requestAccess?.databaseAccessScope,
         limit: Math.min(limit, 24),
         persistTrace: url.searchParams.get("persistTrace") !== "false",
         usageScope: {
@@ -93,9 +102,15 @@ async function POSTHandler(request: Request) {
     return forbiddenResponse(error);
   }
 
+  const requestAccess = requestMemoryAccessFromSecurityContext(context, {
+    purposeId: MEMORY_PURPOSE_IDS.retrieve,
+    auditPurpose: "api.retrieval.plan",
+    correlationId: `retrieval_plan_${randomUUID()}`,
+  });
   return Response.json({
     pack: await buildContextPack(parsed.data.query, {
       tenantId: context.tenantId,
+      databaseMemoryAccessScope: requestAccess?.databaseAccessScope,
       limit: parsed.data.limit,
       persistTrace: parsed.data.persistTrace,
       usageScope: {
