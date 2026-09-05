@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const routeMocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
   getNotificationCenter: vi.fn(),
+  markAllNotificationsRead: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -18,10 +19,10 @@ vi.mock("@/lib/security/guard", async (importOriginal) => ({
 
 vi.mock("@/lib/today/notifications", () => ({
   getNotificationCenter: routeMocks.getNotificationCenter,
-  markAllNotificationsRead: vi.fn(),
+  markAllNotificationsRead: routeMocks.markAllNotificationsRead,
 }));
 
-import { GET } from "@/app/api/notifications/route";
+import { GET, PATCH } from "@/app/api/notifications/route";
 
 const authUserId = "11111111-1111-4111-8111-111111111111";
 const actorId = "notification-owner@example.test";
@@ -48,6 +49,7 @@ describe("notification inbox route", () => {
       quietHoursActive: false,
       preferences: {},
     });
+    routeMocks.markAllNotificationsRead.mockReset().mockResolvedValue([]);
   });
 
   it("keeps reminder generation out of the interactive read", async () => {
@@ -68,6 +70,36 @@ describe("notification inbox route", () => {
         canonicalActorId,
         legacyOwnerActorIds: [actorId],
         readableOwnerActorIds: [canonicalActorId, actorId],
+      },
+    });
+  });
+
+  it("binds read-all mutations to the authenticated request and idempotency key", async () => {
+    const response = await PATCH(new Request("http://localhost/api/notifications", {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "read-all-1",
+        "x-request-id": "notification-request-1",
+      },
+      body: JSON.stringify({ action: "read_all" }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(routeMocks.markAllNotificationsRead).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      actorId,
+      mutation: {
+        idempotencyKey: "read-all-1",
+        executionScope: expect.objectContaining({
+          tenantId: "tenant-a",
+          initiatingActorId: actorId,
+          executingPrincipalType: "user",
+          executingPrincipalId: actorId,
+          correlationId: "notification-request-1",
+          causationId: "notifications:read_all",
+          purpose: "notification.read_all",
+        }),
       },
     });
   });
