@@ -36,7 +36,10 @@ import {
   saveToolExecution,
   sealToolExecutionInput,
 } from "@/lib/tools/audit-store";
-import { buildEffectIntentV2 } from "@/lib/tools/effect-intent-v2";
+import {
+  buildEffectIntentV2,
+  finalizeEffectIntentV2,
+} from "@/lib/tools/effect-intent-v2";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
 import { createWorkflowRun } from "@/lib/workflows/store";
@@ -237,13 +240,23 @@ databaseDescribe("Postgres schema integration", () => {
     );
     expect(getToolExecutionEffectIntentV2(persisted!)).toEqual(intent);
 
+    const receipt = finalizeEffectIntentV2(intent, {
+      providerAcknowledgement: "provider_response",
+      providerAcknowledgementId: "provider:integration-effect",
+      providerAcknowledgementSha256: "9".repeat(64),
+      verificationMethod: "read_after_write",
+      verificationState: "unverifiable",
+      verificationReasonCode: "read_unavailable",
+      observedTargetStateSha256: null,
+    });
     const completed = await runWithDatabaseTenantScope(tenantId, () =>
       completeClaimedToolExecution({
         ...persisted!,
         status: "executed",
         output: { ok: true },
+        effectReceipt: receipt,
         completedAt: new Date().toISOString(),
-      }, claimToken)
+      }, claimToken, { executionScope: scope })
     );
     expect(getToolExecutionEffectIntentV2(completed!)).toEqual(intent);
     expect(publicToolExecution(completed!).output).toEqual({ ok: true });

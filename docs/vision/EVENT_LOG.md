@@ -1205,10 +1205,12 @@ False verified combinations, partial workflow bindings, malformed approval
 state, body tampering, and unknown fields fail closed.
 
 Its event builder emits only allowlisted IDs, hashes, booleans, and enums and
-omits provider request identity. This slice registers no adapter, changes no
-executor path, performs no effect, and grants no authority; it is the stable
-contract required before a connector-specific acknowledgement and verifier can
-be activated.
+omits provider request identity. The audit store now persists the receipt only
+when it exactly matches the preceding immutable intent and writes
+`tool.effect_receipt.recorded` atomically with the terminal database record.
+This slice registers no adapter, changes no executor path, performs no effect,
+and grants no authority; it is the stable contract required before a
+connector-specific acknowledgement and verifier can be activated.
 
 `EffectIntentV2` now supplies the matching pre-effect half of that boundary.
 It deterministically binds the full execution/scope/plan/tool/approval/input/
