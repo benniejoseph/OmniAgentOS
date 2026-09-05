@@ -146,6 +146,32 @@ export type CanonicalSourceSyncPrepareMutation = (
   context: CanonicalSourceSyncPrepareMutationContext,
 ) => PreparedCanonicalSourceMutation | Promise<PreparedCanonicalSourceMutation>;
 
+export type CanonicalSourceSyncFailureStage =
+  | "lock_stream"
+  | "assert_authorization"
+  | "assert_rollout"
+  | "renew_lease"
+  | "persist_manifest"
+  | "assert_manifest"
+  | "prepare_mutation"
+  | "apply_mutation"
+  | "settle_item"
+  | "commit_checkpoint"
+  | "persist_next_checkpoint"
+  | "assert_next_checkpoint"
+  | "append_settlement_event";
+
+const canonicalSourceSyncFailureStages = new WeakMap<
+  object,
+  CanonicalSourceSyncFailureStage
+>();
+
+export function canonicalSourceSyncFailureStage(error: unknown) {
+  return error && typeof error === "object"
+    ? canonicalSourceSyncFailureStages.get(error)
+    : undefined;
+}
+
 type SourceSyncSqlClient = ReturnType<typeof getSql>;
 
 type StoredCheckpoint = {
@@ -854,17 +880,22 @@ async function commitCanonicalSourceSyncPageDb(input: {
     observedAt,
     prepareMutation,
   } = input;
-  return await getSql().transaction(async (sql: SourceSyncSqlClient) => {
-    await lockStream(sql, page.identity);
-    await assertCurrentAuthorization(sql, page.identity);
-    await assertActiveCanonicalRollout(
-      sql,
-      page.identity,
-      rolloutBinding,
-      page.rolloutLifecycleRevision,
-    );
+  let stage: CanonicalSourceSyncFailureStage = "lock_stream";
+  try {
+    return await getSql().transaction(async (sql: SourceSyncSqlClient) => {
+      await lockStream(sql, page.identity);
+      stage = "assert_authorization";
+      await assertCurrentAuthorization(sql, page.identity);
+      stage = "assert_rollout";
+      await assertActiveCanonicalRollout(
+        sql,
+        page.identity,
+        rolloutBinding,
+        page.rolloutLifecycleRevision,
+      );
 
-    const active = await sql`
+      stage = "renew_lease";
+      const active = await sql`
       UPDATE omni_source_sync_page_checkpoints
       SET lease_expires_at = clock_timestamp() + INTERVAL '5 minutes',
           updated_at = clock_timestamp()
@@ -888,45 +919,51 @@ async function commitCanonicalSourceSyncPageDb(input: {
         AND lease_expires_at > clock_timestamp()
       RETURNING *
     `;
-    if (active.length !== 1) throw new SourceSyncLeaseError();
-    const checkpoint = checkpointFromRow(active[0], page.identity);
-    assertStoredClaim(checkpoint, page);
-    const renewedPage = canonicalClaimFromCheckpoint(checkpoint, page.identity);
+      if (active.length !== 1) throw new SourceSyncLeaseError();
+      const checkpoint = checkpointFromRow(active[0], page.identity);
+      assertStoredClaim(checkpoint, page);
+      const renewedPage = canonicalClaimFromCheckpoint(checkpoint, page.identity);
 
-    const now = await databaseTimestamp(sql);
-    const pendingItems = canonicalPendingPageItems(page, items, now);
-    if (pendingItems.length) {
-      await insertCanonicalPendingPageItems(sql, pendingItems);
-      await assertStoredCanonicalPageItems(sql, page, pendingItems, "pending");
-    }
+      const now = await databaseTimestamp(sql);
+      const pendingItems = canonicalPendingPageItems(page, items, now);
+      if (pendingItems.length) {
+        stage = "persist_manifest";
+        await insertCanonicalPendingPageItems(sql, pendingItems);
+        stage = "assert_manifest";
+        await assertStoredCanonicalPageItems(sql, page, pendingItems, "pending");
+      }
 
-    const results: CanonicalSourceMutationResult[] = [];
-    for (const [ordinal, item] of items.entries()) {
-      const order = canonicalSourceOrder(page, ordinal);
-      const prepared = validatedPreparedCanonicalMutation(
-        await prepareMutation(Object.freeze({
-          sql,
-          page: renewedPage,
+      const results: CanonicalSourceMutationResult[] = [];
+      for (const [ordinal, item] of items.entries()) {
+        const order = canonicalSourceOrder(page, ordinal);
+        stage = "prepare_mutation";
+        const prepared = validatedPreparedCanonicalMutation(
+          await prepareMutation(Object.freeze({
+            sql,
+            page: renewedPage,
+            item,
+            ordinal,
+            order,
+          })),
+          page,
           item,
-          ordinal,
           order,
-        })),
-        page,
-        item,
-        order,
-      );
-      const result = await applyPreparedCanonicalSourceMutation(sql, prepared);
-      await settleCanonicalPageItem(
-        sql,
-        pendingItems[ordinal],
-        prepared.output,
-        result,
-        now,
-      );
-      results.push(result);
-    }
+        );
+        stage = "apply_mutation";
+        const result = await applyPreparedCanonicalSourceMutation(sql, prepared);
+        stage = "settle_item";
+        await settleCanonicalPageItem(
+          sql,
+          pendingItems[ordinal],
+          prepared.output,
+          result,
+          now,
+        );
+        results.push(result);
+      }
 
-    const committed = await sql`
+      stage = "commit_checkpoint";
+      const committed = await sql`
       UPDATE omni_source_sync_page_checkpoints
       SET observed_at = ${observedAt},
           manifest_sha256 = ${manifestSha256},
@@ -958,26 +995,35 @@ async function commitCanonicalSourceSyncPageDb(input: {
         AND lease_expires_at > clock_timestamp()
       RETURNING id
     `;
-    if (committed.length !== 1) throw new SourceSyncLeaseError();
+      if (committed.length !== 1) throw new SourceSyncLeaseError();
 
-    const nextCheckpoint = checkpointForNextPage(page, next, now);
-    await insertCheckpointDb(sql, nextCheckpoint);
-    await assertNextCheckpoint(sql, nextCheckpoint, page.identity);
-    await appendCanonicalPageSettledEvent(
-      sql,
-      page,
-      rolloutBinding,
-      items,
-      results,
-      manifestSha256,
-    );
-    return canonicalPageCommitResult(
-      page,
-      items.length,
-      results,
-      manifestSha256,
-    );
-  });
+      const nextCheckpoint = checkpointForNextPage(page, next, now);
+      stage = "persist_next_checkpoint";
+      await insertCheckpointDb(sql, nextCheckpoint);
+      stage = "assert_next_checkpoint";
+      await assertNextCheckpoint(sql, nextCheckpoint, page.identity);
+      stage = "append_settlement_event";
+      await appendCanonicalPageSettledEvent(
+        sql,
+        page,
+        rolloutBinding,
+        items,
+        results,
+        manifestSha256,
+      );
+      return canonicalPageCommitResult(
+        page,
+        items.length,
+        results,
+        manifestSha256,
+      );
+    });
+  } catch (error) {
+    if (error && typeof error === "object") {
+      canonicalSourceSyncFailureStages.set(error, stage);
+    }
+    throw error;
+  }
 }
 
 async function failSourceSyncPageDb(input: {
