@@ -948,6 +948,16 @@ writer cannot succeed against v67 as installed and has no client, route,
 environment lookup, default trust resolver, event append, or serving call site.
 It returns `authorityGranted: false` and `runtimeAccepted: false`.
 
+The P0.5 offline baseline now observes both intent-routing cases through the
+real supervisor rather than leaving them as unsupported probes. The evidence
+preserves the current direct-path decision, absent procedure binding, and
+absent ambiguity evaluation, so the normative durable-procedure and ambiguous
+delete cases remain hard failures. No expected fixture value is copied into
+the observation, no model, network, database, tool, connector, clock, or
+environment input is used, and the baseline score remains the truthful 5 of
+16 (3,125 basis points). This adds regression visibility but does not close
+P0.5 or change serving behavior.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

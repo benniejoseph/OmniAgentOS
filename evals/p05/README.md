@@ -34,14 +34,16 @@ resurrection, or false success is a failure; this lane has no warning state.
 
 `baseline.v1.json` is the first digest-bound current-system observation. Run
 `npm run check:p05-baseline` to reproduce it from the side-effect-free adapters
-in `src/lib/evals2/p05-observer.ts`. The initial result is intentionally red:
-5 of 16 cases pass (3,125 basis points). Tenant mismatch, canonical source
-ordering, explicit-empty context selection, and both negative and positive
-terminal-receipt controls are directly observable. The
-remaining unsupported probes fail closed as `not_observable_offline`; the
-scope boundary probe also records the current tenant-only compatibility read,
-including its actor-isolation gap. This is evidence of the present system, not
-a release pass.
+in `src/lib/evals2/p05-observer.ts`. The result is intentionally red: 5 of 16
+cases pass (3,125 basis points). Tenant mismatch, canonical source ordering,
+explicit context selection, both terminal-receipt controls, and current
+supervisor routing are directly observable. The routing observations preserve
+the current direct-path and missing ambiguity/procedure-resolution gaps instead
+of copying the normative answer into the baseline. Remaining unsupported
+probes fail closed as `not_observable_offline`; the scope boundary probe also
+records the current tenant-only compatibility read, including its
+actor-isolation gap. This is evidence of the present system, not a release
+pass.
 
 Observation envelopes bind to the exact domain-separated suite digest and
 declared scorer version. Scoring-code changes must bump that version; the digest
