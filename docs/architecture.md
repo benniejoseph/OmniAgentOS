@@ -1125,11 +1125,20 @@ and Retrieval Plan searches query it in an actor-scoped transaction and merge
 the result only after the compatibility query completes. Unscoped and sibling
 actors cannot see those nodes or edges. Migration v80 makes the validated
 transaction scope an initplan input to those policies, avoiding per-row parsing
-without weakening tenant, actor, visibility, or purpose checks. Agent-run context still cannot receive
-private rows because its run and thread ledgers remain tenant scoped; that
-omission is a fail-closed phase boundary, not completed P3.1 support.
-Agent-private/shared visibility, agent context, formation, and worker surfaces
-remain closed.
+without weakening tenant, actor, visibility, or purpose checks.
+
+Migration v81 adds immutable actor ownership to agent runs and applies
+restrictive actor policies to runs, threads, turns, run events, checkpoints,
+checkpoint references and resume claims, and fork lineage. Authenticated web
+and native requests install the canonical/current-owner actor set in the
+database scope. Resume, specialist, consolidation, daily-brief, and workflow
+workers re-enter the persisted owner scope before touching protected run data;
+legacy queued resume and consolidation jobs are backfilled during migration.
+This closes the durable run/thread prerequisite, but private memory still does
+not enter agent context: governed tool inputs, outputs, and approval records
+remain tenant-scoped copies. Agent-private/shared visibility, context
+compilation, standing formation, and private-memory worker consumption remain
+closed, so P3.1 is still incomplete.
 
 ## Where things live
 
