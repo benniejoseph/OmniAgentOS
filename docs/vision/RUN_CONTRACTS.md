@@ -196,9 +196,9 @@ event projection omits the provider request ID and cannot contain tool input,
 provider output, credentials, or an extensible metadata bag. The audit store
 now accepts a v2 receipt only when it exactly finalizes the claimed record's
 persisted v2 intent, preserves it immutably, and appends the compact receipt
-event in the same database transaction. This is not yet a serving adapter or
-permission: unregistered tools still receive no v2 receipt and no external
-effect is authorized by constructing one.
+event in the same database transaction. This contract alone is not a serving
+adapter or permission: unregistered tools receive no v2 receipt and no
+external effect is authorized by constructing one.
 
 Before a v2 effect can run, `EffectIntentV2` records the same immutable
 execution, scope, plan, tool, approval, input, idempotency, target, and expected
@@ -210,10 +210,21 @@ approval, or plan during finalization. The tool audit store can now attach the
 intent only to the matching live execution claim, preserve it immutably on the
 private record, and append its scoped event in the same database transaction.
 File mode documents its non-atomic event boundary and repairs by deterministic
-event ID. Stale recovery will not replay an intent-bound effect. Executor and
-provider-adapter activation remain separate gates. The compact event projection
+event ID. Stale recovery will not replay an intent-bound effect. Store support
+does not activate an adapter by itself. The compact event projection
 carries only the exact allowlisted IDs, hashes, booleans, and enums needed to
 audit that pre-effect binding; it contains no provider outcome or raw input.
+
+The first v2 serving adapter covers `http.request` POST, PUT, PATCH, and DELETE
+for a directly authorized user principal. The pending approval seals the exact
+request and binds its canonical endpoint digest. After approval, the executor
+persists `EffectIntentV2` before network delivery, uses the execution ID as the
+provider idempotency key, and finalizes from the bounded HTTP response. Generic
+HTTP cannot read an arbitrary provider's resulting resource, so its receipt is
+explicitly `unverifiable/read_unavailable`; it never claims verified state.
+Provider or receipt uncertainty leaves the intent-bound claim unreplayed.
+GET behavior is unchanged, and workflow/system-principal HTTP mutations remain
+closed until their full workflow plan binding is available.
 
 ## Event payloads
 

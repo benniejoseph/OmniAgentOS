@@ -239,6 +239,9 @@ databaseDescribe("Postgres schema integration", () => {
       })
     );
     expect(getToolExecutionEffectIntentV2(persisted!)).toEqual(intent);
+    await expect(runWithDatabaseTenantScope(tenantId, () =>
+      saveToolExecution({ ...persisted!, output: { ok: false } })
+    )).rejects.toThrow(/effect (?:intent|evidence)/i);
 
     const receipt = finalizeEffectIntentV2(intent, {
       providerAcknowledgement: "provider_response",
@@ -272,10 +275,6 @@ databaseDescribe("Postgres schema integration", () => {
         AND tenant_id = ${tenantId}
     `;
     expect(eventCount.count).toBe(1);
-
-    await expect(runWithDatabaseTenantScope(tenantId, () =>
-      saveToolExecution({ ...completed!, output: { ok: false } })
-    )).rejects.toThrow(/effect intent/i);
   });
 
   test("returns newly inserted and replayed bulk memories", async () => {
