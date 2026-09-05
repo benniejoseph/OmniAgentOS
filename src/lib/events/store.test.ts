@@ -109,6 +109,39 @@ describe("event store (file mode)", () => {
     })).rejects.toThrow("already bound to a different event");
   });
 
+  it("uses an explicitly injected transaction client without ambient database configuration", async () => {
+    const store = await import("@/lib/events/store");
+    const calls: string[] = [];
+    const sql = Object.assign(
+      async (strings: TemplateStringsArray) => {
+        const statement = strings.join("?").replace(/\s+/g, " ").trim();
+        calls.push(statement);
+        return [{ seq: "73" }];
+      },
+      {
+        query: async () => [],
+        unsafe: async () => [],
+        transaction: async () => undefined,
+        transactionScoped: true,
+      },
+    );
+
+    const event = await store.appendDomainEvent(
+      {
+        id: "injected-sql-event",
+        streamId: "ceremony:1",
+        type: "ceremony.recorded",
+        tenantId: "tenant-injected",
+        actorId: "actor-injected",
+      },
+      { sql },
+    );
+
+    expect(event.seq).toBe(73);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("INSERT INTO omni_events");
+  });
+
   it("survives append failures via the safe wrapper", async () => {
     const store = await import("@/lib/events/store");
     const result = await store.appendDomainEventSafely({ streamId: "ok", type: "ok" });

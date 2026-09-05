@@ -673,6 +673,30 @@ human independence, same-tenant controller authority, and restored-clone
 identity remain outside what it proves. No row, event append, writer, runtime
 import/call site, environment key, ACL/RLS change, or activation is added.
 
+The following held-writer slice adds the first atomic persistence boundary but
+does not make it reachable from a serving or maintenance runtime. It requires
+an existing schema-owner, system-scoped transaction and an attributed human
+`memory.maintenance.v1` execution scope. Its injected trust-anchor resolver is
+the external authorization boundary: it must return an independently reviewed,
+rollback-protected manifest anchor and cannot derive trust from the supplied
+manifest. The writer rechecks exact manifest, policy, database-lineage, tenant,
+actor, decision, bundle, and anchor coordinates; rejects an independence review
+that follows the database observation; verifies both Ed25519 signatures before
+and after the trigger-authored decision timestamp; then writes the immutable
+decision, its two attestations, one held v56 authority, and the existing typed
+`memory.membership_management_authority.held` event through the same
+transaction client. The event ID is derived from the decision digest for
+idempotent conflict detection.
+
+The result remains explicitly non-authorizing. No default anchor resolver,
+database client, environment lookup, CLI, route, worker, serving import, ACL or
+RLS grant, activation migration, or runtime call site is added. Therefore this
+code cannot manufacture the two independent human approvals, cannot execute
+against the owner-only evidence tables, and cannot change memory behavior by
+itself. The v56 active-state constraint and every earlier P3.1 hold remain in
+force until the external trust registry, real ceremony evidence, and reviewed
+cutover exist.
+
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.
