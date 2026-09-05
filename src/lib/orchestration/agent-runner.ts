@@ -380,6 +380,29 @@ export async function* runAgent(
     }
   }
 
+  async function checkpointAfterFailedModelTurn(input: {
+    attempt: number;
+    provider: string;
+    model: string;
+    tier: "fast" | "reasoning";
+    error: unknown;
+    generated?: ModelToolTurnResult;
+    latencyMs?: number;
+  }) {
+    if (!shadowRunContract) return;
+    try {
+      await persistFailedModelCheckpointShadow({
+        runId,
+        ...input,
+        executionScope,
+        runContractEnvelope: shadowRunContract.envelope,
+        enrollment: checkpointShadowEnrollment,
+      });
+    } catch (error) {
+      logRunContractShadowFailure("checkpoint_model_after", error);
+    }
+  }
+
   async function checkpointBeforeGovernedTool(
     input: GovernedToolCheckpointInput,
   ) {
@@ -1023,6 +1046,15 @@ export async function* runAgent(
               model: modelRoute.model,
               tier,
             }),
+          afterModelFailure: ({ attempt, provider, tier, error, generated }) =>
+            checkpointAfterFailedModelTurn({
+              attempt,
+              provider,
+              model: modelRoute.model,
+              tier,
+              error,
+              generated,
+            }),
           checkpointBeforeTool: checkpointBeforeGovernedTool,
           checkpointAfterTool: checkpointAfterGovernedTool,
           serializeToolCalls: isExpandedCheckpointShadowEnrollment(
@@ -1211,6 +1243,7 @@ export async function* runAgent(
             } : {}),
           }),
         ).catch(async (error) => {
+          const latencyMs = Date.now() - turnStartedAt;
           await recordAgentModelFailure({
             tenantId: runTenantId,
             actorId: request.actorId,
@@ -1224,7 +1257,15 @@ export async function* runAgent(
               : "deployment_environment",
             usageRecordId: usageReceiptId,
             error,
-            latencyMs: Date.now() - turnStartedAt,
+            latencyMs,
+          });
+          await checkpointAfterFailedModelTurn({
+            attempt: toolSteps + 1,
+            provider: "openai",
+            model: modelRoute.model,
+            tier: modelRoute.tier,
+            error,
+            latencyMs,
           });
           throw error;
         }).finally(() => channel.close());
@@ -1727,6 +1768,13 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     provider: "openai" | "google" | "anthropic" | "aws_bedrock";
     tier: "fast" | "reasoning";
   }) => Promise<void>;
+  afterModelFailure?: (input: {
+    attempt: number;
+    provider: "openai" | "google" | "anthropic" | "aws_bedrock";
+    tier: "fast" | "reasoning";
+    error: unknown;
+    generated?: ModelToolTurnResult;
+  }) => Promise<void>;
   checkpointBeforeTool?: (
     input: GovernedToolCheckpointInput,
   ) => Promise<void>;
@@ -1821,13 +1869,33 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         credentialSource: input.credentialSource,
       },
     };
-    const turn = await generateTurn(
-      input.bindModelRequest
-        ? input.bindModelRequest(turnRequest)
-        : turnRequest,
-    );
-    if (turn.continuation.provider !== turn.provider || turn.provider === "local") {
-      throw new Error("A provider-bound tool turn returned cross-provider state.");
+    let turn: ModelToolTurnResult | undefined;
+    try {
+      turn = await generateTurn(
+        input.bindModelRequest
+          ? input.bindModelRequest(turnRequest)
+          : turnRequest,
+      );
+      if (
+        turn.continuation.provider !== turn.provider ||
+        turn.provider === "local"
+      ) {
+        throw new Error(
+          "A provider-bound tool turn returned cross-provider state.",
+        );
+      }
+    } catch (error) {
+      await input.afterModelFailure?.({
+        attempt: modelAttempt,
+        provider: activeProvider,
+        tier: input.tier,
+        error,
+        ...(turn ? { generated: turn } : {}),
+      });
+      throw error;
+    }
+    if (!turn) {
+      throw new Error("The provider-bound model turn returned no result.");
     }
     activeProvider = turn.provider;
 
@@ -2698,6 +2766,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           }),
         );
       } catch (error) {
+        const latencyMs = Date.now() - turnStartedAt;
         await recordAgentModelFailure({
           tenantId: normalizeTenantId(tenantId),
           actorId: continuation.context.actorId,
@@ -2711,8 +2780,29 @@ async function resumeAgentRunAfterToolApprovalInScope({
             : "deployment_environment",
           usageRecordId: usageReceiptId,
           error,
-          latencyMs: Date.now() - turnStartedAt,
+          latencyMs,
         });
+        if (executionScope && continuation.runContractEnvelope) {
+          try {
+            await persistFailedModelCheckpointShadow({
+              runId: run.id,
+              attempt: toolSteps + 1,
+              provider: "openai",
+              model: resumeModel,
+              tier: resumeTier,
+              error,
+              latencyMs,
+              executionScope,
+              runContractEnvelope: continuation.runContractEnvelope,
+              enrollment: continuation.checkpointShadowEnrollment,
+            });
+          } catch (checkpointError) {
+            logRunContractShadowFailure(
+              "checkpoint_model_after",
+              checkpointError,
+            );
+          }
+        }
         throw error;
       }
 
@@ -3450,6 +3540,34 @@ async function resumeProviderBoundAgentRunAfterApproval({
           model: resumeModel,
           tier,
         }),
+      afterModelFailure: async ({
+        attempt,
+        provider,
+        tier,
+        error,
+        generated,
+      }) => {
+        if (!executionScope || !continuation.runContractEnvelope) return;
+        try {
+          await persistFailedModelCheckpointShadow({
+            runId: run.id,
+            attempt,
+            provider,
+            model: resumeModel,
+            tier,
+            error,
+            generated,
+            executionScope,
+            runContractEnvelope: continuation.runContractEnvelope,
+            enrollment: continuation.checkpointShadowEnrollment,
+          });
+        } catch (checkpointError) {
+          logRunContractShadowFailure(
+            "checkpoint_model_after",
+            checkpointError,
+          );
+        }
+      },
       checkpointBeforeTool: checkpointBeforeResumeTool,
       checkpointAfterTool: checkpointAfterResumeTool,
       serializeToolCalls: isExpandedCheckpointShadowEnrollment(
@@ -4026,6 +4144,105 @@ async function requirePreclaimedAgentRun(
     throw new Error("The durable specialist claim does not match its queued request.");
   }
   return run;
+}
+
+async function persistFailedModelCheckpointShadow(input: {
+  runId: string;
+  attempt: number;
+  provider: string;
+  model: string;
+  tier: "fast" | "reasoning";
+  error: unknown;
+  generated?: ModelToolTurnResult;
+  latencyMs?: number;
+  executionScope: ExecutionScope;
+  runContractEnvelope: ShadowRunContractSnapshot["envelope"];
+  enrollment: ApprovalCheckpointShadowEnrollment | undefined;
+}) {
+  const attempts = modelAttemptsFromError(input.error);
+  const responseReceipt = getModelProviderResponseReceipt(input.error);
+  const attemptsHaveUsage = attempts.some((attempt) => attempt.usage);
+  const usage = input.generated?.usage || (attemptsHaveUsage
+    ? attempts.reduce(
+        (total, attempt) => ({
+          inputTokens: total.inputTokens + (attempt.usage?.inputTokens || 0),
+          outputTokens: total.outputTokens + (attempt.usage?.outputTokens || 0),
+          cachedInputTokens:
+            total.cachedInputTokens + (attempt.usage?.cachedInputTokens || 0),
+          totalTokens: total.totalTokens + (attempt.usage?.totalTokens || 0),
+        }),
+        {
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+          totalTokens: 0,
+        },
+      )
+    : {
+        inputTokens: responseReceipt?.usage?.inputTokens || 0,
+        outputTokens: responseReceipt?.usage?.outputTokens || 0,
+        cachedInputTokens: responseReceipt?.usage?.cachedInputTokens || 0,
+        totalTokens: responseReceipt?.usage?.totalTokens || 0,
+      });
+  const lastAttempt = attempts.at(-1);
+  const errorUsageReceiptId = input.error && typeof input.error === "object"
+    ? (input.error as { usageReceiptId?: unknown }).usageReceiptId
+    : undefined;
+  const usageReceiptId = typeof errorUsageReceiptId === "string"
+    ? errorUsageReceiptId
+    : undefined;
+  await persistModelAfterCheckpointShadow({
+    runId: input.runId,
+    event: {
+      id:
+        input.generated?.usageReceiptId ||
+        usageReceiptId ||
+        input.generated?.providerRequestId ||
+        responseReceipt?.providerRequestId ||
+        `${input.runId}:model_failure:${input.attempt}`,
+      createdAt: new Date().toISOString(),
+      status: "failed",
+      failureKind:
+        lastAttempt?.failureKind ||
+        (input.error instanceof ModelProviderError
+          ? input.error.kind
+          : input.error instanceof Error && input.error.name === "AbortError"
+            ? "abort"
+            : "unknown"),
+      provider:
+        input.generated?.provider ||
+        lastAttempt?.provider ||
+        (input.error instanceof ModelProviderError
+          ? input.error.provider
+          : input.provider),
+      model:
+        input.generated?.model ||
+        responseReceipt?.model ||
+        lastAttempt?.model ||
+        input.model,
+      tier: input.tier,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      totalTokens: usage.totalTokens,
+      latencyMs:
+        input.generated?.latencyMs ??
+        input.latencyMs ??
+        responseReceipt?.latencyMs ??
+        attempts.reduce(
+          (total, attempt) => total + Math.max(0, attempt.latencyMs || 0),
+          0,
+        ),
+      iteration: input.attempt,
+      providerRequestId:
+        input.generated?.providerRequestId ||
+        responseReceipt?.providerRequestId,
+      usageReceiptId: input.generated?.usageReceiptId || usageReceiptId,
+    },
+    executionScope: input.executionScope,
+    runContractEnvelope: input.runContractEnvelope,
+    enrollment: input.enrollment,
+  });
 }
 
 async function recordAgentModelFailure(input: {
