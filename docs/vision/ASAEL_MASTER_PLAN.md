@@ -526,6 +526,17 @@ complete. The normative
 boundary and activation order are documented in
 [RunCheckpoint v1](RUN_CHECKPOINTS.md).
 
+P1.7 is complete for checkpoint-backed agent traces. The trajectory projection
+now exposes bounded checkpoint steps and parent/child fork lineage without
+opening referenced state. A user can select a recorded boundary, provide a
+correction, and execute a deterministically identified new run. Migration v70
+stores immutable tenant-scoped lineage bound to the full validated checkpoint
+chain and exact event-prefix digest. Target creation, fresh scope binding, and
+metadata-only source/target fork events commit together. The source history is
+unchanged; stale provider continuation, resume claims, tool executions, and
+approval decisions are never copied, so any gated action in the new trace
+requires a new approval.
+
 P1.4 is complete for the registered external mutation surface. Google Calendar
 creation records deterministic provider acknowledgement plus verified
 read-after-write state. HTTP POST/PUT/PATCH/DELETE, governed OpenAPI non-read

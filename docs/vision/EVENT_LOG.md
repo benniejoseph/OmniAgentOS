@@ -1071,6 +1071,18 @@ evented before the same fenced runner can commit. The 2026-09-06 production
 hard-kill gate completed at generation 2 with one reclaim event and no external
 effect or effect receipt.
 
+Migration v70 adds append-only `omni_run_forks`. The fork creator locks and
+validates the source run, complete root-to-selected checkpoint chain, and exact
+event prefix through the matching checkpoint receipt. The same transaction
+creates the target run with no continuation, persists a metadata-only lineage
+receipt, binds a fresh execution scope, and appends `run.fork.created` to the
+target plus `run.forked` to the source. Lineage records checkpoint and prefix
+digests, correction length/digest, current grant-set digests, and explicit
+`none` values for approval and continuation inheritance. The corrected text
+belongs only to the target run input; fork events never contain it. Retrying an
+identical idempotency key returns the same target, while rebinding that key to
+different correction or scope fails closed.
+
 ## Event shape
 
 ```ts
