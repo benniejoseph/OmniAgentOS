@@ -205,6 +205,12 @@ function attachVerifiedMemoryWriteReceipt(
   const nodeOutput = requiredRecord(nodeExecution.output);
   const toolExecution = requiredRecordArray(nodeOutput.toolExecutions)[0];
   const executionId = overrides.executionId || String(toolExecution.id);
+  planNode.toolIds = options.authorizePlanTool === false
+    ? []
+    : ["memory.write"];
+  if (options.planPolicy !== undefined) {
+    planNode.policy = options.planPolicy;
+  }
   const tenantId = overrides.tenantId || input.detail.run.tenantId || "default";
   const workflowRunId = overrides.workflowRunId || input.detail.run.id;
   const planId = overrides.planId || String(planOutput.id);
@@ -245,12 +251,6 @@ function attachVerifiedMemoryWriteReceipt(
     status: "executed",
     dryRun: false,
   });
-  planNode.toolIds = options.authorizePlanTool === false
-    ? []
-    : ["memory.write"];
-  if (options.planPolicy !== undefined) {
-    planNode.policy = options.planPolicy;
-  }
   const receipt = buildEffectReceiptV1({
     effectMode: "live",
     reversible: true,

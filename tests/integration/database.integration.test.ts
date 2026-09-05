@@ -580,7 +580,7 @@ databaseDescribe("Postgres schema integration", () => {
       ORDER BY id
     `;
     const remainingMemories = await admin`
-      SELECT id
+      SELECT id, title, content, source, claim_status
       FROM omni_memories
       WHERE id IN (
         'expired-episode-memory',
@@ -642,7 +642,9 @@ databaseDescribe("Postgres schema integration", () => {
     expect(result.deleted.accessRequests).toBe(1);
     expect(result.deleted.authSessions).toBe(1);
     expect(result.deleted.memoryGraphEdges).toBe(1);
-    expect(result.deleted.memoryGraphNodes).toBe(2);
+    // Retention invalidates only rows derived from expired inputs. The durable
+    // rebuild replaces the remaining tenant graph after this count is taken.
+    expect(result.deleted.memoryGraphNodes).toBe(1);
     expect(result.deleted.memories).toBe(2);
     expect(result.deleted.retrievalTraces).toBe(1);
     expect(result.deleted.workflowPlans).toBe(1);
@@ -669,7 +671,29 @@ databaseDescribe("Postgres schema integration", () => {
       },
     ]);
     expect(remainingAuthSessions).toEqual([{ id: "active-auth-session" }]);
-    expect(remainingMemories).toEqual([{ id: "retained-curated-memory" }]);
+    expect(remainingMemories).toEqual([
+      {
+        id: "expired-consolidated-memory",
+        title: "[retired]",
+        content: "",
+        source: "[retired]",
+        claim_status: "superseded",
+      },
+      {
+        id: "expired-episode-memory",
+        title: "[retired]",
+        content: "",
+        source: "[retired]",
+        claim_status: "superseded",
+      },
+      {
+        id: "retained-curated-memory",
+        title: "Curated",
+        content: "Retain this",
+        source: "operator",
+        claim_status: "active",
+      },
+    ]);
     expect(remainingGraphNodes).toEqual([]);
     expect(rebuiltGraph.count).toBeGreaterThan(0);
     expect(pendingGraphRebuilds).toEqual([]);

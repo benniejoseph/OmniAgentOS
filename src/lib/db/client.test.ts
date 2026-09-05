@@ -198,12 +198,14 @@ describe("database pool acquisition", () => {
       expect(maintenance.reserved.release).toHaveBeenCalledOnce();
       expect(statementKinds(runtime.statements)).toEqual([
         "BEGIN",
+        "QUERY",
         "SCOPE",
         "QUERY",
         "COMMIT",
       ]);
       expect(statementKinds(maintenance.statements)).toEqual([
         "BEGIN",
+        "QUERY",
         "SCOPE",
         "QUERY",
         "COMMIT",
@@ -394,6 +396,7 @@ describe("database pool acquisition", () => {
       expect(pool.pg.reserve).toHaveBeenCalledTimes(2);
       expect(statementKinds(pool.statements)).toEqual([
         "BEGIN",
+        "QUERY",
         "SCOPE",
         "QUERY",
         "COMMIT",
@@ -504,6 +507,7 @@ describe("database pool acquisition", () => {
 
       expect(statementKinds(pool.statements)).toEqual([
         "BEGIN",
+        "QUERY",
         "SCOPE",
         "QUERY",
         "COMMIT",
@@ -687,11 +691,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the membership-management bootstrap evidence shadow migration", () => {
+  it("pins the memory deletion barrier policy privilege migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 57,
-      name: "membership_management_bootstrap_evidence_shadow",
-      checksum: "8a06a730f9da8eea20b3c1abf9937369451550865ecbdf27c0019047b80f151b",
+      version: 58,
+      name: "memory_deletion_barrier_policy_privilege_isolation",
+      checksum: "5eb4483ee881615b4178d5ddc84949556a2ada088c8fd405e0d7b709aa67f870",
     });
   });
 

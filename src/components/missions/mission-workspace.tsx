@@ -428,6 +428,8 @@ export function MissionWorkspace({
     setLoading(nextLoading);
   }, []);
 
+  // Stable React setters and refs are intentionally omitted from dependencies.
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const clearRowActionability = useCallback(() => {
     detailGeneration.current += 1;
     detailRequestGeneration.current += 1;
@@ -455,6 +457,7 @@ export function MissionWorkspace({
     setTaskActionError(undefined);
   }, [replaceDetails, replaceMissionReadContract, replaceMissions]);
 
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const invalidateMissionRow = useCallback((missionId: string) => {
     detailGeneration.current += 1;
     detailRequestGeneration.current += 1;
@@ -488,6 +491,47 @@ export function MissionWorkspace({
     }
   }, [replaceDetails, replaceMissions]);
 
+  const updateDetail = useCallback((
+    detail: BoardMissionDetail,
+    expectedId: string,
+  ) => {
+    if (!missionDetailHasExpectedId(detail, expectedId)) return false;
+    const normalizedMission = normalizeMissionSummary(detail.mission);
+    if (normalizedMission?.id !== expectedId) return false;
+    const currentMission = missionsRef.current.find(
+      (mission) => mission.id === expectedId,
+    );
+    if (
+      !currentMission ||
+      missionSelectionMode(
+        currentMission,
+        missionReadContractRef.current,
+        loadingRef.current,
+      ) !== "exact"
+    ) return false;
+    const currentDetail = detailsRef.current[expectedId];
+    if (
+      currentDetail &&
+      Date.parse(detail.mission.updatedAt) <
+        Date.parse(currentDetail.mission.updatedAt)
+    ) return false;
+    const mergedDetail: BoardMissionDetail = {
+      ...detail,
+      mission: {
+        ...normalizedMission,
+        detailAvailable: currentMission.detailAvailable,
+        manageable: currentMission.manageable,
+        runnable: currentMission.runnable,
+      },
+    };
+    replaceDetails({ ...detailsRef.current, [expectedId]: mergedDetail });
+    replaceMissions(missionsRef.current.map((mission) =>
+      mission.id === expectedId ? mergedDetail.mission : mission
+    ));
+    return true;
+  }, [replaceDetails, replaceMissions]);
+
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const loadWorkspace = useCallback(async () => {
     if (!sessionOwnerKey) return;
     listController.current?.abort();
@@ -715,9 +759,11 @@ export function MissionWorkspace({
       listController.current = null;
       activeListController?.abort();
       lastVerifiedOwnerKey.current = undefined;
-      clearRowActionability();
-      replaceLoading(false);
-      return;
+      const resetTimer = window.setTimeout(() => {
+        clearRowActionability();
+        replaceLoading(false);
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
     }
     if (
       lastVerifiedOwnerKey.current === sessionOwnerKey &&
@@ -770,8 +816,8 @@ export function MissionWorkspace({
       const activeController = detailController.current;
       detailController.current = null;
       activeController?.abort();
-      setDetailLoading(false);
-      return;
+      const resetTimer = window.setTimeout(() => setDetailLoading(false), 0);
+      return () => window.clearTimeout(resetTimer);
     }
     detailController.current?.abort();
     const controller = new AbortController();
@@ -836,7 +882,7 @@ export function MissionWorkspace({
         setDetailLoading(false);
       }
     };
-  }, [available, clearRowActionability, details, invalidateMissionRow, loading, missionReadContract, missions, selectedId, sessionStatus]);
+  }, [available, clearRowActionability, details, invalidateMissionRow, loading, missionReadContract, missions, selectedId, sessionStatus, updateDetail]);
 
   useEffect(() => {
     if (
@@ -954,7 +1000,7 @@ export function MissionWorkspace({
       window.removeEventListener("focus", wake);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [available, clearRowActionability, initialEventCursor, invalidateMissionRow, safeInitialDetail?.mission.id, selectedId, selectedMissionStatus, selectionMode, sessionStatus]);
+  }, [available, clearRowActionability, initialEventCursor, invalidateMissionRow, safeInitialDetail?.mission.id, selectedId, selectedMissionStatus, selectionMode, sessionStatus, updateDetail]);
 
   const visibleMissions = useMemo(() => missions.filter((mission) => showArchived || mission.status !== "archived"), [missions, showArchived]);
   const tasks = useMemo(() => selectedDetail?.tasks || [], [selectedDetail]);
@@ -973,40 +1019,6 @@ export function MissionWorkspace({
   const workingCount = tasks.filter((task) => boardColumnForTask(task, tasks) === "working").length;
   const attentionCount = tasks.filter((task) => ["needs-you", "review", "waiting"].includes(boardColumnForTask(task, tasks))).length;
   const doneCount = tasks.filter((task) => boardColumnForTask(task, tasks) === "done").length;
-
-  function updateDetail(detail: BoardMissionDetail, expectedId: string) {
-    if (!missionDetailHasExpectedId(detail, expectedId)) return false;
-    const normalizedMission = normalizeMissionSummary(detail.mission);
-    if (normalizedMission?.id !== expectedId) return false;
-    const currentMission = missionsRef.current.find((mission) => mission.id === expectedId);
-    if (
-      !currentMission ||
-      missionSelectionMode(
-        currentMission,
-        missionReadContractRef.current,
-        loadingRef.current,
-      ) !== "exact"
-    ) return false;
-    const currentDetail = detailsRef.current[expectedId];
-    if (
-      currentDetail &&
-      Date.parse(detail.mission.updatedAt) < Date.parse(currentDetail.mission.updatedAt)
-    ) return false;
-    const mergedDetail: BoardMissionDetail = {
-      ...detail,
-      mission: {
-        ...normalizedMission,
-        detailAvailable: currentMission.detailAvailable,
-        manageable: currentMission.manageable,
-        runnable: currentMission.runnable,
-      },
-    };
-    replaceDetails({ ...detailsRef.current, [expectedId]: mergedDetail });
-    replaceMissions(missionsRef.current.map((mission) =>
-      mission.id === expectedId ? mergedDetail.mission : mission
-    ));
-    return true;
-  }
 
   async function refreshDetail(
     missionId: string,

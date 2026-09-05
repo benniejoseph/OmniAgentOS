@@ -273,7 +273,7 @@ describe("tenant capability rollout contract and store", () => {
           toStatus: "superseded",
         }),
       }),
-      { sql },
+      { sql: expect.any(Function) },
     );
     expect(eventMocks.appendScopedDomainEvent).toHaveBeenNthCalledWith(
       2,
@@ -286,7 +286,7 @@ describe("tenant capability rollout contract and store", () => {
           supersededRolloutPreviousStatus: "active",
         }),
       }),
-      { sql },
+      { sql: expect.any(Function) },
     );
   });
 
@@ -354,7 +354,7 @@ describe("tenant capability rollout contract and store", () => {
           supersededAt: null,
         },
       }),
-      { sql },
+      { sql: expect.any(Function) },
     );
   });
 

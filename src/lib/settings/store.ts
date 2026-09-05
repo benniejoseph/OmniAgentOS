@@ -20,6 +20,7 @@ import { modelCatalogActorReadOrder } from "@/lib/settings/model-catalog-actor-s
 import { mcpExportConfigurationActorReadOrder } from "@/lib/settings/mcp-export-actor-scope";
 import { providerConnectionActorReadOrder } from "@/lib/settings/provider-connection-actor-scope";
 import { serviceApiKeyActorReadOrder } from "@/lib/settings/service-api-key-actor-scope";
+import { serviceApiKeyPreviewMatches } from "@/lib/settings/service-api-key-preview";
 import {
   MODEL_ASSIGNMENT_SCOPES,
   MODEL_PROVIDERS,
@@ -1972,12 +1973,7 @@ function isExpectedServiceKeyPreview(
   tenantId: string,
   keyId: string,
 ) {
-  const tenantSegment = Buffer.from(tenantId, "utf8")
-    .toString("base64url")
-    .slice(0, 10);
-  const suffix = keyId.slice(0, 8);
-  return tokenPrefix === `asael_sk_${tenantSegment}…${suffix}` ||
-    tokenPrefix === `omni_sk_${tenantSegment}…${suffix}`;
+  return serviceApiKeyPreviewMatches(tokenPrefix, tenantId, keyId);
 }
 
 function assertRequestServiceApiKeyRecords(

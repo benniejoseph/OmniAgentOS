@@ -828,6 +828,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[56],
       up: ensureMembershipManagementBootstrapEvidenceShadow,
     },
+    {
+      ...databaseSchemaMigrations[57],
+      up: ensureMemoryDeletionBarrierPolicyPrivilegeIsolation,
+    },
   ];
 }
 
@@ -10530,6 +10534,101 @@ async function ensureMemoryDeletionBarriers(sql: SqlClient) {
     END
     $migration$
   `);
+}
+
+async function ensureMemoryDeletionBarrierPolicyPrivilegeIsolation(
+  sql: SqlClient,
+) {
+  // RLS policies execute with the querying role's table privileges. Keep the
+  // immutable receipt ledger private and expose only tenant-filtered boolean
+  // predicates through narrowly scoped owner functions. FORCE ROW SECURITY on
+  // the receipt table remains active inside these functions.
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_ids_have_deletion_barrier(
+      row_tenant_id TEXT,
+      row_memory_ids TEXT[]
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT EXISTS (
+        SELECT 1
+        FROM public.omni_memory_deletion_receipts receipt
+        WHERE receipt.tenant_id = row_tenant_id
+          AND (
+            ARRAY[receipt.memory_id] || receipt.descendant_memory_ids
+          ) && COALESCE(row_memory_ids, '{}'::TEXT[])
+      )
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_has_deletion_receipt(
+      row_tenant_id TEXT,
+      row_memory_id TEXT
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT EXISTS (
+        SELECT 1
+        FROM public.omni_memory_deletion_receipts receipt
+        WHERE receipt.tenant_id = row_tenant_id
+          AND receipt.memory_id = row_memory_id
+      )
+    $function$
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_deletion_barrier
+    ON omni_memories
+  `;
+  await sql`
+    CREATE POLICY omni_memory_deletion_barrier
+    ON omni_memories
+    AS RESTRICTIVE
+    FOR SELECT
+    USING (
+      NOT omni_memory_ids_have_deletion_barrier(tenant_id, ARRAY[id])
+      OR omni_memory_has_deletion_receipt(tenant_id, id)
+      OR (
+        claim_status = 'forgotten'
+        AND title = '[forgotten]'
+        AND content = ''
+        AND cardinality(tags) = 0
+        AND source = '[forgotten]'
+        AND embedding IS NULL
+        AND cardinality(evidence_refs) = 0
+        AND supersedes_id IS NULL
+        AND contradiction_of_id IS NULL
+        AND forgotten_at IS NOT NULL
+        AND COALESCE(
+          to_jsonb(omni_memories) -> 'embedding_vector',
+          'null'::JSONB
+        ) = 'null'::JSONB
+      )
+    )
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_memory_ids_have_deletion_barrier(TEXT, TEXT[])
+    FROM PUBLIC
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_memory_has_deletion_receipt(TEXT, TEXT)
+    FROM PUBLIC
+  `;
+  await sql`
+    GRANT EXECUTE ON FUNCTION omni_memory_ids_have_deletion_barrier(TEXT, TEXT[])
+    TO PUBLIC
+  `;
+  await sql`
+    GRANT EXECUTE ON FUNCTION omni_memory_has_deletion_receipt(TEXT, TEXT)
+    TO PUBLIC
+  `;
 }
 
 async function ensureMemoryAccessScopeShadow(sql: SqlClient) {

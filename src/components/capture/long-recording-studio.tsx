@@ -189,6 +189,19 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
   const recordingsControllerRef = useRef<AbortController | null>(null);
   const detailControllerRef = useRef<AbortController | null>(null);
 
+  const stopLocalMedia = useCallback(() => {
+    if (timerRef.current) window.clearInterval(timerRef.current);
+    if (meterFrameRef.current) window.cancelAnimationFrame(meterFrameRef.current);
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    void audioContextRef.current?.close().catch(() => undefined);
+    timerRef.current = undefined;
+    meterFrameRef.current = undefined;
+    streamRef.current = undefined;
+    audioContextRef.current = undefined;
+    recorderRef.current = undefined;
+    setLevel(0);
+  }, []);
+
   const replaceRecordings = useCallback((nextRecordings: RecordingSummary[]) => {
     recordingsRef.current = nextRecordings;
     setRecordings(nextRecordings);
@@ -279,7 +292,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
 
   useEffect(() => () => {
     stopLocalMedia();
-  }, []);
+  }, [stopLocalMedia]);
 
   const detailModalOpen = Boolean(viewingRecording || viewingMetadataRecording);
 
@@ -357,7 +370,10 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
       uploadQueueRef.current = Promise.resolve();
       uploadErrorRef.current = undefined;
       discardRef.current = false;
+      // This runs after a user-triggered async permission and API flow.
+      // eslint-disable-next-line react-hooks/purity
       startedAtRef.current = Date.now();
+      // eslint-disable-next-line react-hooks/purity
       segmentStartedAtRef.current = Date.now();
       totalPausedMsRef.current = 0;
 
@@ -653,19 +669,6 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
       meterFrameRef.current = window.requestAnimationFrame(draw);
     };
     draw();
-  }
-
-  function stopLocalMedia() {
-    if (timerRef.current) window.clearInterval(timerRef.current);
-    if (meterFrameRef.current) window.cancelAnimationFrame(meterFrameRef.current);
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    void audioContextRef.current?.close().catch(() => undefined);
-    timerRef.current = undefined;
-    meterFrameRef.current = undefined;
-    streamRef.current = undefined;
-    audioContextRef.current = undefined;
-    recorderRef.current = undefined;
-    setLevel(0);
   }
 
   const active = ["requesting", "recording", "paused", "stopping", "indexing"].includes(phase);
