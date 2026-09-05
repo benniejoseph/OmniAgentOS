@@ -491,10 +491,16 @@ receipts cover both records while the legacy continuation remains authoritative.
 The bounded tenant-scoped operator check now reconciles persisted checkpoint
 rows, reference indexes, events, decision state, and effect receipts; it fails
 closed on an empty or mismatched sample and never opens continuation contents.
+Migration v69 and `checkpoint-resume-claim.ts` add a dormant, forced-RLS fence
+store with exact checkpoint-digest foreign keys, hashed credentials, monotonic
+lease generations, expired-only reclaim, and token-fenced heartbeat/completion.
+Acquisition revalidates the live rollout, scope, waiting run, approval decision,
+terminal tool state, and effect receipt, but no runtime calls it and every claim
+receipt still denies resume authority.
 Unenrolled, preclaimed, file-mode, and existing runs remain unchanged. P1.6
 remains open until a non-empty production sample reconciles, every required
-boundary is checkpointed, and fenced canary resume proves it cannot duplicate
-an effect. The normative
+boundary is checkpointed, the legacy run transition is bound to the fence, and
+canary resume proves it cannot duplicate an effect. The normative
 boundary and activation order are documented in
 [RunCheckpoint v1](RUN_CHECKPOINTS.md).
 

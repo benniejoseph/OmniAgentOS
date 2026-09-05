@@ -101,6 +101,7 @@ export const tenantRootPolicyTables = [
   "omni_agent_runs",
   "omni_run_checkpoints",
   "omni_run_checkpoint_state_references",
+  "omni_run_checkpoint_resume_claims",
   "omni_threads",
   "omni_tool_executions",
   "omni_mcp_connectors",
@@ -879,6 +880,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[67],
       up: ensureRunCheckpointStore,
+    },
+    {
+      ...databaseSchemaMigrations[68],
+      up: ensureRunCheckpointResumeClaims,
     },
   ];
 }
@@ -41205,6 +41210,226 @@ async function ensureRunCheckpointStore(sql: SqlClient) {
             USING ERRCODE = '55000';
         END IF;
       END LOOP;
+    END
+    $migration$
+  `;
+}
+
+async function ensureRunCheckpointResumeClaims(sql: SqlClient) {
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_run_checkpoints_resume_identity_idx
+    ON omni_run_checkpoints (
+      tenant_id, run_id, checkpoint_id, checkpoint_sha256
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_run_checkpoint_resume_claims (
+      tenant_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      checkpoint_id TEXT NOT NULL,
+      checkpoint_sha256 TEXT NOT NULL,
+      operation_job_id TEXT NOT NULL,
+      lease_generation BIGINT NOT NULL,
+      claim_token_sha256 TEXT NOT NULL,
+      lease_owner_sha256 TEXT NOT NULL,
+      lease_expires_at TIMESTAMPTZ NOT NULL,
+      status TEXT NOT NULL,
+      claimed_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+      completed_at TIMESTAMPTZ,
+      CONSTRAINT omni_run_checkpoint_resume_claims_pkey
+        PRIMARY KEY (tenant_id, run_id, checkpoint_id),
+      CONSTRAINT omni_run_checkpoint_resume_claims_checkpoint_fk
+        FOREIGN KEY (
+          tenant_id, run_id, checkpoint_id, checkpoint_sha256
+        )
+        REFERENCES omni_run_checkpoints (
+          tenant_id, run_id, checkpoint_id, checkpoint_sha256
+        )
+        DEFERRABLE INITIALLY IMMEDIATE,
+      CONSTRAINT omni_run_checkpoint_resume_claims_ids_check CHECK (
+        length(tenant_id) BETWEEN 1 AND 240
+        AND length(run_id) BETWEEN 1 AND 240
+        AND length(checkpoint_id) BETWEEN 1 AND 240
+        AND length(operation_job_id) BETWEEN 1 AND 240
+      ),
+      CONSTRAINT omni_run_checkpoint_resume_claims_hashes_check CHECK (
+        checkpoint_sha256 ~ '^[a-f0-9]{64}$'
+        AND claim_token_sha256 ~ '^[a-f0-9]{64}$'
+        AND lease_owner_sha256 ~ '^[a-f0-9]{64}$'
+      ),
+      CONSTRAINT omni_run_checkpoint_resume_claims_generation_check
+        CHECK (lease_generation BETWEEN 1 AND 9007199254740991),
+      CONSTRAINT omni_run_checkpoint_resume_claims_status_check
+        CHECK (status IN ('claimed', 'completed')),
+      CONSTRAINT omni_run_checkpoint_resume_claims_timestamps_check CHECK (
+        claimed_at <= updated_at
+        AND claimed_at < lease_expires_at
+        AND (status = 'completed') = (completed_at IS NOT NULL)
+        AND (completed_at IS NULL OR claimed_at <= completed_at)
+        AND (completed_at IS NULL OR completed_at <= updated_at)
+      )
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_run_checkpoint_resume_claims_one_active_run_idx
+    ON omni_run_checkpoint_resume_claims (tenant_id, run_id)
+    WHERE status = 'claimed'
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS
+      omni_run_checkpoint_resume_claims_expiry_idx
+    ON omni_run_checkpoint_resume_claims (tenant_id, lease_expires_at)
+    WHERE status = 'claimed'
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_run_checkpoint_resume_claim()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'Run checkpoint resume claims cannot be deleted'
+          USING ERRCODE = '55000';
+      END IF;
+      IF TG_OP = 'INSERT' THEN
+        IF NEW.status <> 'claimed'
+          OR NEW.lease_generation <> 1
+          OR NEW.completed_at IS NOT NULL
+          OR NEW.lease_expires_at <= statement_timestamp()
+        THEN
+          RAISE EXCEPTION 'Run checkpoint resume claims must start claimed at generation one'
+            USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+      END IF;
+      IF OLD.status = 'completed' THEN
+        RAISE EXCEPTION 'Completed run checkpoint resume claims are immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+        OR NEW.run_id IS DISTINCT FROM OLD.run_id
+        OR NEW.checkpoint_id IS DISTINCT FROM OLD.checkpoint_id
+        OR NEW.checkpoint_sha256 IS DISTINCT FROM OLD.checkpoint_sha256
+        OR NEW.claimed_at IS DISTINCT FROM OLD.claimed_at
+      THEN
+        RAISE EXCEPTION 'Run checkpoint resume claim identity is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NEW.updated_at < OLD.updated_at THEN
+        RAISE EXCEPTION 'Run checkpoint resume claim time moved backward'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.status = 'completed' THEN
+        IF NEW.lease_generation IS DISTINCT FROM OLD.lease_generation
+          OR NEW.claim_token_sha256 IS DISTINCT FROM OLD.claim_token_sha256
+          OR NEW.lease_owner_sha256 IS DISTINCT FROM OLD.lease_owner_sha256
+          OR NEW.operation_job_id IS DISTINCT FROM OLD.operation_job_id
+          OR NEW.lease_expires_at IS DISTINCT FROM OLD.lease_expires_at
+          OR NEW.completed_at IS NULL
+        THEN
+          RAISE EXCEPTION 'Run checkpoint resume completion changed its fence'
+            USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+      END IF;
+
+      IF NEW.status <> 'claimed' OR NEW.completed_at IS NOT NULL THEN
+        RAISE EXCEPTION 'Run checkpoint resume claim transition is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NEW.lease_generation = OLD.lease_generation THEN
+        IF NEW.claim_token_sha256 IS DISTINCT FROM OLD.claim_token_sha256
+          OR NEW.lease_owner_sha256 IS DISTINCT FROM OLD.lease_owner_sha256
+          OR NEW.operation_job_id IS DISTINCT FROM OLD.operation_job_id
+          OR NEW.lease_expires_at < OLD.lease_expires_at
+          OR NEW.lease_expires_at <= statement_timestamp()
+        THEN
+          RAISE EXCEPTION 'Run checkpoint resume heartbeat changed its fence'
+            USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+      END IF;
+      IF NEW.lease_generation = OLD.lease_generation + 1
+        AND OLD.lease_expires_at <= statement_timestamp()
+        AND NEW.lease_expires_at > statement_timestamp()
+      THEN
+        RETURN NEW;
+      END IF;
+      RAISE EXCEPTION 'Run checkpoint resume reclaim is not fenced'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_run_checkpoint_resume_claim_truncate()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Run checkpoint resume claims cannot be truncated'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_run_checkpoint_resume_claims'::regclass
+          AND tgname = 'omni_run_checkpoint_resume_claims_protected'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_run_checkpoint_resume_claims_protected
+        BEFORE INSERT OR UPDATE OR DELETE ON omni_run_checkpoint_resume_claims
+        FOR EACH ROW EXECUTE FUNCTION omni_protect_run_checkpoint_resume_claim();
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_run_checkpoint_resume_claims'::regclass
+          AND tgname = 'omni_run_checkpoint_resume_claims_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_run_checkpoint_resume_claims_no_truncate
+        BEFORE TRUNCATE ON omni_run_checkpoint_resume_claims
+        FOR EACH STATEMENT EXECUTE FUNCTION omni_reject_run_checkpoint_resume_claim_truncate();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    REVOKE ALL ON TABLE omni_run_checkpoint_resume_claims FROM PUBLIC
+  `;
+  await ensureTenantIsolationPolicies(sql);
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_run_checkpoint_resume_claims'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_run_checkpoint_resume_claims'::regclass
+          AND polname = 'omni_tenant_isolation'
+          AND pg_get_expr(polqual, polrelid) =
+            'omni_tenant_visible(tenant_id)'
+          AND pg_get_expr(polwithcheck, polrelid) =
+            'omni_tenant_visible(tenant_id)'
+      ) OR (
+        SELECT count(*) FROM pg_trigger
+        WHERE tgrelid = 'omni_run_checkpoint_resume_claims'::regclass
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) <> 2 THEN
+        RAISE EXCEPTION 'Run checkpoint resume claim boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
     END
     $migration$
   `;

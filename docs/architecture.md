@@ -208,8 +208,16 @@ rejected successors are terminal. These checkpoints grant no resume authority.
 A bounded tenant-scoped operator check now rereads the stored rows, reference
 indexes, events, decision state, and effect receipts without opening
 continuation contents; empty and mismatched samples fail the gate. A non-empty
-production sample, fenced claims, broader boundaries, and canary resume remain
-later P1.6 gates. See
+production sample remains required before activation.
+
+Migration v69 adds a dormant forced-RLS resume-claim store. It binds a claim to
+the exact checkpoint digest and operation job, stores only hashed lease
+credentials, increments a generation only after expiry, and fences heartbeat
+and completion by the unexpired token/generation pair. Acquisition revalidates
+the live rollout, full scope, waiting run, approval decision, terminal tool,
+and any effect receipt in one caller-owned transaction. No runtime invokes it,
+and claim receipts deny resume authority. Atomic legacy-transition binding,
+broader boundaries, and canary resume remain later P1.6 gates. See
 [RunCheckpoint v1](vision/RUN_CHECKPOINTS.md).
 
 ## Durable workflows
