@@ -6,6 +6,11 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import {
+  parseDatabaseMemoryAccessScope,
+  type DatabaseMemoryAccessScope,
+} from "@/lib/db/memory-access-scope";
+import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
+import {
   toLegacyTenantOptions,
   type MemoryAccessContext,
 } from "@/lib/memory/access-context";
@@ -38,6 +43,12 @@ export type BuildContextPackOptions = {
    * the existing tenant-only retrieval contract without changing results.
    */
   accessContext?: MemoryAccessContext;
+  /**
+   * Already-authorized database scope for non-legacy memory. Scoped results
+   * are served only to this caller and are never written to the tenant-wide
+   * retrieval trace until traces have their own actor-aware access contract.
+   */
+  databaseMemoryAccessScope?: DatabaseMemoryAccessScope;
   limit?: number;
   candidateLimit?: number;
   persistTrace?: boolean;
@@ -89,7 +100,8 @@ export async function buildContextPack(
   options: BuildContextPackOptions = {},
 ): Promise<ContextPack> {
   const startedAt = Date.now();
-  const tenantId = resolveContextTenantId(options);
+  const databaseMemoryAccessScope = resolveContextMemoryAccessScope(options);
+  const tenantId = resolveContextTenantId(options, databaseMemoryAccessScope);
   const normalizedQuery = String(redactSensitive(query.trim())).slice(0, 4_000);
   const evidenceIds = normalizeExplicitEvidenceIds(options.evidenceIds);
   const limit = Math.min(Math.max(options.limit || 8, evidenceIds?.length || 1), 24);
@@ -106,7 +118,7 @@ export async function buildContextPack(
       graphResults: [],
       contextBlock: formatContextPack([], profile),
     };
-    if (options.persistTrace !== false) {
+    if (options.persistTrace !== false && !databaseMemoryAccessScope) {
       pack.trace = await saveRetrievalTrace({
         tenantId,
         query: normalizedQuery,
@@ -126,14 +138,27 @@ export async function buildContextPack(
     undefined,
     options.usageScope,
   ))?.[0];
-  const [memoryResults, knowledgeResults, graphResults] = await Promise.all([
+  const [legacyMemoryResults, scopedMemoryResults, knowledgeResults, graphResults] = await Promise.all([
     searchMemories(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId }),
+    databaseMemoryAccessScope
+      ? searchMemories(retrievalQuery || normalizedQuery, {
+          limit: candidateLimit,
+          queryEmbedding,
+          tenantId,
+          accessScope: databaseMemoryAccessScope,
+        })
+      : Promise.resolve([]),
     searchKnowledge(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId }),
     searchMemoryGraph(normalizedQuery, {
       limit: Math.min(candidateLimit, 24),
       tenantId,
     }),
   ]);
+  const memoryResults = mergeMemorySearchResults(
+    legacyMemoryResults,
+    scopedMemoryResults,
+    candidateLimit,
+  );
   const evidence = scoreEvidenceItems({
     profile,
     memoryResults,
@@ -168,7 +193,7 @@ export async function buildContextPack(
     reasons: item.reasons.slice(0, 8),
   }));
   const trace =
-    options.persistTrace === false
+    options.persistTrace === false || databaseMemoryAccessScope
       ? undefined
       : await saveRetrievalTrace({
           tenantId,
@@ -192,12 +217,14 @@ export async function buildContextPack(
   });
 }
 
-function resolveContextTenantId(options: BuildContextPackOptions): string | undefined {
-  if (!options.accessContext) {
-    return options.tenantId;
-  }
-
-  const scopedTenantId = toLegacyTenantOptions(options.accessContext).tenantId;
+function resolveContextTenantId(
+  options: BuildContextPackOptions,
+  databaseMemoryAccessScope?: DatabaseMemoryAccessScope,
+): string | undefined {
+  const scopedTenantId = options.accessContext
+    ? toLegacyTenantOptions(options.accessContext).tenantId
+    : databaseMemoryAccessScope?.tenantId;
+  if (!scopedTenantId) return options.tenantId;
   if (
     options.tenantId !== undefined &&
     normalizeTenantId(options.tenantId) !== normalizeTenantId(scopedTenantId)
@@ -205,6 +232,51 @@ function resolveContextTenantId(options: BuildContextPackOptions): string | unde
     throw new Error("Context retrieval tenant does not match its execution scope.");
   }
   return scopedTenantId;
+}
+
+function resolveContextMemoryAccessScope(
+  options: BuildContextPackOptions,
+): DatabaseMemoryAccessScope | undefined {
+  if (!options.databaseMemoryAccessScope) return undefined;
+  const scope = parseDatabaseMemoryAccessScope(
+    options.databaseMemoryAccessScope,
+  );
+  if (scope.purposeId !== MEMORY_PURPOSE_IDS.retrieve) {
+    throw new Error("Context retrieval requires the canonical memory retrieval purpose.");
+  }
+  const executionScope = options.accessContext?.executionScope;
+  if (
+    executionScope &&
+    (
+      executionScope.tenantId !== scope.tenantId ||
+      executionScope.initiatingActorId !== scope.initiatingActorId ||
+      executionScope.executingPrincipalType !== scope.executingPrincipalType ||
+      executionScope.executingPrincipalId !== scope.executingPrincipalId ||
+      executionScope.workspaceId !== scope.workspaceId ||
+      executionScope.projectId !== scope.projectId ||
+      executionScope.missionId !== scope.missionId
+    )
+  ) {
+    throw new Error("Context retrieval scope does not match its execution scope.");
+  }
+  return scope;
+}
+
+function mergeMemorySearchResults(
+  legacyResults: MemorySearchResult[],
+  scopedResults: MemorySearchResult[],
+  limit: number,
+) {
+  const byId = new Map<string, MemorySearchResult>();
+  for (const result of [...legacyResults, ...scopedResults]) {
+    const previous = byId.get(result.record.id);
+    if (!previous || result.score > previous.score) {
+      byId.set(result.record.id, result);
+    }
+  }
+  return [...byId.values()]
+    .sort((left, right) => right.score - left.score)
+    .slice(0, limit);
 }
 
 function sanitizeContextPack(pack: ContextPack): ContextPack {
