@@ -11,6 +11,7 @@ import {
   type ClaimedSourceSyncPage,
   type SourceSyncCanonicalRolloutBinding,
   type SourceSyncFailureCode,
+  type SourceSyncDiagnosticStage,
   type SourceSyncPageManifestItem,
   type SourceSyncStreamIdentity,
 } from "@/lib/connectors/source-sync-checkpoints";
@@ -145,7 +146,7 @@ export async function observeGoogleDriveCanonicalMetadata(
 
   let page = claim.page;
   const signal = boundedSignal(input.abortSignal);
-  let stage = "pin_fence";
+  let stage: SourceSyncDiagnosticStage = "pin_fence";
   try {
     if (page.phase === "backfill" && !page.requestCursor?.fenceToken) {
       const fenceToken = await fetchStartPageToken(accessToken, signal);
@@ -186,11 +187,12 @@ export async function observeGoogleDriveCanonicalMetadata(
     });
   } catch (error) {
     const code = failureCode(error, signal);
+    const diagnosticStage = canonicalSourceSyncFailureStage(error) || stage;
     console.warn(JSON.stringify({
       level: "warn",
       event: "google_drive.canonical_metadata.failed",
       phase: page.phase,
-      stage: canonicalSourceSyncFailureStage(error) || stage,
+      stage: diagnosticStage,
       code,
       diagnostic: safeFailureDiagnostic(error),
     }));
@@ -198,6 +200,7 @@ export async function observeGoogleDriveCanonicalMetadata(
       page,
       code,
       failureSha256: sourceSyncFailureSha256(error),
+      diagnosticStage,
     }).catch(() => undefined);
     throw new GoogleDriveCanonicalError(code);
   }
