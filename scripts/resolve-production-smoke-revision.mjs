@@ -15,9 +15,16 @@ export function parseExactGitRevision(value, label = "revision") {
   return normalized;
 }
 
+/**
+ * @param {{
+ *   baseUrl: string;
+ *   requestedRevision?: string;
+ *   fetchHealth?: (baseUrl: string) => Promise<{ status?: unknown; revision?: unknown }>;
+ * }} input
+ */
 export async function resolveProductionSmokeRevision({
   baseUrl,
-  requestedRevision = undefined,
+  requestedRevision,
   fetchHealth = defaultFetchHealth,
 }) {
   if (String(requestedRevision || "").trim()) {
