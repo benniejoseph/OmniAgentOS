@@ -887,6 +887,24 @@ v65 boundary verifier, remove the exact seed hold, and atomically persist the
 approved catalog batch with its governed evidence. Notice receipt and consent
 issuance remain independently held.
 
+The matching pure offline verifier consumes a caller-supplied two-key trust
+manifest whose independently anchored digest, governance-policy coordinates,
+validity window, and ordered legal/privacy keys must match the reviewed batch.
+Each exact review record is repeated in a domain-separated Ed25519 attestation
+that binds its batch digest, policy, slot, review ID, canonical reviewer actor,
+review time, and key ID. The verifier recomputes the batch and manifest digests,
+requires both keys to be distinct and active at review and observation time,
+rejects current revocation, and verifies both signatures before returning only
+fingerprints and non-authorizing evidence.
+
+The manifest anchor and observation time are caller assertions and therefore
+remain external trust inputs; successful cryptography does not prove legal
+authority, human independence, or a durable approval registry by itself. The
+verifier has no clock, registry, network, environment, database, event-store,
+writer, route, row, event, serving call site, or activation path. It returns
+`authorityGranted: false` and `runtimeAccepted: false`; v55 and v65 holds remain
+unchanged until an independently reviewed persistence boundary exists.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
