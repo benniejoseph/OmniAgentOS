@@ -110,6 +110,11 @@ is terminal. Both approval boundaries emit a strict matched comparison receipt
 only after their chain, references, scope, tool/decision state, and resource
 counters validate, and neither receipt grants resume authority.
 
+`scripts/check-run-checkpoint-shadows.ts` is the bounded operator gate for this
+shadow. It rereads one tenant's stored rows, reference indexes, typed events,
+approval decision, and effect-receipt state; it does not open continuation
+contents. Empty and mismatched samples fail closed.
+
 ## One harness receipt per run
 
 Every new agent run emits a durable `run.harness` event after context and

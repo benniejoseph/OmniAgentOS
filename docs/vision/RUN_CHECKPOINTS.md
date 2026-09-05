@@ -34,6 +34,13 @@ scope, tool state, decision event, and counters have been validated. These
 receipts describe the shadow write only and always declare
 `resumeAuthorityGranted: false`.
 
+The bounded `scripts/check-run-checkpoint-shadows.ts` operator check rereads a
+tenant's stored checkpoint rows, exact reference indexes, recorded/comparison
+events, decision successor, governed tool state, and any effect receipt. It
+returns closed mismatch codes without loading continuation contents. An empty
+sample is `no_sample`, not a successful comparison, and the command exits
+nonzero for both empty and mismatched samples.
+
 ## Why this precedes resume
 
 The current agent approval continuation is useful compatibility state, but it
@@ -105,8 +112,8 @@ the continuation.
 
 The remaining slices must proceed in this order:
 
-1. observe production approval-boundary comparison receipts and run a stored
-   chain/reference/resource reconciliation report over the enrolled sample;
+1. accumulate a non-empty production approval-boundary sample and pass the
+   stored chain/reference/resource reconciliation operator check;
 2. canary resume only exact supported pins after a fenced claim; and
 3. expand separately to model, tool, delegation, and verifier boundaries.
 
