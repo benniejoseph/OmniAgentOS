@@ -661,15 +661,152 @@ function runContractReferenceId(prefix: string, value: string) {
 }
 
 function domainEventPayload(event: AgentEvent): Record<string, unknown> {
-  if (event.type !== "done") {
-    return event as unknown as Record<string, unknown>;
+  const schemaVersion = 1;
+  switch (event.type) {
+    case "run":
+      return {
+        schemaVersion,
+        type: event.type,
+        runId: event.runId,
+        threadId: event.threadId,
+        missionId: event.missionId,
+      };
+    case "delegated":
+      return {
+        schemaVersion,
+        type: event.type,
+        threadId: event.threadId,
+        workflowId: event.workflowId,
+        missionId: event.missionId,
+        ...hashedTextFields("acknowledgement", event.acknowledgement),
+        ...hashedTextFields("reason", event.reason),
+      };
+    case "status":
+      return {
+        schemaVersion,
+        type: event.type,
+        ...hashedTextFields("label", event.label),
+        ...hashedTextFields("detail", event.detail),
+      };
+    case "harness":
+      return {
+        schemaVersion,
+        type: event.type,
+        version: event.version,
+        mode: event.mode,
+        provider: event.provider,
+        model: event.model,
+        tier: event.tier,
+        memoryScope: event.memoryScope,
+        contextDecision: event.contextDecision,
+        contextMode: event.contextMode,
+        contextCount: event.contextCount,
+        contextTraceId: event.contextTraceId,
+        liveWeb: event.liveWeb,
+        toolCount: event.toolCount,
+        approvalToolCount: event.approvalToolCount,
+        toolboxSha256: event.toolboxSha256,
+        instructionsSha256: event.instructionsSha256,
+        maxToolSteps: event.maxToolSteps,
+        maxToolCallsPerTurn: event.maxToolCallsPerTurn,
+        maxToolResultChars: event.maxToolResultChars,
+        maxOutputTokens: event.maxOutputTokens,
+        approvalPolicy: event.approvalPolicy,
+        autonomy: event.autonomy,
+        learningState: event.learningState,
+        learningSampleSize: event.learningSampleSize,
+        learningGuidanceCount: event.learningGuidanceCount,
+        learningGuidanceSha256: event.learningGuidanceSha256,
+      };
+    case "memory":
+      return {
+        schemaVersion,
+        type: event.type,
+        count: event.count,
+        ...hashedTextFields("title", event.title),
+      };
+    case "model":
+      return { schemaVersion, ...event };
+    case "council_member":
+      return {
+        schemaVersion,
+        type: event.type,
+        agentId: event.agentId,
+        status: event.status,
+        confidence: event.confidence,
+        durationMs: event.durationMs,
+        ...hashedTextFields("summary", event.summary),
+      };
+    case "council_verdict":
+      return {
+        schemaVersion,
+        type: event.type,
+        status: event.status,
+        score: event.score,
+        requiredChangeCount: event.requiredChanges.length,
+        ...hashedTextFields("assessment", event.assessment),
+        requiredChangesSha256: sha256Json(event.requiredChanges),
+      };
+    case "tool":
+      return {
+        schemaVersion,
+        type: event.type,
+        toolId: event.toolId,
+        status: event.status,
+        riskLevel: event.riskLevel,
+        dryRun: event.dryRun,
+        executionId: event.executionId,
+        ...hashedTextFields("summary", event.summary),
+      };
+    case "waiting_approval":
+      return {
+        schemaVersion,
+        type: event.type,
+        executionId: event.executionId,
+        toolId: event.toolId,
+        ...hashedTextFields("message", event.message),
+      };
+    case "done":
+      return {
+        schemaVersion,
+        type: event.type,
+        responseLength: event.response.length,
+        responseSha256: sha256Text(event.response),
+        grounding: event.grounding
+          ? {
+              status: event.grounding.status,
+              citedIds: event.grounding.citedIds,
+              invalidCitationCount: event.grounding.invalidIds.length,
+            }
+          : undefined,
+      };
+    case "canceled":
+    case "error":
+      return {
+        schemaVersion,
+        type: event.type,
+        ...hashedTextFields("message", event.message),
+      };
+    case "delta":
+      return { schemaVersion, type: event.type };
   }
-  return {
-    type: event.type,
-    responseLength: event.response.length,
-    responseSha256: createHash("sha256").update(event.response).digest("hex"),
-    grounding: event.grounding,
-  };
+}
+
+function hashedTextFields(name: string, value?: string) {
+  return value
+    ? {
+        [`${name}Length`]: value.length,
+        [`${name}Sha256`]: sha256Text(value),
+      }
+    : {};
+}
+
+function sha256Text(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function sha256Json(value: unknown) {
+  return sha256Text(JSON.stringify(value));
 }
 
 export async function updateRunContextCount(runId: string, count: number) {
