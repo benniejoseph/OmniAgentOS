@@ -205,8 +205,11 @@ rejected successor and emits a matched comparison receipt for each approval
 boundary after validating its chain, references, scope, tool state, decision,
 and resource counters. Approved successors are written before effect execution;
 rejected successors are terminal. These checkpoints grant no resume authority.
-Stored production reconciliation, fenced claims, broader boundaries, and
-canary resume remain later P1.6 gates. See
+A bounded tenant-scoped operator check now rereads the stored rows, reference
+indexes, events, decision state, and effect receipts without opening
+continuation contents; empty and mismatched samples fail the gate. A non-empty
+production sample, fenced claims, broader boundaries, and canary resume remain
+later P1.6 gates. See
 [RunCheckpoint v1](vision/RUN_CHECKPOINTS.md).
 
 ## Durable workflows

@@ -488,8 +488,11 @@ The governed approval transaction now records the exact approved or rejected
 successor; the approved record precedes effect execution, the rejected record
 is terminal, and both retain zero boundary effects. Strict matched comparison
 receipts cover both records while the legacy continuation remains authoritative.
+The bounded tenant-scoped operator check now reconciles persisted checkpoint
+rows, reference indexes, events, decision state, and effect receipts; it fails
+closed on an empty or mismatched sample and never opens continuation contents.
 Unenrolled, preclaimed, file-mode, and existing runs remain unchanged. P1.6
-remains open until stored production chains are reconciled, every required
+remains open until a non-empty production sample reconciles, every required
 boundary is checkpointed, and fenced canary resume proves it cannot duplicate
 an effect. The normative
 boundary and activation order are documented in
