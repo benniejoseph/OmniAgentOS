@@ -1099,6 +1099,25 @@ The ledgers have different mutation semantics:
 - Every auth failure, policy block, and allow/deny decision is recorded to the security audit and observability ledgers with correlation IDs.
 - New mutations use the strict scoped event writer and immutable `*.scope_bound` events; the ownership and compatibility inventory is documented in [vision/EXECUTION_SCOPE.md](vision/EXECUTION_SCOPE.md).
 
+### User-private memory canary
+
+Migration v72 activates only the canonical-user `user_private` subset of the
+dormant memory envelope. Every scoped store operation owns its transaction,
+installs one validated memory-access envelope before its first domain query,
+and is restricted by tenant, canonical actor, user principal, visibility, and
+purpose-specific RLS. A scoped transaction cannot see legacy version-0 rows;
+an unscoped compatibility transaction cannot see version-1 rows. The API
+merges those independently authorized result sets after both queries complete.
+
+New authenticated manual writes carry the immutable binding columns and emit
+`memory.user_private.created` in the same transaction. Correction and reviewed
+forget preserve the actor boundary. Portable export includes only the current
+actor's private cohort, and canonical restore creates a fresh private binding.
+The tenant-wide graph and legacy RAG/context paths never receive these rows;
+that omission is a fail-closed phase boundary, not completed P3.1 support.
+Agent-private/shared visibility and actor-aware graph, context, formation, and
+worker surfaces remain closed.
+
 ## Where things live
 
 | Concern | Path |

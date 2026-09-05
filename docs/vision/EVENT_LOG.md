@@ -1284,3 +1284,18 @@ content, authorization receipts, actor identity, source metadata, or private
 reasoning. The full metadata-only map stays in the tenant-scoped run grounding
 projection; public run and stream responses receive a bounded claim-state
 projection instead.
+
+## Canonical user-private memory creation
+
+Migration v72 and the first active P3.1 API canary allow only canonical
+auth-user-owned `user_private` memories. A newly inserted bound row emits
+`memory.user_private.created` atomically on its `memory:<id>` stream. The
+payload is metadata-only: contract version, memory ID, access state,
+visibility, sensitivity, origin purpose, allowed-purpose count, binding hash,
+and binding time. It excludes title, content, tags, embeddings, actor identity,
+and database-session scope. Idempotent replays that observe the existing row do
+not emit another creation event.
+
+Legacy writes retain their existing compatibility behavior. The canary adds no
+agent-private/shared event and does not authorize tenant-wide graph, RAG,
+context, or formation consumption of bound rows.
