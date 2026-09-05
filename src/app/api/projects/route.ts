@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createProject, listProjectCollections, listProjects, listProjectSummaries } from "@/lib/projects/store";
+import { projectMutationFromRequest } from "@/lib/projects/request-mutation";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -62,8 +63,26 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const project = await createProject({ ...parsed, tenantId: context.tenantId, actorId: context.actorId });
-  return Response.json({ project: { ...project, tasks: [], artifacts: [] } }, { status: 201 });
+  try {
+    const project = await createProject({
+      ...parsed,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      mutation: projectMutationFromRequest(request, context, {
+        purpose: "project.create",
+      }),
+    });
+    return Response.json(
+      { project: { ...project, tasks: [], artifacts: [] } },
+      { status: 201 },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Project creation failed.";
+    return Response.json(
+      { error: message },
+      { status: message.startsWith("Idempotency-Key") ? 400 : 409 },
+    );
+  }
 }
 
 async function parse<T extends z.ZodType>(request: Request, schema: T): Promise<z.infer<T> | Response> {

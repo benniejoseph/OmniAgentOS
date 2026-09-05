@@ -8,6 +8,7 @@ import {
   ProjectTransitionError,
   updateProject,
 } from "@/lib/projects/store";
+import { projectMutationFromRequest } from "@/lib/projects/request-mutation";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -67,7 +68,14 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "project", resourceId: id }); }
   catch (error) { return forbiddenResponse(error); }
   try {
-    const project = await updateProject(id, parsed.data, { tenantId: context.tenantId, actorId: context.actorId });
+    const project = await updateProject(id, parsed.data, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      mutation: projectMutationFromRequest(request, context, {
+        projectId: id,
+        purpose: "project.update",
+      }),
+    });
     return project ? Response.json({ project }) : Response.json({ error: "Project not found." }, { status: 404 });
   } catch (error) {
     return error instanceof ProjectTransitionError

@@ -118,6 +118,22 @@ the separately validated `_executionScope` attribution envelope, including its
 bounded purpose and grant identifiers. The registry is initially empty, so
 these events do not activate behavior by themselves.
 
+The first P1.1/P1.2 project cutover covers authenticated project creation and
+project metadata updates. These request paths require an exact user
+`ExecutionScope`, bind a validated idempotency key, and emit
+`project.created` or `project.updated` with schema version 1 in the same
+Postgres transaction as the canonical row mutation. Payloads contain only the
+project ID, lifecycle state, changed-field identifiers, and SHA-256 request
+and idempotency bindings; project titles and objectives never enter the event
+log. Creation derives the project ID from the tenant and idempotency key, so an
+exact retry returns the original project while a different request under the
+same key fails closed. Background planner/executor project mutations remain on
+their legacy path until their real agent or system principal scope is carried
+to the store; this slice does not fabricate user attribution for them. The
+file store preserves the same validation and deterministic retry behavior but
+remains a development compatibility path rather than an atomic production
+claim.
+
 The Drive generation-2 canary adds `source.sync.page.canonical_settled` in the
 same transaction as the page's canonical revisions, tombstones or ordered
 no-op decisions, terminal page items, committed checkpoint, and next encrypted

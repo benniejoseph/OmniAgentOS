@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const routeMocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
+  createProject: vi.fn(),
   getOwnedProject: vi.fn(),
   listProjectArtifacts: vi.fn(),
   listProjectCollections: vi.fn(),
@@ -21,7 +22,7 @@ vi.mock("@/lib/security/guard", () => ({
 }));
 
 vi.mock("@/lib/projects/store", () => ({
-  createProject: vi.fn(),
+  createProject: routeMocks.createProject,
   getOwnedProject: routeMocks.getOwnedProject,
   listProjectArtifacts: routeMocks.listProjectArtifacts,
   listProjectCollections: routeMocks.listProjectCollections,
@@ -33,7 +34,7 @@ vi.mock("@/lib/projects/store", () => ({
 }));
 
 import { GET as GETProject } from "@/app/api/projects/[id]/route";
-import { GET as GETProjects } from "@/app/api/projects/route";
+import { GET as GETProjects, POST as POSTProject } from "@/app/api/projects/route";
 
 const authUserId = "11111111-1111-4111-8111-111111111111";
 const actorId = "project-owner@example.test";
@@ -61,6 +62,7 @@ const requestActorBinding = {
 
 beforeEach(() => {
   routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
+  routeMocks.createProject.mockReset();
   routeMocks.getOwnedProject.mockReset();
   routeMocks.listProjectArtifacts.mockReset().mockResolvedValue([]);
   routeMocks.listProjectCollections.mockReset().mockResolvedValue({
@@ -73,6 +75,50 @@ beforeEach(() => {
 });
 
 describe("request-bound project routes", () => {
+  it("binds project creation to the authenticated principal and request id", async () => {
+    routeMocks.createProject.mockResolvedValue({
+      id: "project-a",
+      tenantId: context.tenantId,
+      actorId,
+      title: "Project A",
+      objective: "Complete project A",
+    });
+
+    const response = await POSTProject(new Request(
+      "http://localhost/api/projects",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "project-create-a",
+        },
+        body: JSON.stringify({
+          title: "Project A",
+          objective: "Complete project A",
+        }),
+      },
+    ));
+
+    expect(response.status).toBe(201);
+    expect(routeMocks.createProject).toHaveBeenCalledWith({
+      title: "Project A",
+      objective: "Complete project A",
+      tenantId: context.tenantId,
+      actorId,
+      mutation: {
+        idempotencyKey: "project-create-a",
+        executionScope: expect.objectContaining({
+          tenantId: context.tenantId,
+          initiatingActorId: actorId,
+          executingPrincipalType: "user",
+          executingPrincipalId: actorId,
+          correlationId: "project-create-a",
+          purpose: "project.create",
+        }),
+      },
+    });
+  });
+
   it("passes the authenticated actor binding to full and summary lists", async () => {
     const listResponse = await GETProjects(
       new Request("http://localhost/api/projects"),

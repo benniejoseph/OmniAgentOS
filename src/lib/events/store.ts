@@ -135,34 +135,28 @@ export async function appendDomainEvent(
         ${event.id}, ${event.streamId}, ${event.type}, ${event.tenantId}, ${event.actorId},
         ${event.payload}::jsonb, ${event.causationId || null}, ${event.correlationId || null}, ${event.at}
       )
+      ON CONFLICT (id) DO NOTHING
       RETURNING seq
     `;
-    return { ...event, seq: Number(rows[0]?.seq || 0) };
+    if (rows[0]) {
+      return { ...event, seq: Number(rows[0].seq || 0) };
+    }
+    const existingRows = await sql`
+      SELECT * FROM omni_events WHERE id = ${event.id} LIMIT 1
+    `;
+    if (!existingRows[0]) {
+      throw new Error("Domain event id conflict could not be resolved.");
+    }
+    const existing = eventFromRow(existingRows[0]);
+    assertIdempotentEventMatch(existing, event);
+    return existing;
   }
 
   let persistedEvent = event;
   await updateJsonFile<EventLedger>(getEventsFile(), { nextSeq: 1, events: [] }, (ledger) => {
     const existing = ledger.events.find((item) => item.id === event.id);
     if (existing) {
-      const existingScope = parsePersistedExecutionScope(
-        existing.executionScope || existing.payload?._executionScope,
-      );
-      if (
-        existing.tenantId !== event.tenantId ||
-        existing.actorId !== event.actorId ||
-        existing.streamId !== event.streamId ||
-        existing.type !== event.type ||
-        existing.correlationId !== event.correlationId ||
-        existing.causationId !== event.causationId ||
-        Boolean(existingScope) !== Boolean(event.executionScope) ||
-        (
-          existingScope &&
-          event.executionScope &&
-          !executionScopesEqual(existingScope, event.executionScope)
-        )
-      ) {
-        throw new Error("Domain event id is already bound to a different event.");
-      }
+      assertIdempotentEventMatch(existing, event);
       persistedEvent = existing;
       return ledger;
     }
@@ -182,6 +176,46 @@ export async function appendDomainEvent(
     return ledger;
   });
   return persistedEvent;
+}
+
+function assertIdempotentEventMatch(
+  existing: DomainEvent,
+  requested: DomainEvent,
+) {
+  const existingScope = parsePersistedExecutionScope(
+    existing.executionScope || existing.payload?._executionScope,
+  );
+  const requestedScope = requested.executionScope;
+  if (
+    existing.tenantId !== requested.tenantId ||
+    existing.actorId !== requested.actorId ||
+    existing.streamId !== requested.streamId ||
+    existing.type !== requested.type ||
+    existing.correlationId !== requested.correlationId ||
+    existing.causationId !== requested.causationId ||
+    canonicalComparable(existing.payload) !== canonicalComparable(requested.payload) ||
+    Boolean(existingScope) !== Boolean(requestedScope) ||
+    (
+      existingScope &&
+      requestedScope &&
+      !executionScopesEqual(existingScope, requestedScope)
+    )
+  ) {
+    throw new Error("Domain event id is already bound to a different event.");
+  }
+}
+
+function canonicalComparable(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalComparable).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalComparable(record[key])}`
+  ).join(",")}}`;
 }
 
 /**
