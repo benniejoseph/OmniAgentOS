@@ -159,7 +159,8 @@ describe("database memory access scope", () => {
       ) => {
         callCount += 1;
         if (callCount === 1) {
-          serialized = String(parameters[0]);
+          expect(parameters[0]).toEqual(validScope);
+          serialized = String(parameters[2]);
           return [{ applied_scope: parameters[2] }];
         }
         return [{ memory_access_scope: JSON.parse(serialized) }];
@@ -206,7 +207,8 @@ describe("database memory access scope", () => {
       ) => {
         callCount += 1;
         if (callCount === 1) {
-          serialized = String(parameters[0]);
+          expect(parameters[0]).toEqual(validScope);
+          serialized = String(parameters[2]);
           return [{ applied_scope: parameters[2] }];
         }
         if (callCount === 2) {

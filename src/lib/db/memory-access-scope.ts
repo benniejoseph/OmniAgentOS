@@ -203,7 +203,7 @@ export async function setTransactionLocalDatabaseMemoryAccessScope(
   const preflightRows = await transaction`
     SELECT CASE
       WHEN public.omni_memory_access_scope_v1_is_valid(
-        ${serialized}::JSONB
+        ${scope}::JSONB
       )
         AND NULLIF(current_setting('omni.tenant_id', TRUE), '')
           = ${scope.tenantId}
