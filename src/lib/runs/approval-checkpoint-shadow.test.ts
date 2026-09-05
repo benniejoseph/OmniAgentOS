@@ -10,6 +10,7 @@ import {
   RUN_CHECKPOINT_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_CONTRACT_VERSION_ID,
   RUN_CHECKPOINT_ENGINE_VERSION_ID,
+  RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256,
   type ApprovalCheckpointShadowEnrollment,
 } from "@/lib/runs/approval-checkpoint-shadow";
@@ -137,7 +138,7 @@ function waitingCheckpoint() {
 }
 
 describe("approval checkpoint shadow", () => {
-  it("accepts the expanded configuration only as a shadow pin", () => {
+  it("keeps shadow and full-boundary canary configurations distinct", () => {
     const expanded = structuredClone(enrollment());
     expanded.enginePin.configurationSha256 =
       RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256;
@@ -192,6 +193,33 @@ describe("approval checkpoint shadow", () => {
       },
       recordedAt: RECORDED_AT,
     })).toThrow(/binding changed/i);
+
+    expanded.enginePin.configurationSha256 =
+      RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256;
+    expect(() => buildApprovalWaitingCheckpointShadow({
+      runId: RUN_ID,
+      executionScope: SCOPE,
+      runContractEnvelope: CONTRACT.envelope,
+      enrollment: expanded,
+      approvalExecutionId: EXECUTION_ID,
+      state: {
+        runRecordSha256: canonicalJsonSha256("run"),
+        approvalRequestSha256: canonicalJsonSha256("approval"),
+        toolExecutionSha256: canonicalJsonSha256("tool"),
+        continuationSha256: canonicalJsonSha256("continuation"),
+      },
+      resourceUsage: {
+        modelCallCount: 1,
+        modelInputTokenCount: 10,
+        modelOutputTokenCount: 5,
+        cachedInputTokenCount: 2,
+        toolCallCount: 1,
+        toolResultByteCount: 0,
+        externalEffectCount: 0,
+        elapsedMs: 5_000,
+      },
+      recordedAt: RECORDED_AT,
+    })).not.toThrow();
   });
 
   it("does not count a pending expanded approval tool before its after boundary", () => {
