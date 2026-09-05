@@ -902,6 +902,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[72],
       up: ensureUserPrivateMemoryRuntimeFunctionGrants,
     },
+    {
+      ...databaseSchemaMigrations[73],
+      up: ensureDailyBriefMemoryLineageColumn,
+    },
   ];
 }
 
@@ -2926,6 +2930,37 @@ async function ensureProactiveDailyBriefs(sql: SqlClient) {
   `;
   await sql`CREATE INDEX IF NOT EXISTS omni_daily_briefs_tenant_actor_date_idx ON omni_daily_briefs (tenant_id, actor_id, local_date DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS omni_daily_briefs_memory_ids_idx ON omni_daily_briefs USING GIN (memory_ids)`;
+}
+
+async function ensureDailyBriefMemoryLineageColumn(sql: SqlClient) {
+  await ensureProactiveDailyBriefs(sql);
+  await sql`
+    UPDATE omni_daily_briefs brief
+    SET memory_ids = ARRAY(
+      SELECT canonical.memory_id
+      FROM (
+        SELECT DISTINCT LEFT(BTRIM(item #>> '{}'), 200) AS memory_id
+        FROM jsonb_array_elements(brief.content -> 'memoryIds') entry(item)
+        WHERE jsonb_typeof(item) = 'string'
+          AND NULLIF(LEFT(BTRIM(item #>> '{}'), 200), '') IS NOT NULL
+      ) canonical
+      ORDER BY canonical.memory_id COLLATE "C"
+      LIMIT 12
+    )
+    WHERE cardinality(brief.memory_ids) = 0
+      AND jsonb_typeof(brief.content -> 'memoryIds') = 'array'
+  `;
+  await sql`
+    UPDATE omni_daily_briefs brief
+    SET content = jsonb_set(
+      brief.content,
+      '{memoryIds}',
+      to_jsonb(brief.memory_ids),
+      TRUE
+    )
+    WHERE jsonb_typeof(brief.content) = 'object'
+      AND (brief.content -> 'memoryIds') IS DISTINCT FROM to_jsonb(brief.memory_ids)
+  `;
 }
 
 async function ensurePersonalNotificationCenter(sql: SqlClient) {
