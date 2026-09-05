@@ -905,6 +905,23 @@ writer, route, row, event, serving call site, or activation path. It returns
 `authorityGranted: false` and `runtimeAccepted: false`; v55 and v65 holds remain
 unchanged until an independently reviewed persistence boundary exists.
 
+Migration v66 adds that persistence boundary only as three empty global
+governance-evidence shadows: approval batches, their exact ordered notice-copy
+records, and the two legal/privacy review attestations. The tables preserve the
+verified batch, policy, nonce/evidence digests, externally anchored manifest
+digest and observation, exact notice text/digest, review signatures, signer-key
+fingerprints, and operational recording actor without treating any of them as
+runtime authority. This is intentionally global legal/privacy copy rather than
+tenant content; forced system-scope RLS, schema-owner-only ACLs, immutable
+triggers, and validated `CHECK (FALSE)` persistence holds keep it inaccessible
+and empty. V66 invokes the exact v65 verifier before and after installation,
+seeds no review or notice, emits no event, adds no writer or call site, and
+leaves the v55 notice-catalog, receipt, consent, membership, and entitlement
+holds unchanged. A later separately reviewed writer/cutover must authenticate
+real externally anchored evidence, remove only these evidence/catalog holds,
+live-lock all coordinates, and commit the approved batch atomically; receipt
+and consent issuance remain independent future gates.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

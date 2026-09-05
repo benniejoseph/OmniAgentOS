@@ -866,6 +866,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[64],
       up: ensureMemoryInformedNoticeAuthorityBoundaryVerification,
     },
+    {
+      ...databaseSchemaMigrations[65],
+      up: ensureMemoryInformedNoticeGovernanceEvidenceShadow,
+    },
   ];
 }
 
@@ -27966,6 +27970,790 @@ async function ensureMemoryInformedNoticeAuthorityBoundaryVerification(
     $migration$
   `;
 
+  await verifyMemoryInformedNoticeAuthorityBoundary(sql);
+}
+
+async function ensureMemoryInformedNoticeGovernanceEvidenceShadow(
+  sql: SqlClient,
+) {
+  // v66 only installs a closed persistence shape for a future, externally
+  // verified legal/privacy review ceremony. It does not seed notice wording,
+  // trust a database role, remove a v55 hold, or expose a runtime reader.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Informed notice governance evidence migration requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM omni_schema_version
+        WHERE version = 65
+          AND name =
+            'memory_informed_notice_authority_boundary_verification'
+          AND checksum =
+            '6dacefc682e876fe123701a039428a11ba160a225025da0a86ef27045bcad476'
+      ) THEN
+        RAISE EXCEPTION 'Informed notice governance evidence requires exact migration v65'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`SET LOCAL row_security = on`;
+
+  // Re-prove and stabilize every v55 authority surface before installing a
+  // schema that a later writer migration may consume.
+  await verifyMemoryInformedNoticeAuthorityBoundary(sql);
+  await sql`
+    LOCK TABLE
+      omni_auth_users,
+      omni_memory_purpose_catalog
+    IN SHARE MODE
+  `;
+
+  const targetRelationState = await sql`
+    SELECT
+      to_regclass(
+        'public.omni_memory_informed_notice_approval_batches'
+      ) IS NOT NULL AS batches_exist,
+      to_regclass(
+        'public.omni_memory_informed_notice_approval_contracts'
+      ) IS NOT NULL AS contracts_exist,
+      to_regclass(
+        'public.omni_memory_informed_notice_review_attestations'
+      ) IS NOT NULL AS attestations_exist
+  `;
+  const batchesExist = targetRelationState[0]?.batches_exist;
+  const contractsExist = targetRelationState[0]?.contracts_exist;
+  const attestationsExist = targetRelationState[0]?.attestations_exist;
+  if (
+    typeof batchesExist !== "boolean" ||
+    typeof contractsExist !== "boolean" ||
+    typeof attestationsExist !== "boolean"
+  ) {
+    throw new Error("Informed notice governance evidence retry state is invalid.");
+  }
+  const existingCount = [batchesExist, contractsExist, attestationsExist].filter(Boolean).length;
+  if (existingCount !== 0 && existingCount !== 3) {
+    throw new Error("Informed notice governance evidence install is partial.");
+  }
+
+  if (existingCount === 0) {
+    await sql`
+      CREATE FUNCTION omni_notice_approval_batch_row_is_valid(
+        candidate_schema_version SMALLINT,
+        candidate_approval_batch_id TEXT,
+        candidate_batch_sha256 TEXT,
+        candidate_governance_policy_id TEXT,
+        candidate_governance_policy_version BIGINT,
+        candidate_decision_nonce_sha256 TEXT,
+        candidate_evidence_sha256 TEXT,
+        candidate_notice_count SMALLINT,
+        candidate_verification_kind TEXT,
+        candidate_trust_manifest_id TEXT,
+        candidate_trust_manifest_revision BIGINT,
+        candidate_trust_manifest_sha256 TEXT,
+        candidate_trust_manifest_issued_at TIMESTAMPTZ,
+        candidate_observed_at TIMESTAMPTZ,
+        candidate_recorded_by_actor_id TEXT,
+        candidate_recorded_at TIMESTAMPTZ
+      )
+      RETURNS BOOLEAN
+      LANGUAGE SQL
+      IMMUTABLE
+      SECURITY INVOKER
+      SET search_path = pg_catalog, public
+      AS $function$
+        SELECT COALESCE(
+          candidate_schema_version = 1
+          AND candidate_approval_batch_id ~
+            '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'
+          AND candidate_batch_sha256 ~ '^[0-9a-f]{64}$'
+          AND candidate_governance_policy_id ~
+            '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'
+          AND candidate_governance_policy_version BETWEEN 1 AND 32767
+          AND candidate_decision_nonce_sha256 ~ '^[0-9a-f]{64}$'
+          AND candidate_evidence_sha256 ~ '^[0-9a-f]{64}$'
+          AND candidate_notice_count BETWEEN 1 AND 64
+          AND candidate_verification_kind =
+            'offline_external_trust_manifest_v1'
+          AND candidate_trust_manifest_id ~
+            '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'
+          AND candidate_trust_manifest_revision
+            BETWEEN 1 AND 9007199254740991
+          AND candidate_trust_manifest_sha256 ~ '^[0-9a-f]{64}$'
+          AND candidate_trust_manifest_issued_at <= candidate_observed_at
+          AND candidate_observed_at <= candidate_recorded_at
+          AND candidate_recorded_by_actor_id ~
+            '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+          FALSE
+        )
+      $function$
+    `;
+
+    await sql`
+      CREATE FUNCTION omni_notice_approval_contract_row_is_valid(
+        candidate_schema_version SMALLINT,
+        candidate_approval_batch_id TEXT,
+        candidate_batch_sha256 TEXT,
+        candidate_notice_ordinal SMALLINT,
+        candidate_record_schema_version SMALLINT,
+        candidate_purpose_id TEXT,
+        candidate_notice_contract_id TEXT,
+        candidate_notice_contract_version SMALLINT,
+        candidate_locale_id TEXT,
+        candidate_notice_text TEXT,
+        candidate_notice_sha256 TEXT
+      )
+      RETURNS BOOLEAN
+      LANGUAGE SQL
+      IMMUTABLE
+      SECURITY INVOKER
+      SET search_path = pg_catalog, public
+      AS $function$
+        SELECT COALESCE(
+          candidate_schema_version = 1
+          AND candidate_approval_batch_id ~
+            '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'
+          AND candidate_batch_sha256 ~ '^[0-9a-f]{64}$'
+          AND candidate_notice_ordinal BETWEEN 0 AND 63
+          AND candidate_record_schema_version = 1
+          AND candidate_purpose_id ~
+            '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'
+          AND candidate_purpose_id !~ '^memory\\.(export|forget)\\.v'
+          AND candidate_notice_contract_id ~
+            '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'
+          AND candidate_notice_contract_version BETWEEN 1 AND 32767
+          AND candidate_locale_id ~
+            '^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
+          AND char_length(candidate_locale_id) BETWEEN 2 AND 35
+          AND char_length(candidate_notice_text) BETWEEN 1 AND 20000
+          AND candidate_notice_text = btrim(candidate_notice_text)
+          AND candidate_notice_sha256 ~ '^[0-9a-f]{64}$',
+          FALSE
+        )
+      $function$
+    `;
+
+    await sql`
+      CREATE FUNCTION omni_notice_review_attestation_row_is_valid(
+        candidate_schema_version SMALLINT,
+        candidate_approval_batch_id TEXT,
+        candidate_batch_sha256 TEXT,
+        candidate_governance_policy_id TEXT,
+        candidate_governance_policy_version BIGINT,
+        candidate_trust_manifest_sha256 TEXT,
+        candidate_trust_manifest_issued_at TIMESTAMPTZ,
+        candidate_observed_at TIMESTAMPTZ,
+        candidate_review_slot TEXT,
+        candidate_review_id TEXT,
+        candidate_reviewer_actor_id TEXT,
+        candidate_reviewed_at TIMESTAMPTZ,
+        candidate_attester_key_id TEXT,
+        candidate_public_key_sha256 TEXT,
+        candidate_signature_algorithm TEXT,
+        candidate_signature_base64url TEXT
+      )
+      RETURNS BOOLEAN
+      LANGUAGE SQL
+      IMMUTABLE
+      SECURITY INVOKER
+      SET search_path = pg_catalog, public
+      AS $function$
+        SELECT COALESCE(
+          candidate_schema_version = 1
+          AND candidate_approval_batch_id ~
+            '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'
+          AND candidate_batch_sha256 ~ '^[0-9a-f]{64}$'
+          AND candidate_governance_policy_id ~
+            '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'
+          AND candidate_governance_policy_version BETWEEN 1 AND 32767
+          AND candidate_trust_manifest_sha256 ~ '^[0-9a-f]{64}$'
+          AND candidate_trust_manifest_issued_at <= candidate_reviewed_at
+          AND candidate_review_slot IN ('legal_reviewer', 'privacy_reviewer')
+          AND candidate_review_id ~
+            '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'
+          AND candidate_reviewer_actor_id ~
+            '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          AND candidate_reviewed_at <= candidate_observed_at
+          AND candidate_attester_key_id ~
+            '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'
+          AND candidate_public_key_sha256 ~ '^[0-9a-f]{64}$'
+          AND candidate_signature_algorithm = 'ed25519'
+          AND candidate_signature_base64url ~
+            '^[A-Za-z0-9_-]{85}[AQgw]$',
+          FALSE
+        )
+      $function$
+    `;
+
+    await sql`
+      CREATE FUNCTION omni_protect_notice_governance_evidence()
+      RETURNS TRIGGER
+      LANGUAGE plpgsql
+      VOLATILE
+      SECURITY INVOKER
+      SET search_path = pg_catalog, public
+      AS $function$
+      BEGIN
+        RAISE EXCEPTION 'Informed notice governance evidence is immutable and held'
+          USING ERRCODE = '55000';
+      END
+      $function$
+    `;
+
+    await sql`
+      CREATE TABLE omni_memory_informed_notice_approval_batches (
+        schema_version SMALLINT NOT NULL DEFAULT 1,
+        approval_batch_id TEXT NOT NULL,
+        batch_sha256 TEXT NOT NULL,
+        governance_policy_id TEXT NOT NULL,
+        governance_policy_version BIGINT NOT NULL,
+        decision_nonce_sha256 TEXT NOT NULL,
+        evidence_sha256 TEXT NOT NULL,
+        notice_count SMALLINT NOT NULL,
+        verification_kind TEXT NOT NULL
+          DEFAULT 'offline_external_trust_manifest_v1',
+        trust_manifest_id TEXT NOT NULL,
+        trust_manifest_revision BIGINT NOT NULL,
+        trust_manifest_sha256 TEXT NOT NULL,
+        trust_manifest_issued_at TIMESTAMPTZ NOT NULL,
+        observed_at TIMESTAMPTZ NOT NULL,
+        recorded_by_actor_id TEXT NOT NULL,
+        recorded_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+        CONSTRAINT omni_notice_approval_batches_pkey
+          PRIMARY KEY (approval_batch_id),
+        CONSTRAINT omni_notice_approval_batches_digest_key
+          UNIQUE (batch_sha256),
+        CONSTRAINT omni_notice_approval_batches_id_digest_key
+          UNIQUE (approval_batch_id, batch_sha256),
+        CONSTRAINT omni_notice_approval_batches_binding_key UNIQUE (
+          approval_batch_id, batch_sha256, governance_policy_id,
+          governance_policy_version, trust_manifest_sha256,
+          trust_manifest_issued_at, observed_at
+        ),
+        CONSTRAINT omni_notice_approval_batch_row_check CHECK (
+          omni_notice_approval_batch_row_is_valid(
+            schema_version, approval_batch_id, batch_sha256,
+            governance_policy_id, governance_policy_version,
+            decision_nonce_sha256, evidence_sha256, notice_count,
+            verification_kind, trust_manifest_id, trust_manifest_revision,
+            trust_manifest_sha256, trust_manifest_issued_at, observed_at,
+            recorded_by_actor_id, recorded_at
+          )
+        ),
+        CONSTRAINT omni_notice_approval_batches_persistence_hold_check
+          CHECK (FALSE),
+        CONSTRAINT omni_notice_approval_batches_recorded_actor_fkey
+          FOREIGN KEY (recorded_by_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT ON DELETE RESTRICT
+      )
+    `;
+
+    await sql`
+      CREATE TABLE omni_memory_informed_notice_approval_contracts (
+        schema_version SMALLINT NOT NULL DEFAULT 1,
+        approval_batch_id TEXT NOT NULL,
+        batch_sha256 TEXT NOT NULL,
+        notice_ordinal SMALLINT NOT NULL,
+        record_schema_version SMALLINT NOT NULL DEFAULT 1,
+        purpose_id TEXT NOT NULL,
+        notice_contract_id TEXT NOT NULL,
+        notice_contract_version SMALLINT NOT NULL,
+        locale_id TEXT NOT NULL,
+        notice_text TEXT NOT NULL,
+        notice_sha256 TEXT NOT NULL,
+        CONSTRAINT omni_notice_approval_contracts_pkey
+          PRIMARY KEY (approval_batch_id, notice_ordinal),
+        CONSTRAINT omni_notice_approval_contracts_identity_key UNIQUE (
+          approval_batch_id, purpose_id, notice_contract_id,
+          notice_contract_version
+        ),
+        CONSTRAINT omni_notice_approval_contract_row_check CHECK (
+          omni_notice_approval_contract_row_is_valid(
+            schema_version, approval_batch_id, batch_sha256, notice_ordinal,
+            record_schema_version, purpose_id, notice_contract_id,
+            notice_contract_version, locale_id, notice_text, notice_sha256
+          )
+        ),
+        CONSTRAINT omni_notice_approval_contracts_persistence_hold_check
+          CHECK (FALSE),
+        CONSTRAINT omni_notice_approval_contracts_batch_fkey
+          FOREIGN KEY (approval_batch_id, batch_sha256)
+          REFERENCES omni_memory_informed_notice_approval_batches (
+            approval_batch_id, batch_sha256
+          ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+        CONSTRAINT omni_notice_approval_contracts_purpose_fkey
+          FOREIGN KEY (purpose_id)
+          REFERENCES omni_memory_purpose_catalog (purpose_id)
+          ON UPDATE RESTRICT ON DELETE RESTRICT
+      )
+    `;
+
+    await sql`
+      CREATE TABLE omni_memory_informed_notice_review_attestations (
+        schema_version SMALLINT NOT NULL DEFAULT 1,
+        approval_batch_id TEXT NOT NULL,
+        batch_sha256 TEXT NOT NULL,
+        governance_policy_id TEXT NOT NULL,
+        governance_policy_version BIGINT NOT NULL,
+        trust_manifest_sha256 TEXT NOT NULL,
+        trust_manifest_issued_at TIMESTAMPTZ NOT NULL,
+        observed_at TIMESTAMPTZ NOT NULL,
+        review_slot TEXT NOT NULL,
+        review_id TEXT NOT NULL,
+        reviewer_actor_id TEXT NOT NULL,
+        reviewed_at TIMESTAMPTZ NOT NULL,
+        attester_key_id TEXT NOT NULL,
+        public_key_sha256 TEXT NOT NULL,
+        signature_algorithm TEXT NOT NULL DEFAULT 'ed25519',
+        signature_base64url TEXT NOT NULL,
+        CONSTRAINT omni_notice_review_attestations_pkey
+          PRIMARY KEY (approval_batch_id, review_slot),
+        CONSTRAINT omni_notice_review_attestations_review_key
+          UNIQUE (approval_batch_id, review_id),
+        CONSTRAINT omni_notice_review_attestations_actor_key
+          UNIQUE (approval_batch_id, reviewer_actor_id),
+        CONSTRAINT omni_notice_review_attestations_signer_key
+          UNIQUE (approval_batch_id, attester_key_id),
+        CONSTRAINT omni_notice_review_attestation_row_check CHECK (
+          omni_notice_review_attestation_row_is_valid(
+            schema_version, approval_batch_id, batch_sha256,
+            governance_policy_id, governance_policy_version,
+            trust_manifest_sha256, trust_manifest_issued_at, observed_at,
+            review_slot, review_id, reviewer_actor_id, reviewed_at,
+            attester_key_id, public_key_sha256, signature_algorithm,
+            signature_base64url
+          )
+        ),
+        CONSTRAINT omni_notice_review_attestations_persistence_hold_check
+          CHECK (FALSE),
+        CONSTRAINT omni_notice_review_attestations_batch_fkey FOREIGN KEY (
+          approval_batch_id, batch_sha256, governance_policy_id,
+          governance_policy_version, trust_manifest_sha256,
+          trust_manifest_issued_at, observed_at
+        ) REFERENCES omni_memory_informed_notice_approval_batches (
+          approval_batch_id, batch_sha256, governance_policy_id,
+          governance_policy_version, trust_manifest_sha256,
+          trust_manifest_issued_at, observed_at
+        ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+        CONSTRAINT omni_notice_review_attestations_actor_fkey
+          FOREIGN KEY (reviewer_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT ON DELETE RESTRICT
+      )
+    `;
+
+    await sql.query(`
+      ALTER TABLE omni_memory_informed_notice_approval_batches
+        ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_memory_informed_notice_approval_batches
+        FORCE ROW LEVEL SECURITY;
+      ALTER TABLE omni_memory_informed_notice_approval_contracts
+        ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_memory_informed_notice_approval_contracts
+        FORCE ROW LEVEL SECURITY;
+      ALTER TABLE omni_memory_informed_notice_review_attestations
+        ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_memory_informed_notice_review_attestations
+        FORCE ROW LEVEL SECURITY
+    `);
+
+    await sql`
+      CREATE POLICY omni_notice_approval_batches_holdback
+      ON omni_memory_informed_notice_approval_batches
+      AS RESTRICTIVE FOR ALL TO PUBLIC
+      USING (omni_system_scope_enabled())
+      WITH CHECK (omni_system_scope_enabled())
+    `;
+    await sql`
+      CREATE POLICY omni_notice_approval_contracts_holdback
+      ON omni_memory_informed_notice_approval_contracts
+      AS RESTRICTIVE FOR ALL TO PUBLIC
+      USING (omni_system_scope_enabled())
+      WITH CHECK (omni_system_scope_enabled())
+    `;
+    await sql`
+      CREATE POLICY omni_notice_review_attestations_holdback
+      ON omni_memory_informed_notice_review_attestations
+      AS RESTRICTIVE FOR ALL TO PUBLIC
+      USING (omni_system_scope_enabled())
+      WITH CHECK (omni_system_scope_enabled())
+    `;
+
+    await sql`
+      CREATE TRIGGER omni_notice_approval_batches_protect
+      BEFORE UPDATE OR DELETE
+      ON omni_memory_informed_notice_approval_batches
+      FOR EACH ROW EXECUTE FUNCTION omni_protect_notice_governance_evidence()
+    `;
+    await sql`
+      CREATE TRIGGER omni_notice_approval_batches_no_truncate
+      BEFORE TRUNCATE
+      ON omni_memory_informed_notice_approval_batches
+      FOR EACH STATEMENT EXECUTE FUNCTION omni_protect_notice_governance_evidence()
+    `;
+    await sql`
+      CREATE TRIGGER omni_notice_approval_contracts_protect
+      BEFORE UPDATE OR DELETE
+      ON omni_memory_informed_notice_approval_contracts
+      FOR EACH ROW EXECUTE FUNCTION omni_protect_notice_governance_evidence()
+    `;
+    await sql`
+      CREATE TRIGGER omni_notice_approval_contracts_no_truncate
+      BEFORE TRUNCATE
+      ON omni_memory_informed_notice_approval_contracts
+      FOR EACH STATEMENT EXECUTE FUNCTION omni_protect_notice_governance_evidence()
+    `;
+    await sql`
+      CREATE TRIGGER omni_notice_review_attestations_protect
+      BEFORE UPDATE OR DELETE
+      ON omni_memory_informed_notice_review_attestations
+      FOR EACH ROW EXECUTE FUNCTION omni_protect_notice_governance_evidence()
+    `;
+    await sql`
+      CREATE TRIGGER omni_notice_review_attestations_no_truncate
+      BEFORE TRUNCATE
+      ON omni_memory_informed_notice_review_attestations
+      FOR EACH STATEMENT EXECUTE FUNCTION omni_protect_notice_governance_evidence()
+    `;
+
+    await sql.query(`
+      REVOKE ALL ON TABLE
+        omni_memory_informed_notice_approval_batches,
+        omni_memory_informed_notice_approval_contracts,
+        omni_memory_informed_notice_review_attestations
+      FROM PUBLIC;
+      REVOKE ALL ON FUNCTION omni_notice_approval_batch_row_is_valid(
+        SMALLINT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, SMALLINT, TEXT,
+        TEXT, BIGINT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TEXT, TIMESTAMPTZ
+      ) FROM PUBLIC;
+      REVOKE ALL ON FUNCTION omni_notice_approval_contract_row_is_valid(
+        SMALLINT, TEXT, TEXT, SMALLINT, SMALLINT, TEXT, TEXT, SMALLINT,
+        TEXT, TEXT, TEXT
+      ) FROM PUBLIC;
+      REVOKE ALL ON FUNCTION omni_notice_review_attestation_row_is_valid(
+        SMALLINT, TEXT, TEXT, TEXT, BIGINT, TEXT, TIMESTAMPTZ,
+        TIMESTAMPTZ, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT, TEXT, TEXT, TEXT
+      ) FROM PUBLIC;
+      REVOKE ALL ON FUNCTION omni_protect_notice_governance_evidence()
+      FROM PUBLIC
+    `);
+  }
+
+  // Remove any inherited or manually introduced privilege before the exact
+  // postflight. A database-owner session remains the only installed reader.
+  await sql`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+      relation_name TEXT;
+    BEGIN
+      FOR relation_name IN SELECT unnest(ARRAY[
+        'omni_memory_informed_notice_approval_batches',
+        'omni_memory_informed_notice_approval_contracts',
+        'omni_memory_informed_notice_review_attestations'
+      ]) LOOP
+        FOR grant_record IN
+          SELECT DISTINCT grantee
+          FROM information_schema.table_privileges
+          WHERE table_schema = current_schema()
+            AND table_name = relation_name
+            AND grantee <> current_user
+            AND grantee <> 'PUBLIC'
+        LOOP
+          EXECUTE format(
+            'REVOKE ALL ON TABLE %I.%I FROM %I',
+            current_schema(), relation_name, grant_record.grantee
+          );
+        END LOOP;
+      END LOOP;
+
+    END
+    $migration$
+  `;
+
+  await sql`
+    LOCK TABLE
+      omni_memory_informed_notice_approval_batches,
+      omni_memory_informed_notice_approval_contracts,
+      omni_memory_informed_notice_review_attestations
+    IN SHARE MODE
+  `;
+
+  await sql`
+    DO $migration$
+    DECLARE
+      owner_oid OID;
+    BEGIN
+      SELECT relowner INTO owner_oid
+      FROM pg_class
+      WHERE oid = 'omni_schema_version'::regclass;
+
+      IF (
+        SELECT count(*)
+        FROM pg_class relation
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE relation.oid IN (
+          'omni_memory_informed_notice_approval_batches'::regclass,
+          'omni_memory_informed_notice_approval_contracts'::regclass,
+          'omni_memory_informed_notice_review_attestations'::regclass
+        )
+          AND namespace.nspname = current_schema()
+          AND relation.relkind = 'r'
+          AND relation.relpersistence = 'p'
+          AND relation.relowner = owner_oid
+          AND relation.relrowsecurity
+          AND relation.relforcerowsecurity
+      ) <> 3 THEN
+        RAISE EXCEPTION 'Informed notice governance evidence relations are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM (
+          VALUES
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS, 16),
+            ('omni_memory_informed_notice_approval_contracts'::REGCLASS, 11),
+            ('omni_memory_informed_notice_review_attestations'::REGCLASS, 16)
+        ) expected(relation_oid, column_count)
+        WHERE (
+          SELECT count(*) FROM pg_attribute attribute
+          WHERE attribute.attrelid = expected.relation_oid
+            AND attribute.attnum > 0 AND NOT attribute.attisdropped
+        ) <> expected.column_count
+      ) OR EXISTS (
+        SELECT 1
+        FROM (
+          VALUES
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS, 'schema_version', 'smallint'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS, 'approval_batch_id', 'text'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS, 'batch_sha256', 'text'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS, 'notice_count', 'smallint'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS, 'observed_at', 'timestamptz'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS, 'recorded_at', 'timestamptz'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_approval_contracts'::REGCLASS, 'notice_ordinal', 'smallint'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_approval_contracts'::REGCLASS, 'notice_text', 'text'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_approval_contracts'::REGCLASS, 'notice_sha256', 'text'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_review_attestations'::REGCLASS, 'review_slot', 'text'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_review_attestations'::REGCLASS, 'trust_manifest_issued_at', 'timestamptz'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_review_attestations'::REGCLASS, 'reviewed_at', 'timestamptz'::REGTYPE, TRUE),
+            ('omni_memory_informed_notice_review_attestations'::REGCLASS, 'signature_base64url', 'text'::REGTYPE, TRUE)
+        ) expected(relation_oid, column_name, type_oid, not_null)
+        LEFT JOIN pg_attribute attribute
+          ON attribute.attrelid = expected.relation_oid
+          AND attribute.attname = expected.column_name
+          AND NOT attribute.attisdropped
+        WHERE attribute.attname IS NULL
+          OR attribute.atttypid <> expected.type_oid
+          OR attribute.attnotnull IS DISTINCT FROM expected.not_null
+      ) THEN
+        RAISE EXCEPTION 'Informed notice governance evidence columns are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM (
+          VALUES
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS, 'omni_notice_approval_batches_persistence_hold_check'),
+            ('omni_memory_informed_notice_approval_contracts'::REGCLASS, 'omni_notice_approval_contracts_persistence_hold_check'),
+            ('omni_memory_informed_notice_review_attestations'::REGCLASS, 'omni_notice_review_attestations_persistence_hold_check')
+        ) expected(relation_oid, constraint_name)
+        WHERE NOT EXISTS (
+          SELECT 1 FROM pg_constraint constraint_record
+          WHERE constraint_record.conrelid = expected.relation_oid
+            AND constraint_record.conname = expected.constraint_name
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND pg_get_expr(
+              constraint_record.conbin, constraint_record.conrelid
+            ) = 'false'
+        )
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid =
+            'omni_memory_informed_notice_approval_batches'::regclass
+          AND conname = 'omni_notice_approval_batches_pkey'
+          AND contype = 'p' AND convalidated
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid =
+            'omni_memory_informed_notice_approval_contracts'::regclass
+          AND conname = 'omni_notice_approval_contracts_pkey'
+          AND contype = 'p' AND convalidated
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid =
+            'omni_memory_informed_notice_review_attestations'::regclass
+          AND conname = 'omni_notice_review_attestations_pkey'
+          AND contype = 'p' AND convalidated
+      ) THEN
+        RAISE EXCEPTION 'Informed notice governance evidence constraints are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (
+        SELECT count(*) FROM pg_proc procedure
+        JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = current_schema()
+          AND procedure.proname IN (
+            'omni_notice_approval_batch_row_is_valid',
+            'omni_notice_approval_contract_row_is_valid',
+            'omni_notice_review_attestation_row_is_valid',
+            'omni_protect_notice_governance_evidence'
+          )
+          AND procedure.proowner = owner_oid
+          AND NOT procedure.prosecdef
+      ) <> 4 THEN
+        RAISE EXCEPTION 'Informed notice governance evidence functions are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF (
+        SELECT count(*) FROM pg_trigger
+        WHERE tgrelid IN (
+          'omni_memory_informed_notice_approval_batches'::regclass,
+          'omni_memory_informed_notice_approval_contracts'::regclass,
+          'omni_memory_informed_notice_review_attestations'::regclass
+        ) AND NOT tgisinternal
+      ) <> 6 OR EXISTS (
+        SELECT 1
+        FROM (
+          VALUES
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS, 'omni_notice_approval_batches_protect'),
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS, 'omni_notice_approval_batches_no_truncate'),
+            ('omni_memory_informed_notice_approval_contracts'::REGCLASS, 'omni_notice_approval_contracts_protect'),
+            ('omni_memory_informed_notice_approval_contracts'::REGCLASS, 'omni_notice_approval_contracts_no_truncate'),
+            ('omni_memory_informed_notice_review_attestations'::REGCLASS, 'omni_notice_review_attestations_protect'),
+            ('omni_memory_informed_notice_review_attestations'::REGCLASS, 'omni_notice_review_attestations_no_truncate')
+        ) expected(relation_oid, trigger_name)
+        WHERE NOT EXISTS (
+          SELECT 1 FROM pg_trigger trigger_record
+          WHERE trigger_record.tgrelid = expected.relation_oid
+            AND trigger_record.tgname = expected.trigger_name
+            AND NOT trigger_record.tgisinternal
+            AND trigger_record.tgenabled = 'O'
+            AND trigger_record.tgfoid = to_regprocedure(
+              'public.omni_protect_notice_governance_evidence()'
+            )
+        )
+      ) THEN
+        RAISE EXCEPTION 'Informed notice governance evidence triggers are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM (
+          VALUES
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS, 'omni_notice_approval_batches_holdback'),
+            ('omni_memory_informed_notice_approval_contracts'::REGCLASS, 'omni_notice_approval_contracts_holdback'),
+            ('omni_memory_informed_notice_review_attestations'::REGCLASS, 'omni_notice_review_attestations_holdback')
+        ) expected(relation_oid, policy_name)
+        WHERE NOT EXISTS (
+          SELECT 1 FROM pg_policy policy_record
+          WHERE policy_record.polrelid = expected.relation_oid
+            AND policy_record.polname = expected.policy_name
+            AND NOT policy_record.polpermissive
+            AND policy_record.polcmd = '*'
+            AND policy_record.polroles = ARRAY[0::OID]
+            AND pg_get_expr(
+              policy_record.polqual, policy_record.polrelid
+            ) = 'omni_system_scope_enabled()'
+            AND pg_get_expr(
+              policy_record.polwithcheck, policy_record.polrelid
+            ) = 'omni_system_scope_enabled()'
+        )
+      ) OR EXISTS (
+        SELECT 1 FROM (
+          VALUES
+            ('omni_memory_informed_notice_approval_batches'::REGCLASS),
+            ('omni_memory_informed_notice_approval_contracts'::REGCLASS),
+            ('omni_memory_informed_notice_review_attestations'::REGCLASS)
+        ) expected(relation_oid)
+        WHERE (
+          SELECT count(*) FROM pg_policy
+          WHERE polrelid = expected.relation_oid
+        ) <> 1
+      ) THEN
+        RAISE EXCEPTION 'Informed notice governance evidence policies are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1 FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name IN (
+            'omni_memory_informed_notice_approval_batches',
+            'omni_memory_informed_notice_approval_contracts',
+            'omni_memory_informed_notice_review_attestations'
+          )
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_notice_approval_batch_row_is_valid',
+            'omni_notice_approval_contract_row_is_valid',
+            'omni_notice_review_attestation_row_is_valid',
+            'omni_protect_notice_governance_evidence'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Informed notice governance evidence boundary is exposed'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1 FROM omni_memory_informed_notice_approval_batches
+      ) OR EXISTS (
+        SELECT 1 FROM omni_memory_informed_notice_approval_contracts
+      ) OR EXISTS (
+        SELECT 1 FROM omni_memory_informed_notice_review_attestations
+      ) THEN
+        RAISE EXCEPTION 'Informed notice governance evidence shadows are not empty'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF public.omni_notice_approval_contract_row_is_valid(
+        1::smallint, 'notice-batch:v66'::text, repeat('a', 64)::text,
+        0::smallint, 1::smallint, 'memory.export.v1'::text,
+        'notice-contract:v66'::text, 1::smallint, 'en-US'::text,
+        'Exact notice'::text, repeat('b', 64)::text
+      ) IS DISTINCT FROM FALSE OR public.omni_notice_review_attestation_row_is_valid(
+        1::smallint, 'notice-batch:v66'::text, repeat('a', 64)::text,
+        'notice-policy:v1'::text, 1::bigint, repeat('c', 64)::text,
+        statement_timestamp(), statement_timestamp(), 'legal_reviewer'::text,
+        'review:v66'::text,
+        'actor:00000000-0000-4000-8000-000000000001'::text,
+        statement_timestamp() + INTERVAL '1 second',
+        'notice-key:v66'::text, repeat('d', 64)::text, 'ed25519'::text,
+        repeat('A', 86)::text
+      ) IS DISTINCT FROM FALSE THEN
+        RAISE EXCEPTION 'Informed notice governance evidence validators are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+
+  // A future writer migration must call this same verifier again immediately
+  // before it changes any v55 hold. V66 itself changes none of those surfaces.
   await verifyMemoryInformedNoticeAuthorityBoundary(sql);
 }
 
