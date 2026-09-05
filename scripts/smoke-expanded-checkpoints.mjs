@@ -49,6 +49,7 @@ try {
     description: `Synthetic expanded-checkpoint approval verifier ${marker}`,
     instructions:
       "Call runs.list exactly once with limit 1 before answering. Do not call any other tool. After the tool result, reply with one short sentence and do not call the tool again.",
+    autonomy: "assist",
     approvalPolicy: "always",
     toolIds: ["runs.list"],
   });
@@ -107,6 +108,7 @@ try {
     description: `Synthetic expanded-checkpoint council verifier ${marker}`,
     instructions:
       "Answer concisely, do not call tools, and preserve the requested safety and evidence review.",
+    autonomy: "assist",
     approvalPolicy: "risk_based",
     toolIds: [],
   });
@@ -183,6 +185,7 @@ async function createAgent({
   role,
   description,
   instructions,
+  autonomy,
   approvalPolicy,
   toolIds,
 }) {
@@ -196,7 +199,7 @@ async function createAgent({
       status: "ready",
       accent: "violet",
       modelPolicy: "openai_fast",
-      autonomy: "governed",
+      autonomy,
       approvalPolicy,
       memoryScope: "session",
       skillIds: [],
