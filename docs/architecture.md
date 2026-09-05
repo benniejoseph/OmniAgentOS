@@ -1117,11 +1117,17 @@ The authenticated Retrieval Plan API can merge that same independently scoped
 cohort into its context pack. Migration v77 persists only the private-memory
 component as an immutable actor-private trace under the same transaction-local
 scope. The compatibility trace receives no scoped query or result, while
-unscoped graph and worker readers remain unable to see the private trace. The
-tenant-wide graph and agent-run context still never receive these rows; those
-omissions are fail-closed phase boundaries, not completed P3.1 support.
-Agent-private/shared visibility plus actor-aware graph, agent context,
-formation, and worker surfaces remain closed.
+unscoped graph and worker readers remain unable to see the private trace.
+Migration v79 projects private memory—not private retrieval traces—into a
+separately namespaced graph carrying the same immutable owner boundary. Manual
+writes and corrections enter that graph under exact purposes; graph API reads
+and Retrieval Plan searches query it in an actor-scoped transaction and merge
+the result only after the compatibility query completes. Unscoped and sibling
+actors cannot see those nodes or edges. Agent-run context still cannot receive
+private rows because its run and thread ledgers remain tenant scoped; that
+omission is a fail-closed phase boundary, not completed P3.1 support.
+Agent-private/shared visibility, agent context, formation, and worker surfaces
+remain closed.
 
 ## Where things live
 
