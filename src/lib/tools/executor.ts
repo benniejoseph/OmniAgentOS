@@ -1622,45 +1622,30 @@ async function assertExistingScopedToolReceipt(input: {
     executionClaimToken: undefined,
   });
   const hasEffectReceipt = input.record.effectReceipt !== undefined;
-  if (!input.effectBinding) {
-    if (hasEffectReceipt) {
-      const intent = getToolExecutionEffectIntentV2(input.record);
-      if (
-        !intent ||
-        intent.executionKind !== "direct" ||
-        intent.inputSha256 !== toolInputSha256(input.toolInput) ||
-        intent.tenantId !== normalizeTenantId(input.context?.tenantId) ||
-        intent.actorId !== input.context?.actorId
-      ) {
-        throw new Error(
-          "A direct effect receipt does not match its persisted execution binding.",
-        );
-      }
-    }
-    return;
-  }
-  if (input.tool.id === "calendar.create") {
+  const providerMaterial = prepareProviderEffectMaterial(
+    input.tool,
+    input.toolInput,
+    input.record.id,
+  );
+  if (providerMaterial) {
     if (!resolved.executionScope) {
-      throw new Error("Calendar workflow receipt is missing its execution scope.");
+      throw new Error("Provider effect receipt is missing its execution scope.");
     }
     const intent = getToolExecutionEffectIntentV2(input.record);
-    const material = prepareProviderEffectMaterial(
-      input.tool,
-      input.toolInput,
-      input.record.id,
-    );
-    if (!intent || !material) {
-      throw new Error("Calendar workflow effect intent is missing.");
+    if (!intent) {
+      throw new Error("Provider effect intent is missing.");
     }
     const expected = buildProviderEffectIntent({
       record: input.record,
       tool: input.tool,
-      material,
+      material: providerMaterial,
       executionScope: resolved.executionScope,
       effectBinding: input.effectBinding,
     });
     if (intent.effectIntentSha256 !== expected.effectIntentSha256) {
-      throw new Error("Calendar workflow effect intent does not match its reviewed plan.");
+      throw new Error(
+        "Provider effect intent does not match its reviewed execution binding.",
+      );
     }
     if (input.record.status === "executing" && !hasEffectReceipt) return;
     if (
@@ -1671,7 +1656,15 @@ async function assertExistingScopedToolReceipt(input: {
       input.record.effectReceipt.targetId === intent.targetId &&
       input.record.effectReceipt.expectedTargetStateSha256 === intent.expectedTargetStateSha256
     ) return;
-    throw new Error("Calendar workflow effect is not in a reconcilable state.");
+    throw new Error("Provider effect is not in a reconcilable state.");
+  }
+  if (!input.effectBinding) {
+    if (hasEffectReceipt) {
+      throw new Error(
+        "A tool execution carries an effect receipt without a supported effect binding.",
+      );
+    }
+    return;
   }
   if (input.record.status === "executed" && !input.record.dryRun) {
     assertCompletedMemoryWriteEffectReceipt({
@@ -2259,7 +2252,12 @@ function prepareMemoryWriteEffectContext(input: {
 }): PreparedMemoryWriteEffectContext | undefined {
   if (!input.effectBinding) return undefined;
   if (input.tool.id !== "memory.write") {
-    if (input.tool.id === "calendar.create") return undefined;
+    if (
+      input.tool.id === "calendar.create" ||
+      input.tool.id === "http.request" ||
+      input.tool.category === "mcp" ||
+      input.tool.category === "openapi"
+    ) return undefined;
     throw new Error("This effect-receipt version supports memory.write only.");
   }
   if (input.tool.reversible !== true) {
@@ -3081,7 +3079,11 @@ export function hasRisk3Quorum(record?: ToolExecutionRecord) {
 type ProviderEffectMaterial = Readonly<{
   inputSha256: string;
   approvalBindingSha256: string;
-  targetType: "http_endpoint" | "google_calendar_event";
+  targetType:
+    | "http_endpoint"
+    | "google_calendar_event"
+    | "mcp_operation"
+    | "openapi_operation";
   targetId: string;
   targetSha256: string;
   expectedTargetStateSha256: string;
@@ -3128,26 +3130,62 @@ function prepareProviderEffectMaterial(
       ),
     });
   }
-  if (tool.id !== "http.request") return undefined;
-  const parsed = httpRequestSchema.parse(input);
-  const method = parsed.method || "GET";
-  if (method === "GET") return undefined;
-  const url = new URL(parsed.url).toString();
-  const inputSha256 = toolInputSha256(parsed);
+  if (tool.id === "http.request") {
+    const parsed = httpRequestSchema.parse(input);
+    const method = parsed.method || "GET";
+    if (method === "GET") return undefined;
+    const url = new URL(parsed.url).toString();
+    return genericProviderEffectMaterial({
+      tool,
+      input: parsed,
+      targetType: "http_endpoint",
+      targetIdentity: { method, url },
+      targetIdPrefix: "http_target",
+    });
+  }
+  if (
+    (tool.category === "mcp" || tool.category === "openapi") &&
+    governedToolOperationClass(tool, input) === "mutation"
+  ) {
+    const targetType = tool.category === "mcp"
+      ? "mcp_operation"
+      : "openapi_operation";
+    return genericProviderEffectMaterial({
+      tool,
+      input,
+      targetType,
+      targetIdentity: {
+        toolId: tool.id,
+        approvalFingerprint: toolApprovalFingerprint(tool),
+      },
+      targetIdPrefix: tool.category === "mcp"
+        ? "mcp_target"
+        : "openapi_target",
+    });
+  }
+  return undefined;
+}
+
+function genericProviderEffectMaterial(input: {
+  tool: ToolDefinition;
+  input: Record<string, unknown>;
+  targetType: ProviderEffectMaterial["targetType"];
+  targetIdentity: Record<string, unknown>;
+  targetIdPrefix: string;
+}): ProviderEffectMaterial {
+  const inputSha256 = toolInputSha256(input.input);
   const targetSha256 = canonicalJsonSha256({
-    targetType: "http_endpoint",
-    method,
-    url,
+    targetType: input.targetType,
+    ...input.targetIdentity,
   });
-  const targetId = `http_target_${targetSha256.slice(0, 52)}`;
   return Object.freeze({
     inputSha256,
     approvalBindingSha256: approvalMaterialBindingSha256({
       targetSha256,
       inputSha256,
     }),
-    targetType: "http_endpoint",
-    targetId,
+    targetType: input.targetType,
+    targetId: `${input.targetIdPrefix}_${targetSha256.slice(0, 52)}`,
     targetSha256,
     expectedTargetStateSha256: canonicalJsonSha256({
       expectation: "provider_acknowledged_exact_request",
@@ -3171,20 +3209,14 @@ function buildProviderEffectIntent(input: {
     executionScope.executingPrincipalId === executionScope.initiatingActorId
   );
   const isBoundWorkflow = Boolean(
-    tool.id === "calendar.create" &&
     effectBinding &&
     executionScope.initiatingActorId &&
     executionScope.executingPrincipalType === "system" &&
     executionScope.executingPrincipalId === `workflow:${effectBinding?.workflowRunId}`
   );
-  if (
-    (tool.id === "http.request" && !isDirectUser) ||
-    (tool.id === "calendar.create" && !isDirectUser && !isBoundWorkflow)
-  ) {
+  if (!isDirectUser && !isBoundWorkflow) {
     throw new Error(
-      tool.id === "http.request"
-        ? "Mutating HTTP effects currently require a directly authorized user principal."
-        : "Calendar effects require a directly authorized user or an exact workflow-plan binding.",
+      "Provider mutations require a directly authorized user or an exact workflow-plan binding.",
     );
   }
   const actorId = executionScope.initiatingActorId;
@@ -3250,6 +3282,22 @@ function finalizeProviderEffectIntent(
       verificationState: "verified",
       verificationReasonCode: "state_matched",
       observedTargetStateSha256: result.observedTargetStateSha256,
+    });
+  }
+  if (tool.category === "mcp" || tool.category === "openapi") {
+    const acknowledgementSha256 = canonicalJsonSha256({
+      toolId: tool.id,
+      result: resultValue,
+    });
+    return finalizeEffectIntentV2(intent, {
+      providerAcknowledgement: "provider_response",
+      providerAcknowledgementId:
+        `${tool.category}_ack_${acknowledgementSha256.slice(0, 54)}`,
+      providerAcknowledgementSha256: acknowledgementSha256,
+      verificationMethod: "read_after_write",
+      verificationState: "unverifiable",
+      verificationReasonCode: "read_unavailable",
+      observedTargetStateSha256: null,
     });
   }
   const result = z.object({
