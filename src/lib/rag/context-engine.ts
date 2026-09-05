@@ -27,6 +27,7 @@ import type {
   RetrievalTraceRecord,
 } from "@/lib/rag/types";
 import { citationIdForEvidence } from "@/lib/rag/citations";
+import { normalizeExplicitEvidenceIds } from "@/lib/rag/evidence-selection";
 import { redactSensitive } from "@/lib/security/context";
 import type { AiUsageScope } from "@/lib/usage/types";
 
@@ -90,12 +91,7 @@ export async function buildContextPack(
   const startedAt = Date.now();
   const tenantId = resolveContextTenantId(options);
   const normalizedQuery = String(redactSensitive(query.trim())).slice(0, 4_000);
-  const evidenceIds = options.evidenceIds === undefined
-    ? undefined
-    : [...new Set(options.evidenceIds
-        .map((id) => id.trim())
-        .filter((id) => /^(?:memory|knowledge|graph):[^\s]+$/.test(id)))]
-        .slice(0, 24);
+  const evidenceIds = normalizeExplicitEvidenceIds(options.evidenceIds);
   const limit = Math.min(Math.max(options.limit || 8, evidenceIds?.length || 1), 24);
   const candidateLimit = Math.min(Math.max(options.candidateLimit || limit * 3, limit), 60);
   const profile = profileQuery(normalizedQuery);

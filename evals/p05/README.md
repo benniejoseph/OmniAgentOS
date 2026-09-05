@@ -35,8 +35,9 @@ resurrection, or false success is a failure; this lane has no warning state.
 `baseline.v1.json` is the first digest-bound current-system observation. Run
 `npm run check:p05-baseline` to reproduce it from the side-effect-free adapters
 in `src/lib/evals2/p05-observer.ts`. The initial result is intentionally red:
-3 of 16 cases pass (1,875 basis points). Tenant mismatch, canonical source
-ordering, and legacy false-completion behavior are directly observable. The
+4 of 16 cases pass (2,500 basis points). Tenant mismatch, canonical source
+ordering, explicit-empty context selection, and legacy false-completion
+behavior are directly observable. The
 remaining unsupported probes fail closed as `not_observable_offline`; the
 scope boundary probe also records the current tenant-only compatibility read,
 including its actor-isolation gap. This is evidence of the present system, not
