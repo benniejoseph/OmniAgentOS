@@ -826,6 +826,18 @@ deletion receipt, or standing consent is imported. There is no writer, serving
 reader, resolver call site, or activation in this slice; the v43 memory
 enrollment and v45 authorization holds remain unchanged.
 
+The denial-only P3.1 canary now accepts a separate frozen request claim only
+for export or forget. It locks the exact v64 request generation in the same
+owned tenant transaction and rechecks the canonical human subject/principal,
+operation-specific confirmation, request digest, resource set, active
+lifecycle, activation actor, and database-observed validity window. A matching
+capability grant must cover that exact resource set and name the exact purpose;
+an agent principal cannot reuse its controller's human request. Ordinary
+purposes reject a request claim and continue to use standing authorities. The
+canary still has no allow result, performs no mutation or consumption, installs
+no access scope, and has no serving call site; v64's activation hold means a
+real row cannot yet satisfy this inspection.
+
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.

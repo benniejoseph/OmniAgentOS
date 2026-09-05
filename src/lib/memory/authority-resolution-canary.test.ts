@@ -30,6 +30,10 @@ const NOTICE_CONTRACT_VERSION = 1;
 const GRANTED_AT = "2026-09-05T08:00:00.000Z";
 const PRESENTED_AT = "2026-09-05T07:59:00.000Z";
 const ACKNOWLEDGED_AT = "2026-09-05T08:00:00.000Z";
+const DATA_RIGHT_REQUEST_ID = "memory-data-right-request:one";
+const DATA_RIGHT_REQUEST_GENERATION = 4;
+const DATA_RIGHT_REQUEST_BINDING_SHA256 = "d".repeat(64);
+const DATA_RIGHT_RESOURCE_IDS = Object.freeze(["memory:one"]);
 
 const ACTOR_BINDING: CanonicalRequestActorBindingV1 = Object.freeze({
   version: 1,
@@ -56,6 +60,14 @@ const ACCESS_SCOPE = Object.freeze({
   capabilityGrantIds: Object.freeze([]),
   purposeId: PURPOSE_ID,
   purpose: null,
+});
+
+const DATA_RIGHT_REQUEST_CLAIM = Object.freeze({
+  schemaVersion: 1 as const,
+  requestId: DATA_RIGHT_REQUEST_ID,
+  requestGeneration: DATA_RIGHT_REQUEST_GENERATION,
+  requestBindingSha256: DATA_RIGHT_REQUEST_BINDING_SHA256,
+  resourceIds: DATA_RIGHT_RESOURCE_IDS,
 });
 
 type SqlRow = Record<string, unknown>;
@@ -86,7 +98,8 @@ type QueryStage =
   | "execution_principal"
   | "workspace"
   | "workspace_membership"
-  | "memory_grant";
+  | "memory_grant"
+  | "data_right_request";
 type AuthorityStage = Exclude<StandardQueryStage, "preflight">;
 type QueryResponses = Record<StandardQueryStage, SqlRow[]> & {
   execution_principal?: SqlRow[];
@@ -94,6 +107,7 @@ type QueryResponses = Record<StandardQueryStage, SqlRow[]> & {
   workspace_membership?: SqlRow[];
   context_grant?: SqlRow[];
   capability_grant?: SqlRow[];
+  data_right_request?: SqlRow[];
 };
 
 const AUTHORITY_STAGES = QUERY_STAGES.slice(1) as readonly AuthorityStage[];
@@ -257,10 +271,12 @@ describe("denial-only memory authority resolution canary", () => {
       {
         accessScope: { ...ACCESS_SCOPE, unexpected: true },
         actorBinding: ACTOR_BINDING,
+        dataRightRequestClaim: null,
       },
       {
         accessScope: ACCESS_SCOPE,
         actorBinding: { ...ACTOR_BINDING },
+        dataRightRequestClaim: null,
       },
       {
         accessScope: ACCESS_SCOPE,
@@ -268,6 +284,33 @@ describe("denial-only memory authority resolution canary", () => {
           ...ACTOR_BINDING,
           canonicalActorId:
             "actor:22222222-2222-4222-8222-222222222222",
+        }),
+        dataRightRequestClaim: null,
+      },
+      {
+        accessScope: ACCESS_SCOPE,
+        actorBinding: ACTOR_BINDING,
+        dataRightRequestClaim: DATA_RIGHT_REQUEST_CLAIM,
+      },
+      {
+        accessScope: scopeForPurpose("memory.forget.v1"),
+        actorBinding: ACTOR_BINDING,
+        dataRightRequestClaim: { ...DATA_RIGHT_REQUEST_CLAIM },
+      },
+      {
+        accessScope: scopeForPurpose("memory.forget.v1"),
+        actorBinding: ACTOR_BINDING,
+        dataRightRequestClaim: Object.freeze({
+          ...DATA_RIGHT_REQUEST_CLAIM,
+          resourceIds: [...DATA_RIGHT_RESOURCE_IDS],
+        }),
+      },
+      {
+        accessScope: scopeForPurpose("memory.forget.v1"),
+        actorBinding: ACTOR_BINDING,
+        dataRightRequestClaim: Object.freeze({
+          ...DATA_RIGHT_REQUEST_CLAIM,
+          resourceIds: Object.freeze(Array<string>(1)),
         }),
       },
     ];
@@ -984,31 +1027,111 @@ describe("denial-only memory authority resolution canary", () => {
     }
   });
 
-  it("skips standing authorities for export and forget", async () => {
+  it("locks exact request-bound authority for export and forget", async () => {
     for (const operationClass of ["export", "forget"] as const) {
       const purposeId = `memory.${operationClass}.v1`;
       const responses = coherentResponses(purposeId, operationClass);
+      responses.data_right_request = [activeDataRightRequest(operationClass)];
+      responses.capability_grant = [activeUserGrant("capability", {
+        purpose_id: purposeId,
+        operation_ids: [purposeId],
+      })];
       const { sql, calls } = fakeSql(handlerFor(responses));
       dbMocks.getSql.mockReturnValue(sql);
+      const scope = Object.freeze({
+        ...scopeForPurpose(purposeId),
+        capabilityGrantIds: Object.freeze(["capability:one"]),
+      });
 
       const result = await inspectMemoryAuthorityDenialCanary(
-        canaryInput(scopeForPurpose(purposeId)),
+        canaryInput(scope, DATA_RIGHT_REQUEST_CLAIM),
       );
 
       expect(calls.map(({ text }) => stageForText(text))).toEqual(
-        QUERY_STAGES.slice(0, QUERY_STAGES.indexOf("operation_policy") + 1),
+        [
+          "preflight",
+          "auth_user",
+          "membership",
+          "epoch",
+          "purpose",
+          "operation_policy",
+          "data_right_request",
+          "memory_grant",
+        ],
       );
-      expect(result.unavailableAuthorities).toEqual([
-        ...BASELINE_UNAVAILABLE,
-        "request_bound_data_right_authority",
-      ]);
+      expect(result.unavailableAuthorities).toEqual([]);
       expect(result.unavailableAuthorities).not.toContain("tenant_entitlement");
       expect(result.unavailableAuthorities).not.toContain("standing_consent");
       expect(result.unavailableAuthorities).not.toContain(
         "informed_notice_evidence",
       );
       expectCanonicalDiagnostics(result.unavailableAuthorities);
+      const requestCall = calls.find(({ text }) =>
+        stageForText(text) === "data_right_request"
+      );
+      expect(requestCall?.params).toEqual([
+        TENANT_ID,
+        DATA_RIGHT_REQUEST_ID,
+        DATA_RIGHT_REQUEST_GENERATION,
+      ]);
+      expect(requestCall?.text).toContain("LIMIT 2");
+      expect(requestCall?.text).toContain("FOR SHARE");
     }
+  });
+
+  it("keeps held, stale, or misbound data-right requests unavailable", async () => {
+    const purposeId = "memory.forget.v1";
+    const mismatches: SqlRow[] = [
+      { state: "held", lifecycle_revision: "0", activated_by_actor_id: null, activated_at: null },
+      { request_binding_sha256: "e".repeat(64) },
+      { resource_ids: ["memory:other"] },
+      { observed_at: "2026-09-05T10:00:00.000Z" },
+      { confirmation_kind: "explicit_export_request" },
+    ];
+    for (const mismatch of mismatches) {
+      const responses = coherentResponses(purposeId, "forget");
+      responses.data_right_request = [{
+        ...activeDataRightRequest("forget"),
+        ...mismatch,
+      }];
+      const { sql, calls } = fakeSql(handlerFor(responses));
+      dbMocks.getSql.mockReturnValue(sql);
+
+      const result = await inspectMemoryAuthorityDenialCanary(
+        canaryInput(scopeForPurpose(purposeId), DATA_RIGHT_REQUEST_CLAIM),
+      );
+
+      expect(result.unavailableAuthorities).toEqual([
+        ...BASELINE_UNAVAILABLE,
+        "request_bound_data_right_authority",
+      ]);
+      expect(calls.map(({ text }) => stageForText(text)).at(-1))
+        .toBe("data_right_request");
+    }
+  });
+
+  it("does not reuse a human data-right request for an agent principal", async () => {
+    const purposeId = "memory.export.v1";
+    const responses = coherentResponses(purposeId, "export");
+    responses.execution_principal = [activeAgentPrincipal()];
+    responses.data_right_request = [activeDataRightRequest("export")];
+    const { sql, calls } = fakeSql(handlerFor(responses));
+    dbMocks.getSql.mockReturnValue(sql);
+    const agentScope = Object.freeze({
+      ...scopeForPurpose(purposeId),
+      executingPrincipalType: "agent" as const,
+      executingPrincipalId: "agent:asael",
+    });
+
+    const result = await inspectMemoryAuthorityDenialCanary(
+      canaryInput(agentScope, DATA_RIGHT_REQUEST_CLAIM),
+    );
+
+    expect(result.unavailableAuthorities).toContain(
+      "request_bound_data_right_authority",
+    );
+    expect(calls.map(({ text }) => stageForText(text)).at(-1))
+      .toBe("data_right_request");
   });
 
   it("sanitizes database failures without retaining a sentinel or cause", async () => {
@@ -1052,8 +1175,11 @@ describe("denial-only memory authority resolution canary", () => {
 
 function canaryInput(
   accessScope: unknown = ACCESS_SCOPE,
+  dataRightRequestClaim: Parameters<
+    typeof inspectMemoryAuthorityDenialCanary
+  >[0]["dataRightRequestClaim"] = null,
 ): Parameters<typeof inspectMemoryAuthorityDenialCanary>[0] {
-  return { accessScope, actorBinding: ACTOR_BINDING };
+  return { accessScope, actorBinding: ACTOR_BINDING, dataRightRequestClaim };
 }
 
 function scopeForPurpose(purposeId: string) {
@@ -1253,6 +1379,35 @@ function activeAgentGrant(
   });
 }
 
+function activeDataRightRequest(
+  operationClass: "export" | "forget",
+  overrides: SqlRow = {},
+): SqlRow {
+  return {
+    schema_version: "1",
+    tenant_id: TENANT_ID,
+    request_id: DATA_RIGHT_REQUEST_ID,
+    request_generation: String(DATA_RIGHT_REQUEST_GENERATION),
+    purpose_id: `memory.${operationClass}.v1`,
+    subject_actor_id: CANONICAL_ACTOR_ID,
+    executing_principal_type: "user",
+    executing_principal_id: CANONICAL_ACTOR_ID,
+    confirmation_kind: operationClass === "forget"
+      ? "reviewed_deletion_preview"
+      : "explicit_export_request",
+    request_binding_sha256: DATA_RIGHT_REQUEST_BINDING_SHA256,
+    resource_ids: [...DATA_RIGHT_RESOURCE_IDS],
+    not_before: "2026-09-05T08:00:00.000Z",
+    expires_at: "2026-09-05T10:00:00.000Z",
+    state: "active",
+    lifecycle_revision: "1",
+    activated_by_actor_id: CANONICAL_ACTOR_ID,
+    activated_at: "2026-09-05T08:30:00.000Z",
+    observed_at: "2026-09-05T09:00:00.000Z",
+    ...overrides,
+  };
+}
+
 function activeWorkspace(overrides: SqlRow = {}): SqlRow {
   return {
     schema_version: "1",
@@ -1308,6 +1463,9 @@ function handlerFor(responses: QueryResponses) {
         ? responses.context_grant
         : responses.capability_grant;
       return (rows ?? []).map((row) => ({ ...row }));
+    }
+    if (stage === "data_right_request") {
+      return (responses.data_right_request ?? []).map((row) => ({ ...row }));
     }
     return (responses[stage] ?? []).map((row) => ({ ...row }));
   };
@@ -1440,6 +1598,9 @@ function stageForText(text: string): QueryStage {
   if (text.includes("FROM public.omni_memory_purpose_catalog")) return "purpose";
   if (text.includes("FROM public.omni_tenant_memory_operation_policies")) {
     return "operation_policy";
+  }
+  if (text.includes("FROM public.omni_tenant_memory_data_right_requests")) {
+    return "data_right_request";
   }
   if (text.includes("FROM public.omni_tenant_memory_access_grants")) {
     return "memory_grant";

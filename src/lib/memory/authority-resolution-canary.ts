@@ -13,6 +13,7 @@ import {
 } from "@/lib/security/canonical-actor";
 
 export const MEMORY_AUTHORITY_RESOLUTION_CANARY_SCHEMA_VERSION = 1 as const;
+export const MEMORY_DATA_RIGHT_AUTHORITY_CLAIM_SCHEMA_VERSION = 1 as const;
 
 export const MEMORY_AUTHORITY_UNAVAILABLE_CODES = Object.freeze([
   "canonical_scope_actor",
@@ -44,6 +45,15 @@ export type MemoryAuthorityResolutionCanaryResultV1 = Readonly<{
 export type MemoryAuthorityDenialCanaryInput = Readonly<{
   accessScope: unknown;
   actorBinding: CanonicalRequestActorBindingV1;
+  dataRightRequestClaim: MemoryDataRightAuthorityClaimV1 | null;
+}>;
+
+export type MemoryDataRightAuthorityClaimV1 = Readonly<{
+  schemaVersion: typeof MEMORY_DATA_RIGHT_AUTHORITY_CLAIM_SCHEMA_VERSION;
+  requestId: string;
+  requestGeneration: number;
+  requestBindingSha256: string;
+  resourceIds: readonly string[];
 }>;
 
 export type MemoryAuthorityDenialCanaryErrorCode =
@@ -90,7 +100,18 @@ type ActiveOperationPolicyRequirements = Readonly<{
   allowedVisibilities: readonly string[];
 }>;
 
-const INPUT_KEYS = ["accessScope", "actorBinding"] as const;
+const INPUT_KEYS = [
+  "accessScope",
+  "actorBinding",
+  "dataRightRequestClaim",
+] as const;
+const DATA_RIGHT_CLAIM_KEYS = [
+  "schemaVersion",
+  "requestId",
+  "requestGeneration",
+  "requestBindingSha256",
+  "resourceIds",
+] as const;
 const ACTOR_BINDING_KEYS = [
   "version",
   "kind",
@@ -128,14 +149,24 @@ export async function inspectMemoryAuthorityDenialCanary(
 ): Promise<MemoryAuthorityResolutionCanaryResultV1> {
   let scope: DatabaseMemoryAccessScope;
   let actorBinding: CanonicalRequestActorBindingV1;
+  let dataRightRequestClaim: MemoryDataRightAuthorityClaimV1 | null;
   try {
     if (!isExactPlainDataRecord(input, INPUT_KEYS)) {
       throw new Error("invalid input shape");
     }
     actorBinding = parseCanonicalActorBinding(input.actorBinding);
     scope = parseDatabaseMemoryAccessScope(input.accessScope);
+    dataRightRequestClaim = parseDataRightAuthorityClaim(
+      input.dataRightRequestClaim,
+    );
     if (!bindingContainsActor(actorBinding, scope.initiatingActorId)) {
       throw new Error("actor binding mismatch");
+    }
+    if (
+      isRequestBoundDataRight(scope.purposeId) !==
+        (dataRightRequestClaim !== null)
+    ) {
+      throw new Error("data-right claim mismatch");
     }
   } catch {
     throw new MemoryAuthorityDenialCanaryError("invalid_input");
@@ -149,7 +180,12 @@ export async function inspectMemoryAuthorityDenialCanary(
     return await runWithDatabaseTenantScope(scope.tenantId, async () => {
       const transactionResult = await getSql().transaction(
         async (sql: CanarySql) =>
-          inspectInOwnedTransaction(sql, scope, actorBinding),
+          inspectInOwnedTransaction(
+            sql,
+            scope,
+            actorBinding,
+            dataRightRequestClaim,
+          ),
       );
       return transactionResult as MemoryAuthorityResolutionCanaryResultV1;
     });
@@ -170,6 +206,7 @@ async function inspectInOwnedTransaction(
   sql: CanarySql,
   scope: DatabaseMemoryAccessScope,
   actorBinding: CanonicalRequestActorBindingV1,
+  dataRightRequestClaim: MemoryDataRightAuthorityClaimV1 | null,
 ): Promise<MemoryAuthorityResolutionCanaryResultV1> {
   await assertTransactionScope(sql, scope.tenantId);
 
@@ -184,6 +221,9 @@ async function inspectInOwnedTransaction(
   unavailable.add("context_grant_authority");
   unavailable.add("capability_grant_authority");
   unavailable.add("operation_policy_authority");
+  if (dataRightRequestClaim !== null) {
+    unavailable.add("request_bound_data_right_authority");
+  }
 
   const authUserRows = await sql`
     SELECT id, actor_id, status
@@ -302,18 +342,29 @@ async function inspectInOwnedTransaction(
   }
 
   if (isRequestBoundDataRight(scope.purposeId)) {
-    unavailable.add("request_bound_data_right_authority");
-    return deniedResult(unavailable);
-  }
-
-  if (!await inspectStandingAuthorities(
-    sql,
-    scope,
-    actorBinding,
-    membershipEpoch,
-    unavailable,
-  )) {
-    return deniedResult(unavailable);
+    if (
+      dataRightRequestClaim === null ||
+      !await hasActiveDataRightRequestAuthority(
+        sql,
+        scope,
+        actorBinding,
+        dataRightRequestClaim,
+      )
+    ) {
+      unavailable.add("request_bound_data_right_authority");
+      return deniedResult(unavailable);
+    }
+    unavailable.delete("request_bound_data_right_authority");
+  } else {
+    if (!await inspectStandingAuthorities(
+      sql,
+      scope,
+      actorBinding,
+      membershipEpoch,
+      unavailable,
+    )) {
+      return deniedResult(unavailable);
+    }
   }
 
   if (
@@ -345,6 +396,7 @@ async function inspectInOwnedTransaction(
       "capability",
       scope.capabilityGrantIds,
       policyRequirements.allowedVisibilities,
+      dataRightRequestClaim,
     )
   ) {
     unavailable.delete("capability_grant_authority");
@@ -443,6 +495,7 @@ async function hasActiveClaimedGrantAuthority(
   grantKind: "context" | "capability",
   grantIds: readonly string[],
   allowedVisibilities: readonly string[],
+  dataRightRequestClaim: MemoryDataRightAuthorityClaimV1 | null = null,
 ): Promise<boolean> {
   if (principalGeneration === undefined || grantIds.length === 0) return false;
   const grantRows = await sql`
@@ -496,6 +549,7 @@ async function hasActiveClaimedGrantAuthority(
       grantKind,
       grantIds[index],
       allowedVisibilities,
+      dataRightRequestClaim,
     )
   );
 }
@@ -508,6 +562,7 @@ function isActiveClaimedGrant(
   grantKind: "context" | "capability",
   grantId: string,
   allowedVisibilities: readonly string[],
+  dataRightRequestClaim: MemoryDataRightAuthorityClaimV1 | null,
 ): boolean {
   const observedAt = timestampMilliseconds(row.observed_at);
   const notBefore = timestampMilliseconds(row.not_before);
@@ -564,11 +619,89 @@ function isActiveClaimedGrant(
   }
   return (
     isCanonicalIdArray(row.operation_ids, 256) &&
+    (
+      dataRightRequestClaim === null ||
+      (
+        arraysEqual(row.resource_ids, dataRightRequestClaim.resourceIds) &&
+        row.operation_ids.includes(scope.purposeId)
+      )
+    ) &&
     row.max_items === null &&
     row.max_bytes === null &&
     positiveSafeInteger(row.max_invocations) !== undefined &&
     positiveSafeInteger(row.max_cost_microusd) !== undefined &&
     positiveSafeInteger(row.max_duration_ms) !== undefined
+  );
+}
+
+async function hasActiveDataRightRequestAuthority(
+  sql: CanarySql,
+  scope: DatabaseMemoryAccessScope,
+  actorBinding: CanonicalRequestActorBindingV1,
+  claim: MemoryDataRightAuthorityClaimV1,
+): Promise<boolean> {
+  const requestRows = await sql`
+    SELECT
+      schema_version,
+      tenant_id,
+      request_id,
+      request_generation,
+      purpose_id,
+      subject_actor_id,
+      executing_principal_type,
+      executing_principal_id,
+      confirmation_kind,
+      request_binding_sha256,
+      resource_ids,
+      not_before,
+      expires_at,
+      state,
+      lifecycle_revision,
+      activated_by_actor_id,
+      activated_at,
+      statement_timestamp() AS observed_at
+    FROM public.omni_tenant_memory_data_right_requests
+    WHERE tenant_id = ${scope.tenantId}
+      AND request_id = ${claim.requestId}
+      AND request_generation = ${claim.requestGeneration}
+    ORDER BY tenant_id ASC, request_id ASC, request_generation ASC
+    LIMIT 2
+    FOR SHARE
+  `;
+  const row = onlyRow(requestRows);
+  const notBefore = timestampMilliseconds(row?.not_before);
+  const expiresAt = timestampMilliseconds(row?.expires_at);
+  const activatedAt = timestampMilliseconds(row?.activated_at);
+  const observedAt = timestampMilliseconds(row?.observed_at);
+  const expectedConfirmation = scope.purposeId === "memory.forget.v1"
+    ? "reviewed_deletion_preview"
+    : "explicit_export_request";
+  return Boolean(
+    row &&
+      numericValue(row.schema_version) === 1 &&
+      row.tenant_id === scope.tenantId &&
+      row.request_id === claim.requestId &&
+      positiveSafeInteger(row.request_generation) === claim.requestGeneration &&
+      row.purpose_id === scope.purposeId &&
+      scope.executingPrincipalType === "user" &&
+      scope.executingPrincipalId === actorBinding.canonicalActorId &&
+      row.subject_actor_id === actorBinding.canonicalActorId &&
+      row.executing_principal_type === "user" &&
+      row.executing_principal_id === actorBinding.canonicalActorId &&
+      row.confirmation_kind === expectedConfirmation &&
+      row.request_binding_sha256 === claim.requestBindingSha256 &&
+      isCanonicalIdArray(row.resource_ids, 256) &&
+      arraysEqual(row.resource_ids, claim.resourceIds) &&
+      row.state === "active" &&
+      numericValue(row.lifecycle_revision) === 1 &&
+      row.activated_by_actor_id === actorBinding.canonicalActorId &&
+      notBefore !== undefined &&
+      expiresAt !== undefined &&
+      activatedAt !== undefined &&
+      observedAt !== undefined &&
+      notBefore <= activatedAt &&
+      activatedAt <= observedAt &&
+      observedAt < expiresAt,
   );
 }
 
@@ -1125,6 +1258,26 @@ function parseCanonicalActorBinding(
   return value as CanonicalRequestActorBindingV1;
 }
 
+function parseDataRightAuthorityClaim(
+  value: unknown,
+): MemoryDataRightAuthorityClaimV1 | null {
+  if (value === null) return null;
+  if (
+    !isExactPlainDataRecord(value, DATA_RIGHT_CLAIM_KEYS) ||
+    !Object.isFrozen(value) ||
+    value.schemaVersion !== MEMORY_DATA_RIGHT_AUTHORITY_CLAIM_SCHEMA_VERSION ||
+    !isContractId(value.requestId) ||
+    !value.requestId.startsWith("memory-data-right-request:") ||
+    positiveSafeInteger(value.requestGeneration) === undefined ||
+    typeof value.requestBindingSha256 !== "string" ||
+    !LOWERCASE_SHA256_PATTERN.test(value.requestBindingSha256) ||
+    !isFrozenCanonicalIdArray(value.resourceIds, 256)
+  ) {
+    throw new Error("invalid data-right authority claim");
+  }
+  return value as MemoryDataRightAuthorityClaimV1;
+}
+
 function bindingContainsActor(
   binding: CanonicalRequestActorBindingV1,
   actorId: string,
@@ -1248,6 +1401,53 @@ function isCanonicalIdArray(
         isContractId(entry) &&
         (index === 0 || String(value[index - 1]) < entry),
     );
+}
+
+function isFrozenCanonicalIdArray(
+  value: unknown,
+  maximumEntries: number,
+): value is readonly string[] {
+  if (
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    !Object.isFrozen(value) ||
+    value.length < 1 ||
+    value.length > maximumEntries
+  ) {
+    return false;
+  }
+  const keys = Reflect.ownKeys(value);
+  if (
+    keys.length !== value.length + 1 ||
+    keys.some(
+      (key) =>
+        typeof key !== "string" ||
+        (key !== "length" && !/^(0|[1-9][0-9]*)$/.test(key)),
+    )
+  ) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (
+      !descriptor ||
+      !descriptor.enumerable ||
+      !("value" in descriptor) ||
+      !isContractId(descriptor.value) ||
+      (index > 0 && String(value[index - 1]) >= descriptor.value)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function arraysEqual(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return left.length === right.length &&
+    left.every((entry, index) => entry === right[index]);
 }
 
 function isContractId(value: unknown): value is string {
