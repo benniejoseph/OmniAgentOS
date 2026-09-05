@@ -926,6 +926,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[78],
       up: ensureUserPrivateMemoryGraphProjection,
     },
+    {
+      ...databaseSchemaMigrations[79],
+      up: ensureMemoryAccessScopeInitplanPolicies,
+    },
   ];
 }
 
@@ -3690,6 +3694,333 @@ async function ensureUserPrivateMemoryGraphProjection(sql: SqlClient) {
     )
     WHERE access_contract_version = 1
   `;
+}
+
+async function ensureMemoryAccessScopeInitplanPolicies(sql: SqlClient) {
+  // The validated access envelope is transaction-constant. Pass it through an
+  // uncorrelated scalar subquery so PostgreSQL evaluates the strict parser once
+  // per statement instead of once per protected row.
+  await sql`
+    CREATE OR REPLACE FUNCTION
+      omni_user_private_memory_scope_v1_allows_validated(
+        access_scope JSONB,
+        row_tenant_id TEXT,
+        row_owner_actor_id TEXT,
+        row_allowed_purpose_ids TEXT[]
+      )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    STRICT
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        jsonb_typeof(access_scope) = 'object'
+        AND (access_scope ->> 'tenantId') = row_tenant_id
+        AND (access_scope ->> 'initiatingActorId') = row_owner_actor_id
+        AND (access_scope ->> 'executingPrincipalType') = 'user'
+        AND (access_scope ->> 'executingPrincipalId') = row_owner_actor_id
+        AND access_scope -> 'workspaceId' = 'null'::JSONB
+        AND access_scope -> 'projectId' = 'null'::JSONB
+        AND access_scope -> 'missionId' = 'null'::JSONB
+        AND (access_scope ->> 'purposeId') = ANY(row_allowed_purpose_ids),
+        FALSE
+      )
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_user_private_memory_scope_v1_allows(
+      row_tenant_id TEXT,
+      row_owner_actor_id TEXT,
+      row_allowed_purpose_ids TEXT[]
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT public.omni_user_private_memory_scope_v1_allows_validated(
+        public.omni_current_memory_access_scope_v1(),
+        row_tenant_id,
+        row_owner_actor_id,
+        row_allowed_purpose_ids
+      )
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION
+      omni_user_private_memory_scope_v1_allows_validated(
+        JSONB, TEXT, TEXT, TEXT[]
+      )
+    FROM PUBLIC
+  `;
+  await sql`
+    GRANT EXECUTE ON FUNCTION
+      omni_user_private_memory_scope_v1_allows_validated(
+        JSONB, TEXT, TEXT, TEXT[]
+      )
+    TO PUBLIC
+  `;
+
+  const accessPolicies = [
+    ["omni_memories", "omni_memory_access_scope_holdback"],
+    ["omni_retrieval_traces", "omni_retrieval_trace_access_scope"],
+    ["omni_memory_graph_nodes", "omni_memory_graph_nodes_access_scope"],
+    ["omni_memory_graph_edges", "omni_memory_graph_edges_access_scope"],
+  ] as const;
+  for (const [tableName, policyName] of accessPolicies) {
+    await sql.query(`DROP POLICY IF EXISTS ${policyName} ON ${tableName}`);
+    await sql.query(`
+      CREATE POLICY ${policyName}
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND (
+            SELECT omni_current_memory_access_scope_v1()
+          ) IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND access_state = 'scope_bound'
+          AND visibility = 'user_private'
+          AND omni_user_private_memory_scope_v1_allows_validated(
+            (SELECT omni_current_memory_access_scope_v1()),
+            tenant_id,
+            owner_actor_id,
+            allowed_purpose_ids
+          )
+        )
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND (
+            SELECT omni_current_memory_access_scope_v1()
+          ) IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND access_state = 'scope_bound'
+          AND visibility = 'user_private'
+          AND omni_user_private_memory_scope_v1_allows_validated(
+            (SELECT omni_current_memory_access_scope_v1()),
+            tenant_id,
+            owner_actor_id,
+            allowed_purpose_ids
+          )
+        )
+      )
+    `);
+  }
+
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_user_private_insert_purpose
+    ON omni_memories
+  `;
+  await sql`
+    CREATE POLICY omni_memory_user_private_insert_purpose
+    ON omni_memories
+    AS RESTRICTIVE
+    FOR INSERT
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR (
+        access_contract_version = 0
+        AND (SELECT omni_current_memory_access_scope_v1()) IS NULL
+      )
+      OR (
+        access_contract_version = 1
+        AND (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId' IN (
+          'memory.write.v1',
+          'memory.correct.v1',
+          'memory.formation.v1'
+        )
+      )
+    )
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_user_private_update_purpose
+    ON omni_memories
+  `;
+  await sql`
+    CREATE POLICY omni_memory_user_private_update_purpose
+    ON omni_memories
+    AS RESTRICTIVE
+    FOR UPDATE
+    USING (
+      omni_system_scope_enabled()
+      OR (
+        access_contract_version = 0
+        AND (SELECT omni_current_memory_access_scope_v1()) IS NULL
+      )
+      OR (
+        access_contract_version = 1
+        AND (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId' IN (
+          'memory.write.v1',
+          'memory.correct.v1',
+          'memory.forget.v1',
+          'memory.maintenance.v1'
+        )
+      )
+    )
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR (
+        access_contract_version = 0
+        AND (SELECT omni_current_memory_access_scope_v1()) IS NULL
+      )
+      OR (
+        access_contract_version = 1
+        AND (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId' IN (
+          'memory.write.v1',
+          'memory.correct.v1',
+          'memory.forget.v1',
+          'memory.maintenance.v1'
+        )
+      )
+    )
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_user_private_delete_purpose
+    ON omni_memories
+  `;
+  await sql`
+    CREATE POLICY omni_memory_user_private_delete_purpose
+    ON omni_memories
+    AS RESTRICTIVE
+    FOR DELETE
+    USING (
+      omni_system_scope_enabled()
+      OR (
+        access_contract_version = 0
+        AND (SELECT omni_current_memory_access_scope_v1()) IS NULL
+      )
+      OR (
+        access_contract_version = 1
+        AND (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId' IN (
+          'memory.forget.v1',
+          'memory.maintenance.v1'
+        )
+      )
+    )
+  `;
+
+  await sql`
+    DROP POLICY IF EXISTS omni_retrieval_trace_insert_purpose
+    ON omni_retrieval_traces
+  `;
+  await sql`
+    CREATE POLICY omni_retrieval_trace_insert_purpose
+    ON omni_retrieval_traces
+    AS RESTRICTIVE
+    FOR INSERT
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR (
+        access_contract_version = 0
+        AND (SELECT omni_current_memory_access_scope_v1()) IS NULL
+      )
+      OR (
+        access_contract_version = 1
+        AND (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId'
+          = 'memory.retrieve.v1'
+      )
+    )
+  `;
+
+  for (const tableName of [
+    "omni_memory_graph_nodes",
+    "omni_memory_graph_edges",
+  ] as const) {
+    await sql.query(`
+      DROP POLICY IF EXISTS ${tableName}_insert_purpose ON ${tableName}
+    `);
+    await sql.query(`
+      CREATE POLICY ${tableName}_insert_purpose
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR INSERT
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND (SELECT omni_current_memory_access_scope_v1()) IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId' IN (
+            'memory.write.v1',
+            'memory.correct.v1'
+          )
+        )
+      )
+    `);
+    await sql.query(`
+      DROP POLICY IF EXISTS ${tableName}_update_purpose ON ${tableName}
+    `);
+    await sql.query(`
+      CREATE POLICY ${tableName}_update_purpose
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR UPDATE
+      USING (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND (SELECT omni_current_memory_access_scope_v1()) IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId' IN (
+            'memory.write.v1',
+            'memory.correct.v1'
+          )
+        )
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND (SELECT omni_current_memory_access_scope_v1()) IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId' IN (
+            'memory.write.v1',
+            'memory.correct.v1'
+          )
+        )
+      )
+    `);
+    await sql.query(`
+      DROP POLICY IF EXISTS ${tableName}_delete_purpose ON ${tableName}
+    `);
+    await sql.query(`
+      CREATE POLICY ${tableName}_delete_purpose
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR DELETE
+      USING (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND (SELECT omni_current_memory_access_scope_v1()) IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId'
+            = 'memory.forget.v1'
+        )
+      )
+    `);
+  }
 }
 
 async function ensurePersonalNotificationCenter(sql: SqlClient) {

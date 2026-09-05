@@ -690,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the user-private memory graph projection migration", () => {
+  it("pins the memory access scope initplan migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 79,
-      name: "user_private_memory_graph_projection",
-      checksum: "5d491f28e211333c21caa8c65fac6b0819c98ef833322512340b38d30b1bbdf4",
+      version: 80,
+      name: "memory_access_scope_initplan_policies",
+      checksum: "bf42db947ea5b5382b3be6917cebb515d40ed260aa1365237aad62039203a290",
     });
   });
 
