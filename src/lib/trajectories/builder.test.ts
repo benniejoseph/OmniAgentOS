@@ -64,12 +64,32 @@ describe("run trajectory", () => {
         fallbackUsed: false,
         estimatedCostUsd: 0.004,
       }),
+      event(3, "run.checkpoint.recorded", {
+        checkpointId: "checkpoint-1",
+        checkpointSha256: "a".repeat(64),
+        sequence: 0,
+        boundaryKind: "model",
+        boundaryPhase: "before",
+        boundaryAttempt: 1,
+        lifecycleState: "active",
+        resumeDisposition: "resumable",
+      }),
     ]);
 
     expect(trajectory.version).toBe(2);
     expect(trajectory.usage).toMatchObject({ totalTokens: 15, estimatedCostUsd: 0.004, costKnown: true });
     expect(trajectory.providers).toEqual(["openai"]);
     expect(trajectory.toolExecutionIds).toEqual(["exec-1"]);
+    expect(trajectory.checkpoints).toEqual([expect.objectContaining({
+      checkpointId: "checkpoint-1",
+      sequence: 0,
+      boundaryKind: "model",
+      boundaryPhase: "before",
+    })]);
+    expect(trajectory.events[2].receipt).toMatchObject({
+      checkpointId: "checkpoint-1",
+      checkpointSha256: "a".repeat(64),
+    });
     expect(trajectory.events[1].receipt).not.toHaveProperty("summary");
     expect(JSON.stringify(trajectory)).not.toContain("private request");
     expect(JSON.stringify(trajectory)).not.toContain("private answer");

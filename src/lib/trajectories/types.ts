@@ -18,6 +18,18 @@ export type TrajectoryEvent = {
   receipt: Record<string, string | number | boolean | null>;
 };
 
+export type TrajectoryCheckpoint = {
+  checkpointId: string;
+  checkpointSha256: string;
+  sequence: number;
+  boundaryKind: "model" | "tool" | "approval" | "delegation" | "verifier";
+  boundaryPhase: "before" | "waiting" | "after";
+  boundaryAttempt: number;
+  lifecycleState: "active" | "waiting" | "terminal";
+  resumeDisposition: "resumable" | "awaiting_signal" | "not_resumable";
+  recordedAt: string;
+};
+
 export type RunTrajectory = {
   version: 2;
   run: {
@@ -44,6 +56,7 @@ export type RunTrajectory = {
   providers: string[];
   models: string[];
   toolExecutionIds: string[];
+  checkpoints: TrajectoryCheckpoint[];
   learning: {
     feedbackVerdict?: "useful" | "needs_work";
     correctionLength?: number;
