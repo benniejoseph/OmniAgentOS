@@ -456,6 +456,18 @@ recorded.
 
 **Phase gate:** zero false `succeeded` outcomes in negative/partial/dry-run fixtures; every accepted effect is attributable and idempotent; projection replay parity is 100%.
 
+P1.5 now has a first dormant contract foundation in
+`src/lib/rag/claim-evidence-map.ts`. It defines exact answer-span claims,
+canonical evidence snapshots, externally resolved authorization receipts,
+versioned semantic assertions, half-open temporal validity, bounded inference,
+five deterministic support states, and declared-material-claim coverage. Its
+structural verifier explicitly does not claim semantic truth, evidence-source
+or resolver trust, or claim-set completeness. No RAG serving path, legacy
+`GroundingReport`, store, event, worker, API, or UI is changed, so P1.5 remains
+open until authorized semantic verification and user-facing adoption are
+implemented behind compatibility gates. The normative boundary is documented
+in [ClaimEvidenceMap v1](CLAIM_EVIDENCE.md).
+
 ### Phase 2 — Convergent sources, canonical assets, and privacy lifecycle
 
 **Goal:** Ensure the system knows exactly what it has, which version it has, and what must disappear.
