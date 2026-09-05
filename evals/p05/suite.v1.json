@@ -1,0 +1,422 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "asael-p0.5-core-v1",
+  "scorerVersion": "p0.5-v1",
+  "observedAt": "2026-01-15T12:00:00.000Z",
+  "timezone": "UTC",
+  "dataClassification": "synthetic",
+  "sideEffectPolicy": "none",
+  "cases": [
+    {
+      "id": "scope.boundary-matrix",
+      "category": "scope",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.scope",
+        "correlationId": "synthetic:correlation:scope-boundary-matrix",
+        "grantIds": ["synthetic:grant:shared-project"]
+      },
+      "given": {
+        "records": [
+          { "id": "memory:own", "tenantId": "synthetic:tenant:alpha", "ownerActorId": "synthetic:actor:owner", "visibility": "private" },
+          { "id": "memory:shared", "tenantId": "synthetic:tenant:alpha", "ownerActorId": "synthetic:actor:collaborator", "visibility": "grant:synthetic:grant:shared-project" },
+          { "id": "memory:sibling-private", "tenantId": "synthetic:tenant:alpha", "ownerActorId": "synthetic:actor:collaborator", "visibility": "private" },
+          { "id": "memory:other-tenant", "tenantId": "synthetic:tenant:beta", "ownerActorId": "synthetic:actor:owner", "visibility": "private" }
+        ]
+      },
+      "action": { "operation": "memory.read", "limit": 10 },
+      "assertions": [
+        { "op": "equals", "path": "/scope/tenantId", "value": "synthetic:tenant:alpha" },
+        { "op": "equals", "path": "/scope/initiatingActorId", "value": "synthetic:actor:owner" },
+        { "op": "equals", "path": "/visibleIds", "value": ["memory:own", "memory:shared"] },
+        { "op": "excludes", "path": "/visibleIds", "value": "memory:sibling-private" },
+        { "op": "excludes", "path": "/visibleIds", "value": "memory:other-tenant" },
+        { "op": "equals", "path": "/leakedReadCount", "value": 0 },
+        { "op": "equals", "path": "/effectCount", "value": 0 }
+      ]
+    },
+    {
+      "id": "scope.mismatch-fails-closed",
+      "category": "scope",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.scope",
+        "correlationId": "synthetic:correlation:scope-mismatch",
+        "grantIds": []
+      },
+      "given": {
+        "requestedRecord": { "id": "memory:other-tenant", "tenantId": "synthetic:tenant:beta" }
+      },
+      "action": { "operation": "memory.read-one" },
+      "assertions": [
+        { "op": "equals", "path": "/decision", "value": "deny" },
+        { "op": "equals", "path": "/visibleIds", "value": [] },
+        { "op": "equals", "path": "/leakedReadCount", "value": 0 },
+        { "op": "equals", "path": "/effectCount", "value": 0 },
+        { "op": "exists", "path": "/correlationId" }
+      ]
+    },
+    {
+      "id": "pagination.mid-page-failure-retry",
+      "category": "pagination",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:sync-worker",
+        "purpose": "evaluation.p0_5.pagination",
+        "correlationId": "synthetic:correlation:pagination-retry",
+        "grantIds": ["synthetic:grant:source-read"]
+      },
+      "given": {
+        "initialCursor": "cursor:page-1",
+        "page": { "ids": ["source:item-1", "source:item-2"], "nextCursor": "cursor:page-2" },
+        "firstAttemptFailsAfterItem": "source:item-1"
+      },
+      "action": { "operation": "source.sync-page", "retryCount": 1 },
+      "assertions": [
+        { "op": "equals", "path": "/committedIds", "value": ["source:item-1", "source:item-2"] },
+        { "op": "equals", "path": "/committedCursor", "value": "cursor:page-2" },
+        { "op": "equals", "path": "/cursorAdvancedBeforeCommit", "value": false },
+        { "op": "equals", "path": "/duplicateCount", "value": 0 },
+        { "op": "equals", "path": "/lostCount", "value": 0 }
+      ]
+    },
+    {
+      "id": "update-delete.tombstone-blocks-stale-resurrection",
+      "category": "update_delete",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:source-worker",
+        "purpose": "evaluation.p0_5.update_delete",
+        "correlationId": "synthetic:correlation:tombstone",
+        "grantIds": ["synthetic:grant:source-write"]
+      },
+      "given": {
+        "events": [
+          { "revision": 1, "kind": "upsert", "id": "source:item-1" },
+          { "revision": 3, "kind": "delete", "id": "source:item-1" },
+          { "revision": 2, "kind": "upsert", "id": "source:item-1" }
+        ]
+      },
+      "action": { "operation": "source.reduce-revisions" },
+      "assertions": [
+        { "op": "equals", "path": "/head/kind", "value": "tombstone" },
+        { "op": "equals", "path": "/head/revision", "value": 3 },
+        { "op": "equals", "path": "/currentIds", "value": [] },
+        { "op": "equals", "path": "/searchableIds", "value": [] },
+        { "op": "equals", "path": "/staleResurrectionCount", "value": 0 }
+      ]
+    },
+    {
+      "id": "retry.ack-lost-exactly-once",
+      "category": "retry",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.retry",
+        "correlationId": "synthetic:correlation:retry-ack-lost",
+        "grantIds": ["synthetic:grant:calendar-write"]
+      },
+      "given": {
+        "idempotencyKey": "synthetic:idempotency:calendar-1",
+        "bindingSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "firstAttempt": "provider_acknowledged_response_lost"
+      },
+      "action": { "operation": "calendar.create", "deliveryAttempts": 2 },
+      "assertions": [
+        { "op": "equals", "path": "/attemptCount", "value": 2 },
+        { "op": "equals", "path": "/providerEffectCount", "value": 1 },
+        { "op": "equals", "path": "/receiptCount", "value": 1 },
+        { "op": "equals", "path": "/receipt/bindingSha256", "value": "1111111111111111111111111111111111111111111111111111111111111111" },
+        { "op": "equals", "path": "/receipt/verification", "value": "read_after_write" }
+      ]
+    },
+    {
+      "id": "intent-routing.portfolio-blog-automation",
+      "category": "intent_routing",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.intent_routing",
+        "correlationId": "synthetic:correlation:intent-blog",
+        "grantIds": ["synthetic:grant:github-actions"]
+      },
+      "given": {
+        "utterance": "Run my portfolio blog automation",
+        "knownProcedure": { "id": "workflow:portfolio-blog", "aliases": ["portfolio blog automation", "generate blog post"] }
+      },
+      "action": { "operation": "intent.route" },
+      "assertions": [
+        { "op": "equals", "path": "/route", "value": "durable_workflow" },
+        { "op": "equals", "path": "/workflowId", "value": "workflow:portfolio-blog" },
+        { "op": "equals", "path": "/ambiguityState", "value": "none" },
+        { "op": "includes", "path": "/requiredToolIds", "value": "mcp:github:actions_run_trigger" },
+        { "op": "equals", "path": "/effectCountBeforeGovernedExecution", "value": 0 }
+      ]
+    },
+    {
+      "id": "intent-routing.ambiguous-delete-clarifies",
+      "category": "intent_routing",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.intent_routing",
+        "correlationId": "synthetic:correlation:intent-delete",
+        "grantIds": []
+      },
+      "given": { "utterance": "Delete the old project", "candidateTargetIds": ["project:one", "project:two"] },
+      "action": { "operation": "intent.route" },
+      "assertions": [
+        { "op": "equals", "path": "/route", "value": "clarify" },
+        { "op": "equals", "path": "/ambiguityState", "value": "detected" },
+        { "op": "equals", "path": "/selectedTargetIds", "value": [] },
+        { "op": "excludes", "path": "/selectedToolIds", "value": "project.delete" },
+        { "op": "equals", "path": "/effectCount", "value": 0 }
+      ]
+    },
+    {
+      "id": "context-selection.explicit-empty-wins",
+      "category": "context_selection",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.context_selection",
+        "correlationId": "synthetic:correlation:context-empty",
+        "grantIds": ["synthetic:grant:memory-read"]
+      },
+      "given": { "explicitSelection": [], "automaticCandidates": ["memory:high-score"] },
+      "action": { "operation": "context.compile", "selectionMode": "explicit" },
+      "assertions": [
+        { "op": "equals", "path": "/selectedEvidenceIds", "value": [] },
+        { "op": "equals", "path": "/retrievalInvoked", "value": false },
+        { "op": "equals", "path": "/disclosureBoundary", "value": "none" },
+        { "op": "excludes", "path": "/selectedEvidenceIds", "value": "memory:high-score" }
+      ]
+    },
+    {
+      "id": "context-selection.explicit-allowlist-wins",
+      "category": "context_selection",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.context_selection",
+        "correlationId": "synthetic:correlation:context-allowlist",
+        "grantIds": ["synthetic:grant:memory-read"]
+      },
+      "given": { "explicitSelection": ["memory:selected"], "automaticCandidates": ["memory:higher-score"], "unauthorizedIds": ["memory:forbidden"] },
+      "action": { "operation": "context.compile", "selectionMode": "explicit" },
+      "assertions": [
+        { "op": "equals", "path": "/selectedEvidenceIds", "value": ["memory:selected"] },
+        { "op": "excludes", "path": "/selectedEvidenceIds", "value": "memory:higher-score" },
+        { "op": "excludes", "path": "/selectedEvidenceIds", "value": "memory:forbidden" },
+        { "op": "equals", "path": "/scopeViolationCount", "value": 0 }
+      ]
+    },
+    {
+      "id": "citations.valid-id-wrong-claim",
+      "category": "citations",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.citations",
+        "correlationId": "synthetic:correlation:citation-wrong-claim",
+        "grantIds": ["synthetic:grant:evidence-read"]
+      },
+      "given": {
+        "claim": { "id": "synthetic:claim:revenue", "proposition": { "subject": "revenue", "predicate": "growth_percent", "object": 10 }, "material": true },
+        "citation": { "id": "synthetic:evidence:headcount", "assertions": [{ "subject": "headcount", "predicate": "growth_percent", "object": 10 }] },
+        "candidateLink": { "claimId": "synthetic:claim:revenue", "evidenceId": "synthetic:evidence:headcount" }
+      },
+      "action": { "operation": "claim-evidence.evaluate" },
+      "assertions": [
+        { "op": "equals", "path": "/claims/0/id", "value": "synthetic:claim:revenue" },
+        { "op": "equals", "path": "/claims/0/supportState", "value": "unsupported" },
+        { "op": "equals", "path": "/claims/0/verified", "value": false },
+        { "op": "equals", "path": "/materialCoverageBasisPoints", "value": 0 }
+      ]
+    },
+    {
+      "id": "citations.full-material-support",
+      "category": "citations",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.citations",
+        "correlationId": "synthetic:correlation:citation-supported",
+        "grantIds": ["synthetic:grant:evidence-read"]
+      },
+      "given": {
+        "claims": [
+          { "id": "synthetic:claim:launch-day", "proposition": { "subject": "launch", "predicate": "scheduled_day", "object": "Monday" }, "material": true },
+          { "id": "synthetic:claim:launch-owner", "proposition": { "subject": "launch", "predicate": "owner", "object": "Synthetic Owner" }, "material": true }
+        ],
+        "evidenceUnits": [
+          { "id": "synthetic:evidence:calendar", "assertions": [{ "subject": "launch", "predicate": "scheduled_day", "object": "Monday" }] },
+          { "id": "synthetic:evidence:assignment", "assertions": [{ "subject": "launch", "predicate": "owner", "object": "Synthetic Owner" }] }
+        ],
+        "candidateLinks": [
+          { "claimId": "synthetic:claim:launch-day", "evidenceId": "synthetic:evidence:calendar" },
+          { "claimId": "synthetic:claim:launch-owner", "evidenceId": "synthetic:evidence:assignment" }
+        ]
+      },
+      "action": { "operation": "claim-evidence.evaluate" },
+      "assertions": [
+        { "op": "equals", "path": "/claims/0/id", "value": "synthetic:claim:launch-day" },
+        { "op": "equals", "path": "/claims/0/supportState", "value": "supported" },
+        { "op": "equals", "path": "/claims/1/id", "value": "synthetic:claim:launch-owner" },
+        { "op": "equals", "path": "/claims/1/supportState", "value": "supported" },
+        { "op": "equals", "path": "/claims/0/evidenceIds", "value": ["synthetic:evidence:calendar"] },
+        { "op": "equals", "path": "/claims/1/evidenceIds", "value": ["synthetic:evidence:assignment"] },
+        { "op": "equals", "path": "/materialCoverageBasisPoints", "value": 10000 },
+        { "op": "equals", "path": "/unauthorizedEvidenceCount", "value": 0 }
+      ]
+    },
+    {
+      "id": "temporal.as-of-selects-valid-interval",
+      "category": "temporal",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.temporal",
+        "correlationId": "synthetic:correlation:temporal-as-of",
+        "grantIds": ["synthetic:grant:memory-read"]
+      },
+      "given": {
+        "question": "What was the launch day as of 2026-01-10?",
+        "facts": [
+          { "id": "evidence:friday", "value": "Friday", "validFrom": "2026-01-01T00:00:00.000Z", "validTo": "2026-01-12T00:00:00.000Z" },
+          { "id": "evidence:monday", "value": "Monday", "validFrom": "2026-01-12T00:00:00.000Z", "validTo": null }
+        ]
+      },
+      "action": { "operation": "temporal.answer", "asOf": "2026-01-10T12:00:00.000Z" },
+      "assertions": [
+        { "op": "equals", "path": "/answer", "value": "Friday" },
+        { "op": "equals", "path": "/selectedEvidenceIds", "value": ["evidence:friday"] },
+        { "op": "excludes", "path": "/selectedEvidenceIds", "value": "evidence:monday" },
+        { "op": "equals", "path": "/uncertainty", "value": "none" }
+      ]
+    },
+    {
+      "id": "approvals.material-change-invalidates",
+      "category": "approvals",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.approvals",
+        "correlationId": "synthetic:correlation:approval-change",
+        "grantIds": ["synthetic:grant:calendar-write"]
+      },
+      "given": {
+        "approvalBinding": { "targetSha256": "2222222222222222222222222222222222222222222222222222222222222222", "inputSha256": "3333333333333333333333333333333333333333333333333333333333333333" },
+        "requestedBinding": { "targetSha256": "4444444444444444444444444444444444444444444444444444444444444444", "inputSha256": "3333333333333333333333333333333333333333333333333333333333333333" }
+      },
+      "action": { "operation": "calendar.delete", "riskLevel": 2 },
+      "assertions": [
+        { "op": "equals", "path": "/approvalAccepted", "value": false },
+        { "op": "equals", "path": "/status", "value": "waiting_approval" },
+        { "op": "equals", "path": "/reason", "value": "material_binding_changed" },
+        { "op": "equals", "path": "/effectCount", "value": 0 }
+      ]
+    },
+    {
+      "id": "approvals.exact-binding-permits-governed-effect",
+      "category": "approvals",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.approvals",
+        "correlationId": "synthetic:correlation:approval-exact",
+        "grantIds": ["synthetic:grant:calendar-write", "synthetic:approval:calendar-delete"]
+      },
+      "given": {
+        "approvalBindingSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "requestedBindingSha256": "5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "action": { "operation": "calendar.delete", "riskLevel": 2 },
+      "assertions": [
+        { "op": "equals", "path": "/approvalAccepted", "value": true },
+        { "op": "equals", "path": "/executor", "value": "governed_tool_executor" },
+        { "op": "equals", "path": "/effectCount", "value": 1 },
+        { "op": "equals", "path": "/effectReceiptId", "value": "synthetic:receipt:calendar-delete" }
+      ]
+    },
+    {
+      "id": "false-completion.legacy-completed-is-unverified",
+      "category": "false_completion",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.false_completion",
+        "correlationId": "synthetic:correlation:legacy-completed",
+        "grantIds": []
+      },
+      "given": { "legacyStatus": "completed", "terminalReceipt": null },
+      "action": { "operation": "outcome.project" },
+      "assertions": [
+        { "op": "equals", "path": "/disposition", "value": "unverified" },
+        { "op": "equals", "path": "/canonicalStatus", "value": "unverified" },
+        { "op": "equals", "path": "/succeeded", "value": false },
+        { "op": "equals", "path": "/reasonCode", "value": "legacy_completed_without_verification" }
+      ]
+    },
+    {
+      "id": "false-completion.verified-live-positive-control",
+      "category": "false_completion",
+      "scope": {
+        "synthetic": true,
+        "tenantId": "synthetic:tenant:alpha",
+        "initiatingActorId": "synthetic:actor:owner",
+        "executingPrincipalId": "synthetic:principal:asael",
+        "purpose": "evaluation.p0_5.false_completion",
+        "correlationId": "synthetic:correlation:verified-success",
+        "grantIds": []
+      },
+      "given": {
+        "executionMode": "live",
+        "requiredOutcomes": 2,
+        "stronglyVerifiedOutcomes": 2,
+        "pendingApprovals": 0,
+        "blockingDependencies": 0
+      },
+      "action": { "operation": "outcome.evaluate" },
+      "assertions": [
+        { "op": "equals", "path": "/disposition", "value": "succeeded" },
+        { "op": "equals", "path": "/canonicalStatus", "value": "succeeded" },
+        { "op": "equals", "path": "/verificationState", "value": "verified" },
+        { "op": "equals", "path": "/succeeded", "value": true },
+        { "op": "equals", "path": "/reasonCode", "value": "all_requirements_verified" }
+      ]
+    }
+  ]
+}
