@@ -237,6 +237,17 @@ its non-empty production reconciliation passes. Broader boundaries remain
 later P1.6 gates. See
 [RunCheckpoint v1](vision/RUN_CHECKPOINTS.md).
 
+Migration v70 adds immutable, forced-RLS checkpoint-fork lineage. A fork
+transaction validates the complete root-to-selected checkpoint chain and the
+exact source event prefix, inserts a new queued run with the corrected turn,
+stores only correction and prefix receipts in lineage, and appends scoped
+source/target fork events. The target receives an independently constructed
+execution scope from the current authenticated actor. Context and capability
+grant sets are rebound explicitly; provider continuation state, tool execution
+state, resume claims, and approval decisions are never copied. The corrected
+run then enters the same governed runner as a new trace while the original run
+and its events remain unchanged.
+
 ## Durable workflows
 
 Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured output), persisted, and executed node-by-node through queue leases (`omni_operation_jobs`): lease → tick → retry with backoff (max 5 attempts) → recovery for stale leases. Approval nodes pause until signaled. The daily cron plus `after()` drains advance work; see [deployment.md](deployment.md) for cadence options.

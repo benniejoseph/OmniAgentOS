@@ -135,6 +135,24 @@ read-only canary runs after non-empty shadow and canary reconciliation plus a
 hard-kill generation-reclaim proof; mutable and unsupported runs remain outside
 that path.
 
+## Checkpoint replay and correction create a new authority boundary
+
+P1.7 forks never resume the source worker. `src/lib/runs/fork-store.ts` rereads
+and validates the full checkpoint chain through the selected boundary, requires
+the source event prefix to end at the exact matching
+`run.checkpoint.recorded` receipt, and hashes a canonical prefix manifest. In
+one tenant-scoped transaction it creates the target run, immutable v1 lineage,
+fresh scope binding, and metadata-only `run.fork.created` / `run.forked`
+events. The correction is present in the new run input; lineage stores only its
+length and SHA-256.
+
+The target begins queued with `continuation = NULL`. Its execution scope is
+constructed from the current authenticated actor with explicitly new grant
+sets and checkpoint causation. No source tool execution, approval, resume
+claim, or provider continuation is copied. Any consequential action reached by
+the corrected trace returns through the governed tool executor and creates a
+new approval decision.
+
 ## One harness receipt per run
 
 Every new agent run emits a durable `run.harness` event after context and
