@@ -1297,5 +1297,10 @@ and database-session scope. Idempotent replays that observe the existing row do
 not emit another creation event.
 
 Legacy writes retain their existing compatibility behavior. The canary adds no
-agent-private/shared event and does not authorize tenant-wide graph, RAG,
-context, or formation consumption of bound rows.
+agent-private/shared event and does not authorize tenant-wide graph
+consumption, agent-run context, or formation from bound rows. Migration v79 adds an
+actor-bound graph projection derived from the same memory create/correction
+transaction. It emits no second semantic memory event: the projection carries
+immutable owner and purpose metadata, while the existing memory event remains
+the authoritative fact. Owner-scoped graph reads and Retrieval Plan searches
+may consume that projection; unscoped workers and sibling actors cannot.

@@ -1755,23 +1755,30 @@ session/mobile memory create, list, search, inspect, correction, reviewed
 forget, portable export, and portable restore use that scope; version-0 rows
 remain on an isolated compatibility query. Bound creation emits a
 metadata-only `memory.user_private.created` event in the same transaction.
-Private rows are not projected into the tenant-wide graph or consumed by
-background formation. The authenticated Retrieval Plan API may now merge the
-calling canonical user's independently scoped private results into an
-context pack. Migration v77 gives retrieval traces the same immutable
-user-private binding: a scoped request persists only its private-memory
-evidence component in an owner-only trace, while its legacy, knowledge, and
-graph evidence remains outside that trace. The tenant compatibility trace and
-unscoped graph/worker readers cannot observe the scoped query or result.
+Private rows are not consumed by background formation. The authenticated
+Retrieval Plan API may merge the calling canonical user's independently scoped
+private results into a context pack. Migration v77 gives retrieval traces the
+same immutable user-private binding: a scoped request persists only its
+private-memory evidence component in an owner-only trace, while its legacy,
+knowledge, and graph evidence remains outside that trace. The tenant
+compatibility trace and unscoped graph/worker readers cannot observe the scoped
+query or result.
+Migration v79 projects user-private memory into a separately namespaced graph
+with the same immutable owner binding. Manual writes and corrections project
+under exact purposes; the graph API and Retrieval Plan query the actor-private
+lane independently and merge it with compatibility results only in application
+memory. Sibling actors, unscoped workers, and tenant-wide rebuilds cannot read
+or overwrite that lane.
 Migration v74 repairs the daily-brief memory-lineage column used by governed
 deletion invalidation. Migrations v75-v76 index immutable deletion barriers and
 remove redundant derived-row read scans after an integrity-gated cutover; the
 production scoped Retrieval Plan and governed-forget canary passes without
-exposing embeddings. Agent-run consumption, agent-private and
-mission/project/workspace-shared memory, standing
-consent-driven formation, actor-aware graph/worker consumption, and the full
-authority resolver remain pending. This canary therefore advances P3.1 without
-marking it done.
+exposing embeddings. Migration v78 applies the same integrity-gated indexed
+lineage cutover to retrieval-trace deletion lookup. Agent-run consumption,
+agent-private and mission/project/workspace-shared memory, standing
+consent-driven formation, background worker consumption, and the full authority
+resolver remain pending. This canary therefore advances P3.1 without marking
+it done.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
