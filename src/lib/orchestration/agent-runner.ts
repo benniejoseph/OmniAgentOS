@@ -93,6 +93,7 @@ import {
   type ShadowRunContractSnapshot,
 } from "@/lib/runs/contract-runtime";
 import {
+  isExpandedCheckpointCanaryEnrollment,
   isExpandedCheckpointShadowEnrollment,
   resolveApprovalCheckpointShadowEnrollment,
   type ApprovalCheckpointShadowEnrollment,
@@ -354,7 +355,11 @@ export async function* runAgent(
           enrollment: checkpointShadowEnrollment,
         });
       } catch (error) {
-        logRunContractShadowFailure("checkpoint_model_after", error);
+        handleCheckpointPersistenceFailure(
+          checkpointShadowEnrollment,
+          "checkpoint_model_after",
+          error,
+        );
       }
     }
     if (event.type === "done" && event.grounding && safeEvent.type === "done") {
@@ -383,7 +388,11 @@ export async function* runAgent(
         enrollment: checkpointShadowEnrollment,
       });
     } catch (error) {
-      logRunContractShadowFailure("checkpoint_model_before", error);
+      handleCheckpointPersistenceFailure(
+        checkpointShadowEnrollment,
+        "checkpoint_model_before",
+        error,
+      );
     }
   }
 
@@ -406,7 +415,11 @@ export async function* runAgent(
         enrollment: checkpointShadowEnrollment,
       });
     } catch (error) {
-      logRunContractShadowFailure("checkpoint_model_after", error);
+      handleCheckpointPersistenceFailure(
+        checkpointShadowEnrollment,
+        "checkpoint_model_after",
+        error,
+      );
     }
   }
 
@@ -427,7 +440,11 @@ export async function* runAgent(
         recordedAt: new Date().toISOString(),
       });
     } catch (error) {
-      logRunContractShadowFailure("checkpoint_tool_before", error);
+      handleCheckpointPersistenceFailure(
+        checkpointShadowEnrollment,
+        "checkpoint_tool_before",
+        error,
+      );
     }
   }
 
@@ -452,7 +469,11 @@ export async function* runAgent(
         enrollment: checkpointShadowEnrollment,
       });
     } catch (error) {
-      logRunContractShadowFailure("checkpoint_tool_after", error);
+      handleCheckpointPersistenceFailure(
+        checkpointShadowEnrollment,
+        "checkpoint_tool_after",
+        error,
+      );
     }
   }
 
@@ -474,7 +495,8 @@ export async function* runAgent(
         enrollment: checkpointShadowEnrollment,
       });
     } catch (error) {
-      logRunContractShadowFailure(
+      handleCheckpointPersistenceFailure(
+        checkpointShadowEnrollment,
         input.kind === "delegation"
           ? `checkpoint_delegation_${input.phase}`
           : `checkpoint_verifier_${input.phase}`,
@@ -534,7 +556,11 @@ export async function* runAgent(
         enrollment: checkpointShadowEnrollment,
       });
     } catch (error) {
-      logRunContractShadowFailure("checkpoint_model_after", error);
+      handleCheckpointPersistenceFailure(
+        checkpointShadowEnrollment,
+        "checkpoint_model_after",
+        error,
+      );
     }
   }
 
@@ -2419,7 +2445,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
           enrollment: continuation.checkpointShadowEnrollment,
         });
       } catch (error) {
-        logRunContractShadowFailure("checkpoint_model_after", error);
+        handleCheckpointPersistenceFailure(
+          continuation.checkpointShadowEnrollment,
+          "checkpoint_model_after",
+          error,
+        );
       }
     }
     return record;
@@ -2442,7 +2472,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
         enrollment: continuation.checkpointShadowEnrollment,
       });
     } catch (error) {
-      logRunContractShadowFailure("checkpoint_model_before", error);
+      handleCheckpointPersistenceFailure(
+        continuation.checkpointShadowEnrollment,
+        "checkpoint_model_before",
+        error,
+      );
     }
   };
 
@@ -2463,7 +2497,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
         recordedAt: new Date().toISOString(),
       });
     } catch (error) {
-      logRunContractShadowFailure("checkpoint_tool_before", error);
+      handleCheckpointPersistenceFailure(
+        continuation.checkpointShadowEnrollment,
+        "checkpoint_tool_before",
+        error,
+      );
     }
   };
 
@@ -2489,7 +2527,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
         enrollment: continuation.checkpointShadowEnrollment,
       });
     } catch (error) {
-      logRunContractShadowFailure("checkpoint_tool_after", error);
+      handleCheckpointPersistenceFailure(
+        continuation.checkpointShadowEnrollment,
+        "checkpoint_tool_after",
+        error,
+      );
     }
   };
 
@@ -2829,7 +2871,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
               enrollment: continuation.checkpointShadowEnrollment,
             });
           } catch (checkpointError) {
-            logRunContractShadowFailure(
+            handleCheckpointPersistenceFailure(
+              continuation.checkpointShadowEnrollment,
               "checkpoint_model_after",
               checkpointError,
             );
@@ -3143,7 +3186,11 @@ async function resumeProviderBoundAgentRunAfterApproval({
           enrollment: continuation.checkpointShadowEnrollment,
         });
       } catch (error) {
-        logRunContractShadowFailure("checkpoint_model_after", error);
+        handleCheckpointPersistenceFailure(
+          continuation.checkpointShadowEnrollment,
+          "checkpoint_model_after",
+          error,
+        );
       }
     }
     return record;
@@ -3166,7 +3213,11 @@ async function resumeProviderBoundAgentRunAfterApproval({
         enrollment: continuation.checkpointShadowEnrollment,
       });
     } catch (error) {
-      logRunContractShadowFailure("checkpoint_model_before", error);
+      handleCheckpointPersistenceFailure(
+        continuation.checkpointShadowEnrollment,
+        "checkpoint_model_before",
+        error,
+      );
     }
   };
   const checkpointBeforeResumeTool = async (
@@ -3186,7 +3237,11 @@ async function resumeProviderBoundAgentRunAfterApproval({
         recordedAt: new Date().toISOString(),
       });
     } catch (error) {
-      logRunContractShadowFailure("checkpoint_tool_before", error);
+      handleCheckpointPersistenceFailure(
+        continuation.checkpointShadowEnrollment,
+        "checkpoint_tool_before",
+        error,
+      );
     }
   };
 
@@ -3212,7 +3267,11 @@ async function resumeProviderBoundAgentRunAfterApproval({
         enrollment: continuation.checkpointShadowEnrollment,
       });
     } catch (error) {
-      logRunContractShadowFailure("checkpoint_tool_after", error);
+      handleCheckpointPersistenceFailure(
+        continuation.checkpointShadowEnrollment,
+        "checkpoint_tool_after",
+        error,
+      );
     }
   };
   if (
@@ -3603,7 +3662,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
             enrollment: continuation.checkpointShadowEnrollment,
           });
         } catch (checkpointError) {
-          logRunContractShadowFailure(
+          handleCheckpointPersistenceFailure(
+            continuation.checkpointShadowEnrollment,
             "checkpoint_model_after",
             checkpointError,
           );
@@ -4530,6 +4590,17 @@ function logRunContractShadowFailure(
       error instanceof Error ? error.message : "Unknown run contract error.",
     )).slice(0, 1_000),
   );
+}
+
+function handleCheckpointPersistenceFailure(
+  enrollment: ApprovalCheckpointShadowEnrollment | undefined,
+  phase: Parameters<typeof logRunContractShadowFailure>[0],
+  error: unknown,
+) {
+  if (isExpandedCheckpointCanaryEnrollment(enrollment)) {
+    throw error;
+  }
+  logRunContractShadowFailure(phase, error);
 }
 
 function stableToolboxFingerprint(tools: readonly ToolboxEntry[]) {
