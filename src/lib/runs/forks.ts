@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import type { ChatMessage } from "@/lib/orchestration/types";
-import type { RunCheckpointV1 } from "@/lib/runs/checkpoints";
+import {
+  parseRunCheckpointV1,
+  validateRunCheckpointSuccessorV1,
+  type RunCheckpointV1,
+} from "@/lib/runs/checkpoints";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 
 export const RUN_FORK_LINEAGE_SCHEMA_VERSION = 1 as const;
@@ -81,6 +85,14 @@ export type BuildRunForkLineageV1Input = Readonly<{
     sha256: string;
   }>;
   createdAt: string;
+}>;
+
+export type RunForkReplayEvent = Readonly<{
+  id: string;
+  seq: number;
+  type: string;
+  payload: Record<string, unknown>;
+  at: string;
 }>;
 
 export function buildRunForkLineageV1(
@@ -177,6 +189,75 @@ export function deterministicRunForkTargetId(forkId: string) {
   return `afr_${sha256(`asael.run-fork-target.v1\0${forkId}`).slice(0, 40)}`;
 }
 
+export function validateRunCheckpointForkChainV1(
+  checkpointValues: readonly unknown[],
+  checkpointId: string,
+): RunCheckpointV1 {
+  if (!checkpointValues.length || checkpointValues.length > 1_000_000) {
+    throw new Error("Checkpoint fork requires a bounded non-empty checkpoint chain.");
+  }
+  const checkpoints = checkpointValues.map(parseRunCheckpointV1);
+  const targetIndex = checkpoints.findIndex(
+    (checkpoint) => checkpoint.checkpointId === checkpointId,
+  );
+  if (targetIndex < 0 || targetIndex !== checkpoints.length - 1) {
+    throw new Error("Checkpoint fork target must be the last record in its replay chain.");
+  }
+  const root = checkpoints[0];
+  if (root.sequence !== 0 || root.parent !== null) {
+    throw new Error("Checkpoint fork replay chain is missing its root.");
+  }
+  checkpoints.forEach((checkpoint, index) => {
+    if (checkpoint.sequence !== index) {
+      throw new Error("Checkpoint fork replay chain is not contiguous.");
+    }
+    if (index > 0) {
+      validateRunCheckpointSuccessorV1(checkpoints[index - 1], checkpoint);
+    }
+  });
+  return checkpoints[targetIndex];
+}
+
+export function buildRunForkEventPrefixV1(
+  events: readonly RunForkReplayEvent[],
+  checkpoint: Pick<RunCheckpointV1, "checkpointId" | "checkpointSha256">,
+) {
+  if (!events.length || events.length > 2_000) {
+    throw new Error("Checkpoint fork requires a bounded non-empty event prefix.");
+  }
+  const ordered = [...events].sort((left, right) => left.seq - right.seq);
+  if (ordered.some((event, index) =>
+    !event.id ||
+    !Number.isSafeInteger(event.seq) ||
+    event.seq < 1 ||
+    !event.type ||
+    !canonicalDate(event.at) ||
+    (index > 0 && ordered[index - 1].seq >= event.seq)
+  )) {
+    throw new Error("Checkpoint fork event prefix is not strictly ordered.");
+  }
+  const matches = ordered.filter((event) =>
+    event.type === "run.checkpoint.recorded" &&
+    event.payload.checkpointId === checkpoint.checkpointId &&
+    event.payload.checkpointSha256 === checkpoint.checkpointSha256
+  );
+  if (matches.length !== 1 || matches[0] !== ordered.at(-1)) {
+    throw new Error("Checkpoint fork event prefix does not end at its exact checkpoint event.");
+  }
+  const manifest = ordered.map((event) => ({
+    id: event.id,
+    seq: event.seq,
+    type: event.type,
+    at: event.at,
+    payloadSha256: sha256(canonicalJson(event.payload)),
+  }));
+  return Object.freeze({
+    count: ordered.length,
+    lastSeq: ordered[ordered.length - 1].seq,
+    sha256: sha256(canonicalJson(manifest)),
+  });
+}
+
 export function buildCheckpointCorrectionMessages(input: {
   sourceMessages: readonly ChatMessage[];
   checkpoint: Pick<RunCheckpointV1, "checkpointId" | "sequence" | "boundary">;
@@ -249,6 +330,22 @@ function canonicalTimestamp(value: string) {
     throw new Error("Run fork timestamp must be canonical UTC time.");
   }
   return value;
+}
+
+function canonicalDate(value: string) {
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime());
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(record[key])}`
+  ).join(",")}}`;
 }
 
 function sha256(value: string) {

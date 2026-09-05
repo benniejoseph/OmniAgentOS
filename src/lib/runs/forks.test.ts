@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildCheckpointCorrectionMessages,
+  buildRunForkEventPrefixV1,
   buildRunForkLineageV1,
   parseRunForkLineageV1,
   RUN_FORK_PURPOSE,
+  validateRunCheckpointForkChainV1,
 } from "@/lib/runs/forks";
 import { buildRunCheckpointV1 } from "@/lib/runs/checkpoints";
 import { createExecutionScope } from "@/lib/security/execution-scope";
@@ -140,5 +142,44 @@ describe("run checkpoint forks", () => {
     expect(messages).toHaveLength(2);
     expect(messages[1].content).toContain("Take the safer interpretation.");
     expect(messages[1].content).toContain("Prior approvals and continuation authority do not carry");
+  });
+
+  it("validates the exact checkpoint root and event prefix", () => {
+    expect(validateRunCheckpointForkChainV1([checkpoint], checkpoint.checkpointId))
+      .toEqual(checkpoint);
+    const prefix = buildRunForkEventPrefixV1([
+      {
+        id: "event-1",
+        seq: 4,
+        type: "run.scope_bound",
+        payload: { scopeVersion: 1 },
+        at: "2026-09-06T10:00:00.000Z",
+      },
+      {
+        id: "event-2",
+        seq: 8,
+        type: "run.checkpoint.recorded",
+        payload: {
+          checkpointId: checkpoint.checkpointId,
+          checkpointSha256: checkpoint.checkpointSha256,
+        },
+        at: "2026-09-06T10:00:01.000Z",
+      },
+    ], checkpoint);
+
+    expect(prefix).toMatchObject({ count: 2, lastSeq: 8 });
+    expect(prefix.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(() => buildRunForkEventPrefixV1([
+      {
+        id: "event-2",
+        seq: 8,
+        type: "run.checkpoint.recorded",
+        payload: {
+          checkpointId: checkpoint.checkpointId,
+          checkpointSha256: "0".repeat(64),
+        },
+        at: "2026-09-06T10:00:01.000Z",
+      },
+    ], checkpoint)).toThrow(/exact checkpoint event/i);
   });
 });
