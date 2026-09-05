@@ -428,13 +428,17 @@ describe("dedicated worker startup cadence", () => {
   it("re-registers canonical while held and activates work only after SIGUSR1", async () => {
     const revision = `held-canonical-${process.pid}`;
     const staged: Array<{ lane: string; startup: boolean | undefined }> = [];
-    const canonical: Array<{ lane: string; startup: boolean | undefined }> = [];
+    const canonical: Array<{
+      lane: string;
+      startup: boolean | undefined;
+      heartbeat: string | undefined;
+    }> = [];
     let canonicalRevision = "previous-release";
     const stagedServer = await startWorkerServer((lane, startup) => {
       staged.push({ lane, startup });
     });
-    const canonicalServer = await startWorkerServer((lane, startup) => {
-      canonical.push({ lane, startup });
+    const canonicalServer = await startWorkerServer((lane, startup, _target, heartbeat) => {
+      canonical.push({ lane, startup, heartbeat });
     }, { healthRevision: () => canonicalRevision });
     const heldEnvironment = {
       OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
@@ -461,10 +465,18 @@ describe("dedicated worker startup cadence", () => {
     expect(canonical.some(({ lane }) => lane === "retention")).toBe(false);
     expect(staged.every(({ startup }) => startup === true)).toBe(true);
 
+    const canonicalCountBeforeActivation = canonical.length;
     expect(child.kill("SIGUSR1")).toBe(true);
-    await waitFor(() =>
-      canonical.some(({ startup }) => startup !== true),
-    );
+    await waitFor(() => {
+      const activated = canonical.slice(canonicalCountBeforeActivation);
+      return ["fast", "background"].every((lane) =>
+        activated.some((observation) =>
+          observation.lane === lane &&
+          observation.startup !== true &&
+          observation.heartbeat === "active"
+        )
+      );
+    });
     expect(staged.every(({ startup }) => startup === true)).toBe(true);
     expect(canonical.some(({ lane }) => lane === "retention")).toBe(false);
     expect(
@@ -710,6 +722,7 @@ async function startWorkerServer(
     lane: string,
     startup: boolean | undefined,
     target: string | undefined,
+    heartbeat: string | undefined,
   ) => void,
   {
     responseDelayMs = 0,
@@ -753,6 +766,7 @@ async function startWorkerServer(
       lane,
       body.startup,
       request.headers["x-omni-worker-target"] as string | undefined,
+      request.headers["x-omni-worker-heartbeat"] as string | undefined,
     );
     const requestDelayMs = typeof responseDelayMs === "function"
       ? responseDelayMs(lane, attempt, body.startup)

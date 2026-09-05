@@ -510,6 +510,14 @@ async function runTickLane(
   let idleAttempts = 0;
   let tenantCursor;
   let targetGeneration = workerDestination.generation;
+  const enterCurrentReleasePhase = () => {
+    // Maintenance keeps its post-registration first-work delay. Fast and
+    // background must publish active evidence as soon as a held release is
+    // activated.
+    startup = !releaseWorkIsEnabled() || lane === "maintenance";
+    tenantCursor = undefined;
+    remoteHeartbeatTimes.delete(lane);
+  };
   while (!shuttingDown) {
     if (lane === "fast") {
       await retryActivatedCanonicalTarget();
@@ -567,8 +575,7 @@ async function runTickLane(
         // next canonical tick another registration. The release gate requires
         // a post-activation active heartbeat, and startup heartbeats also
         // advance the remote-heartbeat throttle.
-        startup = !releaseWorkIsEnabled();
-        tenantCursor = undefined;
+        enterCurrentReleasePhase();
         continue;
       }
       if (response.ok) {
@@ -661,8 +668,7 @@ async function runTickLane(
     }
     if (!shuttingDown) {
       if (releaseGeneration !== releaseWorkGeneration) {
-        startup = !releaseWorkIsEnabled();
-        tenantCursor = undefined;
+        enterCurrentReleasePhase();
         continue;
       }
       if (waitForHeldWorkerEvent) {
@@ -673,6 +679,9 @@ async function runTickLane(
           targetGeneration,
           releaseGeneration,
         );
+      }
+      if (releaseGeneration !== releaseWorkGeneration) {
+        enterCurrentReleasePhase();
       }
     }
   }
