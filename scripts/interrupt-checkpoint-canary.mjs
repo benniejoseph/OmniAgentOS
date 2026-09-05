@@ -34,24 +34,33 @@ const sql = postgres(databaseUrl, {
 try {
   await requireExactWorkerHealth();
   const fenced = await waitForFencedResume();
-  const restart = spawnSync(
+  const stop = spawnSync(
     "fly",
     [
       "machine",
-      "restart",
+      "stop",
       flyMachineId,
       "--app",
       flyApp,
-      "--force",
       "--signal",
       "SIGKILL",
-      "--time",
+      "--timeout",
       "0",
+      "--wait-timeout",
+      "20s",
     ],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   );
-  if (restart.status !== 0) {
-    throw new Error("Fly could not restart the fenced checkpoint canary worker.");
+  if (stop.status !== 0) {
+    throw new Error("Fly could not stop the fenced checkpoint canary worker.");
+  }
+  const start = spawnSync(
+    "fly",
+    ["machine", "start", flyMachineId, "--app", flyApp],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (start.status !== 0) {
+    throw new Error("Fly could not restart the interrupted checkpoint worker.");
   }
   await waitForExactWorkerHealth();
   const proof = await waitForRecoveryProof(fenced.runId);
