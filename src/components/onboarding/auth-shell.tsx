@@ -38,7 +38,7 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
       <main
         id="main-content"
         tabIndex={-1}
-        className="min-h-svh bg-background text-foreground"
+        className="min-h-svh overflow-x-clip bg-background text-foreground"
       >
         <div className="grid min-h-svh lg:grid-cols-[0.95fr_1.05fr]">
           <aside
