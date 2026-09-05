@@ -309,9 +309,14 @@ test("memory studio creates, inspects, corrects, and forgets a claim", async ({ 
   await inspector.getByRole("button", { name: "Save correction" }).click();
   await expect(inspector.getByRole("button", { name: "Corrected" })).toBeVisible();
 
-  await inspector.getByRole("button", { name: "Forget" }).click();
-  await inspector.getByRole("button", { name: "Confirm forget" }).click();
-  await expect(page.getByText("Memory forgotten and removed from recall.")).toBeAttached();
+  await inspector.getByRole("button", { name: "Review forget impact" }).click();
+  await expect(
+    inspector.getByRole("region", { name: "Permanent deletion preview" }),
+  ).toBeVisible();
+  await inspector.getByRole("button", { name: "Forget permanently" }).click();
+  await expect(
+    inspector.getByRole("heading", { name: "Best-effort local deletion" }),
+  ).toBeVisible();
 });
 
 test("agent arsenal stays navigable across themes and viewports", async ({ page }) => {
