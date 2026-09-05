@@ -733,6 +733,23 @@ either commits first and becomes visible to deletion, or deletion commits first
 and the stale run or workflow fails closed. Terminal run transitions already
 exclude canceled rows, so delayed workers cannot resurrect invalidated work.
 
+## Memory deletion preview and receipt UX
+
+The authenticated Memory workspace now requests an exact, write-authorized
+deletion preview before it offers the irreversible confirmation. The preview
+enumerates descendant memories and reports exact trace, graph, and pending-run
+impact. Its manifest digest uses the same tenant, root, descendant, trace, node,
+and edge bindings as the eventual permanent receipt.
+
+The API requires that digest when deletion is committed. The deletion
+transaction recomputes the lineage while holding the memory and graph locks;
+if anything changed after review, the transaction rolls back and returns a
+conflict instead of deleting an unreviewed target set. After commit, the UI
+renders the permanent receipt hash, projection counts, and exact number of
+non-terminal runs canceled. File mode applies the same preview binding and
+scrubs descendant rows, but remains explicitly best-effort rather than a
+rollback-proof database guarantee.
+
 ## Event shape
 
 ```ts
