@@ -1772,16 +1772,25 @@ or overwrite that lane. Migration v80 evaluates the already-validated
 transaction scope once per statement so graph projection remains bounded as
 node and edge counts grow; the policy still compares every row's tenant, owner,
 visibility, and allowed purpose.
+Migration v81 closes the next persistence prerequisite by assigning every
+agent run an immutable owner and applying restrictive actor policies to runs,
+threads, turns, run events, checkpoints, checkpoint references and resume
+claims, and fork lineage. Authenticated requests install the canonical/current
+owner set, while resume, specialist, consolidation, daily-brief, and workflow
+workers re-enter the persisted actor before reading or writing these ledgers.
+Existing queued resume and consolidation work is upgraded with that owner.
 Migration v74 repairs the daily-brief memory-lineage column used by governed
 deletion invalidation. Migrations v75-v76 index immutable deletion barriers and
 remove redundant derived-row read scans after an integrity-gated cutover; the
 production scoped Retrieval Plan and governed-forget canary passes without
 exposing embeddings. Migration v78 applies the same integrity-gated indexed
-lineage cutover to retrieval-trace deletion lookup. Agent-run consumption,
-agent-private and mission/project/workspace-shared memory, standing
-consent-driven formation, background worker consumption, and the full authority
-resolver remain pending. This canary therefore advances P3.1 without marking
-it done.
+lineage cutover to retrieval-trace deletion lookup. Private memory still cannot
+enter agent-run context because governed tool inputs, outputs, and approval
+records remain tenant-scoped copies. Agent-private and
+mission/project/workspace-shared memory, context compilation, standing
+consent-driven formation, private-memory worker consumption, and the full
+authority resolver remain pending. This canary therefore advances P3.1 without
+marking it done.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
