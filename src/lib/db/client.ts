@@ -92,6 +92,7 @@ export const tenantRootPolicyTables = [
   "omni_tenant_execution_principals",
   "omni_tenant_workspaces",
   "omni_tenant_workspace_memberships",
+  "omni_tenant_memory_access_grants",
   "omni_knowledge_documents",
   "omni_knowledge_chunks",
   "omni_retrieval_traces",
@@ -846,6 +847,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[60],
       up: ensureTenantWorkspaceMembershipAuthorityShadow,
+    },
+    {
+      ...databaseSchemaMigrations[61],
+      up: ensureTenantMemoryAccessGrantsShadow,
     },
   ];
 }
@@ -34557,6 +34562,718 @@ async function ensureTenantWorkspaceMembershipAuthorityShadow(sql: SqlClient) {
           )
       ) <> 6 THEN
         RAISE EXCEPTION 'Workspace authority hold triggers are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureTenantMemoryAccessGrantsShadow(sql: SqlClient) {
+  // v62 reserves exact context and capability grants. It does not translate
+  // OAuth, rollout, tenant role, prior access, or persona configuration into
+  // authority, and it cannot activate a grant.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Memory grant migration requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`SET LOCAL row_security = on`;
+  await sql`
+    LOCK TABLE
+      omni_auth_tenants,
+      omni_auth_users,
+      omni_auth_memberships,
+      omni_memory_purpose_catalog,
+      omni_tenant_execution_principals,
+      omni_tenant_workspaces,
+      omni_memories
+    IN SHARE MODE
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*) FROM omni_schema_version
+        WHERE version = 61
+          AND name = 'tenant_workspace_membership_authority_shadow'
+          AND checksum =
+            '8b33c54d950086f02770907218712576bb64fbad2a685f317a8b1df3f42eb243'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Memory grant v61 predecessor marker is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF to_regprocedure(
+        'public.omni_actor_has_active_tenant_membership(text,text)'
+      ) IS NULL OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_memories'::regclass
+          AND conname = 'omni_memories_access_enrollment_hold_check'
+          AND contype = 'c' AND convalidated
+          AND pg_get_expr(conbin, conrelid) = '(access_contract_version = 0)'
+      ) THEN
+        RAISE EXCEPTION 'Memory grant authorization predecessors changed'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_access_grant_binding_is_valid(
+      candidate_schema_version SMALLINT,
+      candidate_tenant_id TEXT,
+      candidate_grant_kind TEXT,
+      candidate_grant_id TEXT,
+      candidate_grant_generation BIGINT,
+      candidate_grantee_kind TEXT,
+      candidate_grantee_key TEXT,
+      candidate_grantee_actor_id TEXT,
+      candidate_grantee_principal_id TEXT,
+      candidate_grantee_principal_generation BIGINT,
+      candidate_purpose_id TEXT,
+      candidate_visibility TEXT,
+      candidate_owner_actor_id TEXT,
+      candidate_owner_agent_id TEXT,
+      candidate_owner_agent_generation BIGINT,
+      candidate_workspace_id TEXT,
+      candidate_project_id TEXT,
+      candidate_mission_id TEXT,
+      candidate_resource_ids TEXT[],
+      candidate_operation_ids TEXT[],
+      candidate_max_items BIGINT,
+      candidate_max_bytes BIGINT,
+      candidate_max_invocations BIGINT,
+      candidate_max_cost_microusd BIGINT,
+      candidate_max_duration_ms BIGINT
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        candidate_schema_version = 1
+        AND public.omni_source_contract_id_is_valid(candidate_tenant_id)
+        AND candidate_grant_kind IN ('context', 'capability')
+        AND (
+          (candidate_grant_kind = 'context' AND candidate_grant_id ~
+            '^context:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$')
+          OR
+          (candidate_grant_kind = 'capability' AND candidate_grant_id ~
+            '^capability:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$')
+        )
+        AND candidate_grant_generation BETWEEN 1 AND 9007199254740991
+        AND candidate_grantee_kind IN ('user', 'agent', 'system')
+        AND candidate_grantee_key = COALESCE(
+          candidate_grantee_actor_id,
+          candidate_grantee_principal_id
+        )
+        AND (
+          (
+            candidate_grantee_kind = 'user'
+            AND candidate_grantee_actor_id ~
+              '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            AND candidate_grantee_principal_id IS NULL
+            AND candidate_grantee_principal_generation IS NULL
+          ) OR (
+            candidate_grantee_kind = 'agent'
+            AND candidate_grantee_actor_id IS NULL
+            AND candidate_grantee_principal_id ~
+              '^agent:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+            AND candidate_grantee_principal_generation
+              BETWEEN 1 AND 9007199254740991
+          ) OR (
+            candidate_grantee_kind = 'system'
+            AND candidate_grantee_actor_id IS NULL
+            AND candidate_grantee_principal_id ~
+              '^service:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+            AND candidate_grantee_principal_generation
+              BETWEEN 1 AND 9007199254740991
+          )
+        )
+        AND candidate_purpose_id IN (
+          'memory.read.v1', 'memory.retrieve.v1', 'memory.write.v1',
+          'memory.correct.v1', 'memory.forget.v1', 'memory.formation.v1',
+          'memory.maintenance.v1', 'memory.export.v1'
+        )
+        AND (
+          candidate_grant_kind <> 'context'
+          OR candidate_purpose_id IN ('memory.read.v1', 'memory.retrieve.v1')
+        )
+        AND candidate_visibility IN (
+          'agent_private', 'user_private', 'mission_shared',
+          'project_shared', 'workspace_shared'
+        )
+        AND candidate_owner_actor_id ~
+          '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        AND (
+          (
+            candidate_visibility = 'agent_private'
+            AND candidate_owner_agent_id ~
+              '^agent:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+            AND candidate_owner_agent_generation
+              BETWEEN 1 AND 9007199254740991
+            AND candidate_workspace_id IS NULL
+            AND candidate_project_id IS NULL
+            AND candidate_mission_id IS NULL
+          ) OR (
+            candidate_visibility = 'user_private'
+            AND candidate_owner_agent_id IS NULL
+            AND candidate_owner_agent_generation IS NULL
+            AND candidate_workspace_id IS NULL
+            AND candidate_project_id IS NULL
+            AND candidate_mission_id IS NULL
+          ) OR (
+            candidate_visibility = 'mission_shared'
+            AND candidate_owner_agent_id IS NULL
+            AND candidate_owner_agent_generation IS NULL
+            AND candidate_workspace_id IS NULL
+            AND candidate_project_id IS NULL
+            AND public.omni_source_contract_id_is_valid(candidate_mission_id)
+          ) OR (
+            candidate_visibility = 'project_shared'
+            AND candidate_owner_agent_id IS NULL
+            AND candidate_owner_agent_generation IS NULL
+            AND candidate_workspace_id ~
+              '^workspace:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+            AND public.omni_source_contract_id_is_valid(candidate_project_id)
+            AND candidate_mission_id IS NULL
+          ) OR (
+            candidate_visibility = 'workspace_shared'
+            AND candidate_owner_agent_id IS NULL
+            AND candidate_owner_agent_generation IS NULL
+            AND candidate_workspace_id ~
+              '^workspace:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+            AND candidate_project_id IS NULL
+            AND candidate_mission_id IS NULL
+          )
+        )
+        AND public.omni_source_id_array_is_canonical(
+          candidate_resource_ids, 128
+        )
+        AND (
+          (
+            candidate_grant_kind = 'context'
+            AND candidate_operation_ids IS NULL
+            AND candidate_max_items BETWEEN 1 AND 9007199254740991
+            AND candidate_max_bytes BETWEEN 1 AND 9007199254740991
+            AND candidate_max_invocations IS NULL
+            AND candidate_max_cost_microusd IS NULL
+            AND candidate_max_duration_ms IS NULL
+          ) OR (
+            candidate_grant_kind = 'capability'
+            AND public.omni_source_id_array_is_canonical(
+              candidate_operation_ids, 64
+            )
+            AND candidate_max_items IS NULL
+            AND candidate_max_bytes IS NULL
+            AND candidate_max_invocations BETWEEN 1 AND 9007199254740991
+            AND candidate_max_cost_microusd BETWEEN 1 AND 9007199254740991
+            AND candidate_max_duration_ms BETWEEN 1 AND 9007199254740991
+          )
+        ),
+        FALSE
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_access_grant_lifecycle_is_valid(
+      candidate_state TEXT,
+      candidate_lifecycle_revision BIGINT,
+      candidate_created_by_actor_id TEXT,
+      candidate_activated_by_actor_id TEXT,
+      candidate_revoked_by_actor_id TEXT,
+      candidate_not_before TIMESTAMPTZ,
+      candidate_expires_at TIMESTAMPTZ,
+      candidate_created_at TIMESTAMPTZ,
+      candidate_activated_at TIMESTAMPTZ,
+      candidate_revoked_at TIMESTAMPTZ,
+      candidate_updated_at TIMESTAMPTZ
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        candidate_state IN ('held', 'active', 'revoked')
+        AND candidate_lifecycle_revision BETWEEN 0 AND 9007199254740991
+        AND candidate_created_by_actor_id ~
+          '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        AND (
+          candidate_activated_by_actor_id IS NULL
+          OR candidate_activated_by_actor_id ~
+            '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        )
+        AND (
+          candidate_revoked_by_actor_id IS NULL
+          OR candidate_revoked_by_actor_id ~
+            '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        )
+        AND (candidate_activated_by_actor_id IS NULL) =
+          (candidate_activated_at IS NULL)
+        AND (candidate_revoked_by_actor_id IS NULL) =
+          (candidate_revoked_at IS NULL)
+        AND (
+          (
+            candidate_state = 'held' AND candidate_lifecycle_revision = 0
+            AND candidate_activated_at IS NULL AND candidate_revoked_at IS NULL
+          ) OR (
+            candidate_state = 'active' AND candidate_lifecycle_revision = 1
+            AND candidate_activated_at IS NOT NULL AND candidate_revoked_at IS NULL
+          ) OR (
+            candidate_state = 'revoked' AND candidate_revoked_at IS NOT NULL
+            AND (
+              (candidate_activated_at IS NULL AND candidate_lifecycle_revision = 1)
+              OR
+              (candidate_activated_at IS NOT NULL AND candidate_lifecycle_revision = 2)
+            )
+          )
+        )
+        AND candidate_created_at <= candidate_not_before
+        AND candidate_not_before < candidate_expires_at
+        AND candidate_created_at <= candidate_updated_at
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_activated_at BETWEEN candidate_created_at AND candidate_updated_at
+        )
+        AND (
+          candidate_revoked_at IS NULL
+          OR candidate_revoked_at BETWEEN candidate_created_at AND candidate_updated_at
+        )
+        AND (
+          candidate_activated_at IS NULL OR candidate_revoked_at IS NULL
+          OR candidate_activated_at <= candidate_revoked_at
+        ),
+        FALSE
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_tenant_memory_access_grants (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      grant_kind TEXT NOT NULL,
+      grant_id TEXT NOT NULL,
+      grant_generation BIGINT NOT NULL,
+      grantee_kind TEXT NOT NULL,
+      grantee_key TEXT NOT NULL,
+      grantee_actor_id TEXT,
+      grantee_execution_principal_id TEXT,
+      grantee_execution_principal_generation BIGINT,
+      purpose_id TEXT NOT NULL,
+      target_visibility TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      owner_agent_id TEXT,
+      owner_agent_principal_generation BIGINT,
+      workspace_id TEXT,
+      project_id TEXT,
+      mission_id TEXT,
+      resource_ids TEXT[] NOT NULL,
+      operation_ids TEXT[],
+      max_items BIGINT,
+      max_bytes BIGINT,
+      max_invocations BIGINT,
+      max_cost_microusd BIGINT,
+      max_duration_ms BIGINT,
+      not_before TIMESTAMPTZ NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      state TEXT NOT NULL DEFAULT 'held',
+      lifecycle_revision BIGINT NOT NULL DEFAULT 0,
+      created_by_actor_id TEXT NOT NULL,
+      activated_by_actor_id TEXT,
+      revoked_by_actor_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      activated_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_memory_access_grants_pkey PRIMARY KEY (
+        tenant_id, grant_kind, grant_id, grant_generation
+      ),
+      CONSTRAINT omni_memory_access_grant_binding_check CHECK (
+        omni_memory_access_grant_binding_is_valid(
+          schema_version, tenant_id, grant_kind, grant_id, grant_generation,
+          grantee_kind, grantee_key, grantee_actor_id,
+          grantee_execution_principal_id,
+          grantee_execution_principal_generation, purpose_id,
+          target_visibility, owner_actor_id, owner_agent_id,
+          owner_agent_principal_generation, workspace_id, project_id,
+          mission_id, resource_ids, operation_ids, max_items, max_bytes,
+          max_invocations, max_cost_microusd, max_duration_ms
+        )
+      ),
+      CONSTRAINT omni_memory_access_grant_lifecycle_check CHECK (
+        omni_memory_access_grant_lifecycle_is_valid(
+          state, lifecycle_revision, created_by_actor_id,
+          activated_by_actor_id, revoked_by_actor_id, not_before, expires_at,
+          created_at, activated_at, revoked_at, updated_at
+        )
+      ),
+      CONSTRAINT omni_memory_access_grant_activation_hold_check
+        CHECK (state <> 'active'),
+      CONSTRAINT omni_memory_access_grant_tenant_fkey FOREIGN KEY (tenant_id)
+        REFERENCES omni_auth_tenants (id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_access_grant_purpose_fkey FOREIGN KEY (purpose_id)
+        REFERENCES omni_memory_purpose_catalog (purpose_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_access_grant_grantee_actor_fkey
+        FOREIGN KEY (grantee_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_access_grant_grantee_principal_fkey
+        FOREIGN KEY (
+          tenant_id, grantee_execution_principal_id,
+          grantee_execution_principal_generation
+        ) REFERENCES omni_tenant_execution_principals (
+          tenant_id, principal_id, principal_generation
+        ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_access_grant_owner_actor_fkey
+        FOREIGN KEY (owner_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_access_grant_owner_agent_fkey
+        FOREIGN KEY (
+          tenant_id, owner_agent_id, owner_agent_principal_generation
+        ) REFERENCES omni_tenant_execution_principals (
+          tenant_id, principal_id, principal_generation
+        ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_access_grant_workspace_fkey
+        FOREIGN KEY (tenant_id, workspace_id)
+        REFERENCES omni_tenant_workspaces (tenant_id, workspace_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_access_grant_created_actor_fkey
+        FOREIGN KEY (created_by_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_access_grant_activated_actor_fkey
+        FOREIGN KEY (activated_by_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_memory_access_grant_revoked_actor_fkey
+        FOREIGN KEY (revoked_by_actor_id) REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_memory_access_grants_current_idx
+    ON omni_tenant_memory_access_grants (tenant_id, grant_kind, grant_id)
+    WHERE state <> 'revoked'
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_access_grants_grantee_idx
+    ON omni_tenant_memory_access_grants (
+      tenant_id, grantee_kind, grantee_key, grant_kind, purpose_id, state
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_access_grants_expiry_idx
+    ON omni_tenant_memory_access_grants (state, expires_at)
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_memory_access_grant_insert()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      expected_generation BIGINT;
+      insertion_time TIMESTAMPTZ;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id || ':' || NEW.grant_kind),
+        hashtext(NEW.grant_id)
+      );
+      IF NEW.state <> 'held' OR NEW.lifecycle_revision <> 0
+        OR NEW.activated_by_actor_id IS NOT NULL
+        OR NEW.revoked_by_actor_id IS NOT NULL
+        OR NEW.activated_at IS NOT NULL OR NEW.revoked_at IS NOT NULL
+      THEN
+        RAISE EXCEPTION 'Memory access grants must start held'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NOT public.omni_actor_has_active_tenant_membership(
+        NEW.tenant_id, NEW.created_by_actor_id
+      ) OR NOT public.omni_actor_has_active_tenant_membership(
+        NEW.tenant_id, NEW.owner_actor_id
+      ) THEN
+        RAISE EXCEPTION 'Memory access grant actors lack active tenant membership'
+          USING ERRCODE = '23503';
+      END IF;
+      IF NEW.grantee_kind = 'user' AND NOT
+        public.omni_actor_has_active_tenant_membership(
+          NEW.tenant_id, NEW.grantee_actor_id
+        )
+      THEN
+        RAISE EXCEPTION 'Memory access grant user lacks active tenant membership'
+          USING ERRCODE = '23503';
+      END IF;
+      IF NEW.grantee_kind IN ('agent', 'system') AND NOT EXISTS (
+        SELECT 1 FROM public.omni_tenant_execution_principals principal
+        WHERE principal.tenant_id = NEW.tenant_id
+          AND principal.principal_id = NEW.grantee_execution_principal_id
+          AND principal.principal_generation =
+            NEW.grantee_execution_principal_generation
+          AND principal.principal_kind = NEW.grantee_kind
+          AND principal.state <> 'revoked'
+      ) THEN
+        RAISE EXCEPTION 'Memory access grant principal is unavailable'
+          USING ERRCODE = '23503';
+      END IF;
+      IF NEW.owner_agent_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM public.omni_tenant_execution_principals principal
+        WHERE principal.tenant_id = NEW.tenant_id
+          AND principal.principal_id = NEW.owner_agent_id
+          AND principal.principal_generation = NEW.owner_agent_principal_generation
+          AND principal.principal_kind = 'agent'
+          AND principal.controller_actor_id = NEW.owner_actor_id
+          AND principal.state <> 'revoked'
+      ) THEN
+        RAISE EXCEPTION 'Memory access grant owner agent is unavailable'
+          USING ERRCODE = '23503';
+      END IF;
+      insertion_time := statement_timestamp();
+      IF NEW.expires_at <= insertion_time OR NEW.not_before >= NEW.expires_at THEN
+        RAISE EXCEPTION 'Memory access grant validity window is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      NEW.not_before := GREATEST(NEW.not_before, insertion_time);
+      SELECT COALESCE(MAX(grant_generation), 0) + 1
+      INTO expected_generation
+      FROM public.omni_tenant_memory_access_grants
+      WHERE tenant_id = NEW.tenant_id
+        AND grant_kind = NEW.grant_kind
+        AND grant_id = NEW.grant_id;
+      IF NEW.grant_generation IS DISTINCT FROM expected_generation THEN
+        RAISE EXCEPTION 'Memory access grant generation is not next'
+          USING ERRCODE = '23514';
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM public.omni_tenant_memory_access_grants
+        WHERE tenant_id = NEW.tenant_id
+          AND grant_kind = NEW.grant_kind
+          AND grant_id = NEW.grant_id
+          AND state <> 'revoked'
+      ) THEN
+        RAISE EXCEPTION 'Memory access grant already has a current generation'
+          USING ERRCODE = '23514';
+      END IF;
+      NEW.created_at := insertion_time;
+      NEW.updated_at := insertion_time;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_memory_access_grant_mutation()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Memory access grant lifecycle is held'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+  await sql`
+    CREATE TRIGGER omni_memory_access_grant_validate_insert
+    BEFORE INSERT ON omni_tenant_memory_access_grants
+    FOR EACH ROW EXECUTE FUNCTION omni_validate_memory_access_grant_insert()
+  `;
+  await sql`
+    CREATE TRIGGER omni_memory_access_grant_mutation_hold
+    BEFORE UPDATE OR DELETE ON omni_tenant_memory_access_grants
+    FOR EACH ROW EXECUTE FUNCTION omni_reject_memory_access_grant_mutation()
+  `;
+  await sql`
+    CREATE TRIGGER omni_memory_access_grant_no_truncate
+    BEFORE TRUNCATE ON omni_tenant_memory_access_grants
+    FOR EACH STATEMENT EXECUTE FUNCTION omni_reject_memory_access_grant_mutation()
+  `;
+
+  await sql.query(`
+    REVOKE ALL ON TABLE omni_tenant_memory_access_grants FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_memory_access_grant_binding_is_valid(
+      SMALLINT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, BIGINT,
+      TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT[], TEXT[],
+      BIGINT, BIGINT, BIGINT, BIGINT, BIGINT
+    ) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_memory_access_grant_lifecycle_is_valid(
+      TEXT, BIGINT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ,
+      TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ
+    ) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_validate_memory_access_grant_insert()
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION omni_reject_memory_access_grant_mutation()
+      FROM PUBLIC
+  `);
+
+  await sql`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_memory_access_grants'
+          AND grantee <> current_user AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON TABLE %I.omni_tenant_memory_access_grants FROM %I',
+          current_schema(), grant_record.grantee
+        );
+      END LOOP;
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_memory_access_grant_binding_is_valid',
+            'omni_memory_access_grant_lifecycle_is_valid',
+            'omni_validate_memory_access_grant_insert',
+            'omni_reject_memory_access_grant_mutation'
+          ) AND grantee <> current_user AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_memory_access_grant_binding_is_valid(' ||
+          'SMALLINT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, BIGINT, ' ||
+          'TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT[], TEXT[], ' ||
+          'BIGINT, BIGINT, BIGINT, BIGINT, BIGINT) FROM %I',
+          current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_memory_access_grant_lifecycle_is_valid(' ||
+          'TEXT, BIGINT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, ' ||
+          'TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ) FROM %I',
+          current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_validate_memory_access_grant_insert() ' ||
+          'FROM %I', current_schema(), grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION %I.omni_reject_memory_access_grant_mutation() ' ||
+          'FROM %I', current_schema(), grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `;
+
+  await sql`
+    ALTER TABLE omni_tenant_memory_access_grants ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_tenant_memory_access_grants FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    CREATE POLICY omni_tenant_isolation ON omni_tenant_memory_access_grants
+    FOR ALL TO PUBLIC
+    USING (omni_tenant_visible(tenant_id))
+    WITH CHECK (omni_tenant_visible(tenant_id))
+  `;
+  await sql`
+    CREATE POLICY omni_memory_access_grant_holdback
+    ON omni_tenant_memory_access_grants
+    AS RESTRICTIVE FOR ALL TO PUBLIC
+    USING (omni_system_scope_enabled())
+    WITH CHECK (omni_system_scope_enabled())
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM omni_tenant_memory_access_grants) THEN
+        RAISE EXCEPTION 'Memory access grant shadow must start empty'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_tenant_memory_access_grants'::regclass
+          AND relkind = 'r' AND relpersistence = 'p'
+          AND relrowsecurity AND relforcerowsecurity
+          AND relowner = (
+            SELECT relowner FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+      ) OR (
+        SELECT count(*) FROM pg_policy
+        WHERE polrelid = 'omni_tenant_memory_access_grants'::regclass
+      ) <> 2 THEN
+        RAISE EXCEPTION 'Memory access grant isolation boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_tenant_memory_access_grants'::regclass
+          AND conname = 'omni_memory_access_grant_activation_hold_check'
+          AND contype = 'c' AND convalidated
+          AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_tenant_memory_access_grants'::regclass
+          AND conname IN (
+            'omni_memory_access_grant_binding_check',
+            'omni_memory_access_grant_lifecycle_check'
+          ) AND contype = 'c' AND convalidated
+        GROUP BY conrelid HAVING count(*) = 2
+      ) THEN
+        RAISE EXCEPTION 'Memory access grant row holds are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_memory_access_grants'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_memory_access_grants'
+          AND grantee <> current_user
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_memory_access_grant_binding_is_valid',
+            'omni_memory_access_grant_lifecycle_is_valid',
+            'omni_validate_memory_access_grant_insert',
+            'omni_reject_memory_access_grant_mutation'
+          ) AND grantee <> current_user
+      ) THEN
+        RAISE EXCEPTION 'Memory access grant shadow grants non-owner access'
+          USING ERRCODE = '55000';
+      END IF;
+      IF (
+        SELECT count(*) FROM pg_trigger
+        WHERE tgrelid = 'omni_tenant_memory_access_grants'::regclass
+          AND NOT tgisinternal
+          AND tgname IN (
+            'omni_memory_access_grant_validate_insert',
+            'omni_memory_access_grant_mutation_hold',
+            'omni_memory_access_grant_no_truncate'
+          )
+      ) <> 3 THEN
+        RAISE EXCEPTION 'Memory access grant hold triggers are invalid'
           USING ERRCODE = '55000';
       END IF;
     END

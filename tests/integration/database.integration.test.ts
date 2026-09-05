@@ -467,6 +467,67 @@ databaseDescribe("Postgres schema integration", () => {
     `).rejects.toMatchObject({ code: "23514" });
   });
 
+  test("keeps context and capability grants explicit, bounded, and activation-held", async () => {
+    const [surface] = await admin`
+      SELECT
+        (SELECT count(*)::int FROM omni_tenant_memory_access_grants) AS rows,
+        (SELECT count(*)::int FROM pg_policy
+         WHERE polrelid = 'omni_tenant_memory_access_grants'::regclass)
+          AS policies,
+        NOT EXISTS (
+          SELECT 1 FROM information_schema.table_privileges
+          WHERE table_schema = 'public'
+            AND table_name = 'omni_tenant_memory_access_grants'
+            AND grantee <> current_user
+        ) AS owner_only,
+        EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'omni_tenant_memory_access_grants'::regclass
+            AND conname = 'omni_memory_access_grant_activation_hold_check'
+            AND convalidated
+            AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
+        ) AS activation_held,
+        EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'omni_tenant_memory_access_grants'::regclass
+            AND conname = 'omni_memory_access_grant_binding_check'
+            AND convalidated
+            AND pg_get_expr(conbin, conrelid) LIKE
+              '%omni_memory_access_grant_binding_is_valid%'
+        ) AS binding_validated
+    `;
+
+    expect(surface).toEqual({
+      rows: 0,
+      policies: 2,
+      owner_only: true,
+      activation_held: true,
+      binding_validated: true,
+    });
+    await expect(admin`
+      INSERT INTO omni_tenant_memory_access_grants (
+        tenant_id, grant_kind, grant_id, grant_generation,
+        grantee_kind, grantee_key, grantee_actor_id, purpose_id,
+        target_visibility, owner_actor_id, resource_ids,
+        max_items, max_bytes, not_before, expires_at,
+        state, lifecycle_revision, created_by_actor_id,
+        activated_by_actor_id, activated_at
+      ) VALUES (
+        'tenant:forbidden', 'context', 'context:forbidden', 1,
+        'user', 'actor:00000000-0000-4000-8000-000000000001',
+        'actor:00000000-0000-4000-8000-000000000001',
+        'memory.retrieve.v1', 'user_private',
+        'actor:00000000-0000-4000-8000-000000000001',
+        ARRAY['memory:forbidden'], 1, 1,
+        statement_timestamp(), statement_timestamp() + INTERVAL '1 hour',
+        'active', 1,
+        'actor:00000000-0000-4000-8000-000000000001',
+        'actor:00000000-0000-4000-8000-000000000001',
+        statement_timestamp()
+      )
+    `).rejects.toMatchObject({ code: "23514" });
+  });
+
   test("enforces shared limits atomically across concurrent requests", async () => {
     const key = `integration:${crypto.randomUUID()}`;
     const results = await Promise.all(
