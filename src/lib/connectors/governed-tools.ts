@@ -107,6 +107,7 @@ export function toGovernedTool(
     riskLevel: tool.riskLevel,
     dryRunSupported: true,
     approvalRequired: tool.approvalRequired,
+    operationClass: tool.riskLevel === 0 ? "read_only" : "mutation",
     inputSchema: sanitizeConnectorInputSchema(tool.inputSchema),
     approvalFingerprint: fingerprintApprovalContract({
       connector: connector
@@ -217,6 +218,9 @@ export function openApiOperationToGovernedTool(
     riskLevel,
     dryRunSupported: true,
     approvalRequired: operation.approvalRequired || riskLevel >= 2,
+    operationClass: ["GET", "HEAD", "OPTIONS"].includes(operation.method)
+      ? "read_only"
+      : "mutation",
     inputSchema: sanitizeConnectorInputSchema(operation.inputSchema),
     approvalFingerprint: fingerprintApprovalContract({
       connector: connector

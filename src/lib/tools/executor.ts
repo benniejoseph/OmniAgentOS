@@ -3091,6 +3091,7 @@ export function governedToolOperationClass(
   tool: ToolDefinition,
   input: Record<string, unknown>,
 ): "read_only" | "mutation" {
+  if (tool.operationClass) return tool.operationClass;
   if (tool.id === "http.request") {
     const method = httpRequestSchema.parse(input).method || "GET";
     return method === "GET" ? "read_only" : "mutation";

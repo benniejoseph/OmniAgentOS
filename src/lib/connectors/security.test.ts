@@ -200,6 +200,7 @@ describe("connector security", () => {
       },
     }));
     expect(governed.name).toBe("Connector: tool");
+    expect(governed.operationClass).toBe("mutation");
     expect(governed.description).not.toContain("Ignore");
     expect(JSON.stringify(governed.inputSchema)).not.toContain("environment variable");
     expect(JSON.stringify(governed.inputSchema)).not.toContain("Ignore all prior");
@@ -233,7 +234,19 @@ describe("connector security", () => {
       status: "active",
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
-    })).toMatchObject({ riskLevel: 2, approvalRequired: true });
+    })).toMatchObject({
+      riskLevel: 2,
+      approvalRequired: true,
+      operationClass: "mutation",
+    });
+    expect(openApiOperationToGovernedTool(
+      openApiOperationRecord({ method: "GET", riskLevel: 2 }),
+      openApiConnectorRecord(),
+    )).toMatchObject({
+      riskLevel: 2,
+      approvalRequired: true,
+      operationClass: "read_only",
+    });
   });
 
   it("preserves locally reviewed MCP policy on rediscovery", () => {
