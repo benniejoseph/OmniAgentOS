@@ -196,10 +196,11 @@ counters, and external-effect counter, while compatibility permits only exact
 active `canary` or `enabled` pins and otherwise safely pauses instead of
 interpreting state under a different worker contract.
 
-This slice creates no checkpoint store or event, writes no continuation, and
-changes no runtime path. Durable storage, transactional event emission,
-shadow comparison, fenced claims, and canary resume remain later P1.6 gates.
-See [RunCheckpoint v1](vision/RUN_CHECKPOINTS.md).
+Migration v68 and the transaction-only writer now provide the append-only,
+forced-RLS store and atomic metadata event boundary. The writer has no runtime
+call site and grants no resume authority. Approval shadow writes, comparison,
+fenced claims, and canary resume remain later P1.6 gates. See [RunCheckpoint
+v1](vision/RUN_CHECKPOINTS.md).
 
 ## Durable workflows
 

@@ -690,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the informed-notice anchor review evidence shadow migration", () => {
+  it("pins the run checkpoint store migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 67,
-      name: "memory_informed_notice_anchor_review_evidence_shadow",
-      checksum: "6659ee684d50ec67c535c5d3f597347ab31143bd9d9ca9dc4748883b66935956",
+      version: 68,
+      name: "run_checkpoint_store",
+      checksum: "669a3ee086669d481f1dfdb35417f4b61283ee0236825ef937925682eb6dad29",
     });
   });
 

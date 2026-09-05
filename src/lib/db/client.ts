@@ -99,6 +99,8 @@ export const tenantRootPolicyTables = [
   "omni_knowledge_chunks",
   "omni_retrieval_traces",
   "omni_agent_runs",
+  "omni_run_checkpoints",
+  "omni_run_checkpoint_state_references",
   "omni_threads",
   "omni_tool_executions",
   "omni_mcp_connectors",
@@ -873,6 +875,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[66],
       up: ensureMemoryInformedNoticeAnchorReviewEvidenceShadow,
+    },
+    {
+      ...databaseSchemaMigrations[67],
+      up: ensureRunCheckpointStore,
     },
   ];
 }
@@ -40875,6 +40881,261 @@ async function ensureNativeClientCompatibilityTelemetry(sql: SqlClient) {
         RAISE EXCEPTION 'Native client compatibility storage boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureRunCheckpointStore(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_run_checkpoints (
+      schema_version INTEGER NOT NULL,
+      checkpoint_id TEXT PRIMARY KEY,
+      checkpoint_sha256 TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      executing_principal_type TEXT NOT NULL,
+      executing_principal_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      parent_checkpoint_id TEXT,
+      parent_checkpoint_sha256 TEXT,
+      parent_sequence INTEGER,
+      boundary_kind TEXT NOT NULL,
+      boundary_phase TEXT NOT NULL,
+      boundary_id TEXT NOT NULL,
+      boundary_attempt INTEGER NOT NULL,
+      execution_scope_sha256 TEXT NOT NULL,
+      purpose_sha256 TEXT NOT NULL,
+      rollout_capability_id TEXT NOT NULL,
+      engine_version_id TEXT NOT NULL,
+      contract_version_id TEXT NOT NULL,
+      configuration_sha256 TEXT NOT NULL,
+      rollout_generation INTEGER NOT NULL,
+      rollout_lifecycle_revision INTEGER NOT NULL,
+      lifecycle_state TEXT NOT NULL,
+      resume_disposition TEXT NOT NULL,
+      checkpoint_json JSONB NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL,
+      CONSTRAINT omni_run_checkpoints_schema_check
+        CHECK (schema_version = 1),
+      CONSTRAINT omni_run_checkpoints_id_check
+        CHECK (length(checkpoint_id) BETWEEN 1 AND 240),
+      CONSTRAINT omni_run_checkpoints_sha_check
+        CHECK (checkpoint_sha256 ~ '^[a-f0-9]{64}$'),
+      CONSTRAINT omni_run_checkpoints_scope_sha_check
+        CHECK (
+          execution_scope_sha256 ~ '^[a-f0-9]{64}$'
+          AND purpose_sha256 ~ '^[a-f0-9]{64}$'
+          AND configuration_sha256 ~ '^[a-f0-9]{64}$'
+        ),
+      CONSTRAINT omni_run_checkpoints_sequence_check
+        CHECK (sequence BETWEEN 0 AND 1000000000),
+      CONSTRAINT omni_run_checkpoints_parent_check
+        CHECK (
+          (sequence = 0 AND parent_checkpoint_id IS NULL
+            AND parent_checkpoint_sha256 IS NULL AND parent_sequence IS NULL)
+          OR
+          (sequence > 0 AND parent_checkpoint_id IS NOT NULL
+            AND parent_checkpoint_sha256 ~ '^[a-f0-9]{64}$'
+            AND parent_sequence = sequence - 1)
+        ),
+      CONSTRAINT omni_run_checkpoints_principal_check
+        CHECK (executing_principal_type IN ('user', 'agent', 'system')),
+      CONSTRAINT omni_run_checkpoints_boundary_check
+        CHECK (
+          boundary_kind IN ('model', 'tool', 'approval', 'delegation', 'verifier')
+          AND boundary_phase IN ('before', 'waiting', 'after')
+          AND boundary_attempt BETWEEN 1 AND 1000000000
+        ),
+      CONSTRAINT omni_run_checkpoints_lifecycle_check
+        CHECK (
+          lifecycle_state IN ('active', 'waiting', 'terminal')
+          AND resume_disposition IN (
+            'resumable', 'awaiting_signal', 'not_resumable'
+          )
+        ),
+      CONSTRAINT omni_run_checkpoints_rollout_check
+        CHECK (
+          rollout_generation BETWEEN 1 AND 1000000000
+          AND rollout_lifecycle_revision BETWEEN 0 AND 1000000000
+        ),
+      CONSTRAINT omni_run_checkpoints_json_check
+        CHECK (
+          jsonb_typeof(checkpoint_json) = 'object'
+          AND checkpoint_json ->> 'checkpointId' = checkpoint_id
+          AND checkpoint_json ->> 'checkpointSha256' = checkpoint_sha256
+          AND checkpoint_json ->> 'runId' = run_id
+          AND checkpoint_json #>> '{executionScope,tenantId}' = tenant_id
+          AND checkpoint_json #>> '{executionScope,initiatingActorId}' = actor_id
+          AND checkpoint_json #>> '{executionScope,executingPrincipalType}' =
+            executing_principal_type
+          AND checkpoint_json #>> '{executionScope,executingPrincipalId}' =
+            executing_principal_id
+          AND checkpoint_json #>> '{executionScope,executionScopeSha256}' =
+            execution_scope_sha256
+          AND checkpoint_json #>> '{executionScope,purposeSha256}' = purpose_sha256
+          AND (checkpoint_json ->> 'sequence')::INTEGER = sequence
+          AND checkpoint_json #>> '{boundary,kind}' = boundary_kind
+          AND checkpoint_json #>> '{boundary,phase}' = boundary_phase
+          AND checkpoint_json #>> '{boundary,boundaryId}' = boundary_id
+          AND (checkpoint_json #>> '{boundary,attempt}')::INTEGER =
+            boundary_attempt
+        ),
+      CONSTRAINT omni_run_checkpoints_identity_unique
+        UNIQUE (tenant_id, run_id, checkpoint_id),
+      CONSTRAINT omni_run_checkpoints_sequence_unique
+        UNIQUE (tenant_id, run_id, sequence),
+      CONSTRAINT omni_run_checkpoints_parent_fk
+        FOREIGN KEY (tenant_id, run_id, parent_checkpoint_id)
+        REFERENCES omni_run_checkpoints (tenant_id, run_id, checkpoint_id)
+        DEFERRABLE INITIALLY IMMEDIATE
+    )
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_run_checkpoint_state_references (
+      tenant_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      checkpoint_id TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      reference_kind TEXT NOT NULL,
+      reference_id TEXT NOT NULL,
+      reference_sha256 TEXT NOT NULL,
+      version_id TEXT,
+      CONSTRAINT omni_run_checkpoint_references_ordinal_check
+        CHECK (ordinal BETWEEN 0 AND 63),
+      CONSTRAINT omni_run_checkpoint_references_kind_check
+        CHECK (reference_kind IN (
+          'run_record', 'workflow_run', 'conversation', 'context_manifest',
+          'harness_manifest', 'model_turn', 'model_continuation',
+          'tool_execution', 'approval_request', 'approval_decision',
+          'delegation', 'delegation_signal', 'verifier_request',
+          'verifier_receipt', 'effect_intent', 'effect_receipt', 'artifact'
+        )),
+      CONSTRAINT omni_run_checkpoint_references_id_check
+        CHECK (
+          length(reference_id) BETWEEN 1 AND 240
+          AND (version_id IS NULL OR length(version_id) BETWEEN 1 AND 240)
+        ),
+      CONSTRAINT omni_run_checkpoint_references_sha_check
+        CHECK (reference_sha256 ~ '^[a-f0-9]{64}$'),
+      CONSTRAINT omni_run_checkpoint_references_pk
+        PRIMARY KEY (checkpoint_id, ordinal),
+      CONSTRAINT omni_run_checkpoint_references_identity_unique
+        UNIQUE (tenant_id, run_id, checkpoint_id, reference_kind, reference_id),
+      CONSTRAINT omni_run_checkpoint_references_checkpoint_fk
+        FOREIGN KEY (tenant_id, run_id, checkpoint_id)
+        REFERENCES omni_run_checkpoints (tenant_id, run_id, checkpoint_id)
+        DEFERRABLE INITIALLY IMMEDIATE
+    )
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_run_checkpoints_tenant_run_recorded_idx
+    ON omni_run_checkpoints (tenant_id, run_id, recorded_at DESC, sequence DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_run_checkpoint_references_lookup_idx
+    ON omni_run_checkpoint_state_references
+      (tenant_id, reference_kind, reference_id, checkpoint_id)
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_run_checkpoint_mutation()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Run checkpoints are append-only' USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_run_checkpoints'::regclass
+          AND tgname = 'omni_run_checkpoints_immutable'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_run_checkpoints_immutable
+        BEFORE UPDATE OR DELETE ON omni_run_checkpoints
+        FOR EACH ROW EXECUTE FUNCTION omni_reject_run_checkpoint_mutation();
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_run_checkpoints'::regclass
+          AND tgname = 'omni_run_checkpoints_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_run_checkpoints_no_truncate
+        BEFORE TRUNCATE ON omni_run_checkpoints
+        FOR EACH STATEMENT EXECUTE FUNCTION omni_reject_run_checkpoint_mutation();
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_run_checkpoint_state_references'::regclass
+          AND tgname = 'omni_run_checkpoint_references_immutable'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_run_checkpoint_references_immutable
+        BEFORE UPDATE OR DELETE ON omni_run_checkpoint_state_references
+        FOR EACH ROW EXECUTE FUNCTION omni_reject_run_checkpoint_mutation();
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_run_checkpoint_state_references'::regclass
+          AND tgname = 'omni_run_checkpoint_references_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_run_checkpoint_references_no_truncate
+        BEFORE TRUNCATE ON omni_run_checkpoint_state_references
+        FOR EACH STATEMENT EXECUTE FUNCTION omni_reject_run_checkpoint_mutation();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await ensureTenantIsolationPolicies(sql);
+
+  await sql`
+    DO $migration$
+    DECLARE
+      relation_name TEXT;
+    BEGIN
+      FOREACH relation_name IN ARRAY ARRAY[
+        'omni_run_checkpoints',
+        'omni_run_checkpoint_state_references'
+      ] LOOP
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_class relation
+          WHERE relation.oid = to_regclass(relation_name)
+            AND relation.relrowsecurity
+            AND relation.relforcerowsecurity
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_policy
+          WHERE polrelid = to_regclass(relation_name)
+            AND polname = 'omni_tenant_isolation'
+            AND pg_get_expr(polqual, polrelid) =
+              'omni_tenant_visible(tenant_id)'
+            AND pg_get_expr(polwithcheck, polrelid) =
+              'omni_tenant_visible(tenant_id)'
+        ) OR (
+          SELECT count(*)
+          FROM pg_trigger
+          WHERE tgrelid = to_regclass(relation_name)
+            AND NOT tgisinternal
+            AND tgenabled = 'O'
+        ) <> 2 THEN
+          RAISE EXCEPTION 'Run checkpoint storage boundary is invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END LOOP;
     END
     $migration$
   `;
