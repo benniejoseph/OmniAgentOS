@@ -27,7 +27,8 @@ vi.mock("@/lib/security/guard", async (importOriginal) => ({
   authorizeRequest: routeMocks.authorizeRequest,
 }));
 
-vi.mock("@/lib/security/execution-scope", () => ({
+vi.mock("@/lib/security/execution-scope", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/security/execution-scope")>()),
   executionScopeFromSecurityContext:
     routeMocks.executionScopeFromSecurityContext,
 }));
@@ -54,6 +55,15 @@ const context = {
   actorId: "owner@example.test",
   role: "admin" as const,
   source: "session" as const,
+};
+const authenticatedContext = {
+  ...context,
+  auth: {
+    userId: "a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+    email: "owner@example.test",
+    sessionId: "session-a",
+    tenantName: "Tenant A",
+  },
 };
 const preview = {
   schemaVersion: 1,
@@ -156,5 +166,31 @@ describe("memory deletion route", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: expect.stringContaining("fresh preview"),
     });
+  });
+
+  it("uses the canonical private scope for an authenticated deletion", async () => {
+    routeMocks.authorizeRequest.mockResolvedValue(authenticatedContext);
+    const response = await DELETE(
+      new Request("http://localhost/api/memory/memory-a", {
+        method: "DELETE",
+        headers: { "x-asael-deletion-preview": "a".repeat(64) },
+      }),
+      { params: Promise.resolve({ id: "memory-a" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(routeMocks.forgetMemoryWithReceipt).toHaveBeenCalledTimes(1);
+    expect(routeMocks.forgetMemoryWithReceipt).toHaveBeenCalledWith(
+      "memory-a",
+      expect.objectContaining({
+        executionScope: expect.objectContaining({
+          initiatingActorId:
+            "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+        }),
+        accessScope: expect.objectContaining({
+          purposeId: "memory.forget.v1",
+        }),
+      }),
+    );
   });
 });

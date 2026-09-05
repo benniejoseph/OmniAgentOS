@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { listOAuthGrants } from "@/lib/connectors/oauth-store";
+import type { DatabaseMemoryAccessScope } from "@/lib/db/memory-access-scope";
+import { buildUserPrivateMemoryAccessBindingV1 } from "@/lib/memory/access-binding";
 import { saveMemories, listMemories } from "@/lib/memory/store";
 import type { MemoryRecord } from "@/lib/memory/types";
 import { createProject, createProjectTasks, listProjectCollections, listProjects } from "@/lib/projects/store";
@@ -8,15 +10,22 @@ import { listKnowledgeChunks, listKnowledgeDocuments } from "@/lib/rag/store";
 import { appendThreadTurn, createThread, listThreads, listThreadTurns } from "@/lib/threads/store";
 import { createTodayItem, listTodayItems, updateTodayItem } from "@/lib/today/store";
 import { createAgentSkill, createCustomAgent, listAgentSkills, listCustomAgents } from "@/lib/skills/store";
-import { createExecutionScope } from "@/lib/security/execution-scope";
+import {
+  createExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 
 export type PortableArchive = Awaited<ReturnType<typeof createPortableArchive>>;
 
-export async function createPortableArchive(input: { tenantId: string; actorId: string }) {
+export async function createPortableArchive(input: {
+  tenantId: string;
+  actorId: string;
+  memoryAccessScope?: DatabaseMemoryAccessScope;
+}) {
   const [documents, chunks, memories, threads, today, projects, connections, skills, agents] = await Promise.all([
     listKnowledgeDocuments(5_000, { tenantId: input.tenantId }),
     listKnowledgeChunks(50_000, { tenantId: input.tenantId }),
-    listMemories({ tenantId: input.tenantId, limit: 20_000, includeInactive: true }),
+    listPortableMemories(input),
     listThreads(100, { tenantId: input.tenantId, actorId: input.actorId }),
     listTodayItems(250, { tenantId: input.tenantId, actorId: input.actorId }),
     listProjects(100, { tenantId: input.tenantId, actorId: input.actorId }),
@@ -64,7 +73,14 @@ export async function createPortableArchive(input: { tenantId: string; actorId: 
   };
 }
 
-export async function restorePortableArchive(archive: unknown, input: { tenantId: string; actorId: string; abortSignal?: AbortSignal }) {
+export async function restorePortableArchive(archive: unknown, input: {
+  tenantId: string;
+  actorId: string;
+  privateMemoryOwnerActorId?: string;
+  memoryAccessScope?: DatabaseMemoryAccessScope;
+  memoryExecutionScope?: ExecutionScope;
+  abortSignal?: AbortSignal;
+}) {
   const data = asArchive(archive);
   const sourceExecutionScope = createExecutionScope({
     tenantId: input.tenantId,
@@ -110,7 +126,30 @@ export async function restorePortableArchive(archive: unknown, input: { tenantId
     });
     knowledge += 1;
   }
-  const memoryInputs = data.memories.slice(0, 20_000).map((memory) => ({ ...memory, tenantId: input.tenantId, id: memory.id || `portable_${digest(`${memory.title}:${memory.content}`)}`, source: memory.source || "portable-restore", embedding: undefined }));
+  const privateMemoryBinding = input.privateMemoryOwnerActorId &&
+      input.memoryAccessScope &&
+      input.memoryExecutionScope
+    ? buildUserPrivateMemoryAccessBindingV1({
+        tenantId: input.tenantId,
+        ownerActorId: input.privateMemoryOwnerActorId,
+        originPurpose: "api.portable.restore",
+      })
+    : undefined;
+  const memoryInputs = data.memories.slice(0, 20_000).map((memory) => ({
+    ...memory,
+    tenantId: input.tenantId,
+    id: memory.id || `portable_${digest(`${memory.title}:${memory.content}`)}`,
+    source: memory.source || "portable-restore",
+    scope: privateMemoryBinding ? "user" as const : memory.scope,
+    embedding: undefined,
+    accessBinding: privateMemoryBinding,
+    databaseAccessScope: privateMemoryBinding
+      ? input.memoryAccessScope
+      : undefined,
+    executionScope: privateMemoryBinding
+      ? input.memoryExecutionScope
+      : undefined,
+  }));
   if (memoryInputs.length) await saveMemories(memoryInputs);
   let turns = 0;
   for (const archived of data.threads.slice(0, 100)) {
@@ -144,6 +183,30 @@ function portableSourceKind(value: ReturnType<typeof sourceType>) {
   if (value === "file") return "file" as const;
   if (value === "api") return "record" as const;
   return "document" as const;
+}
+
+async function listPortableMemories(input: {
+  tenantId: string;
+  memoryAccessScope?: DatabaseMemoryAccessScope;
+}) {
+  const legacy = await listMemories({
+    tenantId: input.tenantId,
+    limit: 20_000,
+    includeInactive: true,
+  });
+  const scoped = input.memoryAccessScope
+    ? await listMemories({
+        tenantId: input.tenantId,
+        limit: 20_000,
+        includeInactive: true,
+        accessScope: input.memoryAccessScope,
+      })
+    : [];
+  return [...new Map(
+    [...legacy, ...scoped].map((memory) => [memory.id, memory] as const),
+  ).values()]
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 20_000);
 }
 
 function asArchive(value: unknown) {

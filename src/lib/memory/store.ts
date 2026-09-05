@@ -7,6 +7,7 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import {
+  databaseMemoryAccessScopeFromExecutionScope,
   parseDatabaseMemoryAccessScope,
   serializeDatabaseMemoryAccessScope,
   setTransactionLocalDatabaseMemoryAccessScope,
@@ -70,6 +71,7 @@ export type CreateMemoryInput = {
   embedding?: number[];
   accessBinding?: MemoryAccessBindingV1;
   databaseAccessScope?: DatabaseMemoryAccessScope;
+  executionScope?: ExecutionScope;
 };
 
 type TenantScopedOptions = {
@@ -407,6 +409,12 @@ async function saveMemoriesWithCommitStatus(
         );
         const persistedRows = await persistRows(sql);
         await updateInsertedMemoryVectors(sql, persistedRows, records, tenantId);
+        await appendBoundMemoryCreatedEvents(
+          sql,
+          persistedRows,
+          records,
+          inputs,
+        );
         return persistedRows;
       }) as Array<Record<string, unknown>>;
     } else {
@@ -559,6 +567,7 @@ export async function correctMemory(
     tenantId?: string;
     actorId?: string;
     accessScope?: DatabaseMemoryAccessScope;
+    executionScope?: ExecutionScope;
   } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
@@ -587,6 +596,9 @@ export async function correctMemory(
     accessBinding: existing.accessBinding,
     databaseAccessScope: existing.accessBinding
       ? options.accessScope
+      : undefined,
+    executionScope: existing.accessBinding
+      ? options.executionScope
       : undefined,
   });
   const oldStatus: NonNullable<MemoryRecord["claimStatus"]> = correction.contradiction ? "contradicted" : "superseded";
@@ -1585,7 +1597,8 @@ function resolveDatabaseMemoryWriteScope(
   if (
     inputs.length !== records.length ||
     inputs.some((input, index) =>
-      Boolean(input.databaseAccessScope) !== Boolean(records[index]?.accessBinding)
+      Boolean(input.databaseAccessScope) !== Boolean(records[index]?.accessBinding) ||
+      Boolean(input.executionScope) !== Boolean(records[index]?.accessBinding)
     )
   ) {
     throw new Error(
@@ -1614,16 +1627,70 @@ function resolveDatabaseMemoryWriteScope(
     const scope = parseDatabaseMemoryAccessScope(
       inputs[index]?.databaseAccessScope,
     );
+    const inputExecutionScope = inputs[index]?.executionScope;
+    const executionScope = parsePersistedExecutionScope(inputExecutionScope);
+    const expectedDatabaseScope = executionScope
+      ? databaseMemoryAccessScopeFromExecutionScope(executionScope, {
+          purposeId: scope.purposeId,
+          auditPurpose: scope.purpose,
+        })
+      : undefined;
     if (
       !binding ||
+      !executionScope ||
+      !inputExecutionScope ||
+      !executionScopesEqual(executionScope, inputExecutionScope) ||
       binding.visibility !== "user_private" ||
       serializeDatabaseMemoryAccessScope(scope) !== serializedScope ||
+      serializeDatabaseMemoryAccessScope(expectedDatabaseScope) !==
+        serializedScope ||
       !memoryAccessBindingAllows(scope, binding)
     ) {
       throw new Error("Memory access binding does not authorize this write.");
     }
   }
   return firstScope;
+}
+
+async function appendBoundMemoryCreatedEvents(
+  sql: MemorySqlClient,
+  rows: readonly Record<string, unknown>[],
+  records: readonly MemoryRecord[],
+  inputs: readonly CreateMemoryInput[],
+) {
+  const insertedIds = new Set(
+    rows
+      .filter((row) => Boolean(row._inserted))
+      .map((row) => String(row.id)),
+  );
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const executionScope = inputs[index]?.executionScope;
+    if (
+      !record?.accessBinding ||
+      !executionScope ||
+      !insertedIds.has(record.id)
+    ) {
+      continue;
+    }
+    await appendScopedDomainEvent({
+      id: `memory_access_bound_${record.id}`,
+      streamId: `memory:${record.id}`,
+      type: "memory.user_private.created",
+      executionScope,
+      payload: {
+        schemaVersion: record.accessBinding.version,
+        memoryId: record.id,
+        accessState: record.accessBinding.state,
+        visibility: record.accessBinding.visibility,
+        sensitivity: record.accessBinding.sensitivity,
+        originPurpose: record.accessBinding.originPurpose,
+        allowedPurposeCount: record.accessBinding.allowedPurposeIds.length,
+        accessScopeSha256: record.accessBinding.accessScopeSha256,
+        accessBoundAt: record.accessBinding.accessBoundAt,
+      },
+    }, { sql });
+  }
 }
 
 async function updateInsertedMemoryVectors(

@@ -48,11 +48,18 @@ vi.mock("@/lib/db/memory-access-scope", async (importOriginal) => ({
   }),
 }));
 
+vi.mock("@/lib/events/store", () => ({
+  appendScopedDomainEvent: vi.fn(async () => {
+    mocks.events.push("event");
+  }),
+}));
+
 import {
   buildUserPrivateMemoryAccessBindingV1,
   MEMORY_PURPOSE_IDS,
 } from "@/lib/memory/access-binding";
 import { listMemories, saveMemory, searchMemories } from "@/lib/memory/store";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const ownerActorId = "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6";
 
@@ -71,6 +78,17 @@ function accessScope(purposeId: string) {
     purposeId,
     purpose: `test.${purposeId}`,
   };
+}
+
+function executionScope(purposeId: string) {
+  return createExecutionScope({
+    tenantId: "tenant-a",
+    initiatingActorId: ownerActorId,
+    executingPrincipalType: "user",
+    executingPrincipalId: ownerActorId,
+    correlationId: "memory_test",
+    purpose: `test.${purposeId}`,
+  });
 }
 
 describe("Postgres memory recall", () => {
@@ -110,6 +128,7 @@ describe("Postgres memory recall", () => {
       content: "Keep this isolated.",
       accessBinding: binding,
       databaseAccessScope: accessScope(MEMORY_PURPOSE_IDS.write),
+      executionScope: executionScope(MEMORY_PURPOSE_IDS.write),
     });
 
     expect(mocks.events.slice(0, 2)).toEqual(["scope", "query"]);
@@ -135,6 +154,7 @@ describe("Postgres memory recall", () => {
       content: "This must fail before SQL.",
       accessBinding: binding,
       databaseAccessScope: accessScope(MEMORY_PURPOSE_IDS.read),
+      executionScope: executionScope(MEMORY_PURPOSE_IDS.read),
     })).rejects.toThrow("not authorized for this operation");
   });
 });

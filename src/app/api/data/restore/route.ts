@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { restorePortableArchive } from "@/lib/data/portable";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
+import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -14,7 +17,20 @@ async function POSTHandler(request: Request) {
   let body: unknown;
   try { body = await parseJsonBody(request, 10 * 1024 * 1024); } catch (error) { return jsonBodyErrorResponse(error); }
   try {
-    const restored = await restorePortableArchive(body, { tenantId: context.tenantId, actorId: context.actorId, abortSignal: request.signal });
+    const requestAccess = requestMemoryAccessFromSecurityContext(context, {
+      purposeId: MEMORY_PURPOSE_IDS.write,
+      auditPurpose: "api.portable.restore",
+      correlationId: `memory_restore_${randomUUID()}`,
+    });
+    const restored = await restorePortableArchive(body, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      privateMemoryOwnerActorId:
+        requestAccess?.actorBinding.canonicalActorId,
+      memoryAccessScope: requestAccess?.databaseAccessScope,
+      memoryExecutionScope: requestAccess?.executionScope,
+      abortSignal: request.signal,
+    });
     return Response.json({ restored }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Archive restore failed." }, { status: 400 });
