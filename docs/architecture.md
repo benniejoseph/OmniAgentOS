@@ -407,6 +407,35 @@ database/runtime hold remains. A notice contract ID/version/digest is evidence,
 not approval of legal/privacy copy; reviewed and pinned wording remains a
 prerequisite to issuance.
 
+The next authority-resolution canary is a PostgreSQL observer with no allow
+state. It accepts the exact v44 memory-access envelope plus a v50 canonical
+request-actor binding, opens its own ordinary tenant-scoped transaction, proves
+that system scope and any prior memory scope are absent, and attempts separate
+`FOR SHARE` reads in deterministic order: canonical user, current membership,
+membership epoch, purpose contract, tenant entitlement, standing consent, the
+exact six-coordinate notice receipt, and its notice contract. It stops at the
+first unavailable or malformed prerequisite. Each attempted lookup uses
+explicit columns, exact predicates, deterministic ordering, and a two-row
+ambiguity bound; it never joins authority surfaces or returns their rows.
+
+Production serving roles currently have no `SELECT` grant on these owner-only
+authority shadows, so an accidental invocation fails as a sanitized read
+failure. If a future least-privilege read grant is introduced, the v48-v55
+restrictive holdbacks still make held rows invisible to ordinary tenant scope.
+Missing, hidden, held, duplicate, or malformed authority collapses to a closed,
+canonically ordered diagnostic. Every successfully returned observation remains
+`deny / activation_held`; invalid input, missing PostgreSQL, rejected database
+scope, and database read failures instead produce fixed, sanitized errors.
+Export and forget stop before standing-entitlement/consent reads and report the
+separate request-bound data-right authority as unavailable. `FOR SHARE` takes
+transient row locks, so this is not described as a read-only transaction; it
+still performs no durable mutation. The canary has no serving import or call
+site, scope installer, v45 authorization-hook call, writer, event, log,
+canary-specific metric, telemetry SQL, or file fallback. A future allow-capable
+resolver requires governed lifecycle writers, modeled
+principal/context/capability/operation authority, and a shared locking protocol
+before any hold can move.
+
 Migration v50 adds an owner-only, append-only auth-user actor-identifier
 shadow. It records each v46 canonical actor as a self identifier and each exact
 current auth email as the initial legacy identifier, while an auth-user trigger

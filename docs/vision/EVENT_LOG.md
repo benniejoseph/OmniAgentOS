@@ -485,6 +485,18 @@ no event or row; every v45 and v48-v55 database/runtime hold remains in force.
 A contract ID, version, or digest is not legal/privacy approval of the notice
 copy; issuance still requires reviewed, pinned wording.
 
+The denial-only memory-authority resolution canary also emits no event. It
+performs only sequential, ambiguity-bounded `FOR SHARE` observations inside an
+ordinary tenant-scoped PostgreSQL transaction and can return only
+`deny / activation_held` with coarse authority identifiers. It does not claim
+that hidden or missing authority is absent globally, does not expose resolved
+rows or a legacy email, and does not append diagnostics, database failures, or
+private content to the event log. Export and forget remain separate
+request-bound data-right flows. Typed authority events begin only in future
+governed lifecycle writers that commit the authority transition and scoped
+event together; the canary has no writer, serving call site, or event-store
+import.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
