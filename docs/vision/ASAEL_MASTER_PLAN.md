@@ -430,15 +430,13 @@ plane, Workspace cutover, native client, runtime grant, database change, or
 user-visible behavior. It does not complete the other Phase 0 rows or satisfy
 the aggregate Phase 0 gate.
 
-P0.5 now has a first dormant contract foundation in
-`evals/p05/suite.v1.json` and `src/lib/evals2/p05.ts`. Sixteen bounded,
-synthetic cases cover all ten required categories with explicit execution scope
-and exact structural assertions. This lane is isolated from live models,
-providers, tools, databases, connectors, clocks, and production state; it has no
-warning result and grants no runtime authority. No observed baseline or
-category adapter is claimed by this slice, so P0.5 remains open until those
-later batches are implemented and an explicitly authorized baseline is
-recorded.
+P0.5 now has a reproducible observed baseline in `evals/p05/baseline.v1.json`.
+All sixteen bounded synthetic cases pass across the ten required truth and
+safety categories. The observer exercises the corresponding side-effect-free
+runtime policies without calling a model, provider, database, connector, clock,
+or external effect. This completes the shared baseline portion of P0.5; each
+later phase must still add its own narrow regression set and explicit exit gate
+rather than treating the shared baseline as proof of that phase.
 
 ### Phase 1 — Truthful events, evidence, completion, and recovery
 
@@ -468,8 +466,9 @@ open until authorized semantic verification and user-facing adoption are
 implemented behind compatibility gates. The normative boundary is documented
 in [ClaimEvidenceMap v1](CLAIM_EVIDENCE.md).
 
-P1.6 now has a first dormant contract foundation in
-`src/lib/runs/checkpoints.ts`. It defines a bounded, immutable,
+P1.6 now has a dormant contract and persistence foundation in
+`src/lib/runs/checkpoints.ts` and `src/lib/runs/checkpoint-store.ts`. It defines
+a bounded, immutable,
 metadata-and-reference-only `RunCheckpointV1`, deterministic checkpoint
 identity and digest, exact parent-chain validation, monotonic budget and
 external-effect accounting, guarded waiting-boundary transitions, exact
@@ -477,8 +476,12 @@ completed-call counting, and a safe-pause compatibility decision for inactive
 or unsupported engine, contract, configuration, or rollout pins. Mutation
 boundaries bind governed tool execution, persisted intent, idempotency, and
 effect-receipt identities rather than embedding provider state or trusting a
-model assertion. No store, migration, event, worker, API, continuation, or UI
-is changed, so P1.6 remains open until every required boundary is persisted
+model assertion. Migration v68 adds append-only tenant-scoped checkpoint and
+state-reference tables with forced RLS. A transaction-only writer rebinds the
+exact scope, locks and validates the parent, persists the record and reference
+index, and appends one metadata-only `run.checkpoint.recorded` event. There is
+no route, runtime call site, state loader, worker claim, continuation, or resume
+authority. P1.6 remains open until every required boundary is shadow-written
 and fenced canary resume proves it cannot duplicate an effect. The normative
 boundary and activation order are documented in
 [RunCheckpoint v1](RUN_CHECKPOINTS.md).

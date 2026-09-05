@@ -96,6 +96,12 @@ a lease, or permit an effect. Those facts must be revalidated transactionally
 by a later resume worker. The complete contract and staged activation gates are documented in
 [RunCheckpoint v1](vision/RUN_CHECKPOINTS.md).
 
+Migration v68 and the transaction-only writer persist one exact parent-bound
+checkpoint, its state-reference index, and `run.checkpoint.recorded` event in a
+single existing transaction. The writer deliberately has no transaction opener
+or call site and returns `resumeAuthorityGranted: false`; persistence evidence
+must not be mistaken for an executable continuation.
+
 ## One harness receipt per run
 
 Every new agent run emits a durable `run.harness` event after context and

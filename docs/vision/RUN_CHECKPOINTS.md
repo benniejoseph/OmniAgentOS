@@ -1,14 +1,17 @@
 # RunCheckpoint v1
 
-**Status:** Dormant additive P1.6 contract foundation
+**Status:** Dormant additive P1.6 contract and persistence foundation
 
-**Runtime effect:** None
+**Runtime effect:** Migration and transaction-only writer; no call site or resume
 
 `RunCheckpointV1` defines the immutable metadata and reference boundary that a
-future durable run must record before work can be resumed safely. This first
-slice is a pure contract. It does not create a checkpoint table, write an
-event, alter the current approval continuation, resume interrupted work, or
-change any API, worker, workflow, tool, model, verifier, delegation, or UI.
+future durable run must record before work can be resumed safely. Migration
+v68 creates forced-RLS, append-only checkpoint and state-reference tables. A
+transaction-only writer verifies the exact scope, locks and validates the
+parent, stores the immutable record and reference index, and appends a
+metadata-only `run.checkpoint.recorded` event in the same caller-owned
+transaction. Nothing calls the writer, loads referenced state, claims a resume,
+or changes an API, worker, workflow, tool, model, verifier, delegation, or UI.
 
 ## Why this precedes resume
 
@@ -77,17 +80,15 @@ revalidate the live rollout, execution scope, grants, approval, tool/effect
 state, lease, and cancellation state inside the same transaction used to claim
 the continuation.
 
-## Later P1.6 activation gates
+## Remaining P1.6 activation gates
 
-The next slices must remain additive and proceed in this order:
+The remaining slices must proceed in this order:
 
-1. add an append-only, tenant-scoped checkpoint/state-reference store and
-   metadata-only `run.checkpoint.recorded` event in one transaction;
-2. shadow-write the governed approval boundary for newly enrolled runs while
+1. shadow-write the governed approval boundary for newly enrolled runs while
    the legacy continuation remains authoritative;
-3. compare checkpoint chains, references, and tool-effect reconciliation;
-4. canary resume only exact supported pins after a fenced claim; and
-5. expand separately to model, tool, delegation, and verifier boundaries.
+2. compare checkpoint chains, references, and tool-effect reconciliation;
+3. canary resume only exact supported pins after a fenced claim; and
+4. expand separately to model, tool, delegation, and verifier boundaries.
 
 P1.6 remains open until all required boundaries checkpoint durably and an
 interrupted run resumes without duplicate side effects. Replay, fork, and user

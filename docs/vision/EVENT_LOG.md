@@ -1042,6 +1042,23 @@ IDs, counts, status, and SLA outcome only. The immediate receipt barrier stays
 authoritative during the scrub window; the default physical completion SLA is
 24 hours and overdue receipt IDs are surfaced in worker results.
 
+## Run checkpoint persistence boundary
+
+Migration v68 adds append-only, forced-RLS checkpoint and state-reference
+tables. The transaction-only writer rebinds the supplied `ExecutionScope` to
+the immutable checkpoint, locks and validates the exact parent for every
+successor, persists the record and canonical reference index, and appends one
+idempotent `run.checkpoint.recorded` event in the same transaction. The event
+contains only identities, hashes, closed lifecycle/boundary values, scope and
+rollout coordinates, grants, and counts; raw purpose, prompts, messages,
+provider continuation data, tool input/output, credentials, and private
+reasoning are excluded.
+
+This is persistence evidence only. The module has no transaction opener,
+route, state loader, continuation claim, or worker call site and always returns
+`resumeAuthorityGranted: false`. Approval shadow writes, comparison, fenced
+resume, and the other boundary kinds remain later P1.6 gates.
+
 ## Event shape
 
 ```ts
