@@ -624,7 +624,7 @@ export async function recordApprovalDecisionCheckpointShadow(
      FROM omni_run_checkpoints
      WHERE tenant_id = $1 AND run_id = $2
      ORDER BY sequence DESC
-     LIMIT 2
+     LIMIT 1
      FOR SHARE`,
     [scope.tenantId, String(runRow.id)],
   );
