@@ -16,6 +16,10 @@ import {
 import { buildInitialShadowRunContract } from "@/lib/runs/contract-runtime";
 import type { RunCheckpointWriterSql } from "@/lib/runs/checkpoint-store";
 import {
+  buildRunCheckpointV1,
+  validateRunCheckpointSuccessorV1,
+} from "@/lib/runs/checkpoints";
+import {
   createExecutionScope,
   deriveExecutionScope,
 } from "@/lib/security/execution-scope";
@@ -188,6 +192,147 @@ describe("approval checkpoint shadow", () => {
       },
       recordedAt: RECORDED_AT,
     })).toThrow(/binding changed/i);
+  });
+
+  it("does not count a pending expanded approval tool before its after boundary", () => {
+    const expanded = structuredClone(enrollment());
+    expanded.enginePin.configurationSha256 =
+      RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256;
+    const modelBefore = buildRunCheckpointV1({
+      runId: RUN_ID,
+      executionScope: SCOPE,
+      boundary: {
+        kind: "model",
+        phase: "before",
+        boundaryId: `${RUN_ID}:model:1`,
+        attempt: 1,
+      },
+      sequence: 0,
+      parent: null,
+      enginePin: expanded.enginePin,
+      stateReferences: [
+        {
+          kind: "run_record",
+          referenceId: RUN_ID,
+          referenceSha256: canonicalJsonSha256("run before approval"),
+          versionId: "agent_run_v1",
+        },
+        {
+          kind: "harness_manifest",
+          referenceId: expanded.enginePin.harnessManifestId,
+          referenceSha256: expanded.enginePin.harnessManifestSha256,
+          versionId: "harness_manifest_v1",
+        },
+        {
+          kind: "model_turn",
+          referenceId: `${RUN_ID}:model:1`,
+          referenceSha256: canonicalJsonSha256("model request"),
+          versionId: "model_turn_request_v1",
+        },
+      ],
+      toolBinding: null,
+      resourceUsage: {
+        modelCallCount: 0,
+        modelInputTokenCount: 0,
+        modelOutputTokenCount: 0,
+        cachedInputTokenCount: 0,
+        toolCallCount: 0,
+        toolResultByteCount: 0,
+        externalEffectCount: 0,
+        boundaryExternalEffectCount: 0,
+        elapsedMs: 3_000,
+      },
+      lifecycleState: "active",
+      resumeDisposition: "resumable",
+      recordedAt: "2026-09-05T12:00:03.000Z",
+    });
+    const parent = buildRunCheckpointV1({
+      runId: RUN_ID,
+      executionScope: SCOPE,
+      boundary: {
+        kind: "model",
+        phase: "after",
+        boundaryId: `${RUN_ID}:model:1`,
+        attempt: 1,
+      },
+      sequence: 1,
+      parent: {
+        checkpointId: modelBefore.checkpointId,
+        checkpointSha256: modelBefore.checkpointSha256,
+        sequence: modelBefore.sequence,
+      },
+      enginePin: expanded.enginePin,
+      stateReferences: [
+        {
+          kind: "run_record",
+          referenceId: RUN_ID,
+          referenceSha256: canonicalJsonSha256("run before approval"),
+          versionId: "agent_run_v1",
+        },
+        {
+          kind: "harness_manifest",
+          referenceId: expanded.enginePin.harnessManifestId,
+          referenceSha256: expanded.enginePin.harnessManifestSha256,
+          versionId: "harness_manifest_v1",
+        },
+        {
+          kind: "model_turn",
+          referenceId: `${RUN_ID}:model:1`,
+          referenceSha256: canonicalJsonSha256("model receipt"),
+          versionId: "model_turn_receipt_v1",
+        },
+      ],
+      toolBinding: null,
+      resourceUsage: {
+        modelCallCount: 1,
+        modelInputTokenCount: 10,
+        modelOutputTokenCount: 5,
+        cachedInputTokenCount: 2,
+        toolCallCount: 0,
+        toolResultByteCount: 0,
+        externalEffectCount: 0,
+        boundaryExternalEffectCount: 0,
+        elapsedMs: 4_000,
+      },
+      lifecycleState: "active",
+      resumeDisposition: "resumable",
+      recordedAt: "2026-09-05T12:00:04.000Z",
+    });
+    expect(() =>
+      validateRunCheckpointSuccessorV1(modelBefore, parent)
+    ).not.toThrow();
+    const waiting = buildApprovalWaitingCheckpointShadow({
+      runId: RUN_ID,
+      executionScope: SCOPE,
+      runContractEnvelope: CONTRACT.envelope,
+      enrollment: expanded,
+      parent,
+      approvalExecutionId: EXECUTION_ID,
+      state: {
+        runRecordSha256: canonicalJsonSha256("waiting run"),
+        approvalRequestSha256: canonicalJsonSha256("approval request"),
+        toolExecutionSha256: canonicalJsonSha256("pending tool"),
+        continuationSha256: canonicalJsonSha256("continuation"),
+      },
+      resourceUsage: {
+        modelCallCount: 1,
+        modelInputTokenCount: 10,
+        modelOutputTokenCount: 5,
+        cachedInputTokenCount: 2,
+        toolCallCount: 1,
+        toolResultByteCount: 0,
+        externalEffectCount: 0,
+        elapsedMs: 5_000,
+      },
+      recordedAt: RECORDED_AT,
+    });
+
+    expect(waiting.resourceUsage).toMatchObject({
+      modelCallCount: 1,
+      toolCallCount: 0,
+      elapsedMs: 5_000,
+    });
+    expect(() => validateRunCheckpointSuccessorV1(parent, waiting)).not.toThrow();
   });
 
   it("accepts only the dedicated canary configuration for a canary pin", () => {

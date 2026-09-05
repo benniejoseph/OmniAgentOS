@@ -245,6 +245,26 @@ export function buildApprovalWaitingCheckpointShadow(input: {
   ) {
     throw new Error("Approval checkpoint parent changed its active run binding.");
   }
+  // Entering approval wait does not itself complete a model or tool call. The
+  // legacy event projection includes the pending tool execution ID, so its
+  // aggregate toolCallCount can be one ahead of an expanded checkpoint parent.
+  // Preserve the parent's cumulative counters and advance only elapsed time;
+  // the paired tool after-boundary records the completed call after approval.
+  const resourceUsage = parent
+    ? {
+        modelCallCount: parent.resourceUsage.modelCallCount,
+        modelInputTokenCount: parent.resourceUsage.modelInputTokenCount,
+        modelOutputTokenCount: parent.resourceUsage.modelOutputTokenCount,
+        cachedInputTokenCount: parent.resourceUsage.cachedInputTokenCount,
+        toolCallCount: parent.resourceUsage.toolCallCount,
+        toolResultByteCount: parent.resourceUsage.toolResultByteCount,
+        externalEffectCount: parent.resourceUsage.externalEffectCount,
+        elapsedMs: Math.max(
+          parent.resourceUsage.elapsedMs,
+          input.resourceUsage.elapsedMs,
+        ),
+      }
+    : input.resourceUsage;
 
   return buildRunCheckpointV1({
     runId: input.runId,
@@ -298,15 +318,15 @@ export function buildApprovalWaitingCheckpointShadow(input: {
     ],
     toolBinding: null,
     resourceUsage: {
-      modelCallCount: input.resourceUsage.modelCallCount,
-      modelInputTokenCount: input.resourceUsage.modelInputTokenCount,
-      modelOutputTokenCount: input.resourceUsage.modelOutputTokenCount,
-      cachedInputTokenCount: input.resourceUsage.cachedInputTokenCount,
-      toolCallCount: input.resourceUsage.toolCallCount,
-      toolResultByteCount: input.resourceUsage.toolResultByteCount,
-      externalEffectCount: input.resourceUsage.externalEffectCount,
+      modelCallCount: resourceUsage.modelCallCount,
+      modelInputTokenCount: resourceUsage.modelInputTokenCount,
+      modelOutputTokenCount: resourceUsage.modelOutputTokenCount,
+      cachedInputTokenCount: resourceUsage.cachedInputTokenCount,
+      toolCallCount: resourceUsage.toolCallCount,
+      toolResultByteCount: resourceUsage.toolResultByteCount,
+      externalEffectCount: resourceUsage.externalEffectCount,
       boundaryExternalEffectCount: 0,
-      elapsedMs: input.resourceUsage.elapsedMs,
+      elapsedMs: resourceUsage.elapsedMs,
     },
     lifecycleState: "waiting",
     resumeDisposition: "awaiting_signal",
