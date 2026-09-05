@@ -10,6 +10,7 @@ import {
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import { rebuildMemoryGraph } from "@/lib/memory/graph";
 import { saveMemories } from "@/lib/memory/store";
+import { createKnowledgeDocument } from "@/lib/rag/store";
 import {
   completeOperationJob,
   enqueueOperationJob,
@@ -161,6 +162,42 @@ databaseDescribe("Postgres schema integration", () => {
       "bulk-memory-two",
     ]);
     expect(replayed).toEqual(first);
+  });
+
+  test("persists a knowledge chunk batch as a native JSON array", async () => {
+    const tenantId = "knowledge_chunk_batch_tenant";
+    const created = await runWithDatabaseTenantScope(tenantId, () =>
+      createKnowledgeDocument({
+        idempotencyKey: "native-jsonb-chunk-batch",
+        tenantId,
+        title: "Native JSONB chunk batch",
+        content: "A connected-source document must persist atomically.",
+        source: "integration.connected-source",
+        sourceType: "api",
+        chunks: [
+          {
+            index: 0,
+            content: "A connected-source document must persist atomically.",
+          },
+        ],
+      }),
+    );
+
+    const chunks = await admin`
+      SELECT id, tenant_id, document_id, chunk_index, content
+      FROM omni_knowledge_chunks
+      WHERE tenant_id = ${tenantId}
+        AND document_id = ${created.document.id}
+      ORDER BY chunk_index
+    `;
+    expect(chunks).toEqual([
+      expect.objectContaining({
+        tenant_id: tenantId,
+        document_id: created.document.id,
+        chunk_index: 0,
+        content: "A connected-source document must persist atomically.",
+      }),
+    ]);
   });
 
   test("stores structured parameters as native JSONB", async () => {

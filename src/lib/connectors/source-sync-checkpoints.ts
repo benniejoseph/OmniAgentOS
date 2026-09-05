@@ -776,7 +776,7 @@ async function commitSourceSyncPageDb(input: {
           adapter_output_id, adapter_output_sha256, delete_reason_code,
           last_known_revision_id, attempts, error_code, error_sha256,
           next_retry_at, applied_at, created_at, updated_at
-        FROM jsonb_to_recordset(${JSON.stringify(dbPageItems(storedItems))}::jsonb) AS item(
+        FROM jsonb_to_recordset(${dbPageItems(storedItems)}::jsonb) AS item(
           id text, schema_version integer, tenant_id text, checkpoint_id text,
           owner_actor_id text, connection_id text, provider text,
           source_id text, engine_version text, authorization_generation bigint,
@@ -2089,9 +2089,7 @@ async function insertCanonicalPendingPageItems(
       delete_reason_code, noop_reason_code, last_known_revision_id, attempts,
       error_code, error_sha256, next_retry_at, applied_at, created_at,
       updated_at
-    FROM jsonb_to_recordset(${JSON.stringify(
-      canonicalPendingDbPageItems(items),
-    )}::jsonb) AS item(
+    FROM jsonb_to_recordset(${canonicalPendingDbPageItems(items)}::jsonb) AS item(
       id text, schema_version integer, tenant_id text, checkpoint_id text,
       owner_actor_id text, connection_id text, provider text,
       source_id text, engine_version text, authorization_generation bigint,

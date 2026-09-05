@@ -800,7 +800,7 @@ async function insertKnowledgeDocumentDb(
           id, tenant_id, document_id, source_revision_id, evidence_unit_id,
           chunk_index, title, content, tags, source, token_estimate,
           character_count, embedding, metadata, created_at, updated_at
-        FROM jsonb_to_recordset(${JSON.stringify(chunkPayload)}::jsonb) AS input(
+        FROM jsonb_to_recordset(${chunkPayload}::jsonb) AS input(
           id text,
           tenant_id text,
           document_id text,

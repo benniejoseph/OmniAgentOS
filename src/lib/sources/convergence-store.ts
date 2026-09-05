@@ -977,7 +977,7 @@ async function persistConvergentEvidenceUnits(
       evidence_unit_sha256, adapter_output_id, adapter_output_sha256,
       adapter_operation, adapter_id, adapter_version_id,
       adapter_config_sha256, adapter_event_key_sha256, adapter_observed_at
-    FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS input(
+    FROM jsonb_to_recordset(${payload}::jsonb) AS input(
       id text, schema_version integer, contract_kind text, tenant_id text,
       source_item_id text, source_revision_id text, owner_actor_id text,
       workspace_id text, project_id text, mission_id text,
