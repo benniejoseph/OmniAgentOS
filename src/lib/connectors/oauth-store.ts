@@ -16,6 +16,8 @@ export type OAuthSyncLease = Readonly<{
 }>;
 type InternalGrant = OAuthGrant & {
   sealedTokens: ReturnType<typeof sealJsonPayload>;
+  sealedSyncCursor?: ReturnType<typeof sealJsonPayload>;
+  /** Legacy file-mode compatibility; new cursor writes are sealed. */
   syncCursor?: string;
   syncLeaseOwnerId?: string;
   syncLeaseExpiresAt?: string;
@@ -97,7 +99,7 @@ export async function saveOAuthGrant(input: { tenantId: string; actorId: string;
   let saved!: InternalGrant;
   await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => {
     const existing = ledger.grants.find((grant) => grant.tenantId === input.tenantId && grant.actorId === input.actorId && grant.provider === input.provider);
-    saved = { id: existing?.id || id, tenantId: input.tenantId, actorId: input.actorId, provider: input.provider, scopes, sealedTokens, syncCursor: authorizationMode === "refresh" ? existing?.syncCursor : undefined, syncStatus: authorizationMode === "refresh" ? existing?.syncStatus || "idle" : "idle", syncError: authorizationMode === "refresh" ? existing?.syncError : undefined, lastSyncedAt: existing?.lastSyncedAt, syncedItems: existing?.syncedItems || 0, status: "active", authorizationGeneration: existing ? Math.max(1, Number(existing.authorizationGeneration || 1)) + (authorizationMode === "reauthorize" ? 1 : 0) : 1, expiresAt, createdAt: existing?.createdAt || now, updatedAt: now, ...(authorizationMode === "refresh" ? { syncLeaseOwnerId: existing?.syncLeaseOwnerId, syncLeaseExpiresAt: existing?.syncLeaseExpiresAt, syncLeaseGeneration: existing?.syncLeaseGeneration } : { syncLeaseGeneration: existing?.syncLeaseGeneration || 0 }) };
+    saved = { id: existing?.id || id, tenantId: input.tenantId, actorId: input.actorId, provider: input.provider, scopes, sealedTokens, sealedSyncCursor: authorizationMode === "refresh" ? existing?.sealedSyncCursor : undefined, syncCursor: authorizationMode === "refresh" ? existing?.syncCursor : undefined, syncStatus: authorizationMode === "refresh" ? existing?.syncStatus || "idle" : "idle", syncError: authorizationMode === "refresh" ? existing?.syncError : undefined, lastSyncedAt: existing?.lastSyncedAt, syncedItems: existing?.syncedItems || 0, status: "active", authorizationGeneration: existing ? Math.max(1, Number(existing.authorizationGeneration || 1)) + (authorizationMode === "reauthorize" ? 1 : 0) : 1, expiresAt, createdAt: existing?.createdAt || now, updatedAt: now, ...(authorizationMode === "refresh" ? { syncLeaseOwnerId: existing?.syncLeaseOwnerId, syncLeaseExpiresAt: existing?.syncLeaseExpiresAt, syncLeaseGeneration: existing?.syncLeaseGeneration } : { syncLeaseGeneration: existing?.syncLeaseGeneration || 0 }) };
     return { grants: [saved, ...ledger.grants.filter((grant) => grant.id !== existing?.id)].slice(0, 100) };
   });
   return stripTokens(saved);
@@ -204,7 +206,7 @@ export async function revokeOAuthGrant(tenantId: string, actorId: string, provid
     await getSql()`UPDATE omni_oauth_grants SET status = 'revoked', sealed_tokens = ${sealJsonPayload({}, `oauth-grant:${tenantId}:${actorId}:${provider}`)}::jsonb, sync_cursor = NULL, sync_lease_owner_id = NULL, sync_lease_expires_at = NULL, updated_at = ${now} WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = ${provider}`;
     return;
   }
-  await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => ({ grants: ledger.grants.map((grant) => grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider ? { ...grant, status: "revoked", sealedTokens: sealJsonPayload({}, `oauth-grant:${tenantId}:${actorId}:${provider}`), syncCursor: undefined, syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined, updatedAt: now } : grant) }));
+  await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => ({ grants: ledger.grants.map((grant) => grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider ? { ...grant, status: "revoked", sealedTokens: sealJsonPayload({}, `oauth-grant:${tenantId}:${actorId}:${provider}`), sealedSyncCursor: undefined, syncCursor: undefined, syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined, updatedAt: now } : grant) }));
 }
 
 export async function getOAuthGrantSecrets(tenantId: string, actorId: string, provider: OAuthProvider) {
@@ -219,7 +221,11 @@ export async function getOAuthGrantSecrets(tenantId: string, actorId: string, pr
   }
   if (!internal) return undefined;
   const tokens = openJsonPayload(internal.sealedTokens, `oauth-grant:${tenantId}:${actorId}:${provider}`) as Record<string, unknown>;
-  return { grant: stripTokens(internal), tokens, syncCursor: internal.syncCursor };
+  return {
+    grant: stripTokens(internal),
+    tokens,
+    syncCursor: openedSyncCursor(internal),
+  };
 }
 
 export async function claimOAuthSyncLease(input: {
@@ -318,9 +324,12 @@ export async function updateOAuthSyncState(input: {
   }
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const sealedCursor = input.cursor
+      ? JSON.stringify(sealJsonPayload(input.cursor, syncCursorBinding(input)))
+      : undefined;
     const rows = input.lease
-      ? await getSql()`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${input.cursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, sync_lease_owner_id = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_owner_id END, sync_lease_expires_at = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_expires_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND status = 'active' AND sync_lease_owner_id = ${input.lease.ownerId} AND sync_lease_generation = ${input.lease.generation} AND sync_lease_expires_at > clock_timestamp() RETURNING *`
-      : await getSql()`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${input.cursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND status = 'active' RETURNING *`;
+      ? await getSql()`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, sync_lease_owner_id = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_owner_id END, sync_lease_expires_at = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_expires_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND status = 'active' AND sync_lease_owner_id = ${input.lease.ownerId} AND sync_lease_generation = ${input.lease.generation} AND sync_lease_expires_at > clock_timestamp() RETURNING *`
+      : await getSql()`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND status = 'active' RETURNING *`;
     return rows[0] ? publicGrant(rows[0]) : undefined;
   }
   let updated: OAuthGrant | undefined;
@@ -336,7 +345,7 @@ export async function updateOAuthSyncState(input: {
     ) {
       return grant;
     }
-    const next: InternalGrant = { ...grant, syncStatus: input.status, syncError: input.error, syncCursor: input.cursor || grant.syncCursor, syncedItems: (grant.syncedItems || 0) + (input.syncedItems || 0), lastSyncedAt: input.status === "healthy" ? now : grant.lastSyncedAt, updatedAt: now, ...(input.releaseLease ? { syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined } : {}) };
+    const next: InternalGrant = { ...grant, syncStatus: input.status, syncError: input.error, sealedSyncCursor: input.cursor ? sealJsonPayload(input.cursor, syncCursorBinding(input)) : grant.sealedSyncCursor, syncCursor: input.cursor ? undefined : grant.syncCursor, syncedItems: (grant.syncedItems || 0) + (input.syncedItems || 0), lastSyncedAt: input.status === "healthy" ? now : grant.lastSyncedAt, updatedAt: now, ...(input.releaseLease ? { syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined } : {}) };
     updated = stripTokens(next); return next;
   }) }));
   return updated;
@@ -346,7 +355,61 @@ function stripTokens(grant: InternalGrant): OAuthGrant {
   return { id: grant.id, tenantId: grant.tenantId, actorId: grant.actorId, provider: grant.provider, scopes: grant.scopes, status: grant.status, authorizationGeneration: Math.max(1, Number(grant.authorizationGeneration || 1)), expiresAt: grant.expiresAt, syncStatus: grant.syncStatus || "idle", syncError: grant.syncError, lastSyncedAt: grant.lastSyncedAt, syncedItems: grant.syncedItems || 0, createdAt: grant.createdAt, updatedAt: grant.updatedAt };
 }
 function publicGrant(row: Record<string, unknown>): OAuthGrant { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), provider: String(row.provider) as OAuthProvider, scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [], status: String(row.status) as "active" | "revoked", authorizationGeneration: Math.max(1, Number(row.authorization_generation || 1)), expiresAt: row.expires_at ? new Date(String(row.expires_at)).toISOString() : undefined, syncStatus: String(row.sync_status || "idle") as OAuthGrant["syncStatus"], syncError: row.sync_error ? String(row.sync_error) : undefined, lastSyncedAt: row.last_synced_at ? new Date(String(row.last_synced_at)).toISOString() : undefined, syncedItems: Number(row.synced_items || 0), createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString() }; }
-function internalGrantFromRow(row: Record<string, unknown>): InternalGrant { return { ...publicGrant(row), sealedTokens: row.sealed_tokens as InternalGrant["sealedTokens"], syncCursor: row.sync_cursor ? String(row.sync_cursor) : undefined, syncLeaseOwnerId: row.sync_lease_owner_id ? String(row.sync_lease_owner_id) : undefined, syncLeaseExpiresAt: row.sync_lease_expires_at ? new Date(String(row.sync_lease_expires_at)).toISOString() : undefined, syncLeaseGeneration: Number(row.sync_lease_generation || 0) }; }
+function internalGrantFromRow(row: Record<string, unknown>): InternalGrant {
+  const grant = publicGrant(row);
+  const storedCursor = row.sync_cursor ? String(row.sync_cursor) : undefined;
+  const cursor = storedCursor
+    ? storedDatabaseSyncCursor(storedCursor)
+    : {};
+  return {
+    ...grant,
+    sealedTokens: row.sealed_tokens as InternalGrant["sealedTokens"],
+    ...cursor,
+    syncLeaseOwnerId: row.sync_lease_owner_id
+      ? String(row.sync_lease_owner_id)
+      : undefined,
+    syncLeaseExpiresAt: row.sync_lease_expires_at
+      ? new Date(String(row.sync_lease_expires_at)).toISOString()
+      : undefined,
+    syncLeaseGeneration: Number(row.sync_lease_generation || 0),
+  };
+}
+
+function openedSyncCursor(grant: InternalGrant) {
+  if (grant.sealedSyncCursor) {
+    const opened = openJsonPayload(
+      grant.sealedSyncCursor,
+      syncCursorBinding(grant),
+    );
+    if (typeof opened !== "string") {
+      throw new Error("Connected source cursor is invalid.");
+    }
+    return opened;
+  }
+  return grant.syncCursor;
+}
+
+function storedDatabaseSyncCursor(
+  value: string,
+): Pick<InternalGrant, "sealedSyncCursor" | "syncCursor"> {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    if (parsed.version === 1 && parsed.algorithm === "aes-256-gcm") {
+      return {
+        sealedSyncCursor: parsed as InternalGrant["sealedSyncCursor"],
+      };
+    }
+  } catch {
+    // Legacy cursor strings were stored as plaintext JSON.
+  }
+  return { syncCursor: value };
+}
+
+function syncCursorBinding(
+  owner: Pick<OAuthGrant, "tenantId" | "actorId" | "provider">,
+) {
+  return `oauth-sync-cursor:${owner.tenantId}:${owner.actorId}:${owner.provider}`;
+}
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;

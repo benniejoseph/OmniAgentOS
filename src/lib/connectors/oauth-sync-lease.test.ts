@@ -1,12 +1,15 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
+let dataDir = "";
+
 beforeAll(async () => {
-  process.env.OMNIAGENT_DATA_DIR = await mkdtemp(
+  dataDir = await mkdtemp(
     path.join(tmpdir(), "asael-oauth-sync-lease-"),
   );
+  process.env.OMNIAGENT_DATA_DIR = dataDir;
   delete process.env.DATABASE_URL;
 });
 
@@ -52,6 +55,20 @@ describe("OAuth source synchronization lease", () => {
       cursor: JSON.stringify({ drivePageToken: "page-2" }),
       lease: first.lease,
     })).resolves.toMatchObject({ syncStatus: "syncing" });
+    await expect(store.getOAuthGrantSecrets(
+      owner.tenantId,
+      owner.actorId,
+      owner.provider,
+    )).resolves.toMatchObject({
+      syncCursor: JSON.stringify({ drivePageToken: "page-2" }),
+    });
+    const rawLedger = await readFile(
+      path.join(dataDir, "oauth-grants.json"),
+      "utf8",
+    );
+    expect(rawLedger).toContain("sealedSyncCursor");
+    expect(rawLedger).not.toContain("drivePageToken");
+    expect(rawLedger).not.toContain("page-2");
     await expect(store.updateOAuthSyncState({
       ...owner,
       status: "healthy",
