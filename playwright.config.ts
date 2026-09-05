@@ -6,6 +6,8 @@ const port = Number(process.env.PLAYWRIGHT_PORT || 3100);
 const managedBaseUrl = `http://127.0.0.1:${port}`;
 const baseURL = process.env.PLAYWRIGHT_BASE_URL || managedBaseUrl;
 const startsManagedServer = !process.env.PLAYWRIGHT_BASE_URL;
+const e2eStateDirectory = path.join(os.tmpdir(), `omniagent-playwright-${process.pid}`);
+process.env.OMNIAGENT_E2E_SESSION_FILE ||= path.join(e2eStateDirectory, "session-cookies.json");
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -61,7 +63,7 @@ export default defineConfig({
           OMNIAGENT_DEFAULT_ROLE: "operator",
           OMNIAGENT_LOCAL_PRODUCTION: "true",
           TZ: "UTC",
-          OMNIAGENT_DATA_DIR: path.join(os.tmpdir(), `omniagent-playwright-${process.pid}`),
+          OMNIAGENT_DATA_DIR: e2eStateDirectory,
           OMNIAGENT_ACCESS_REQUEST_FILE: path.join(
             os.tmpdir(),
             `omniagent-playwright-${process.pid}`,
