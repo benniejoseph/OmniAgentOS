@@ -1,3 +1,5 @@
+import type { MemoryAccessBindingV1 } from "@/lib/memory/access-binding";
+
 export type MemoryType =
   | "preference"
   | "fact"
@@ -29,6 +31,7 @@ export type MemoryRecord = {
   createdAt: string;
   updatedAt: string;
   embedding?: number[];
+  accessBinding?: MemoryAccessBindingV1;
 };
 
 export type MemorySearchResult = {

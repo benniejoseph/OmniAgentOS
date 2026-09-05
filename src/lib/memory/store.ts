@@ -29,6 +29,12 @@ import {
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type { MemoryRecord, MemorySearchResult, MemoryType } from "@/lib/memory/types";
 import { isTemporalIntervalActive } from "@/lib/memory/temporal";
+import {
+  memoryAccessBindingAllows,
+  memoryAccessBindingV1Schema,
+  type MemoryAccessBindingV1,
+} from "@/lib/memory/access-binding";
+import type { DatabaseMemoryAccessScope } from "@/lib/db/memory-access-scope";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
 import {
   assertCaptureIngestSource,
@@ -56,6 +62,7 @@ export type CreateMemoryInput = {
   supersedesId?: string;
   contradictionOfId?: string;
   embedding?: number[];
+  accessBinding?: MemoryAccessBindingV1;
 };
 
 type TenantScopedOptions = {
@@ -64,6 +71,7 @@ type TenantScopedOptions = {
   includeInactive?: boolean;
   type?: MemoryType;
   sql?: MemorySqlClient;
+  accessScope?: DatabaseMemoryAccessScope;
 };
 
 type MemorySqlClient = ReturnType<typeof getSql>;
@@ -90,6 +98,7 @@ export async function listMemories(options: TenantScopedOptions = {}) {
   const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
   return memories
     .filter((memory) => normalizeTenantId(memory.tenantId) === tenantId)
+    .filter((memory) => memoryVisibleForScope(memory, options.accessScope))
     .filter((memory) => !options.type || memory.type === options.type)
     .filter((memory) => sanitizeMemoryRecord(memory).claimStatus !== "forgotten")
     .filter((memory) => options.includeInactive || isActiveMemory(sanitizeMemoryRecord(memory)))
@@ -99,7 +108,10 @@ export async function listMemories(options: TenantScopedOptions = {}) {
 
 export async function listThreadMemories(
   threadId: string,
-  options: Pick<TenantScopedOptions, "tenantId" | "limit" | "sql"> = {},
+  options: Pick<
+    TenantScopedOptions,
+    "tenantId" | "limit" | "sql" | "accessScope"
+  > = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const limit = Math.min(Math.max(options.limit || 100, 1), 100);
@@ -126,6 +138,7 @@ export async function listThreadMemories(
   return memories
     .map(sanitizeMemoryRecord)
     .filter((memory) => normalizeTenantId(memory.tenantId) === tenantId)
+    .filter((memory) => memoryVisibleForScope(memory, options.accessScope))
     .filter((memory) => memory.claimStatus !== "forgotten")
     .filter((memory) => memory.evidenceRefs?.includes(evidenceRef))
     .slice(0, limit);
@@ -135,6 +148,13 @@ function memoryRecordFromInput(
   input: CreateMemoryInput,
   now: string,
 ): MemoryRecord {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const accessBinding = input.accessBinding
+    ? memoryAccessBindingV1Schema.parse(input.accessBinding)
+    : undefined;
+  if (accessBinding && accessBinding.tenantId !== tenantId) {
+    throw new Error("Memory access binding tenant does not match the record.");
+  }
   const title = String(redactSensitive(input.title)).slice(0, 240);
   const content = String(redactSensitive(input.content)).slice(0, 200_000);
   const tags = normalizeTags(
@@ -147,7 +167,7 @@ function memoryRecordFromInput(
     title !== input.title || content !== input.content;
   return {
     id: input.id?.trim().slice(0, 200) || randomUUID(),
-    tenantId: normalizeTenantId(input.tenantId),
+    tenantId,
     type: input.type || "fact",
     title,
     content,
@@ -166,6 +186,7 @@ function memoryRecordFromInput(
     createdAt: now,
     updatedAt: now,
     embedding: textWasRedacted ? undefined : input.embedding,
+    ...(accessBinding ? { accessBinding } : {}),
   };
 }
 
@@ -210,6 +231,11 @@ async function saveMemoriesWithCommitStatus(
     )
   ) {
     throw new Error("Bulk memory persistence cannot mix tenants.");
+  }
+  if (hasDatabaseUrl() && records.some((record) => record.accessBinding)) {
+    throw new Error(
+      "Scope-bound memory persistence is not activated for Postgres.",
+    );
   }
   if (options.captureIngestGuard) {
     for (const record of records) {
@@ -379,7 +405,12 @@ async function saveMemoriesWithCommitStatus(
 
 export async function searchMemories(
   query: string,
-  options: { limit?: number; queryEmbedding?: number[]; tenantId?: string } = {},
+  options: {
+    limit?: number;
+    queryEmbedding?: number[];
+    tenantId?: string;
+    accessScope?: DatabaseMemoryAccessScope;
+  } = {},
 ): Promise<MemorySearchResult[]> {
   if (hasDatabaseUrl()) {
     const results = await searchMemoriesDb(query, options);
@@ -388,7 +419,10 @@ export async function searchMemories(
     }
   }
 
-  const memories = await listMemories({ tenantId: options.tenantId });
+  const memories = await listMemories({
+    tenantId: options.tenantId,
+    accessScope: options.accessScope,
+  });
   const terms = tokenize(query);
   const limit = options.limit || 8;
 
@@ -421,7 +455,13 @@ export async function searchMemories(
     .slice(0, limit);
 }
 
-export async function getMemory(id: string, options: { tenantId?: string } = {}) {
+export async function getMemory(
+  id: string,
+  options: {
+    tenantId?: string;
+    accessScope?: DatabaseMemoryAccessScope;
+  } = {},
+) {
   const tenantId = normalizeTenantId(options.tenantId);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -430,16 +470,25 @@ export async function getMemory(id: string, options: { tenantId?: string } = {})
   }
   const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
   const memory = memories.find((item) => item.id === id && normalizeTenantId(item.tenantId) === tenantId);
-  return memory ? sanitizeMemoryRecord(memory) : null;
+  return memory && memoryVisibleForScope(memory, options.accessScope)
+    ? sanitizeMemoryRecord(memory)
+    : null;
 }
 
 export async function correctMemory(
   id: string,
   correction: { title?: string; content?: string; confidence?: number; validTo?: string; contradiction?: boolean; embedding?: number[] },
-  options: { tenantId?: string; actorId?: string } = {},
+  options: {
+    tenantId?: string;
+    actorId?: string;
+    accessScope?: DatabaseMemoryAccessScope;
+  } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
-  const existing = await getMemory(id, { tenantId });
+  const existing = await getMemory(id, {
+    tenantId,
+    accessScope: options.accessScope,
+  });
   if (!existing || existing.claimStatus === "forgotten") return null;
   const corrected = await saveMemory({
     tenantId,
@@ -458,6 +507,7 @@ export async function correctMemory(
     supersedesId: correction.contradiction ? undefined : existing.id,
     contradictionOfId: correction.contradiction ? existing.id : undefined,
     embedding: correction.embedding,
+    accessBinding: existing.accessBinding,
   });
   const oldStatus: NonNullable<MemoryRecord["claimStatus"]> = correction.contradiction ? "contradicted" : "superseded";
   if (hasDatabaseUrl()) {
@@ -1513,6 +1563,16 @@ function sanitizeMemoryRecord(record: MemoryRecord): MemoryRecord {
     ),
     source: String(redactSensitive(record.source)).slice(0, 2_000),
   };
+}
+
+function memoryVisibleForScope(
+  record: MemoryRecord,
+  accessScope?: DatabaseMemoryAccessScope,
+) {
+  if (!record.accessBinding) return !accessScope;
+  return accessScope
+    ? memoryAccessBindingAllows(accessScope, record.accessBinding)
+    : false;
 }
 
 function normalizeTenantId(value?: string) {
