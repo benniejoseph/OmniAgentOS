@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { publicMemoryDeletionReceiptV1 } from "@/lib/memory/deletion-receipt";
 import { queueMemoryGraphRebuild } from "@/lib/memory/graph";
+import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import {
   correctMemory,
   forgetMemoryWithReceipt,
@@ -45,7 +47,18 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
     );
   } catch (error) { return forbiddenResponse(error); }
   if (deletionPreview) {
-    const preview = await previewMemoryDeletion(id, {
+    const requestAccess = requestMemoryAccessFromSecurityContext(context, {
+      purposeId: MEMORY_PURPOSE_IDS.forget,
+      auditPurpose: "api.memory.forget.preview",
+      correlationId: `memory_forget_preview_${randomUUID()}`,
+    });
+    const scopedPreview = requestAccess
+      ? await previewMemoryDeletion(id, {
+          tenantId: context.tenantId,
+          accessScope: requestAccess.databaseAccessScope,
+        })
+      : null;
+    const preview = scopedPreview || await previewMemoryDeletion(id, {
       tenantId: context.tenantId,
     });
     return preview
@@ -57,7 +70,20 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
           headers: { "cache-control": "private, no-store" },
         });
   }
-  const memory = await getMemory(id, { tenantId: context.tenantId });
+  const requestAccess = requestMemoryAccessFromSecurityContext(context, {
+    purposeId: MEMORY_PURPOSE_IDS.read,
+    auditPurpose: "api.memory.read",
+    correlationId: `memory_read_${randomUUID()}`,
+  });
+  const scopedMemory = requestAccess
+    ? await getMemory(id, {
+        tenantId: context.tenantId,
+        accessScope: requestAccess.databaseAccessScope,
+      })
+    : null;
+  const memory = scopedMemory || await getMemory(id, {
+    tenantId: context.tenantId,
+  });
   return memory ? Response.json({ memory: publicMemory(memory) }) : Response.json({ error: "Memory not found." }, { status: 404 });
 }
 
@@ -69,7 +95,20 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   if (!parsed.success) return Response.json({ error: "Invalid correction", details: parsed.error.flatten() }, { status: 400 });
   let context;
   try { context = await authorize(request, id, "write.memory"); } catch (error) { return forbiddenResponse(error); }
-  const existing = await getMemory(id, { tenantId: context.tenantId });
+  const requestAccess = requestMemoryAccessFromSecurityContext(context, {
+    purposeId: MEMORY_PURPOSE_IDS.correct,
+    auditPurpose: "api.memory.correct",
+    correlationId: `memory_correct_${randomUUID()}`,
+  });
+  const scopedExisting = requestAccess
+    ? await getMemory(id, {
+        tenantId: context.tenantId,
+        accessScope: requestAccess.databaseAccessScope,
+      })
+    : null;
+  const existing = scopedExisting || await getMemory(id, {
+    tenantId: context.tenantId,
+  });
   if (!existing) return Response.json({ error: "Memory not found." }, { status: 404 });
   const embedding = (await embedTexts([
     `${parsed.data.title || existing.title}\n\n${parsed.data.content || existing.content}`,
@@ -81,9 +120,22 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
     purpose: "api.memory.correct",
     credentialSource: "deployment_environment",
   }))?.[0] || existing.embedding;
-  const result = await correctMemory(id, { ...parsed.data, embedding }, { tenantId: context.tenantId, actorId: context.actorId });
+  const result = await correctMemory(id, { ...parsed.data, embedding }, {
+    tenantId: context.tenantId,
+    actorId: scopedExisting
+      ? requestAccess?.actorBinding.canonicalActorId
+      : context.actorId,
+    accessScope: scopedExisting
+      ? requestAccess?.databaseAccessScope
+      : undefined,
+    executionScope: scopedExisting
+      ? requestAccess?.executionScope
+      : undefined,
+  });
   if (!result) return Response.json({ error: "Memory not found." }, { status: 404 });
-  await queueMemoryGraphRebuild({ tenantId: context.tenantId });
+  if (!result.corrected.accessBinding) {
+    await queueMemoryGraphRebuild({ tenantId: context.tenantId });
+  }
   return Response.json({ previous: publicMemory(result.previous), corrected: publicMemory(result.corrected) });
 }
 
@@ -104,6 +156,22 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
   }
   let result: Awaited<ReturnType<typeof forgetMemoryWithReceipt>>;
   try {
+    const requestAccess = requestMemoryAccessFromSecurityContext(context, {
+      purposeId: MEMORY_PURPOSE_IDS.forget,
+      auditPurpose: "api.memory.forget",
+      correlationId: `memory_forget_${randomUUID()}`,
+    });
+    const scopedResult = requestAccess
+      ? await forgetMemoryWithReceipt(id, {
+          tenantId: context.tenantId,
+          expectedDescendantManifestSha256: expectedManifestSha256,
+          executionScope: requestAccess.executionScope,
+          accessScope: requestAccess.databaseAccessScope,
+        })
+      : null;
+    if (scopedResult) {
+      result = scopedResult;
+    } else {
     result = await forgetMemoryWithReceipt(id, {
       tenantId: context.tenantId,
       expectedDescendantManifestSha256: expectedManifestSha256,
@@ -112,6 +180,7 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
         purpose: "memory.forget.api",
       }),
     });
+    }
   } catch (error) {
     if (error instanceof MemoryDeletionPreviewConflictError) {
       return Response.json({ error: error.message }, {
