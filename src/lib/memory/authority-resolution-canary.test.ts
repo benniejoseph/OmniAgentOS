@@ -79,14 +79,16 @@ const QUERY_STAGES = [
   "notice_contract",
 ] as const;
 
-type QueryStage = (typeof QUERY_STAGES)[number];
-type AuthorityStage = Exclude<QueryStage, "preflight">;
-type QueryResponses = Record<QueryStage, SqlRow[]>;
+type StandardQueryStage = (typeof QUERY_STAGES)[number];
+type QueryStage = StandardQueryStage | "execution_principal";
+type AuthorityStage = Exclude<StandardQueryStage, "preflight">;
+type QueryResponses = Record<StandardQueryStage, SqlRow[]> & {
+  execution_principal?: SqlRow[];
+};
 
 const AUTHORITY_STAGES = QUERY_STAGES.slice(1) as readonly AuthorityStage[];
 
 const BASELINE_UNAVAILABLE = [
-  "executing_principal_authority",
   "context_grant_authority",
   "capability_grant_authority",
   "operation_policy_authority",
@@ -481,8 +483,19 @@ describe("denial-only memory authority resolution canary", () => {
       .toBe(false);
   });
 
-  it("returns all unmodeled authority codes in their canonical order", async () => {
-    const { sql } = fakeSql(handlerFor(coherentResponses()));
+  it("locks and accepts one actor-controlled active agent principal", async () => {
+    const responses = coherentResponses();
+    responses.execution_principal = [{
+      schema_version: "1",
+      tenant_id: TENANT_ID,
+      principal_kind: "agent",
+      principal_id: "agent:asael",
+      principal_generation: "3",
+      controller_actor_id: CANONICAL_ACTOR_ID,
+      state: "active",
+      lifecycle_revision: "1",
+    }];
+    const { sql, calls } = fakeSql(handlerFor(responses));
     dbMocks.getSql.mockReturnValue(sql);
     const scopeWithClaims = Object.freeze({
       ...ACCESS_SCOPE,
@@ -497,7 +510,50 @@ describe("denial-only memory authority resolution canary", () => {
     );
 
     expect(result.unavailableAuthorities).toEqual(BASELINE_UNAVAILABLE);
+    const principalCall = calls.find(({ text }) =>
+      stageForText(text) === "execution_principal"
+    );
+    expect(principalCall).toBeDefined();
+    expect(principalCall?.text).toContain("LIMIT 2");
+    expect(principalCall?.text).toContain("FOR SHARE");
+    expect(principalCall?.params).toEqual([
+      TENANT_ID,
+      "agent",
+      "agent:asael",
+    ]);
     expectCanonicalDiagnostics(result.unavailableAuthorities);
+  });
+
+  it("keeps absent, duplicate, mismatched, or malformed agent principals unavailable", async () => {
+    const variants: SqlRow[][] = [
+      [],
+      [activeAgentPrincipal(), activeAgentPrincipal()],
+      [activeAgentPrincipal({ controller_actor_id: "actor:22222222-2222-4222-8222-222222222222" })],
+      [activeAgentPrincipal({ principal_generation: "01" })],
+      [activeAgentPrincipal({ state: "held", lifecycle_revision: "0" })],
+    ];
+    const agentScope = Object.freeze({
+      ...ACCESS_SCOPE,
+      executingPrincipalType: "agent" as const,
+      executingPrincipalId: "agent:asael",
+    });
+
+    for (const rows of variants) {
+      const responses = coherentResponses();
+      responses.execution_principal = rows;
+      const { sql } = fakeSql(handlerFor(responses));
+      dbMocks.getSql.mockReturnValue(sql);
+
+      const result = await inspectMemoryAuthorityDenialCanary(
+        canaryInput(agentScope),
+      );
+
+      expect(result.unavailableAuthorities).toEqual([
+        "executing_principal_authority",
+        ...BASELINE_UNAVAILABLE,
+      ]);
+      expectCanonicalDiagnostics(result.unavailableAuthorities);
+    }
   });
 
   it("reports a valid legacy request actor without exposing its identifier", async () => {
@@ -519,6 +575,7 @@ describe("denial-only memory authority resolution canary", () => {
       reason: "activation_held",
       unavailableAuthorities: [
         "canonical_scope_actor",
+        "executing_principal_authority",
         ...BASELINE_UNAVAILABLE,
       ],
     });
@@ -802,9 +859,23 @@ function coherentResponses(
   };
 }
 
+function activeAgentPrincipal(overrides: SqlRow = {}): SqlRow {
+  return {
+    schema_version: "1",
+    tenant_id: TENANT_ID,
+    principal_kind: "agent",
+    principal_id: "agent:asael",
+    principal_generation: "3",
+    controller_actor_id: CANONICAL_ACTOR_ID,
+    state: "active",
+    lifecycle_revision: "1",
+    ...overrides,
+  };
+}
+
 function handlerFor(responses: QueryResponses) {
   return (call: QueryCall): SqlRow[] =>
-    responses[stageForText(call.text)].map((row) => ({ ...row }));
+    (responses[stageForText(call.text)] ?? []).map((row) => ({ ...row }));
 }
 
 function corruptedRows(
@@ -917,6 +988,9 @@ function stageForText(text: string): QueryStage {
   if (text.includes("current_setting('omni.tenant_id'")) return "preflight";
   if (text.includes("FROM public.omni_auth_users")) return "auth_user";
   if (text.includes("FROM public.omni_auth_memberships")) return "membership";
+  if (text.includes("FROM public.omni_tenant_execution_principals")) {
+    return "execution_principal";
+  }
   if (text.includes("FROM public.omni_tenant_actor_membership_epochs")) {
     return "epoch";
   }
