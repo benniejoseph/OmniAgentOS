@@ -77,6 +77,25 @@ truth, source or resolver trust, claim-decomposition completeness, or live RAG
 adoption. The complete boundary and later activation gates are documented in
 [ClaimEvidenceMap v1](vision/CLAIM_EVIDENCE.md).
 
+## Checkpoints are compatibility evidence, not execution authority
+
+The dormant P1.6 `RunCheckpointV1` contract in
+`src/lib/runs/checkpoints.ts` records only immutable metadata and canonical
+references at model, tool, approval, delegation, and verifier boundaries. It
+binds the exact run scope, grants, purpose, engine and rollout generation,
+harness and run-envelope identities, budget counters, boundary lifecycle, and
+parent checkpoint. Mutation boundaries must also bind the governed tool
+execution, persisted intent, idempotency identity, and effect receipt required
+for that phase.
+
+Compatibility is checked before state references are opened. Only an exact,
+active `canary` or `enabled` rollout pin can be resumable. Shadow, inactive,
+unsupported, or mismatched pins produce a safe pause; they never silently fall
+back to the current engine. A checkpoint does not grant authorization, acquire
+a lease, or permit an effect. Those facts must be revalidated transactionally
+by a later resume worker. The complete contract and staged activation gates are documented in
+[RunCheckpoint v1](vision/RUN_CHECKPOINTS.md).
+
 ## One harness receipt per run
 
 Every new agent run emits a durable `run.harness` event after context and

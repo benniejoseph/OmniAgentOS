@@ -184,6 +184,23 @@ derivation. It explicitly does not establish semantic truth, evidence-source
 or authorization-authority trust, source-head currentness, or decomposition
 completeness. See [ClaimEvidenceMap v1](vision/CLAIM_EVIDENCE.md).
 
+The first P1.6 slice is likewise dormant: `RunCheckpointV1` defines the
+immutable, metadata-only boundary a future resume worker must prove before it
+opens separately scoped state. It binds explicit tenant, initiating actor,
+executing principal, grants, purpose, run lineage, engine and rollout pins,
+budget consumption, boundary lifecycle, and canonical state references. Tool
+mutation boundaries additionally bind governed execution intent,
+idempotency, and effect-receipt identities. A pure successor validator enforces
+the checkpoint chain, waiting-boundary resolution, completed model/tool call
+counters, and external-effect counter, while compatibility permits only exact
+active `canary` or `enabled` pins and otherwise safely pauses instead of
+interpreting state under a different worker contract.
+
+This slice creates no checkpoint store or event, writes no continuation, and
+changes no runtime path. Durable storage, transactional event emission,
+shadow comparison, fenced claims, and canary resume remain later P1.6 gates.
+See [RunCheckpoint v1](vision/RUN_CHECKPOINTS.md).
+
 ## Durable workflows
 
 Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured output), persisted, and executed node-by-node through queue leases (`omni_operation_jobs`): lease → tick → retry with backoff (max 5 attempts) → recovery for stale leases. Approval nodes pause until signaled. The daily cron plus `after()` drains advance work; see [deployment.md](deployment.md) for cadence options.
