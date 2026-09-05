@@ -104,6 +104,12 @@ the canonical continuation transaction. It has no transaction opener and
 returns `resumeAuthorityGranted: false`; persistence evidence must not be
 mistaken for an executable continuation.
 
+The governed approval transaction also records the exact approved or rejected
+successor. An approved record precedes tool effect execution; a rejected record
+is terminal. Both approval boundaries emit a strict matched comparison receipt
+only after their chain, references, scope, tool/decision state, and resource
+counters validate, and neither receipt grants resume authority.
+
 ## One harness receipt per run
 
 Every new agent run emits a durable `run.harness` event after context and

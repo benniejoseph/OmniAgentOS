@@ -7,6 +7,7 @@ import {
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { redactSensitive } from "@/lib/security/context";
+import { recordApprovalDecisionCheckpointShadow } from "@/lib/runs/approval-checkpoint-shadow";
 import {
   assertExecutionScopeTenant,
   parsePersistedExecutionScope,
@@ -243,6 +244,13 @@ export async function approveAndClaimToolExecution(input: {
               : "execution_claimed",
             decisionActorId: input.approvedBy,
           }, sql);
+          if (result.outcome === "claimed") {
+            await recordApprovalDecisionCheckpointShadow({
+              tenantId,
+              approvalExecutionId: result.record.id,
+              decision: "approved",
+            }, sql);
+          }
         }
       }
       return result;
@@ -346,6 +354,11 @@ export async function rejectPendingToolExecution(input: {
             decision: "rejected",
             outcome: "rejected",
             decisionActorId: input.rejectedBy,
+          }, sql);
+          await recordApprovalDecisionCheckpointShadow({
+            tenantId,
+            approvalExecutionId: result.record.id,
+            decision: "rejected",
           }, sql);
         }
       }

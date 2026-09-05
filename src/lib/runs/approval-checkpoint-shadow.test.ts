@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildApprovalWaitingCheckpointShadow,
   parseApprovalCheckpointShadowEnrollment,
+  recordApprovalDecisionCheckpointShadow,
   recordApprovalWaitingCheckpointShadow,
   RUN_CHECKPOINT_CAPABILITY_ID,
   RUN_CHECKPOINT_CONFIGURATION_SHA256,
@@ -100,6 +101,33 @@ function continuation() {
     },
     createdAt: RECORDED_AT,
   };
+}
+
+function waitingCheckpoint() {
+  return buildApprovalWaitingCheckpointShadow({
+    runId: RUN_ID,
+    executionScope: SCOPE,
+    runContractEnvelope: CONTRACT.envelope,
+    enrollment: enrollment(),
+    approvalExecutionId: EXECUTION_ID,
+    state: {
+      runRecordSha256: canonicalJsonSha256("run"),
+      approvalRequestSha256: canonicalJsonSha256("approval"),
+      toolExecutionSha256: canonicalJsonSha256("tool"),
+      continuationSha256: canonicalJsonSha256("continuation"),
+    },
+    resourceUsage: {
+      modelCallCount: 1,
+      modelInputTokenCount: 10,
+      modelOutputTokenCount: 5,
+      cachedInputTokenCount: 2,
+      toolCallCount: 1,
+      toolResultByteCount: 0,
+      externalEffectCount: 0,
+      elapsedMs: 5_000,
+    },
+    recordedAt: RECORDED_AT,
+  });
 }
 
 describe("approval checkpoint shadow", () => {
@@ -298,6 +326,154 @@ describe("approval checkpoint shadow", () => {
         resumeDisposition: "awaiting_signal",
       },
     });
-    expect(insertedEvents).toHaveLength(1);
+    expect(insertedEvents).toHaveLength(2);
   });
+
+  it.each([
+    ["approved", "executing", "tool.approval.recorded", "execution_claimed", "active", "resumable"],
+    ["rejected", "rejected", "tool.approval.rejected", "rejected", "terminal", "not_resumable"],
+  ] as const)(
+    "records a matched %s decision successor before legacy continuation",
+    async (
+      decision,
+      toolStatus,
+      eventType,
+      eventOutcome,
+      lifecycleState,
+      resumeDisposition,
+    ) => {
+      const parent = waitingCheckpoint();
+      const value = continuation();
+      const insertedEvents: unknown[][] = [];
+      const toolScope = deriveExecutionScope(SCOPE, {
+        causationId: "call_checkpoint_shadow",
+        purpose: "agent.tool.execute",
+      });
+      const sql = (async (
+        strings: TemplateStringsArray,
+        ...params: unknown[]
+      ) => {
+        if (strings.join(" ").includes("INSERT INTO omni_events")) {
+          insertedEvents.push(params);
+          return [{ seq: String(insertedEvents.length) }];
+        }
+        throw new Error(`Unexpected tagged SQL: ${strings.join(" ")}`);
+      }) as unknown as RunCheckpointWriterSql;
+      sql.query = async (text, params = []) => {
+        if (text.includes("FROM omni_agent_runs")) {
+          return [{
+            id: RUN_ID,
+            tenant_id: SCOPE.tenantId,
+            status: "waiting_approval",
+            response: "partial",
+            continuation: value,
+            started_at: "2026-09-05T12:00:00.000Z",
+          }];
+        }
+        if (
+          text.includes("FROM omni_run_checkpoints") &&
+          text.includes("ORDER BY sequence DESC")
+        ) {
+          return [{ checkpoint_json: parent }];
+        }
+        if (
+          text.includes("FROM omni_run_checkpoints") &&
+          text.includes("checkpoint_id = $3")
+        ) {
+          return [{ checkpoint_json: parent }];
+        }
+        if (text.includes("FROM omni_tool_executions")) {
+          return [{
+            id: EXECUTION_ID,
+            tenant_id: SCOPE.tenantId,
+            actor_id: SCOPE.initiatingActorId,
+            tool_id: "calendar.create",
+            tool_name: "Create calendar event",
+            risk_level: 2,
+            status: toolStatus,
+            dry_run: false,
+            approval_required: true,
+            approval_decision: decision,
+            approved_by: "actor_approver",
+            approved_at: "2026-09-05T12:00:06.000Z",
+            input: {},
+            output: {},
+            reason: "Decision recorded",
+            effect_receipt: null,
+            created_at: "2026-09-05T12:00:04.000Z",
+          }];
+        }
+        if (text.includes("type = 'tool.scope_bound'")) {
+          return [{ payload: {
+            _executionScope: toolScope,
+            requesterRole: "operator",
+            toolId: "calendar.create",
+            inputSha256: canonicalJsonSha256("input"),
+            scopeSha256: canonicalJsonSha256("scope"),
+          } }];
+        }
+        if (text.includes("payload->>'outcome'")) {
+          expect(params[2]).toBe(eventType);
+          expect(params[3]).toBe(eventOutcome);
+          return [{
+            id: `decision_event_${decision}`,
+            type: eventType,
+            actor_id: "actor_approver",
+            payload: {
+              schemaVersion: 1,
+              executionId: EXECUTION_ID,
+              decision,
+              outcome: eventOutcome,
+            },
+            at: "2026-09-05T12:00:06.000Z",
+          }];
+        }
+        if (text.includes("INSERT INTO omni_run_checkpoints")) {
+          return [{ checkpoint_json: params[26] }];
+        }
+        if (text.includes("INSERT INTO omni_run_checkpoint_state_references")) {
+          return (params[3] as Array<Record<string, unknown>>).map((row) => ({
+            ordinal: row.ordinal,
+            reference_kind: row.reference_kind,
+            reference_id: row.reference_id,
+            reference_sha256: row.reference_sha256,
+            version_id: row.version_id,
+          }));
+        }
+        throw new Error(`Unexpected query SQL: ${text}`);
+      };
+      sql.unsafe = sql.query;
+      sql.transaction = async () => {
+        throw new Error("Nested transaction is forbidden.");
+      };
+      Object.defineProperty(sql, "transactionScoped", { value: true });
+
+      const result = await recordApprovalDecisionCheckpointShadow({
+        tenantId: SCOPE.tenantId,
+        approvalExecutionId: EXECUTION_ID,
+        decision,
+      }, sql);
+
+      expect(result).toMatchObject({
+        outcome: "recorded",
+        resumeAuthorityGranted: false,
+        checkpoint: {
+          sequence: 1,
+          lifecycleState,
+          resumeDisposition,
+          boundary: {
+            kind: "approval",
+            phase: "after",
+            boundaryId: EXECUTION_ID,
+          },
+        },
+      });
+      expect(result.checkpoint?.parent).toEqual({
+        checkpointId: parent.checkpointId,
+        checkpointSha256: parent.checkpointSha256,
+        sequence: parent.sequence,
+      });
+      expect(insertedEvents).toHaveLength(2);
+    },
+  );
 });

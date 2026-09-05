@@ -1,8 +1,8 @@
 # RunCheckpoint v1
 
-**Status:** P1.6 approval-wait shadow enrollment
+**Status:** P1.6 approval-boundary shadow chain
 
-**Runtime effect:** New-run-only approval-wait shadow write; no checkpoint resume
+**Runtime effect:** New-run-only approval waiting/decision shadow writes; no checkpoint resume
 
 `RunCheckpointV1` defines the immutable metadata and reference boundary that a
 future durable run must record before work can be resumed safely. Migration
@@ -10,8 +10,9 @@ v68 creates forced-RLS, append-only checkpoint and state-reference tables. A
 transaction-only writer verifies the exact scope, locks and validates the
 parent, stores the immutable record and reference index, and appends a
 metadata-only `run.checkpoint.recorded` event in the same caller-owned
-transaction. Nothing calls the writer, loads referenced state, claims a resume,
-or grants resume authority. The legacy continuation remains authoritative.
+transaction. The approval shadow call sites use that writer, but nothing loads
+referenced state, claims a resume, or grants resume authority. The legacy
+continuation remains authoritative.
 
 New agent runs capture an exact active `agent_run_checkpoints` shadow rollout
 pin after their resolved run contract is built. If such a run pauses on its
@@ -22,6 +23,16 @@ observable resource counters. File-mode, preclaimed, unenrolled, mismatched,
 and already-checkpointed runs keep legacy behavior. A run with an earlier
 external effect is not admitted at this late genesis boundary; broader model
 and tool boundary coverage must establish its checkpoint chain earlier.
+
+When that approval is accepted or rejected, the same governed approval
+transaction records the exact decision successor. An approved successor is
+persisted before the claimed tool can execute; a rejected successor is
+terminal. Both preserve the parent's effect counter because approval itself
+cannot claim an external effect. Each waiting and decision record also emits a
+strict `run.checkpoint.shadow_compared` receipt after its chain, references,
+scope, tool state, decision event, and counters have been validated. These
+receipts describe the shadow write only and always declare
+`resumeAuthorityGranted: false`.
 
 ## Why this precedes resume
 
@@ -94,8 +105,8 @@ the continuation.
 
 The remaining slices must proceed in this order:
 
-1. compare first approval-wait shadows, references, and resource/effect
-   reconciliation, then add the approval-decision successor;
+1. observe production approval-boundary comparison receipts and run a stored
+   chain/reference/resource reconciliation report over the enrolled sample;
 2. canary resume only exact supported pins after a fenced claim; and
 3. expand separately to model, tool, delegation, and verifier boundaries.
 
