@@ -135,7 +135,7 @@ export async function rotateMobileRefreshToken(
               UPDATE omni_mobile_sessions
               SET access_token_hash = ${hashSessionToken(nextAccessToken)},
                   refresh_token_hash = ${hashSessionToken(nextRefreshToken)},
-                  consumed_refresh_token_hashes = ${JSON.stringify(consumed)}::jsonb,
+                  consumed_refresh_token_hashes = ${consumed}::jsonb,
                   access_expires_at = ${nextAccessExpiresAt},
                   app_version = ${client.appVersion},
                   app_build_number = ${client.buildNumber},
@@ -152,7 +152,7 @@ export async function rotateMobileRefreshToken(
               UPDATE omni_mobile_sessions
               SET access_token_hash = ${hashSessionToken(nextAccessToken)},
                   refresh_token_hash = ${hashSessionToken(nextRefreshToken)},
-                  consumed_refresh_token_hashes = ${JSON.stringify(consumed)}::jsonb,
+                  consumed_refresh_token_hashes = ${consumed}::jsonb,
                   access_expires_at = ${nextAccessExpiresAt},
                   app_build_number = NULL,
                   client_contract_version = 0,
@@ -543,7 +543,7 @@ async function createMobileSession(identity: AuthSessionIdentity, device: Mobile
         ${device.platform}, ${device.appVersion || null}, ${device.buildNumber || null},
         ${device.clientContractVersion || 0}, ${session.lastSeenAt}, ${session.clientAttestedAt || null},
         ${session.accessTokenHash}, ${session.refreshTokenHash},
-        ${JSON.stringify([])}::jsonb, ${session.accessExpiresAt}, ${session.refreshExpiresAt}, ${session.createdAt}, ${session.updatedAt}
+        ${[]}::jsonb, ${session.accessExpiresAt}, ${session.refreshExpiresAt}, ${session.createdAt}, ${session.updatedAt}
       )
     `);
   } else {
