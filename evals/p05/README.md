@@ -32,11 +32,20 @@ checks over safe RFC 6901 JSON pointers. A missing case, extra case, failed
 assertion, scope leak, duplicate/lost item, duplicate/unapproved effect, stale
 resurrection, or false success is a failure; this lane has no warning state.
 
-The checked-in suite does not claim that Asael currently produces the expected
-observations. Observation envelopes bind to the exact domain-separated suite
-digest and declared scorer version. Scoring-code changes must bump that version;
-the digest does not hash source code. Category adapters and a digest-bound
-observed baseline will be added in
-later narrow batches. Until that baseline is explicitly recorded,
-P0.5 remains open. Normative expectations must never be copied into the
-observed baseline merely to make it pass.
+`baseline.v1.json` is the first digest-bound current-system observation. Run
+`npm run check:p05-baseline` to reproduce it from the side-effect-free adapters
+in `src/lib/evals2/p05-observer.ts`. The initial result is intentionally red:
+3 of 16 cases pass (1,875 basis points). Tenant mismatch, canonical source
+ordering, and legacy false-completion behavior are directly observable. The
+remaining unsupported probes fail closed as `not_observable_offline`; the
+scope boundary probe also records the current tenant-only compatibility read,
+including its actor-isolation gap. This is evidence of the present system, not
+a release pass.
+
+Observation envelopes bind to the exact domain-separated suite digest and
+declared scorer version. Scoring-code changes must bump that version; the digest
+does not hash source code. Each remaining category must gain a real
+side-effect-free system adapter in a later narrow batch. P0.5 remains open
+until those adapters and the per-phase regression gates exist. Normative
+expectations must never be copied into the observed baseline merely to make it
+pass.

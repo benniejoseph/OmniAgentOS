@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "asael-p0.5-core-v1",
+  "scorerVersion": "p0.5-v1",
+  "suiteSha256": "83c13fd60c49453ff4f862e22a6056977bd78b6c94fb144d1b760af57da47a52",
+  "observations": [
+    {
+      "caseId": "scope.boundary-matrix",
+      "value": {
+        "adapterId": "p0.1-legacy-tenant-memory-read-v1",
+        "adapterStatus": "observed",
+        "scope": {
+          "tenantId": "synthetic:tenant:alpha",
+          "initiatingActorId": "synthetic:actor:owner"
+        },
+        "visibleIds": [
+          "memory:own",
+          "memory:shared",
+          "memory:sibling-private"
+        ],
+        "leakedReadCount": 1,
+        "effectCount": 0
+      }
+    },
+    {
+      "caseId": "scope.mismatch-fails-closed",
+      "value": {
+        "adapterId": "execution-scope-tenant-assertion-v1",
+        "adapterStatus": "observed",
+        "decision": "deny",
+        "visibleIds": [],
+        "leakedReadCount": 0,
+        "effectCount": 0,
+        "correlationId": "synthetic:correlation:scope-mismatch"
+      }
+    },
+    {
+      "caseId": "pagination.mid-page-failure-retry",
+      "value": {
+        "adapterId": "p0.5-observer-v1:pagination",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    },
+    {
+      "caseId": "update-delete.tombstone-blocks-stale-resurrection",
+      "value": {
+        "adapterId": "canonical-source-order-v1",
+        "adapterStatus": "observed",
+        "head": {
+          "kind": "tombstone",
+          "revision": 3
+        },
+        "currentIds": [],
+        "searchableIds": [],
+        "staleResurrectionCount": 0
+      }
+    },
+    {
+      "caseId": "retry.ack-lost-exactly-once",
+      "value": {
+        "adapterId": "p0.5-observer-v1:retry",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    },
+    {
+      "caseId": "intent-routing.portfolio-blog-automation",
+      "value": {
+        "adapterId": "p0.5-observer-v1:intent_routing",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    },
+    {
+      "caseId": "intent-routing.ambiguous-delete-clarifies",
+      "value": {
+        "adapterId": "p0.5-observer-v1:intent_routing",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    },
+    {
+      "caseId": "context-selection.explicit-empty-wins",
+      "value": {
+        "adapterId": "p0.5-observer-v1:context_selection",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    },
+    {
+      "caseId": "context-selection.explicit-allowlist-wins",
+      "value": {
+        "adapterId": "p0.5-observer-v1:context_selection",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    },
+    {
+      "caseId": "citations.valid-id-wrong-claim",
+      "value": {
+        "adapterId": "p0.5-observer-v1:citations",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    },
+    {
+      "caseId": "citations.full-material-support",
+      "value": {
+        "adapterId": "p0.5-observer-v1:citations",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    },
+    {
+      "caseId": "temporal.as-of-selects-valid-interval",
+      "value": {
+        "adapterId": "p0.5-observer-v1:temporal",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    },
+    {
+      "caseId": "approvals.material-change-invalidates",
+      "value": {
+        "adapterId": "p0.5-observer-v1:approvals",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    },
+    {
+      "caseId": "approvals.exact-binding-permits-governed-effect",
+      "value": {
+        "adapterId": "p0.5-observer-v1:approvals",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    },
+    {
+      "caseId": "false-completion.legacy-completed-is-unverified",
+      "value": {
+        "adapterId": "run-contract-legacy-terminal-v1",
+        "adapterStatus": "observed",
+        "disposition": "unverified",
+        "canonicalStatus": "unverified",
+        "succeeded": false,
+        "reasonCode": "legacy_completed_without_verification"
+      }
+    },
+    {
+      "caseId": "false-completion.verified-live-positive-control",
+      "value": {
+        "adapterId": "p0.5-observer-v1:false_completion",
+        "adapterStatus": "not_observable_offline",
+        "reasonCode": "no_side_effect_free_current_system_adapter"
+      }
+    }
+  ]
+}
