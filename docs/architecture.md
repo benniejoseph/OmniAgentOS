@@ -263,6 +263,13 @@ compatibility contracts; they are not product display names.
 
 Schema changes run as ordered, idempotent migrations under a Postgres advisory lock. `omni_schema_version` records each applied version and upgrades the older timestamp-only marker. pgvector setup is attempted under the same lock but remains optional when the database role lacks extension privileges.
 
+Canonical knowledge lineage stores metadata-only `SourceItem`, immutable
+`SourceRevision`, and exact-locator `EvidenceUnit` contracts beside knowledge
+documents and chunks. Registered actor-owned ingestion is fail-closed when
+that lineage is absent. API, Capture, portable restore, governed knowledge
+tools, and Google personal sync therefore persist passage and lineage records
+in the same transaction; legacy unlineaged rows remain read-compatible only.
+
 Migration v36 adds the nullable `effect_receipt` column to
 `omni_tool_executions`. For the canary, Postgres finalizes that receipt on the
 tool record and appends `tool.effect_receipt.recorded` in the same transaction.

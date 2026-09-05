@@ -916,6 +916,16 @@ revision-aware cursor and convergence pilot begins with Drive. Actor-aware
 canonical reads remain blocked on P3.1; no source-lineage read API is exposed
 by this shadow slice.
 
+P2.1 is complete for the registered indexing surface. Actor-attributed and
+Capture ingestion now fail before embedding or persistence when canonical
+lineage is absent. API, Capture, portable restore, governed knowledge tools,
+and Google personal sync bind every accepted passage to one actor, connection,
+immutable source revision, and exact UTF-16 locator; provider revision and
+source timestamps make Google retry identity stable. The production closure
+check found no pre-existing knowledge documents or chunks requiring an
+unattributed backfill. Compatibility reads for legacy unlineaged rows remain,
+but current production writers cannot create one through a registered ingress.
+
 The first P2.2 slice adds a separate, write-only Google Drive checkpoint
 shadow. It captures a Drive Changes start-page fence before a paginated
 metadata backfill, then advances one transactionally committed page at a time
