@@ -1768,7 +1768,10 @@ with the same immutable owner binding. Manual writes and corrections project
 under exact purposes; the graph API and Retrieval Plan query the actor-private
 lane independently and merge it with compatibility results only in application
 memory. Sibling actors, unscoped workers, and tenant-wide rebuilds cannot read
-or overwrite that lane.
+or overwrite that lane. Migration v80 evaluates the already-validated
+transaction scope once per statement so graph projection remains bounded as
+node and edge counts grow; the policy still compares every row's tenant, owner,
+visibility, and allowed purpose.
 Migration v74 repairs the daily-brief memory-lineage column used by governed
 deletion invalidation. Migrations v75-v76 index immutable deletion barriers and
 remove redundant derived-row read scans after an integrity-gated cutover; the

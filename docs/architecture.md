@@ -1123,7 +1123,9 @@ separately namespaced graph carrying the same immutable owner boundary. Manual
 writes and corrections enter that graph under exact purposes; graph API reads
 and Retrieval Plan searches query it in an actor-scoped transaction and merge
 the result only after the compatibility query completes. Unscoped and sibling
-actors cannot see those nodes or edges. Agent-run context still cannot receive
+actors cannot see those nodes or edges. Migration v80 makes the validated
+transaction scope an initplan input to those policies, avoiding per-row parsing
+without weakening tenant, actor, visibility, or purpose checks. Agent-run context still cannot receive
 private rows because its run and thread ledgers remain tenant scoped; that
 omission is a fail-closed phase boundary, not completed P3.1 support.
 Agent-private/shared visibility, agent context, formation, and worker surfaces
