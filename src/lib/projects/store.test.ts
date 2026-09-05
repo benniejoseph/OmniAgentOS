@@ -23,6 +23,8 @@ import {
   updateProjectTask,
 } from "@/lib/projects/store";
 import { transitionWorkflowRun } from "@/lib/workflows/store";
+import { listStreamEvents } from "@/lib/events/store";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 describe("personal projects", () => {
   beforeEach(async () => {
@@ -54,6 +56,91 @@ describe("personal projects", () => {
     const project = await createProject({ tenantId: "personal", actorId: "owner", title: "Private goal", objective: "Only the owner can see this." });
     await expect(getProject(project.id, { tenantId: "personal", actorId: "someone-else" })).resolves.toBeUndefined();
     await expect(listProjects(10, { tenantId: "personal", actorId: "someone-else" })).resolves.toEqual([]);
+  });
+
+  it("persists an exact scoped creation event and replays one request idempotently", async () => {
+    const executionScope = createExecutionScope({
+      tenantId: "project-events",
+      initiatingActorId: "owner",
+      executingPrincipalType: "user",
+      executingPrincipalId: "owner",
+      correlationId: "request-project-create",
+      purpose: "project.create",
+    });
+    const input = {
+      tenantId: "project-events",
+      actorId: "owner",
+      title: "Private launch",
+      objective: "Ship without leaking private project content into events.",
+      mutation: {
+        executionScope,
+        idempotencyKey: "project-create-1",
+      },
+    } as const;
+
+    const first = await createProject(input);
+    const replay = await createProject(input);
+    expect(replay.id).toBe(first.id);
+
+    const events = await listStreamEvents(`project:${first.id}`, {
+      tenantId: "project-events",
+      actorId: "owner",
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "project.created",
+      correlationId: "request-project-create",
+      payload: {
+        schemaVersion: 1,
+        projectId: first.id,
+        taskId: null,
+        operation: "project_created",
+        status: "active",
+        priorStatus: null,
+      },
+    });
+    expect(JSON.stringify(events[0].payload)).not.toContain(input.title);
+    expect(JSON.stringify(events[0].payload)).not.toContain(input.objective);
+
+    const updateScope = createExecutionScope({
+      tenantId: "project-events",
+      initiatingActorId: "owner",
+      executingPrincipalType: "user",
+      executingPrincipalId: "owner",
+      projectId: first.id,
+      correlationId: "request-project-update",
+      purpose: "project.update",
+    });
+    await updateProject(first.id, { title: "Renamed private launch" }, {
+      tenantId: "project-events",
+      actorId: "owner",
+      mutation: {
+        executionScope: updateScope,
+        idempotencyKey: "project-update-1",
+      },
+    });
+    const updatedEvents = await listStreamEvents(`project:${first.id}`, {
+      tenantId: "project-events",
+      actorId: "owner",
+    });
+    expect(updatedEvents).toHaveLength(2);
+    expect(updatedEvents[1]).toMatchObject({
+      type: "project.updated",
+      correlationId: "request-project-update",
+      payload: {
+        schemaVersion: 1,
+        operation: "project_updated",
+        changedFieldIds: ["title"],
+      },
+    });
+    expect(JSON.stringify(updatedEvents[1].payload)).not.toContain(
+      "Renamed private launch",
+    );
+
+    await expect(createProject({
+      ...input,
+      title: "Conflicting launch",
+    })).rejects.toThrow("already bound to a different project request");
   });
 
   it("keeps canonical bindings exact in file mode", async () => {

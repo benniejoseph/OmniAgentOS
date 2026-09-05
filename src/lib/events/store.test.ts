@@ -79,6 +79,36 @@ describe("event store (file mode)", () => {
     expect(recent.every((event) => event.type === "trust.outcome.success")).toBe(true);
   });
 
+  it("treats a stable event id as an exact idempotency binding", async () => {
+    const store = await import("@/lib/events/store");
+    const first = await store.appendDomainEvent({
+      id: "stable-event-id",
+      streamId: "project:stable",
+      type: "project.created",
+      tenantId: "tenant-stable",
+      actorId: "actor-stable",
+      payload: { schemaVersion: 1, projectId: "stable" },
+    });
+    const replay = await store.appendDomainEvent({
+      id: "stable-event-id",
+      streamId: "project:stable",
+      type: "project.created",
+      tenantId: "tenant-stable",
+      actorId: "actor-stable",
+      payload: { projectId: "stable", schemaVersion: 1 },
+    });
+
+    expect(replay).toEqual(first);
+    await expect(store.appendDomainEvent({
+      id: "stable-event-id",
+      streamId: "project:stable",
+      type: "project.created",
+      tenantId: "tenant-stable",
+      actorId: "actor-stable",
+      payload: { schemaVersion: 1, projectId: "different" },
+    })).rejects.toThrow("already bound to a different event");
+  });
+
   it("survives append failures via the safe wrapper", async () => {
     const store = await import("@/lib/events/store");
     const result = await store.appendDomainEventSafely({ streamId: "ok", type: "ok" });
