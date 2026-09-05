@@ -575,6 +575,24 @@ signatures, an externally anchored verifier, atomic persistence plus typed
 event integration, least-privilege cutover, and a separate v56 activation
 migration are future gates.
 
+The subsequent pure bootstrap-governance contract also emits no domain event.
+It fixes a versioned, domain-separated decision preimage whose exact signed
+coordinates are framed in fixed order with uint32-big-endian UTF-8 name/value
+lengths. The governance-decision ID, logical database identity, target
+authority tuple, ceremony policy, trust-manifest/nonce/evidence digests, and
+validity window are covered; recorder attribution and lifecycle placeholders
+are not. Ed25519 verification must target those exact preimage bytes rather
+than the hexadecimal digest or a second hash. Recomputing SHA-256 proves only
+canonical byte equality.
+
+Attestation-to-decision binding covers the tenant, decision ID/digest, and
+half-open window. A frozen two-slot bundle additionally proves stable slot
+presence and distinct key IDs, but not signature validity, trust-manifest
+resolution, human independence, same-tenant authority, current validity, or
+physical-instance uniqueness. No database or event-store writer/import, event
+append, registry, serving route, or call site is added. The v57 evidence tables
+stay empty and all v45 and v48-v57 holds remain intact.
+
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.
