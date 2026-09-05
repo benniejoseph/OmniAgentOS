@@ -3300,6 +3300,11 @@ async function ensureUserPrivateMemoryAccessCanary(sql: SqlClient) {
       SELECT COALESCE(
         (value ->> 'tenantId') = row_tenant_id
         AND (value ->> 'initiatingActorId') = row_owner_actor_id
+        AND (value ->> 'executingPrincipalType') = 'user'
+        AND (value ->> 'executingPrincipalId') = row_owner_actor_id
+        AND value -> 'workspaceId' = 'null'::JSONB
+        AND value -> 'projectId' = 'null'::JSONB
+        AND value -> 'missionId' = 'null'::JSONB
         AND (value ->> 'purposeId') = ANY(row_allowed_purpose_ids),
         FALSE
       )
@@ -3380,6 +3385,98 @@ async function ensureUserPrivateMemoryAccessCanary(sql: SqlClient) {
           tenant_id,
           owner_actor_id,
           allowed_purpose_ids
+        )
+      )
+    )
+  `;
+
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_user_private_insert_purpose
+    ON omni_memories
+  `;
+  await sql`
+    CREATE POLICY omni_memory_user_private_insert_purpose
+    ON omni_memories
+    AS RESTRICTIVE
+    FOR INSERT
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR (
+        access_contract_version = 0
+        AND omni_current_memory_access_scope_v1() IS NULL
+      )
+      OR (
+        access_contract_version = 1
+        AND omni_current_memory_access_scope_v1() ->> 'purposeId' IN (
+          'memory.write.v1',
+          'memory.correct.v1',
+          'memory.formation.v1'
+        )
+      )
+    )
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_user_private_update_purpose
+    ON omni_memories
+  `;
+  await sql`
+    CREATE POLICY omni_memory_user_private_update_purpose
+    ON omni_memories
+    AS RESTRICTIVE
+    FOR UPDATE
+    USING (
+      omni_system_scope_enabled()
+      OR (
+        access_contract_version = 0
+        AND omni_current_memory_access_scope_v1() IS NULL
+      )
+      OR (
+        access_contract_version = 1
+        AND omni_current_memory_access_scope_v1() ->> 'purposeId' IN (
+          'memory.write.v1',
+          'memory.correct.v1',
+          'memory.forget.v1',
+          'memory.maintenance.v1'
+        )
+      )
+    )
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR (
+        access_contract_version = 0
+        AND omni_current_memory_access_scope_v1() IS NULL
+      )
+      OR (
+        access_contract_version = 1
+        AND omni_current_memory_access_scope_v1() ->> 'purposeId' IN (
+          'memory.write.v1',
+          'memory.correct.v1',
+          'memory.forget.v1',
+          'memory.maintenance.v1'
+        )
+      )
+    )
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_user_private_delete_purpose
+    ON omni_memories
+  `;
+  await sql`
+    CREATE POLICY omni_memory_user_private_delete_purpose
+    ON omni_memories
+    AS RESTRICTIVE
+    FOR DELETE
+    USING (
+      omni_system_scope_enabled()
+      OR (
+        access_contract_version = 0
+        AND omni_current_memory_access_scope_v1() IS NULL
+      )
+      OR (
+        access_contract_version = 1
+        AND omni_current_memory_access_scope_v1() ->> 'purposeId' IN (
+          'memory.forget.v1',
+          'memory.maintenance.v1'
         )
       )
     )
