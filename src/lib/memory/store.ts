@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import {
   ensureDatabaseSchema,
@@ -13,6 +14,10 @@ import {
   parseMemoryDeletionReceiptV1,
   type MemoryDeletionReceiptV1,
 } from "@/lib/memory/deletion-receipt";
+import {
+  buildMemoryDeletionPreviewV1,
+  type MemoryDeletionPreviewV1,
+} from "@/lib/memory/deletion-preview";
 import { getDataPath } from "@/lib/storage/paths";
 import { redactSensitive } from "@/lib/security/context";
 import {
@@ -468,7 +473,102 @@ export type ForgetMemoryWithReceiptResult = {
     | "legacy_unattributed_receipt"
     | "best_effort";
   deletionDisposition: "committed" | "already_deleted";
+  invalidatedAgentRunCount: number;
+  invalidatedWorkflowRunCount: number;
 };
+
+export class MemoryDeletionPreviewConflictError extends Error {
+  constructor() {
+    super("Memory deletion impact changed. Review a fresh preview before forgetting it.");
+    this.name = "MemoryDeletionPreviewConflictError";
+  }
+}
+
+export async function previewMemoryDeletion(
+  id: string,
+  options: { tenantId?: string } = {},
+): Promise<MemoryDeletionPreviewV1 | null> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: MemorySqlClient) => {
+      await lockMemoryDeletionScope(sql, tenantId, id);
+      const memoryRows = await sql`
+        SELECT *
+        FROM omni_memories
+        WHERE tenant_id = ${tenantId}
+          AND id = ${id}
+        FOR SHARE
+      `;
+      if (!memoryRows[0]) return null;
+      const memory = memoryFromRow(memoryRows[0]);
+      const receiptRows = await sql`
+        SELECT *
+        FROM omni_memory_deletion_receipts
+        WHERE tenant_id = ${tenantId}
+          AND memory_id = ${id}
+      `;
+      if (receiptRows[0]) {
+        const receipt = memoryDeletionReceiptFromRow(receiptRows[0]);
+        return buildMemoryDeletionPreviewV1({
+          tenantId,
+          state: "already_deleted",
+          guarantee: "rollback_proof_barrier",
+          memory: previewMemoryRecord(memory),
+          descendantMemories: receipt.descendantMemoryIds.map((descendantId) => ({
+            id: descendantId,
+            title: "[forgotten descendant]",
+            type: "knowledge" as const,
+          })),
+          retrievalTraceIds: receipt.retrievalTraceIds,
+          graphNodeIds: receipt.graphNodeIds,
+          graphEdgeIds: receipt.graphEdgeIds,
+          generatedAt: new Date().toISOString(),
+        });
+      }
+      if (memory.claimStatus === "forgotten") {
+        throw new Error("Forgotten memory is missing its immutable deletion receipt.");
+      }
+
+      const lineage = await collectMemoryDeletionLineage(sql, tenantId, id, {
+        lockTraces: false,
+      });
+      const pendingRuns = await collectPendingRunsForDeletionPreview(
+        sql,
+        tenantId,
+        lineage.retrievalTraceIds,
+      );
+      return buildMemoryDeletionPreviewV1({
+        tenantId,
+        guarantee: "rollback_proof_barrier",
+        memory: previewMemoryRecord(memory),
+        descendantMemories: lineage.descendantMemories,
+        retrievalTraceIds: lineage.retrievalTraceIds,
+        graphNodeIds: lineage.graphNodeIds,
+        graphEdgeIds: lineage.graphEdgeIds,
+        pendingAgentRunIds: pendingRuns.agentRunIds,
+        pendingWorkflowRunIds: pendingRuns.workflowRunIds,
+      });
+    }) as Promise<MemoryDeletionPreviewV1 | null>;
+  }
+
+  const memories = (await readJsonFile<MemoryRecord[]>(getMemoryFile(), []))
+    .map(sanitizeMemoryRecord)
+    .filter((memory) => normalizeTenantId(memory.tenantId) === tenantId);
+  const memory = memories.find((item) => item.id === id);
+  if (!memory) return null;
+  const descendantMemories = collectFileMemoryDescendants(memories, id);
+  return buildMemoryDeletionPreviewV1({
+    tenantId,
+    state: memory.claimStatus === "forgotten" ? "already_deleted" : "ready",
+    guarantee: "best_effort",
+    memory: previewMemoryRecord(memory),
+    descendantMemories: descendantMemories.map(previewMemoryRecord),
+    retrievalTraceIds: [],
+    graphNodeIds: [],
+    graphEdgeIds: [],
+  });
+}
 
 /** Read-only lookup used to reconcile a governed forget after a process loss. */
 export async function getMemoryDeletionReceipt(
@@ -501,17 +601,28 @@ export async function getMemoryDeletionReceipt(
  */
 export async function forgetMemory(
   id: string,
-  options: { tenantId?: string; executionScope?: ExecutionScope } = {},
+  options: {
+    tenantId?: string;
+    executionScope?: ExecutionScope;
+    expectedDescendantManifestSha256?: string;
+  } = {},
 ) {
   return (await forgetMemoryWithReceipt(id, options))?.memory || null;
 }
 
 export async function forgetMemoryWithReceipt(
   id: string,
-  options: { tenantId?: string; executionScope?: ExecutionScope } = {},
+  options: {
+    tenantId?: string;
+    executionScope?: ExecutionScope;
+    expectedDescendantManifestSha256?: string;
+  } = {},
 ): Promise<ForgetMemoryWithReceiptResult | null> {
   const tenantId = normalizeTenantId(options.tenantId);
   const forgottenAt = new Date().toISOString();
+  const expectedManifestSha256 = normalizeExpectedDeletionManifest(
+    options.expectedDescendantManifestSha256,
+  );
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const executionScope = parsePersistedExecutionScope(options.executionScope);
@@ -528,17 +639,7 @@ export async function forgetMemoryWithReceipt(
     }
 
     return getSql().transaction(async (sql: MemorySqlClient) => {
-      await sql`
-        SELECT pg_advisory_xact_lock(
-          hashtextextended(${`memory-graph:${tenantId}`}, 0)
-        )
-      `;
-      await sql`
-        SELECT pg_advisory_xact_lock(
-          hashtext(${tenantId}),
-          hashtext(${`memory:${id}`})
-        )
-      `;
+      await lockMemoryDeletionScope(sql, tenantId, id);
 
       const memoryRows = await sql`
         SELECT *
@@ -560,6 +661,10 @@ export async function forgetMemoryWithReceipt(
             "Memory deletion receipt is missing its canonical forgotten shell.",
           );
         }
+        assertExpectedDeletionManifest(
+          expectedManifestSha256,
+          receipt.descendantManifestSha256,
+        );
         return {
           memory: memoryFromRow(memoryRows[0]),
           receipt,
@@ -572,6 +677,8 @@ export async function forgetMemoryWithReceipt(
               executionScopesEqual(receipt.executionScope, executionScope)
               ? "committed" as const
               : "already_deleted" as const,
+          invalidatedAgentRunCount: 0,
+          invalidatedWorkflowRunCount: 0,
         };
       }
       if (!memoryRows[0]) {
@@ -581,65 +688,13 @@ export async function forgetMemoryWithReceipt(
         throw new Error("Forgotten memory is missing its immutable deletion receipt.");
       }
 
-      const descendantRows = await sql`
-        WITH RECURSIVE descendants(id) AS (
-          SELECT child.id
-          FROM omni_memories child
-          WHERE child.tenant_id = ${tenantId}
-            AND child.id <> ${id}
-            AND (
-              child.supersedes_id = ${id}
-              OR child.contradiction_of_id = ${id}
-              OR ${`memory:${id}`} = ANY(child.evidence_refs)
-            )
-          UNION
-          SELECT child.id
-          FROM omni_memories child
-          JOIN descendants parent ON (
-            child.supersedes_id = parent.id
-            OR child.contradiction_of_id = parent.id
-            OR ('memory:' || parent.id) = ANY(child.evidence_refs)
-          )
-          WHERE child.tenant_id = ${tenantId}
-            AND child.id <> ${id}
-        )
-        SELECT id
-        FROM descendants
-        ORDER BY id COLLATE "C"
-      `;
-      const descendantMemoryIds = canonicalizeMemoryDeletionIds(
-        descendantRows.map((row) => String(row.id)),
+      const lineage = await collectMemoryDeletionLineage(sql, tenantId, id, {
+        lockTraces: true,
+      });
+      const descendantMemoryIds = lineage.descendantMemories.map(
+        (memory) => memory.id,
       );
-      const affectedMemoryIds = canonicalizeMemoryDeletionIds([
-        id,
-        ...descendantMemoryIds,
-      ]);
-
-      const traceRows = await sql`
-        SELECT id
-        FROM omni_retrieval_traces trace
-        WHERE trace.tenant_id = ${tenantId}
-          AND (
-            trace.memory_ids && ${affectedMemoryIds}::text[]
-            OR EXISTS (
-              SELECT 1
-              FROM jsonb_array_elements(
-                CASE
-                  WHEN jsonb_typeof(trace.results) = 'array'
-                    THEN trace.results
-                  ELSE '[]'::jsonb
-                END
-              ) result
-              WHERE result ->> 'kind' = 'memory'
-                AND result ->> 'id' = ANY(${affectedMemoryIds}::text[])
-            )
-          )
-        ORDER BY id COLLATE "C"
-        FOR UPDATE
-      `;
-      const retrievalTraceIds = canonicalizeMemoryDeletionIds(
-        traceRows.map((row) => String(row.id)),
-      );
+      const retrievalTraceIds = lineage.retrievalTraceIds;
 
       const invalidatedRuns = await invalidateRunsForDeletedContext({
         tenantId,
@@ -650,34 +705,8 @@ export async function forgetMemoryWithReceipt(
         sql,
       });
 
-      const graphNodeRows = await sql`
-        SELECT id
-        FROM omni_memory_graph_nodes node
-        WHERE node.tenant_id = ${tenantId}
-          AND (
-            node.memory_ids && ${affectedMemoryIds}::text[]
-            OR node.trace_ids && ${retrievalTraceIds}::text[]
-          )
-        ORDER BY id COLLATE "C"
-      `;
-      const graphNodeIds = canonicalizeMemoryDeletionIds(
-        graphNodeRows.map((row) => String(row.id)),
-      );
-      const graphEdgeRows = await sql`
-        SELECT id
-        FROM omni_memory_graph_edges edge
-        WHERE edge.tenant_id = ${tenantId}
-          AND (
-            edge.memory_ids && ${affectedMemoryIds}::text[]
-            OR edge.trace_ids && ${retrievalTraceIds}::text[]
-            OR edge.source_node_id = ANY(${graphNodeIds}::text[])
-            OR edge.target_node_id = ANY(${graphNodeIds}::text[])
-          )
-        ORDER BY id COLLATE "C"
-      `;
-      const graphEdgeIds = canonicalizeMemoryDeletionIds(
-        graphEdgeRows.map((row) => String(row.id)),
-      );
+      const graphNodeIds = lineage.graphNodeIds;
+      const graphEdgeIds = lineage.graphEdgeIds;
 
       const receipt = buildMemoryDeletionReceiptV1({
         tenantId,
@@ -690,6 +719,10 @@ export async function forgetMemoryWithReceipt(
         forgottenAt,
         createdAt: forgottenAt,
       });
+      assertExpectedDeletionManifest(
+        expectedManifestSha256,
+        receipt.descendantManifestSha256,
+      );
       // The receipt trigger verifies and deletes this exact graph/trace
       // snapshot before NEW becomes visible to the restrictive barrier policy.
       await insertMemoryDeletionReceipt(receipt, sql);
@@ -783,9 +816,23 @@ export async function forgetMemoryWithReceipt(
         receipt,
         deletionGuarantee: "scope_bound_receipt" as const,
         deletionDisposition: "committed" as const,
+        invalidatedAgentRunCount: invalidatedRuns.agentRunIds.length,
+        invalidatedWorkflowRunCount: invalidatedRuns.workflowRunIds.length,
       };
     }) as Promise<ForgetMemoryWithReceiptResult | null>;
   }
+  const filePreview = await previewMemoryDeletion(id, { tenantId });
+  if (!filePreview) return null;
+  if (expectedManifestSha256) {
+    assertExpectedDeletionManifest(
+      expectedManifestSha256,
+      filePreview.expectedReceiptManifestSha256,
+    );
+  }
+  const affectedFileMemoryIds = new Set([
+    id,
+    ...filePreview.descendantMemories.map((memory) => memory.id),
+  ]);
   let forgotten: MemoryRecord | null = null;
   let deletionDisposition: ForgetMemoryWithReceiptResult["deletionDisposition"] =
     "committed";
@@ -794,17 +841,19 @@ export async function forgetMemoryWithReceipt(
     [],
     (memories) => memories.map((memory) => {
       if (
-        memory.id !== id ||
+        !affectedFileMemoryIds.has(memory.id) ||
         normalizeTenantId(memory.tenantId) !== tenantId
       ) {
         return memory;
       }
       const sanitized = sanitizeMemoryRecord(memory);
-      deletionDisposition = sanitized.claimStatus === "forgotten"
-        ? "already_deleted"
-        : "committed";
+      if (memory.id === id) {
+        deletionDisposition = sanitized.claimStatus === "forgotten"
+          ? "already_deleted"
+          : "committed";
+      }
       const effectiveForgottenAt = sanitized.forgottenAt || forgottenAt;
-      forgotten = {
+      const scrubbed: MemoryRecord = {
         ...sanitized,
         title: "[forgotten]",
         content: "",
@@ -818,7 +867,8 @@ export async function forgetMemoryWithReceipt(
         forgottenAt: effectiveForgottenAt,
         updatedAt: effectiveForgottenAt,
       };
-      return forgotten;
+      if (memory.id === id) forgotten = scrubbed;
+      return scrubbed;
     }),
   );
   if (!forgotten) return null;
@@ -829,7 +879,269 @@ export async function forgetMemoryWithReceipt(
     receipt: null,
     deletionGuarantee: "best_effort",
     deletionDisposition,
+    invalidatedAgentRunCount: 0,
+    invalidatedWorkflowRunCount: 0,
   };
+}
+
+async function lockMemoryDeletionScope(
+  sql: MemorySqlClient,
+  tenantId: string,
+  memoryId: string,
+) {
+  await sql`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(${`memory-graph:${tenantId}`}, 0)
+    )
+  `;
+  await sql`
+    SELECT pg_advisory_xact_lock(
+      hashtext(${tenantId}),
+      hashtext(${`memory:${memoryId}`})
+    )
+  `;
+}
+
+async function collectMemoryDeletionLineage(
+  sql: MemorySqlClient,
+  tenantId: string,
+  memoryId: string,
+  options: { lockTraces: boolean },
+) {
+  const descendantRows = await sql`
+    WITH RECURSIVE descendants(id) AS (
+      SELECT child.id
+      FROM omni_memories child
+      WHERE child.tenant_id = ${tenantId}
+        AND child.id <> ${memoryId}
+        AND (
+          child.supersedes_id = ${memoryId}
+          OR child.contradiction_of_id = ${memoryId}
+          OR ${`memory:${memoryId}`} = ANY(child.evidence_refs)
+        )
+      UNION
+      SELECT child.id
+      FROM omni_memories child
+      JOIN descendants parent ON (
+        child.supersedes_id = parent.id
+        OR child.contradiction_of_id = parent.id
+        OR ('memory:' || parent.id) = ANY(child.evidence_refs)
+      )
+      WHERE child.tenant_id = ${tenantId}
+        AND child.id <> ${memoryId}
+    )
+    SELECT memory.id, memory.title, memory.type
+    FROM descendants
+    JOIN omni_memories memory
+      ON memory.tenant_id = ${tenantId}
+      AND memory.id = descendants.id
+    ORDER BY memory.id COLLATE "C"
+  `;
+  const descendantMemories = descendantRows.map((row) => ({
+    id: String(row.id),
+    title: String(row.title),
+    type: normalizeMemoryType(row.type),
+  }));
+  const affectedMemoryIds = canonicalizeMemoryDeletionIds([
+    memoryId,
+    ...descendantMemories.map((memory) => memory.id),
+  ]);
+  const traceRows = options.lockTraces
+    ? await sql`
+        SELECT id
+        FROM omni_retrieval_traces trace
+        WHERE trace.tenant_id = ${tenantId}
+          AND (
+            trace.memory_ids && ${affectedMemoryIds}::text[]
+            OR EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(
+                CASE
+                  WHEN jsonb_typeof(trace.results) = 'array'
+                    THEN trace.results
+                  ELSE '[]'::jsonb
+                END
+              ) result
+              WHERE result ->> 'kind' = 'memory'
+                AND result ->> 'id' = ANY(${affectedMemoryIds}::text[])
+            )
+          )
+        ORDER BY id COLLATE "C"
+        FOR UPDATE
+      `
+    : await sql`
+        SELECT id
+        FROM omni_retrieval_traces trace
+        WHERE trace.tenant_id = ${tenantId}
+          AND (
+            trace.memory_ids && ${affectedMemoryIds}::text[]
+            OR EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(
+                CASE
+                  WHEN jsonb_typeof(trace.results) = 'array'
+                    THEN trace.results
+                  ELSE '[]'::jsonb
+                END
+              ) result
+              WHERE result ->> 'kind' = 'memory'
+                AND result ->> 'id' = ANY(${affectedMemoryIds}::text[])
+            )
+          )
+        ORDER BY id COLLATE "C"
+        FOR SHARE
+      `;
+  const retrievalTraceIds = canonicalizeMemoryDeletionIds(
+    traceRows.map((row) => String(row.id)),
+  );
+  const graphNodeRows = await sql`
+    SELECT id
+    FROM omni_memory_graph_nodes node
+    WHERE node.tenant_id = ${tenantId}
+      AND (
+        node.memory_ids && ${affectedMemoryIds}::text[]
+        OR node.trace_ids && ${retrievalTraceIds}::text[]
+      )
+    ORDER BY id COLLATE "C"
+  `;
+  const graphNodeIds = canonicalizeMemoryDeletionIds(
+    graphNodeRows.map((row) => String(row.id)),
+  );
+  const graphEdgeRows = await sql`
+    SELECT id
+    FROM omni_memory_graph_edges edge
+    WHERE edge.tenant_id = ${tenantId}
+      AND (
+        edge.memory_ids && ${affectedMemoryIds}::text[]
+        OR edge.trace_ids && ${retrievalTraceIds}::text[]
+        OR edge.source_node_id = ANY(${graphNodeIds}::text[])
+        OR edge.target_node_id = ANY(${graphNodeIds}::text[])
+      )
+    ORDER BY id COLLATE "C"
+  `;
+  return {
+    descendantMemories,
+    retrievalTraceIds,
+    graphNodeIds,
+    graphEdgeIds: canonicalizeMemoryDeletionIds(
+      graphEdgeRows.map((row) => String(row.id)),
+    ),
+  };
+}
+
+async function collectPendingRunsForDeletionPreview(
+  sql: MemorySqlClient,
+  tenantId: string,
+  retrievalTraceIds: readonly string[],
+) {
+  if (!retrievalTraceIds.length) {
+    return { agentRunIds: [] as string[], workflowRunIds: [] as string[] };
+  }
+  const agentRows = await sql`
+      SELECT run.id
+      FROM omni_agent_runs run
+      WHERE run.tenant_id = ${tenantId}
+        AND run.status IN ('running', 'waiting_approval', 'resuming')
+        AND EXISTS (
+          SELECT 1
+          FROM omni_agent_events event
+          WHERE event.tenant_id = run.tenant_id
+            AND event.run_id = run.id
+            AND event.type = 'harness'
+            AND event.payload ->> 'contextTraceId' = ANY(${retrievalTraceIds}::text[])
+        )
+      ORDER BY run.id COLLATE "C"
+    `;
+  const workflowRows = await sql`
+      SELECT run.id
+      FROM omni_workflow_runs run
+      WHERE run.tenant_id = ${tenantId}
+        AND run.status IN ('queued', 'running', 'waiting_approval', 'paused')
+        AND EXISTS (
+          SELECT 1
+          FROM omni_workflow_plans plan
+          WHERE plan.tenant_id = run.tenant_id
+            AND plan.workflow_run_id = run.id
+            AND plan.context_trace_id = ANY(${retrievalTraceIds}::text[])
+        )
+      ORDER BY run.id COLLATE "C"
+    `;
+  return {
+    agentRunIds: canonicalizeMemoryDeletionIds(
+      agentRows.map((row) => String(row.id)),
+    ),
+    workflowRunIds: canonicalizeMemoryDeletionIds(
+      workflowRows.map((row) => String(row.id)),
+    ),
+  };
+}
+
+function collectFileMemoryDescendants(
+  memories: readonly MemoryRecord[],
+  rootId: string,
+) {
+  const descendants: MemoryRecord[] = [];
+  const discovered = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const memory of memories) {
+      if (discovered.has(memory.id)) continue;
+      const referencesAncestor = [...discovered].some((ancestorId) =>
+        memory.supersedesId === ancestorId ||
+        memory.contradictionOfId === ancestorId ||
+        memory.evidenceRefs?.includes(`memory:${ancestorId}`)
+      );
+      if (!referencesAncestor) continue;
+      discovered.add(memory.id);
+      descendants.push(memory);
+      changed = true;
+    }
+  }
+  return descendants.sort((left, right) =>
+    Buffer.from(left.id, "utf8").compare(Buffer.from(right.id, "utf8"))
+  );
+}
+
+function previewMemoryRecord(memory: MemoryRecord) {
+  return {
+    id: memory.id,
+    title: memory.title,
+    type: memory.type,
+  };
+}
+
+function normalizeMemoryType(value: unknown): MemoryType {
+  const type = String(value);
+  return [
+    "preference",
+    "fact",
+    "episode",
+    "procedure",
+    "knowledge",
+    "decision",
+    "task",
+  ].includes(type)
+    ? type as MemoryType
+    : "knowledge";
+}
+
+function normalizeExpectedDeletionManifest(value: string | undefined) {
+  if (value === undefined) return undefined;
+  const normalized = value.trim();
+  if (!/^[a-f0-9]{64}$/.test(normalized)) {
+    throw new Error("Memory deletion preview digest is invalid.");
+  }
+  return normalized;
+}
+
+function assertExpectedDeletionManifest(
+  expected: string | undefined,
+  actual: string | null,
+) {
+  if (expected && expected !== actual) {
+    throw new MemoryDeletionPreviewConflictError();
+  }
 }
 
 /**

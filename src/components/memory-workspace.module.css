@@ -148,6 +148,29 @@
 .inspector :global(.memory-inspector-actions .memory-save) { border-color: color-mix(in oklab, var(--day-primary) 38%, var(--day-line)); color: var(--day-primary); background: var(--day-mint); }
 .inspector :global(.memory-inspector-empty h2), .inspector :global(.memory-node-inspector h2) { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.3rem; color: var(--day-ink); }
 
+.deletionPreview { display: grid; gap: .75rem; margin-top: .8rem; border: 1px solid color-mix(in oklab, var(--danger) 34%, var(--day-line)); border-radius: 1.2rem; padding: .8rem; background: color-mix(in oklab, var(--danger) 6%, var(--day-paper)); }
+.deletionPreview > header { display: flex; align-items: flex-start; gap: .55rem; color: var(--danger); }
+.deletionPreview > header > div { display: grid; gap: .16rem; }
+.deletionPreview > header strong { font-size: .67rem; }
+.deletionPreview > header span, .deletionPreview > p { color: var(--day-muted); font-size: .57rem; line-height: 1.5; }
+.deletionPreview dl, .deletionReceipt dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .3rem .6rem; border-block: 1px solid var(--day-line); padding-block: .55rem; font-size: .58rem; }
+.deletionPreview dt, .deletionReceipt dt { color: var(--day-muted); }
+.deletionPreview dd, .deletionReceipt dd { color: var(--day-ink); font-weight: 760; font-variant-numeric: tabular-nums; }
+.deletionDescendants { display: grid; gap: .4rem; }
+.deletionDescendants > span { color: var(--day-muted); font-size: .55rem; font-weight: 740; text-transform: uppercase; letter-spacing: .08em; }
+.deletionDescendants ul { display: grid; max-height: 8rem; gap: .25rem; overflow-y: auto; }
+.deletionDescendants li { display: flex; align-items: center; justify-content: space-between; gap: .5rem; border-radius: .65rem; padding: .38rem .5rem; background: var(--day-paper-soft); }
+.deletionDescendants strong { overflow: hidden; color: var(--day-ink); font-size: .58rem; text-overflow: ellipsis; white-space: nowrap; }
+.deletionDescendants small { flex: 0 0 auto; color: var(--day-muted); font-size: .52rem; }
+
+.deletionReceipt { display: grid; place-items: center; gap: .6rem; min-height: 100%; color: var(--day-primary); text-align: center; }
+.deletionReceipt > p { font-size: .57rem; font-weight: 780; letter-spacing: .12em; text-transform: uppercase; }
+.deletionReceipt > h2 { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; color: var(--day-ink); font-size: 1.4rem; }
+.deletionReceipt > span { max-width: 18rem; color: var(--day-muted); font-size: .63rem; line-height: 1.5; }
+.deletionReceipt dl { width: 100%; text-align: left; }
+.deletionReceipt code { width: 100%; overflow: hidden; border-radius: .65rem; padding: .5rem; color: var(--day-muted); background: var(--day-paper-soft); font-size: .5rem; text-overflow: ellipsis; white-space: nowrap; }
+.deletionReceipt button { min-height: 2.45rem; border: 1px solid color-mix(in oklab, var(--day-primary) 38%, var(--day-line)); border-radius: 999px; padding-inline: .9rem; color: var(--day-primary); background: var(--day-mint); font-size: .62rem; font-weight: 750; }
+
 .dialogBackdrop { background: color-mix(in oklab, var(--day-ink) 46%, transparent); backdrop-filter: blur(13px); }
 .dialog { border-color: var(--day-line-strong); border-radius: 2rem 4.5rem 2rem 2rem; padding: 1.25rem; color: var(--day-ink); background: var(--day-paper-solid); box-shadow: 0 2.4rem 7rem var(--day-shadow); }
 .dialog > header h2 { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.5rem; }

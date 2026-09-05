@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   Brain,
   Check,
   CircleDot,
@@ -26,6 +27,40 @@ import styles from "@/components/memory-workspace.module.css";
 type LoadState = "loading" | "ready" | "error";
 type SaveState = "idle" | "saving" | "saved" | "error";
 type PositionedNode = MemoryGraphNode & { x: number; y: number };
+type ForgetState = "idle" | "previewing" | "ready" | "deleting";
+type MemoryDeletionPreview = {
+  expectedReceiptManifestSha256: string;
+  guarantee: "rollback_proof_barrier" | "best_effort";
+  descendantMemories: Array<{
+    id: string;
+    title: string;
+    type: MemoryType;
+  }>;
+  impact: {
+    rootMemoryCount: 1;
+    descendantMemoryCount: number;
+    retrievalTraceCount: number;
+    graphNodeCount: number;
+    graphEdgeCount: number;
+    pendingAgentRunCount: number;
+    pendingWorkflowRunCount: number;
+  };
+};
+type MemoryDeletionResult = {
+  deletionGuarantee: "scope_bound_receipt" | "legacy_unattributed_receipt" | "best_effort";
+  invalidatedAgentRunCount: number;
+  invalidatedWorkflowRunCount: number;
+  deletionReceipt: {
+    id: string;
+    memoryId: string;
+    forgottenAt: string;
+    descendantMemoryCount: number;
+    retrievalTraceCount: number;
+    graphNodeCount: number;
+    graphEdgeCount: number;
+    receiptSha256: string | null;
+  } | null;
+};
 
 const memoryTypes: MemoryType[] = ["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"];
 
@@ -43,7 +78,9 @@ export function MemoryWorkspace() {
   const [draft, setDraft] = useState<{ title: string; content: string; confidence: number }>();
   const [showCreate, setShowCreate] = useState(false);
   const [indexCollapsed, setIndexCollapsed] = useState(false);
-  const [confirmForget, setConfirmForget] = useState(false);
+  const [forgetState, setForgetState] = useState<ForgetState>("idle");
+  const [forgetPreview, setForgetPreview] = useState<MemoryDeletionPreview>();
+  const [deletionResult, setDeletionResult] = useState<MemoryDeletionResult>();
   const [announcement, setAnnouncement] = useState("");
   const [error, setError] = useState<string>();
 
@@ -93,7 +130,9 @@ export function MemoryWorkspace() {
     setSelectedMemoryId(memory.id);
     setSelectedNodeId(undefined);
     setDraft({ title: memory.title, content: memory.content, confidence: memory.confidence ?? 0.7 });
-    setConfirmForget(false);
+    setForgetState("idle");
+    setForgetPreview(undefined);
+    setDeletionResult(undefined);
     setSaveState("idle");
   }
 
@@ -131,21 +170,52 @@ export function MemoryWorkspace() {
     }
   }
 
+  async function requestForgetPreview() {
+    if (!selectedMemory) return;
+    setForgetState("previewing");
+    setError(undefined);
+    try {
+      const response = await fetch(
+        `/api/memory/${encodeURIComponent(selectedMemory.id)}?view=deletion-preview`,
+        { cache: "no-store" },
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || "Deletion preview failed.");
+      }
+      setForgetPreview(payload.preview as MemoryDeletionPreview);
+      setForgetState("ready");
+      setAnnouncement("Deletion preview ready. Review every affected memory and projection before confirming.");
+    } catch (previewError) {
+      setForgetState("idle");
+      setError(message(previewError));
+    }
+  }
+
   async function forgetSelected() {
-    if (!selectedMemory || !confirmForget) return;
+    if (!selectedMemory || !forgetPreview || forgetState !== "ready") return;
+    setForgetState("deleting");
     setSaveState("saving");
     try {
-      const response = await fetch(`/api/memory/${encodeURIComponent(selectedMemory.id)}`, { method: "DELETE" });
+      const response = await fetch(`/api/memory/${encodeURIComponent(selectedMemory.id)}`, {
+        method: "DELETE",
+        headers: {
+          "x-asael-deletion-preview": forgetPreview.expectedReceiptManifestSha256,
+        },
+      });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.message || payload.error || "Forget request failed.");
+      setDeletionResult(payload as MemoryDeletionResult);
       setMemories((current) => current.filter((item) => item.id !== selectedMemory.id));
       setSelectedMemoryId(undefined);
       setDraft(undefined);
-      setConfirmForget(false);
+      setForgetState("idle");
+      setForgetPreview(undefined);
       setSaveState("idle");
-      setAnnouncement("Memory forgotten and removed from recall.");
+      setAnnouncement("Memory deletion committed. Its receipt and affected projection counts are available.");
       void refreshGraph();
     } catch (forgetError) {
+      setForgetState("ready");
       setSaveState("error");
       setError(message(forgetError));
     }
@@ -210,13 +280,24 @@ export function MemoryWorkspace() {
             <label>Claim<textarea rows={9} value={draft.content} onChange={(event) => { setDraft({ ...draft, content: event.currentTarget.value }); setSaveState("idle"); }} /></label>
             <label>Confidence <span>{Math.round(draft.confidence * 100)}%</span><input type="range" min="0" max="1" step=".01" value={draft.confidence} onChange={(event) => { setDraft({ ...draft, confidence: Number(event.currentTarget.value) }); setSaveState("idle"); }} /></label>
             <div className="memory-provenance"><p><ShieldCheck size={13} aria-hidden="true" /> Provenance</p><dl><dt>Asserted by</dt><dd>{selectedMemory.assertedBy || "unknown"}</dd><dt>Source</dt><dd>{selectedMemory.source}</dd><dt>Scope</dt><dd>{selectedMemory.scope}</dd><dt>Updated</dt><dd>{formatDate(selectedMemory.updatedAt)}</dd></dl>{selectedMemory.evidenceRefs?.length ? <div>{selectedMemory.evidenceRefs.map((reference) => <code key={reference}>{reference}</code>)}</div> : null}</div>
-            <div className="memory-inspector-actions"><button type="button" className="memory-save" disabled={saveState === "saving" || !draft.title.trim() || !draft.content.trim()} onClick={() => void saveCorrection()}>{saveState === "saving" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : saveState === "saved" ? <Check size={13} aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{saveState === "saved" ? "Corrected" : "Save correction"}</button><button type="button" className={clsx("memory-forget", confirmForget && "is-confirming")} onClick={() => confirmForget ? void forgetSelected() : setConfirmForget(true)}><Trash2 size={13} aria-hidden="true" />{confirmForget ? "Confirm forget" : "Forget"}</button>{confirmForget ? <button type="button" className="memory-cancel" onClick={() => setConfirmForget(false)}><X size={13} aria-hidden="true" /> Cancel</button> : null}</div>
-          </> : selectedNode ? <div className="memory-node-inspector"><CircleDot size={22} aria-hidden="true" /><p>{selectedNode.kind}</p><h2>{selectedNode.label}</h2><span>{selectedNode.summary}</span><dl><dt>Sources</dt><dd>{selectedNode.sourceCount}</dd><dt>Weight</dt><dd>{selectedNode.weight.toFixed(1)}</dd><dt>Memories</dt><dd>{selectedNode.memoryIds.length}</dd></dl></div> : <div className="memory-inspector-empty"><Brain size={26} aria-hidden="true" /><h2>Select a memory</h2><p>Inspect provenance, correct a claim, or forget information that should no longer influence your agents.</p></div>}
+            {forgetPreview ? <DeletionPreview preview={forgetPreview} /> : null}
+            <div className="memory-inspector-actions"><button type="button" className="memory-save" disabled={saveState === "saving" || !draft.title.trim() || !draft.content.trim()} onClick={() => void saveCorrection()}>{saveState === "saving" && forgetState !== "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : saveState === "saved" ? <Check size={13} aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{saveState === "saved" ? "Corrected" : "Save correction"}</button><button type="button" className={clsx("memory-forget", forgetState === "ready" && "is-confirming")} disabled={forgetState === "previewing" || forgetState === "deleting"} onClick={() => forgetState === "ready" ? void forgetSelected() : void requestForgetPreview()}>{forgetState === "previewing" || forgetState === "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Trash2 size={13} aria-hidden="true" />}{forgetState === "previewing" ? "Checking impact" : forgetState === "deleting" ? "Committing deletion" : forgetState === "ready" ? "Forget permanently" : "Review forget impact"}</button>{forgetState === "ready" ? <button type="button" className="memory-cancel" onClick={() => { setForgetState("idle"); setForgetPreview(undefined); }}><X size={13} aria-hidden="true" /> Cancel</button> : null}</div>
+          </> : deletionResult ? <DeletionReceipt result={deletionResult} onClose={() => setDeletionResult(undefined)} /> : selectedNode ? <div className="memory-node-inspector"><CircleDot size={22} aria-hidden="true" /><p>{selectedNode.kind}</p><h2>{selectedNode.label}</h2><span>{selectedNode.summary}</span><dl><dt>Sources</dt><dd>{selectedNode.sourceCount}</dd><dt>Weight</dt><dd>{selectedNode.weight.toFixed(1)}</dd><dt>Memories</dt><dd>{selectedNode.memoryIds.length}</dd></dl></div> : <div className="memory-inspector-empty"><Brain size={26} aria-hidden="true" /><h2>Select a memory</h2><p>Inspect provenance, correct a claim, or forget information that should no longer influence your agents.</p></div>}
         </aside>
       </div>
       {showCreate ? <CreateMemoryDialog onClose={() => setShowCreate(false)} onCreated={(memory) => { setShowCreate(false); setMemories((current) => [memory, ...current]); selectMemory(memory); setAnnouncement("Memory added."); void refreshGraph(); }} /> : null}
     </main>
   );
+}
+
+function DeletionPreview({ preview }: { preview: MemoryDeletionPreview }) {
+  const impact = preview.impact;
+  return <section className={styles.deletionPreview} aria-label="Permanent deletion preview"><header><AlertTriangle size={15} aria-hidden="true" /><div><strong>Permanent deletion preview</strong><span>{preview.guarantee === "rollback_proof_barrier" ? "A rollback-proof barrier will block recall immediately." : "Local development provides a best-effort deletion only."}</span></div></header><dl><dt>Memories</dt><dd>{impact.rootMemoryCount + impact.descendantMemoryCount}</dd><dt>Retrieval traces</dt><dd>{impact.retrievalTraceCount}</dd><dt>Graph projections</dt><dd>{impact.graphNodeCount + impact.graphEdgeCount}</dd><dt>Pending runs canceled</dt><dd>{impact.pendingAgentRunCount + impact.pendingWorkflowRunCount}</dd></dl>{preview.descendantMemories.length ? <div className={styles.deletionDescendants}><span>Descendant memories also blocked</span><ul>{preview.descendantMemories.map((memory) => <li key={memory.id}><strong>{memory.title}</strong><small>{memory.type}</small></li>)}</ul></div> : null}<p>This removes the claim from search, context, graph views, and future exports. This action cannot be undone.</p></section>;
+}
+
+function DeletionReceipt({ result, onClose }: { result: MemoryDeletionResult; onClose: () => void }) {
+  const receipt = result.deletionReceipt;
+  return <div className={styles.deletionReceipt}><ShieldCheck size={25} aria-hidden="true" /><p>Deletion committed</p><h2>{receipt ? "Receipt verified" : "Best-effort local deletion"}</h2><span>{receipt ? `The permanent barrier was recorded ${formatDate(receipt.forgottenAt)}.` : "The memory was removed from the local development store."}</span>{receipt ? <><dl><dt>Descendant memories</dt><dd>{receipt.descendantMemoryCount}</dd><dt>Retrieval traces</dt><dd>{receipt.retrievalTraceCount}</dd><dt>Graph projections</dt><dd>{receipt.graphNodeCount + receipt.graphEdgeCount}</dd><dt>Runs canceled</dt><dd>{result.invalidatedAgentRunCount + result.invalidatedWorkflowRunCount}</dd></dl><code title={receipt.receiptSha256 || receipt.id}>{receipt.receiptSha256 || receipt.id}</code></> : null}<button type="button" onClick={onClose}>Back to memory</button></div>;
 }
 
 function CreateMemoryDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (memory: MemoryRecord) => void }) {

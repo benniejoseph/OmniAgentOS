@@ -4,7 +4,13 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { publicMemoryDeletionReceiptV1 } from "@/lib/memory/deletion-receipt";
 import { queueMemoryGraphRebuild } from "@/lib/memory/graph";
-import { correctMemory, forgetMemoryWithReceipt, getMemory } from "@/lib/memory/store";
+import {
+  correctMemory,
+  forgetMemoryWithReceipt,
+  getMemory,
+  MemoryDeletionPreviewConflictError,
+  previewMemoryDeletion,
+} from "@/lib/memory/store";
 import { embedTexts } from "@/lib/openai/client";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -28,8 +34,29 @@ async function authorize(request: Request, id: string, action: "read" | "write.m
 
 async function GETHandler(request: Request, route: { params: Promise<{ id: string }> }) {
   const { id } = await route.params;
+  const deletionPreview = new URL(request.url).searchParams.get("view") ===
+    "deletion-preview";
   let context;
-  try { context = await authorize(request, id, "read"); } catch (error) { return forbiddenResponse(error); }
+  try {
+    context = await authorize(
+      request,
+      id,
+      deletionPreview ? "write.memory" : "read",
+    );
+  } catch (error) { return forbiddenResponse(error); }
+  if (deletionPreview) {
+    const preview = await previewMemoryDeletion(id, {
+      tenantId: context.tenantId,
+    });
+    return preview
+      ? Response.json({ preview }, {
+          headers: { "cache-control": "private, no-store" },
+        })
+      : Response.json({ error: "Memory not found." }, {
+          status: 404,
+          headers: { "cache-control": "private, no-store" },
+        });
+  }
   const memory = await getMemory(id, { tenantId: context.tenantId });
   return memory ? Response.json({ memory: publicMemory(memory) }) : Response.json({ error: "Memory not found." }, { status: 404 });
 }
@@ -64,13 +91,45 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
   const { id } = await route.params;
   let context;
   try { context = await authorize(request, id, "write.memory"); } catch (error) { return forbiddenResponse(error); }
-  const result = await forgetMemoryWithReceipt(id, {
-    tenantId: context.tenantId,
-    executionScope: executionScopeFromSecurityContext(context, {
-      correlationId: `memory_forget_${randomUUID()}`,
-      purpose: "memory.forget.api",
-    }),
-  });
+  const expectedManifestSha256 = request.headers
+    .get("x-asael-deletion-preview")
+    ?.trim();
+  if (!expectedManifestSha256) {
+    return Response.json({
+      error: "Review the current deletion preview before forgetting this memory.",
+    }, {
+      status: 428,
+      headers: { "cache-control": "private, no-store" },
+    });
+  }
+  let result: Awaited<ReturnType<typeof forgetMemoryWithReceipt>>;
+  try {
+    result = await forgetMemoryWithReceipt(id, {
+      tenantId: context.tenantId,
+      expectedDescendantManifestSha256: expectedManifestSha256,
+      executionScope: executionScopeFromSecurityContext(context, {
+        correlationId: `memory_forget_${randomUUID()}`,
+        purpose: "memory.forget.api",
+      }),
+    });
+  } catch (error) {
+    if (error instanceof MemoryDeletionPreviewConflictError) {
+      return Response.json({ error: error.message }, {
+        status: 409,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+    if (
+      error instanceof Error &&
+      error.message === "Memory deletion preview digest is invalid."
+    ) {
+      return Response.json({ error: error.message }, {
+        status: 400,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+    throw error;
+  }
   if (!result) return Response.json({ error: "Memory not found." }, { status: 404 });
   return Response.json({
     forgotten: true,
@@ -80,6 +139,8 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
     deletionReceipt: result.receipt
       ? publicMemoryDeletionReceiptV1(result.receipt)
       : null,
+    invalidatedAgentRunCount: result.invalidatedAgentRunCount,
+    invalidatedWorkflowRunCount: result.invalidatedWorkflowRunCount,
   }, {
     headers: { "cache-control": "private, no-store" },
   });

@@ -118,6 +118,48 @@ describe("memory persistence safety (file mode)", () => {
     await expect(store.searchMemories("retain sentence", { tenantId: "tenant-forget" })).resolves.toEqual([]);
   });
 
+  it("binds forget to a fresh impact preview and scrubs file descendants", async () => {
+    const store = await import("@/lib/memory/store");
+    const root = await store.saveMemory({
+      tenantId: "tenant-preview",
+      title: "Original claim",
+      content: "Original sensitive claim.",
+    });
+    const descendant = await store.saveMemory({
+      tenantId: "tenant-preview",
+      title: "Corrected claim",
+      content: "Corrected sensitive claim.",
+      supersedesId: root.id,
+      evidenceRefs: [`memory:${root.id}`],
+    });
+    const preview = await store.previewMemoryDeletion(root.id, {
+      tenantId: "tenant-preview",
+    });
+
+    expect(preview?.descendantMemories).toEqual([{
+      id: descendant.id,
+      title: descendant.title,
+      type: descendant.type,
+    }]);
+    await expect(store.forgetMemoryWithReceipt(root.id, {
+      tenantId: "tenant-preview",
+      expectedDescendantManifestSha256: "0".repeat(64),
+    })).rejects.toThrow(store.MemoryDeletionPreviewConflictError);
+    expect((await store.getMemory(root.id, { tenantId: "tenant-preview" }))?.claimStatus)
+      .toBe("active");
+
+    await expect(store.forgetMemoryWithReceipt(root.id, {
+      tenantId: "tenant-preview",
+      expectedDescendantManifestSha256: preview?.expectedReceiptManifestSha256,
+    })).resolves.toMatchObject({
+      deletionDisposition: "committed",
+      invalidatedAgentRunCount: 0,
+      invalidatedWorkflowRunCount: 0,
+    });
+    expect((await store.getMemory(descendant.id, { tenantId: "tenant-preview" }))?.claimStatus)
+      .toBe("forgotten");
+  });
+
   it("reinforces useful run memories and quarantines corrected run claims", async () => {
     const store = await import("@/lib/memory/store");
     const useful = await store.saveMemory({
