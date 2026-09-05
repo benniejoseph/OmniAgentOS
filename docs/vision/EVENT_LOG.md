@@ -1215,5 +1215,10 @@ It deterministically binds the full execution/scope/plan/tool/approval/input/
 idempotency/target identity and expected state before any provider fields
 exist. The finalizer revalidates the immutable intent and accepts only bounded
 acknowledgement and verification evidence, preventing post-effect rebinding.
-It still has no store or executor call site, so an intent object alone cannot
+The audit store now persists it behind the exact execution-claim token, checks
+tenant/actor/principal, tool contract, input, and preapproved material binding,
+and emits `tool.effect_intent.recorded` atomically with the private database
+record. The private intent and approval evidence are removed from public tool
+records, and stale-claim recovery cannot replay the bound effect. It still has
+no executor or provider-adapter call site, so an intent object alone cannot
 cause or authorize an effect.

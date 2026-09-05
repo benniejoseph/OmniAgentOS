@@ -25,6 +25,20 @@ import {
 } from "@/lib/operations/job-queue";
 import { sweepExpiredSensitiveData } from "@/lib/security/retention";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { approvalMaterialBindingSha256 } from "@/lib/tools/approval-binding";
+import {
+  completeClaimedToolExecution,
+  createToolExecutionRecord,
+  getToolExecution,
+  getToolExecutionEffectIntentV2,
+  persistClaimedToolEffectIntentV2,
+  publicToolExecution,
+  saveToolExecution,
+  sealToolExecutionInput,
+} from "@/lib/tools/audit-store";
+import { buildEffectIntentV2 } from "@/lib/tools/effect-intent-v2";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { toolInputSha256 } from "@/lib/tools/execution-scope";
 import { createWorkflowRun } from "@/lib/workflows/store";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -132,6 +146,123 @@ databaseDescribe("Postgres schema integration", () => {
     } else {
       expect(vectorStatus.dimensions).toBeGreaterThan(0);
     }
+  });
+
+  test("atomically persists immutable generic effect intents and events", async () => {
+    const tenantId = "effect_intent_tenant";
+    const actorId = "effect_intent_actor";
+    const claimToken = "effect-intent-integration-claim";
+    const approvalFingerprint = "integration-http-post-contract";
+    const toolInput = {
+      url: "https://example.com/integration-effect",
+      method: "POST",
+    };
+    const inputSha256 = toolInputSha256(toolInput);
+    const approvalBindingSha256 = approvalMaterialBindingSha256({
+      targetSha256: "6".repeat(64),
+      inputSha256,
+    });
+    const base = createToolExecutionRecord({
+      tenantId,
+      actorId,
+      toolId: "http.request",
+      toolName: "HTTP request",
+      riskLevel: 2,
+      status: "executing",
+      dryRun: false,
+      approvalRequired: true,
+      approvalDecision: "approved",
+      approvedBy: "integration-admin",
+      approvedAt: new Date().toISOString(),
+      input: toolInput,
+      output: undefined,
+    });
+    const claimed = {
+      ...base,
+      output: {
+        ...sealToolExecutionInput(
+          toolInput,
+          base,
+          approvalFingerprint,
+          { approvalMaterialBindingSha256: approvalBindingSha256 },
+        ),
+        __executionClaim: {
+          token: claimToken,
+          claimedAt: new Date().toISOString(),
+        },
+      },
+    };
+    const scope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "effect-intent-integration-request",
+      causationId: claimed.id,
+      purpose: "tool.effect.execute",
+    });
+    const intent = buildEffectIntentV2({
+      effectMode: "live",
+      reversible: false,
+      executionKind: "direct",
+      executionId: claimed.id,
+      tenantId,
+      actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      workflowRunId: null,
+      planId: null,
+      planSha256: null,
+      planNodeId: null,
+      toolId: claimed.toolId,
+      toolContractSha256: canonicalJsonSha256({ approvalFingerprint }),
+      approvalState: "approved",
+      approvalBindingSha256,
+      inputSha256,
+      idempotencyKeySha256: "7".repeat(64),
+      targetType: "http_endpoint",
+      targetId: "http_target:integration-effect",
+      expectedTargetStateSha256: "8".repeat(64),
+    });
+
+    await runWithDatabaseTenantScope(tenantId, () => saveToolExecution(claimed));
+    const persisted = await runWithDatabaseTenantScope(tenantId, () =>
+      persistClaimedToolEffectIntentV2({
+        recordId: claimed.id,
+        tenantId,
+        claimToken,
+        intent,
+        executionScope: scope,
+      })
+    );
+    expect(getToolExecutionEffectIntentV2(persisted!)).toEqual(intent);
+
+    const completed = await runWithDatabaseTenantScope(tenantId, () =>
+      completeClaimedToolExecution({
+        ...persisted!,
+        status: "executed",
+        output: { ok: true },
+        completedAt: new Date().toISOString(),
+      }, claimToken)
+    );
+    expect(getToolExecutionEffectIntentV2(completed!)).toEqual(intent);
+    expect(publicToolExecution(completed!).output).toEqual({ ok: true });
+    const reread = await runWithDatabaseTenantScope(tenantId, () =>
+      getToolExecution(claimed.id, { tenantId })
+    );
+    expect(getToolExecutionEffectIntentV2(reread!)).toEqual(intent);
+
+    const [eventCount] = await admin`
+      SELECT COUNT(*)::int AS count
+      FROM omni_events
+      WHERE id = ${`tool.effect_intent:${intent.effectIntentId}`}
+        AND tenant_id = ${tenantId}
+    `;
+    expect(eventCount.count).toBe(1);
+
+    await expect(runWithDatabaseTenantScope(tenantId, () =>
+      saveToolExecution({ ...completed!, output: { ok: false } })
+    )).rejects.toThrow(/effect intent/i);
   });
 
   test("returns newly inserted and replayed bulk memories", async () => {
