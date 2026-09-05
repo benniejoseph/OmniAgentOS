@@ -98,7 +98,10 @@ describe("personal OAuth synchronization", () => {
       }),
     );
     expect(mocks.remove).toHaveBeenCalledWith("oauth:google:calendar:e0", { tenantId: "personal" });
-    expect(mocks.updateState).toHaveBeenLastCalledWith(expect.objectContaining({ status: "healthy", syncedItems: 3 }));
+    expect(mocks.updateState).toHaveBeenCalledTimes(5);
+    expect(mocks.updateState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "healthy" }),
+    );
   });
 
   it("reconciles a removed Gmail message without failing the full sync", async () => {
@@ -142,6 +145,77 @@ describe("personal OAuth synchronization", () => {
         idempotencyKey: "oauth:google:drive:d404",
         content: expect.stringContaining("File: Moved brief"),
       }),
+    );
+  });
+
+  it("commits successful source cursors when a sibling source fails", async () => {
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("gmail.googleapis.com")) {
+        throw new Error("Gmail is temporarily unavailable.");
+      }
+      if (url.includes("calendar")) {
+        return json({
+          nextSyncToken: "calendar-partial",
+          items: [{
+            id: "event-partial",
+            etag: "event-partial-v1",
+            created: "2026-08-26T08:00:00Z",
+            updated: "2026-08-26T09:00:00Z",
+            summary: "Independent settlement",
+            status: "confirmed",
+            start: { dateTime: "2026-08-26T10:00:00Z" },
+            end: { dateTime: "2026-08-26T11:00:00Z" },
+          }],
+        });
+      }
+      if (url.includes("/drive/v3/files")) {
+        return json({
+          files: [{
+            id: "drive-partial",
+            name: "Independent source.txt",
+            mimeType: "text/plain",
+            createdTime: "2026-08-25T10:00:00Z",
+            modifiedTime: "2026-08-26T10:00:00Z",
+            version: "2",
+            size: "0",
+          }],
+        });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    const result = await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+    });
+
+    expect(result).toMatchObject({
+      status: "partial",
+      imported: 2,
+      removed: 0,
+      cursorAdvanced: true,
+      sources: [
+        { source: "mail", status: "error", imported: 0 },
+        { source: "calendar", status: "healthy", imported: 1 },
+        { source: "drive", status: "healthy", imported: 1 },
+      ],
+    });
+    expect(mocks.ingest).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining(":mail:"),
+      }),
+    );
+    expect(mocks.updateState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "error",
+        cursor: expect.stringContaining("calendar-partial"),
+        error: expect.stringContaining("mail:"),
+      }),
+    );
+    expect(mocks.updateState.mock.calls.at(-1)?.[0].cursor).toContain(
+      "2026-08-26T10:00:00Z",
     );
   });
 });
