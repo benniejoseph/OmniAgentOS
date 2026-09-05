@@ -205,6 +205,40 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(executeTool).toHaveBeenCalledTimes(2);
     expect(maximumActiveExecutions).toBe(1);
   });
+
+  it("closes the observed model boundary when generation fails", async () => {
+    const failure = new Error("provider unavailable");
+    const afterModelFailure = vi.fn(async () => undefined);
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "reasoning",
+      instructions: "Answer safely.",
+      prompt: "Fail this test turn.",
+      tools: [],
+      toolbox: { byFunctionName: new Map() },
+      securityContext: {
+        tenantId: "default",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-failed-model",
+      modelAttemptOffset: 2,
+      beforeModelTurn: vi.fn(async () => undefined),
+      afterModelFailure,
+      generateTurn: vi.fn(async () => {
+        throw failure;
+      }),
+    });
+
+    await expect(collect(loop)).rejects.toThrow("provider unavailable");
+    expect(afterModelFailure).toHaveBeenCalledWith({
+      attempt: 3,
+      provider: "google",
+      tier: "reasoning",
+      error: failure,
+    });
+  });
 });
 
 function turn(input: {
