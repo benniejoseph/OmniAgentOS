@@ -567,6 +567,19 @@ async function executeBackgroundOperation(
     const captureExecutionScope = actorId && captureTarget
       ? captureIngestMutationExecutionScope(job, actorId)
       : undefined;
+    const captureIngestGuard = actorId && captureTarget
+      ? {
+          tenantId: job.tenantId,
+          actorId,
+          ingestJobId: job.id,
+          ...(captureTarget.assetId
+            ? { kind: "asset" as const, captureId: captureTarget.assetId }
+            : {
+                kind: "recording" as const,
+                captureId: captureTarget.recordingId as string,
+              }),
+        }
+      : undefined;
     const result = await ingestTextDocument({
       ...parsed,
       tenantId: job.tenantId,
@@ -610,6 +623,7 @@ async function executeBackgroundOperation(
             },
           }
         : {}),
+      captureIngestGuard,
     });
     if (actorId && captureExecutionScope) {
       try {

@@ -25,6 +25,7 @@ const routeMocks = vi.hoisted(() => {
     CaptureAssetReadConflictError,
     authorizeRequest: vi.fn(),
     canonicalRequestActorBindingFromSecurityContext: vi.fn(),
+    deleteCaptureAssetWithKnowledge: vi.fn(),
     getCaptureAsset: vi.fn(),
     getCaptureAssetForRequest: vi.fn(),
     getCaptureAssetContent: vi.fn(),
@@ -53,13 +54,17 @@ vi.mock("@/lib/capture/assets", () => ({
     routeMocks.CaptureAssetContentIntegrityError,
   CaptureAssetError: routeMocks.CaptureAssetError,
   CaptureAssetReadConflictError: routeMocks.CaptureAssetReadConflictError,
-  deleteCaptureAsset: vi.fn(),
   getCaptureAsset: routeMocks.getCaptureAsset,
   getCaptureAssetForRequest: routeMocks.getCaptureAssetForRequest,
   getCaptureAssetContent: routeMocks.getCaptureAssetContent,
   getCaptureAssetContentForRequest:
     routeMocks.getCaptureAssetContentForRequest,
   updateCaptureAssetStatus: vi.fn(),
+}));
+
+vi.mock("@/lib/capture/deletion", () => ({
+  deleteCaptureAssetWithKnowledge:
+    routeMocks.deleteCaptureAssetWithKnowledge,
 }));
 
 vi.mock("@/lib/capture/execution-scope", () => ({
@@ -82,10 +87,6 @@ vi.mock("@/lib/operations/job-queue", () => ({
   cancelOperationJobByDedupeKey: vi.fn(),
   getOperationJob: vi.fn(),
   projectOperationJobStatus: vi.fn(),
-}));
-
-vi.mock("@/lib/rag/store", () => ({
-  deleteKnowledgeDocumentsBySourcePrefix: vi.fn(),
 }));
 
 import { GET } from "@/app/api/capture/assets/[id]/route";

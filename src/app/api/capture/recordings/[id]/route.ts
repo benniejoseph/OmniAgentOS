@@ -2,15 +2,14 @@ import { z } from "zod";
 import {
   CaptureRecordingError,
   CaptureRecordingReadConflictError,
-  deleteCaptureRecording,
   getCaptureRecording,
   getCaptureRecordingMetadataForRequest,
   updateCaptureRecording,
 } from "@/lib/capture/recordings";
+import { deleteCaptureRecordingWithKnowledge } from "@/lib/capture/deletion";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { deleteKnowledgeDocumentsBySourcePrefix } from "@/lib/rag/store";
 import { cancelOperationJobByDedupeKey, getOperationJob } from "@/lib/operations/job-queue";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -124,8 +123,10 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
       const job = await getOperationJob(recording.ingestJobId, { tenantId: context.tenantId });
       if (job?.dedupeKey) await cancelOperationJobByDedupeKey(job.dedupeKey, "Captured recording deleted by its owner.", { tenantId: context.tenantId });
     }
-    const forgotten = await deleteKnowledgeDocumentsBySourcePrefix(recording.source, { tenantId: context.tenantId });
-    await deleteCaptureRecording(id, { ...context, executionScope });
+    const forgotten = await deleteCaptureRecordingWithKnowledge(recording, {
+      ...context,
+      executionScope,
+    });
     return Response.json({ deleted: true, forgotten }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
     return captureErrorResponse(error);

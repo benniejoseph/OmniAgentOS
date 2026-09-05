@@ -24,6 +24,11 @@ import {
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type { MemoryRecord, MemorySearchResult, MemoryType } from "@/lib/memory/types";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
+import {
+  assertCaptureIngestSource,
+  lockActiveCaptureIngest,
+  type CaptureIngestGuard,
+} from "@/lib/capture/ingest-guard";
 
 export type CreateMemoryInput = {
   id?: string;
@@ -155,8 +160,13 @@ export async function saveMemory(input: CreateMemoryInput) {
   return (await saveMemoryWithCommitStatus(input)).record;
 }
 
-export async function saveMemories(inputs: CreateMemoryInput[]) {
-  return (await saveMemoriesWithCommitStatus(inputs)).map((result) => result.record);
+export async function saveMemories(
+  inputs: CreateMemoryInput[],
+  options: { captureIngestGuard?: CaptureIngestGuard } = {},
+) {
+  return (await saveMemoriesWithCommitStatus(inputs, options)).map(
+    (result) => result.record,
+  );
 }
 
 /**
@@ -171,7 +181,10 @@ export async function saveMemoryWithCommitStatus(input: CreateMemoryInput) {
   return result;
 }
 
-async function saveMemoriesWithCommitStatus(inputs: CreateMemoryInput[]) {
+async function saveMemoriesWithCommitStatus(
+  inputs: CreateMemoryInput[],
+  options: { captureIngestGuard?: CaptureIngestGuard } = {},
+) {
   if (!inputs.length) {
     return [];
   }
@@ -184,6 +197,15 @@ async function saveMemoriesWithCommitStatus(inputs: CreateMemoryInput[]) {
     )
   ) {
     throw new Error("Bulk memory persistence cannot mix tenants.");
+  }
+  if (options.captureIngestGuard) {
+    for (const record of records) {
+      assertCaptureIngestSource(
+        options.captureIngestGuard,
+        tenantId,
+        record.source,
+      );
+    }
   }
 
   if (hasDatabaseUrl()) {
@@ -210,7 +232,7 @@ async function saveMemoriesWithCommitStatus(inputs: CreateMemoryInput[]) {
       created_at: record.createdAt,
       updated_at: record.updatedAt,
     }));
-    const rows = await getSql()`
+    const persistRows = (sql: MemorySqlClient) => sql`
       WITH input_rows AS (
         SELECT *
         FROM jsonb_to_recordset(${payload}::jsonb) AS input(
@@ -258,6 +280,12 @@ async function saveMemoriesWithCommitStatus(inputs: CreateMemoryInput[]) {
         ON memory.id = input.id
        AND memory.tenant_id = input.tenant_id
     `;
+    const rows = options.captureIngestGuard
+      ? await getSql().transaction(async (sql: MemorySqlClient) => {
+          await lockActiveCaptureIngest(sql, options.captureIngestGuard!);
+          return persistRows(sql);
+        }) as Array<Record<string, unknown>>
+      : await persistRows(getSql());
     if (rows.length !== records.length) {
       throw new Error("Memory idempotency key collided with another tenant.");
     }

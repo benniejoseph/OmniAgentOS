@@ -13,6 +13,7 @@ import {
   type TextSourceLineageInput,
 } from "@/lib/sources/text-lineage";
 import type { AiUsageScope } from "@/lib/usage/types";
+import type { CaptureIngestGuard } from "@/lib/capture/ingest-guard";
 
 export async function ingestTextDocument({
   idempotencyKey,
@@ -27,6 +28,7 @@ export async function ingestTextDocument({
   abortSignal,
   usageScope,
   sourceLineage,
+  captureIngestGuard,
 }: {
   idempotencyKey?: string;
   tenantId?: string;
@@ -40,6 +42,7 @@ export async function ingestTextDocument({
   abortSignal?: AbortSignal;
   usageScope?: AiUsageScope;
   sourceLineage?: TextSourceLineageInput;
+  captureIngestGuard?: CaptureIngestGuard;
 }) {
   const safeTitle = jsonbSafeTruncate(String(redactSensitive(title)), 240);
   const safeContent = jsonbSafeTruncate(
@@ -87,6 +90,7 @@ export async function ingestTextDocument({
     tags: safeTags,
     metadata,
     canonicalSourceWrite,
+    captureIngestGuard,
     chunks: chunks.map((chunk) => ({
       ...chunk,
       embedding: embeddings?.[chunk.index],
@@ -122,9 +126,12 @@ export async function ingestTextDocument({
       ],
       embedding: embeddings?.[chunk.index],
     })),
+    { captureIngestGuard },
   );
   abortSignal?.throwIfAborted();
-  await indexMemoryGraphRecords(records, "knowledge.ingest");
+  await indexMemoryGraphRecords(records, "knowledge.ingest", {
+    captureIngestGuard,
+  });
 
   return {
     document: knowledge.document,

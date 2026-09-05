@@ -6,6 +6,11 @@ import {
   hasDatabaseUrl,
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
+import {
+  assertCaptureIngestSource,
+  lockActiveCaptureIngest,
+  type CaptureIngestGuard,
+} from "@/lib/capture/ingest-guard";
 import { listMemories } from "@/lib/memory/store";
 import type {
   MemoryGraphBuildRecord,
@@ -299,14 +304,31 @@ async function collectMemoryGraphAggregate(
 export async function indexMemoryGraphRecords(
   records: MemoryRecord[],
   source = "memory.write",
-  options: { tenantId?: string } = {},
+  options: {
+    tenantId?: string;
+    captureIngestGuard?: CaptureIngestGuard;
+  } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId || records[0]?.tenantId);
   if (records.some((record) => normalizeTenantId(record.tenantId) !== tenantId)) {
     throw new Error("Memory graph indexing cannot mix records from different tenants.");
   }
+  if (options.captureIngestGuard) {
+    for (const record of records) {
+      assertCaptureIngestSource(
+        options.captureIngestGuard,
+        tenantId,
+        record.source,
+      );
+    }
+  }
   return runWithDatabaseTenantScope(tenantId, () =>
-    indexMemoryGraphRecordsForTenant(records, source, tenantId),
+    indexMemoryGraphRecordsForTenant(
+      records,
+      source,
+      tenantId,
+      options.captureIngestGuard,
+    ),
   );
 }
 
@@ -314,6 +336,7 @@ async function indexMemoryGraphRecordsForTenant(
   records: MemoryRecord[],
   source: string,
   tenantId: string,
+  captureIngestGuard?: CaptureIngestGuard,
 ) {
   if (!records.length) {
     return getMemoryGraphStats({ tenantId });
@@ -323,6 +346,9 @@ async function indexMemoryGraphRecordsForTenant(
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await getSql().transaction(async (sql: GraphSqlClient) => {
+      if (captureIngestGuard) {
+        await lockActiveCaptureIngest(sql, captureIngestGuard);
+      }
       await sql`
         SELECT pg_advisory_xact_lock(
           hashtextextended(${"memory-graph:" + tenantId}, 0)

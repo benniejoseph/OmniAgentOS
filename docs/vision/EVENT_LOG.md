@@ -709,9 +709,13 @@ metadata; source names and indexed content are excluded.
 
 In Postgres, matching knowledge removal, derived-memory retirement, retrieval
 trace and graph invalidation, rebuild scheduling, and the event append commit in
-one transaction. File fallback remains a non-atomic development compatibility
-path. Capture deletion still sequences its knowledge cleanup and asset deletion
-as separate transactions, so full cross-store P2.7 propagation remains open.
+one transaction. Capture asset and recording deletion now joins that transaction
+with the exact owner-bound capture row and its typed deletion event. Capture
+ingest also locks the same tenant/actor/job-bound row before each knowledge,
+memory, and graph persistence stage: ingest either commits first and is scrubbed,
+or deletion commits first and the stale writer fails closed. File fallback
+remains a non-atomic development compatibility path. Broader P2.7 propagation
+and physical scrub completion remain open.
 
 ## Event shape
 

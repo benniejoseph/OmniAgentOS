@@ -28,6 +28,10 @@ type CaptureAssetListOwner = Owner & {
   requestActorBinding?: CanonicalRequestActorBindingV1;
 };
 type ScopedOwner = Owner & { executionScope: ExecutionScope };
+type DeleteCaptureAssetOptions = {
+  sql?: ReturnType<typeof getSql>;
+  asset?: CaptureAsset;
+};
 type CaptureAssetEventPayload = {
   schemaVersion: 1;
   assetId: string;
@@ -465,11 +469,17 @@ export async function updateCaptureAssetStatus(id: string, owner: ScopedOwner, i
   return next;
 }
 
-export async function deleteCaptureAsset(id: string, owner: ScopedOwner) {
+export async function deleteCaptureAsset(
+  id: string,
+  owner: ScopedOwner,
+  options: DeleteCaptureAssetOptions = {},
+) {
   const executionScope = requireCaptureAssetMutationScope(owner);
-  const asset = await requireCaptureAsset(id, owner);
+  const asset = options.asset
+    ? exactCaptureAssetForDeletion(id, owner, options.asset)
+    : await requireCaptureAsset(id, owner);
   if (hasDatabaseUrl()) {
-    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    const deleteWithSql = async (sql: ReturnType<typeof getSql>) => {
       const rows = await sql`DELETE FROM omni_capture_assets WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId} AND actor_id = ${asset.actorId} RETURNING id`;
       if (!rows[0]) return false;
       await appendCaptureAssetEvent(asset, executionScope, "capture_asset.deleted", {
@@ -483,7 +493,10 @@ export async function deleteCaptureAsset(id: string, owner: ScopedOwner) {
         knowledgeDocumentId: asset.knowledgeDocumentId,
       }, { sql });
       return true;
-    }) as Promise<boolean>;
+    };
+    return (options.sql
+      ? deleteWithSql(options.sql)
+      : getSql().transaction(deleteWithSql)) as Promise<boolean>;
   }
   await updateJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] }, (ledger) => ({
     assets: ledger.assets.filter((item) => !(item.id === asset.id && item.tenantId === asset.tenantId && item.actorId === asset.actorId)),
@@ -500,6 +513,21 @@ export async function deleteCaptureAsset(id: string, owner: ScopedOwner) {
     knowledgeDocumentId: asset.knowledgeDocumentId,
   });
   return true;
+}
+
+function exactCaptureAssetForDeletion(
+  id: string,
+  owner: Owner,
+  asset: CaptureAsset,
+) {
+  if (
+    asset.id !== id ||
+    asset.tenantId !== normalizeTenantId(owner.tenantId) ||
+    asset.actorId !== normalizeActorId(owner.actorId)
+  ) {
+    throw new CaptureAssetError("Captured file not found.", 404);
+  }
+  return asset;
 }
 
 async function appendCaptureAssetStatusEvent(

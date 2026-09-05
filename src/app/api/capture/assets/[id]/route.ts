@@ -2,13 +2,13 @@ import {
   CaptureAssetContentIntegrityError,
   CaptureAssetError,
   CaptureAssetReadConflictError,
-  deleteCaptureAsset,
   getCaptureAsset,
   getCaptureAssetForRequest,
   getCaptureAssetContent,
   getCaptureAssetContentForRequest,
   updateCaptureAssetStatus,
 } from "@/lib/capture/assets";
+import { deleteCaptureAssetWithKnowledge } from "@/lib/capture/deletion";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { CaptureFileError, captureTitle, extractCaptureFile } from "@/lib/capture/files";
 import { withDatabaseRequestScope } from "@/lib/db/client";
@@ -22,7 +22,6 @@ import {
   getOperationJob,
   projectOperationJobStatus,
 } from "@/lib/operations/job-queue";
-import { deleteKnowledgeDocumentsBySourcePrefix } from "@/lib/rag/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { z } from "zod";
@@ -98,8 +97,10 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
     const asset = await getCaptureAsset(id, context);
     if (!asset) return Response.json({ error: "Captured file not found." }, { status: 404, headers: privateNoStoreHeaders });
     await cancelIngestJob(asset.ingestJobId, context.tenantId);
-    const forgotten = await deleteKnowledgeDocumentsBySourcePrefix(`capture:asset:${asset.id}`, { tenantId: context.tenantId });
-    await deleteCaptureAsset(id, { ...context, executionScope });
+    const forgotten = await deleteCaptureAssetWithKnowledge(asset, {
+      ...context,
+      executionScope,
+    });
     return Response.json({ deleted: true, forgotten }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
     return assetErrorResponse(error);

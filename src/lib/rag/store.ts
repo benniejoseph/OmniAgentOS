@@ -25,6 +25,11 @@ import type {
 } from "@/lib/rag/types";
 import type { MemoryRecord } from "@/lib/memory/types";
 import {
+  assertCaptureIngestSource,
+  lockActiveCaptureIngest,
+  type CaptureIngestGuard,
+} from "@/lib/capture/ingest-guard";
+import {
   sourceAdapterUpsertV1Schema,
   sourceContractSha256,
 } from "@/lib/sources/contracts";
@@ -62,6 +67,7 @@ type CreateKnowledgeDocumentInput = {
   }>;
   metadata?: Record<string, unknown>;
   canonicalSourceWrite?: CanonicalTextSourceWrite;
+  captureIngestGuard?: CaptureIngestGuard;
 };
 
 type SearchKnowledgeOptions = {
@@ -96,6 +102,9 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
     ? knowledgeDocumentId(tenantId, input.idempotencyKey)
     : randomUUID();
   const canonicalSourceWrite = input.canonicalSourceWrite;
+  if (input.captureIngestGuard) {
+    assertCaptureIngestSource(input.captureIngestGuard, tenantId, source);
+  }
   if (
     canonicalSourceWrite &&
     canonicalSourceWrite.executionScope.tenantId !== tenantId
@@ -188,6 +197,7 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
       document,
       chunks,
       canonicalSourceWrite,
+      input.captureIngestGuard,
     );
     return {
       document: lineage ? document : withoutDocumentLineage(document),
@@ -307,6 +317,7 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
   tenantId?: string;
   actorId?: string;
   mutation?: KnowledgeDeletionMutationContext;
+  sql?: RagSqlClient;
 } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
   const prefix = String(redactSensitive(sourcePrefix)).trim().slice(0, 500);
@@ -322,7 +333,7 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
   const retiredAt = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    return getSql().transaction(async (sql: RagSqlClient) => {
+    const deleteWithSql = async (sql: RagSqlClient) => {
       await lockKnowledgeMemoryGraph(sql, tenantId);
       const rows = await sql`SELECT id FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND source LIKE ${prefix + "%"}`;
       const ids = rows.map((row) => String(row.id));
@@ -349,7 +360,10 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
         await appendKnowledgeDeletionEvent(prefix, mutation, sql);
       }
       return { documents: ids.length, memories: retired.length };
-    });
+    };
+    return options.sql
+      ? deleteWithSql(options.sql)
+      : getSql().transaction(deleteWithSql);
   }
   const ledger = await readKnowledgeLedger();
   const ids = new Set(ledger.documents.filter((document) => normalizeTenantId(document.tenantId) === tenantId && document.source.startsWith(prefix)).map((document) => document.id));
@@ -671,10 +685,14 @@ async function insertKnowledgeDocumentDb(
   document: KnowledgeDocument,
   chunks: KnowledgeChunk[],
   canonicalSourceWrite?: CanonicalTextSourceWrite,
+  captureIngestGuard?: CaptureIngestGuard,
 ) {
   await ensureDatabaseSchema();
   const sql = getSql();
   const persistence = await sql.transaction(async (transaction: RagSqlClient) => {
+    if (captureIngestGuard) {
+      await lockActiveCaptureIngest(transaction, captureIngestGuard);
+    }
     const insertedDocuments = await transaction`
       INSERT INTO omni_knowledge_documents (
         id, tenant_id, title, source, source_type, tags, content_hash, chunk_count, total_characters, metadata, created_at, updated_at
