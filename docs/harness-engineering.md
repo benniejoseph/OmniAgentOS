@@ -115,6 +115,12 @@ shadow. It rereads one tenant's stored rows, reference indexes, typed events,
 approval decision, and effect-receipt state; it does not open continuation
 contents. Empty and mismatched samples fail closed.
 
+Passing `expanded` as the command's final argument selects only the dormant
+full-boundary configuration. That mode additionally requires model, tool,
+approval, delegation, and verifier phase coverage; checks their exact pairs,
+chain and cumulative counters; and revalidates terminal tool/effect receipts.
+Incomplete coverage is a failing gate even when every observed row is valid.
+
 Migration v69 provides the resume fence. Claims bind the exact
 checkpoint digest and operation job, persist only hashed credentials, advance
 their generation only after expiry, and require the exact live token for

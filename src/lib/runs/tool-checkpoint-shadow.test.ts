@@ -310,6 +310,20 @@ describe("tool checkpoint shadow", () => {
       enrollment: enrollment(),
       recordedAt: "2026-09-06T09:00:01.000Z",
     }, sql);
+    await expect(recordToolAfterCheckpointShadow({
+      runId: RUN_ID,
+      record: {
+        ...executing,
+        status: "executed",
+        completedAt: "2026-09-06T09:00:02.000Z",
+      },
+      tool,
+      operationClass: "mutation",
+      executionScope: SCOPE,
+      toolExecutionScope: TOOL_SCOPE,
+      runContractEnvelope: CONTRACT.envelope,
+      enrollment: enrollment(),
+    }, sql)).rejects.toThrow(/requires its exact effect receipt/i);
     const after = await recordToolAfterCheckpointShadow({
       runId: RUN_ID,
       record: {

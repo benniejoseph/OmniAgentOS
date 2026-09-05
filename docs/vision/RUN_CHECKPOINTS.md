@@ -1,8 +1,8 @@
 # RunCheckpoint v1
 
-**Status:** P1.6 approval-boundary shadow chain and production-proven resume fence
+**Status:** P1.6 full-boundary shadow implemented; expanded production proof pending
 
-**Runtime effect:** Approval writes and the generation-2 risk-0 fenced-resume canary are active; broader boundary coverage remains pending
+**Runtime effect:** Approval writes and the generation-2 risk-0 fenced-resume canary are active; the expanded model/tool/delegation/verifier generation remains dormant until a separately registered shadow rollout
 
 `RunCheckpointV1` defines the immutable metadata and reference boundary that a
 future durable run must record before work can be resumed safely. Migration
@@ -69,6 +69,22 @@ with two approval checkpoints, one governed tool execution, no effect receipt,
 and no duplicate tool or external effect. The event stream records claimed and
 authorized generation 1, reclaimed and authorized generation 2, and completed
 generation 2 in that order.
+
+The next additive configuration now implements the complete shadow chain.
+It records model success and failure receipts, governed live tool before/after
+boundaries, approval successors on the same chain, council delegation
+requests/results, and verifier requests/results. Enrolled council and tool work
+is serialized only where a single immutable checkpoint parent requires it;
+existing approval-only and canary generations keep their prior execution
+behavior. Successful mutation tool checkpoints fail closed unless the exact
+persisted intent and effect receipt are present.
+
+The reconciliation command accepts `expanded` as its final argument. Expanded
+mode samples only the exact expanded configuration, revalidates rows,
+references, events, pins, parent/resource transitions, boundary pairs, tool
+receipts, and all ten required before/waiting/after phase observations. An
+otherwise valid but incomplete sample returns `incomplete_coverage`, not a
+passing result.
 
 ## Why this precedes resume
 
@@ -148,7 +164,10 @@ The remaining slices must proceed in this order:
    interrupted resume without a duplicate effect; and
 3. expand separately to model, tool, delegation, and verifier boundaries.
 
-Gates 1 and 2 are complete. Gate 3 is the remaining P1.6 work.
+Gates 1 and 2 are complete. Gate 3 is implemented in code and remains open for
+deployment, an exact expanded shadow registration, a non-empty production
+sample covering every required phase, reconciliation, and an interrupted-run
+proof before activation.
 
 P1.6 remains open until all required boundaries checkpoint durably and an
 interrupted run resumes without duplicate side effects. Replay, fork, and user

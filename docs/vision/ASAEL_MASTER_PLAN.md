@@ -505,8 +505,13 @@ worker cannot commit run state or project mission progress. Unenrolled,
 preclaimed, file-mode, and existing runs remain unchanged. The non-empty
 production sample reconciled, and the active generation-2 risk-0 canary
 reclaimed a deliberately interrupted generation-1 resume with exactly one tool
-execution, no effect receipt, and a completed generation-2 fence. P1.6 remains
-open until model, tool, delegation, and verifier boundaries are checkpointed.
+execution, no effect receipt, and a completed generation-2 fence. The expanded
+shadow implementation now chains model success/failure, governed tool,
+approval, council delegation, and verifier boundaries, and its bounded
+reconciler fails closed on missing phase coverage or successful mutations
+without exact receipts. P1.6 remains open until that configuration is deployed,
+registered as a new shadow generation, reconciled against a complete non-empty
+production sample, and proven under interruption before activation.
 The normative
 boundary and activation order are documented in
 [RunCheckpoint v1](RUN_CHECKPOINTS.md).
