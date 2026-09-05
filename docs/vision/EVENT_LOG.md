@@ -433,6 +433,14 @@ revokes an epoch. That event may contain only versioned authority identifiers,
 state, epoch, causation, and decision attribution—not credentials, personal
 content, consent text, or inferred administrator intent.
 
+Installing the informed-notice and consent-v2 shadow emits no domain event.
+Migration v55 creates no notice contract, presentation, acknowledgement, or
+consent row and performs no user decision. A future governed writer must append
+typed notice-presentation and consent-decision evidence atomically with those
+facts. Events may reference the versioned notice contract, digest, receipt,
+purpose, consent generation, and membership epoch, but must not duplicate the
+notice text, credentials, private content, or model reasoning.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility

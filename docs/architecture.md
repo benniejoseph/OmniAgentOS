@@ -367,6 +367,18 @@ this exact epoch into the still-empty consent row in one migration before a
 consent grant writer is designed; live authorization must still lock the user,
 current same-tenant membership, epoch, entitlement, and consent separately.
 
+Migration v55 adds the missing informed-notice evidence envelope without
+inventing notice copy or a user decision. An empty immutable notice-contract
+catalog and an empty tenant/actor receipt ledger are both issuance-held and
+owner-only. The receipt binds one subject acknowledgement to one exact purpose,
+consent generation, membership epoch, and versioned notice contract. The empty
+standing-consent ledger advances to contract version 2 and requires that exact
+epoch and receipt tuple, with no default or inferred backfill. Receipt issuance,
+consent grants, and the memory authorization hook remain physically blocked;
+future activation must separately live-lock current membership, the active
+epoch, entitlement, receipt, consent, and decision actor and append typed
+evidence atomically.
+
 Migration v50 adds an owner-only, append-only auth-user actor-identifier
 shadow. It records each v46 canonical actor as a self identifier and each exact
 current auth email as the initial legacy identifier, while an auth-user trigger
