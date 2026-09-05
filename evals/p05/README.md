@@ -34,10 +34,11 @@ resurrection, or false success is a failure; this lane has no warning state.
 
 `baseline.v1.json` is the digest-bound current-system observation. Run
 `npm run check:p05-baseline` to reproduce it from the side-effect-free adapters
-in `src/lib/evals2/p05-observer.ts`. The result is intentionally red: 15 of 16
-cases pass (9,375 basis points). The remaining failure is an explicit product
-gap, not missing scorer glue: the calendar positive-control has no
-write-capable connector/receipt path. The portfolio automation case now flows
+in `src/lib/evals2/p05-observer.ts`. All 16 cases now pass (10,000 basis
+points). The calendar positive-control is backed by the production
+`calendar.create` governed tool: exact approval material, deterministic Google
+event IDs, a persisted effect intent, idempotent reconciliation, and
+read-after-write verification are all required before success. The portfolio automation case flows
 through the same strict saved-procedure contract used by production routing;
 its required GitHub tool binding is fixture input, not copied from the expected
 output. Scope and actor visibility, transactional
@@ -49,8 +50,5 @@ not a release pass.
 
 Observation envelopes bind to the exact domain-separated suite digest and
 declared scorer version. Scoring-code changes must bump that version; the digest
-does not hash source code. Each remaining category must gain a real
-side-effect-free system adapter in a later narrow batch. P0.5 remains open
-until those adapters and the per-phase regression gates exist. Normative
-expectations must never be copied into the observed baseline merely to make it
-pass.
+does not hash source code. Normative expectations must never be copied into the
+observed baseline merely to make it pass.

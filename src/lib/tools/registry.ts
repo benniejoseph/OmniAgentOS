@@ -2,6 +2,30 @@ import type { ToolDefinition } from "@/lib/tools/types";
 
 export const governedTools: ToolDefinition[] = [
   {
+    id: "calendar.create",
+    name: "Create Google Calendar Event",
+    description: "Create one event in the connected user's Google Calendar with deterministic idempotency and read-after-write verification.",
+    category: "connector",
+    status: "active",
+    riskLevel: 2,
+    dryRunSupported: true,
+    approvalRequired: true,
+    reversible: true,
+    inputSchema: {
+      ...objectSchema({
+        calendarId: { type: "string", minLength: 1, maxLength: 240, default: "primary" },
+        summary: { type: "string", minLength: 1, maxLength: 1_000 },
+        description: { type: "string", maxLength: 8_000 },
+        location: { type: "string", maxLength: 1_000 },
+        start: { type: "string", format: "date-time" },
+        end: { type: "string", format: "date-time" },
+        timeZone: { type: "string", minLength: 1, maxLength: 100 },
+        attendees: { type: "array", maxItems: 50, items: { type: "string", format: "email" } },
+      }),
+      required: ["summary", "start", "end"],
+    },
+  },
+  {
     id: "memory.search",
     name: "Search Memory",
     description: "Read-only hybrid search over durable memories.",

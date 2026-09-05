@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suiteId": "asael-p0.5-core-v1",
   "scorerVersion": "p0.5-v1",
-  "suiteSha256": "288866d5c280368a4c4bde0d2c913bd58eeac0d2b51f16def880d8d2c2767f7d",
+  "suiteSha256": "9c331a2949ca33dd09c73f8fb8cf5f71da471f671bf217789d6b8c1fac3ad1b5",
   "observations": [
     {
       "caseId": "scope.boundary-matrix",
@@ -198,12 +198,12 @@
     {
       "caseId": "approvals.exact-binding-permits-governed-effect",
       "value": {
-        "adapterId": "approval-material-binding-v1",
+        "adapterId": "calendar-create-effect-receipt-v1",
         "adapterStatus": "observed",
         "approvalAccepted": true,
         "executor": "governed_tool_executor",
-        "effectCount": 0,
-        "effectReceiptId": null
+        "effectCount": 1,
+        "effectReceiptId": "effect_v2_df80b2c4a2c5cad40fad90cd97856c1d28d791f10b9aa79da0fef"
       }
     },
     {

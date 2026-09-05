@@ -5,6 +5,8 @@ import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload"
 export type OAuthProvider = "google";
 export const GOOGLE_PHOTOS_PICKER_SCOPE =
   "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
+export const GOOGLE_CALENDAR_WRITE_SCOPE =
+  "https://www.googleapis.com/auth/calendar.events";
 
 const oauthReturnPaths = new Set(["/app/capture", "/app/connectors"]);
 
@@ -17,7 +19,7 @@ export const oauthProviders = {
     clientSecretEnv: "GOOGLE_OAUTH_CLIENT_SECRET",
     scopes: [
       "https://www.googleapis.com/auth/gmail.readonly",
-      "https://www.googleapis.com/auth/calendar.events.readonly",
+      GOOGLE_CALENDAR_WRITE_SCOPE,
       "https://www.googleapis.com/auth/drive.readonly",
       GOOGLE_PHOTOS_PICKER_SCOPE,
     ],

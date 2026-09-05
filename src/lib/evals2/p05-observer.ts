@@ -41,6 +41,19 @@ import {
 } from "@/lib/tools/approval-binding";
 import { evaluateLostAcknowledgementRecovery } from "@/lib/tools/idempotent-delivery";
 import {
+  googleCalendarCreateSchema,
+  googleCalendarEventId,
+  googleCalendarTargetState,
+} from "@/lib/connectors/google-calendar-write";
+import { getGovernedTool } from "@/lib/tools/registry";
+import { toolApprovalFingerprint } from "@/lib/tools/fingerprint";
+import { toolInputSha256 } from "@/lib/tools/execution-scope";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import {
+  buildEffectIntentV2,
+  finalizeEffectIntentV2,
+} from "@/lib/tools/effect-intent-v2";
+import {
   parseSavedProcedureContractV1,
   toSupervisorKnownProcedures,
 } from "@/lib/workflows/saved-procedures";
@@ -161,17 +174,86 @@ function observeApprovalBinding(testCase: P05Case): P05JsonValue {
       };
     }
 
+    const action = jsonRecord(testCase.action);
+    const eventInput = googleCalendarCreateSchema.parse(jsonRecord(action.input));
+    const executionId = text(given.executionId) || "";
+    const eventId = googleCalendarEventId(executionId);
+    const inputSha256 = toolInputSha256(eventInput);
+    const targetSha256 = canonicalJsonSha256({
+      targetType: "google_calendar_event",
+      calendarId: eventInput.calendarId,
+      eventId,
+    });
+    const requestedBindingSha256 = approvalMaterialBindingSha256({
+      targetSha256,
+      inputSha256,
+    });
     const decision = evaluateApprovalBinding({
       approvedBindingSha256: text(given.approvalBindingSha256) || "",
-      requestedBindingSha256: text(given.requestedBindingSha256) || "",
+      requestedBindingSha256,
+    });
+    const tool = getGovernedTool("calendar.create");
+    if (!decision.accepted || !tool || !executionId) {
+      return {
+        adapterId: "calendar-create-effect-receipt-v1",
+        adapterStatus: "observed",
+        approvalAccepted: decision.accepted,
+        executor: null,
+        effectCount: 0,
+        effectReceiptId: null,
+      };
+    }
+    const actorId = testCase.scope.initiatingActorId;
+    const intent = buildEffectIntentV2({
+      effectMode: "live",
+      reversible: tool.reversible === true,
+      executionKind: "direct",
+      executionId,
+      tenantId: testCase.scope.tenantId,
+      actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      workflowRunId: null,
+      planId: null,
+      planSha256: null,
+      planNodeId: null,
+      toolId: tool.id,
+      toolContractSha256: canonicalJsonSha256({
+        approvalFingerprint: toolApprovalFingerprint(tool),
+      }),
+      approvalState: "approved",
+      approvalBindingSha256: requestedBindingSha256,
+      inputSha256,
+      idempotencyKeySha256: canonicalJsonSha256({
+        tenantId: testCase.scope.tenantId,
+        idempotencyKey: executionId,
+      }),
+      targetType: "google_calendar_event",
+      targetId: `google_calendar_event:${eventInput.calendarId}:${eventId}`,
+      expectedTargetStateSha256: canonicalJsonSha256(
+        googleCalendarTargetState(eventInput, eventId),
+      ),
+    });
+    const receipt = finalizeEffectIntentV2(intent, {
+      providerAcknowledgement: "provider_response",
+      providerAcknowledgementId: `google_calendar_ack:${eventId}`,
+      providerAcknowledgementSha256: canonicalJsonSha256({
+        provider: "google_calendar",
+        eventId,
+        status: "confirmed",
+      }),
+      verificationMethod: "read_after_write",
+      verificationState: "verified",
+      verificationReasonCode: "state_matched",
+      observedTargetStateSha256: intent.expectedTargetStateSha256,
     });
     return {
-      adapterId: "approval-material-binding-v1",
+      adapterId: "calendar-create-effect-receipt-v1",
       adapterStatus: "observed",
       approvalAccepted: decision.accepted,
-      executor: decision.accepted ? "governed_tool_executor" : null,
-      effectCount: 0,
-      effectReceiptId: null,
+      executor: "governed_tool_executor",
+      effectCount: 1,
+      effectReceiptId: receipt.effectReceiptId,
     };
   } catch {
     return unavailableObservation(testCase);
