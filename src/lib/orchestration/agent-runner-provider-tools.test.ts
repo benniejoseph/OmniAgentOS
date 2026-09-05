@@ -144,6 +144,67 @@ describe("non-OpenAI governed provider tool loop", () => {
       },
     });
   });
+
+  it("serializes otherwise parallel reads for a checkpoint chain", async () => {
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) =>
+      request.toolResults
+        ? turn({ text: "done" })
+        : turn({
+            toolCalls: [
+              { callId: "call-a", name: "memory_search", argumentsJson: "{}" },
+              { callId: "call-b", name: "knowledge_search", argumentsJson: "{}" },
+            ],
+          })
+    );
+    let activeExecutions = 0;
+    let maximumActiveExecutions = 0;
+    const executeTool = vi.fn(async (request: { toolId: string }) => {
+      activeExecutions += 1;
+      maximumActiveExecutions = Math.max(
+        maximumActiveExecutions,
+        activeExecutions,
+      );
+      await Promise.resolve();
+      activeExecutions -= 1;
+      return {
+        record: executionRecord(request.toolId, "executed"),
+        result: { ok: true },
+      };
+    });
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Use tools.",
+      prompt: "Search both stores.",
+      tools: [modelTool("memory_search"), modelTool("knowledge_search")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["memory_search", {
+            definition: toolDefinition("memory.search"),
+            functionName: "memory_search",
+          }],
+          ["knowledge_search", {
+            definition: toolDefinition("knowledge.search"),
+            functionName: "knowledge_search",
+          }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "default",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-serialized",
+      serializeToolCalls: true,
+      generateTurn,
+      executeTool: executeTool as never,
+    });
+
+    await collect(loop);
+    expect(executeTool).toHaveBeenCalledTimes(2);
+    expect(maximumActiveExecutions).toBe(1);
+  });
 });
 
 function turn(input: {

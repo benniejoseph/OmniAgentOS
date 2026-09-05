@@ -91,6 +91,7 @@ import {
   type ShadowRunContractSnapshot,
 } from "@/lib/runs/contract-runtime";
 import {
+  isExpandedCheckpointShadowEnrollment,
   resolveApprovalCheckpointShadowEnrollment,
   type ApprovalCheckpointShadowEnrollment,
 } from "@/lib/runs/approval-checkpoint-shadow";
@@ -98,6 +99,10 @@ import {
   persistModelAfterCheckpointShadow,
   persistModelBeforeCheckpointShadow,
 } from "@/lib/runs/boundary-checkpoint-shadow";
+import {
+  persistToolAfterCheckpointShadow,
+  persistToolBeforeCheckpointShadow,
+} from "@/lib/runs/tool-checkpoint-shadow";
 import type {
   AgentProviderToolContinuation,
   AgentRunContinuation,
@@ -106,7 +111,11 @@ import type {
 import type { SecurityContext, SecurityRole } from "@/lib/security/types";
 import { redactSensitive } from "@/lib/security/context";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
-import { executeGovernedTool } from "@/lib/tools/executor";
+import {
+  executeGovernedTool,
+  governedToolOperationClass,
+  type GovernedToolCheckpointInput,
+} from "@/lib/tools/executor";
 import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { appendThreadTurn } from "@/lib/threads/store";
@@ -362,6 +371,52 @@ export async function* runAgent(
       });
     } catch (error) {
       logRunContractShadowFailure("checkpoint_model_before", error);
+    }
+  }
+
+  async function checkpointBeforeGovernedTool(
+    input: GovernedToolCheckpointInput,
+  ) {
+    if (!shadowRunContract) return;
+    try {
+      await persistToolBeforeCheckpointShadow({
+        runId,
+        record: input.record,
+        tool: input.tool,
+        operationClass: input.operationClass,
+        executionScope,
+        toolExecutionScope: input.executionScope,
+        runContractEnvelope: shadowRunContract.envelope,
+        enrollment: checkpointShadowEnrollment,
+        recordedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      logRunContractShadowFailure("checkpoint_tool_before", error);
+    }
+  }
+
+  async function checkpointAfterGovernedTool(
+    input: GovernedToolCheckpointInput,
+  ) {
+    if (
+      !shadowRunContract ||
+      input.record.status === "approval_required" ||
+      input.record.status === "executing" ||
+      input.record.dryRun
+    ) return;
+    try {
+      await persistToolAfterCheckpointShadow({
+        runId,
+        record: input.record,
+        tool: input.tool,
+        operationClass: input.operationClass,
+        executionScope,
+        toolExecutionScope: input.executionScope,
+        runContractEnvelope: shadowRunContract.envelope,
+        enrollment: checkpointShadowEnrollment,
+      });
+    } catch (error) {
+      logRunContractShadowFailure("checkpoint_tool_after", error);
     }
   }
 
@@ -819,6 +874,11 @@ export async function* runAgent(
               model: modelRoute.model,
               tier,
             }),
+          checkpointBeforeTool: checkpointBeforeGovernedTool,
+          checkpointAfterTool: checkpointAfterGovernedTool,
+          serializeToolCalls: isExpandedCheckpointShadowEnrollment(
+            checkpointShadowEnrollment,
+          ),
         });
         let result: NonOpenAIProviderLoopResult;
         try {
@@ -1107,7 +1167,10 @@ export async function* runAgent(
             return null;
           }
         });
-        const canRunInParallel = parallelCalls.length > 1 && parallelCalls.every(Boolean);
+        const canRunInParallel =
+          !isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment) &&
+          parallelCalls.length > 1 &&
+          parallelCalls.every(Boolean);
 
         if (canRunInParallel) {
           const prepared = parallelCalls.filter((item): item is NonNullable<typeof item> => Boolean(item));
@@ -1134,10 +1197,23 @@ export async function* runAgent(
               executionScope,
               item.call.callId,
             ),
+            checkpointBeforeEffect: checkpointBeforeGovernedTool,
           })));
           for (let index = 0; index < prepared.length; index += 1) {
             const item = prepared[index];
             const execution = executions[index];
+            await checkpointAfterGovernedTool({
+              record: execution.record,
+              tool: item.entry.definition,
+              operationClass: governedToolOperationClass(
+                item.entry.definition,
+                item.input,
+              ),
+              executionScope: agentToolExecutionScope(
+                executionScope,
+                item.call.callId,
+              ),
+            });
             citationSources = mergeCitationSources(
               citationSources,
               citationSourcesFromToolResult(item.entry.definition.id, execution.result),
@@ -1189,6 +1265,10 @@ export async function* runAgent(
           // dryRun=false lets policy decide: low-risk tools execute live,
           // gated tools persist an approval_required record that the
           // Approvals workspace can later approve and execute for real.
+          const toolExecutionScope = agentToolExecutionScope(
+            executionScope,
+            call.callId,
+          );
           const execution = await executeGovernedTool({
             toolId: definition.id,
             input,
@@ -1199,10 +1279,14 @@ export async function* runAgent(
             idempotencyKey: `${run.id}:${call.callId}`,
             forceApproval: agentToolPolicy?.forceApproval,
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
-            executionScope: agentToolExecutionScope(
-              executionScope,
-              call.callId,
-            ),
+            executionScope: toolExecutionScope,
+            checkpointBeforeEffect: checkpointBeforeGovernedTool,
+          });
+          await checkpointAfterGovernedTool({
+            record: execution.record,
+            tool: definition,
+            operationClass: governedToolOperationClass(definition, input),
+            executionScope: toolExecutionScope,
           });
           citationSources = mergeCitationSources(
             citationSources,
@@ -1492,6 +1576,13 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     provider: "openai" | "google" | "anthropic" | "aws_bedrock";
     tier: "fast" | "reasoning";
   }) => Promise<void>;
+  checkpointBeforeTool?: (
+    input: GovernedToolCheckpointInput,
+  ) => Promise<void>;
+  checkpointAfterTool?: (
+    input: GovernedToolCheckpointInput,
+  ) => Promise<void>;
+  serializeToolCalls?: boolean;
   executeTool?: typeof executeGovernedTool;
 }): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
   const generateTurn = input.generateTurn || generateModelToolTurn;
@@ -1666,6 +1757,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       }
     });
     const canRunInParallel =
+      !input.serializeToolCalls &&
       !input.forceApproval &&
       parallelCalls.length > 1 &&
       parallelCalls.every(Boolean);
@@ -1684,24 +1776,46 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         };
       }
       const executions = await Promise.all(
-        prepared.map((item) => executeTool({
-          toolId: item.entry.definition.id,
-          input: item.arguments,
-          dryRun: false,
-          approved: false,
-          context: input.securityContext,
-          abortSignal: input.abortSignal,
-          idempotencyKey: `${input.runId}:${activeProvider}:${item.call.callId}`,
-          forceApproval: input.forceApproval,
-          mcpSessionScope: agentMcpSessionScope(input.runId, input.securityContext),
-          executionScope: input.executionScope
+        prepared.map((item) => {
+          const toolExecutionScope = input.executionScope
             ? agentToolExecutionScope(input.executionScope, item.call.callId)
-            : undefined,
-        })),
+            : undefined;
+          return executeTool({
+            toolId: item.entry.definition.id,
+            input: item.arguments,
+            dryRun: false,
+            approved: false,
+            context: input.securityContext,
+            abortSignal: input.abortSignal,
+            idempotencyKey:
+              `${input.runId}:${activeProvider}:${item.call.callId}`,
+            forceApproval: input.forceApproval,
+            mcpSessionScope: agentMcpSessionScope(
+              input.runId,
+              input.securityContext,
+            ),
+            executionScope: toolExecutionScope,
+            checkpointBeforeEffect: input.checkpointBeforeTool,
+          });
+        }),
       );
       for (let index = 0; index < prepared.length; index += 1) {
         const item = prepared[index];
         const execution = executions[index];
+        const toolExecutionScope = input.executionScope
+          ? agentToolExecutionScope(input.executionScope, item.call.callId)
+          : undefined;
+        if (toolExecutionScope && input.checkpointAfterTool) {
+          await input.checkpointAfterTool({
+            record: execution.record,
+            tool: item.entry.definition,
+            operationClass: governedToolOperationClass(
+              item.entry.definition,
+              item.arguments,
+            ),
+            executionScope: toolExecutionScope,
+          });
+        }
         citationSources = mergeCitationSources(
           citationSources,
           citationSourcesFromToolResult(item.entry.definition.id, execution.result),
@@ -1748,6 +1862,9 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           continue;
         }
 
+        const toolExecutionScope = input.executionScope
+          ? agentToolExecutionScope(input.executionScope, call.callId)
+          : undefined;
         const execution = await executeTool({
           toolId: definition.id,
           input: parsedArguments,
@@ -1758,10 +1875,20 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           idempotencyKey: `${input.runId}:${activeProvider}:${call.callId}`,
           forceApproval: input.forceApproval,
           mcpSessionScope: agentMcpSessionScope(input.runId, input.securityContext),
-          executionScope: input.executionScope
-            ? agentToolExecutionScope(input.executionScope, call.callId)
-            : undefined,
+          executionScope: toolExecutionScope,
+          checkpointBeforeEffect: input.checkpointBeforeTool,
         });
+        if (toolExecutionScope && input.checkpointAfterTool) {
+          await input.checkpointAfterTool({
+            record: execution.record,
+            tool: definition,
+            operationClass: governedToolOperationClass(
+              definition,
+              parsedArguments,
+            ),
+            executionScope: toolExecutionScope,
+          });
+        }
         citationSources = mergeCitationSources(
           citationSources,
           citationSourcesFromToolResult(definition.id, execution.result),
@@ -2068,6 +2195,53 @@ async function resumeAgentRunAfterToolApprovalInScope({
     }
   };
 
+  const checkpointBeforeResumeTool = async (
+    input: GovernedToolCheckpointInput,
+  ) => {
+    if (!executionScope || !continuation.runContractEnvelope) return;
+    try {
+      await persistToolBeforeCheckpointShadow({
+        runId: run.id,
+        record: input.record,
+        tool: input.tool,
+        operationClass: input.operationClass,
+        executionScope,
+        toolExecutionScope: input.executionScope,
+        runContractEnvelope: continuation.runContractEnvelope,
+        enrollment: continuation.checkpointShadowEnrollment,
+        recordedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      logRunContractShadowFailure("checkpoint_tool_before", error);
+    }
+  };
+
+  const checkpointAfterResumeTool = async (
+    input: GovernedToolCheckpointInput,
+  ) => {
+    if (
+      !executionScope ||
+      !continuation.runContractEnvelope ||
+      input.record.status === "approval_required" ||
+      input.record.status === "executing" ||
+      input.record.dryRun
+    ) return;
+    try {
+      await persistToolAfterCheckpointShadow({
+        runId: run.id,
+        record: input.record,
+        tool: input.tool,
+        operationClass: input.operationClass,
+        executionScope,
+        toolExecutionScope: input.executionScope,
+        runContractEnvelope: continuation.runContractEnvelope,
+        enrollment: continuation.checkpointShadowEnrollment,
+      });
+    } catch (error) {
+      logRunContractShadowFailure("checkpoint_tool_after", error);
+    }
+  };
+
   const resumeDeploymentRoute = selectAgentModel({
     message: run.prompt,
     mode: run.mode,
@@ -2225,6 +2399,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
         status: "running",
         riskLevel: definition.riskLevel,
       });
+      const toolExecutionScope = executionScope
+        ? agentToolExecutionScope(executionScope, call.callId)
+        : undefined;
       const execution = await executeGovernedTool({
         toolId: definition.id,
         input,
@@ -2240,10 +2417,17 @@ async function resumeAgentRunAfterToolApprovalInScope({
         idempotencyKey: `${run.id}:${call.callId}`,
         forceApproval: continuation.toolPolicy?.forceApproval,
         mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
-        executionScope: executionScope
-          ? agentToolExecutionScope(executionScope, call.callId)
-          : undefined,
+        executionScope: toolExecutionScope,
+        checkpointBeforeEffect: checkpointBeforeResumeTool,
       });
+      if (toolExecutionScope) {
+        await checkpointAfterResumeTool({
+          record: execution.record,
+          tool: definition,
+          operationClass: governedToolOperationClass(definition, input),
+          executionScope: toolExecutionScope,
+        });
+      }
       citationSources = mergeCitationSources(
         citationSources,
         citationSourcesFromToolResult(definition.id, execution.result),
@@ -2456,6 +2640,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
           continue;
         }
 
+        const toolExecutionScope = executionScope
+          ? agentToolExecutionScope(executionScope, call.callId)
+          : undefined;
         const execution = await executeGovernedTool({
           toolId: definition.id,
           input,
@@ -2471,10 +2658,17 @@ async function resumeAgentRunAfterToolApprovalInScope({
           idempotencyKey: `${run.id}:${call.callId}`,
           forceApproval: continuation.toolPolicy?.forceApproval,
           mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
-          executionScope: executionScope
-            ? agentToolExecutionScope(executionScope, call.callId)
-            : undefined,
+          executionScope: toolExecutionScope,
+          checkpointBeforeEffect: checkpointBeforeResumeTool,
         });
+        if (toolExecutionScope) {
+          await checkpointAfterResumeTool({
+            record: execution.record,
+            tool: definition,
+            operationClass: governedToolOperationClass(definition, input),
+            executionScope: toolExecutionScope,
+          });
+        }
         citationSources = mergeCitationSources(
           citationSources,
           citationSourcesFromToolResult(definition.id, execution.result),
@@ -2691,6 +2885,52 @@ async function resumeProviderBoundAgentRunAfterApproval({
       });
     } catch (error) {
       logRunContractShadowFailure("checkpoint_model_before", error);
+    }
+  };
+  const checkpointBeforeResumeTool = async (
+    input: GovernedToolCheckpointInput,
+  ) => {
+    if (!executionScope || !continuation.runContractEnvelope) return;
+    try {
+      await persistToolBeforeCheckpointShadow({
+        runId: run.id,
+        record: input.record,
+        tool: input.tool,
+        operationClass: input.operationClass,
+        executionScope,
+        toolExecutionScope: input.executionScope,
+        runContractEnvelope: continuation.runContractEnvelope,
+        enrollment: continuation.checkpointShadowEnrollment,
+        recordedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      logRunContractShadowFailure("checkpoint_tool_before", error);
+    }
+  };
+
+  const checkpointAfterResumeTool = async (
+    input: GovernedToolCheckpointInput,
+  ) => {
+    if (
+      !executionScope ||
+      !continuation.runContractEnvelope ||
+      input.record.status === "approval_required" ||
+      input.record.status === "executing" ||
+      input.record.dryRun
+    ) return;
+    try {
+      await persistToolAfterCheckpointShadow({
+        runId: run.id,
+        record: input.record,
+        tool: input.tool,
+        operationClass: input.operationClass,
+        executionScope,
+        toolExecutionScope: input.executionScope,
+        runContractEnvelope: continuation.runContractEnvelope,
+        enrollment: continuation.checkpointShadowEnrollment,
+      });
+    } catch (error) {
+      logRunContractShadowFailure("checkpoint_tool_after", error);
     }
   };
   if (
@@ -2958,6 +3198,9 @@ async function resumeProviderBoundAgentRunAfterApproval({
         continue;
       }
 
+      const toolExecutionScope = executionScope
+        ? agentToolExecutionScope(executionScope, call.callId)
+        : undefined;
       const execution = await executeGovernedTool({
         toolId: definition.id,
         input: parsedArguments,
@@ -2974,10 +3217,20 @@ async function resumeProviderBoundAgentRunAfterApproval({
           `${run.id}:${providerState.provider}:${call.callId}`,
         forceApproval: continuation.toolPolicy?.forceApproval,
         mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
-        executionScope: executionScope
-          ? agentToolExecutionScope(executionScope, call.callId)
-          : undefined,
+        executionScope: toolExecutionScope,
+        checkpointBeforeEffect: checkpointBeforeResumeTool,
       });
+      if (toolExecutionScope) {
+        await checkpointAfterResumeTool({
+          record: execution.record,
+          tool: definition,
+          operationClass: governedToolOperationClass(
+            definition,
+            parsedArguments,
+          ),
+          executionScope: toolExecutionScope,
+        });
+      }
       citationSources = mergeCitationSources(
         citationSources,
         citationSourcesFromToolResult(definition.id, execution.result),
@@ -3046,6 +3299,11 @@ async function resumeProviderBoundAgentRunAfterApproval({
           model: resumeModel,
           tier,
         }),
+      checkpointBeforeTool: checkpointBeforeResumeTool,
+      checkpointAfterTool: checkpointAfterResumeTool,
+      serializeToolCalls: isExpandedCheckpointShadowEnrollment(
+        continuation.checkpointShadowEnrollment,
+      ),
     });
     let result: NonOpenAIProviderLoopResult;
     try {
@@ -3839,7 +4097,9 @@ function logRunContractShadowFailure(
     | "resolved"
     | "checkpoint_enrollment"
     | "checkpoint_model_before"
-    | "checkpoint_model_after",
+    | "checkpoint_model_after"
+    | "checkpoint_tool_before"
+    | "checkpoint_tool_after",
   error: unknown,
 ) {
   console.warn(
