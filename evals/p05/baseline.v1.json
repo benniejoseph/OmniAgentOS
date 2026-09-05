@@ -67,9 +67,15 @@
     {
       "caseId": "retry.ack-lost-exactly-once",
       "value": {
-        "adapterId": "p0.5-observer-v1:retry",
-        "adapterStatus": "not_observable_offline",
-        "reasonCode": "no_side_effect_free_current_system_adapter"
+        "adapterId": "idempotent-delivery-lost-ack-v1",
+        "adapterStatus": "observed",
+        "attemptCount": 2,
+        "providerEffectCount": 1,
+        "receiptCount": 1,
+        "receipt": {
+          "bindingSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "verification": "read_after_write"
+        }
       }
     },
     {

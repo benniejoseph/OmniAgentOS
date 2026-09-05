@@ -38,6 +38,7 @@ import {
   approvalMaterialBindingSha256,
   evaluateApprovalBinding,
 } from "@/lib/tools/approval-binding";
+import { evaluateLostAcknowledgementRecovery } from "@/lib/tools/idempotent-delivery";
 
 /**
  * Versioned, side-effect-free probes of behavior that the current runtime can
@@ -75,6 +76,8 @@ export function observeP05Case(
       return observeSourceSyncPageRetry(testCase);
     case "update-delete.tombstone-blocks-stale-resurrection":
       return observeCanonicalSourceOrdering(testCase);
+    case "retry.ack-lost-exactly-once":
+      return observeLostAcknowledgementRetry(testCase);
     case "intent-routing.portfolio-blog-automation":
     case "intent-routing.ambiguous-delete-clarifies":
       return observeIntentRouting(testCase);
@@ -95,6 +98,35 @@ export function observeP05Case(
       return observeVerifiedCompletion(testCase);
     default:
       return unavailableObservation(testCase);
+  }
+}
+
+function observeLostAcknowledgementRetry(testCase: P05Case): P05JsonValue {
+  const given = jsonRecord(testCase.given);
+  const action = jsonRecord(testCase.action);
+  if (text(given.firstAttempt) !== "provider_acknowledged_response_lost") {
+    return unavailableObservation(testCase);
+  }
+  const bindingSha256 = text(given.bindingSha256);
+  const deliveryAttempts = number(action.deliveryAttempts);
+  if (!bindingSha256 || deliveryAttempts === undefined) {
+    return unavailableObservation(testCase);
+  }
+  try {
+    const result = evaluateLostAcknowledgementRecovery({
+      bindingSha256,
+      deliveryAttempts,
+    });
+    return {
+      adapterId: "idempotent-delivery-lost-ack-v1",
+      adapterStatus: "observed",
+      attemptCount: result.attemptCount,
+      providerEffectCount: result.providerEffectCount,
+      receiptCount: result.receiptCount,
+      receipt: result.receipt,
+    };
+  } catch {
+    return unavailableObservation(testCase);
   }
 }
 
