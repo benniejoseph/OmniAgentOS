@@ -64,6 +64,7 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 - `POST|DELETE /api/connectors/:id/credential` rotates or removes an app-managed MCP bearer token as a risk-2 admin operation. Rotation disables the connector and invalidates its discovered contracts until rediscovery and review. Removal scrubs the ciphertext and disables the connector, but does not revoke the external provider token.
 - `/api/openapi-connectors`, `/api/openapi-connectors/:id`, and `/api/openapi-connectors/:id/import`.
 - `/api/connection-catalog` and `/api/capabilities`.
+- `GET|POST /api/capabilities/rollouts` exposes the tenant-bound capability rollout control plane. Authorized security readers may inspect a current generation by capability ID; trusted system automation may register or compare-and-swap a generation transition as a risk-3 operation. Responses expose opaque identifiers and hashes, never private capability payloads.
 
 Connector API records never contain credential plaintext or sealed payloads. App-managed bearer credentials are decrypted only immediately before the exact-origin MCP request; deployer-managed connector records reference environment-variable names instead of values. Registration does not make an endpoint safe by itself; discovery/import and execution remain subject to network, role, risk, and approval policy.
 
