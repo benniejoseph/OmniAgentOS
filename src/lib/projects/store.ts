@@ -11,6 +11,7 @@ import { projectActorReadOrder } from "@/lib/projects/actor-scope";
 import {
   PROJECT_EVENT_SCHEMA_VERSION,
   projectIdForIdempotencyKey,
+  projectTaskIdForIdempotencyKey,
   projectMutationEventId,
   projectMutationEventPayloadSchema,
   projectMutationSha256,
@@ -692,17 +693,68 @@ export async function createProjectTasks(
     dueAt?: string;
     dependsOn?: string[];
   }>,
-  options: { tenantId?: string },
+  options: {
+    tenantId?: string;
+    actorId?: string;
+    mutation?: ProjectMutationContext;
+  },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const mutation = options.mutation
+    ? exactProjectMutationContext(
+        options.mutation,
+        tenantId,
+        options.actorId || "",
+      )
+    : undefined;
+  if (mutation && inputs.length !== 1) {
+    throw new Error("Interactive project task creation requires exactly one task.");
+  }
+  if (
+    mutation?.executionScope.projectId &&
+    mutation.executionScope.projectId !== projectId
+  ) {
+    throw new Error("Project task mutation scope does not match the target project.");
+  }
+  const mutationProject = mutation
+    ? await getProject(projectId, {
+        tenantId,
+        actorId: options.actorId || "",
+      })
+    : undefined;
+  if (mutation && !mutationProject) {
+    throw new Error("Project not found for task mutation.");
+  }
   const existing = await listProjectTasks(projectId, { tenantId });
+  if (mutation) {
+    const taskId = projectTaskIdForIdempotencyKey(
+      tenantId,
+      projectId,
+      mutation.idempotencyKey,
+    );
+    const replay = existing.find((item) => item.id === taskId);
+    if (replay) {
+      if (!sameProjectTaskCreateRequest(replay, inputs[0])) {
+        throw new Error(
+          "Idempotency-Key is already bound to a different project task request.",
+        );
+      }
+      return [replay];
+    }
+  }
   const existingTitles = new Set(existing.map((item) => item.title.toLowerCase()));
   const now = new Date().toISOString();
   const tasks = inputs
     .filter((input) => !existingTitles.has(safeText(input.title, 240).toLowerCase()))
     .slice(0, 20)
     .map((input, index): ProjectTask => ({
-      id: randomUUID(),
+      id: mutation
+        ? projectTaskIdForIdempotencyKey(
+            tenantId,
+            projectId,
+            mutation.idempotencyKey,
+          )
+        : randomUUID(),
       tenantId,
       projectId,
       title: safeText(input.title, 240),
@@ -721,21 +773,65 @@ export async function createProjectTasks(
   if (!tasks.length) return [];
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    for (const task of tasks) {
-      await getSql()`
-        INSERT INTO omni_project_tasks (
-          id, tenant_id, project_id, title, detail, status, priority, agent_id,
-          position, origin, due_at, dependency_ids, created_at, updated_at
-        ) VALUES (
-          ${task.id}, ${task.tenantId}, ${task.projectId}, ${task.title}, ${task.detail},
-          ${task.status}, ${task.priority}, ${task.agentId}, ${task.position},
-          ${task.origin}, ${task.dueAt || null}, ${task.dependsOn}::jsonb, ${task.createdAt}, ${task.updatedAt}
-        )
-      `;
+    if (!mutation) {
+      for (const task of tasks) await insertProjectTask(getSql(), task);
+      return tasks;
     }
-    return tasks;
+    return getSql().transaction(async (sql: ProjectSqlClient) => {
+      const task = tasks[0];
+      const rows = await insertProjectTask(sql, task, true);
+      const saved = rows[0]
+        ? taskFromRow(rows[0])
+        : await getProjectTaskById(sql, task.id, tenantId, projectId);
+      if (!saved || !sameProjectTaskCreateRequest(saved, inputs[0])) {
+        throw new Error(
+          "Idempotency-Key is already bound to a different project task request.",
+        );
+      }
+      const project = await getProjectById(sql, projectId, tenantId);
+      if (!project || project.actorId !== options.actorId) {
+        throw new Error("Project not found for task mutation.");
+      }
+      await appendProjectMutationEvent({
+        mutation,
+        project,
+        taskId: saved.id,
+        operation: "project_task_created",
+        status: saved.status,
+        changedFieldIds: [
+          "agent_id",
+          "dependency_ids",
+          "detail",
+          "due_at",
+          "origin",
+          "priority",
+          "title",
+        ],
+        mutationInput: projectTaskCreateMutationInput(saved),
+      }, sql);
+      return [saved];
+    }) as Promise<ProjectTask[]>;
   }
   await updateLedger((ledger) => ({ ...ledger, tasks: [...ledger.tasks, ...tasks] }));
+  if (mutation) {
+    await appendProjectMutationEvent({
+      mutation,
+      project: mutationProject!,
+      taskId: tasks[0].id,
+      operation: "project_task_created",
+      status: tasks[0].status,
+      changedFieldIds: [
+        "agent_id",
+        "dependency_ids",
+        "detail",
+        "due_at",
+        "origin",
+        "priority",
+        "title",
+      ],
+      mutationInput: projectTaskCreateMutationInput(tasks[0]),
+    });
+  }
   return tasks;
 }
 
@@ -840,11 +936,28 @@ export async function updateProjectTask(
   projectId: string,
   taskId: string,
   input: { title?: string; detail?: string; status?: ProjectTaskStatus; priority?: ProjectTaskPriority; agentId?: SupervisorAgentId; dueAt?: string | null },
-  options: { tenantId?: string; actorId: string },
+  options: {
+    tenantId?: string;
+    actorId: string;
+    mutation?: ProjectMutationContext;
+  },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const project = await getProject(projectId, options);
   if (!project) return undefined;
+  const mutation = options.mutation
+    ? exactProjectMutationContext(
+        options.mutation,
+        tenantId,
+        project.actorId,
+      )
+    : undefined;
+  if (
+    mutation?.executionScope.projectId &&
+    mutation.executionScope.projectId !== projectId
+  ) {
+    throw new Error("Project task mutation scope does not match the target project.");
+  }
   if (project.status !== "active") {
     throw new ProjectTransitionError("Tasks can only change while their project is active.");
   }
@@ -871,21 +984,41 @@ export async function updateProjectTask(
   };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_project_tasks SET
-        title = ${next.title}, detail = ${next.detail}, status = ${next.status},
-        priority = ${next.priority}, agent_id = ${next.agentId}, due_at = ${next.dueAt || null},
-        workflow_run_id = ${next.workflowRunId || null}, workflow_status = ${next.workflowStatus || null},
-        execution_error = ${next.executionError || null}, completed_at = ${next.completedAt || null}, updated_at = ${now}
-      WHERE id = ${taskId} AND project_id = ${projectId} AND tenant_id = ${tenantId}
-      RETURNING *
-    `;
-    return rows[0] ? taskFromRow(rows[0]) : undefined;
+    if (!mutation) {
+      const rows = await updateProjectTaskRow(getSql(), next, now);
+      return rows[0] ? taskFromRow(rows[0]) : undefined;
+    }
+    return getSql().transaction(async (sql: ProjectSqlClient) => {
+      const rows = await updateProjectTaskRow(sql, next, now);
+      const saved = rows[0] ? taskFromRow(rows[0]) : undefined;
+      if (!saved) return undefined;
+      await appendProjectMutationEvent({
+        mutation,
+        project,
+        taskId: saved.id,
+        operation: "project_task_updated",
+        status: saved.status,
+        changedFieldIds: Object.keys(input),
+        mutationInput: input,
+      }, sql);
+      return saved;
+    }) as Promise<ProjectTask | undefined>;
   }
   await updateLedger((ledger) => ({
     ...ledger,
     tasks: ledger.tasks.map((item) => item.id === taskId && item.projectId === projectId ? next : item),
   }));
+  if (mutation) {
+    await appendProjectMutationEvent({
+      mutation,
+      project,
+      taskId: next.id,
+      operation: "project_task_updated",
+      status: next.status,
+      changedFieldIds: Object.keys(input),
+      mutationInput: input,
+    });
+  }
   return next;
 }
 
@@ -1022,6 +1155,85 @@ async function updateProjectRow(
   );
 }
 
+async function insertProjectTask(
+  sql: ProjectSqlClient,
+  task: ProjectTask,
+  idempotent = false,
+) {
+  const conflictClause = idempotent ? "ON CONFLICT (id) DO NOTHING" : "";
+  return sql.query(
+    `INSERT INTO omni_project_tasks (
+       id, tenant_id, project_id, title, detail, status, priority, agent_id,
+       position, origin, due_at, dependency_ids, created_at, updated_at
+     ) VALUES (
+       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14
+     ) ${conflictClause}
+     RETURNING *`,
+    [
+      task.id,
+      task.tenantId,
+      task.projectId,
+      task.title,
+      task.detail,
+      task.status,
+      task.priority,
+      task.agentId,
+      task.position,
+      task.origin,
+      task.dueAt || null,
+      JSON.stringify(task.dependsOn),
+      task.createdAt,
+      task.updatedAt,
+    ],
+  );
+}
+
+async function getProjectTaskById(
+  sql: ProjectSqlClient,
+  taskId: string,
+  tenantId: string,
+  projectId: string,
+) {
+  const rows = await sql.query(
+    `SELECT * FROM omni_project_tasks
+     WHERE id = $1 AND tenant_id = $2 AND project_id = $3
+     LIMIT 1`,
+    [taskId, tenantId, projectId],
+  );
+  return rows[0] ? taskFromRow(rows[0]) : undefined;
+}
+
+async function updateProjectTaskRow(
+  sql: ProjectSqlClient,
+  task: ProjectTask,
+  now: string,
+) {
+  return sql.query(
+    `UPDATE omni_project_tasks SET
+       title = $1, detail = $2, status = $3, priority = $4, agent_id = $5,
+       due_at = $6, workflow_run_id = $7, workflow_status = $8,
+       execution_error = $9, completed_at = $10, updated_at = $11
+     WHERE id = $12 AND project_id = $13 AND tenant_id = $14
+     RETURNING *`,
+    [
+      task.title,
+      task.detail,
+      task.status,
+      task.priority,
+      task.agentId,
+      task.dueAt || null,
+      task.workflowRunId || null,
+      task.workflowStatus || null,
+      task.executionError || null,
+      task.completedAt || null,
+      now,
+      task.id,
+      task.projectId,
+      task.tenantId,
+    ],
+  );
+}
+
 function projectCreateMutationInput(project: PersonalProject) {
   return {
     title: project.title,
@@ -1039,6 +1251,42 @@ function sameProjectCreateRequest(
     existing.actorId === requested.actorId &&
     projectMutationSha256(projectCreateMutationInput(existing)) ===
       projectMutationSha256(projectCreateMutationInput(requested));
+}
+
+function projectTaskCreateMutationInput(task: ProjectTask) {
+  return {
+    title: task.title,
+    detail: task.detail,
+    priority: task.priority,
+    agentId: task.agentId,
+    origin: task.origin,
+    dueAt: task.dueAt || null,
+    dependsOn: task.dependsOn,
+  };
+}
+
+function sameProjectTaskCreateRequest(
+  existing: ProjectTask,
+  requested: {
+    title: string;
+    detail?: string;
+    priority?: ProjectTaskPriority;
+    agentId?: SupervisorAgentId;
+    origin?: ProjectTask["origin"];
+    dueAt?: string;
+    dependsOn?: string[];
+  },
+) {
+  return projectMutationSha256(projectTaskCreateMutationInput(existing)) ===
+    projectMutationSha256({
+      title: safeText(requested.title, 240),
+      detail: safeText(requested.detail || "", 1_000),
+      priority: requested.priority || "medium",
+      agentId: requested.agentId || "atlas",
+      origin: requested.origin || "manual",
+      dueAt: optionalDate(requested.dueAt) || null,
+      dependsOn: sanitizeIds(requested.dependsOn),
+    });
 }
 
 async function appendProjectMutationEvent(

@@ -137,6 +137,78 @@ describe("personal projects", () => {
       "Renamed private launch",
     );
 
+    const taskCreateScope = createExecutionScope({
+      tenantId: "project-events",
+      initiatingActorId: "owner",
+      executingPrincipalType: "user",
+      executingPrincipalId: "owner",
+      projectId: first.id,
+      correlationId: "request-project-task-create",
+      purpose: "project.task.create",
+    });
+    const [task] = await createProjectTasks(first.id, [{
+      title: "Private launch task",
+      detail: "Do not copy this into the event log.",
+      origin: "manual",
+    }], {
+      tenantId: "project-events",
+      actorId: "owner",
+      mutation: {
+        executionScope: taskCreateScope,
+        idempotencyKey: "project-task-create-1",
+      },
+    });
+    const [taskReplay] = await createProjectTasks(first.id, [{
+      title: "Private launch task",
+      detail: "Do not copy this into the event log.",
+      origin: "manual",
+    }], {
+      tenantId: "project-events",
+      actorId: "owner",
+      mutation: {
+        executionScope: taskCreateScope,
+        idempotencyKey: "project-task-create-1",
+      },
+    });
+    expect(taskReplay.id).toBe(task.id);
+
+    const taskUpdateScope = createExecutionScope({
+      tenantId: "project-events",
+      initiatingActorId: "owner",
+      executingPrincipalType: "user",
+      executingPrincipalId: "owner",
+      projectId: first.id,
+      correlationId: "request-project-task-update",
+      purpose: "project.task.update",
+    });
+    await updateProjectTask(first.id, task.id, { status: "doing" }, {
+      tenantId: "project-events",
+      actorId: "owner",
+      mutation: {
+        executionScope: taskUpdateScope,
+        idempotencyKey: "project-task-update-1",
+      },
+    });
+    const taskEvents = await listStreamEvents(`project:${first.id}`, {
+      tenantId: "project-events",
+      actorId: "owner",
+    });
+    expect(taskEvents.slice(2).map((event) => event.type)).toEqual([
+      "project.task.created",
+      "project.task.updated",
+    ]);
+    expect(taskEvents[2].payload).toMatchObject({
+      schemaVersion: 1,
+      taskId: task.id,
+      operation: "project_task_created",
+    });
+    expect(JSON.stringify(taskEvents[2].payload)).not.toContain(
+      "Private launch task",
+    );
+    expect(JSON.stringify(taskEvents[2].payload)).not.toContain(
+      "Do not copy this",
+    );
+
     await expect(createProject({
       ...input,
       title: "Conflicting launch",
