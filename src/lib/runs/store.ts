@@ -24,6 +24,7 @@ import {
   buildRunContractEnvelopeV1,
   buildRunContractEventPayloadV1,
   parseRunContractEnvelopeV1,
+  runContractIdSchema,
   runContractEventPayloadV1Schema,
   type RunContractEnvelopeV1,
   type RunContractEventPayloadV1,
@@ -1625,11 +1626,20 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
   } catch {
     return undefined;
   }
+  let checkpointResumeClaim: AgentRunContinuation["checkpointResumeClaim"];
+  try {
+    checkpointResumeClaim = parseCheckpointResumeClaimMetadata(
+      candidate.checkpointResumeClaim,
+    );
+  } catch {
+    return undefined;
+  }
 
   return {
     executionScope,
     runContractEnvelope,
     checkpointShadowEnrollment,
+    checkpointResumeClaim,
     conversationItems: Array.isArray(candidate.conversationItems)
       ? (candidate.conversationItems as Array<Record<string, unknown>>)
       : [],
@@ -1665,6 +1675,32 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
       typeof candidate.resumeClaimedAt === "string"
         ? candidate.resumeClaimedAt
         : undefined,
+  };
+}
+
+function parseCheckpointResumeClaimMetadata(
+  value: unknown,
+): AgentRunContinuation["checkpointResumeClaim"] {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Checkpoint resume claim metadata is invalid.");
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.schemaVersion !== 1 ||
+    !Number.isSafeInteger(candidate.leaseGeneration) ||
+    Number(candidate.leaseGeneration) < 1 ||
+    typeof candidate.checkpointSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(candidate.checkpointSha256)
+  ) {
+    throw new Error("Checkpoint resume claim metadata is invalid.");
+  }
+  return {
+    schemaVersion: 1,
+    checkpointId: runContractIdSchema.parse(candidate.checkpointId),
+    checkpointSha256: candidate.checkpointSha256,
+    operationJobId: runContractIdSchema.parse(candidate.operationJobId),
+    leaseGeneration: Number(candidate.leaseGeneration),
   };
 }
 

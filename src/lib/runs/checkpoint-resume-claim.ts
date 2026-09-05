@@ -49,6 +49,99 @@ export type AcquireRunCheckpointResumeClaimResult = Readonly<{
   resumeAuthorityGranted: false;
 }>;
 
+export type AuthorizeRunCheckpointResumeResult =
+  | Readonly<{
+      outcome: "authorized";
+      reason: "checkpoint_fence_acquired";
+      claim: RunCheckpointResumeClaim;
+      fenceAcquired: true;
+      resumeAuthorityGranted: true;
+    }>
+  | AcquireRunCheckpointResumeClaimResult;
+
+/**
+ * Atomically acquires the exact fence and moves its run to `resuming`. No
+ * runtime calls this dormant binder until the canary gate is opened.
+ */
+export async function authorizeAgentRunCheckpointResume(
+  input: Parameters<typeof acquireRunCheckpointResumeClaim>[0],
+  sql: RunCheckpointWriterSql,
+): Promise<AuthorizeRunCheckpointResumeResult> {
+  requireTransaction(sql);
+  const executionScope = parsePersistedExecutionScope(input.executionScope);
+  if (!executionScope) {
+    throw new Error("Checkpoint resume authorization lost its execution scope.");
+  }
+  const result = await acquireRunCheckpointResumeClaim(input, sql);
+  if (result.outcome !== "acquired" || !result.claim) return result;
+  const claim = result.claim;
+  const resumedAt = new Date().toISOString();
+  const claimMetadata = {
+    schemaVersion: 1,
+    checkpointId: claim.checkpointId,
+    checkpointSha256: claim.checkpointSha256,
+    operationJobId: claim.operationJobId,
+    leaseGeneration: claim.leaseGeneration,
+  };
+  const rows = await sql.query(
+    `UPDATE omni_agent_runs
+     SET status = 'resuming',
+         continuation = jsonb_set(
+           jsonb_set(
+             continuation,
+             '{resumeClaimedAt}',
+             to_jsonb($6::text),
+             true
+           ),
+           '{checkpointResumeClaim}',
+           $7::jsonb,
+           true
+         ),
+         completed_at = NULL
+     WHERE tenant_id = $1 AND id = $2
+       AND continuation->'pendingToolCall'->>'executionId' = $3
+       AND (
+         status = 'waiting_approval'
+         OR (
+           status = 'resuming'
+           AND continuation->'checkpointResumeClaim'->>'checkpointId' = $4
+           AND continuation->'checkpointResumeClaim'->>'checkpointSha256' = $5
+         )
+       )
+     RETURNING id`,
+    [
+      claim.tenantId,
+      claim.runId,
+      input.approvalExecutionId,
+      claim.checkpointId,
+      claim.checkpointSha256,
+      resumedAt,
+      claimMetadata,
+    ],
+  );
+  if (rows.length !== 1) {
+    throw new Error("Checkpoint resume fence could not bind the run transition.");
+  }
+  await appendDomainEvent({
+    id: `run-checkpoint-resume-authorized:${claim.checkpointSha256}:${claim.leaseGeneration}`,
+    streamId: `run:${claim.runId}`,
+    type: "run.checkpoint.resume_authorized",
+    executionScope,
+    payload: {
+      ...claimMetadata,
+      runId: claim.runId,
+      resumeAuthorityGranted: true,
+    },
+  }, { sql });
+  return Object.freeze({
+    outcome: "authorized" as const,
+    reason: "checkpoint_fence_acquired" as const,
+    claim,
+    fenceAcquired: true as const,
+    resumeAuthorityGranted: true as const,
+  });
+}
+
 /**
  * Acquires or reclaims one exact checkpoint fence inside a caller-owned
  * transaction. This store is dormant: acquisition alone never resumes a run.
@@ -59,6 +152,7 @@ export async function acquireRunCheckpointResumeClaim(
     runId: string;
     checkpointId: string;
     checkpointSha256: string;
+    approvalExecutionId: string;
     operationJobId: string;
     leaseOwner: string;
     leaseSeconds?: number;
@@ -72,6 +166,9 @@ export async function acquireRunCheckpointResumeClaim(
   const checkpointId = runContractIdSchema.parse(input.checkpointId);
   const checkpointSha256 = z.string().regex(/^[a-f0-9]{64}$/).parse(
     input.checkpointSha256,
+  );
+  const approvalExecutionId = runContractIdSchema.parse(
+    input.approvalExecutionId,
   );
   const operationJobId = runContractIdSchema.parse(input.operationJobId);
   const leaseOwner = z.string().min(1).max(512).parse(input.leaseOwner);
@@ -96,7 +193,8 @@ export async function acquireRunCheckpointResumeClaim(
   const checkpoint = parseRunCheckpointV1(checkpointRows[0]?.checkpoint_json);
   if (
     checkpoint.checkpointId !== checkpointId ||
-    checkpoint.checkpointSha256 !== checkpointSha256
+    checkpoint.checkpointSha256 !== checkpointSha256 ||
+    checkpoint.boundary.boundaryId !== approvalExecutionId
   ) {
     return paused("checkpoint_not_latest");
   }
@@ -127,7 +225,9 @@ export async function acquireRunCheckpointResumeClaim(
 
   const runRows = await sql.query(
     `SELECT id, status,
-            continuation->'pendingToolCall'->>'executionId' AS approval_execution_id
+            continuation->'pendingToolCall'->>'executionId' AS approval_execution_id,
+            continuation->'checkpointResumeClaim'->>'checkpointId' AS claimed_checkpoint_id,
+            continuation->'checkpointResumeClaim'->>'checkpointSha256' AS claimed_checkpoint_sha256
      FROM omni_agent_runs
      WHERE tenant_id = $1 AND id = $2
      LIMIT 2
@@ -136,8 +236,15 @@ export async function acquireRunCheckpointResumeClaim(
   );
   if (
     runRows.length !== 1 ||
-    runRows[0]?.status !== "waiting_approval" ||
-    runRows[0]?.approval_execution_id !== checkpoint.boundary.boundaryId
+    runRows[0]?.approval_execution_id !== checkpoint.boundary.boundaryId ||
+    !(
+      runRows[0]?.status === "waiting_approval" ||
+      (
+        runRows[0]?.status === "resuming" &&
+        runRows[0]?.claimed_checkpoint_id === checkpoint.checkpointId &&
+        runRows[0]?.claimed_checkpoint_sha256 === checkpoint.checkpointSha256
+      )
+    )
   ) {
     return paused("run_not_waiting");
   }

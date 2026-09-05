@@ -52,9 +52,13 @@ effect receipt in one caller-owned transaction. Raw lease credentials never
 enter storage or events. Claim events remain metadata-only and explicitly set
 `resumeAuthorityGranted: false`.
 
-No runtime calls this claim store. It cannot transition a run, open referenced
-state, execute a model or tool, or resume a continuation until the non-empty
-shadow gate passes and the legacy transition is atomically bound to the fence.
+No runtime calls this claim store. A claim alone cannot transition a run, open
+referenced state, execute a model or tool, or resume a continuation. A dormant atomic
+binder can acquire the fence and change `waiting_approval` (or an exactly
+fenced interrupted `resuming` run) to `resuming` in the same transaction. It
+stores only checkpoint/job/generation metadata in the continuation and emits
+`run.checkpoint.resume_authorized`; the raw token remains process-local. The
+worker does not call this binder until the non-empty shadow gate passes.
 
 ## Why this precedes resume
 
@@ -129,7 +133,7 @@ The remaining slices must proceed in this order:
 
 1. accumulate a non-empty production approval-boundary sample and pass the
    stored chain/reference/resource reconciliation operator check;
-2. bind the legacy resume transition to the exact fence, then canary only
+2. fence worker heartbeat and terminal/next-wait writes, then canary only
    supported pins after a non-empty shadow pass; and
 3. expand separately to model, tool, delegation, and verifier boundaries.
 

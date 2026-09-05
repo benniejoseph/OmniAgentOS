@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const eventMocks = vi.hoisted(() => ({ appendDomainEvent: vi.fn() }));
 
@@ -8,6 +8,7 @@ vi.mock("@/lib/events/store", () => ({
 
 import {
   acquireRunCheckpointResumeClaim,
+  authorizeAgentRunCheckpointResume,
   completeRunCheckpointResumeClaim,
   heartbeatRunCheckpointResumeClaim,
 } from "@/lib/runs/checkpoint-resume-claim";
@@ -105,6 +106,11 @@ function checkpoint(mode: "shadow" | "canary" = "canary"): RunCheckpointV1 {
 }
 
 describe("checkpoint resume claims", () => {
+  beforeEach(() => {
+    eventMocks.appendDomainEvent.mockReset();
+    eventMocks.appendDomainEvent.mockResolvedValue({});
+  });
+
   it("requires a caller-owned transaction", async () => {
     const value = checkpoint();
     const sql = fakeSql(value, { transactionScoped: false });
@@ -134,7 +140,6 @@ describe("checkpoint resume claims", () => {
   });
 
   it("acquires a hashed, exact canary fence without granting resume authority", async () => {
-    eventMocks.appendDomainEvent.mockResolvedValue({});
     const value = checkpoint();
     const calls: Array<{ text: string; params: unknown[] }> = [];
     const sql = fakeSql(value, { calls });
@@ -177,7 +182,6 @@ describe("checkpoint resume claims", () => {
   });
 
   it("reports an unexpired claim as busy and reclaims an expired generation", async () => {
-    eventMocks.appendDomainEvent.mockResolvedValue({});
     const value = checkpoint();
     const busy = fakeSql(value, { existingClaimExpired: false });
     await expect(acquireRunCheckpointResumeClaim(
@@ -202,7 +206,6 @@ describe("checkpoint resume claims", () => {
   });
 
   it("heartbeats and completes only an exact unexpired token generation", async () => {
-    eventMocks.appendDomainEvent.mockResolvedValue({});
     const value = checkpoint();
     const sql = fakeSql(value, { lifecycleUpdates: true });
     const claim = {
@@ -229,6 +232,34 @@ describe("checkpoint resume claims", () => {
       { sql },
     );
   });
+
+  it("authorizes the run transition only in the same claim transaction", async () => {
+    const value = checkpoint();
+    const sql = fakeSql(value, { authorizeTransition: true });
+
+    const result = await authorizeAgentRunCheckpointResume(
+      acquireInput(value),
+      sql,
+    );
+
+    expect(result).toMatchObject({
+      outcome: "authorized",
+      reason: "checkpoint_fence_acquired",
+      fenceAcquired: true,
+      resumeAuthorityGranted: true,
+    });
+    expect(eventMocks.appendDomainEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        type: "run.checkpoint.resume_authorized",
+        payload: expect.objectContaining({
+          checkpointId: value.checkpointId,
+          resumeAuthorityGranted: true,
+        }),
+      }),
+      { sql },
+    );
+  });
 });
 
 function acquireInput(value: RunCheckpointV1) {
@@ -237,6 +268,7 @@ function acquireInput(value: RunCheckpointV1) {
     runId: RUN_ID,
     checkpointId: value.checkpointId,
     checkpointSha256: value.checkpointSha256,
+    approvalExecutionId: EXECUTION_ID,
     operationJobId: JOB_ID,
     leaseOwner: "worker:test-lease-owner",
     leaseSeconds: 60,
@@ -251,6 +283,7 @@ function fakeSql(
     calls?: Array<{ text: string; params: unknown[] }>;
     existingClaimExpired?: boolean;
     lifecycleUpdates?: boolean;
+    authorizeTransition?: boolean;
   } = {},
 ): RunCheckpointWriterSql {
   const query = async (text: string, params: unknown[] = []) => {
@@ -284,6 +317,9 @@ function fakeSql(
         approval_decision: "approved",
         effect_receipt: null,
       }];
+    }
+    if (options.authorizeTransition && text.includes("UPDATE omni_agent_runs")) {
+      return [{ id: RUN_ID }];
     }
     if (text.includes("INSERT INTO omni_run_checkpoint_resume_claims")) {
       if (options.existingClaimExpired !== undefined) return [];

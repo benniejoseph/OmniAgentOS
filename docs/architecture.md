@@ -216,8 +216,11 @@ credentials, increments a generation only after expiry, and fences heartbeat
 and completion by the unexpired token/generation pair. Acquisition revalidates
 the live rollout, full scope, waiting run, approval decision, terminal tool,
 and any effect receipt in one caller-owned transaction. No runtime invokes it,
-and claim receipts deny resume authority. Atomic legacy-transition binding,
-broader boundaries, and canary resume remain later P1.6 gates. See
+and claim receipts deny resume authority. A dormant binder can co-commit fence
+acquisition, metadata-only continuation claim state, the run transition, and a
+typed authorization receipt without persisting the raw token. Worker heartbeat
+and final/next-wait writes are not yet token-fenced. Those guards, broader
+boundaries, and canary resume remain later P1.6 gates. See
 [RunCheckpoint v1](vision/RUN_CHECKPOINTS.md).
 
 ## Durable workflows

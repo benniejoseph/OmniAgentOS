@@ -45,6 +45,14 @@ export type AgentRunContinuation = {
   runContractEnvelope?: RunContractEnvelopeV1;
   /** New-run-only P1.6 shadow pin. It never grants resume authority. */
   checkpointShadowEnrollment?: ApprovalCheckpointShadowEnrollment;
+  /** Metadata-only checkpoint fence; the raw claim token is never persisted. */
+  checkpointResumeClaim?: {
+    schemaVersion: 1;
+    checkpointId: string;
+    checkpointSha256: string;
+    operationJobId: string;
+    leaseGeneration: number;
+  };
   /** Full conversation array for ZDR-safe resume (replaces previousResponseId). */
   conversationItems: Array<Record<string, unknown>>;
   instructions: string;
