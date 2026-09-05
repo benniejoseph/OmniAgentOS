@@ -808,6 +808,24 @@ unavailable. Export and forget still stop at the request-bound authority gate
 before standing grants can be considered. Even with every observable input
 coherent, the canary's only decision remains `deny`.
 
+Migration v64 adds the missing request-bound authority model for the two memory
+data rights. A request is limited to `memory.export.v1` or
+`memory.forget.v1`, one canonical subject acting as the exact user principal,
+one request digest, a canonical resource set, a short validity window, and the
+operation-specific human evidence (`explicit_export_request` or
+`reviewed_deletion_preview`). Its lifecycle supports held, active, one-time
+consumed, and revoked states so an approved request cannot become standing
+consent or be replayed indefinitely. Lifecycle events contain only opaque
+coordinates, counts, and SHA-256 bindings; raw resources are not copied.
+
+The v64 table starts empty, owner-only, and under forced tenant RLS with a
+restrictive system holdback. A validated constraint forbids active and consumed
+rows, inserts must start held, and update/delete/truncate are hard-held. No
+generic tool approval, tenant role, purpose entitlement, OAuth grant, existing
+deletion receipt, or standing consent is imported. There is no writer, serving
+reader, resolver call site, or activation in this slice; the v43 memory
+enrollment and v45 authorization holds remain unchanged.
+
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.

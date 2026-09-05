@@ -691,11 +691,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the tenant memory operation-policies shadow migration", () => {
+  it("pins the tenant memory data-right request shadow migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 63,
-      name: "tenant_memory_operation_policies_shadow",
-      checksum: "6af56428280d777c2fffa9360543cb879542531a7463ce83e836dd6e88e4e207",
+      version: 64,
+      name: "tenant_memory_data_right_requests_shadow",
+      checksum: "c3f429b8cb68adc2974fb4baca2c1e706d4249fa8a70cfda186e9b1567f9a178",
     });
   });
 
