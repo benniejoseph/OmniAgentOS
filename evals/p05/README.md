@@ -34,21 +34,17 @@ resurrection, or false success is a failure; this lane has no warning state.
 
 `baseline.v1.json` is the digest-bound current-system observation. Run
 `npm run check:p05-baseline` to reproduce it from the side-effect-free adapters
-in `src/lib/evals2/p05-observer.ts`. The result is intentionally red: 10 of 16
-cases pass (6,250 basis points). Tenant mismatch, transactional page retry,
-canonical source ordering,
-explicit-empty context selection, both terminal-receipt controls, and current
-supervisor routing are directly observable. Ambiguous destructive requests now
-fail closed on a clarification route without selecting a target or tool. The
-structured claim adapter also proves that citation IDs alone cannot establish
-support and that every material claim needs an exact authorized proposition
-match. Half-open as-of selection now proves the temporal regression without
-choosing across overlapping facts. The known-procedure observation preserves the procedure-resolution gap
-instead of copying the normative answer into the baseline. Remaining unsupported
-probes fail closed as `not_observable_offline`; the scope boundary probe also
-records the current tenant-only compatibility read, including its
-actor-isolation gap. This is evidence of the present system, not a release
-pass.
+in `src/lib/evals2/p05-observer.ts`. The result is intentionally red: 14 of 16
+cases pass (8,750 basis points). The remaining failures are explicit product
+gaps, not missing scorer glue: the known portfolio procedure has no persisted
+procedure-to-GitHub-tool binding, and the calendar positive-control has no
+write-capable connector/receipt path. The observer does not copy either
+normative answer into the baseline. Scope and actor visibility, transactional
+page retry, tombstone convergence, lost-ack reconciliation, ambiguous intent
+clarification, explicit context selection, structured claim support, half-open
+temporal selection, material approval invalidation, and both terminal-receipt
+controls are now directly observable. This is evidence of the present system,
+not a release pass.
 
 Observation envelopes bind to the exact domain-separated suite digest and
 declared scorer version. Scoring-code changes must bump that version; the digest
