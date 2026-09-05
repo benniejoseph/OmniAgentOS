@@ -328,5 +328,10 @@
     "version": 66,
     "name": "memory_informed_notice_governance_evidence_shadow",
     "checksum": "8e845ac8182b025d6dea8014ec3877c141e55ad2dc551054b1a885e4bb680f6e"
+  },
+  {
+    "version": 67,
+    "name": "memory_informed_notice_anchor_review_evidence_shadow",
+    "checksum": "6659ee684d50ec67c535c5d3f597347ab31143bd9d9ca9dc4748883b66935956"
   }
 ]

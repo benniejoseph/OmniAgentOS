@@ -619,7 +619,7 @@ databaseDescribe("Postgres schema integration", () => {
     });
   });
 
-  test("keeps informed-notice governance evidence empty and owner-only", async () => {
+  test("keeps informed-notice governance and anchor-review evidence held", async () => {
     const [surface] = await admin`
       SELECT
         EXISTS (
@@ -629,6 +629,14 @@ databaseDescribe("Postgres schema integration", () => {
             AND checksum =
               '8e845ac8182b025d6dea8014ec3877c141e55ad2dc551054b1a885e4bb680f6e'
         ) AS migration_recorded,
+        EXISTS (
+          SELECT 1 FROM omni_schema_version
+          WHERE version = 67
+            AND name =
+              'memory_informed_notice_anchor_review_evidence_shadow'
+            AND checksum =
+              '6659ee684d50ec67c535c5d3f597347ab31143bd9d9ca9dc4748883b66935956'
+        ) AS anchor_migration_recorded,
         (SELECT count(*)::int
          FROM omni_memory_informed_notice_approval_batches) AS batches,
         (SELECT count(*)::int
@@ -660,6 +668,18 @@ databaseDescribe("Postgres schema integration", () => {
           ) AND convalidated
             AND pg_get_expr(conbin, conrelid) = 'false'
         ) AS persistence_held,
+        (
+          SELECT count(*)::int FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name =
+              'omni_memory_informed_notice_approval_batches'
+            AND column_name IN (
+              'independence_review_id',
+              'independence_reviewed_by_actor_id',
+              'independence_reviewed_at',
+              'human_independence_reviewed'
+            )
+        ) AS anchor_columns,
         omni_notice_approval_contract_row_is_valid(
           1::smallint, 'notice-batch:valid'::text, repeat('a', 64)::text,
           0::smallint, 1::smallint, 'memory.retrieval.v1'::text,
@@ -676,12 +696,14 @@ databaseDescribe("Postgres schema integration", () => {
 
     expect(surface).toEqual({
       migration_recorded: true,
+      anchor_migration_recorded: true,
       batches: 0,
       contracts: 0,
       attestations: 0,
       policies: 3,
       owner_only: true,
       persistence_held: true,
+      anchor_columns: 4,
       standing_notice_valid: true,
       data_right_notice_accepted: false,
     });
