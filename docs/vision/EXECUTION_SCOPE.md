@@ -95,5 +95,23 @@ cutover must precede a future atomic management-grant writer under a separately
 versioned event contract. Only after that exact grant is active may a separate
 v54 lifecycle writer lock its canonical grantee and subject and commit the
 membership-epoch transition with its typed event. Distinct
-entitlement-management authority is a later
-dependency and is not modeled or granted by v56.
+entitlement-management authority is a later dependency and is not modeled or
+granted by v56.
+
+The following membership-management contract-only slice also does not extend
+`ExecutionScope`. Its frozen record exactly mirrors the v56 tenant, subject,
+grantee, authority ID/generation, lifecycle state/revision, and all lifecycle
+actor/timestamp fields. Its stable
+`memory.membership_management_authority.{held,activated,revoked}` payload adds a
+required opaque `governanceDecisionId` beside the exact record identity and
+state-specific decision attribution. Structural equality with a held, active,
+or revoked record is evidence only; neither that equality nor any scope field
+proves approval or mutation authority. V56 has no governance-decision column,
+so the helper validates the opaque ID's shape but cannot bind or authenticate
+it.
+
+Bootstrap governance remains a separate unmodeled prerequisite. The pure slice
+has no database or event-store import, writer, event append, serving import or
+call site, scope installer, grant, or row mutation. The v56 activation hold,
+restrictive RLS, owner-only ACLs, zero-row state, and all v45 and v48-v55 holds
+remain unchanged.

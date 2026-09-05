@@ -1462,9 +1462,32 @@ activate that grant under a separately versioned event contract. Only then may
 a separate v54 lifecycle writer live-lock the active canonical grantee, exact
 subject, and management generation while committing a membership-epoch
 transition and its typed event together. A distinct entitlement-management
-authority comes afterward. Migration v56
-neither models that entitlement authority nor enables entitlement, consent,
-notice issuance, the v45 hook, or an allow-capable resolver.
+authority comes afterward. Migration v56 neither models that entitlement
+authority nor enables entitlement, consent, notice issuance, the v45 hook, or
+an allow-capable resolver.
+
+The next contract-only slice mirrors the exact v56 record in a strict frozen
+shape: schema version; tenant, subject, and grantee; management-authority ID and
+generation; lifecycle state and revision; created, activated, and revoked actor
+attribution and timestamps; and the update timestamp. Held is revision 0,
+activation is revision 1, direct revocation is revision 1, and revocation after
+activation is revision 2. State-specific nullability, decision attribution, and
+timestamp ordering remain part of the contract rather than caller convention.
+
+It also fixes the stable event family
+`memory.membership_management_authority.{held,activated,revoked}` and
+`payloadKind: "memory_membership_management_authority"`. Each payload carries
+the exact tenant/subject/grantee/authority/generation identity, state and
+revision, its state-specific decision actor and time, and a required opaque
+`governanceDecisionId`. A pure binding helper proves only exact record/event
+coordinates and lifecycle attribution. It does not prove that the row exists or
+is current, that governance approved it, or that the actor may mutate it. V56
+has no governance-decision column, so the helper validates the opaque ID's
+shape but deliberately neither binds nor authenticates it.
+Bootstrap governance remains a separate unmodeled trust and lifecycle contract;
+the opaque ID cannot substitute for it. The slice adds no writer, event append,
+database or event-store import, serving import or call site, grant, or authority
+row, and changes none of the v45 or v48-v56 physical and runtime holds.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 

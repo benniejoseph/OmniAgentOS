@@ -1,21 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_INFORMED_NOTICE_RECEIPT_EVENT_TYPE,
+  MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES,
   MEMORY_MEMBERSHIP_EPOCH_EVENT_TYPES,
   MEMORY_PURPOSE_CONSENT_EVENT_TYPES,
   MEMORY_PURPOSE_ENTITLEMENT_EVENT_TYPES,
+  assertMemoryMembershipManagementAuthorityRecordEventBindingV1,
   assertMemoryConsentReceiptStructuralBindingV1,
+  buildMemoryMembershipManagementAuthorityEventV1,
   buildMemoryInformedNoticeReceiptEventV1,
   buildMemoryMembershipEpochEventV1,
   buildMemoryPurposeConsentEventV1,
   buildMemoryPurposeEntitlementEventV1,
   memoryAuthorityEventTypeSchema,
   parseMemoryAuthorityEventV1,
+  parseMemoryMembershipManagementAuthorityEventV1,
+  parseMemoryMembershipManagementAuthorityEventPayloadV1,
+  parseMemoryMembershipManagementAuthorityRecordV1,
   parseMemoryInformedNoticeReceiptEventV1,
   parseMemoryMembershipEpochEventV1,
   parseMemoryPurposeConsentEventV1,
   parseMemoryPurposeEntitlementEventV1,
   type BuildMemoryInformedNoticeReceiptEventV1Input,
+  type BuildMemoryMembershipManagementAuthorityEventV1Input,
   type BuildMemoryMembershipEpochEventV1Input,
   type BuildMemoryPurposeConsentEventV1Input,
   type BuildMemoryPurposeEntitlementEventV1Input,
@@ -36,6 +43,76 @@ const DECISION_AT = "2026-09-05T09:30:00.000Z";
 const PRESENTED_AT = "2026-09-05T09:29:58.000Z";
 const ACKNOWLEDGED_AT = "2026-09-05T09:30:00.000Z";
 const NOTICE_SHA256 = "a".repeat(64);
+const MANAGEMENT_AUTHORITY_ID = "membership-authority:contract-test";
+const GOVERNANCE_DECISION_ID = "governance@decision:contract-test";
+const AUTHORITY_CREATED_AT = "2026-09-05T09:30:00.000Z";
+const AUTHORITY_ACTIVATED_AT = "2026-09-05T09:30:01.000Z";
+const AUTHORITY_REVOKED_AT = "2026-09-05T09:30:02.000Z";
+
+function managementAuthorityRecordBase() {
+  return {
+    schemaVersion: 1,
+    tenantId: TENANT_ID,
+    subjectActorId: SUBJECT_ACTOR_ID,
+    granteeActorId: DECISION_ACTOR_ID,
+    managementAuthorityId: MANAGEMENT_AUTHORITY_ID,
+    authorityGeneration: 2,
+    createdByActorId: OTHER_ACTOR_ID,
+    createdAt: AUTHORITY_CREATED_AT,
+  } as const;
+}
+
+function heldManagementAuthorityRecord() {
+  return {
+    ...managementAuthorityRecordBase(),
+    state: "held",
+    lifecycleRevision: 0,
+    activatedByActorId: null,
+    revokedByActorId: null,
+    activatedAt: null,
+    revokedAt: null,
+    updatedAt: AUTHORITY_CREATED_AT,
+  } as const;
+}
+
+function activeManagementAuthorityRecord() {
+  return {
+    ...managementAuthorityRecordBase(),
+    state: "active",
+    lifecycleRevision: 1,
+    activatedByActorId: OTHER_ACTOR_ID,
+    revokedByActorId: null,
+    activatedAt: AUTHORITY_ACTIVATED_AT,
+    revokedAt: null,
+    updatedAt: AUTHORITY_ACTIVATED_AT,
+  } as const;
+}
+
+function heldRevokedManagementAuthorityRecord() {
+  return {
+    ...managementAuthorityRecordBase(),
+    state: "revoked",
+    lifecycleRevision: 1,
+    activatedByActorId: null,
+    revokedByActorId: OTHER_ACTOR_ID,
+    activatedAt: null,
+    revokedAt: AUTHORITY_REVOKED_AT,
+    updatedAt: AUTHORITY_REVOKED_AT,
+  } as const;
+}
+
+function activeRevokedManagementAuthorityRecord() {
+  return {
+    ...managementAuthorityRecordBase(),
+    state: "revoked",
+    lifecycleRevision: 2,
+    activatedByActorId: OTHER_ACTOR_ID,
+    revokedByActorId: OTHER_ACTOR_ID,
+    activatedAt: AUTHORITY_ACTIVATED_AT,
+    revokedAt: AUTHORITY_REVOKED_AT,
+    updatedAt: AUTHORITY_REVOKED_AT,
+  } as const;
+}
 
 function membershipBase() {
   return {
@@ -88,6 +165,415 @@ function consentBase() {
     decisionAt: DECISION_AT,
   } as const;
 }
+
+describe("membership management authority contracts", () => {
+  it("models every reserved v56 record and event lifecycle shape", () => {
+    const variants = [
+      {
+        record: heldManagementAuthorityRecord(),
+        decisionAt: AUTHORITY_CREATED_AT,
+        type: MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES.held,
+      },
+      {
+        record: activeManagementAuthorityRecord(),
+        decisionAt: AUTHORITY_ACTIVATED_AT,
+        type: MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES.active,
+      },
+      {
+        record: heldRevokedManagementAuthorityRecord(),
+        decisionAt: AUTHORITY_REVOKED_AT,
+        type: MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES.revoked,
+      },
+      {
+        record: activeRevokedManagementAuthorityRecord(),
+        decisionAt: AUTHORITY_REVOKED_AT,
+        type: MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES.revoked,
+      },
+    ] as const;
+
+    for (const variant of variants) {
+      const record = parseMemoryMembershipManagementAuthorityRecordV1(
+        variant.record,
+      );
+      const input = {
+        tenantId: record.tenantId,
+        subjectActorId: record.subjectActorId,
+        granteeActorId: record.granteeActorId,
+        managementAuthorityId: record.managementAuthorityId,
+        authorityGeneration: record.authorityGeneration,
+        governanceDecisionId: GOVERNANCE_DECISION_ID,
+        decisionActorId: OTHER_ACTOR_ID,
+        decisionAt: variant.decisionAt,
+        state: record.state,
+        lifecycleRevision: record.lifecycleRevision,
+      } as BuildMemoryMembershipManagementAuthorityEventV1Input;
+      const event = buildMemoryMembershipManagementAuthorityEventV1(input);
+      const parsedPayload =
+        parseMemoryMembershipManagementAuthorityEventPayloadV1({
+          ...event.payload,
+        });
+      const parsedEvent = parseMemoryAuthorityEventV1({
+        type: event.type,
+        payload: { ...event.payload },
+      });
+      const binding =
+        assertMemoryMembershipManagementAuthorityRecordEventBindingV1(
+          record,
+          event,
+        );
+
+      expect(event.type).toBe(variant.type);
+      expect(event.payload).toMatchObject({
+        schemaVersion: 1,
+        recordSchemaVersion: 1,
+        payloadKind: "memory_membership_management_authority",
+        governanceDecisionId: GOVERNANCE_DECISION_ID,
+        state: record.state,
+        lifecycleRevision: record.lifecycleRevision,
+      });
+      expect(event.payload.decisionActorId).not.toBe(record.subjectActorId);
+      expect(event.payload.decisionActorId).not.toBe(record.granteeActorId);
+      expect(parsedPayload).toEqual(event.payload);
+      expect(parsedEvent).toEqual(event);
+      expect(binding).toMatchObject({
+        tenantId: TENANT_ID,
+        subjectActorId: SUBJECT_ACTOR_ID,
+        granteeActorId: DECISION_ACTOR_ID,
+        managementAuthorityId: MANAGEMENT_AUTHORITY_ID,
+        authorityGeneration: 2,
+      });
+      expect(Object.isFrozen(record)).toBe(true);
+      expect(Object.isFrozen(event)).toBe(true);
+      expect(Object.isFrozen(event.payload)).toBe(true);
+      expect(Object.isFrozen(parsedPayload)).toBe(true);
+      expect(Object.isFrozen(parsedEvent)).toBe(true);
+      expect(Object.isFrozen(parsedEvent.payload)).toBe(true);
+      expect(Object.isFrozen(binding)).toBe(true);
+      expect(record).not.toBe(variant.record);
+      expect(event.payload).not.toBe(input);
+      expect(parsedPayload).not.toBe(event.payload);
+      expect(parsedEvent).not.toBe(event);
+      expect(parsedEvent.payload).not.toBe(event.payload);
+    }
+
+    expect(
+      Object.isFrozen(MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES),
+    ).toBe(true);
+  });
+
+  it("rejects unreachable state, revision, attribution, and timestamp matrices", () => {
+    const invalidRecords = [
+      { ...heldManagementAuthorityRecord(), lifecycleRevision: 1 },
+      { ...activeManagementAuthorityRecord(), lifecycleRevision: 2 },
+      {
+        ...activeManagementAuthorityRecord(),
+        activatedByActorId: null,
+      },
+      {
+        ...heldRevokedManagementAuthorityRecord(),
+        activatedByActorId: OTHER_ACTOR_ID,
+        activatedAt: AUTHORITY_ACTIVATED_AT,
+      },
+      {
+        ...activeRevokedManagementAuthorityRecord(),
+        activatedByActorId: null,
+        activatedAt: null,
+      },
+      {
+        ...activeManagementAuthorityRecord(),
+        updatedAt: AUTHORITY_REVOKED_AT,
+      },
+      {
+        ...activeRevokedManagementAuthorityRecord(),
+        activatedAt: "2026-09-05T09:30:03.000Z",
+      },
+      {
+        ...heldManagementAuthorityRecord(),
+        createdAt: "2026-09-05T09:30:03.000Z",
+      },
+      {
+        ...heldManagementAuthorityRecord(),
+        createdAt: "2026-09-05T09:30:00Z",
+        updatedAt: "2026-09-05T09:30:00Z",
+      },
+    ];
+
+    for (const record of invalidRecords) {
+      expect(() =>
+        parseMemoryMembershipManagementAuthorityRecordV1(record)
+      ).toThrow();
+    }
+
+    expect(() => buildMemoryMembershipManagementAuthorityEventV1({
+      tenantId: TENANT_ID,
+      subjectActorId: SUBJECT_ACTOR_ID,
+      granteeActorId: DECISION_ACTOR_ID,
+      managementAuthorityId: MANAGEMENT_AUTHORITY_ID,
+      authorityGeneration: 2,
+      governanceDecisionId: GOVERNANCE_DECISION_ID,
+      decisionActorId: OTHER_ACTOR_ID,
+      decisionAt: AUTHORITY_ACTIVATED_AT,
+      state: "active",
+      lifecycleRevision: 2,
+    } as unknown as BuildMemoryMembershipManagementAuthorityEventV1Input))
+      .toThrow();
+    expect(() => buildMemoryMembershipManagementAuthorityEventV1({
+      tenantId: TENANT_ID,
+      subjectActorId: SUBJECT_ACTOR_ID,
+      granteeActorId: DECISION_ACTOR_ID,
+      managementAuthorityId: MANAGEMENT_AUTHORITY_ID,
+      authorityGeneration: 2,
+      governanceDecisionId: GOVERNANCE_DECISION_ID,
+      decisionActorId: OTHER_ACTOR_ID,
+      decisionAt: AUTHORITY_REVOKED_AT,
+      state: "revoked",
+      lifecycleRevision: 0,
+    } as unknown as BuildMemoryMembershipManagementAuthorityEventV1Input))
+      .toThrow();
+  });
+
+  it("rejects noncanonical coordinates and non-positive-safe generations", () => {
+    const held = heldManagementAuthorityRecord();
+    for (const authorityGeneration of [
+      0,
+      -1,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      "2",
+    ]) {
+      expect(() => parseMemoryMembershipManagementAuthorityRecordV1({
+        ...held,
+        authorityGeneration,
+      })).toThrow();
+    }
+
+    const invalidCoordinates = [
+      ["tenantId", ` ${TENANT_ID}`],
+      ["subjectActorId", "person@example.test"],
+      ["granteeActorId", DECISION_ACTOR_ID.toUpperCase()],
+      ["createdByActorId", ` ${OTHER_ACTOR_ID}`],
+      ["managementAuthorityId", `${MANAGEMENT_AUTHORITY_ID} `],
+    ] as const;
+    for (const [field, value] of invalidCoordinates) {
+      expect(() => parseMemoryMembershipManagementAuthorityRecordV1({
+        ...held,
+        [field]: value,
+      })).toThrow();
+    }
+
+    expect(() => parseMemoryMembershipManagementAuthorityRecordV1({
+      ...held,
+      schemaVersion: 2,
+    })).toThrow();
+
+    const {
+      managementAuthorityId: _managementAuthorityId,
+      ...withoutManagementAuthorityId
+    } = held;
+    void _managementAuthorityId;
+    expect(() => parseMemoryMembershipManagementAuthorityRecordV1(
+      withoutManagementAuthorityId,
+    )).toThrow();
+
+    expect(() => buildMemoryMembershipManagementAuthorityEventV1({
+      tenantId: TENANT_ID,
+      subjectActorId: SUBJECT_ACTOR_ID,
+      granteeActorId: DECISION_ACTOR_ID,
+      managementAuthorityId: MANAGEMENT_AUTHORITY_ID,
+      authorityGeneration: 2,
+      governanceDecisionId: ` ${GOVERNANCE_DECISION_ID}`,
+      decisionActorId: OTHER_ACTOR_ID,
+      decisionAt: AUTHORITY_CREATED_AT,
+      state: "held",
+      lifecycleRevision: 0,
+    })).toThrow();
+    expect(() => buildMemoryMembershipManagementAuthorityEventV1({
+      tenantId: TENANT_ID,
+      subjectActorId: SUBJECT_ACTOR_ID,
+      granteeActorId: DECISION_ACTOR_ID,
+      managementAuthorityId: MANAGEMENT_AUTHORITY_ID,
+      authorityGeneration: 2,
+      governanceDecisionId: GOVERNANCE_DECISION_ID,
+      decisionActorId: "person@example.test",
+      decisionAt: AUTHORITY_CREATED_AT,
+      state: "held",
+      lifecycleRevision: 0,
+    })).toThrow();
+    expect(() => buildMemoryMembershipManagementAuthorityEventV1({
+      tenantId: TENANT_ID,
+      subjectActorId: SUBJECT_ACTOR_ID,
+      granteeActorId: DECISION_ACTOR_ID,
+      managementAuthorityId: MANAGEMENT_AUTHORITY_ID,
+      authorityGeneration: 2,
+      governanceDecisionId: GOVERNANCE_DECISION_ID,
+      decisionActorId: OTHER_ACTOR_ID,
+      decisionAt: "2026-09-05T09:30:00Z",
+      state: "held",
+      lifecycleRevision: 0,
+    })).toThrow();
+  });
+
+  it("requires opaque governance evidence and exact event-type pairing", () => {
+    const completeInput = {
+      tenantId: TENANT_ID,
+      subjectActorId: SUBJECT_ACTOR_ID,
+      granteeActorId: DECISION_ACTOR_ID,
+      managementAuthorityId: MANAGEMENT_AUTHORITY_ID,
+      authorityGeneration: 2,
+      governanceDecisionId: GOVERNANCE_DECISION_ID,
+      decisionActorId: OTHER_ACTOR_ID,
+      decisionAt: AUTHORITY_CREATED_AT,
+      state: "held" as const,
+      lifecycleRevision: 0 as const,
+    };
+    const {
+      governanceDecisionId: _governanceDecisionId,
+      ...withoutGovernanceDecision
+    } = completeInput;
+    void _governanceDecisionId;
+
+    expect(() => buildMemoryMembershipManagementAuthorityEventV1(
+      withoutGovernanceDecision as unknown as
+        BuildMemoryMembershipManagementAuthorityEventV1Input,
+    )).toThrow();
+
+    const event =
+      buildMemoryMembershipManagementAuthorityEventV1(completeInput);
+    expect(() => parseMemoryMembershipManagementAuthorityEventV1({
+      ...event,
+      type: MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES.active,
+    })).toThrow();
+    expect(() => parseMemoryMembershipManagementAuthorityEventV1({
+      ...event,
+      payload: { ...event.payload, recordSchemaVersion: 2 },
+    })).toThrow();
+    expect(() => parseMemoryMembershipManagementAuthorityEventV1({
+      ...event,
+      payload: { ...event.payload, payloadKind: "membership_authority" },
+    })).toThrow();
+  });
+
+  it("rejects unknown, content, credential, role, and reasoning fields", () => {
+    const record = heldManagementAuthorityRecord();
+    const event = buildMemoryMembershipManagementAuthorityEventV1({
+      tenantId: TENANT_ID,
+      subjectActorId: SUBJECT_ACTOR_ID,
+      granteeActorId: DECISION_ACTOR_ID,
+      managementAuthorityId: MANAGEMENT_AUTHORITY_ID,
+      authorityGeneration: 2,
+      governanceDecisionId: GOVERNANCE_DECISION_ID,
+      decisionActorId: OTHER_ACTOR_ID,
+      decisionAt: AUTHORITY_CREATED_AT,
+      state: "held",
+      lifecycleRevision: 0,
+    });
+    const forbiddenFields = [
+      "email",
+      "name",
+      "role",
+      "content",
+      "credentials",
+      "metadata",
+      "evidenceIds",
+      "reasoning",
+      "noticeText",
+      "executionScope",
+    ] as const;
+
+    for (const field of forbiddenFields) {
+      expect(() => parseMemoryMembershipManagementAuthorityRecordV1({
+        ...record,
+        [field]: "must-not-enter-authority-evidence",
+      })).toThrow();
+      expect(() => parseMemoryMembershipManagementAuthorityEventV1({
+        ...event,
+        payload: {
+          ...event.payload,
+          [field]: "must-not-enter-authority-evidence",
+        },
+      })).toThrow();
+    }
+    expect(() => parseMemoryMembershipManagementAuthorityEventV1({
+      ...event,
+      unexpected: true,
+    })).toThrow();
+  });
+
+  it("binds record evidence structurally without validating governance authority", () => {
+    const record = heldManagementAuthorityRecord();
+    const event = buildMemoryMembershipManagementAuthorityEventV1({
+      tenantId: TENANT_ID,
+      subjectActorId: SUBJECT_ACTOR_ID,
+      granteeActorId: DECISION_ACTOR_ID,
+      managementAuthorityId: MANAGEMENT_AUTHORITY_ID,
+      authorityGeneration: 2,
+      governanceDecisionId: GOVERNANCE_DECISION_ID,
+      decisionActorId: OTHER_ACTOR_ID,
+      decisionAt: AUTHORITY_CREATED_AT,
+      state: "held",
+      lifecycleRevision: 0,
+    });
+    const mismatches = [
+      ["tenantId", OTHER_TENANT_ID],
+      ["subjectActorId", OTHER_ACTOR_ID],
+      ["granteeActorId", SUBJECT_ACTOR_ID],
+      ["managementAuthorityId", "membership-authority:other"],
+      ["authorityGeneration", 3],
+      ["decisionActorId", SUBJECT_ACTOR_ID],
+      ["decisionAt", AUTHORITY_ACTIVATED_AT],
+    ] as const;
+
+    for (const [field, value] of mismatches) {
+      expect(() =>
+        assertMemoryMembershipManagementAuthorityRecordEventBindingV1(
+          record,
+          {
+            ...event,
+            payload: { ...event.payload, [field]: value },
+          },
+        )
+      ).toThrow(/does not authorize a membership change/i);
+    }
+
+    const otherOpaqueGovernanceEvidence = {
+      ...event,
+      payload: {
+        ...event.payload,
+        governanceDecisionId: "governance:other-unresolved-evidence",
+      },
+    };
+    expect(
+      assertMemoryMembershipManagementAuthorityRecordEventBindingV1(
+        record,
+        otherOpaqueGovernanceEvidence,
+      ),
+    ).toMatchObject({
+      managementAuthorityId: MANAGEMENT_AUTHORITY_ID,
+      decisionActorId: OTHER_ACTOR_ID,
+    });
+
+    const activeEvent = buildMemoryMembershipManagementAuthorityEventV1({
+      tenantId: event.payload.tenantId,
+      subjectActorId: event.payload.subjectActorId,
+      granteeActorId: event.payload.granteeActorId,
+      managementAuthorityId: event.payload.managementAuthorityId,
+      authorityGeneration: event.payload.authorityGeneration,
+      governanceDecisionId: event.payload.governanceDecisionId,
+      decisionActorId: event.payload.decisionActorId,
+      decisionAt: AUTHORITY_ACTIVATED_AT,
+      state: "active",
+      lifecycleRevision: 1,
+    });
+    expect(() =>
+      assertMemoryMembershipManagementAuthorityRecordEventBindingV1(
+        record,
+        activeEvent,
+      )
+    ).toThrow(/does not authorize a membership change/i);
+  });
+});
 
 describe("memory authority event contracts", () => {
   it("builds every membership-epoch lifecycle variant with a stable type pair", () => {
@@ -578,6 +1064,9 @@ describe("memory authority event contracts", () => {
 
   it("keeps the public event-type vocabulary closed", () => {
     expect(memoryAuthorityEventTypeSchema.options).toEqual([
+      "memory.membership_management_authority.held",
+      "memory.membership_management_authority.activated",
+      "memory.membership_management_authority.revoked",
       "memory.membership_epoch.held",
       "memory.membership_epoch.activated",
       "memory.membership_epoch.revoked",
