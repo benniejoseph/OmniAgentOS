@@ -1091,3 +1091,15 @@ clarification and appends `intent.clarification_requested` with the initiating
 actor, executing agent, correlation and causation IDs, a closed reason code,
 empty target/tool selections, and zero effects; it does not persist the raw
 request in the event payload.
+
+## Structured claim support probe
+
+The claim/evidence foundation now includes a bounded deterministic evaluator
+for structured subject/predicate/object propositions. A candidate citation ID
+does not establish support: the link must resolve to an explicitly authorized
+evidence unit whose assertion exactly matches the complete proposition.
+Material coverage is derived from the declared claim set, unauthorized linked
+evidence is counted and excluded, and duplicate claim or evidence identities
+fail closed. The P0.5 observer uses this runtime adapter for both the
+wrong-claim and complete-material-support regressions without network, model,
+database, or external effects.

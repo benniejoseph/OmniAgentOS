@@ -34,12 +34,14 @@ resurrection, or false success is a failure; this lane has no warning state.
 
 `baseline.v1.json` is the digest-bound current-system observation. Run
 `npm run check:p05-baseline` to reproduce it from the side-effect-free adapters
-in `src/lib/evals2/p05-observer.ts`. The result is intentionally red: 6 of 16
-cases pass (3,750 basis points). Tenant mismatch, canonical source ordering,
-explicit context selection, both terminal-receipt controls, and current
+in `src/lib/evals2/p05-observer.ts`. The result is intentionally red: 8 of 16
+cases pass (5,000 basis points). Tenant mismatch, canonical source ordering,
+explicit-empty context selection, both terminal-receipt controls, and current
 supervisor routing are directly observable. Ambiguous destructive requests now
 fail closed on a clarification route without selecting a target or tool. The
-known-procedure observation preserves the remaining procedure-resolution gap
+structured claim adapter also proves that citation IDs alone cannot establish
+support and that every material claim needs an exact authorized proposition
+match. The known-procedure observation preserves the procedure-resolution gap
 instead of copying the normative answer into the baseline. Remaining unsupported
 probes fail closed as `not_observable_offline`; the scope boundary probe also
 records the current tenant-only compatibility read, including its

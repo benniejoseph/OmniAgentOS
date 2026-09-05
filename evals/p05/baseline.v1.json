@@ -113,17 +113,45 @@
     {
       "caseId": "citations.valid-id-wrong-claim",
       "value": {
-        "adapterId": "p0.5-observer-v1:citations",
-        "adapterStatus": "not_observable_offline",
-        "reasonCode": "no_side_effect_free_current_system_adapter"
+        "adapterId": "structured-claim-support-v1",
+        "adapterStatus": "observed",
+        "claims": [
+          {
+            "id": "synthetic:claim:revenue",
+            "supportState": "unsupported",
+            "verified": false,
+            "evidenceIds": []
+          }
+        ],
+        "materialCoverageBasisPoints": 0,
+        "unauthorizedEvidenceCount": 0
       }
     },
     {
       "caseId": "citations.full-material-support",
       "value": {
-        "adapterId": "p0.5-observer-v1:citations",
-        "adapterStatus": "not_observable_offline",
-        "reasonCode": "no_side_effect_free_current_system_adapter"
+        "adapterId": "structured-claim-support-v1",
+        "adapterStatus": "observed",
+        "claims": [
+          {
+            "id": "synthetic:claim:launch-day",
+            "supportState": "supported",
+            "verified": true,
+            "evidenceIds": [
+              "synthetic:evidence:calendar"
+            ]
+          },
+          {
+            "id": "synthetic:claim:launch-owner",
+            "supportState": "supported",
+            "verified": true,
+            "evidenceIds": [
+              "synthetic:evidence:assignment"
+            ]
+          }
+        ],
+        "materialCoverageBasisPoints": 10000,
+        "unauthorizedEvidenceCount": 0
       }
     },
     {
