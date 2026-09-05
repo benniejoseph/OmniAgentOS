@@ -170,8 +170,8 @@ that exact plan digest. The canary proves which persisted plan executed after
 workflow approval, not that the digest itself was presented and signed; that
 pre-execution approval binding remains a later success gate.
 
-The first P1.5 slice is a dormant, pure `ClaimEvidenceMapV1` contract and
-structural verifier. It binds one exact answer to UTF-16 claim spans, canonical
+P1.5 activates the pure `ClaimEvidenceMapV1` contract and structural verifier
+for every completed agent answer. It binds one exact answer to UTF-16 claim spans, canonical
 evidence snapshots, one pre-resolved authorization decision per evidence unit,
 versioned semantic-assessment receipts with one common tenant/run/purpose/scope
 and policy, bounded inference parents and aggregate claim span work, an
@@ -182,12 +182,19 @@ citation-ID or model assertions never become support. Public parsers reject
 unbounded or non-plain inputs before semantic traversal and return deeply
 frozen contracts.
 
-The slice has no store, migration, route, event, worker, UI, or serving import
-and does not replace the legacy `GroundingReport`. Its verification receipt
-proves only hashes, bindings, windows, graph structure, and deterministic
-derivation. It explicitly does not establish semantic truth, evidence-source
-or authorization-authority trust, source-head currentness, or decomposition
-completeness. See [ClaimEvidenceMap v1](vision/CLAIM_EVIDENCE.md).
+The runtime resolves exact tenant-scoped canonical knowledge evidence, checks
+owner, scope coordinates, explicit answer-verification purpose, retention,
+content hash, and byte length before inspecting its content, and records only
+normalized exact-span entailment as strong support. The complete metadata-only
+map persists in the run grounding JSON; the typed `run.done` event contains a
+summary and public APIs/streams receive a bounded projection. The result UI
+shows per-claim state and coverage. Legacy citation sources remain readable,
+but citations, model assertions, memory/graph/web results, and non-canonical
+chunks do not establish support. Structural verification still proves only
+hashes, bindings, windows, graph structure, and deterministic derivation; it
+does not establish semantic truth, source or authority trust, source-head
+currentness, or decomposition completeness. See
+[ClaimEvidenceMap v1](vision/CLAIM_EVIDENCE.md).
 
 The P1.6 foundation defines `RunCheckpointV1` as the
 immutable, metadata-only boundary a future resume worker must prove before it
