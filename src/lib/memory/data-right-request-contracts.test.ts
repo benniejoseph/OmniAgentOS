@@ -33,6 +33,10 @@ describe("memory data-right request contracts", () => {
       ...requestRecord(),
       expiresAt: "2026-09-05T09:00:00.000Z",
     })).toThrow(/timestamps/i);
+    expect(() => parseMemoryDataRightRequestRecordV1({
+      ...requestRecord(),
+      expiresAt: "2026-09-05T10:00:00.001Z",
+    })).toThrow(/timestamps/i);
   });
 
   it("permits only held, active, one-time consumed, or revoked lifecycles", () => {

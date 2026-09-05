@@ -1086,6 +1086,7 @@ describe("denial-only memory authority resolution canary", () => {
       { request_binding_sha256: "e".repeat(64) },
       { resource_ids: ["memory:other"] },
       { observed_at: "2026-09-05T10:00:00.000Z" },
+      { expires_at: "2026-09-05T10:00:00.001Z" },
       { confirmation_kind: "explicit_export_request" },
     ];
     for (const mismatch of mismatches) {
@@ -1397,8 +1398,8 @@ function activeDataRightRequest(
       : "explicit_export_request",
     request_binding_sha256: DATA_RIGHT_REQUEST_BINDING_SHA256,
     resource_ids: [...DATA_RIGHT_RESOURCE_IDS],
-    not_before: "2026-09-05T08:00:00.000Z",
-    expires_at: "2026-09-05T10:00:00.000Z",
+    not_before: "2026-09-05T08:30:00.000Z",
+    expires_at: "2026-09-05T09:30:00.000Z",
     state: "active",
     lifecycle_revision: "1",
     activated_by_actor_id: CANONICAL_ACTOR_ID,

@@ -811,7 +811,8 @@ coherent, the canary's only decision remains `deny`.
 Migration v64 adds the missing request-bound authority model for the two memory
 data rights. A request is limited to `memory.export.v1` or
 `memory.forget.v1`, one canonical subject acting as the exact user principal,
-one request digest, a canonical resource set, a short validity window, and the
+one request digest, a canonical resource set, a validity window capped at one
+hour, and the
 operation-specific human evidence (`explicit_export_request` or
 `reviewed_deletion_preview`). Its lifecycle supports held, active, one-time
 consumed, and revoked states so an approved request cannot become standing
@@ -837,6 +838,18 @@ purposes reject a request claim and continue to use standing authorities. The
 canary still has no allow result, performs no mutation or consumption, installs
 no access scope, and has no serving call site; v64's activation hold means a
 real row cannot yet satisfy this inspection.
+
+A separate transaction-only writer can now persist the initial held v64
+request and its metadata-only event atomically. It accepts only an exact
+canonical human execution scope whose tenant, actor, principal, and purpose
+match the request; live-locks the active auth user and same-tenant membership;
+and verifies the exact v64 marker, activation constraint, forced RLS, policies,
+and mutation triggers before insertion. The database remains authoritative for
+generation ordering and timestamps, and a valid-but-differently-bound returned
+row is rejected before event append. The writer has no client, route,
+environment lookup, transaction opener, activation, revocation, consumption,
+or serving call site. It requires an explicitly supplied schema-owner system
+transaction and returns `authorityGranted: false` and `runtimeAccepted: false`.
 
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that

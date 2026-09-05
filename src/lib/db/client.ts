@@ -35932,6 +35932,8 @@ async function ensureTenantMemoryDataRightRequestsShadow(sql: SqlClient) {
         )
         AND candidate_created_at <= candidate_not_before
         AND candidate_not_before < candidate_expires_at
+        AND candidate_expires_at <=
+          candidate_not_before + INTERVAL '1 hour'
         AND candidate_created_at <= candidate_updated_at
         AND (
           candidate_activated_at IS NULL

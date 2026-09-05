@@ -3,12 +3,19 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   databaseSchemaMigrations,
   ensureDatabaseSchema,
+  getSql,
   getVectorStoreStatus,
+  runWithDatabaseSystemScope,
   runWithDatabaseTenantScope,
   tenantPolicyTables,
 } from "@/lib/db/client";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import { rebuildMemoryGraph } from "@/lib/memory/graph";
+import {
+  recordHeldMemoryDataRightRequestV1,
+  type MemoryDataRightRequestWriterSql,
+  type RecordHeldMemoryDataRightRequestResultV1,
+} from "@/lib/memory/data-right-request-writer";
 import { saveMemories } from "@/lib/memory/store";
 import { createKnowledgeDocument } from "@/lib/rag/store";
 import {
@@ -17,6 +24,7 @@ import {
   failOperationJob,
 } from "@/lib/operations/job-queue";
 import { sweepExpiredSensitiveData } from "@/lib/security/retention";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import { createWorkflowRun } from "@/lib/workflows/store";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -657,6 +665,107 @@ databaseDescribe("Postgres schema integration", () => {
         statement_timestamp()
       )
     `).rejects.toMatchObject({ code: "23514" });
+  });
+
+  test("records a held memory data-right request and its event atomically", async () => {
+    const tenantId = "tenant_data_right_writer";
+    const userId = "00000000-0000-4000-8000-000000000064";
+    const actorId = `actor:${userId}`;
+    await admin`
+      INSERT INTO omni_auth_tenants (id, name, slug)
+      VALUES (${tenantId}, 'Data-right writer', 'data-right-writer')
+    `;
+    await admin`
+      INSERT INTO omni_auth_users (id, email, password_hash)
+      VALUES (${userId}, 'data-right-writer@example.test', 'test-only')
+    `;
+    await admin`
+      INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+      VALUES ('membership:data-right-writer', ${tenantId}, ${userId}, 'admin')
+    `;
+    const now = Date.now();
+    const createdAt = new Date(now - 120_000).toISOString();
+    const notBefore = new Date(now).toISOString();
+    const expiresAt = new Date(now + 3_600_000).toISOString();
+    const requestBindingSha256 = "6".repeat(64);
+    const executionScope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "correlation:data-right-writer-integration",
+      purpose: "memory.export.v1",
+    });
+
+    const result = await runWithDatabaseSystemScope(
+      "integration held data-right request",
+      () => getSql().transaction((sql: MemoryDataRightRequestWriterSql) =>
+        recordHeldMemoryDataRightRequestV1(
+          {
+            executionScope,
+            governanceDecisionId: "governance:data-right-writer-integration",
+            request: {
+              schemaVersion: 1,
+              tenantId,
+              requestId: "memory-data-right-request:integration",
+              requestGeneration: 1,
+              purposeId: "memory.export.v1",
+              subjectActorId: actorId,
+              executingPrincipalType: "user",
+              executingPrincipalId: actorId,
+              confirmationKind: "explicit_export_request",
+              requestBindingSha256,
+              resourceIds: ["memory:integration"],
+              notBefore,
+              expiresAt,
+              state: "held",
+              lifecycleRevision: 0,
+              createdByActorId: actorId,
+              activatedByActorId: null,
+              consumedByActorId: null,
+              revokedByActorId: null,
+              createdAt,
+              activatedAt: null,
+              consumedAt: null,
+              revokedAt: null,
+              updatedAt: createdAt,
+            },
+          },
+          sql,
+        )
+      ),
+    ) as RecordHeldMemoryDataRightRequestResultV1;
+
+    expect(result).toMatchObject({
+      request: {
+        tenantId,
+        purposeId: "memory.export.v1",
+        state: "held",
+      },
+      authorityGranted: false,
+      runtimeAccepted: false,
+    });
+    const [stored] = await admin`
+      SELECT state, lifecycle_revision
+      FROM omni_tenant_memory_data_right_requests
+      WHERE tenant_id = ${tenantId}
+        AND request_id = 'memory-data-right-request:integration'
+    `;
+    const [event] = await admin`
+      SELECT type, payload
+      FROM omni_events
+      WHERE id = ${result.event.id}
+    `;
+    expect(stored).toEqual({ state: "held", lifecycle_revision: "0" });
+    expect(event).toMatchObject({
+      type: "memory.data_right_request.held",
+      payload: {
+        tenantId,
+        resourceCount: 1,
+        state: "held",
+      },
+    });
+    expect(event.payload).not.toHaveProperty("resourceIds");
   });
 
   test("enforces shared limits atomically across concurrent requests", async () => {

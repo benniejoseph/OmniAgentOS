@@ -3,6 +3,7 @@ import { z } from "zod";
 
 export const MEMORY_DATA_RIGHT_REQUEST_SCHEMA_VERSION = 1 as const;
 export const MEMORY_DATA_RIGHT_REQUEST_EVENT_SCHEMA_VERSION = 1 as const;
+export const MAX_MEMORY_DATA_RIGHT_REQUEST_WINDOW_MS = 60 * 60 * 1_000;
 
 export const MEMORY_DATA_RIGHT_REQUEST_EVENT_TYPES = Object.freeze({
   held: "memory.data_right_request.held",
@@ -158,6 +159,7 @@ export const memoryDataRightRequestRecordV1Schema = z
     if (
       createdAt > notBefore ||
       notBefore >= expiresAt ||
+      expiresAt - notBefore > MAX_MEMORY_DATA_RIGHT_REQUEST_WINDOW_MS ||
       updatedAt < createdAt ||
       (activatedAt !== null &&
         (activatedAt < notBefore || activatedAt >= expiresAt || activatedAt > updatedAt)) ||
