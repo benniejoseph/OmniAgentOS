@@ -563,7 +563,11 @@ async function runTickLane(
         continue;
       }
       if (releaseGeneration !== releaseWorkGeneration) {
-        startup = true;
+        // A held registration that completes across SIGUSR1 must not make the
+        // next canonical tick another registration. The release gate requires
+        // a post-activation active heartbeat, and startup heartbeats also
+        // advance the remote-heartbeat throttle.
+        startup = !releaseWorkIsEnabled();
         tenantCursor = undefined;
         continue;
       }
@@ -657,6 +661,8 @@ async function runTickLane(
     }
     if (!shuttingDown) {
       if (releaseGeneration !== releaseWorkGeneration) {
+        startup = !releaseWorkIsEnabled();
+        tenantCursor = undefined;
         continue;
       }
       if (waitForHeldWorkerEvent) {
