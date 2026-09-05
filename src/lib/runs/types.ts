@@ -89,6 +89,7 @@ export type AgentRunContinuation = {
 export type AgentRunRecord = {
   id: string;
   tenantId?: string;
+  ownerActorId: string;
   threadId?: string;
   mode: AgentMode;
   status: RunStatus;

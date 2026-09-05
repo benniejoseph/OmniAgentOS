@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { getDatabaseTenantContext, hasDatabaseUrl, ensureDatabaseSchema, getSql } from "@/lib/db/client";
+import {
+  getDatabaseTenantContext,
+  hasDatabaseUrl,
+  ensureDatabaseSchema,
+  getSql,
+  runWithDatabaseSystemScope,
+} from "@/lib/db/client";
 import {
   appendDomainEvent,
   appendDomainEventSafely,
@@ -46,6 +52,7 @@ import { recordAiUsage } from "@/lib/usage/ledger";
 
 export async function createAgentRun(input: {
   tenantId?: string;
+  actorId?: string;
   threadId?: string;
   mode: AgentMode;
   prompt: string;
@@ -62,6 +69,9 @@ export async function createAgentRun(input: {
   const run: AgentRunRecord = {
     id: randomUUID(),
     tenantId: normalizeTenantId(input.tenantId),
+    ownerActorId: requiredOwnerActorId(
+      input.actorId || (hasDatabaseUrl() ? "" : "local:file-runtime"),
+    ),
     threadId: input.threadId,
     mode: input.mode,
     status: "running",
@@ -81,10 +91,10 @@ export async function createAgentRun(input: {
     await ensureDatabaseSchema();
     await getSql()`
       INSERT INTO omni_agent_runs (
-        id, tenant_id, thread_id, mode, status, prompt, messages, model, agent_id, specialist_ids, memory_context_count, started_at
+        id, tenant_id, owner_actor_id, thread_id, mode, status, prompt, messages, model, agent_id, specialist_ids, memory_context_count, started_at
       )
       VALUES (
-        ${run.id}, ${run.tenantId}, ${run.threadId || null}, ${run.mode}, ${run.status}, ${run.prompt}, ${run.messages}::jsonb,
+        ${run.id}, ${run.tenantId}, ${run.ownerActorId}, ${run.threadId || null}, ${run.mode}, ${run.status}, ${run.prompt}, ${run.messages}::jsonb,
         ${run.model || null}, ${run.agentId}, ${run.specialistIds}, ${run.memoryContextCount}, ${run.startedAt}
       )
     `;
@@ -105,6 +115,7 @@ export async function createAgentRun(input: {
 export async function createQueuedAgentRun(input: {
   id: string;
   tenantId?: string;
+  actorId?: string;
   mode: AgentMode;
   prompt: string;
   messages: ChatMessage[];
@@ -119,6 +130,9 @@ export async function createQueuedAgentRun(input: {
   const run: AgentRunRecord = {
     id: safeRunId(input.id),
     tenantId: normalizeTenantId(input.tenantId),
+    ownerActorId: requiredOwnerActorId(
+      input.actorId || (hasDatabaseUrl() ? "" : "local:file-runtime"),
+    ),
     mode: input.mode,
     status: "queued",
     prompt: safeRunText(input.prompt, 30_000),
@@ -136,11 +150,11 @@ export async function createQueuedAgentRun(input: {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       INSERT INTO omni_agent_runs (
-        id, tenant_id, mode, status, prompt, messages, model, agent_id,
+        id, tenant_id, owner_actor_id, mode, status, prompt, messages, model, agent_id,
         specialist_ids, memory_context_count, started_at
       )
       VALUES (
-        ${run.id}, ${run.tenantId}, ${run.mode}, ${run.status}, ${run.prompt},
+        ${run.id}, ${run.tenantId}, ${run.ownerActorId}, ${run.mode}, ${run.status}, ${run.prompt},
         ${run.messages}::jsonb, ${run.model || null}, ${run.agentId},
         ${run.specialistIds}, ${run.memoryContextCount}, ${run.startedAt}
       )
@@ -1066,35 +1080,38 @@ export async function repairStuckAgentRuns({
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     // Use epoch arithmetic to avoid named-parameter / type issues with intervals.
-    const rows = await getSql()`
-      UPDATE omni_agent_runs
-      SET status       = 'failed',
-          error        = CASE
-            WHEN status = 'resuming'
-              THEN 'Approved run resume was interrupted; side effects were not replayed.'
-            WHEN status = 'queued'
-              THEN 'Queued durable agent run expired before dispatch.'
-            ELSE 'Run timed out (function invocation limit exceeded).'
-          END,
-          continuation = NULL,
-          completed_at = NOW()
-      WHERE tenant_id = ${tenantId}
-        AND (
-          (status IN ('queued', 'running') AND started_at <= ${staleBeforeEpoch}::timestamptz)
-          OR (
-            status = 'resuming'
-            AND COALESCE(
-              (continuation->>'resumeClaimedAt')::timestamptz,
-              started_at
-            ) <= ${staleBeforeEpoch}::timestamptz
+    const rows = await runWithDatabaseSystemScope(
+      `Repair stale agent runs for tenant ${tenantId}.`,
+      () => getSql()`
+        UPDATE omni_agent_runs
+        SET status       = 'failed',
+            error        = CASE
+              WHEN status = 'resuming'
+                THEN 'Approved run resume was interrupted; side effects were not replayed.'
+              WHEN status = 'queued'
+                THEN 'Queued durable agent run expired before dispatch.'
+              ELSE 'Run timed out (function invocation limit exceeded).'
+            END,
+            continuation = NULL,
+            completed_at = NOW()
+        WHERE tenant_id = ${tenantId}
+          AND (
+            (status IN ('queued', 'running') AND started_at <= ${staleBeforeEpoch}::timestamptz)
+            OR (
+              status = 'resuming'
+              AND COALESCE(
+                (continuation->>'resumeClaimedAt')::timestamptz,
+                started_at
+              ) <= ${staleBeforeEpoch}::timestamptz
+            )
           )
-        )
-        AND NOT (
-          status = 'resuming'
-          AND continuation ? 'checkpointResumeClaim'
-        )
-      RETURNING id
-    `;
+          AND NOT (
+            status = 'resuming'
+            AND continuation ? 'checkpointResumeClaim'
+          )
+        RETURNING id
+      `,
+    );
     return rows.length;
   }
   let repaired = 0;
@@ -1142,7 +1159,11 @@ export async function markAgentRunWaitingForApproval(
     tenantId,
     type: "agent.resume" as const,
     dedupeKey: getAgentResumeJobDedupeKey(executionId),
-    payload: { agentRunId: runId, executionId },
+    payload: {
+      agentRunId: runId,
+      executionId,
+      actorId: values.continuation.context.actorId,
+    },
     priority: 20,
     maxAttempts: 10,
   };
@@ -1660,6 +1681,7 @@ function runFromRow(row: Record<string, unknown>): AgentRunRecord {
   return sanitizeAgentRunRecord({
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
+    ownerActorId: requiredOwnerActorId(String(row.owner_actor_id || "")),
     threadId: row.thread_id ? String(row.thread_id) : undefined,
     mode: String(row.mode) as AgentMode,
     status: String(row.status) as RunStatus,
@@ -1680,6 +1702,14 @@ function runFromRow(row: Record<string, unknown>): AgentRunRecord {
     completedAt: row.completed_at ? normalizeDate(row.completed_at) : undefined,
     consolidatedAt: row.consolidated_at ? normalizeDate(row.consolidated_at) : undefined,
   });
+}
+
+function requiredOwnerActorId(value: string) {
+  const actorId = value.trim();
+  if (!actorId || actorId.length > 320 || actorId.includes("\0")) {
+    throw new Error("Agent runs require a valid owner actor id.");
+  }
+  return actorId;
 }
 
 function sanitizeAgentRunRecord(run: AgentRunRecord): AgentRunRecord {

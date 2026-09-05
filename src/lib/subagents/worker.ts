@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { OPERATION_QUEUE_LEASE_SECONDS } from "@/lib/config";
-import { runWithDatabaseTenantScope } from "@/lib/db/client";
+import {
+  runWithDatabaseActorScope,
+  runWithDatabaseTenantScope,
+} from "@/lib/db/client";
 import { syncMissionExecutor } from "@/lib/missions/runtime";
 import { recordMissionArtifact } from "@/lib/missions/store";
 import { runAgent } from "@/lib/orchestration/agent-runner";
@@ -315,6 +318,20 @@ async function processSpecialistJob(
 }
 
 async function processSpecialistJobSafely(
+  job: OperationJobRecord,
+  deadline?: number,
+): Promise<SpecialistJobResult> {
+  const parsed = specialistJobSchema.safeParse(job.payload);
+  const actorId = parsed.success ? parsed.data.actorId : undefined;
+  if (actorId) {
+    return runWithDatabaseActorScope(job.tenantId, [actorId], () =>
+      processSpecialistJobSafelyInActorScope(job, deadline)
+    );
+  }
+  return processSpecialistJobSafelyInActorScope(job, deadline);
+}
+
+async function processSpecialistJobSafelyInActorScope(
   job: OperationJobRecord,
   deadline?: number,
 ): Promise<SpecialistJobResult> {

@@ -3,7 +3,8 @@ import { publicGroundingReport } from "@/lib/rag/citations";
 import { canonicalStatusForAgentRun } from "@/lib/status/canonical";
 
 export function publicAgentRun(run: AgentRunRecord) {
-  const { continuation, grounding, messages, ...safeRun } = run;
+  const { continuation, grounding, messages, ownerActorId: _ownerActorId, ...safeRun } = run;
+  void _ownerActorId;
   return {
     ...safeRun,
     grounding: grounding ? publicGroundingReport(grounding) : undefined,

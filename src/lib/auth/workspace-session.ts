@@ -5,7 +5,10 @@ import {
   isAuthEnforced,
   isBootstrapConfigured,
 } from "@/lib/auth/store";
-import { getSecurityContext } from "@/lib/security/context";
+import {
+  enterDatabaseSecurityContext,
+  getSecurityContext,
+} from "@/lib/security/context";
 
 export async function resolveWorkspaceSession(request: Request) {
   const identity = await getSessionIdentity(getSessionToken(request));
@@ -15,6 +18,9 @@ export async function resolveWorkspaceSession(request: Request) {
     ? headerContext
     : undefined;
   const context = identity?.context || trustedHeaderContext;
+  if (context) {
+    enterDatabaseSecurityContext(context);
+  }
 
   return {
     authEnabled,
