@@ -496,11 +496,13 @@ store with exact checkpoint-digest foreign keys, hashed credentials, monotonic
 lease generations, expired-only reclaim, and token-fenced heartbeat/completion.
 Acquisition revalidates the live rollout, scope, waiting run, approval decision,
 terminal tool state, and effect receipt, but no runtime calls it and every claim
-receipt still denies resume authority.
+receipt still denies resume authority. A dormant binder can atomically acquire
+that fence and move the exact run to `resuming`, emitting authority only in the
+same transaction and persisting no raw token. The worker is not wired to it.
 Unenrolled, preclaimed, file-mode, and existing runs remain unchanged. P1.6
 remains open until a non-empty production sample reconciles, every required
-boundary is checkpointed, the legacy run transition is bound to the fence, and
-canary resume proves it cannot duplicate an effect. The normative
+boundary is checkpointed, worker writes are token-fenced, and canary resume
+proves it cannot duplicate an effect. The normative
 boundary and activation order are documented in
 [RunCheckpoint v1](RUN_CHECKPOINTS.md).
 

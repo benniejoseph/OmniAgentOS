@@ -120,7 +120,10 @@ checkpoint digest and operation job, persist only hashed credentials, advance
 their generation only after expiry, and require the exact live token for
 heartbeat or completion. Acquisition rechecks rollout, scope, run, decision,
 tool, and effect state transactionally. No harness path invokes it yet, and its
-typed receipts explicitly deny resume authority.
+claim receipts explicitly deny resume authority. A separate dormant binder can
+co-commit the fence and run transition, emitting authority without storing the
+raw token. Worker heartbeat and final/next-wait mutations still need the same
+token fence before canary activation.
 
 ## One harness receipt per run
 
