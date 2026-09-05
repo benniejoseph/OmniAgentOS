@@ -53,6 +53,7 @@ export type MemoryGraphEdgeRelation =
 export type MemoryGraphNode = {
   id: string;
   tenantId: string;
+  accessBinding?: MemoryAccessBindingV1;
   kind: MemoryGraphNodeKind;
   label: string;
   slug: string;
@@ -71,6 +72,7 @@ export type MemoryGraphNode = {
 export type MemoryGraphEdge = {
   id: string;
   tenantId: string;
+  accessBinding?: MemoryAccessBindingV1;
   sourceNodeId: string;
   targetNodeId: string;
   relation: MemoryGraphEdgeRelation;

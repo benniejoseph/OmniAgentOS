@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const routeMocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
   indexMemoryGraphRecords: vi.fn(),
+  indexUserPrivateMemoryGraphRecords: vi.fn(),
   listMemories: vi.fn(),
   listThreadMemories: vi.fn(),
   saveMemory: vi.fn(),
@@ -30,6 +31,8 @@ vi.mock("@/lib/memory/store", () => ({
 
 vi.mock("@/lib/memory/graph", () => ({
   indexMemoryGraphRecords: routeMocks.indexMemoryGraphRecords,
+  indexUserPrivateMemoryGraphRecords:
+    routeMocks.indexUserPrivateMemoryGraphRecords,
 }));
 
 vi.mock("@/lib/openai/client", () => ({
@@ -66,6 +69,7 @@ describe("memory API private canary", () => {
   beforeEach(() => {
     routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
     routeMocks.indexMemoryGraphRecords.mockReset();
+    routeMocks.indexUserPrivateMemoryGraphRecords.mockReset();
     routeMocks.listMemories.mockReset()
       .mockResolvedValueOnce([legacyMemory])
       .mockResolvedValueOnce([]);
@@ -94,7 +98,7 @@ describe("memory API private canary", () => {
     });
   });
 
-  it("creates canonical user-private memory without tenant graph indexing", async () => {
+  it("creates canonical user-private memory with actor-scoped graph indexing", async () => {
     routeMocks.saveMemory.mockImplementation(async (input) => ({
       ...input,
       id: "private-a",
@@ -123,5 +127,15 @@ describe("memory API private canary", () => {
       }),
     }));
     expect(routeMocks.indexMemoryGraphRecords).not.toHaveBeenCalled();
+    expect(routeMocks.indexUserPrivateMemoryGraphRecords).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "private-a" })],
+      "memory.manual",
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        accessScope: expect.objectContaining({
+          purposeId: MEMORY_PURPOSE_IDS.write,
+        }),
+      }),
+    );
   });
 });

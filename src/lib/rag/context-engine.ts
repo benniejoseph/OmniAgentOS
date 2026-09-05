@@ -171,6 +171,7 @@ export async function buildContextPack(
     searchMemoryGraph(normalizedQuery, {
       limit: Math.min(candidateLimit, 24),
       tenantId,
+      accessScope: databaseMemoryAccessScope,
     }),
   ]);
   const memoryResults = mergeMemorySearchResults(

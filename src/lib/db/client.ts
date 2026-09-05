@@ -922,6 +922,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[77],
       up: ensureRetrievalTraceLineageQueryCutover,
     },
+    {
+      ...databaseSchemaMigrations[78],
+      up: ensureUserPrivateMemoryGraphProjection,
+    },
   ];
 }
 
@@ -3380,6 +3384,311 @@ async function ensureRetrievalTraceLineageQueryCutover(sql: SqlClient) {
       END IF;
     END
     $migration$
+  `;
+}
+
+async function ensureUserPrivateMemoryGraphProjection(sql: SqlClient) {
+  const graphTables = [
+    "omni_memory_graph_nodes",
+    "omni_memory_graph_edges",
+  ] as const;
+  for (const tableName of graphTables) {
+    await sql.query(`
+      ALTER TABLE ${tableName}
+      ADD COLUMN IF NOT EXISTS access_contract_version SMALLINT NOT NULL DEFAULT 0
+    `);
+    await sql.query(`
+      ALTER TABLE ${tableName}
+      ADD COLUMN IF NOT EXISTS access_state TEXT NOT NULL DEFAULT 'legacy_unattributed'
+    `);
+    for (const columnName of [
+      "owner_actor_id",
+      "owner_agent_id",
+      "workspace_id",
+      "project_id",
+      "mission_id",
+      "visibility",
+      "sensitivity",
+      "origin_purpose",
+      "access_scope_sha256",
+    ]) {
+      await sql.query(`
+        ALTER TABLE ${tableName}
+        ADD COLUMN IF NOT EXISTS ${columnName} TEXT
+      `);
+    }
+    await sql.query(`
+      ALTER TABLE ${tableName}
+      ADD COLUMN IF NOT EXISTS allowed_purpose_ids TEXT[]
+    `);
+    await sql.query(`
+      ALTER TABLE ${tableName}
+      ADD COLUMN IF NOT EXISTS access_bound_at TIMESTAMPTZ
+    `);
+  }
+
+  for (const tableName of graphTables) {
+    const constraintName = `${tableName}_access_contract_check`;
+    await sql.query(`
+      DO $migration$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = '${constraintName}'
+            AND conrelid = '${tableName}'::regclass
+        ) THEN
+          ALTER TABLE ${tableName}
+          ADD CONSTRAINT ${constraintName} CHECK (
+            (
+              access_contract_version = 0
+              AND access_state = 'legacy_unattributed'
+              AND owner_actor_id IS NULL
+              AND owner_agent_id IS NULL
+              AND workspace_id IS NULL
+              AND project_id IS NULL
+              AND mission_id IS NULL
+              AND visibility IS NULL
+              AND sensitivity IS NULL
+              AND origin_purpose IS NULL
+              AND allowed_purpose_ids IS NULL
+              AND access_scope_sha256 IS NULL
+              AND access_bound_at IS NULL
+            )
+            OR (
+              access_contract_version = 1
+              AND access_state = 'scope_bound'
+              AND omni_source_contract_id_is_valid(owner_actor_id)
+              AND owner_agent_id IS NULL
+              AND workspace_id IS NULL
+              AND project_id IS NULL
+              AND mission_id IS NULL
+              AND visibility = 'user_private'
+              AND sensitivity = 'confidential'
+              AND origin_purpose = 'memory.graph.projection'
+              AND allowed_purpose_ids = ARRAY[
+                'memory.correct.v1',
+                'memory.export.v1',
+                'memory.forget.v1',
+                'memory.read.v1',
+                'memory.retrieve.v1',
+                'memory.write.v1'
+              ]::TEXT[]
+              AND access_scope_sha256 ~ '^[0-9a-f]{64}$'
+              AND access_bound_at IS NOT NULL
+            )
+          ) NOT VALID;
+        END IF;
+      END
+      $migration$
+    `);
+    await sql.query(`
+      ALTER TABLE ${tableName}
+      VALIDATE CONSTRAINT ${constraintName}
+    `);
+  }
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_memory_graph_access_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF ROW(
+        OLD.tenant_id,
+        OLD.access_contract_version,
+        OLD.access_state,
+        OLD.owner_actor_id,
+        OLD.owner_agent_id,
+        OLD.workspace_id,
+        OLD.project_id,
+        OLD.mission_id,
+        OLD.visibility,
+        OLD.sensitivity,
+        OLD.origin_purpose,
+        OLD.allowed_purpose_ids,
+        OLD.access_scope_sha256,
+        OLD.access_bound_at
+      ) IS DISTINCT FROM ROW(
+        NEW.tenant_id,
+        NEW.access_contract_version,
+        NEW.access_state,
+        NEW.owner_actor_id,
+        NEW.owner_agent_id,
+        NEW.workspace_id,
+        NEW.project_id,
+        NEW.mission_id,
+        NEW.visibility,
+        NEW.sensitivity,
+        NEW.origin_purpose,
+        NEW.allowed_purpose_ids,
+        NEW.access_scope_sha256,
+        NEW.access_bound_at
+      ) THEN
+        RAISE EXCEPTION 'Memory graph access scope is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  for (const tableName of graphTables) {
+    const policyPrefix = tableName.replace(/^omni_/, "omni_");
+    await sql.query(`
+      DROP TRIGGER IF EXISTS ${tableName}_access_scope_immutable
+      ON ${tableName}
+    `);
+    await sql.query(`
+      CREATE TRIGGER ${tableName}_access_scope_immutable
+      BEFORE UPDATE OF
+        tenant_id, access_contract_version, access_state, owner_actor_id,
+        owner_agent_id, workspace_id, project_id, mission_id, visibility,
+        sensitivity, origin_purpose, allowed_purpose_ids,
+        access_scope_sha256, access_bound_at
+      ON ${tableName}
+      FOR EACH ROW
+      EXECUTE FUNCTION omni_reject_memory_graph_access_change()
+    `);
+    await sql.query(`
+      DROP POLICY IF EXISTS ${policyPrefix}_access_scope ON ${tableName}
+    `);
+    await sql.query(`
+      CREATE POLICY ${policyPrefix}_access_scope
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND omni_current_memory_access_scope_v1() IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND access_state = 'scope_bound'
+          AND visibility = 'user_private'
+          AND omni_user_private_memory_scope_v1_allows(
+            tenant_id,
+            owner_actor_id,
+            allowed_purpose_ids
+          )
+        )
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND omni_current_memory_access_scope_v1() IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND access_state = 'scope_bound'
+          AND visibility = 'user_private'
+          AND omni_user_private_memory_scope_v1_allows(
+            tenant_id,
+            owner_actor_id,
+            allowed_purpose_ids
+          )
+        )
+      )
+    `);
+    await sql.query(`
+      DROP POLICY IF EXISTS ${policyPrefix}_insert_purpose ON ${tableName}
+    `);
+    await sql.query(`
+      CREATE POLICY ${policyPrefix}_insert_purpose
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR INSERT
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND omni_current_memory_access_scope_v1() IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND omni_current_memory_access_scope_v1() ->> 'purposeId' IN (
+            'memory.write.v1',
+            'memory.correct.v1'
+          )
+        )
+      )
+    `);
+    await sql.query(`
+      DROP POLICY IF EXISTS ${policyPrefix}_update_purpose ON ${tableName}
+    `);
+    await sql.query(`
+      CREATE POLICY ${policyPrefix}_update_purpose
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR UPDATE
+      USING (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND omni_current_memory_access_scope_v1() IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND omni_current_memory_access_scope_v1() ->> 'purposeId' IN (
+            'memory.write.v1',
+            'memory.correct.v1'
+          )
+        )
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND omni_current_memory_access_scope_v1() IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND omni_current_memory_access_scope_v1() ->> 'purposeId' IN (
+            'memory.write.v1',
+            'memory.correct.v1'
+          )
+        )
+      )
+    `);
+    await sql.query(`
+      DROP POLICY IF EXISTS ${policyPrefix}_delete_purpose ON ${tableName}
+    `);
+    await sql.query(`
+      CREATE POLICY ${policyPrefix}_delete_purpose
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR DELETE
+      USING (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND omni_current_memory_access_scope_v1() IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND omni_current_memory_access_scope_v1() ->> 'purposeId'
+            = 'memory.forget.v1'
+        )
+      )
+    `);
+  }
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_graph_nodes_actor_rank_idx
+    ON omni_memory_graph_nodes (
+      tenant_id, owner_actor_id, weight DESC, source_count DESC, updated_at DESC
+    )
+    WHERE access_contract_version = 1
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_graph_edges_actor_rank_idx
+    ON omni_memory_graph_edges (
+      tenant_id, owner_actor_id, weight DESC, evidence_count DESC, updated_at DESC
+    )
+    WHERE access_contract_version = 1
   `;
 }
 

@@ -43,6 +43,7 @@ vi.mock("@/lib/memory/store", () => ({
 }));
 
 vi.mock("@/lib/memory/graph", () => ({
+  indexUserPrivateMemoryGraphRecords: vi.fn(),
   queueMemoryGraphRebuild: vi.fn(),
 }));
 

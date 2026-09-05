@@ -690,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the retrieval-trace lineage query cutover migration", () => {
+  it("pins the user-private memory graph projection migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 78,
-      name: "retrieval_trace_lineage_query_cutover",
-      checksum: "294a7328f6a0d68d82496975b3827d5c53a91ac7a1215b2a829c8a64290c9ca2",
+      version: 79,
+      name: "user_private_memory_graph_projection",
+      checksum: "5d491f28e211333c21caa8c65fac6b0819c98ef833322512340b38d30b1bbdf4",
     });
   });
 

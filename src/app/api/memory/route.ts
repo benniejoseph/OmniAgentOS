@@ -6,7 +6,10 @@ import {
   parseBoundedInteger,
   parseJsonBody,
 } from "@/lib/http/body";
-import { indexMemoryGraphRecords } from "@/lib/memory/graph";
+import {
+  indexMemoryGraphRecords,
+  indexUserPrivateMemoryGraphRecords,
+} from "@/lib/memory/graph";
 import {
   buildUserPrivateMemoryAccessBindingV1,
   MEMORY_PURPOSE_IDS,
@@ -224,7 +227,12 @@ async function POSTHandler(request: Request) {
       databaseAccessScope: requestAccess?.databaseAccessScope,
       executionScope: requestAccess?.executionScope,
     });
-    if (!record.accessBinding) {
+    if (record.accessBinding && requestAccess) {
+      await indexUserPrivateMemoryGraphRecords([record], "memory.manual", {
+        tenantId: context.tenantId,
+        accessScope: requestAccess.databaseAccessScope,
+      });
+    } else if (!record.accessBinding) {
       await indexMemoryGraphRecords([record], "memory.manual");
     }
 
