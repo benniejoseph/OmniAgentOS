@@ -528,6 +528,49 @@ databaseDescribe("Postgres schema integration", () => {
     `).rejects.toMatchObject({ code: "23514" });
   });
 
+  test("keeps operation policies empty, owner-only, and unable to waive gates", async () => {
+    const [surface] = await admin`
+      SELECT
+        (SELECT count(*)::int FROM omni_tenant_memory_operation_policies)
+          AS rows,
+        (SELECT count(*)::int FROM pg_policy
+         WHERE polrelid = 'omni_tenant_memory_operation_policies'::regclass)
+          AS policies,
+        NOT EXISTS (
+          SELECT 1 FROM information_schema.table_privileges
+          WHERE table_schema = 'public'
+            AND table_name = 'omni_tenant_memory_operation_policies'
+            AND grantee <> current_user
+        ) AS owner_only,
+        EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'omni_tenant_memory_operation_policies'::regclass
+            AND conname = 'omni_memory_operation_policy_activation_hold_check'
+            AND convalidated
+            AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
+        ) AS activation_held,
+        omni_memory_operation_policy_row_is_valid(
+          1::smallint, 'tenant:one'::text, 'memory-policy:unsafe'::text,
+          1::bigint, 'memory.forget.v1'::text, 'forget'::text, 'low'::text,
+          ARRAY['user'], ARRAY['user_private'], ARRAY['public'],
+          FALSE, FALSE, FALSE, FALSE,
+          'held'::text, 0::bigint,
+          'actor:00000000-0000-4000-8000-000000000001'::text,
+          NULL::text, NULL::text,
+          statement_timestamp(), NULL::timestamptz, NULL::timestamptz,
+          statement_timestamp()
+        ) AS unsafe_policy_accepted
+    `;
+
+    expect(surface).toEqual({
+      rows: 0,
+      policies: 2,
+      owner_only: true,
+      activation_held: true,
+      unsafe_policy_accepted: false,
+    });
+  });
+
   test("enforces shared limits atomically across concurrent requests", async () => {
     const key = `integration:${crypto.randomUUID()}`;
     const results = await Promise.all(
