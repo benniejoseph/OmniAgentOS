@@ -1113,10 +1113,13 @@ New authenticated manual writes carry the immutable binding columns and emit
 `memory.user_private.created` in the same transaction. Correction and reviewed
 forget preserve the actor boundary. Portable export includes only the current
 actor's private cohort, and canonical restore creates a fresh private binding.
-The tenant-wide graph and legacy RAG/context paths never receive these rows;
-that omission is a fail-closed phase boundary, not completed P3.1 support.
-Agent-private/shared visibility and actor-aware graph, context, formation, and
-worker surfaces remain closed.
+The authenticated Retrieval Plan API can merge that same independently scoped
+cohort into an ephemeral context pack. It never persists a tenant-wide
+retrieval trace while a scoped-memory envelope is present. The tenant-wide
+graph and agent-run context still never receive these rows; those omissions are
+fail-closed phase boundaries, not completed P3.1 support. Agent-private/shared
+visibility and actor-aware traces, graph, agent context, formation, and worker
+surfaces remain closed.
 
 ## Where things live
 

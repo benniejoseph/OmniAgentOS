@@ -1755,11 +1755,17 @@ session/mobile memory create, list, search, inspect, correction, reviewed
 forget, portable export, and portable restore use that scope; version-0 rows
 remain on an isolated compatibility query. Bound creation emits a
 metadata-only `memory.user_private.created` event in the same transaction.
-Private rows are not projected into the tenant-wide graph and are not consumed
-by the legacy RAG/context or background formation paths. Agent-private and
-mission/project/workspace-shared memory, standing consent-driven formation,
-actor-aware graph/context/worker consumption, and the full authority resolver
-remain pending. This canary therefore advances P3.1 without marking it done.
+Private rows are not projected into the tenant-wide graph or consumed by
+background formation. The authenticated Retrieval Plan API may now merge the
+calling canonical user's independently scoped private results into an
+ephemeral context pack; any request that enters that scope suppresses the
+tenant-wide retrieval trace because traces do not yet have an actor-aware
+contract. Migration v74 repairs the daily-brief memory-lineage column used by
+governed deletion invalidation. Agent-run consumption, private retrieval
+traces, agent-private and mission/project/workspace-shared memory, standing
+consent-driven formation, actor-aware graph/worker consumption, and the full
+authority resolver remain pending. This canary therefore advances P3.1 without
+marking it done.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
