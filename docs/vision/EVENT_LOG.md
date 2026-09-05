@@ -157,6 +157,15 @@ private workflow-history row and metadata-only canonical event in one Postgres
 transaction. Legacy workflows without an authority remain explicitly legacy
 attributed; this privacy correction does not invent an owner for them.
 
+Mission lifecycle dual-writes use the same metadata-only projection rule.
+`mission.*` canonical event payloads now carry schema version 1, the bounded
+event type, a field count, and a canonical SHA-256 binding only. Mission and
+task objectives, definitions of done, comments, handoff notes, review text,
+artifact bodies, errors, and model output remain in their owner-scoped stores
+and are not copied to `omni_events`. Mission mutations still use the legacy
+best-effort dual-write boundary in this slice; transactional conversion and an
+explicit executing-principal scope remain open P1.1/P1.2 work.
+
 The Drive generation-2 canary adds `source.sync.page.canonical_settled` in the
 same transaction as the page's canonical revisions, tombstones or ordered
 no-op decisions, terminal page items, committed checkpoint, and next encrypted

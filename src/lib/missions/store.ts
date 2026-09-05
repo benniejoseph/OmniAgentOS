@@ -6,6 +6,7 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import { appendDomainEventSafely } from "@/lib/events/store";
+import { missionDomainEventPayloadV1 } from "@/lib/missions/events";
 import { missionActorReadOrder } from "@/lib/missions/actor-scope";
 import type {
   Mission,
@@ -1489,7 +1490,10 @@ async function appendMissionLifecycleEventForOwner(
     type: safeText(type, 120),
     tenantId: owner.tenantId,
     actorId: owner.actorId,
-    payload: compactEventPayload(payload),
+    payload: missionDomainEventPayloadV1(
+      safeText(type, 120),
+      compactEventPayload(payload),
+    ),
   });
 }
 
