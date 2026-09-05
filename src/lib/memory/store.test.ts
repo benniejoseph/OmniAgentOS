@@ -192,4 +192,50 @@ describe("memory persistence safety (file mode)", () => {
     expect(quarantined).toMatchObject({ claimStatus: "contradicted", confidence: 0.35 });
     await expect(store.searchMemories("long answers", { tenantId: "tenant-learning" })).resolves.toEqual([]);
   });
+
+  it("keeps scope-bound private memory hidden from legacy and sibling reads", async () => {
+    const store = await import("@/lib/memory/store");
+    const access = await import("@/lib/memory/access-binding");
+    const binding = access.buildUserPrivateMemoryAccessBindingV1({
+      tenantId: "tenant-private",
+      ownerActorId: "actor:owner",
+      originPurpose: "api.memory.write",
+      accessBoundAt: "2026-09-06T00:00:00.000Z",
+    });
+    const ownerScope = {
+      version: 1 as const,
+      tenantId: "tenant-private",
+      initiatingActorId: "actor:owner",
+      executingPrincipalType: "user" as const,
+      executingPrincipalId: "actor:owner",
+      workspaceId: null,
+      projectId: null,
+      missionId: null,
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+      purposeId: access.MEMORY_PURPOSE_IDS.read,
+      purpose: "api.memory.read",
+    };
+    const record = await store.saveMemory({
+      tenantId: "tenant-private",
+      title: "Owner preference",
+      content: "Only the owner may retrieve this.",
+      accessBinding: binding,
+    });
+
+    await expect(store.listMemories({ tenantId: "tenant-private" }))
+      .resolves.toEqual([]);
+    await expect(store.listMemories({
+      tenantId: "tenant-private",
+      accessScope: ownerScope,
+    })).resolves.toEqual([record]);
+    await expect(store.listMemories({
+      tenantId: "tenant-private",
+      accessScope: {
+        ...ownerScope,
+        initiatingActorId: "actor:sibling",
+        executingPrincipalId: "actor:sibling",
+      },
+    })).resolves.toEqual([]);
+  });
 });
