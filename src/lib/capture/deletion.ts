@@ -45,6 +45,7 @@ export async function deleteCaptureAssetWithKnowledge(
     }
     return deleteKnowledgeDocumentsBySourcePrefix(source, {
       tenantId: owner.tenantId,
+      invalidationScope: owner.executionScope,
       sql,
     });
   });
@@ -74,6 +75,7 @@ export async function deleteCaptureRecordingWithKnowledge(
     }
     return deleteKnowledgeDocumentsBySourcePrefix(recording.source, {
       tenantId: owner.tenantId,
+      invalidationScope: owner.executionScope,
       sql,
     });
   });

@@ -112,6 +112,7 @@ describe("atomic capture deletion", () => {
       captureMocks.deleteKnowledgeDocumentsBySourcePrefix,
     ).toHaveBeenCalledWith(`capture:asset:${asset.id}`, {
       tenantId: owner.tenantId,
+      invalidationScope: owner.executionScope,
       sql: dbMocks.sql,
     });
     expect(
@@ -137,6 +138,7 @@ describe("atomic capture deletion", () => {
       captureMocks.deleteKnowledgeDocumentsBySourcePrefix,
     ).toHaveBeenCalledWith(recording.source, {
       tenantId: owner.tenantId,
+      invalidationScope: owner.executionScope,
       sql: dbMocks.sql,
     });
   });

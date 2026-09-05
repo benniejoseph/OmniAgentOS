@@ -29,6 +29,7 @@ import {
   lockActiveCaptureIngest,
   type CaptureIngestGuard,
 } from "@/lib/capture/ingest-guard";
+import { invalidateRunsForDeletedContext } from "@/lib/runs/context-invalidation";
 
 export type CreateMemoryInput = {
   id?: string;
@@ -634,10 +635,20 @@ export async function forgetMemoryWithReceipt(
             )
           )
         ORDER BY id COLLATE "C"
+        FOR UPDATE
       `;
       const retrievalTraceIds = canonicalizeMemoryDeletionIds(
         traceRows.map((row) => String(row.id)),
       );
+
+      const invalidatedRuns = await invalidateRunsForDeletedContext({
+        tenantId,
+        retrievalTraceIds,
+        executionScope,
+        sourceKind: "memory",
+        sourceReference: id,
+        sql,
+      });
 
       const graphNodeRows = await sql`
         SELECT id
@@ -744,6 +755,8 @@ export async function forgetMemoryWithReceipt(
           retrievalTraceCount: receipt.retrievalTraceCount,
           graphNodeCount: receipt.graphNodeCount,
           graphEdgeCount: receipt.graphEdgeCount,
+          invalidatedAgentRunCount: invalidatedRuns.agentRunIds.length,
+          invalidatedWorkflowRunCount: invalidatedRuns.workflowRunIds.length,
           descendantManifestSha256: receipt.descendantManifestSha256,
           executionScopeSha256: receipt.executionScopeSha256,
           receiptSha256: receipt.receiptSha256,

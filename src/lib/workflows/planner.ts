@@ -1000,21 +1000,41 @@ async function saveWorkflowPlan(record: WorkflowPlanRecord) {
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`
-      INSERT INTO omni_workflow_plans (
-        id, tenant_id, workflow_run_id, goal, status, planner, model, plan, validation,
-        context_trace_id, highest_risk_level, approval_required, confidence,
-        error, created_at, updated_at
-      )
-      VALUES (
-        ${planRecord.id}, ${planRecord.tenantId}, ${planRecord.workflowRunId || null}, ${planRecord.goal},
-        ${planRecord.status}, ${planRecord.planner}, ${planRecord.model},
-        ${planRecord.plan}::jsonb, ${planRecord.validation}::jsonb,
-        ${planRecord.contextTraceId || null}, ${planRecord.highestRiskLevel},
-        ${planRecord.approvalRequired}, ${planRecord.confidence}, ${planRecord.error || null},
-        ${planRecord.createdAt}, ${planRecord.updatedAt}
-      )
-    `;
+    await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      if (planRecord.contextTraceId) {
+        const traceRows = await sql`
+          SELECT id
+          FROM omni_retrieval_traces
+          WHERE tenant_id = ${planRecord.tenantId}
+            AND id = ${planRecord.contextTraceId}
+            AND NOT omni_memory_ids_have_deletion_barrier(
+              tenant_id,
+              memory_ids
+            )
+          FOR KEY SHARE
+        `;
+        if (!traceRows[0]) {
+          throw new Error(
+            "Workflow context was invalidated before its plan could be admitted.",
+          );
+        }
+      }
+      await sql`
+        INSERT INTO omni_workflow_plans (
+          id, tenant_id, workflow_run_id, goal, status, planner, model, plan, validation,
+          context_trace_id, highest_risk_level, approval_required, confidence,
+          error, created_at, updated_at
+        )
+        VALUES (
+          ${planRecord.id}, ${planRecord.tenantId}, ${planRecord.workflowRunId || null}, ${planRecord.goal},
+          ${planRecord.status}, ${planRecord.planner}, ${planRecord.model},
+          ${planRecord.plan}::jsonb, ${planRecord.validation}::jsonb,
+          ${planRecord.contextTraceId || null}, ${planRecord.highestRiskLevel},
+          ${planRecord.approvalRequired}, ${planRecord.confidence}, ${planRecord.error || null},
+          ${planRecord.createdAt}, ${planRecord.updatedAt}
+        )
+      `;
+    });
     return planRecord;
   }
 

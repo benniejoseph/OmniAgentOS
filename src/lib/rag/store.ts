@@ -11,6 +11,7 @@ import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
   parsePersistedExecutionScope,
+  type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
@@ -49,6 +50,7 @@ import {
   knowledgeDeletionTargetId,
   type KnowledgeDeletionMutationContext,
 } from "@/lib/rag/deletion-events";
+import { invalidateRunsForDeletedContext } from "@/lib/runs/context-invalidation";
 
 type RagSqlClient = ReturnType<typeof getSql>;
 
@@ -317,6 +319,7 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
   tenantId?: string;
   actorId?: string;
   mutation?: KnowledgeDeletionMutationContext;
+  invalidationScope?: ExecutionScope;
   sql?: RagSqlClient;
 } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
@@ -346,7 +349,13 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
         ORDER BY id COLLATE "C"
       `;
       const memoryIds = memoryRows.map((row) => String(row.id));
-      await invalidateKnowledgeMemoryLineage(sql, tenantId, memoryIds);
+      const invalidationScope = mutation?.executionScope ||
+        options.invalidationScope;
+      await invalidateKnowledgeMemoryLineage(sql, tenantId, memoryIds, {
+        executionScope: invalidationScope,
+        sourceKind: prefix.startsWith("capture:") ? "capture" : "knowledge",
+        sourceReference: prefix,
+      });
       if (ids.length) {
         await sql`DELETE FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND id = ANY(${ids})`;
       }
@@ -468,8 +477,31 @@ async function invalidateKnowledgeMemoryLineage(
   sql: RagSqlClient,
   tenantId: string,
   memoryIds: string[],
+  invalidation?: {
+    executionScope?: ExecutionScope;
+    sourceKind: "knowledge" | "capture";
+    sourceReference: string;
+  },
 ) {
   if (!memoryIds.length) return;
+  const traceRows = await sql`
+    SELECT id
+    FROM omni_retrieval_traces
+    WHERE tenant_id = ${tenantId}
+      AND memory_ids && ${memoryIds}::text[]
+    ORDER BY id COLLATE "C"
+    FOR UPDATE
+  `;
+  if (invalidation?.executionScope) {
+    await invalidateRunsForDeletedContext({
+      tenantId,
+      retrievalTraceIds: traceRows.map((row) => String(row.id)),
+      executionScope: invalidation.executionScope,
+      sourceKind: invalidation.sourceKind,
+      sourceReference: invalidation.sourceReference,
+      sql,
+    });
+  }
   await sql`
     DELETE FROM omni_memory_graph_edges edge
     WHERE edge.tenant_id = ${tenantId}
