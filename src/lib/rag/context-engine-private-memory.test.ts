@@ -39,7 +39,7 @@ import { buildContextPack } from "@/lib/rag/context-engine";
 
 const actorId = "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6";
 
-function accessScope(purposeId = MEMORY_PURPOSE_IDS.retrieve) {
+function accessScope(purposeId: string = MEMORY_PURPOSE_IDS.retrieve) {
   return {
     version: 1 as const,
     tenantId: "tenant-a",
