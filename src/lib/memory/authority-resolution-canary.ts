@@ -11,6 +11,7 @@ import {
   CANONICAL_REQUEST_ACTOR_BINDING_VERSION,
   type CanonicalRequestActorBindingV1,
 } from "@/lib/security/canonical-actor";
+import { MAX_MEMORY_DATA_RIGHT_REQUEST_WINDOW_MS } from "@/lib/memory/data-right-request-contracts";
 
 export const MEMORY_AUTHORITY_RESOLUTION_CANARY_SCHEMA_VERSION = 1 as const;
 export const MEMORY_DATA_RIGHT_AUTHORITY_CLAIM_SCHEMA_VERSION = 1 as const;
@@ -699,6 +700,7 @@ async function hasActiveDataRightRequestAuthority(
       expiresAt !== undefined &&
       activatedAt !== undefined &&
       observedAt !== undefined &&
+      expiresAt - notBefore <= MAX_MEMORY_DATA_RIGHT_REQUEST_WINDOW_MS &&
       notBefore <= activatedAt &&
       activatedAt <= observedAt &&
       observedAt < expiresAt,
