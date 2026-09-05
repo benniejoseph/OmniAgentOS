@@ -52,6 +52,7 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 - `/api/workflows/:id/tick` and `/api/workflows/:id/signal` for controlled progression.
 - `/api/triggers` and `/api/triggers/:id/dispatch`.
 - `/api/operations`, `/api/approvals`, `/api/approvals/:id`, and `/api/workflows/tick`.
+- Tool decisions sent to `POST /api/approvals/:id` accept the same bounded `Idempotency-Key` format. Approved, quorum-pending, and rejected tool decisions persist a versioned metadata-only event atomically with the locked tool-execution row; private reasons and tool payloads are excluded.
 
 ## Tools and connectors
 

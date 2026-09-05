@@ -7,7 +7,11 @@ import {
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { redactSensitive } from "@/lib/security/context";
-import type { ExecutionScope } from "@/lib/security/execution-scope";
+import {
+  assertExecutionScopeTenant,
+  parsePersistedExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import {
   openJsonPayload,
   sealJsonPayload,
@@ -22,6 +26,13 @@ import {
   type EffectReceiptV1,
 } from "@/lib/tools/effect-receipt";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
+import {
+  approvalSha256,
+  TOOL_APPROVAL_EVENT_SCHEMA_VERSION,
+  toolApprovalEventId,
+  toolApprovalEventPayloadSchema,
+  type ToolApprovalMutationContext,
+} from "@/lib/tools/approval-events";
 import { toolApprovalFingerprint } from "@/lib/tools/fingerprint";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM, type ToolExecutionLedger, type ToolExecutionRecord } from "@/lib/tools/types";
@@ -177,8 +188,16 @@ export async function approveAndClaimToolExecution(input: {
   approvedRole: string;
   approvalReason?: string;
   claimToken: string;
+  mutation?: ToolApprovalMutationContext;
 }): Promise<ToolApprovalClaimResult> {
   const tenantId = normalizeTenantId(input.tenantId);
+  const mutation = input.mutation
+    ? exactToolApprovalMutation(
+        input.mutation,
+        tenantId,
+        input.approvedBy,
+      )
+    : undefined;
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -196,6 +215,17 @@ export async function approveAndClaimToolExecution(input: {
       const result = applyApprovalClaim(recordFromRow(rows[0]), input);
       if (result.record && (result.outcome === "pending" || result.outcome === "claimed")) {
         await writeToolExecutionDb(sql, result.record);
+        if (mutation) {
+          await appendToolApprovalDecisionEvent({
+            mutation,
+            record: result.record,
+            decision: "approved",
+            outcome: result.outcome === "pending"
+              ? "quorum_pending"
+              : "execution_claimed",
+            decisionActorId: input.approvedBy,
+          }, sql);
+        }
       }
       return result;
     }) as Promise<ToolApprovalClaimResult>;
@@ -216,6 +246,21 @@ export async function approveAndClaimToolExecution(input: {
     }
     return replaceLedgerRecord(ledger, result.record);
   });
+  if (
+    mutation &&
+    result.record &&
+    (result.outcome === "pending" || result.outcome === "claimed")
+  ) {
+    await appendToolApprovalDecisionEvent({
+      mutation,
+      record: result.record,
+      decision: "approved",
+      outcome: result.outcome === "pending"
+        ? "quorum_pending"
+        : "execution_claimed",
+      decisionActorId: input.approvedBy,
+    });
+  }
   return result;
 }
 
@@ -224,8 +269,16 @@ export async function rejectPendingToolExecution(input: {
   tenantId?: string;
   rejectedBy: string;
   reason?: string;
+  mutation?: ToolApprovalMutationContext;
 }): Promise<{ outcome: "not_found" | "conflict" | "rejected"; record?: ToolExecutionRecord }> {
   const tenantId = normalizeTenantId(input.tenantId);
+  const mutation = input.mutation
+    ? exactToolApprovalMutation(
+        input.mutation,
+        tenantId,
+        input.rejectedBy,
+      )
+    : undefined;
   const reject = (record: ToolExecutionRecord) => {
     if (record.status !== "approval_required") {
       return { outcome: "conflict" as const, record };
@@ -268,6 +321,15 @@ export async function rejectPendingToolExecution(input: {
       const result = reject(recordFromRow(rows[0]));
       if (result.outcome === "rejected") {
         await writeToolExecutionDb(sql, result.record);
+        if (mutation) {
+          await appendToolApprovalDecisionEvent({
+            mutation,
+            record: result.record,
+            decision: "rejected",
+            outcome: "rejected",
+            decisionActorId: input.rejectedBy,
+          }, sql);
+        }
       }
       return result;
     }) as Promise<{ outcome: "not_found" | "conflict" | "rejected"; record?: ToolExecutionRecord }>;
@@ -289,6 +351,15 @@ export async function rejectPendingToolExecution(input: {
       ? replaceLedgerRecord(ledger, result.record)
       : ledger;
   });
+  if (mutation && result.outcome === "rejected" && result.record) {
+    await appendToolApprovalDecisionEvent({
+      mutation,
+      record: result.record,
+      decision: "rejected",
+      outcome: "rejected",
+      decisionActorId: input.rejectedBy,
+    });
+  }
   return result;
 }
 
@@ -1061,6 +1132,83 @@ async function appendToolEffectReceiptEvent(
     type: "tool.effect_receipt.recorded",
     executionScope,
     payload: buildEffectReceiptEventPayloadV1(validated),
+  }, sql ? { sql } : {});
+}
+
+function exactToolApprovalMutation(
+  value: ToolApprovalMutationContext,
+  tenantId: string,
+  decisionActorId: string,
+) {
+  const executionScope = parsePersistedExecutionScope(value.executionScope);
+  if (!executionScope) {
+    throw new Error("Tool approval decision requires an execution scope.");
+  }
+  assertExecutionScopeTenant(executionScope, tenantId);
+  if (
+    executionScope.initiatingActorId !== decisionActorId ||
+    executionScope.executingPrincipalId !== decisionActorId ||
+    !["user", "system"].includes(executionScope.executingPrincipalType)
+  ) {
+    throw new Error(
+      "Tool approval scope must bind the authenticated decision principal.",
+    );
+  }
+  const idempotencyKey = value.idempotencyKey.trim();
+  if (
+    !idempotencyKey ||
+    idempotencyKey.length > 200 ||
+    !/^[A-Za-z0-9._:-]+$/.test(idempotencyKey)
+  ) {
+    throw new Error(
+      "Tool approval Idempotency-Key must use 1-200 letters, numbers, dots, underscores, colons, or hyphens.",
+    );
+  }
+  return { executionScope, idempotencyKey } as const;
+}
+
+async function appendToolApprovalDecisionEvent(
+  input: {
+    mutation: ReturnType<typeof exactToolApprovalMutation>;
+    record: ToolExecutionRecord;
+    decision: "approved" | "rejected";
+    outcome: "quorum_pending" | "execution_claimed" | "rejected";
+    decisionActorId: string;
+  },
+  sql?: SqlClient,
+) {
+  const approvalFingerprint = getToolExecutionApprovalFingerprint(input.record);
+  const payload = toolApprovalEventPayloadSchema.parse({
+    schemaVersion: TOOL_APPROVAL_EVENT_SCHEMA_VERSION,
+    executionId: input.record.id,
+    toolId: input.record.toolId,
+    decision: input.decision,
+    outcome: input.outcome,
+    riskLevel: input.record.riskLevel,
+    approvalCount: input.record.approvals?.length ||
+      (input.decision === "approved" ? 1 : 0),
+    requiredApprovalCount: input.record.riskLevel >= 3 ? RISK3_QUORUM : 1,
+    approvalFingerprintSha256: approvalFingerprint
+      ? approvalSha256(approvalFingerprint)
+      : null,
+    idempotencyKeySha256: approvalSha256({
+      tenantId: input.record.tenantId || "default",
+      idempotencyKey: input.mutation.idempotencyKey,
+    }),
+  });
+  await appendScopedDomainEvent({
+    id: toolApprovalEventId({
+      tenantId: input.record.tenantId || "default",
+      executionId: input.record.id,
+      decisionActorId: input.decisionActorId,
+      decision: input.decision,
+    }),
+    streamId: `tool_execution:${input.record.id}`,
+    type: input.decision === "approved"
+      ? "tool.approval.recorded"
+      : "tool.approval.rejected",
+    executionScope: input.mutation.executionScope,
+    payload,
   }, sql ? { sql } : {});
 }
 

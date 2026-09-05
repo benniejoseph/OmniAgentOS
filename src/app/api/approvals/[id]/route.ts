@@ -26,6 +26,7 @@ import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM } from "@/lib/tools/types";
+import { toolApprovalMutationFromRequest } from "@/lib/tools/approval-events";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
@@ -213,6 +214,19 @@ async function POSTHandler(
   if (!record) {
     return Response.json({ error: "Tool approval record not found." }, { status: 404 });
   }
+  let approvalMutation;
+  try {
+    approvalMutation = toolApprovalMutationFromRequest(
+      request,
+      securityContext,
+      { executionId: record.id, decision: parsed.data.decision },
+    );
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : "Invalid approval request." },
+      { status: 400 },
+    );
+  }
 
   const retryingMemoryForget =
     parsed.data.decision === "approve" &&
@@ -241,6 +255,7 @@ async function POSTHandler(
       tenantId: securityContext.tenantId,
       rejectedBy: securityContext.actorId,
       reason: parsed.data.reason,
+      mutation: approvalMutation,
     });
     if (rejection.outcome !== "rejected" || !rejection.record) {
       return Response.json(
@@ -312,6 +327,7 @@ async function POSTHandler(
     approvedRole: securityContext.role,
     approvalReason: parsed.data.reason,
     claimToken,
+    mutation: approvalMutation,
   });
   if (claim.outcome === "not_found") {
     return Response.json({ error: "Tool approval record not found." }, { status: 404 });
