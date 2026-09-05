@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyDatabaseScope,
   databaseSchemaMigrations,
+  enterDatabaseActorContext,
   enterDatabaseTenantContext,
+  getDatabaseActorContext,
   getDatabaseAcquireTimeoutMs,
   getDatabaseIdleTransactionTimeoutMs,
   getDatabaseLockTimeoutMs,
@@ -209,12 +211,14 @@ describe("database pool acquisition", () => {
         "QUERY",
         "COMMIT",
       ]);
-      expect(scopeStatement(runtime.statements)?.params.slice(0, 3)).toEqual([
+      expect(scopeStatement(runtime.statements)?.params.slice(0, 4)).toEqual([
         "tenant-a",
+        '{"version":1,"tenantId":"tenant-a","actorIds":[]}',
         "false",
         "",
       ]);
-      expect(scopeStatement(maintenance.statements)?.params.slice(0, 3)).toEqual([
+      expect(scopeStatement(maintenance.statements)?.params.slice(0, 4)).toEqual([
+        "",
         "",
         "true",
         "unit-test maintenance lookup",
@@ -610,9 +614,11 @@ describe("database scope application", () => {
       await applyDatabaseScope(sql, {
         kind: "tenant",
         tenantId: "tenant-a",
+        actorIds: ["actor-a"],
       });
       expect(calls).toHaveLength(1);
-      expect(calls[0].text.match(/set_config/g)).toHaveLength(6);
+      expect(calls[0].text.match(/set_config/g)).toHaveLength(7);
+      expect(calls[0].text).toContain("set_config('omni.actor_scope_v1'");
       expect(calls[0].text).toContain("set_config('statement_timeout'");
       expect(calls[0].text).toContain("set_config('lock_timeout'");
       expect(calls[0].text).toContain(
@@ -620,6 +626,7 @@ describe("database scope application", () => {
       );
       expect(calls[0].params).toEqual([
         "tenant-a",
+        '{"version":1,"tenantId":"tenant-a","actorIds":["actor-a"]}',
         "false",
         "",
         "12345",
@@ -633,8 +640,9 @@ describe("database scope application", () => {
         reason: "maintenance",
       });
       expect(calls).toHaveLength(1);
-      expect(calls[0].text.match(/set_config/g)).toHaveLength(6);
+      expect(calls[0].text.match(/set_config/g)).toHaveLength(7);
       expect(calls[0].params).toEqual([
+        "",
         "",
         "true",
         "maintenance",
@@ -899,6 +907,23 @@ describe("ordered database schema versions", () => {
 
     await expect(resolveTenant()).resolves.toBe("tenant-after-await");
     expect(getDatabaseTenantContext()).toBeUndefined();
+  });
+
+  it("propagates actor aliases only inside the resolved request scope", async () => {
+    const resolveActor = withDatabaseRequestScope(async () => {
+      enterDatabaseActorContext("tenant-a", ["actor:canonical", "legacy@example.test"]);
+      await Promise.resolve();
+      return {
+        tenantId: getDatabaseTenantContext(),
+        actorIds: getDatabaseActorContext(),
+      };
+    });
+
+    await expect(resolveActor()).resolves.toEqual({
+      tenantId: "tenant-a",
+      actorIds: ["actor:canonical", "legacy@example.test"],
+    });
+    expect(getDatabaseActorContext()).toEqual([]);
   });
 
   it("isolates tenants resolved concurrently in separate request scopes", async () => {

@@ -2,7 +2,11 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { getSessionToken } from "@/lib/auth/session";
 import { getSessionIdentity, isAuthEnforced } from "@/lib/auth/store";
 import { getMobileIdentityFromRequest, hasBearerAuthorization } from "@/lib/auth/mobile";
-import { enterDatabaseTenantContext } from "@/lib/db/client";
+import {
+  enterDatabaseActorContext,
+  enterDatabaseTenantContext,
+} from "@/lib/db/client";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import type { RbacRule, SecurityContext, SecurityRole } from "@/lib/security/types";
 
 const roles: SecurityRole[] = ["viewer", "operator", "admin", "system"];
@@ -133,7 +137,7 @@ export function getSecurityContext(request?: Request): SecurityContext {
     role,
     source: trustedHeaders.source,
   };
-  enterDatabaseTenantContext(context.tenantId);
+  enterResolvedDatabaseContext(context);
   return context;
 }
 
@@ -154,7 +158,7 @@ export async function resolveSecurityContext(request?: Request): Promise<Securit
     if (!mobileIdentity) {
       throw new SecurityPolicyError("Authentication required.", 401);
     }
-    enterDatabaseTenantContext(mobileIdentity.context.tenantId);
+    enterResolvedDatabaseContext(mobileIdentity.context);
     return mobileIdentity.context;
   }
 
@@ -167,8 +171,16 @@ export async function resolveSecurityContext(request?: Request): Promise<Securit
     throw new SecurityPolicyError("Authentication required.", 401);
   }
 
-  enterDatabaseTenantContext(identity.context.tenantId);
+  enterResolvedDatabaseContext(identity.context);
   return identity.context;
+}
+
+function enterResolvedDatabaseContext(context: SecurityContext) {
+  const binding = canonicalRequestActorBindingFromSecurityContext(context);
+  enterDatabaseActorContext(
+    context.tenantId,
+    binding?.readableOwnerActorIds || [context.actorId],
+  );
 }
 
 export function canPerform(role: SecurityRole, action: string) {

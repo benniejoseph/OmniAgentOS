@@ -26,7 +26,7 @@ type SqlClient = {
 };
 
 type DatabaseScope =
-  | { kind: "tenant"; tenantId: string }
+  | { kind: "tenant"; tenantId: string; actorIds: string[] }
   | { kind: "system"; reason: string };
 
 type SchemaMigration = {
@@ -378,15 +378,45 @@ export function enterDatabaseTenantContext(tenantId?: string) {
   const normalized = normalizeTenantId(tenantId) || "";
   const existing = databaseScope.getStore();
   if (existing?.kind === "tenant") {
+    if (existing.tenantId !== normalized) {
+      existing.actorIds = [];
+    }
     existing.tenantId = normalized;
     return;
   }
-  databaseScope.enterWith({ kind: "tenant", tenantId: normalized });
+  databaseScope.enterWith({ kind: "tenant", tenantId: normalized, actorIds: [] });
 }
 
 export function getDatabaseTenantContext() {
   const scope = databaseScope.getStore();
   return scope?.kind === "tenant" ? scope.tenantId || undefined : undefined;
+}
+
+export function enterDatabaseActorContext(
+  tenantId: string,
+  actorIds: readonly string[],
+) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  if (!normalizedTenantId) {
+    throw new Error("A tenant id is required for actor-scoped database work.");
+  }
+  const normalizedActorIds = normalizeDatabaseActorIds(actorIds);
+  const existing = databaseScope.getStore();
+  if (existing?.kind === "tenant") {
+    existing.tenantId = normalizedTenantId;
+    existing.actorIds = normalizedActorIds;
+    return;
+  }
+  databaseScope.enterWith({
+    kind: "tenant",
+    tenantId: normalizedTenantId,
+    actorIds: normalizedActorIds,
+  });
+}
+
+export function getDatabaseActorContext() {
+  const scope = databaseScope.getStore();
+  return scope?.kind === "tenant" ? [...scope.actorIds] : [];
 }
 
 export function runWithDatabaseTenantScope<T>(
@@ -397,7 +427,27 @@ export function runWithDatabaseTenantScope<T>(
   if (!normalized) {
     throw new Error("A tenant id is required for tenant-scoped database work.");
   }
-  return Promise.resolve(databaseScope.run({ kind: "tenant", tenantId: normalized }, operation));
+  return Promise.resolve(databaseScope.run({
+    kind: "tenant",
+    tenantId: normalized,
+    actorIds: [],
+  }, operation));
+}
+
+export function runWithDatabaseActorScope<T>(
+  tenantId: string,
+  actorIds: readonly string[],
+  operation: () => T | Promise<T>,
+): Promise<T> {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  if (!normalizedTenantId) {
+    throw new Error("A tenant id is required for actor-scoped database work.");
+  }
+  return Promise.resolve(databaseScope.run({
+    kind: "tenant",
+    tenantId: normalizedTenantId,
+    actorIds: normalizeDatabaseActorIds(actorIds),
+  }, operation));
 }
 
 export function withDatabaseRequestScope<
@@ -410,7 +460,7 @@ export function withDatabaseRequestScope<
     const request = args[0] instanceof Request ? args[0] : undefined;
     return runWithRequestTiming(async () => {
       const result = await databaseScope.run(
-        { kind: "tenant", tenantId: "" },
+        { kind: "tenant", tenantId: "", actorIds: [] },
         () => handler(...args),
       );
       return (
@@ -1833,6 +1883,13 @@ export function isDatabaseMutation(statement: string) {
 export async function applyDatabaseScope(sql: AnyPg, scope?: DatabaseScope) {
   const systemScope = scope?.kind === "system";
   const tenantId = systemScope ? "" : scope?.tenantId || "";
+  const actorScope = systemScope
+    ? ""
+    : JSON.stringify({
+        version: 1,
+        tenantId,
+        actorIds: scope?.kind === "tenant" ? scope.actorIds || [] : [],
+      });
   const systemReason = systemScope ? scope.reason : "";
   const statementTimeoutMs = getDatabaseStatementTimeoutMs();
   const lockTimeoutMs = getDatabaseLockTimeoutMs(statementTimeoutMs);
@@ -1840,12 +1897,25 @@ export async function applyDatabaseScope(sql: AnyPg, scope?: DatabaseScope) {
   await sql`
     SELECT
       set_config('omni.tenant_id', ${tenantId}, true),
+      set_config('omni.actor_scope_v1', ${actorScope}, true),
       set_config('omni.system_scope', ${systemScope ? "true" : "false"}, true),
       set_config('omni.system_reason', ${systemReason}, true),
       set_config('statement_timeout', ${String(statementTimeoutMs)}, true),
       set_config('lock_timeout', ${String(lockTimeoutMs)}, true),
       set_config('idle_in_transaction_session_timeout', ${String(idleTransactionTimeoutMs)}, true)
   `;
+}
+
+function normalizeDatabaseActorIds(actorIds: readonly string[]) {
+  const normalized = [...new Set(actorIds.map((value) => value.trim()))]
+    .filter(Boolean);
+  if (!normalized.length || normalized.length > 8) {
+    throw new Error("Actor-scoped database work requires one to eight actor ids.");
+  }
+  if (normalized.some((value) => value.length > 320 || value.includes("\0"))) {
+    throw new Error("Actor-scoped database work received an invalid actor id.");
+  }
+  return normalized;
 }
 
 // ---------------------------------------------------------------------------
