@@ -690,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the derived-memory read-barrier cutover migration", () => {
+  it("pins the user-private retrieval-trace migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 76,
-      name: "derived_memory_read_barrier_cutover",
-      checksum: "2c9f41f2e651714203cc111b825aeaec85a335aed41ef9cd6fcead3d9afd7315",
+      version: 77,
+      name: "user_private_retrieval_traces",
+      checksum: "f6333159707f3796f1f9ae79f09744536c672b6142c81fddcadd348182ee5093",
     });
   });
 
