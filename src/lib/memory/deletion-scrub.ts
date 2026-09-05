@@ -85,30 +85,10 @@ export async function processPendingMemoryDeletionScrubs({
 
       return sql.transaction(async (transaction: ReturnType<typeof getSql>) => {
         const receiptRows = await transaction`
-          SELECT receipt.*
-          FROM omni_memory_deletion_receipts receipt
-          WHERE cardinality(receipt.descendant_memory_ids) > 0
-            AND EXISTS (
-              SELECT 1
-              FROM omni_memories memory
-              WHERE memory.tenant_id = receipt.tenant_id
-                AND memory.id = ANY(receipt.descendant_memory_ids)
-                AND (
-                  memory.title IS DISTINCT FROM '[forgotten]'
-                  OR memory.content IS DISTINCT FROM ''
-                  OR memory.tags IS DISTINCT FROM '{}'::text[]
-                  OR memory.source IS DISTINCT FROM '[forgotten]'
-                  OR memory.embedding IS NOT NULL
-                  OR memory.evidence_refs IS DISTINCT FROM '{}'::text[]
-                  OR memory.supersedes_id IS NOT NULL
-                  OR memory.contradiction_of_id IS NOT NULL
-                  OR memory.claim_status IS DISTINCT FROM 'forgotten'
-                  OR memory.forgotten_at IS NULL
-                )
-            )
-          ORDER BY receipt.created_at ASC, receipt.tenant_id ASC, receipt.id ASC
-          FOR UPDATE OF receipt SKIP LOCKED
-          LIMIT ${boundedReceiptLimit}
+          SELECT *
+          FROM omni_lease_memory_deletion_scrub_receipts(
+            ${boundedReceiptLimit}
+          )
         ` as MemoryDeletionScrubReceiptRow[];
 
         let remainingMemoryBudget = boundedMemoryLimit;
