@@ -690,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the OAuth source-sync fenced-lease migration", () => {
+  it("pins the user-private memory access canary migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 71,
-      name: "oauth_source_sync_fenced_leases",
-      checksum: "1d128700ad7a4b01f0ba7a4e78521a778ff7e49da52e820f87e973f30ea9ce15",
+      version: 72,
+      name: "user_private_memory_access_canary",
+      checksum: "4cf4b3dc4549d5d8f05e19501f810462c2de6064a7bcc1dd27e7c97f6506f1bc",
     });
   });
 
