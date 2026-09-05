@@ -690,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the user-private memory access canary migration", () => {
+  it("pins the user-private memory runtime grants migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 72,
-      name: "user_private_memory_access_canary",
-      checksum: "4cf4b3dc4549d5d8f05e19501f810462c2de6064a7bcc1dd27e7c97f6506f1bc",
+      version: 73,
+      name: "user_private_memory_runtime_function_grants",
+      checksum: "e48b32da855e7146ce7f3fb1448abe89efcb602f72cbe43509fd3f5ff3a8ae79",
     });
   });
 

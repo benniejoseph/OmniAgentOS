@@ -898,6 +898,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[71],
       up: ensureUserPrivateMemoryAccessCanary,
     },
+    {
+      ...databaseSchemaMigrations[72],
+      up: ensureUserPrivateMemoryRuntimeFunctionGrants,
+    },
   ];
 }
 
@@ -3480,6 +3484,14 @@ async function ensureUserPrivateMemoryAccessCanary(sql: SqlClient) {
         )
       )
     )
+  `;
+}
+
+async function ensureUserPrivateMemoryRuntimeFunctionGrants(sql: SqlClient) {
+  await sql`
+    GRANT EXECUTE ON FUNCTION
+      omni_memory_access_grant_ids_v1_are_canonical(JSONB, INTEGER)
+    TO PUBLIC
   `;
 }
 
