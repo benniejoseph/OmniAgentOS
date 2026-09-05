@@ -88,7 +88,10 @@ try {
     approval.continuation?.scheduled === true,
     "Approved run continuation was not scheduled.",
   );
-  const completedApprovalRun = await waitForRun(approvalRunId);
+  const completedApprovalRun = await waitForRun(
+    approvalRunId,
+    waiting.executionId,
+  );
   assert(
     completedApprovalRun.run?.status === "completed",
     `Approval canary ended as ${completedApprovalRun.run?.status || "unknown"}.`,
@@ -231,7 +234,7 @@ async function agentRequest({ agentId, requestId, mode, message }) {
   return events;
 }
 
-async function waitForRun(runId) {
+async function waitForRun(runId, approvedExecutionId) {
   const deadline = Date.now() + 180_000;
   for (;;) {
     const detail = await jsonRequest(
@@ -240,7 +243,10 @@ async function waitForRun(runId) {
     if (["completed", "failed", "canceled"].includes(detail.run?.status)) {
       return detail;
     }
-    if (detail.run?.status === "waiting_approval") {
+    if (
+      detail.run?.status === "waiting_approval" &&
+      detail.run?.waitingApproval?.executionId !== approvedExecutionId
+    ) {
       throw new Error("Approval canary requested an unexpected second approval.");
     }
     if (Date.now() >= deadline) {
