@@ -832,6 +832,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[57],
       up: ensureMemoryDeletionBarrierPolicyPrivilegeIsolation,
     },
+    {
+      ...databaseSchemaMigrations[58],
+      up: ensureMemoryDeletionScrubLeaseContract,
+    },
   ];
 }
 
@@ -10627,6 +10631,110 @@ async function ensureMemoryDeletionBarrierPolicyPrivilegeIsolation(
   `;
   await sql`
     GRANT EXECUTE ON FUNCTION omni_memory_has_deletion_receipt(TEXT, TEXT)
+    TO PUBLIC
+  `;
+}
+
+async function ensureMemoryDeletionScrubLeaseContract(sql: SqlClient) {
+  // The receipt ledger remains unreadable to ordinary runtime and maintenance
+  // roles. This owner function exposes only bounded manifests to an explicit
+  // system-scoped schema owner or dedicated BYPASSRLS maintenance session.
+  // Receipt row locks live until the caller's surrounding transaction ends.
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_lease_memory_deletion_scrub_receipts(
+      candidate_limit INTEGER
+    )
+    RETURNS TABLE (
+      id TEXT,
+      tenant_id TEXT,
+      memory_id TEXT,
+      descendant_memory_ids TEXT[],
+      descendant_memory_count INTEGER,
+      attribution_kind TEXT,
+      execution_scope JSONB,
+      forgotten_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ
+    )
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF COALESCE(current_setting('omni.system_scope', TRUE), '') <> 'true'
+        OR NULLIF(current_setting('omni.system_reason', TRUE), '') IS NULL
+        OR NOT EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_roles session_role
+          WHERE session_role.rolname = session_user
+            AND (
+              session_role.rolbypassrls
+              OR session_role.oid = (
+                SELECT relation.relowner
+                FROM pg_catalog.pg_class relation
+                WHERE relation.oid = 'public.omni_schema_version'::regclass
+              )
+            )
+            AND (
+              NOT session_role.rolsuper
+              OR session_role.oid = (
+                SELECT relation.relowner
+                FROM pg_catalog.pg_class relation
+                WHERE relation.oid = 'public.omni_schema_version'::regclass
+              )
+            )
+        )
+      THEN
+        RAISE EXCEPTION 'Memory deletion scrub leasing requires an audited maintenance scope'
+          USING ERRCODE = '42501';
+      END IF;
+
+      RETURN QUERY
+      SELECT
+        receipt.id,
+        receipt.tenant_id,
+        receipt.memory_id,
+        receipt.descendant_memory_ids,
+        receipt.descendant_memory_count,
+        receipt.attribution_kind,
+        receipt.execution_scope,
+        receipt.forgotten_at,
+        receipt.created_at
+      FROM public.omni_memory_deletion_receipts receipt
+      WHERE cardinality(receipt.descendant_memory_ids) > 0
+        AND EXISTS (
+          SELECT 1
+          FROM public.omni_memories memory
+          WHERE memory.tenant_id = receipt.tenant_id
+            AND memory.id = ANY(receipt.descendant_memory_ids)
+            AND (
+              memory.title IS DISTINCT FROM '[forgotten]'
+              OR memory.content IS DISTINCT FROM ''
+              OR memory.tags IS DISTINCT FROM '{}'::TEXT[]
+              OR memory.source IS DISTINCT FROM '[forgotten]'
+              OR memory.embedding IS NOT NULL
+              OR COALESCE(
+                pg_catalog.to_jsonb(memory) -> 'embedding_vector',
+                'null'::JSONB
+              ) <> 'null'::JSONB
+              OR memory.evidence_refs IS DISTINCT FROM '{}'::TEXT[]
+              OR memory.supersedes_id IS NOT NULL
+              OR memory.contradiction_of_id IS NOT NULL
+              OR memory.claim_status IS DISTINCT FROM 'forgotten'
+              OR memory.forgotten_at IS NULL
+            )
+        )
+      ORDER BY receipt.created_at ASC, receipt.tenant_id ASC, receipt.id ASC
+      FOR UPDATE OF receipt SKIP LOCKED
+      LIMIT LEAST(GREATEST(COALESCE(candidate_limit, 1), 1), 50);
+    END
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_lease_memory_deletion_scrub_receipts(INTEGER)
+    FROM PUBLIC
+  `;
+  await sql`
+    GRANT EXECUTE ON FUNCTION omni_lease_memory_deletion_scrub_receipts(INTEGER)
     TO PUBLIC
   `;
 }

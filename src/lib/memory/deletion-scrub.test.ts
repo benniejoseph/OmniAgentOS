@@ -60,7 +60,7 @@ describe("memory deletion physical scrub", () => {
     const transactionSql = vi.fn(async (strings: TemplateStringsArray) => {
       const query = strings.join("?");
       queries.push(query);
-      if (query.includes("SELECT receipt.*")) {
+      if (query.includes("omni_lease_memory_deletion_scrub_receipts")) {
         return [{
           id: "receipt-1",
           tenant_id: "tenant-a",

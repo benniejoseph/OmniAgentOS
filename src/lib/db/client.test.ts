@@ -691,11 +691,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the memory deletion barrier policy privilege migration", () => {
+  it("pins the memory deletion scrub lease migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 58,
-      name: "memory_deletion_barrier_policy_privilege_isolation",
-      checksum: "5eb4483ee881615b4178d5ddc84949556a2ada088c8fd405e0d7b709aa67f870",
+      version: 59,
+      name: "memory_deletion_scrub_lease_contract",
+      checksum: "af5d06d4321e7e859f49c4edc7092f819954240b1d566fb79eadc22ef84874af",
     });
   });
 
