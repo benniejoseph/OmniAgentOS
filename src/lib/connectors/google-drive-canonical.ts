@@ -34,11 +34,11 @@ const EMPTY_CONTENT_SHA256 = createHash("sha256").update("").digest("hex");
 export const GOOGLE_DRIVE_CANONICAL_CAPABILITY_ID =
   "source.google-drive.canonical-metadata";
 export const GOOGLE_DRIVE_CANONICAL_ROLLOUT_GENERATION = 2;
-export const GOOGLE_DRIVE_CANONICAL_ENGINE_VERSION = "source-sync.p2.2b";
+export const GOOGLE_DRIVE_CANONICAL_ENGINE_VERSION = "source-sync.p2.3-drive-v2";
 export const GOOGLE_DRIVE_CANONICAL_ADAPTER_ID =
   "google-drive.metadata-canonical";
 export const GOOGLE_DRIVE_CANONICAL_ADAPTER_VERSION =
-  "google-drive.metadata-canonical.v1";
+  "google-drive.metadata-canonical.v2";
 export const GOOGLE_DRIVE_CANONICAL_ROLLOUT_MODE = "canary" as const;
 
 const GOOGLE_DRIVE_CANONICAL_PURPOSE_ID =
@@ -51,7 +51,7 @@ const GOOGLE_DRIVE_CANONICAL_MEDIA_TYPE =
 
 export const GOOGLE_DRIVE_CANONICAL_ADAPTER_CONFIG_SHA256 =
   sourceContractSha256({
-    schemaVersion: 1,
+    schemaVersion: 2,
     capabilityId: GOOGLE_DRIVE_CANONICAL_CAPABILITY_ID,
     rolloutGeneration: GOOGLE_DRIVE_CANONICAL_ROLLOUT_GENERATION,
     engineVersion: GOOGLE_DRIVE_CANONICAL_ENGINE_VERSION,
@@ -82,6 +82,7 @@ export const GOOGLE_DRIVE_CANONICAL_ADAPTER_CONFIG_SHA256 =
       contentByteLength: 0,
       mediaType: GOOGLE_DRIVE_CANONICAL_MEDIA_TYPE,
       evidenceUnits: 0,
+      moveSemantics: "hashed-parent-set",
     },
     readAuthority: "legacy-rag",
   });
@@ -232,7 +233,7 @@ async function observeBackfillPage(
   url.searchParams.set("orderBy", "modifiedTime,name");
   url.searchParams.set(
     "fields",
-    "nextPageToken,incompleteSearch,files(id,version,headRevisionId,mimeType,createdTime,modifiedTime,trashed,md5Checksum,size)",
+    "nextPageToken,incompleteSearch,files(id,version,headRevisionId,mimeType,parents,createdTime,modifiedTime,trashed,md5Checksum,size)",
   );
   if (page.requestCursor?.pageToken) {
     url.searchParams.set("pageToken", page.requestCursor.pageToken);
@@ -279,7 +280,7 @@ async function observeChangesPage(
   url.searchParams.set("supportsAllDrives", "true");
   url.searchParams.set(
     "fields",
-    "nextPageToken,newStartPageToken,changes(changeType,fileId,removed,time,file(id,version,headRevisionId,mimeType,createdTime,modifiedTime,trashed,md5Checksum,size))",
+    "nextPageToken,newStartPageToken,changes(changeType,fileId,removed,time,file(id,version,headRevisionId,mimeType,parents,createdTime,modifiedTime,trashed,md5Checksum,size))",
   );
 
   const response = await googleJson(url, accessToken, signal);
@@ -404,19 +405,40 @@ function normalizedMetadata(
     sourceUpdatedAt,
     sourceCreatedAt,
   );
-  const metadataSha256 = sourceContractSha256({
-    schemaVersion: 1,
+  const metadataSha256 = canonicalDriveMetadataSha256(
+    file,
+    providerItemKeySha256,
+    { sourceCreatedAt, sourceUpdatedAt },
+  );
+  return { sourceCreatedAt, sourceUpdatedAt, capturedAt, metadataSha256 };
+}
+
+export function canonicalDriveMetadataSha256(
+  file: Record<string, unknown>,
+  providerItemKeySha256: string,
+  timestamps = canonicalDriveSourceTimestamps(
+    file.createdTime,
+    file.modifiedTime,
+  ),
+) {
+  const parentKeySetSha256 = sourceContractSha256(
+    providerStringSet(file.parents).map((parentId) =>
+      sourceContractSha256({ parentId })
+    ),
+  );
+  return sourceContractSha256({
+    schemaVersion: 2,
     providerItemKeySha256,
     version: optionalProviderValue(file.version) || null,
     headRevisionKeySha256: optionalHashedProviderValue(file.headRevisionId),
     mimeTypeSha256: optionalHashedProviderValue(file.mimeType),
-    sourceCreatedAt,
-    sourceUpdatedAt,
+    parentKeySetSha256,
+    sourceCreatedAt: timestamps.sourceCreatedAt,
+    sourceUpdatedAt: timestamps.sourceUpdatedAt,
     trashed: file.trashed === true,
     providerContentChecksumSha256: optionalHashedProviderValue(file.md5Checksum),
     providerContentByteLength: optionalProviderValue(file.size) || null,
   });
-  return { sourceCreatedAt, sourceUpdatedAt, capturedAt, metadataSha256 };
 }
 
 export function canonicalDriveSourceTimestamps(
@@ -716,6 +738,14 @@ function providerArray(value: unknown) {
     throw new GoogleDriveProviderError("invalid_provider_response");
   }
   return value;
+}
+
+function providerStringSet(value: unknown) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 64) {
+    throw new GoogleDriveProviderError("invalid_provider_response");
+  }
+  return [...new Set(value.map(requiredProviderValue))].sort();
 }
 
 function requiredProviderValue(value: unknown) {
