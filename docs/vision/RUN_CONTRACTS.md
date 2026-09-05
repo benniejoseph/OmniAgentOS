@@ -197,6 +197,15 @@ provider output, credentials, or an extensible metadata bag. This contract is
 not yet a serving adapter or permission: unregistered tools still receive no
 v2 receipt and no external effect is authorized by constructing one.
 
+Before a v2 effect can run, `EffectIntentV2` records the same immutable
+execution, scope, plan, tool, approval, input, idempotency, target, and expected
+state bindings without provider outcome fields. Its ID and body digest are
+deterministic. Finalization accepts only provider acknowledgement and
+read-after-write evidence, re-parses the persisted intent, and copies every
+material binding into the receipt; a caller cannot replace a target, input,
+approval, or plan during finalization. Persistence and executor activation
+remain separate gates.
+
 ## Event payloads
 
 Keep a full envelope only on its intended private scoped record or active
