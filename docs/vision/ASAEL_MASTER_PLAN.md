@@ -1366,6 +1366,18 @@ the v48-v49 holds stay unchanged. Informed-notice evidence and the exact epoch
 binding must be added to the still-empty consent contract together before any
 consent grant writer can exist.
 
+Migration v55 adds that binding as another closed shadow, not as consent
+activation. It introduces an empty immutable informed-notice contract catalog
+and an empty tenant/actor acknowledgement-receipt ledger. Both have validated
+issuance holds, so the migration cannot invent privacy wording, a presentation,
+or an acknowledgement. Standing-consent contract version 2 requires an exact
+membership epoch and the exact notice receipt tuple, including the purpose and
+consent generation, without defaults or backfill. Notice issuance, membership
+activation, tenant entitlement, consent grant, and the v45 memory authorization
+hook remain blocked and unavailable to serving roles. A later reviewed batch
+must approve and pin notice copy before any narrow writer can live-lock all
+authorities and emit the corresponding typed evidence.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

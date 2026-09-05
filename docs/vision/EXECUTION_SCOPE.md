@@ -59,3 +59,10 @@ and remains behind a validated activation hold plus restrictive RLS. A future
 authority writer and typed event must establish an epoch before the memory
 authorization hook can use it; `ExecutionScope` cannot substitute for that
 membership decision.
+Migration v55 adds empty, issuance-held informed-notice contracts and
+tenant/actor acknowledgement receipts, then requires the exact receipt and
+membership epoch in the still-empty standing-consent contract. These references
+grant no execution scope and do not authorize memory access. A future resolver
+must live-lock and validate the active authorities for the current request;
+`ExecutionScope` fields or a stored receipt alone cannot substitute for current
+membership, entitlement, consent, or revocation state.
