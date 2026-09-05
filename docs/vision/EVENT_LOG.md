@@ -1193,3 +1193,19 @@ P0.5 exercises this policy without loading evidence content. Live context-pack
 integration remains gated on actor-aware exact-ID retrieval, so the selector
 does not broaden the current tenant-only memory store or bypass its dormant
 database access cutover.
+
+## Generic provider effect receipt v2
+
+The additive `EffectReceiptV2` contract extends effect evidence beyond the
+frozen memory-only v1 meaning without loosening historical receipts. It binds
+direct or workflow execution, complete scope/principal and plan identity,
+generic governed tool and target IDs, tool/input/idempotency digests, exact
+approval material, provider acknowledgement class, and read-after-write state.
+False verified combinations, partial workflow bindings, malformed approval
+state, body tampering, and unknown fields fail closed.
+
+Its event builder emits only allowlisted IDs, hashes, booleans, and enums and
+omits provider request identity. This slice registers no adapter, changes no
+executor path, performs no effect, and grants no authority; it is the stable
+contract required before a connector-specific acknowledgement and verifier can
+be activated.
