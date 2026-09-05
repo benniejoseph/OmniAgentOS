@@ -76,10 +76,10 @@
     {
       "caseId": "intent-routing.portfolio-blog-automation",
       "value": {
-        "adapterId": "supervisor-route-v2",
+        "adapterId": "supervisor-route-v3",
         "adapterStatus": "observed",
-        "route": "direct",
-        "workflowId": null,
+        "route": "durable_workflow",
+        "workflowId": "workflow:portfolio-blog",
         "ambiguityState": "none",
         "requiredToolIds": [],
         "effectCountBeforeGovernedExecution": 0
@@ -88,7 +88,7 @@
     {
       "caseId": "intent-routing.ambiguous-delete-clarifies",
       "value": {
-        "adapterId": "supervisor-route-v2",
+        "adapterId": "supervisor-route-v3",
         "adapterStatus": "observed",
         "route": "clarify",
         "ambiguityState": "detected",

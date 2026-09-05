@@ -9,9 +9,15 @@ export type SupervisorAmbiguity =
   | { state: "none" }
   | {
       state: "detected";
-      reasonCode: "ambiguous_destructive_target";
+      reasonCode: "ambiguous_destructive_target" | "ambiguous_known_procedure";
       clarificationPrompt: string;
     };
+
+export type SupervisorKnownProcedure = Readonly<{
+  id: string;
+  aliases: readonly string[];
+  requiredToolIds: readonly string[];
+}>;
 
 export type SupervisorDecision = {
   route: SupervisorRoute;
@@ -21,6 +27,11 @@ export type SupervisorDecision = {
   primaryAgentId: SupervisorAgentId;
   specialistIds: SupervisorAgentId[];
   ambiguity: SupervisorAmbiguity;
+  procedure?: Readonly<{
+    workflowId: string;
+    matchedAlias: string;
+    requiredToolIds: readonly string[];
+  }>;
   learning?: {
     state: "cold_start" | "observing" | "reinforced" | "supported";
     sampleSize: number;
@@ -34,6 +45,7 @@ export function routeAgentRequest(
   message: string,
   mode: AgentMode = "orchestrate",
   preferredAgentId?: SupervisorAgentId,
+  knownProcedures: readonly SupervisorKnownProcedure[] = [],
 ): SupervisorDecision {
   const text = message.trim();
   const reasons: string[] = [];
@@ -45,6 +57,7 @@ export function routeAgentRequest(
   const externalEffect = /\b(send|publish|deploy|delete|remove|archive|cancel|revoke|purge|destroy|purchase|book|email|post|change external|update production|trigger|dispatch|re-?run)\b/i.test(text) ||
     /\brun\b[^.\n]{0,100}\b(action|automation|workflow|job|pipeline)\b/i.test(text);
   const ambiguity = analyzeAgentRequestAmbiguity(text);
+  const procedureResolution = resolveKnownProcedure(text, knownProcedures);
   const team = selectAgentTeam(
     text,
     mode,
@@ -59,6 +72,37 @@ export function routeAgentRequest(
       reasons: ["A destructive request has no uniquely identified target."],
       requiresApproval: externalEffect,
       ambiguity,
+      ...team,
+    };
+  }
+
+  if (procedureResolution.state === "ambiguous") {
+    return {
+      route: "clarify",
+      score: 0,
+      reasons: ["More than one saved procedure matches this request."],
+      requiresApproval: externalEffect,
+      ambiguity: {
+        state: "detected",
+        reasonCode: "ambiguous_known_procedure",
+        clarificationPrompt: "Name the exact saved procedure you want me to run.",
+      },
+      ...team,
+    };
+  }
+
+  if (procedureResolution.state === "resolved") {
+    return {
+      route: "durable_workflow",
+      score: 4,
+      reasons: ["A saved deterministic procedure matched this request."],
+      requiresApproval: externalEffect,
+      ambiguity,
+      procedure: {
+        workflowId: procedureResolution.procedure.id,
+        matchedAlias: procedureResolution.matchedAlias,
+        requiredToolIds: procedureResolution.procedure.requiredToolIds,
+      },
       ...team,
     };
   }
@@ -81,6 +125,73 @@ export function routeAgentRequest(
     ambiguity,
     ...team,
   };
+}
+
+export function resolveKnownProcedure(
+  message: string,
+  procedures: readonly SupervisorKnownProcedure[],
+):
+  | Readonly<{ state: "none" }>
+  | Readonly<{ state: "ambiguous"; workflowIds: readonly string[] }>
+  | Readonly<{
+      state: "resolved";
+      procedure: SupervisorKnownProcedure;
+      matchedAlias: string;
+    }> {
+  if (procedures.length > 128) {
+    throw new Error("Known procedure resolution is bounded to 128 procedures.");
+  }
+  const normalizedMessage = normalizeProcedurePhrase(message);
+  const ids = procedures.map((procedure) => boundedProcedureId(procedure.id));
+  if (new Set(ids).size !== ids.length) {
+    throw new Error("Known procedure IDs must be unique.");
+  }
+  const matches = procedures.flatMap((procedure) => {
+    const requiredToolIds = [...new Set(
+      procedure.requiredToolIds.map(boundedProcedureId),
+    )].sort();
+    const aliases = [...new Set(procedure.aliases
+      .map(normalizeProcedurePhrase)
+      .filter(Boolean))]
+      .sort((left, right) => right.length - left.length);
+    const matchedAlias = aliases.find((alias) =>
+      ` ${normalizedMessage} `.includes(` ${alias} `)
+    );
+    return matchedAlias
+      ? [{
+          procedure: Object.freeze({
+            id: boundedProcedureId(procedure.id),
+            aliases: Object.freeze(aliases),
+            requiredToolIds: Object.freeze(requiredToolIds),
+          }),
+          matchedAlias,
+        }]
+      : [];
+  });
+  if (!matches.length) return Object.freeze({ state: "none" as const });
+  if (matches.length > 1) {
+    return Object.freeze({
+      state: "ambiguous" as const,
+      workflowIds: Object.freeze(matches.map((match) => match.procedure.id).sort()),
+    });
+  }
+  return Object.freeze({
+    state: "resolved" as const,
+    procedure: matches[0].procedure,
+    matchedAlias: matches[0].matchedAlias,
+  });
+}
+
+function normalizeProcedurePhrase(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function boundedProcedureId(value: string) {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 240 || !/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/.test(normalized)) {
+    throw new Error("Known procedure identifiers must be non-empty, bounded, and canonical.");
+  }
+  return normalized;
 }
 
 export function applySupervisorStrategy(

@@ -1121,3 +1121,19 @@ the original cursor; a later attempt commits the complete unique manifest and
 next cursor together. Duplicate page identities and invalid retry budgets fail
 closed. P0.5 now measures the mid-page failure/retry invariant without touching
 a connector, database, clock, or external provider.
+
+## Deterministic saved-procedure resolution
+
+The supervisor can now resolve an explicitly supplied bounded registry of
+saved procedures by normalized whole-phrase aliases. One match binds the
+canonical workflow ID and declared required tool IDs to a durable decision;
+multiple matching procedures fail closed with an
+`ambiguous_known_procedure` clarification that execution strategy overrides
+cannot bypass. Duplicate workflow IDs and malformed identifiers are rejected.
+The resolver performs no lookup, model call, tool invocation, or effect.
+
+The P0.5 intent observer supplies only the synthetic fixture's workflow ID and
+aliases, so it now truthfully observes durable workflow resolution while
+leaving the procedure's required GitHub trigger binding empty. The case
+therefore remains red until a real tenant-scoped saved-procedure/tool binding
+is available; no expected tool ID is inferred from the fixture assertion.

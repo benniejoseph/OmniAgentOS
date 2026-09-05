@@ -95,24 +95,32 @@ function observeIntentRouting(testCase: P05Case): P05JsonValue {
   const utterance = text(given.utterance);
   if (!utterance) return unavailableObservation(testCase);
 
-  const decision = routeAgentRequest(utterance, "orchestrate");
   if (testCase.id === "intent-routing.portfolio-blog-automation") {
     const knownProcedure = jsonRecord(given.knownProcedure);
+    const workflowId = text(knownProcedure.id);
+    const aliases = strings(knownProcedure.aliases);
+    const decision = routeAgentRequest(
+      utterance,
+      "orchestrate",
+      undefined,
+      workflowId && aliases.length
+        ? [{ id: workflowId, aliases, requiredToolIds: [] }]
+        : [],
+    );
     return {
-      adapterId: "supervisor-route-v2",
+      adapterId: "supervisor-route-v3",
       adapterStatus: "observed",
       route: decision.route,
-      workflowId: decision.route === "durable_workflow"
-        ? text(knownProcedure.id) || null
-        : null,
+      workflowId: decision.procedure?.workflowId || null,
       ambiguityState: decision.ambiguity.state,
-      requiredToolIds: [],
+      requiredToolIds: [...(decision.procedure?.requiredToolIds || [])],
       effectCountBeforeGovernedExecution: 0,
     };
   }
 
+  const decision = routeAgentRequest(utterance, "orchestrate");
   return {
-    adapterId: "supervisor-route-v2",
+    adapterId: "supervisor-route-v3",
     adapterStatus: "observed",
     route: decision.route,
     ambiguityState: decision.ambiguity.state,

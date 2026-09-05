@@ -85,7 +85,7 @@ export type AgentEvent =
       type: "clarification";
       threadId: string;
       message: string;
-      reasonCode: "ambiguous_destructive_target";
+      reasonCode: "ambiguous_destructive_target" | "ambiguous_known_procedure";
     }
   | { type: "status"; label: string; detail?: string }
   | AgentHarnessEvent

@@ -159,7 +159,7 @@ type StreamEvent =
   | { type: "waiting_approval"; executionId?: string; toolId?: string; message?: string }
   | { type: "done"; response?: string; grounding?: GroundingReport }
   | { type: "delegated"; threadId?: string; workflowId?: string; missionId?: string; acknowledgement?: string; reason?: string }
-  | { type: "clarification"; threadId?: string; message?: string; reasonCode?: "ambiguous_destructive_target" }
+  | { type: "clarification"; threadId?: string; message?: string; reasonCode?: "ambiguous_destructive_target" | "ambiguous_known_procedure" }
   | { type: "canceled"; message?: string }
   | { type: "error"; message?: string };
 
