@@ -760,6 +760,24 @@ The pure contract emits metadata-only `memory.access_grant.*` events without an
 event-store dependency. A governed lifecycle writer, operation policy,
 transactional resolver, and all-surface activation are still required.
 
+Migration v63 adds the missing tenant-scoped memory operation-policy authority
+without installing an active policy. Each generation binds exactly one v47
+purpose to its operation class, a fixed minimum risk class, canonical principal,
+visibility, and sensitivity sets, and explicit grant/request/approval gates.
+Every operation requires a capability grant; read, retrieve, and formation also
+require context grants. Forget and export are always critical, request-bound,
+and human-approved, so neither a standing consent nor a policy row can disable
+those data-right safeguards. Maintenance remains an ordinary attributed
+operation and does not enable database maintenance scope or RLS bypass.
+
+The table starts empty, is schema-owner-only, uses forced tenant RLS plus a
+restrictive system holdback, and has a validated active-state constraint and
+hard mutation hold. It seeds no permissive defaults and has no writer, resolver,
+or event-store call site. The pure contract emits only metadata in
+`memory.operation_policy.*` lifecycle events. The transaction-bound resolver,
+governed authority writers, and atomic all-surface activation remain later
+P3.1 work.
+
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.
