@@ -25,6 +25,7 @@ import {
   assertExecutionScopeTenant,
   createExecutionScope,
 } from "@/lib/security/execution-scope";
+import { selectTemporalFactsAsOf } from "@/lib/memory/temporal";
 import { canonicalStatusForTerminalReceipt } from "@/lib/status/canonical";
 import {
   compareCanonicalSourceOrder,
@@ -75,6 +76,8 @@ export function observeP05Case(
     case "citations.valid-id-wrong-claim":
     case "citations.full-material-support":
       return observeStructuredClaimSupport(testCase);
+    case "temporal.as-of-selects-valid-interval":
+      return observeTemporalSelection(testCase);
     case "false-completion.legacy-completed-is-unverified":
       return observeLegacyCompletion(testCase);
     case "false-completion.verified-live-positive-control":
@@ -241,6 +244,36 @@ function observeStructuredClaimSupport(testCase: P05Case): P05JsonValue {
       })),
       materialCoverageBasisPoints: result.materialCoverageBasisPoints,
       unauthorizedEvidenceCount: result.unauthorizedEvidenceCount,
+    };
+  } catch {
+    return unavailableObservation(testCase);
+  }
+}
+
+function observeTemporalSelection(testCase: P05Case): P05JsonValue {
+  const given = jsonRecord(testCase.given);
+  const action = jsonRecord(testCase.action);
+  const asOf = text(action.asOf);
+  if (!asOf) return unavailableObservation(testCase);
+
+  try {
+    const selection = selectTemporalFactsAsOf(
+      jsonRecords(given.facts).map((fact) => ({
+        id: text(fact.id) || "",
+        value: fact.value ?? null,
+        validFrom: text(fact.validFrom) || null,
+        validTo: text(fact.validTo) || null,
+      })),
+      asOf,
+    );
+    return {
+      adapterId: "memory-temporal-selection-v1",
+      adapterStatus: "observed",
+      answer: selection.facts.length === 1
+        ? selection.facts[0].value
+        : null,
+      selectedEvidenceIds: selection.facts.map((fact) => fact.id),
+      uncertainty: selection.uncertainty,
     };
   } catch {
     return unavailableObservation(testCase);

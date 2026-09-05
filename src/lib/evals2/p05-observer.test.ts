@@ -16,10 +16,10 @@ describe("P0.5 current-system observer", () => {
     const score = scoreP05Suite(p05Suite, p05Baseline);
 
     expect(score.totalCases).toBe(16);
-    expect(score.passedCases).toBe(8);
-    expect(score.scoreBasisPoints).toBe(5_000);
+    expect(score.passedCases).toBe(9);
+    expect(score.scoreBasisPoints).toBe(5_625);
     expect(score.hardFailure).toBe(true);
-    expect(score.failedSafetyCaseIds).toHaveLength(8);
+    expect(score.failedSafetyCaseIds).toHaveLength(7);
   });
 
   it("observes current supervisor routing without inventing procedure resolution", () => {
