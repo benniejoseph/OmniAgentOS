@@ -536,6 +536,45 @@ import, writer, append, registry or serving import, or call site. It creates no
 row or event and leaves the v56 activation hold, forced RLS, owner-only ACLs,
 zero-row postflight, and every earlier event and runtime hold unchanged.
 
+Migration v57 emits no domain event and does not append bootstrap evidence to
+the event log. Its empty, owner-only
+`omni_membership_management_bootstrap_decisions` table can record only a held,
+revision-0 evidence coordinate for the exact tenant, subject, grantee,
+management-authority ID, and generation named by the fixed
+`create_held_membership_management_authority` action, plus the database
+identity that binds the ceremony to one logical database lineage. Restore
+preserves that ID, so it cannot prevent replay into a clone by itself.
+Ceremony-policy
+coordinates; trust-manifest, nonce, evidence, and decision digests; a nonempty
+validity window capped at 15 minutes; and operational recording attribution are
+not an approval event and do not create the tuple-matched v56 row. The trigger
+authors `recorded_at` inside the half-open interval
+`[not_before, expires_at)`.
+
+The empty `omni_membership_management_bootstrap_attestations` table reserves
+the `organization_custodian` and `independent_reviewer` slots with distinct key
+IDs. A possible row repeats the exact parent decision digest, declares
+`ed25519`, and stores only its canonical 86-character unpadded base64url
+signature ending in `[AQgw]` plus caller-supplied `attested_at`. Its insert
+guard requires both the claimed time and the database statement time to fall in
+the half-open interval `[not_before, expires_at)`, but does not prove when
+signing occurred. Those checks are structural evidence only. V57 neither
+requires both attestations nor authenticates a signature or key. The
+trust-manifest digest is not a trust anchor; public anchors remain outside
+Postgres. Actor foreign keys prove canonical identities only, not signer trust
+or same-tenant authority. Raw or private evidence, prose, private keys, and
+credentials are excluded from these tables.
+
+The v57 postflight proves both tables empty; forced RLS and owner-only ACLs keep
+them unavailable to serving roles. The migration grants no serving access and
+adds no writer, route, runtime import, call site, or event append; v56 stays
+empty and active-forbidden and every earlier hold remains intact. Broad
+development permission and administrator, session, system-scope, or
+database-owner status cannot stand in for signed bootstrap governance. External human approval and
+signatures, an externally anchored verifier, atomic persistence plus typed
+event integration, least-privilege cutover, and a separate v56 activation
+migration are future gates.
+
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that
 writer's migration. V56's bounded hold audit is not a substitute for that gate.
