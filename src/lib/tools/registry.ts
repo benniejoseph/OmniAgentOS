@@ -94,7 +94,7 @@ export const governedTools: ToolDefinition[] = [
     id: "memory.correct",
     name: "Correct Memory",
     description:
-      "Replace an existing tenant-scoped memory with a corrected version while retaining the prior record as superseded or contradicted.",
+      "Replace an existing tenant-scoped memory with a corrected version while retaining the prior record as superseded or contradicted. Provide the exact id and at least one correction field.",
     category: "memory",
     status: "active",
     riskLevel: 1,
@@ -115,13 +115,6 @@ export const governedTools: ToolDefinition[] = [
         },
       }),
       required: ["id"],
-      anyOf: [
-        { required: ["title"] },
-        { required: ["content"] },
-        { required: ["confidence"] },
-        { required: ["validTo"] },
-        { required: ["contradiction"] },
-      ],
     },
   },
   {
