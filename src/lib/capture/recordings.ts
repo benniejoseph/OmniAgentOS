@@ -43,6 +43,10 @@ type CaptureRecordingListOwner = Owner & {
   requestActorBinding?: CanonicalRequestActorBindingV1;
 };
 type ScopedOwner = Owner & { executionScope: ExecutionScope };
+type DeleteCaptureRecordingOptions = {
+  sql?: ReturnType<typeof getSql>;
+  recording?: CaptureRecordingDetail;
+};
 type CaptureRecordingPhysicalSummary = Omit<
   RequestCaptureRecordingSummary,
   "metadataDetailAvailable" | "detailAvailable" | "manageable"
@@ -871,18 +875,27 @@ export async function markCaptureRecordingIndexed(id: string, owner: ScopedOwner
   return next;
 }
 
-export async function deleteCaptureRecording(id: string, owner: ScopedOwner) {
+export async function deleteCaptureRecording(
+  id: string,
+  owner: ScopedOwner,
+  options: DeleteCaptureRecordingOptions = {},
+) {
   const executionScope = requireCaptureRecordingMutationScope(owner);
-  const detail = await requireCaptureRecording(id, owner);
+  const detail = options.recording
+    ? exactCaptureRecordingForDeletion(id, owner, options.recording)
+    : await requireCaptureRecording(id, owner);
   if (hasDatabaseUrl()) {
-    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    const deleteWithSql = async (sql: ReturnType<typeof getSql>) => {
       const rows = await sql`DELETE FROM omni_capture_recordings WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId} AND actor_id = ${detail.actorId} RETURNING id`;
       if (!rows[0]) return false;
       await appendCaptureRecordingEvent(detail.id, executionScope, "capture_recording.deleted", captureRecordingReferencePayload(detail, {
         previousStatus: detail.status,
       }), { sql });
       return true;
-    }) as Promise<boolean>;
+    };
+    return (options.sql
+      ? deleteWithSql(options.sql)
+      : getSql().transaction(deleteWithSql)) as Promise<boolean>;
   }
   await updateJsonFile<CaptureLedger>(getCaptureLedgerFile(), emptyLedger(), (ledger) => ({
     recordings: ledger.recordings.filter((item) => !(item.id === detail.id && item.tenantId === detail.tenantId && item.actorId === detail.actorId)),
@@ -893,6 +906,21 @@ export async function deleteCaptureRecording(id: string, owner: ScopedOwner) {
     previousStatus: detail.status,
   }));
   return true;
+}
+
+function exactCaptureRecordingForDeletion(
+  id: string,
+  owner: Owner,
+  recording: CaptureRecordingDetail,
+) {
+  if (
+    recording.id !== id ||
+    recording.tenantId !== normalizeTenantId(owner.tenantId) ||
+    recording.actorId !== normalizeActorId(owner.actorId)
+  ) {
+    throw new CaptureRecordingError("Recording not found.", 404);
+  }
+  return recording;
 }
 
 async function appendCaptureRecordingDetailsEvent(

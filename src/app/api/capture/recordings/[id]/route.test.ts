@@ -25,8 +25,7 @@ const routeMocks = vi.hoisted(() => {
     cancelOperationJobByDedupeKey: vi.fn(),
     canonicalRequestActorBindingFromSecurityContext: vi.fn(),
     captureExecutionScopeFromSecurityContext: vi.fn(),
-    deleteCaptureRecording: vi.fn(),
-    deleteKnowledgeDocumentsBySourcePrefix: vi.fn(),
+    deleteCaptureRecordingWithKnowledge: vi.fn(),
     getCaptureRecording: vi.fn(),
     getCaptureRecordingMetadataForRequest: vi.fn(),
     getOperationJob: vi.fn(),
@@ -54,21 +53,20 @@ vi.mock("@/lib/capture/recordings", () => ({
   CaptureRecordingError: routeMocks.CaptureRecordingError,
   CaptureRecordingReadConflictError:
     routeMocks.CaptureRecordingReadConflictError,
-  deleteCaptureRecording: routeMocks.deleteCaptureRecording,
   getCaptureRecording: routeMocks.getCaptureRecording,
   getCaptureRecordingMetadataForRequest:
     routeMocks.getCaptureRecordingMetadataForRequest,
   updateCaptureRecording: routeMocks.updateCaptureRecording,
 }));
 
+vi.mock("@/lib/capture/deletion", () => ({
+  deleteCaptureRecordingWithKnowledge:
+    routeMocks.deleteCaptureRecordingWithKnowledge,
+}));
+
 vi.mock("@/lib/capture/execution-scope", () => ({
   captureExecutionScopeFromSecurityContext:
     routeMocks.captureExecutionScopeFromSecurityContext,
-}));
-
-vi.mock("@/lib/rag/store", () => ({
-  deleteKnowledgeDocumentsBySourcePrefix:
-    routeMocks.deleteKnowledgeDocumentsBySourcePrefix,
 }));
 
 vi.mock("@/lib/operations/job-queue", () => ({
@@ -164,10 +162,9 @@ beforeEach(() => {
   routeMocks.captureExecutionScopeFromSecurityContext
     .mockReset()
     .mockReturnValue(executionScope);
-  routeMocks.deleteCaptureRecording.mockReset().mockResolvedValue(true);
-  routeMocks.deleteKnowledgeDocumentsBySourcePrefix
+  routeMocks.deleteCaptureRecordingWithKnowledge
     .mockReset()
-    .mockResolvedValue(1);
+    .mockResolvedValue({ documents: 1, memories: 1 });
   routeMocks.getCaptureRecording
     .mockReset()
     .mockResolvedValue(exactRecording);
@@ -377,8 +374,8 @@ describe("Capture recording detail ownership", () => {
       exactRecording.id,
       context,
     );
-    expect(routeMocks.deleteCaptureRecording).toHaveBeenCalledWith(
-      exactRecording.id,
+    expect(routeMocks.deleteCaptureRecordingWithKnowledge).toHaveBeenCalledWith(
+      exactRecording,
       { ...context, executionScope },
     );
     expect(
