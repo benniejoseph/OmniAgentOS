@@ -97,6 +97,17 @@ type RunFeedback = {
   correction?: string;
   updatedAt: string;
 };
+type TrajectoryCheckpoint = {
+  checkpointId: string;
+  checkpointSha256: string;
+  sequence: number;
+  boundaryKind: "model" | "tool" | "approval" | "delegation" | "verifier";
+  boundaryPhase: "before" | "waiting" | "after";
+  boundaryAttempt: number;
+  lifecycleState: "active" | "waiting" | "terminal";
+  resumeDisposition: "resumable" | "awaiting_signal" | "not_resumable";
+  recordedAt: string;
+};
 type ConversationMemory = {
   id: string;
   type: string;
@@ -824,6 +835,121 @@ export function AgentRunsWorkspace({
       setRunAnnouncement("Feedback could not be saved.");
     } finally {
       setFeedbackSaving(false);
+    }
+  }
+
+  async function forkRunFromCheckpoint(
+    checkpointId: string,
+    correction: string,
+  ) {
+    const sourceRunId = activeAgentRunId;
+    if (!sourceRunId || !correction.trim()) return;
+    setLoading("agent");
+    setError(undefined);
+    setRunAnnouncement("Creating a corrected trace from the selected checkpoint.");
+    try {
+      const requestId = crypto.randomUUID();
+      const payload = asRecord(await readJson(
+        `/api/runs/${encodeURIComponent(sourceRunId)}/fork`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": requestId,
+          },
+          body: JSON.stringify({
+            checkpointId,
+            correction: correction.trim(),
+            requestId,
+          }),
+        },
+      ));
+      const run = asRecord(payload.run);
+      const runId = stringValue(run.id);
+      if (!runId) throw new Error("The corrected trace did not return a run id.");
+      const status = stringValue(run.status);
+      const response = stringValue(run.response);
+      const nextGrounding = run.grounding
+        ? asRecord(run.grounding) as unknown as GroundingReport
+        : undefined;
+      currentRunIdRef.current = runId;
+      directRunStatusRef.current = status;
+      setActiveAgentRunId(runId);
+      setSelectedActivityRunId(runId);
+      setAgentResponse(response);
+      setGrounding(nextGrounding);
+      setRunFeedback(undefined);
+      setTurns((current) => {
+        const next = [
+          ...current,
+          {
+            id: `fork-user-${Date.now()}`,
+            role: "user" as const,
+            content: correction.trim(),
+            createdAt: new Date().toISOString(),
+            runId,
+          },
+        ];
+        return response
+          ? [...next, {
+              id: `fork-assistant-${Date.now()}`,
+              role: "assistant" as const,
+              content: response,
+              createdAt: new Date().toISOString(),
+              runId,
+            }]
+          : next;
+      });
+      if (status === "completed") {
+        setWaitingApproval(undefined);
+        setStreamEvents([
+          { type: "run", runId },
+          { type: "done", response, grounding: nextGrounding },
+        ]);
+        setRunAnnouncement("Corrected trace completed. The original run remains unchanged.");
+      } else if (status === "failed") {
+        const message = stringValue(run.error, "The corrected trace failed.");
+        setWaitingApproval(undefined);
+        setStreamEvents([{ type: "run", runId }, { type: "error", message }]);
+        setError(message);
+        setRunAnnouncement("The corrected trace failed; the original run remains available.");
+      } else if (status === "canceled") {
+        setWaitingApproval(undefined);
+        setStreamEvents([
+          { type: "run", runId },
+          { type: "canceled", message: "The corrected trace was canceled." },
+        ]);
+        setRunAnnouncement("The corrected trace was canceled.");
+      } else if (status === "waiting_approval") {
+        const approval = asRecord(run.waitingApproval);
+        const waiting = {
+          type: "waiting_approval" as const,
+          executionId: stringValue(approval.executionId),
+          toolId: stringValue(approval.toolId),
+          message: `${stringValue(approval.toolName, "A gated action")} needs a new approval for this corrected trace.`,
+        };
+        setWaitingApproval(waiting);
+        setStreamEvents([{ type: "run", runId }, waiting]);
+        setRunAnnouncement("The corrected trace is waiting for a new approval.");
+      } else {
+        setWaitingApproval(undefined);
+        setStreamEvents([
+          { type: "run", runId },
+          { type: "status", label: "Corrected trace", detail: `Run is ${status || "queued"}.` },
+        ]);
+        setRunAnnouncement("The corrected trace is continuing in the background.");
+      }
+      void refreshEvidence();
+      void refreshThreads();
+    } catch (forkError) {
+      setError(
+        forkError instanceof Error
+          ? forkError.message
+          : "The corrected trace could not be created.",
+      );
+      setRunAnnouncement("The corrected trace could not be created; the original run was not changed.");
+    } finally {
+      setLoading(undefined);
     }
   }
 
@@ -1957,7 +2083,16 @@ export function AgentRunsWorkspace({
                       </p>
                     ) : null}
                     {agentResponse && activeAgentRunId && agentRunCompleted ? (
-                      <RunFeedbackPanel feedback={runFeedback} saving={feedbackSaving} onSave={saveRunFeedback} />
+                      <>
+                        <RunFeedbackPanel feedback={runFeedback} saving={feedbackSaving} onSave={saveRunFeedback} />
+                        <RunCheckpointForkPanel
+                          key={activeAgentRunId}
+                          runId={activeAgentRunId}
+                          disabled={Boolean(runPermission || loading === "agent")}
+                          disabledReason={runPermission}
+                          onFork={forkRunFromCheckpoint}
+                        />
+                      </>
                     ) : null}
                   </div>
                 </article>
@@ -3647,6 +3782,176 @@ function RunFeedbackPanel({
   );
 }
 
+function RunCheckpointForkPanel({
+  runId,
+  disabled,
+  disabledReason,
+  onFork,
+}: {
+  runId: string;
+  disabled: boolean;
+  disabledReason?: string;
+  onFork: (checkpointId: string, correction: string) => Promise<void>;
+}) {
+  const [checkpoints, setCheckpoints] = useState<TrajectoryCheckpoint[]>([]);
+  const [selectedCheckpointId, setSelectedCheckpointId] = useState("");
+  const [correction, setCorrection] = useState("");
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [loadError, setLoadError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+  const [childForkCount, setChildForkCount] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void readJson(`/api/runs/${encodeURIComponent(runId)}/trajectory`, {
+      signal: controller.signal,
+    }).then((payload) => {
+      if (controller.signal.aborted) return;
+      const record = asRecord(payload);
+      const trajectory = asRecord(record.trajectory);
+      const items = Array.isArray(trajectory.checkpoints)
+        ? trajectory.checkpoints.map(asRecord).flatMap((item) => {
+            const checkpointId = stringValue(item.checkpointId);
+            const checkpointSha256 = stringValue(item.checkpointSha256);
+            const boundaryKind = stringValue(item.boundaryKind);
+            const boundaryPhase = stringValue(item.boundaryPhase);
+            const lifecycleState = stringValue(item.lifecycleState);
+            const resumeDisposition = stringValue(item.resumeDisposition);
+            if (
+              !checkpointId ||
+              !checkpointSha256 ||
+              !isTrajectoryBoundaryKind(boundaryKind) ||
+              !isTrajectoryBoundaryPhase(boundaryPhase) ||
+              !isTrajectoryLifecycleState(lifecycleState) ||
+              !isTrajectoryResumeDisposition(resumeDisposition)
+            ) return [];
+            return [{
+              checkpointId,
+              checkpointSha256,
+              sequence: numberValue(item.sequence, 0),
+              boundaryKind,
+              boundaryPhase,
+              boundaryAttempt: numberValue(item.boundaryAttempt, 1),
+              lifecycleState,
+              resumeDisposition,
+              recordedAt: stringValue(item.recordedAt),
+            } satisfies TrajectoryCheckpoint];
+          })
+        : [];
+      items.sort((left, right) => left.sequence - right.sequence);
+      setCheckpoints(items);
+      setSelectedCheckpointId(items.at(-1)?.checkpointId || "");
+      const lineage = asRecord(record.lineage);
+      setChildForkCount(Array.isArray(lineage.children) ? lineage.children.length : 0);
+      setState("ready");
+    }).catch((error) => {
+      if (controller.signal.aborted) return;
+      setLoadError(error instanceof Error ? error.message : "Trajectory could not be loaded.");
+      setState("error");
+    });
+    return () => controller.abort();
+  }, [runId]);
+
+  const selected = checkpoints.find(
+    (checkpoint) => checkpoint.checkpointId === selectedCheckpointId,
+  );
+  const submitDisabled = disabled || submitting || !selected || !correction.trim();
+
+  return (
+    <section className="mt-4 rounded-xl border border-line/80 bg-background px-3 py-3" aria-labelledby="run-fork-title">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p id="run-fork-title" className="text-sm font-semibold">Correct from a checkpoint</p>
+          <p className="mt-1 text-xs leading-5 text-muted">
+            Inspect a recorded boundary, add a correction, and continue as a new trace. The original history stays unchanged.
+          </p>
+        </div>
+        {childForkCount ? (
+          <span className="shrink-0 rounded-md bg-primary/10 px-2 py-1 font-mono text-xs text-primary">
+            {childForkCount} fork{childForkCount === 1 ? "" : "s"}
+          </span>
+        ) : null}
+      </div>
+      {state === "loading" ? (
+        <p className="mt-3 inline-flex items-center gap-2 text-xs text-muted" role="status">
+          <Loader2 size={14} className="animate-spin" aria-hidden="true" /> Loading checkpoint trajectory…
+        </p>
+      ) : null}
+      {state === "error" ? (
+        <p className="mt-3 rounded-md border border-danger/25 bg-danger/5 px-3 py-2 text-xs text-danger" role="alert">
+          {loadError || "Trajectory could not be loaded."}
+        </p>
+      ) : null}
+      {state === "ready" && !checkpoints.length ? (
+        <p className="mt-3 rounded-md border border-dashed border-line bg-surface px-3 py-2 text-xs leading-5 text-muted">
+          This run predates checkpoint capture, so it cannot be forked from an exact recorded boundary.
+        </p>
+      ) : null}
+      {state === "ready" && checkpoints.length ? (
+        <div className="mt-3 space-y-3">
+          <div>
+            <label className="block text-xs font-semibold" htmlFor={`run-fork-checkpoint-${runId}`}>
+              Recorded boundary
+            </label>
+            <select
+              id={`run-fork-checkpoint-${runId}`}
+              value={selectedCheckpointId}
+              disabled={disabled || submitting}
+              onChange={(event) => setSelectedCheckpointId(event.currentTarget.value)}
+              className="mt-2 min-h-10 w-full rounded-md border border-line bg-surface px-3 text-sm outline-none focus:border-primary disabled:opacity-60"
+            >
+              {checkpoints.map((checkpoint) => (
+                <option key={checkpoint.checkpointId} value={checkpoint.checkpointId}>
+                  {`Step ${checkpoint.sequence + 1} · ${checkpoint.boundaryKind} ${checkpoint.boundaryPhase} · attempt ${checkpoint.boundaryAttempt}`}
+                </option>
+              ))}
+            </select>
+            {selected ? (
+              <p className="mt-2 font-mono text-[11px] leading-5 text-muted">
+                {selected.lifecycleState} · {selected.resumeDisposition} · {formatCheckpointTime(selected.recordedAt)} · {selected.checkpointId.slice(0, 18)}…
+              </p>
+            ) : null}
+          </div>
+          <div>
+            <label className="block text-xs font-semibold" htmlFor={`run-fork-correction-${runId}`}>
+              Correction for the new trace
+            </label>
+            <textarea
+              id={`run-fork-correction-${runId}`}
+              value={correction}
+              maxLength={4_000}
+              rows={3}
+              disabled={disabled || submitting}
+              onChange={(event) => setCorrection(event.currentTarget.value)}
+              placeholder="Explain what should change from this boundary…"
+              className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm leading-5 outline-none focus:border-primary disabled:opacity-60"
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs leading-5 text-muted">
+              Prior approvals never carry over; consequential actions require a new decision.
+            </p>
+            <button
+              type="button"
+              disabled={submitDisabled}
+              title={disabledReason}
+              onClick={() => {
+                if (!selected || !correction.trim()) return;
+                setSubmitting(true);
+                void onFork(selected.checkpointId, correction).finally(() => setSubmitting(false));
+              }}
+              className="primary-button shrink-0"
+            >
+              {submitting ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <GitBranch size={14} aria-hidden="true" />}
+              Fork corrected trace
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function EvidenceCard({ title, rows, empty }: { title: string; rows: Array<{ title: string; status: string; meta: string }>; empty: string }) {
   return (
     <div className="rounded-md border border-line bg-background p-3">
@@ -4099,6 +4404,37 @@ function stringValue(value: unknown, fallback = "") {
 function numberValue(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function isTrajectoryBoundaryKind(
+  value: string,
+): value is TrajectoryCheckpoint["boundaryKind"] {
+  return ["model", "tool", "approval", "delegation", "verifier"].includes(value);
+}
+
+function isTrajectoryBoundaryPhase(
+  value: string,
+): value is TrajectoryCheckpoint["boundaryPhase"] {
+  return ["before", "waiting", "after"].includes(value);
+}
+
+function isTrajectoryLifecycleState(
+  value: string,
+): value is TrajectoryCheckpoint["lifecycleState"] {
+  return ["active", "waiting", "terminal"].includes(value);
+}
+
+function isTrajectoryResumeDisposition(
+  value: string,
+): value is TrajectoryCheckpoint["resumeDisposition"] {
+  return ["resumable", "awaiting_signal", "not_resumable"].includes(value);
+}
+
+function formatCheckpointTime(value: string) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+    : "recorded time unavailable";
 }
 
 function formatBrowserDuration(durationMs: number) {
