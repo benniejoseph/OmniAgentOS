@@ -86,6 +86,7 @@ export const tenantRootPolicyTables = [
   "omni_tenant_actor_memory_purpose_consents",
   "omni_tenant_actor_memory_notice_receipts",
   "omni_tenant_actor_membership_epochs",
+  "omni_tenant_actor_membership_management_authorities",
   "omni_knowledge_documents",
   "omni_knowledge_chunks",
   "omni_retrieval_traces",
@@ -816,6 +817,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[54],
       up: ensureMemoryInformedNoticeReceiptsAndConsentV2Shadow,
+    },
+    {
+      ...databaseSchemaMigrations[55],
+      up: ensureTenantActorMembershipManagementAuthoritiesShadow,
     },
   ];
 }
@@ -27638,6 +27643,2536 @@ async function ensureMemoryInformedNoticeReceiptsAndConsentV2Shadow(
     END
     $migration$
   `;
+}
+
+async function ensureTenantActorMembershipManagementAuthoritiesShadow(
+  sql: SqlClient,
+) {
+  // v56 installs only a dormant, subject-bound authority ledger. It does not
+  // infer an administrator from current auth, create an authority generation,
+  // expose a serving reader or writer, or enable any memory authorization.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF current_user IS DISTINCT FROM (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      ) THEN
+        RAISE EXCEPTION 'Membership management authority migration requires the schema owner'
+          USING ERRCODE = '42501';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`SET LOCAL row_security = on`;
+
+  // Stabilize the live identity boundary and every dormant memory-authority
+  // predecessor. SHARE blocks ordinary DML for both audit passes without
+  // changing any row, policy, privilege, or runtime authorization decision.
+  await sql`
+    LOCK TABLE
+      omni_auth_tenants,
+      omni_auth_users,
+      omni_auth_memberships,
+      omni_memories,
+      omni_memory_informed_notice_contracts,
+      omni_tenant_actor_memory_notice_receipts,
+      omni_tenant_actor_memory_purpose_consents,
+      omni_tenant_memory_purpose_entitlements,
+      omni_tenant_actor_membership_epochs
+    IN SHARE MODE
+  `;
+
+  const verifyPrecedingAuthorityBoundary = async () => {
+    await sql`
+      DO $migration$
+      DECLARE
+        valid_scope JSONB;
+      BEGIN
+        IF public.omni_system_scope_enabled() IS DISTINCT FROM TRUE
+          OR public.omni_tenant_visible(
+            'tenant:v56_system_scope_check'
+          ) IS DISTINCT FROM TRUE
+        THEN
+          RAISE EXCEPTION 'Membership management system scope is unavailable'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF (
+          SELECT count(*)
+          FROM pg_class relation
+          JOIN pg_namespace namespace
+            ON namespace.oid = relation.relnamespace
+          WHERE relation.oid IN (
+              'omni_auth_tenants'::regclass,
+              'omni_auth_users'::regclass,
+              'omni_auth_memberships'::regclass,
+              'omni_memories'::regclass,
+              'omni_memory_informed_notice_contracts'::regclass,
+              'omni_tenant_actor_memory_notice_receipts'::regclass,
+              'omni_tenant_actor_memory_purpose_consents'::regclass,
+              'omni_tenant_memory_purpose_entitlements'::regclass,
+              'omni_tenant_actor_membership_epochs'::regclass
+            )
+            AND namespace.nspname = current_schema()
+            AND relation.relkind = 'r'
+            AND relation.relpersistence = 'p'
+            AND relation.relowner = (
+              SELECT relowner
+              FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+        ) <> 9 THEN
+          RAISE EXCEPTION 'Membership management predecessor relations changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid = 'omni_auth_users'::regclass
+            AND attribute.attname = 'actor_id'
+            AND NOT attribute.attisdropped
+            AND attribute.atttypid = 'text'::regtype
+            AND attribute.attnotnull
+            AND attribute.attgenerated = 's'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) = '(''actor:''::text || id)'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conname =
+              'omni_auth_users_actor_id_contract_check'
+            AND constraint_record.conrelid = 'omni_auth_users'::regclass
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND pg_get_expr(
+              constraint_record.conbin,
+              constraint_record.conrelid
+            ) = 'omni_source_contract_id_is_valid(actor_id)'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          JOIN pg_index index_record
+            ON index_record.indexrelid = constraint_record.conindid
+          WHERE constraint_record.conname = 'omni_auth_users_actor_id_key'
+            AND constraint_record.conrelid = 'omni_auth_users'::regclass
+            AND constraint_record.contype = 'u'
+            AND constraint_record.convalidated
+            AND constraint_record.conkey = ARRAY[
+              (
+                SELECT attnum
+                FROM pg_attribute
+                WHERE attrelid = 'omni_auth_users'::regclass
+                  AND attname = 'actor_id'
+                  AND NOT attisdropped
+              )
+            ]::SMALLINT[]
+            AND index_record.indisunique
+            AND index_record.indisvalid
+            AND index_record.indisready
+        ) THEN
+          RAISE EXCEPTION 'Membership management actor identity changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM (
+            SELECT
+              array_agg(attribute.attname::TEXT ORDER BY attribute.attnum)
+                AS names,
+              array_agg(attribute.attname::TEXT ORDER BY attribute.attnum)
+                FILTER (WHERE attribute.attnotnull) AS not_null_names,
+              bool_and(attribute.attgenerated = '') AS none_generated,
+              count(*) AS column_count
+            FROM pg_attribute attribute
+            WHERE attribute.attrelid = 'omni_auth_memberships'::regclass
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+          ) columns
+          WHERE columns.names = ARRAY[
+              'id', 'tenant_id', 'user_id', 'role', 'status',
+              'created_at', 'updated_at'
+            ]::TEXT[]
+            AND columns.not_null_names = columns.names
+            AND columns.none_generated
+            AND columns.column_count = 7
+        ) OR EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              ('id', 'text'::REGTYPE),
+              ('tenant_id', 'text'::REGTYPE),
+              ('user_id', 'text'::REGTYPE),
+              ('role', 'text'::REGTYPE),
+              ('status', 'text'::REGTYPE),
+              ('created_at', 'timestamp with time zone'::REGTYPE),
+              ('updated_at', 'timestamp with time zone'::REGTYPE)
+          ) expected(column_name, type_oid)
+          LEFT JOIN pg_attribute attribute
+            ON attribute.attrelid = 'omni_auth_memberships'::regclass
+            AND attribute.attname = expected.column_name
+            AND NOT attribute.attisdropped
+          WHERE attribute.attname IS NULL
+            OR attribute.atttypid <> expected.type_oid
+        ) THEN
+          RAISE EXCEPTION 'Membership management live membership columns changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          JOIN pg_index index_record
+            ON index_record.indexrelid = constraint_record.conindid
+          WHERE constraint_record.conname = 'omni_auth_memberships_pkey'
+            AND constraint_record.conrelid =
+              'omni_auth_memberships'::regclass
+            AND constraint_record.contype = 'p'
+            AND constraint_record.convalidated
+            AND constraint_record.conkey = ARRAY[
+              (
+                SELECT attnum FROM pg_attribute
+                WHERE attrelid = 'omni_auth_memberships'::regclass
+                  AND attname = 'id' AND NOT attisdropped
+              )
+            ]::SMALLINT[]
+            AND index_record.indisprimary
+            AND index_record.indisunique
+            AND index_record.indisvalid
+            AND index_record.indisready
+        ) OR EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              (
+                'omni_auth_memberships_tenant_id_fkey',
+                'tenant_id',
+                'omni_auth_tenants'::REGCLASS,
+                'id'
+              ),
+              (
+                'omni_auth_memberships_user_id_fkey',
+                'user_id',
+                'omni_auth_users'::REGCLASS,
+                'id'
+              )
+          ) expected(
+            constraint_name,
+            local_column,
+            foreign_relation,
+            foreign_column
+          )
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint constraint_record
+            WHERE constraint_record.conname = expected.constraint_name
+              AND constraint_record.conrelid =
+                'omni_auth_memberships'::regclass
+              AND constraint_record.contype = 'f'
+              AND constraint_record.convalidated
+              AND constraint_record.confrelid = expected.foreign_relation
+              AND constraint_record.confupdtype = 'a'
+              AND constraint_record.confdeltype = 'c'
+              AND constraint_record.confmatchtype = 's'
+              AND constraint_record.conkey = ARRAY[
+                (
+                  SELECT attnum FROM pg_attribute
+                  WHERE attrelid = 'omni_auth_memberships'::regclass
+                    AND attname = expected.local_column
+                    AND NOT attisdropped
+                )
+              ]::SMALLINT[]
+              AND constraint_record.confkey = ARRAY[
+                (
+                  SELECT attnum FROM pg_attribute
+                  WHERE attrelid = expected.foreign_relation
+                    AND attname = expected.foreign_column
+                    AND NOT attisdropped
+                )
+              ]::SMALLINT[]
+          )
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_index index_record
+          WHERE index_record.indexrelid =
+              'omni_auth_memberships_tenant_user_idx'::regclass
+            AND index_record.indrelid = 'omni_auth_memberships'::regclass
+            AND index_record.indisunique
+            AND index_record.indisvalid
+            AND index_record.indisready
+            AND index_record.indnkeyatts = 2
+            AND index_record.indnatts = 2
+            AND index_record.indexprs IS NULL
+            AND index_record.indpred IS NULL
+            AND (
+              SELECT array_agg(
+                attribute.attname::TEXT ORDER BY key.ordinality
+              )
+              FROM unnest(index_record.indkey)
+                WITH ORDINALITY AS key(attnum, ordinality)
+              JOIN pg_attribute attribute
+                ON attribute.attrelid = index_record.indrelid
+                AND attribute.attnum = key.attnum
+                AND NOT attribute.attisdropped
+            ) = ARRAY['tenant_id', 'user_id']::TEXT[]
+        ) THEN
+          RAISE EXCEPTION 'Membership management live membership keys changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF (
+          SELECT count(*)
+          FROM pg_policy
+          WHERE polrelid = 'omni_auth_memberships'::regclass
+        ) <> 1 OR NOT EXISTS (
+          SELECT 1
+          FROM pg_class
+          WHERE oid = 'omni_auth_memberships'::regclass
+            AND relrowsecurity
+            AND relforcerowsecurity
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_policy
+          WHERE polrelid = 'omni_auth_memberships'::regclass
+            AND polname = 'omni_tenant_isolation'
+            AND polpermissive
+            AND polcmd = '*'
+            AND polroles = ARRAY[0::OID]
+            AND pg_get_expr(polqual, polrelid) =
+              'omni_tenant_visible(tenant_id)'
+            AND pg_get_expr(polwithcheck, polrelid) =
+              'omni_tenant_visible(tenant_id)'
+        ) OR EXISTS (
+          SELECT 1
+          FROM pg_class
+          WHERE oid = 'omni_auth_users'::regclass
+            AND (relrowsecurity OR relforcerowsecurity)
+        ) OR EXISTS (
+          SELECT 1
+          FROM pg_trigger
+          WHERE tgrelid = 'omni_auth_memberships'::regclass
+            AND NOT tgisinternal
+        ) THEN
+          RAISE EXCEPTION 'Membership management live auth visibility changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM omni_auth_users
+          WHERE actor_id IS DISTINCT FROM 'actor:' || id
+            OR NOT public.omni_source_contract_id_is_valid(actor_id)
+        ) OR (
+          SELECT count(*) FROM omni_auth_users
+        ) IS DISTINCT FROM (
+          SELECT count(DISTINCT actor_id) FROM omni_auth_users
+        ) OR EXISTS (
+          SELECT 1
+          FROM omni_auth_memberships membership
+          LEFT JOIN omni_auth_tenants tenant
+            ON tenant.id = membership.tenant_id
+          LEFT JOIN omni_auth_users auth_user
+            ON auth_user.id = membership.user_id
+          WHERE tenant.id IS NULL OR auth_user.id IS NULL
+        ) OR EXISTS (
+          SELECT 1
+          FROM omni_auth_memberships
+          GROUP BY tenant_id, user_id
+          HAVING count(*) <> 1
+        ) THEN
+          RAISE EXCEPTION 'Membership management live auth data changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        valid_scope := jsonb_build_object(
+          'version', 1,
+          'tenantId', 'tenant:v56_authority_check',
+          'initiatingActorId', 'actor:v56_authority_subject',
+          'executingPrincipalType', 'user',
+          'executingPrincipalId', 'actor:v56_authority_subject',
+          'workspaceId', NULL,
+          'projectId', NULL,
+          'missionId', NULL,
+          'contextGrantIds', '[]'::JSONB,
+          'capabilityGrantIds', '[]'::JSONB,
+          'purposeId', 'memory.read.v1',
+          'purpose', 'Membership management authority self-check'
+        );
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conname =
+              'omni_memories_access_enrollment_hold_check'
+            AND constraint_record.conrelid = 'omni_memories'::regclass
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND pg_get_expr(
+              constraint_record.conbin,
+              constraint_record.conrelid
+            ) = '(access_contract_version = 0)'
+        ) OR EXISTS (
+          SELECT 1
+          FROM omni_memories
+          WHERE access_contract_version IS DISTINCT FROM 0
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_class
+          WHERE oid = 'omni_memories'::regclass
+            AND relrowsecurity
+            AND relforcerowsecurity
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_policy
+          WHERE polrelid = 'omni_memories'::regclass
+            AND polname = 'omni_memory_access_scope_holdback'
+            AND NOT polpermissive
+            AND polcmd = '*'
+            AND polroles = ARRAY[0::OID]
+            AND pg_get_expr(polqual, polrelid) =
+              '((access_contract_version = 0) OR omni_system_scope_enabled())'
+            AND pg_get_expr(polwithcheck, polrelid) =
+              '((access_contract_version = 0) OR omni_system_scope_enabled())'
+        ) THEN
+          RAISE EXCEPTION 'Membership management memory enrollment hold changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF public.omni_memory_access_scope_v1_is_valid(valid_scope)
+            IS DISTINCT FROM TRUE
+          OR public.omni_memory_access_scope_v1_is_authorized(valid_scope)
+            IS DISTINCT FROM FALSE
+          OR NOT EXISTS (
+            SELECT 1
+            FROM pg_proc procedure
+            JOIN pg_language language ON language.oid = procedure.prolang
+            WHERE procedure.oid = to_regprocedure(
+              'public.omni_memory_access_scope_v1_is_authorized(jsonb)'
+            )
+              AND procedure.prorettype = 'boolean'::regtype
+              AND procedure.provolatile = 'v'
+              AND procedure.proisstrict
+              AND NOT procedure.prosecdef
+              AND NOT procedure.proleakproof
+              AND procedure.proconfig =
+                ARRAY['search_path=pg_catalog, public']
+              AND procedure.proowner = (
+                SELECT relowner FROM pg_class
+                WHERE oid = 'omni_schema_version'::regclass
+              )
+              AND language.lanname = 'sql'
+              AND btrim(regexp_replace(
+                procedure.prosrc,
+                '[[:space:]]+',
+                ' ',
+                'g'
+              )) = 'SELECT FALSE'
+          ) OR EXISTS (
+            SELECT 1
+            FROM information_schema.routine_privileges
+            WHERE routine_schema = current_schema()
+              AND routine_name =
+                'omni_memory_access_scope_v1_is_authorized'
+              AND privilege_type = 'EXECUTE'
+              AND grantee <> current_user
+          ) OR EXISTS (
+            SELECT 1
+            FROM pg_policy
+            WHERE COALESCE(pg_get_expr(polqual, polrelid), '') LIKE
+                '%omni_memory_access_scope_v1_is_authorized%'
+              OR COALESCE(pg_get_expr(polwithcheck, polrelid), '') LIKE
+                '%omni_memory_access_scope_v1_is_authorized%'
+          )
+        THEN
+          RAISE EXCEPTION 'Membership management dormant authorization hook changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              (
+                'omni_tenant_memory_purpose_entitlements'::REGCLASS,
+                'omni_memory_purpose_entitlements_activation_hold_check',
+                '(state <> ''active''::text)'
+              ),
+              (
+                'omni_tenant_actor_memory_purpose_consents'::REGCLASS,
+                'omni_actor_memory_purpose_consents_grant_hold_check',
+                '(state <> ''granted''::text)'
+              ),
+              (
+                'omni_tenant_actor_membership_epochs'::REGCLASS,
+                'omni_actor_membership_epochs_activation_hold_check',
+                '(state <> ''active''::text)'
+              ),
+              (
+                'omni_memory_informed_notice_contracts'::REGCLASS,
+                'omni_memory_informed_notice_contracts_seed_hold_check',
+                'false'
+              ),
+              (
+                'omni_tenant_actor_memory_notice_receipts'::REGCLASS,
+                'omni_actor_memory_notice_receipts_issuance_hold_check',
+                'false'
+              )
+          ) expected(relation_oid, constraint_name, expression)
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint constraint_record
+            WHERE constraint_record.conrelid = expected.relation_oid
+              AND constraint_record.conname = expected.constraint_name
+              AND constraint_record.contype = 'c'
+              AND constraint_record.convalidated
+              AND COALESCE(
+                (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+                TRUE
+              )
+              AND NOT constraint_record.connoinherit
+              AND pg_get_expr(
+                constraint_record.conbin,
+                constraint_record.conrelid
+              ) = expected.expression
+          )
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority holds changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              (
+                'omni_tenant_memory_purpose_entitlements'::REGCLASS,
+                'omni_memory_purpose_entitlement_holdback'
+              ),
+              (
+                'omni_tenant_actor_memory_purpose_consents'::REGCLASS,
+                'omni_actor_memory_purpose_consent_holdback'
+              ),
+              (
+                'omni_tenant_actor_membership_epochs'::REGCLASS,
+                'omni_actor_membership_epoch_holdback'
+              ),
+              (
+                'omni_tenant_actor_memory_notice_receipts'::REGCLASS,
+                'omni_memory_notice_receipt_holdback'
+              )
+          ) expected(relation_oid, holdback_policy)
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_class relation
+            WHERE relation.oid = expected.relation_oid
+              AND relation.relrowsecurity
+              AND relation.relforcerowsecurity
+          ) OR (
+            SELECT count(*)
+            FROM pg_policy
+            WHERE polrelid = expected.relation_oid
+          ) <> 2 OR NOT EXISTS (
+            SELECT 1
+            FROM pg_policy
+            WHERE polrelid = expected.relation_oid
+              AND polname = 'omni_tenant_isolation'
+              AND polpermissive
+              AND polcmd = '*'
+              AND polroles = ARRAY[0::OID]
+              AND pg_get_expr(polqual, polrelid) =
+                'omni_tenant_visible(tenant_id)'
+              AND pg_get_expr(polwithcheck, polrelid) =
+                'omni_tenant_visible(tenant_id)'
+          ) OR NOT EXISTS (
+            SELECT 1
+            FROM pg_policy
+            WHERE polrelid = expected.relation_oid
+              AND polname = expected.holdback_policy
+              AND NOT polpermissive
+              AND polcmd = '*'
+              AND polroles = ARRAY[0::OID]
+              AND pg_get_expr(polqual, polrelid) =
+                'omni_system_scope_enabled()'
+              AND pg_get_expr(polwithcheck, polrelid) =
+                'omni_system_scope_enabled()'
+          )
+        ) THEN
+          RAISE EXCEPTION 'Membership management predecessor policies changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM (
+            SELECT
+              array_agg(attribute.attname::TEXT ORDER BY attribute.attnum)
+                AS names,
+              count(*) AS column_count
+            FROM pg_attribute attribute
+            WHERE attribute.attrelid =
+                'omni_tenant_actor_memory_purpose_consents'::regclass
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+          ) columns
+          WHERE columns.names = ARRAY[
+              'schema_version', 'tenant_id', 'subject_actor_id',
+              'purpose_id', 'consent_generation', 'state',
+              'lifecycle_revision', 'created_by_actor_id',
+              'granted_by_actor_id', 'revoked_by_actor_id', 'created_at',
+              'granted_at', 'revoked_at', 'updated_at', 'membership_epoch',
+              'notice_receipt_id'
+            ]::TEXT[]
+            AND columns.column_count = 16
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_tenant_actor_memory_purpose_consents'::regclass
+            AND attribute.attname = 'schema_version'
+            AND attribute.attnotnull
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) IN ('2', '2::smallint', '(2)::smallint')
+        ) OR to_regprocedure(
+          'public.omni_actor_memory_purpose_consent_row_is_valid(smallint,text,text,text,bigint,text,bigint,text,text,text,timestamptz,timestamptz,timestamptz,timestamptz)'
+        ) IS NOT NULL OR to_regprocedure(
+          'public.omni_actor_memory_purpose_consent_row_is_valid(smallint,text,text,text,bigint,bigint,text,text,bigint,text,text,text,timestamptz,timestamptz,timestamptz,timestamptz)'
+        ) IS NULL THEN
+          RAISE EXCEPTION 'Membership management consent v2 binding changed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1 FROM omni_memory_informed_notice_contracts
+        ) OR EXISTS (
+          SELECT 1 FROM omni_tenant_actor_memory_notice_receipts
+        ) OR EXISTS (
+          SELECT 1 FROM omni_tenant_actor_memory_purpose_consents
+        ) OR EXISTS (
+          SELECT 1 FROM omni_tenant_memory_purpose_entitlements
+        ) OR EXISTS (
+          SELECT 1 FROM omni_tenant_actor_membership_epochs
+        ) THEN
+          RAISE EXCEPTION 'Membership management predecessor shadows are not empty'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.table_privileges
+          WHERE table_schema = current_schema()
+            AND table_name IN (
+              'omni_memory_informed_notice_contracts',
+              'omni_tenant_actor_memory_notice_receipts',
+              'omni_tenant_actor_memory_purpose_consents',
+              'omni_tenant_memory_purpose_entitlements',
+              'omni_tenant_actor_membership_epochs'
+            )
+            AND grantee <> current_user
+        ) OR EXISTS (
+          SELECT 1
+          FROM information_schema.column_privileges
+          WHERE table_schema = current_schema()
+            AND table_name IN (
+              'omni_memory_informed_notice_contracts',
+              'omni_tenant_actor_memory_notice_receipts',
+              'omni_tenant_actor_memory_purpose_consents',
+              'omni_tenant_memory_purpose_entitlements',
+              'omni_tenant_actor_membership_epochs'
+            )
+            AND grantee <> current_user
+        ) OR EXISTS (
+          SELECT 1
+          FROM information_schema.routine_privileges
+          WHERE routine_schema = current_schema()
+            AND routine_name IN (
+              'omni_memory_informed_notice_contract_row_is_valid',
+              'omni_reject_memory_informed_notice_contract_change',
+              'omni_actor_memory_notice_receipt_row_is_valid',
+              'omni_validate_actor_memory_notice_receipt_insert',
+              'omni_reject_actor_memory_notice_receipt_change',
+              'omni_actor_memory_purpose_consent_row_is_valid',
+              'omni_validate_actor_memory_purpose_consent_insert',
+              'omni_protect_actor_memory_purpose_consent',
+              'omni_memory_purpose_entitlement_row_is_valid',
+              'omni_validate_memory_purpose_entitlement_insert',
+              'omni_protect_memory_purpose_entitlement',
+              'omni_actor_membership_epoch_row_is_valid',
+              'omni_validate_actor_membership_epoch_insert',
+              'omni_protect_actor_membership_epoch'
+            )
+            AND privilege_type = 'EXECUTE'
+            AND grantee <> current_user
+        ) THEN
+          RAISE EXCEPTION 'Membership management predecessor boundary is exposed'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+  };
+
+  const verifyMembershipManagementAuthoritySurface = async () => {
+    await sql`
+      DO $migration$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_class relation
+          JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+          WHERE relation.oid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND namespace.nspname = current_schema()
+            AND relation.relkind = 'r'
+            AND relation.relpersistence = 'p'
+            AND relation.relrowsecurity
+            AND relation.relforcerowsecurity
+            AND relation.relowner = (
+              SELECT relowner
+              FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority relation is invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM (
+            SELECT
+              array_agg(attribute.attname::TEXT ORDER BY attribute.attnum)
+                AS names,
+              array_agg(attribute.attname::TEXT ORDER BY attribute.attnum)
+                FILTER (WHERE attribute.attnotnull) AS not_null_names,
+              bool_and(attribute.attgenerated = '') AS none_generated,
+              count(*) AS column_count
+            FROM pg_attribute attribute
+            WHERE attribute.attrelid =
+                'omni_tenant_actor_membership_management_authorities'::regclass
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+          ) columns
+          WHERE columns.names = ARRAY[
+              'schema_version', 'tenant_id', 'subject_actor_id',
+              'grantee_actor_id', 'management_authority_id',
+              'authority_generation', 'state', 'lifecycle_revision',
+              'created_by_actor_id', 'activated_by_actor_id',
+              'revoked_by_actor_id', 'created_at', 'activated_at',
+              'revoked_at', 'updated_at'
+            ]::TEXT[]
+            AND columns.not_null_names = ARRAY[
+              'schema_version', 'tenant_id', 'subject_actor_id',
+              'grantee_actor_id', 'management_authority_id',
+              'authority_generation', 'state', 'lifecycle_revision',
+              'created_by_actor_id', 'created_at', 'updated_at'
+            ]::TEXT[]
+            AND columns.none_generated
+            AND columns.column_count = 15
+        ) OR EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              ('schema_version', 'smallint'::REGTYPE, 0::OID),
+              (
+                'tenant_id',
+                'text'::REGTYPE,
+                'pg_catalog.default'::REGCOLLATION::OID
+              ),
+              (
+                'subject_actor_id',
+                'text'::REGTYPE,
+                'pg_catalog.default'::REGCOLLATION::OID
+              ),
+              (
+                'grantee_actor_id',
+                'text'::REGTYPE,
+                'pg_catalog.default'::REGCOLLATION::OID
+              ),
+              (
+                'management_authority_id',
+                'text'::REGTYPE,
+                'pg_catalog.default'::REGCOLLATION::OID
+              ),
+              ('authority_generation', 'bigint'::REGTYPE, 0::OID),
+              (
+                'state',
+                'text'::REGTYPE,
+                'pg_catalog.default'::REGCOLLATION::OID
+              ),
+              ('lifecycle_revision', 'bigint'::REGTYPE, 0::OID),
+              (
+                'created_by_actor_id',
+                'text'::REGTYPE,
+                'pg_catalog.default'::REGCOLLATION::OID
+              ),
+              (
+                'activated_by_actor_id',
+                'text'::REGTYPE,
+                'pg_catalog.default'::REGCOLLATION::OID
+              ),
+              (
+                'revoked_by_actor_id',
+                'text'::REGTYPE,
+                'pg_catalog.default'::REGCOLLATION::OID
+              ),
+              ('created_at', 'timestamp with time zone'::REGTYPE, 0::OID),
+              ('activated_at', 'timestamp with time zone'::REGTYPE, 0::OID),
+              ('revoked_at', 'timestamp with time zone'::REGTYPE, 0::OID),
+              ('updated_at', 'timestamp with time zone'::REGTYPE, 0::OID)
+          ) expected(column_name, type_oid, collation_oid)
+          LEFT JOIN pg_attribute attribute
+            ON attribute.attrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND attribute.attname = expected.column_name
+            AND NOT attribute.attisdropped
+          WHERE attribute.attname IS NULL
+            OR attribute.atttypid <> expected.type_oid
+            OR attribute.attcollation <> expected.collation_oid
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority columns are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF (
+          SELECT count(*)
+          FROM pg_attrdef
+          WHERE adrelid =
+            'omni_tenant_actor_membership_management_authorities'::regclass
+        ) <> 5 OR NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND attribute.attname = 'schema_version'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) IN ('1', '1::smallint', '(1)::smallint')
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND attribute.attname = 'state'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) = '''held''::text'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND attribute.attname = 'lifecycle_revision'
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) IN ('0', '0::bigint', '(0)::bigint')
+        ) OR (
+          SELECT count(*)
+          FROM pg_attribute attribute
+          JOIN pg_attrdef attribute_default
+            ON attribute_default.adrelid = attribute.attrelid
+            AND attribute_default.adnum = attribute.attnum
+          WHERE attribute.attrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND attribute.attname IN ('created_at', 'updated_at')
+            AND pg_get_expr(
+              attribute_default.adbin,
+              attribute_default.adrelid
+            ) = 'now()'
+        ) <> 2 THEN
+          RAISE EXCEPTION 'Membership management authority defaults are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+
+    await sql`
+      DO $migration$
+      BEGIN
+        IF (
+          SELECT count(*)
+          FROM pg_constraint
+          WHERE conrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND contype <> 'n'
+        ) <> 10 OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          JOIN pg_index index_record
+            ON index_record.indexrelid = constraint_record.conindid
+          JOIN pg_class index_relation
+            ON index_relation.oid = index_record.indexrelid
+          JOIN pg_am access_method
+            ON access_method.oid = index_relation.relam
+          WHERE constraint_record.conname =
+              'omni_membership_management_authorities_pkey'
+            AND constraint_record.conrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND constraint_record.contype = 'p'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND NOT constraint_record.condeferrable
+            AND NOT constraint_record.condeferred
+            AND constraint_record.conkey = ARRAY[
+              (
+                SELECT attnum FROM pg_attribute
+                WHERE attrelid =
+                    'omni_tenant_actor_membership_management_authorities'::regclass
+                  AND attname = 'tenant_id' AND NOT attisdropped
+              ),
+              (
+                SELECT attnum FROM pg_attribute
+                WHERE attrelid =
+                    'omni_tenant_actor_membership_management_authorities'::regclass
+                  AND attname = 'subject_actor_id' AND NOT attisdropped
+              ),
+              (
+                SELECT attnum FROM pg_attribute
+                WHERE attrelid =
+                    'omni_tenant_actor_membership_management_authorities'::regclass
+                  AND attname = 'grantee_actor_id' AND NOT attisdropped
+              ),
+              (
+                SELECT attnum FROM pg_attribute
+                WHERE attrelid =
+                    'omni_tenant_actor_membership_management_authorities'::regclass
+                  AND attname = 'authority_generation' AND NOT attisdropped
+              )
+            ]::SMALLINT[]
+            AND index_record.indisprimary
+            AND index_record.indisunique
+            AND index_record.indisvalid
+            AND index_record.indisready
+            AND index_record.indislive
+            AND index_record.indimmediate
+            AND NOT index_record.indisclustered
+            AND NOT index_record.indisreplident
+            AND NOT index_record.indisexclusion
+            AND index_record.indnkeyatts = 4
+            AND index_record.indnatts = 4
+            AND index_record.indexprs IS NULL
+            AND index_record.indpred IS NULL
+            AND index_relation.relkind = 'i'
+            AND access_method.amname = 'btree'
+            AND (
+              SELECT array_agg(
+                operator_namespace.nspname || '.' || operator_class.opcname
+                ORDER BY key.ordinality
+              )
+              FROM unnest(index_record.indclass)
+                WITH ORDINALITY AS key(operator_class_oid, ordinality)
+              JOIN pg_opclass operator_class
+                ON operator_class.oid = key.operator_class_oid
+              JOIN pg_namespace operator_namespace
+                ON operator_namespace.oid = operator_class.opcnamespace
+            ) = ARRAY[
+              'pg_catalog.text_ops',
+              'pg_catalog.text_ops',
+              'pg_catalog.text_ops',
+              'pg_catalog.int8_ops'
+            ]::TEXT[]
+            AND (
+              SELECT array_agg(collation_oid ORDER BY ordinality)
+              FROM unnest(index_record.indcollation)
+                WITH ORDINALITY AS collations(collation_oid, ordinality)
+            ) = ARRAY[
+              'pg_catalog.default'::REGCOLLATION::OID,
+              'pg_catalog.default'::REGCOLLATION::OID,
+              'pg_catalog.default'::REGCOLLATION::OID,
+              0::OID
+            ]::OID[]
+            AND (
+              SELECT array_agg(index_option ORDER BY ordinality)
+              FROM unnest(index_record.indoption)
+                WITH ORDINALITY AS options(index_option, ordinality)
+            ) = ARRAY[0, 0, 0, 0]::SMALLINT[]
+            AND (
+              SELECT array_agg(
+                attribute.attname::TEXT ORDER BY key.ordinality
+              )
+              FROM unnest(index_record.indkey)
+                WITH ORDINALITY AS key(attnum, ordinality)
+              JOIN pg_attribute attribute
+                ON attribute.attrelid = index_record.indrelid
+                AND attribute.attnum = key.attnum
+                AND NOT attribute.attisdropped
+            ) = ARRAY[
+              'tenant_id', 'subject_actor_id', 'grantee_actor_id',
+              'authority_generation'
+            ]::TEXT[]
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          JOIN pg_index index_record
+            ON index_record.indexrelid = constraint_record.conindid
+          JOIN pg_class index_relation
+            ON index_relation.oid = index_record.indexrelid
+          JOIN pg_am access_method
+            ON access_method.oid = index_relation.relam
+          WHERE constraint_record.conname =
+              'omni_membership_management_authority_id_key'
+            AND constraint_record.conrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND constraint_record.contype = 'u'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND NOT constraint_record.condeferrable
+            AND NOT constraint_record.condeferred
+            AND constraint_record.conkey = ARRAY[
+              (
+                SELECT attnum FROM pg_attribute
+                WHERE attrelid =
+                    'omni_tenant_actor_membership_management_authorities'::regclass
+                  AND attname = 'tenant_id' AND NOT attisdropped
+              ),
+              (
+                SELECT attnum FROM pg_attribute
+                WHERE attrelid =
+                    'omni_tenant_actor_membership_management_authorities'::regclass
+                  AND attname = 'management_authority_id'
+                  AND NOT attisdropped
+              )
+            ]::SMALLINT[]
+            AND index_record.indisunique
+            AND NOT index_record.indisprimary
+            AND index_record.indisvalid
+            AND index_record.indisready
+            AND index_record.indislive
+            AND index_record.indimmediate
+            AND NOT index_record.indisclustered
+            AND NOT index_record.indisreplident
+            AND NOT index_record.indisexclusion
+            AND index_record.indnkeyatts = 2
+            AND index_record.indnatts = 2
+            AND index_record.indexprs IS NULL
+            AND index_record.indpred IS NULL
+            AND index_relation.relkind = 'i'
+            AND access_method.amname = 'btree'
+            AND (
+              SELECT array_agg(
+                operator_namespace.nspname || '.' || operator_class.opcname
+                ORDER BY key.ordinality
+              )
+              FROM unnest(index_record.indclass)
+                WITH ORDINALITY AS key(operator_class_oid, ordinality)
+              JOIN pg_opclass operator_class
+                ON operator_class.oid = key.operator_class_oid
+              JOIN pg_namespace operator_namespace
+                ON operator_namespace.oid = operator_class.opcnamespace
+            ) = ARRAY[
+              'pg_catalog.text_ops',
+              'pg_catalog.text_ops'
+            ]::TEXT[]
+            AND (
+              SELECT array_agg(collation_oid ORDER BY ordinality)
+              FROM unnest(index_record.indcollation)
+                WITH ORDINALITY AS collations(collation_oid, ordinality)
+            ) = ARRAY[
+              'pg_catalog.default'::REGCOLLATION::OID,
+              'pg_catalog.default'::REGCOLLATION::OID
+            ]::OID[]
+            AND (
+              SELECT array_agg(index_option ORDER BY ordinality)
+              FROM unnest(index_record.indoption)
+                WITH ORDINALITY AS options(index_option, ordinality)
+            ) = ARRAY[0, 0]::SMALLINT[]
+            AND (
+              SELECT array_agg(
+                attribute.attname::TEXT ORDER BY key.ordinality
+              )
+              FROM unnest(index_record.indkey)
+                WITH ORDINALITY AS key(attnum, ordinality)
+              JOIN pg_attribute attribute
+                ON attribute.attrelid = index_record.indrelid
+                AND attribute.attnum = key.attnum
+                AND NOT attribute.attisdropped
+            ) = ARRAY[
+              'tenant_id', 'management_authority_id'
+            ]::TEXT[]
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conname =
+              'omni_membership_management_authority_row_check'
+            AND constraint_record.conrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND NOT constraint_record.connoinherit
+            AND pg_get_expr(
+              constraint_record.conbin,
+              constraint_record.conrelid
+            ) =
+              'omni_membership_management_authority_row_is_valid(schema_version, tenant_id, subject_actor_id, grantee_actor_id, management_authority_id, authority_generation, state, lifecycle_revision, created_by_actor_id, activated_by_actor_id, revoked_by_actor_id, created_at, activated_at, revoked_at, updated_at)'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint constraint_record
+          WHERE constraint_record.conname =
+              'omni_membership_management_authority_activation_hold_check'
+            AND constraint_record.conrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND constraint_record.contype = 'c'
+            AND constraint_record.convalidated
+            AND COALESCE(
+              (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+              TRUE
+            )
+            AND NOT constraint_record.connoinherit
+            AND pg_get_expr(
+              constraint_record.conbin,
+              constraint_record.conrelid
+            ) = '(state <> ''active''::text)'
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority constraints are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              (
+                'omni_membership_management_authority_tenant_fkey',
+                'tenant_id',
+                'omni_auth_tenants'::REGCLASS,
+                'id'
+              ),
+              (
+                'omni_membership_management_authority_subject_fkey',
+                'subject_actor_id',
+                'omni_auth_users'::REGCLASS,
+                'actor_id'
+              ),
+              (
+                'omni_membership_management_authority_grantee_fkey',
+                'grantee_actor_id',
+                'omni_auth_users'::REGCLASS,
+                'actor_id'
+              ),
+              (
+                'omni_membership_management_authority_created_actor_fkey',
+                'created_by_actor_id',
+                'omni_auth_users'::REGCLASS,
+                'actor_id'
+              ),
+              (
+                'omni_membership_management_authority_activated_actor_fkey',
+                'activated_by_actor_id',
+                'omni_auth_users'::REGCLASS,
+                'actor_id'
+              ),
+              (
+                'omni_membership_management_authority_revoked_actor_fkey',
+                'revoked_by_actor_id',
+                'omni_auth_users'::REGCLASS,
+                'actor_id'
+              )
+          ) expected(
+            constraint_name,
+            local_column,
+            foreign_relation,
+            foreign_column
+          )
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint constraint_record
+            WHERE constraint_record.conname = expected.constraint_name
+              AND constraint_record.conrelid =
+                'omni_tenant_actor_membership_management_authorities'::regclass
+              AND constraint_record.contype = 'f'
+              AND constraint_record.convalidated
+              AND COALESCE(
+                (to_jsonb(constraint_record) ->> 'conenforced')::BOOLEAN,
+                TRUE
+              )
+              AND NOT constraint_record.condeferrable
+              AND NOT constraint_record.condeferred
+              AND constraint_record.confrelid = expected.foreign_relation
+              AND constraint_record.confupdtype = 'r'
+              AND constraint_record.confdeltype = 'r'
+              AND constraint_record.confmatchtype = 's'
+              AND constraint_record.conkey = ARRAY[
+                (
+                  SELECT attnum FROM pg_attribute
+                  WHERE attrelid =
+                      'omni_tenant_actor_membership_management_authorities'::regclass
+                    AND attname = expected.local_column
+                    AND NOT attisdropped
+                )
+              ]::SMALLINT[]
+              AND constraint_record.confkey = ARRAY[
+                (
+                  SELECT attnum FROM pg_attribute
+                  WHERE attrelid = expected.foreign_relation
+                    AND attname = expected.foreign_column
+                    AND NOT attisdropped
+                )
+              ]::SMALLINT[]
+          )
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority references are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF (
+          SELECT count(*)
+          FROM pg_index
+          WHERE indrelid =
+            'omni_tenant_actor_membership_management_authorities'::regclass
+        ) <> 3 OR NOT EXISTS (
+          SELECT 1
+          FROM pg_index index_record
+          JOIN pg_class index_relation
+            ON index_relation.oid = index_record.indexrelid
+          JOIN pg_am access_method
+            ON access_method.oid = index_relation.relam
+          WHERE index_record.indexrelid =
+              'omni_membership_management_authorities_current_idx'::regclass
+            AND index_record.indrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND index_record.indisunique
+            AND NOT index_record.indisprimary
+            AND index_record.indisvalid
+            AND index_record.indisready
+            AND index_record.indislive
+            AND index_record.indimmediate
+            AND NOT index_record.indisclustered
+            AND NOT index_record.indisreplident
+            AND NOT index_record.indisexclusion
+            AND index_record.indnatts = 3
+            AND index_record.indnkeyatts = 3
+            AND index_record.indexprs IS NULL
+            AND index_relation.relkind = 'i'
+            AND access_method.amname = 'btree'
+            AND (
+              SELECT array_agg(operator_class ORDER BY ordinal_position)
+              FROM unnest(index_record.indclass)
+                WITH ORDINALITY AS operator_classes(
+                  operator_class,
+                  ordinal_position
+                )
+            ) = ARRAY[
+              (
+                SELECT operator_class.oid
+                FROM pg_opclass operator_class
+                WHERE operator_class.opcname = 'text_ops'
+                  AND operator_class.opcnamespace =
+                    'pg_catalog'::REGNAMESPACE
+                  AND operator_class.opcmethod = access_method.oid
+              ),
+              (
+                SELECT operator_class.oid
+                FROM pg_opclass operator_class
+                WHERE operator_class.opcname = 'text_ops'
+                  AND operator_class.opcnamespace =
+                    'pg_catalog'::REGNAMESPACE
+                  AND operator_class.opcmethod = access_method.oid
+              ),
+              (
+                SELECT operator_class.oid
+                FROM pg_opclass operator_class
+                WHERE operator_class.opcname = 'text_ops'
+                  AND operator_class.opcnamespace =
+                    'pg_catalog'::REGNAMESPACE
+                  AND operator_class.opcmethod = access_method.oid
+              )
+            ]::OID[]
+            AND (
+              SELECT array_agg(collation_oid ORDER BY ordinal_position)
+              FROM unnest(index_record.indcollation)
+                WITH ORDINALITY AS collations(
+                  collation_oid,
+                  ordinal_position
+                )
+            ) = ARRAY[
+              'pg_catalog.default'::REGCOLLATION::OID,
+              'pg_catalog.default'::REGCOLLATION::OID,
+              'pg_catalog.default'::REGCOLLATION::OID
+            ]::OID[]
+            AND (
+              SELECT array_agg(index_option ORDER BY ordinal_position)
+              FROM unnest(index_record.indoption)
+                WITH ORDINALITY AS index_options(
+                  index_option,
+                  ordinal_position
+                )
+            ) = ARRAY[0, 0, 0]::SMALLINT[]
+            AND (
+              SELECT array_agg(
+                attribute.attname::TEXT ORDER BY key.ordinality
+              )
+              FROM unnest(index_record.indkey)
+                WITH ORDINALITY AS key(attnum, ordinality)
+              JOIN pg_attribute attribute
+                ON attribute.attrelid = index_record.indrelid
+                AND attribute.attnum = key.attnum
+                AND NOT attribute.attisdropped
+            ) = ARRAY[
+              'tenant_id', 'subject_actor_id', 'grantee_actor_id'
+            ]::TEXT[]
+            AND pg_get_expr(index_record.indpred, index_record.indrelid) =
+              '(state <> ''revoked''::text)'
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority indexes are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+
+    await sql`
+      DO $migration$
+      BEGIN
+        IF public.omni_membership_management_authority_row_is_valid(
+          1::SMALLINT,
+          'tenant:v56_authority_check',
+          'actor:v56_authority_subject',
+          'actor:v56_authority_grantee',
+          'membership_authority:v56_check',
+          1::BIGINT,
+          'held',
+          0::BIGINT,
+          'actor:v56_authority_creator',
+          NULL,
+          NULL,
+          CURRENT_TIMESTAMP,
+          NULL,
+          NULL,
+          CURRENT_TIMESTAMP
+        ) IS DISTINCT FROM TRUE OR
+          public.omni_membership_management_authority_row_is_valid(
+            1::SMALLINT,
+            'tenant:v56_authority_check',
+            'actor:v56_authority_subject',
+            'actor:v56_authority_grantee',
+            'membership_authority:v56_check',
+            1::BIGINT,
+            'active',
+            1::BIGINT,
+            'actor:v56_authority_creator',
+            'actor:v56_authority_activator',
+            NULL,
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP,
+            NULL,
+            CURRENT_TIMESTAMP
+          ) IS DISTINCT FROM TRUE OR
+          public.omni_membership_management_authority_row_is_valid(
+            1::SMALLINT,
+            'tenant:v56_authority_check',
+            'actor:v56_authority_subject',
+            'actor:v56_authority_grantee',
+            'membership_authority:v56_check',
+            1::BIGINT,
+            'revoked',
+            1::BIGINT,
+            'actor:v56_authority_creator',
+            NULL,
+            'actor:v56_authority_revoker',
+            CURRENT_TIMESTAMP,
+            NULL,
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+          ) IS DISTINCT FROM TRUE OR
+          public.omni_membership_management_authority_row_is_valid(
+            1::SMALLINT,
+            'tenant:v56_authority_check',
+            'actor:v56_authority_subject',
+            'actor:v56_authority_grantee',
+            'membership_authority:v56_check',
+            1::BIGINT,
+            'active',
+            0::BIGINT,
+            'actor:v56_authority_creator',
+            NULL,
+            NULL,
+            CURRENT_TIMESTAMP,
+            NULL,
+            NULL,
+            CURRENT_TIMESTAMP
+          ) IS DISTINCT FROM FALSE OR
+          public.omni_membership_management_authority_row_is_valid(
+            1::SMALLINT,
+            'tenant:v56_authority_check',
+            'actor:v56_authority_subject',
+            'actor:v56_authority_grantee',
+            NULL,
+            1::BIGINT,
+            'held',
+            0::BIGINT,
+            'actor:v56_authority_creator',
+            NULL,
+            NULL,
+            CURRENT_TIMESTAMP,
+            NULL,
+            NULL,
+            CURRENT_TIMESTAMP
+          ) IS DISTINCT FROM FALSE
+        THEN
+          RAISE EXCEPTION 'Membership management authority validator is invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF (
+          SELECT count(*)
+          FROM pg_proc procedure
+          JOIN pg_namespace namespace
+            ON namespace.oid = procedure.pronamespace
+          WHERE namespace.nspname = current_schema()
+            AND procedure.proname IN (
+              'omni_membership_management_authority_row_is_valid',
+              'omni_validate_membership_management_authority_insert',
+              'omni_protect_membership_management_authority'
+            )
+        ) <> 3 OR NOT EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_language language ON language.oid = procedure.prolang
+          WHERE procedure.oid = to_regprocedure(
+            'public.omni_membership_management_authority_row_is_valid(smallint,text,text,text,text,bigint,text,bigint,text,text,text,timestamptz,timestamptz,timestamptz,timestamptz)'
+          )
+            AND procedure.prorettype = 'boolean'::regtype
+            AND procedure.provolatile = 'i'
+            AND NOT procedure.proisstrict
+            AND NOT procedure.prosecdef
+            AND NOT procedure.proleakproof
+            AND procedure.proconfig =
+              ARRAY['search_path=pg_catalog, public']
+            AND procedure.proowner = (
+              SELECT relowner FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+            AND language.lanname = 'sql'
+            AND procedure.prosrc = $expected$
+      SELECT COALESCE(
+        candidate_schema_version = 1
+        AND public.omni_source_contract_id_is_valid(candidate_tenant_id)
+        AND public.omni_source_contract_id_is_valid(
+          candidate_subject_actor_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_grantee_actor_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_management_authority_id
+        )
+        AND candidate_authority_generation BETWEEN 1 AND 9007199254740991
+        AND candidate_state IN ('held', 'active', 'revoked')
+        AND candidate_lifecycle_revision BETWEEN 0 AND 9007199254740991
+        AND public.omni_source_contract_id_is_valid(
+          candidate_created_by_actor_id
+        )
+        AND (
+          candidate_activated_by_actor_id IS NULL
+          OR public.omni_source_contract_id_is_valid(
+            candidate_activated_by_actor_id
+          )
+        )
+        AND (
+          candidate_revoked_by_actor_id IS NULL
+          OR public.omni_source_contract_id_is_valid(
+            candidate_revoked_by_actor_id
+          )
+        )
+        AND (candidate_activated_by_actor_id IS NULL) =
+          (candidate_activated_at IS NULL)
+        AND (candidate_revoked_by_actor_id IS NULL) =
+          (candidate_revoked_at IS NULL)
+        AND (
+          (
+            candidate_state = 'held'
+            AND candidate_lifecycle_revision = 0
+            AND candidate_activated_at IS NULL
+            AND candidate_revoked_at IS NULL
+          )
+          OR (
+            candidate_state = 'active'
+            AND candidate_lifecycle_revision = 1
+            AND candidate_activated_at IS NOT NULL
+            AND candidate_revoked_at IS NULL
+          )
+          OR (
+            candidate_state = 'revoked'
+            AND candidate_revoked_at IS NOT NULL
+            AND (
+              (
+                candidate_activated_at IS NULL
+                AND candidate_lifecycle_revision = 1
+              )
+              OR (
+                candidate_activated_at IS NOT NULL
+                AND candidate_lifecycle_revision = 2
+              )
+            )
+          )
+        )
+        AND candidate_created_at <= candidate_updated_at
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_created_at <= candidate_activated_at
+        )
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_activated_at <= candidate_updated_at
+        )
+        AND (
+          candidate_revoked_at IS NULL
+          OR candidate_created_at <= candidate_revoked_at
+        )
+        AND (
+          candidate_revoked_at IS NULL
+          OR candidate_revoked_at <= candidate_updated_at
+        )
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_revoked_at IS NULL
+          OR candidate_activated_at <= candidate_revoked_at
+        ),
+        FALSE
+      )
+    $expected$
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_language language ON language.oid = procedure.prolang
+          WHERE procedure.oid = to_regprocedure(
+            'public.omni_validate_membership_management_authority_insert()'
+          )
+            AND procedure.prorettype = 'trigger'::regtype
+            AND procedure.provolatile = 'v'
+            AND NOT procedure.proisstrict
+            AND NOT procedure.prosecdef
+            AND NOT procedure.proleakproof
+            AND procedure.proconfig =
+              ARRAY['search_path=pg_catalog, public']
+            AND procedure.proowner = (
+              SELECT relowner FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+            AND language.lanname = 'plpgsql'
+            AND procedure.prosrc = $expected$
+    DECLARE
+      expected_generation BIGINT;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id),
+        hashtext(
+          NEW.subject_actor_id || chr(31) || NEW.grantee_actor_id
+        )
+      );
+
+      IF NEW.state <> 'held'
+        OR NEW.lifecycle_revision <> 0
+        OR NEW.activated_by_actor_id IS NOT NULL
+        OR NEW.revoked_by_actor_id IS NOT NULL
+        OR NEW.activated_at IS NOT NULL
+        OR NEW.revoked_at IS NOT NULL
+      THEN
+        RAISE EXCEPTION 'Membership management authorities must start held'
+          USING ERRCODE = '23514';
+      END IF;
+
+      NEW.created_at := statement_timestamp();
+      NEW.updated_at := NEW.created_at;
+
+      SELECT COALESCE(MAX(authority.authority_generation), 0) + 1
+      INTO expected_generation
+      FROM public.omni_tenant_actor_membership_management_authorities authority
+      WHERE authority.tenant_id = NEW.tenant_id
+        AND authority.subject_actor_id = NEW.subject_actor_id
+        AND authority.grantee_actor_id = NEW.grantee_actor_id;
+
+      IF NEW.authority_generation IS DISTINCT FROM expected_generation THEN
+        RAISE EXCEPTION 'Membership management authority generation is not next'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM public.omni_tenant_actor_membership_management_authorities authority
+        WHERE authority.tenant_id = NEW.tenant_id
+          AND authority.subject_actor_id = NEW.subject_actor_id
+          AND authority.grantee_actor_id = NEW.grantee_actor_id
+          AND authority.state <> 'revoked'
+      ) THEN
+        RAISE EXCEPTION 'Membership management authority already has a current generation'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $expected$
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_language language ON language.oid = procedure.prolang
+          WHERE procedure.oid = to_regprocedure(
+            'public.omni_protect_membership_management_authority()'
+          )
+            AND procedure.prorettype = 'trigger'::regtype
+            AND procedure.provolatile = 'v'
+            AND NOT procedure.proisstrict
+            AND NOT procedure.prosecdef
+            AND NOT procedure.proleakproof
+            AND procedure.proconfig =
+              ARRAY['search_path=pg_catalog, public']
+            AND procedure.proowner = (
+              SELECT relowner FROM pg_class
+              WHERE oid = 'omni_schema_version'::regclass
+            )
+            AND language.lanname = 'plpgsql'
+            AND procedure.prosrc = $expected$
+    DECLARE
+      transition_at TIMESTAMPTZ;
+    BEGIN
+      IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION 'Membership management authority rows cannot be removed'
+          USING ERRCODE = '55000';
+      END IF;
+
+      PERFORM pg_advisory_xact_lock(
+        hashtext(OLD.tenant_id),
+        hashtext(
+          OLD.subject_actor_id || chr(31) || OLD.grantee_actor_id
+        )
+      );
+
+      IF OLD.state = 'revoked' THEN
+        RAISE EXCEPTION 'Revoked membership management authorities are immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.schema_version IS DISTINCT FROM OLD.schema_version
+        OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+        OR NEW.subject_actor_id IS DISTINCT FROM OLD.subject_actor_id
+        OR NEW.grantee_actor_id IS DISTINCT FROM OLD.grantee_actor_id
+        OR NEW.management_authority_id IS DISTINCT FROM
+          OLD.management_authority_id
+        OR NEW.authority_generation IS DISTINCT FROM
+          OLD.authority_generation
+        OR NEW.created_by_actor_id IS DISTINCT FROM
+          OLD.created_by_actor_id
+        OR NEW.created_at IS DISTINCT FROM OLD.created_at
+      THEN
+        RAISE EXCEPTION 'Membership management authority identity is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT (
+        (OLD.state = 'held' AND NEW.state IN ('active', 'revoked'))
+        OR (OLD.state = 'active' AND NEW.state = 'revoked')
+      ) THEN
+        RAISE EXCEPTION 'Membership management authority transition is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.lifecycle_revision IS DISTINCT FROM
+        OLD.lifecycle_revision + 1
+      THEN
+        RAISE EXCEPTION 'Membership management authority revision must increase once'
+          USING ERRCODE = '23514';
+      END IF;
+
+      transition_at := GREATEST(
+        statement_timestamp(),
+        OLD.updated_at + INTERVAL '1 microsecond'
+      );
+      NEW.updated_at := transition_at;
+
+      IF OLD.activated_at IS NOT NULL AND (
+        NEW.activated_at IS DISTINCT FROM OLD.activated_at
+        OR NEW.activated_by_actor_id IS DISTINCT FROM
+          OLD.activated_by_actor_id
+      ) THEN
+        RAISE EXCEPTION 'Membership management authority activation is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF OLD.activated_at IS NULL THEN
+        IF OLD.state = 'held' AND NEW.state = 'active' THEN
+          IF NEW.activated_by_actor_id IS NULL THEN
+            RAISE EXCEPTION 'Membership management activation attribution is invalid'
+              USING ERRCODE = '23514';
+          END IF;
+          NEW.activated_at := transition_at;
+        ELSIF NEW.activated_by_actor_id IS NOT NULL
+          OR NEW.activated_at IS NOT NULL
+        THEN
+          RAISE EXCEPTION 'Membership management activation metadata is unexpected'
+            USING ERRCODE = '23514';
+        END IF;
+      END IF;
+
+      IF NEW.state = 'revoked' THEN
+        IF NEW.revoked_by_actor_id IS NULL THEN
+          RAISE EXCEPTION 'Membership management revocation attribution is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        NEW.revoked_at := transition_at;
+      ELSIF NEW.revoked_by_actor_id IS NOT NULL
+        OR NEW.revoked_at IS NOT NULL
+      THEN
+        RAISE EXCEPTION 'Membership management revocation metadata is unexpected'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $expected$
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority functions are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF (
+          SELECT count(*)
+          FROM pg_trigger
+          WHERE tgrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND NOT tgisinternal
+        ) <> 3 OR EXISTS (
+          SELECT 1
+          FROM (
+            VALUES
+              (
+                'omni_membership_management_authority_validate_insert',
+                to_regprocedure(
+                  'public.omni_validate_membership_management_authority_insert()'
+                ),
+                7
+              ),
+              (
+                'omni_membership_management_authority_protect',
+                to_regprocedure(
+                  'public.omni_protect_membership_management_authority()'
+                ),
+                27
+              ),
+              (
+                'omni_membership_management_authority_no_truncate',
+                to_regprocedure(
+                  'public.omni_protect_membership_management_authority()'
+                ),
+                34
+              )
+          ) expected(trigger_name, procedure_oid, trigger_type)
+          WHERE expected.procedure_oid IS NULL
+            OR NOT EXISTS (
+              SELECT 1
+              FROM pg_trigger trigger_record
+              WHERE trigger_record.tgrelid =
+                  'omni_tenant_actor_membership_management_authorities'::regclass
+                AND trigger_record.tgname = expected.trigger_name
+                AND NOT trigger_record.tgisinternal
+                AND trigger_record.tgenabled = 'O'
+                AND trigger_record.tgfoid = expected.procedure_oid
+                AND trigger_record.tgtype = expected.trigger_type
+                AND trigger_record.tgqual IS NULL
+                AND trigger_record.tgnargs = 0
+                AND trigger_record.tgconstraint = 0
+                AND NOT trigger_record.tgdeferrable
+                AND NOT trigger_record.tginitdeferred
+                AND trigger_record.tgattr::TEXT = ''
+            )
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority triggers are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+
+    await sql`
+      DO $migration$
+      BEGIN
+        IF (
+          SELECT count(*)
+          FROM pg_policy
+          WHERE polrelid =
+            'omni_tenant_actor_membership_management_authorities'::regclass
+        ) <> 2 OR NOT EXISTS (
+          SELECT 1
+          FROM pg_policy
+          WHERE polrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND polname = 'omni_tenant_isolation'
+            AND polpermissive
+            AND polcmd = '*'
+            AND polroles = ARRAY[0::OID]
+            AND pg_get_expr(polqual, polrelid) =
+              'omni_tenant_visible(tenant_id)'
+            AND pg_get_expr(polwithcheck, polrelid) =
+              'omni_tenant_visible(tenant_id)'
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM pg_policy
+          WHERE polrelid =
+              'omni_tenant_actor_membership_management_authorities'::regclass
+            AND polname =
+              'omni_membership_management_authority_holdback'
+            AND NOT polpermissive
+            AND polcmd = '*'
+            AND polroles = ARRAY[0::OID]
+            AND pg_get_expr(polqual, polrelid) =
+              'omni_system_scope_enabled()'
+            AND pg_get_expr(polwithcheck, polrelid) =
+              'omni_system_scope_enabled()'
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority policies are invalid'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.table_privileges
+          WHERE table_schema = current_schema()
+            AND table_name =
+              'omni_tenant_actor_membership_management_authorities'
+            AND grantee <> current_user
+        ) OR EXISTS (
+          SELECT 1
+          FROM information_schema.column_privileges
+          WHERE table_schema = current_schema()
+            AND table_name =
+              'omni_tenant_actor_membership_management_authorities'
+            AND grantee <> current_user
+        ) OR EXISTS (
+          SELECT 1
+          FROM information_schema.routine_privileges
+          WHERE routine_schema = current_schema()
+            AND routine_name IN (
+              'omni_membership_management_authority_row_is_valid',
+              'omni_validate_membership_management_authority_insert',
+              'omni_protect_membership_management_authority'
+            )
+            AND privilege_type = 'EXECUTE'
+            AND grantee <> current_user
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority boundary is exposed'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM omni_tenant_actor_membership_management_authorities
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority shadow is not empty'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+  };
+
+  await verifyPrecedingAuthorityBoundary();
+
+  const targetRelationState = await sql`
+    SELECT to_regclass(
+      'public.omni_tenant_actor_membership_management_authorities'
+    ) IS NOT NULL AS relation_exists
+  `;
+  const targetRelationExists = targetRelationState[0]?.relation_exists;
+  if (
+    targetRelationState.length !== 1 ||
+    typeof targetRelationExists !== "boolean"
+  ) {
+    throw new Error("Membership management authority retry state is invalid.");
+  }
+
+  if (targetRelationExists) {
+    await sql`
+      LOCK TABLE omni_tenant_actor_membership_management_authorities
+      IN ACCESS EXCLUSIVE MODE
+    `;
+    await verifyMembershipManagementAuthoritySurface();
+  } else {
+    await sql`
+      DO $migration$
+      BEGIN
+        IF to_regclass(
+          'public.omni_membership_management_authorities_current_idx'
+        ) IS NOT NULL OR to_regprocedure(
+          'public.omni_membership_management_authority_row_is_valid(smallint,text,text,text,text,bigint,text,bigint,text,text,text,timestamptz,timestamptz,timestamptz,timestamptz)'
+        ) IS NOT NULL OR to_regprocedure(
+          'public.omni_validate_membership_management_authority_insert()'
+        ) IS NOT NULL OR to_regprocedure(
+          'public.omni_protect_membership_management_authority()'
+        ) IS NOT NULL THEN
+          RAISE EXCEPTION 'Membership management authority install is partial'
+            USING ERRCODE = '55000';
+        END IF;
+
+        IF EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_namespace namespace
+            ON namespace.oid = procedure.pronamespace
+          WHERE namespace.nspname = current_schema()
+            AND procedure.proname IN (
+              'omni_membership_management_authority_row_is_valid',
+              'omni_validate_membership_management_authority_insert',
+              'omni_protect_membership_management_authority'
+            )
+        ) THEN
+          RAISE EXCEPTION 'Membership management authority overload is unexpected'
+            USING ERRCODE = '55000';
+        END IF;
+      END
+      $migration$
+    `;
+  }
+
+  await sql`
+    CREATE OR REPLACE FUNCTION
+      omni_membership_management_authority_row_is_valid(
+        candidate_schema_version SMALLINT,
+        candidate_tenant_id TEXT,
+        candidate_subject_actor_id TEXT,
+        candidate_grantee_actor_id TEXT,
+        candidate_management_authority_id TEXT,
+        candidate_authority_generation BIGINT,
+        candidate_state TEXT,
+        candidate_lifecycle_revision BIGINT,
+        candidate_created_by_actor_id TEXT,
+        candidate_activated_by_actor_id TEXT,
+        candidate_revoked_by_actor_id TEXT,
+        candidate_created_at TIMESTAMPTZ,
+        candidate_activated_at TIMESTAMPTZ,
+        candidate_revoked_at TIMESTAMPTZ,
+        candidate_updated_at TIMESTAMPTZ
+      )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        candidate_schema_version = 1
+        AND public.omni_source_contract_id_is_valid(candidate_tenant_id)
+        AND public.omni_source_contract_id_is_valid(
+          candidate_subject_actor_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_grantee_actor_id
+        )
+        AND public.omni_source_contract_id_is_valid(
+          candidate_management_authority_id
+        )
+        AND candidate_authority_generation BETWEEN 1 AND 9007199254740991
+        AND candidate_state IN ('held', 'active', 'revoked')
+        AND candidate_lifecycle_revision BETWEEN 0 AND 9007199254740991
+        AND public.omni_source_contract_id_is_valid(
+          candidate_created_by_actor_id
+        )
+        AND (
+          candidate_activated_by_actor_id IS NULL
+          OR public.omni_source_contract_id_is_valid(
+            candidate_activated_by_actor_id
+          )
+        )
+        AND (
+          candidate_revoked_by_actor_id IS NULL
+          OR public.omni_source_contract_id_is_valid(
+            candidate_revoked_by_actor_id
+          )
+        )
+        AND (candidate_activated_by_actor_id IS NULL) =
+          (candidate_activated_at IS NULL)
+        AND (candidate_revoked_by_actor_id IS NULL) =
+          (candidate_revoked_at IS NULL)
+        AND (
+          (
+            candidate_state = 'held'
+            AND candidate_lifecycle_revision = 0
+            AND candidate_activated_at IS NULL
+            AND candidate_revoked_at IS NULL
+          )
+          OR (
+            candidate_state = 'active'
+            AND candidate_lifecycle_revision = 1
+            AND candidate_activated_at IS NOT NULL
+            AND candidate_revoked_at IS NULL
+          )
+          OR (
+            candidate_state = 'revoked'
+            AND candidate_revoked_at IS NOT NULL
+            AND (
+              (
+                candidate_activated_at IS NULL
+                AND candidate_lifecycle_revision = 1
+              )
+              OR (
+                candidate_activated_at IS NOT NULL
+                AND candidate_lifecycle_revision = 2
+              )
+            )
+          )
+        )
+        AND candidate_created_at <= candidate_updated_at
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_created_at <= candidate_activated_at
+        )
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_activated_at <= candidate_updated_at
+        )
+        AND (
+          candidate_revoked_at IS NULL
+          OR candidate_created_at <= candidate_revoked_at
+        )
+        AND (
+          candidate_revoked_at IS NULL
+          OR candidate_revoked_at <= candidate_updated_at
+        )
+        AND (
+          candidate_activated_at IS NULL
+          OR candidate_revoked_at IS NULL
+          OR candidate_activated_at <= candidate_revoked_at
+        ),
+        FALSE
+      )
+    $function$
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS
+      omni_tenant_actor_membership_management_authorities (
+        schema_version SMALLINT NOT NULL DEFAULT 1,
+        tenant_id TEXT NOT NULL,
+        subject_actor_id TEXT NOT NULL,
+        grantee_actor_id TEXT NOT NULL,
+        management_authority_id TEXT NOT NULL,
+        authority_generation BIGINT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'held',
+        lifecycle_revision BIGINT NOT NULL DEFAULT 0,
+        created_by_actor_id TEXT NOT NULL,
+        activated_by_actor_id TEXT,
+        revoked_by_actor_id TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        activated_at TIMESTAMPTZ,
+        revoked_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT omni_membership_management_authorities_pkey
+          PRIMARY KEY (
+            tenant_id,
+            subject_actor_id,
+            grantee_actor_id,
+            authority_generation
+          ),
+        CONSTRAINT omni_membership_management_authority_id_key
+          UNIQUE (tenant_id, management_authority_id),
+        CONSTRAINT omni_membership_management_authority_row_check CHECK (
+          omni_membership_management_authority_row_is_valid(
+            schema_version,
+            tenant_id,
+            subject_actor_id,
+            grantee_actor_id,
+            management_authority_id,
+            authority_generation,
+            state,
+            lifecycle_revision,
+            created_by_actor_id,
+            activated_by_actor_id,
+            revoked_by_actor_id,
+            created_at,
+            activated_at,
+            revoked_at,
+            updated_at
+          )
+        ),
+        CONSTRAINT
+          omni_membership_management_authority_activation_hold_check
+          CHECK (state <> 'active'),
+        CONSTRAINT omni_membership_management_authority_tenant_fkey
+          FOREIGN KEY (tenant_id)
+          REFERENCES omni_auth_tenants (id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_membership_management_authority_subject_fkey
+          FOREIGN KEY (subject_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_membership_management_authority_grantee_fkey
+          FOREIGN KEY (grantee_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_membership_management_authority_created_actor_fkey
+          FOREIGN KEY (created_by_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_membership_management_authority_activated_actor_fkey
+          FOREIGN KEY (activated_by_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT,
+        CONSTRAINT omni_membership_management_authority_revoked_actor_fkey
+          FOREIGN KEY (revoked_by_actor_id)
+          REFERENCES omni_auth_users (actor_id)
+          ON UPDATE RESTRICT
+          ON DELETE RESTRICT
+      )
+  `;
+
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_membership_management_authorities_current_idx
+    ON omni_tenant_actor_membership_management_authorities (
+      tenant_id,
+      subject_actor_id,
+      grantee_actor_id
+    )
+    WHERE state <> 'revoked'
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION
+      omni_validate_membership_management_authority_insert()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      expected_generation BIGINT;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id),
+        hashtext(
+          NEW.subject_actor_id || chr(31) || NEW.grantee_actor_id
+        )
+      );
+
+      IF NEW.state <> 'held'
+        OR NEW.lifecycle_revision <> 0
+        OR NEW.activated_by_actor_id IS NOT NULL
+        OR NEW.revoked_by_actor_id IS NOT NULL
+        OR NEW.activated_at IS NOT NULL
+        OR NEW.revoked_at IS NOT NULL
+      THEN
+        RAISE EXCEPTION 'Membership management authorities must start held'
+          USING ERRCODE = '23514';
+      END IF;
+
+      NEW.created_at := statement_timestamp();
+      NEW.updated_at := NEW.created_at;
+
+      SELECT COALESCE(MAX(authority.authority_generation), 0) + 1
+      INTO expected_generation
+      FROM public.omni_tenant_actor_membership_management_authorities authority
+      WHERE authority.tenant_id = NEW.tenant_id
+        AND authority.subject_actor_id = NEW.subject_actor_id
+        AND authority.grantee_actor_id = NEW.grantee_actor_id;
+
+      IF NEW.authority_generation IS DISTINCT FROM expected_generation THEN
+        RAISE EXCEPTION 'Membership management authority generation is not next'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM public.omni_tenant_actor_membership_management_authorities authority
+        WHERE authority.tenant_id = NEW.tenant_id
+          AND authority.subject_actor_id = NEW.subject_actor_id
+          AND authority.grantee_actor_id = NEW.grantee_actor_id
+          AND authority.state <> 'revoked'
+      ) THEN
+        RAISE EXCEPTION 'Membership management authority already has a current generation'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION
+      omni_protect_membership_management_authority()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      transition_at TIMESTAMPTZ;
+    BEGIN
+      IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION 'Membership management authority rows cannot be removed'
+          USING ERRCODE = '55000';
+      END IF;
+
+      PERFORM pg_advisory_xact_lock(
+        hashtext(OLD.tenant_id),
+        hashtext(
+          OLD.subject_actor_id || chr(31) || OLD.grantee_actor_id
+        )
+      );
+
+      IF OLD.state = 'revoked' THEN
+        RAISE EXCEPTION 'Revoked membership management authorities are immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.schema_version IS DISTINCT FROM OLD.schema_version
+        OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+        OR NEW.subject_actor_id IS DISTINCT FROM OLD.subject_actor_id
+        OR NEW.grantee_actor_id IS DISTINCT FROM OLD.grantee_actor_id
+        OR NEW.management_authority_id IS DISTINCT FROM
+          OLD.management_authority_id
+        OR NEW.authority_generation IS DISTINCT FROM
+          OLD.authority_generation
+        OR NEW.created_by_actor_id IS DISTINCT FROM
+          OLD.created_by_actor_id
+        OR NEW.created_at IS DISTINCT FROM OLD.created_at
+      THEN
+        RAISE EXCEPTION 'Membership management authority identity is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NOT (
+        (OLD.state = 'held' AND NEW.state IN ('active', 'revoked'))
+        OR (OLD.state = 'active' AND NEW.state = 'revoked')
+      ) THEN
+        RAISE EXCEPTION 'Membership management authority transition is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.lifecycle_revision IS DISTINCT FROM
+        OLD.lifecycle_revision + 1
+      THEN
+        RAISE EXCEPTION 'Membership management authority revision must increase once'
+          USING ERRCODE = '23514';
+      END IF;
+
+      transition_at := GREATEST(
+        statement_timestamp(),
+        OLD.updated_at + INTERVAL '1 microsecond'
+      );
+      NEW.updated_at := transition_at;
+
+      IF OLD.activated_at IS NOT NULL AND (
+        NEW.activated_at IS DISTINCT FROM OLD.activated_at
+        OR NEW.activated_by_actor_id IS DISTINCT FROM
+          OLD.activated_by_actor_id
+      ) THEN
+        RAISE EXCEPTION 'Membership management authority activation is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF OLD.activated_at IS NULL THEN
+        IF OLD.state = 'held' AND NEW.state = 'active' THEN
+          IF NEW.activated_by_actor_id IS NULL THEN
+            RAISE EXCEPTION 'Membership management activation attribution is invalid'
+              USING ERRCODE = '23514';
+          END IF;
+          NEW.activated_at := transition_at;
+        ELSIF NEW.activated_by_actor_id IS NOT NULL
+          OR NEW.activated_at IS NOT NULL
+        THEN
+          RAISE EXCEPTION 'Membership management activation metadata is unexpected'
+            USING ERRCODE = '23514';
+        END IF;
+      END IF;
+
+      IF NEW.state = 'revoked' THEN
+        IF NEW.revoked_by_actor_id IS NULL THEN
+          RAISE EXCEPTION 'Membership management revocation attribution is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        NEW.revoked_at := transition_at;
+      ELSIF NEW.revoked_by_actor_id IS NOT NULL
+        OR NEW.revoked_at IS NOT NULL
+      THEN
+        RAISE EXCEPTION 'Membership management revocation metadata is unexpected'
+          USING ERRCODE = '23514';
+      END IF;
+
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid =
+            'omni_tenant_actor_membership_management_authorities'::regclass
+          AND tgname =
+            'omni_membership_management_authority_validate_insert'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_membership_management_authority_validate_insert
+        BEFORE INSERT
+        ON omni_tenant_actor_membership_management_authorities
+        FOR EACH ROW
+        EXECUTE FUNCTION
+          omni_validate_membership_management_authority_insert();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid =
+            'omni_tenant_actor_membership_management_authorities'::regclass
+          AND tgname = 'omni_membership_management_authority_protect'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_membership_management_authority_protect
+        BEFORE UPDATE OR DELETE
+        ON omni_tenant_actor_membership_management_authorities
+        FOR EACH ROW
+        EXECUTE FUNCTION omni_protect_membership_management_authority();
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid =
+            'omni_tenant_actor_membership_management_authorities'::regclass
+          AND tgname = 'omni_membership_management_authority_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_membership_management_authority_no_truncate
+        BEFORE TRUNCATE
+        ON omni_tenant_actor_membership_management_authorities
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_protect_membership_management_authority();
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql.query(`
+    REVOKE ALL
+    ON TABLE omni_tenant_actor_membership_management_authorities
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_membership_management_authority_row_is_valid(
+      SMALLINT,
+      TEXT,
+      TEXT,
+      TEXT,
+      TEXT,
+      BIGINT,
+      TEXT,
+      BIGINT,
+      TEXT,
+      TEXT,
+      TEXT,
+      TIMESTAMPTZ,
+      TIMESTAMPTZ,
+      TIMESTAMPTZ,
+      TIMESTAMPTZ
+    )
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_validate_membership_management_authority_insert()
+    FROM PUBLIC
+  `);
+  await sql.query(`
+    REVOKE ALL
+    ON FUNCTION omni_protect_membership_management_authority()
+    FROM PUBLIC
+  `);
+
+  await sql`
+    DO $migration$
+    DECLARE
+      grant_record RECORD;
+    BEGIN
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.table_privileges
+        WHERE table_schema = current_schema()
+          AND table_name =
+            'omni_tenant_actor_membership_management_authorities'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON TABLE ' ||
+          '%I.omni_tenant_actor_membership_management_authorities FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+
+      FOR grant_record IN
+        SELECT DISTINCT grantee, privilege_type, column_name
+        FROM information_schema.column_privileges
+        WHERE table_schema = current_schema()
+          AND table_name =
+            'omni_tenant_actor_membership_management_authorities'
+          AND grantee <> current_user
+      LOOP
+        EXECUTE format(
+          'REVOKE %s (%I) ON TABLE ' ||
+          '%I.omni_tenant_actor_membership_management_authorities FROM %s',
+          grant_record.privilege_type,
+          grant_record.column_name,
+          current_schema(),
+          CASE
+            WHEN grant_record.grantee = 'PUBLIC' THEN 'PUBLIC'
+            ELSE quote_ident(grant_record.grantee)
+          END
+        );
+      END LOOP;
+
+      FOR grant_record IN
+        SELECT DISTINCT grantee
+        FROM information_schema.routine_privileges
+        WHERE routine_schema = current_schema()
+          AND routine_name IN (
+            'omni_membership_management_authority_row_is_valid',
+            'omni_validate_membership_management_authority_insert',
+            'omni_protect_membership_management_authority'
+          )
+          AND privilege_type = 'EXECUTE'
+          AND grantee <> current_user
+          AND grantee <> 'PUBLIC'
+      LOOP
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_membership_management_authority_row_is_valid(' ||
+          'SMALLINT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, BIGINT, ' ||
+          'TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, ' ||
+          'TIMESTAMPTZ, TIMESTAMPTZ) FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_validate_membership_management_authority_insert() ' ||
+          'FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+        EXECUTE format(
+          'REVOKE ALL ON FUNCTION ' ||
+          '%I.omni_protect_membership_management_authority() FROM %I',
+          current_schema(),
+          grant_record.grantee
+        );
+      END LOOP;
+    END
+    $migration$
+  `;
+
+  await sql`
+    ALTER TABLE omni_tenant_actor_membership_management_authorities
+      ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_tenant_actor_membership_management_authorities
+      FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid =
+            'omni_tenant_actor_membership_management_authorities'::regclass
+          AND polname = 'omni_tenant_isolation'
+      ) THEN
+        ALTER POLICY omni_tenant_isolation
+        ON omni_tenant_actor_membership_management_authorities
+        USING (omni_tenant_visible(tenant_id))
+        WITH CHECK (omni_tenant_visible(tenant_id));
+      ELSE
+        CREATE POLICY omni_tenant_isolation
+        ON omni_tenant_actor_membership_management_authorities
+        FOR ALL
+        TO PUBLIC
+        USING (omni_tenant_visible(tenant_id))
+        WITH CHECK (omni_tenant_visible(tenant_id));
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid =
+            'omni_tenant_actor_membership_management_authorities'::regclass
+          AND polname =
+            'omni_membership_management_authority_holdback'
+      ) THEN
+        CREATE POLICY omni_membership_management_authority_holdback
+        ON omni_tenant_actor_membership_management_authorities
+        AS RESTRICTIVE
+        FOR ALL
+        TO PUBLIC
+        USING (omni_system_scope_enabled())
+        WITH CHECK (omni_system_scope_enabled());
+      END IF;
+    END
+    $migration$
+  `;
+
+  await verifyMembershipManagementAuthoritySurface();
+  await verifyPrecedingAuthorityBoundary();
 }
 
 async function ensureCanonicalAuthUserActorIdentifiersShadow(sql: SqlClient) {

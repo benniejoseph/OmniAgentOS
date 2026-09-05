@@ -78,3 +78,22 @@ fields into authority. Its only result is `deny / activation_held`; export and
 forget additionally require a separate request-bound data-right authority.
 `FOR SHARE` row locks are transient observations, not permission or a durable
 mutation.
+
+Migration v56 adds the empty, owner-only
+`omni_tenant_actor_membership_management_authorities` shadow, not a new
+`ExecutionScope` field or grant. Each generation binds a canonical grantee to
+one exact canonical membership subject and tenant, remains behind a validated
+activation hold and restrictive tenant RLS, and is absent at postflight. The
+migration installs no serving reader, writer, runtime privilege, event,
+bootstrap inference, or authority row and preserves the v45 and v48-v55 holds.
+Neither `initiatingActorId`, principal identity, role, context/capability grant
+IDs, nor any other scope coordinate can manufacture or replace that
+subject-bound authority.
+
+A separately reviewed bootstrap-governance decision and activation/ACL/RLS
+cutover must precede a future atomic management-grant writer under a separately
+versioned event contract. Only after that exact grant is active may a separate
+v54 lifecycle writer lock its canonical grantee and subject and commit the
+membership-epoch transition with its typed event. Distinct
+entitlement-management authority is a later
+dependency and is not modeled or granted by v56.

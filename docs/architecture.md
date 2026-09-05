@@ -436,6 +436,37 @@ resolver requires governed lifecycle writers, modeled
 principal/context/capability/operation authority, and a shared locking protocol
 before any hold can move.
 
+Migration v56 adds the missing membership-management prerequisite as the
+separate, empty, owner-only
+`omni_tenant_actor_membership_management_authorities` shadow ledger. Each
+authority generation binds one canonical grantee actor to one exact canonical
+membership subject inside one tenant; it is not a tenant-wide administrator
+capability. Generations advance monotonically under the tenant, subject, and
+grantee lock and begin held. The lifecycle model reserves held-to-active,
+held-to-revoked, and active-to-revoked transitions, but the validated
+activation hold makes the active state impossible in v56. Forced tenant RLS, a
+restrictive system-only policy, owner-only ACLs, and a zero-row postflight also
+keep the ledger unusable by serving roles. The migration seeds no authority,
+infers nothing from the mutable bootstrap membership or an administrator role,
+grants no runtime reader or writer, and appends no event.
+It does not alter auth rows, sessions, roles, request authorization, or the v45
+and v48-v55 holds.
+
+The v56 predecessor audit re-proves those closed safety holds; it is not a new
+full v55 structural verifier. Before any notice, receipt, or consent writer is
+enabled, v55's exact postflight must be extracted into a shared read-only
+verifier and required by that writer's migration.
+
+Activation must proceed from an explicitly reviewed bootstrap-governance
+decision, not from `ExecutionScope` or the row's decision-actor foreign keys.
+Only after a separately reviewed cutover removes the activation hold and adds
+least-privilege ACL/RLS access may a governed writer create and activate the
+exact management grant under a separately versioned event contract. A separate
+later v54 lifecycle writer may then live-lock that active grant, its canonical
+grantee, and its exact subject while creating, activating, or revoking the
+subject's membership epoch and event in one transaction. Entitlement-management authority is
+deliberately not part of v56 and follows only after that membership root exists.
+
 Migration v50 adds an owner-only, append-only auth-user actor-identifier
 shadow. It records each v46 canonical actor as a self identifier and each exact
 current auth email as the initial legacy identifier, while an auth-user trigger

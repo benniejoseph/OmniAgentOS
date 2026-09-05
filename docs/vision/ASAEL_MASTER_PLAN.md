@@ -1433,6 +1433,39 @@ operation-policy authority explicitly unavailable. Those authorities, governed
 lifecycle writers, atomic typed events, and a shared lock protocol must exist
 before an allow path can be designed.
 
+Migration v56 adds only the missing membership-management foundation as the
+separate, empty, owner-only
+`omni_tenant_actor_membership_management_authorities` shadow ledger. One
+generation binds one canonical grantee actor to one exact canonical membership
+subject inside one tenant; it does not confer tenant-wide administrator
+authority. Generations are monotonic under a tenant, subject, and grantee lock
+and start held. The lifecycle model reserves held-to-active, held-to-revoked,
+and active-to-revoked transitions, but v56's validated activation hold makes
+the active state impossible. Forced tenant RLS, a restrictive system-only
+policy, owner-only ACLs, and a zero-row postflight also keep every generation
+unavailable to serving roles. The migration creates no authority row, derives
+none from the mutable bootstrap membership, role, session, actor foreign key,
+or existing event evidence, grants no runtime reader or writer, and emits no
+event. Current auth behavior and all v45 and
+v48-v55 database and runtime holds remain unchanged.
+
+The bounded v56 predecessor audit re-proves those holds but does not replace
+v55's exact structural postflight. Before any notice, receipt, or consent writer
+is enabled, extract that postflight into a shared read-only verifier and require
+it at the writer migration boundary.
+
+The dependency order remains closed: a separately reviewed bootstrap-governance
+decision must first authorize creation of the exact subject-bound grant; a
+separately reviewed cutover must then remove the activation hold and add
+least-privilege ACL/RLS access before a governed writer may persist and
+activate that grant under a separately versioned event contract. Only then may
+a separate v54 lifecycle writer live-lock the active canonical grantee, exact
+subject, and management generation while committing a membership-epoch
+transition and its typed event together. A distinct entitlement-management
+authority comes afterward. Migration v56
+neither models that entitlement authority nor enables entitlement, consent,
+notice issuance, the v45 hook, or an allow-capable resolver.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

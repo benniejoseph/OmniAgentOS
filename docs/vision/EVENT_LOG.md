@@ -497,6 +497,29 @@ governed lifecycle writers that commit the authority transition and scoped
 event together; the canary has no writer, serving call site, or event-store
 import.
 
+Installing the v56 membership-management authority shadow emits no domain
+event. The empty ledger makes no grant or membership decision and cannot
+truthfully assign the mutable bootstrap membership to a historical authority.
+Each future generation is scoped to one tenant, one exact canonical membership
+subject, and one canonical grantee; a stored `management_authority_id` is still
+only a coordinate until a governed boundary live-locks the active generation.
+Migration v56 seeds no row, exposes no runtime reader or writer privilege, and
+leaves the v45 and v48-v55 event and database holds unchanged.
+
+Eventful work remains dependency ordered. An explicitly reviewed
+bootstrap-governance decision and a separately reviewed activation/ACL/RLS
+cutover must precede the future management-grant writer and its versioned event
+contract. Only afterward may a separate v54 lifecycle writer lock that exact
+active grant and append the existing
+`memory.membership_epoch.{held,activated,revoked}` event in the same transaction
+as the matching epoch transition. The grant-lifecycle event contract and the
+distinct entitlement-management authority are later contracts; v56 defines or
+emits neither.
+
+Before any v55 notice, receipt, or consent writer can emit events, its existing
+exact postflight must become a shared read-only verifier required by that
+writer's migration. V56's bounded hold audit is not a substitute for that gate.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
