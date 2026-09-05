@@ -690,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the deletion-barrier query-index migration", () => {
+  it("pins the derived-memory read-barrier cutover migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 75,
-      name: "memory_deletion_barrier_query_indexes",
-      checksum: "c34aac5c2035a63afc8644f4e582ffcbb146b68c1e2debf14524424ee55198ed",
+      version: 76,
+      name: "derived_memory_read_barrier_cutover",
+      checksum: "2c9f41f2e651714203cc111b825aeaec85a335aed41ef9cd6fcead3d9afd7315",
     });
   });
 

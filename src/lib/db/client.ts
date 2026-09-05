@@ -910,6 +910,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[74],
       up: ensureMemoryDeletionBarrierQueryIndexes,
     },
+    {
+      ...databaseSchemaMigrations[75],
+      up: ensureDerivedMemoryReadBarrierCutover,
+    },
   ];
 }
 
@@ -3025,6 +3029,84 @@ async function ensureMemoryDeletionBarrierQueryIndexes(sql: SqlClient) {
   await sql`
     GRANT EXECUTE ON FUNCTION omni_memory_ids_have_deletion_barrier(TEXT, TEXT[])
     TO PUBLIC
+  `;
+}
+
+async function ensureDerivedMemoryReadBarrierCutover(sql: SqlClient) {
+  // Receipt insertion already validates and deletes the exact trace/graph
+  // manifest before commit, and deferred write triggers reject any later row
+  // that intersects a permanent barrier. Prove that invariant before removing
+  // the redundant per-row SELECT checks that made bounded graph reads scan the
+  // full edge table. Tenant RLS remains independently restrictive.
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM omni_retrieval_traces row_value
+        JOIN omni_memory_deletion_receipts receipt
+          ON receipt.tenant_id = row_value.tenant_id
+         AND receipt.blocked_memory_ids && row_value.memory_ids
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_memory_graph_nodes row_value
+        JOIN omni_memory_deletion_receipts receipt
+          ON receipt.tenant_id = row_value.tenant_id
+         AND receipt.blocked_memory_ids && row_value.memory_ids
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_memory_graph_edges row_value
+        JOIN omni_memory_deletion_receipts receipt
+          ON receipt.tenant_id = row_value.tenant_id
+         AND receipt.blocked_memory_ids && row_value.memory_ids
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_memory_graph_edges edge
+        LEFT JOIN omni_memory_graph_nodes source_node
+          ON source_node.id = edge.source_node_id
+         AND source_node.tenant_id = edge.tenant_id
+        LEFT JOIN omni_memory_graph_nodes target_node
+          ON target_node.id = edge.target_node_id
+         AND target_node.tenant_id = edge.tenant_id
+        WHERE source_node.id IS NULL OR target_node.id IS NULL
+      ) THEN
+        RAISE EXCEPTION
+          'Derived memory rows violate the deletion-barrier cutover invariant'
+          USING ERRCODE = '23514';
+      END IF;
+    END
+    $migration$
+  `;
+
+  for (const tableName of [
+    "omni_retrieval_traces",
+    "omni_memory_graph_nodes",
+    "omni_memory_graph_edges",
+  ]) {
+    await sql.query(`
+      DROP POLICY IF EXISTS omni_memory_deletion_barrier
+      ON ${tableName}
+    `);
+    await sql.query(`
+      CREATE POLICY omni_memory_deletion_barrier
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR SELECT
+      USING (TRUE)
+    `);
+  }
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_graph_nodes_tenant_rank_idx
+    ON omni_memory_graph_nodes (
+      tenant_id, weight DESC, source_count DESC, updated_at DESC
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_graph_edges_tenant_rank_idx
+    ON omni_memory_graph_edges (
+      tenant_id, weight DESC, evidence_count DESC, updated_at DESC
+    )
   `;
 }
 
