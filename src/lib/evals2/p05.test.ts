@@ -335,7 +335,10 @@ describe("P0.5 observation binding", () => {
     ).toThrow(/suiteSha256/);
 
     const stale = observationsFor(suite);
-    suite.cases[0].action = { kind: "changed-after-observation" };
+    suite.cases[0].action = {
+      kind: "changed-after-observation",
+      category: suite.cases[0].category,
+    };
     expect(() => parseP05ObservationSet(suite, stale)).toThrow(/suiteSha256/);
   });
 });
