@@ -640,6 +640,7 @@ describe("approval checkpoint shadow", () => {
           text.includes("FROM omni_run_checkpoints") &&
           text.includes("ORDER BY sequence DESC")
         ) {
+          expect(text).toContain("LIMIT 1");
           return [{ checkpoint_json: parent }];
         }
         if (
