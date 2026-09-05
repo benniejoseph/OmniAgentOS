@@ -889,7 +889,7 @@ async function runWithRetrievalTraceAccessScope<T>(
   ) {
     throw new Error("Retrieval trace access scope does not match this operation.");
   }
-  return getSql().transaction(async (sql) => {
+  return getSql().transaction(async (sql: RetrievalTraceSqlClient) => {
     await setTransactionLocalDatabaseMemoryAccessScope(sql, parsedScope);
     return operation(sql);
   }) as Promise<T>;
