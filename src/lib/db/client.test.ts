@@ -690,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the user-private memory runtime grants migration", () => {
+  it("pins the daily-brief memory lineage repair migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 73,
-      name: "user_private_memory_runtime_function_grants",
-      checksum: "e48b32da855e7146ce7f3fb1448abe89efcb602f72cbe43509fd3f5ff3a8ae79",
+      version: 74,
+      name: "daily_brief_memory_lineage_column",
+      checksum: "b0aeed374d527136094316d0b7ba0c48cd84a243dcbbd6b17235fcc512a564aa",
     });
   });
 
