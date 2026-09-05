@@ -2846,11 +2846,20 @@ async function ensureProactiveDailyBriefs(sql: SqlClient) {
       generated_by TEXT NOT NULL DEFAULT 'system',
       model TEXT,
       source_counts JSONB NOT NULL DEFAULT '{}',
+      memory_ids TEXT[] NOT NULL DEFAULT '{}',
       generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (tenant_id, actor_id, local_date)
     )
   `;
+  await sql`ALTER TABLE omni_daily_briefs ADD COLUMN IF NOT EXISTS memory_ids TEXT[] NOT NULL DEFAULT '{}'`;
+  await sql`
+    UPDATE omni_daily_briefs
+    SET content = jsonb_set(content, '{memoryIds}', to_jsonb(memory_ids), TRUE)
+    WHERE jsonb_typeof(content) = 'object'
+      AND NOT content ? 'memoryIds'
+  `;
   await sql`CREATE INDEX IF NOT EXISTS omni_daily_briefs_tenant_actor_date_idx ON omni_daily_briefs (tenant_id, actor_id, local_date DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS omni_daily_briefs_memory_ids_idx ON omni_daily_briefs USING GIN (memory_ids)`;
 }
 
 async function ensurePersonalNotificationCenter(sql: SqlClient) {

@@ -141,6 +141,7 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
       : null,
     invalidatedAgentRunCount: result.invalidatedAgentRunCount,
     invalidatedWorkflowRunCount: result.invalidatedWorkflowRunCount,
+    invalidatedDailyBriefCount: result.invalidatedDailyBriefCount,
   }, {
     headers: { "cache-control": "private, no-store" },
   });

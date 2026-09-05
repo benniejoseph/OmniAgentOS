@@ -475,6 +475,7 @@ export type ForgetMemoryWithReceiptResult = {
   deletionDisposition: "committed" | "already_deleted";
   invalidatedAgentRunCount: number;
   invalidatedWorkflowRunCount: number;
+  invalidatedDailyBriefCount: number;
 };
 
 export class MemoryDeletionPreviewConflictError extends Error {
@@ -679,6 +680,7 @@ export async function forgetMemoryWithReceipt(
               : "already_deleted" as const,
           invalidatedAgentRunCount: 0,
           invalidatedWorkflowRunCount: 0,
+          invalidatedDailyBriefCount: 0,
         };
       }
       if (!memoryRows[0]) {
@@ -722,6 +724,11 @@ export async function forgetMemoryWithReceipt(
       assertExpectedDeletionManifest(
         expectedManifestSha256,
         receipt.descendantManifestSha256,
+      );
+      const invalidatedDailyBriefCount = await invalidateDailyBriefsForDeletedMemories(
+        sql,
+        tenantId,
+        canonicalizeMemoryDeletionIds([id, ...descendantMemoryIds]),
       );
       // The receipt trigger verifies and deletes this exact graph/trace
       // snapshot before NEW becomes visible to the restrictive barrier policy.
@@ -790,6 +797,7 @@ export async function forgetMemoryWithReceipt(
           graphEdgeCount: receipt.graphEdgeCount,
           invalidatedAgentRunCount: invalidatedRuns.agentRunIds.length,
           invalidatedWorkflowRunCount: invalidatedRuns.workflowRunIds.length,
+          invalidatedDailyBriefCount,
           descendantManifestSha256: receipt.descendantManifestSha256,
           executionScopeSha256: receipt.executionScopeSha256,
           receiptSha256: receipt.receiptSha256,
@@ -818,6 +826,7 @@ export async function forgetMemoryWithReceipt(
         deletionDisposition: "committed" as const,
         invalidatedAgentRunCount: invalidatedRuns.agentRunIds.length,
         invalidatedWorkflowRunCount: invalidatedRuns.workflowRunIds.length,
+        invalidatedDailyBriefCount,
       };
     }) as Promise<ForgetMemoryWithReceiptResult | null>;
   }
@@ -881,7 +890,29 @@ export async function forgetMemoryWithReceipt(
     deletionDisposition,
     invalidatedAgentRunCount: 0,
     invalidatedWorkflowRunCount: 0,
+    invalidatedDailyBriefCount: 0,
   };
+}
+
+async function invalidateDailyBriefsForDeletedMemories(
+  sql: MemorySqlClient,
+  tenantId: string,
+  memoryIds: readonly string[],
+) {
+  const rows = await sql`
+    DELETE FROM omni_daily_briefs brief
+    WHERE brief.tenant_id = ${tenantId}
+      AND (
+        brief.memory_ids && ${memoryIds}::text[]
+        OR (
+          cardinality(brief.memory_ids) = 0
+          AND jsonb_typeof(brief.source_counts -> 'memories') = 'number'
+          AND (brief.source_counts ->> 'memories')::numeric > 0
+        )
+      )
+    RETURNING brief.id
+  `;
+  return rows.length;
 }
 
 async function lockMemoryDeletionScope(
