@@ -619,6 +619,74 @@ databaseDescribe("Postgres schema integration", () => {
     });
   });
 
+  test("keeps informed-notice governance evidence empty and owner-only", async () => {
+    const [surface] = await admin`
+      SELECT
+        EXISTS (
+          SELECT 1 FROM omni_schema_version
+          WHERE version = 66
+            AND name = 'memory_informed_notice_governance_evidence_shadow'
+            AND checksum =
+              '8e845ac8182b025d6dea8014ec3877c141e55ad2dc551054b1a885e4bb680f6e'
+        ) AS migration_recorded,
+        (SELECT count(*)::int
+         FROM omni_memory_informed_notice_approval_batches) AS batches,
+        (SELECT count(*)::int
+         FROM omni_memory_informed_notice_approval_contracts) AS contracts,
+        (SELECT count(*)::int
+         FROM omni_memory_informed_notice_review_attestations) AS attestations,
+        (SELECT count(*)::int FROM pg_policy
+         WHERE polrelid IN (
+           'omni_memory_informed_notice_approval_batches'::regclass,
+           'omni_memory_informed_notice_approval_contracts'::regclass,
+           'omni_memory_informed_notice_review_attestations'::regclass
+         )) AS policies,
+        NOT EXISTS (
+          SELECT 1 FROM information_schema.table_privileges
+          WHERE table_schema = 'public'
+            AND table_name IN (
+              'omni_memory_informed_notice_approval_batches',
+              'omni_memory_informed_notice_approval_contracts',
+              'omni_memory_informed_notice_review_attestations'
+            )
+            AND grantee <> current_user
+        ) AS owner_only,
+        (
+          SELECT count(*) = 3 FROM pg_constraint
+          WHERE conname IN (
+            'omni_notice_approval_batches_persistence_hold_check',
+            'omni_notice_approval_contracts_persistence_hold_check',
+            'omni_notice_review_attestations_persistence_hold_check'
+          ) AND convalidated
+            AND pg_get_expr(conbin, conrelid) = 'false'
+        ) AS persistence_held,
+        omni_notice_approval_contract_row_is_valid(
+          1::smallint, 'notice-batch:valid'::text, repeat('a', 64)::text,
+          0::smallint, 1::smallint, 'memory.retrieval.v1'::text,
+          'notice-contract:valid'::text, 1::smallint, 'en-US'::text,
+          'Exact notice'::text, repeat('b', 64)::text
+        ) AS standing_notice_valid,
+        omni_notice_approval_contract_row_is_valid(
+          1::smallint, 'notice-batch:unsafe'::text, repeat('a', 64)::text,
+          0::smallint, 1::smallint, 'memory.forget.v1'::text,
+          'notice-contract:unsafe'::text, 1::smallint, 'en-US'::text,
+          'Exact notice'::text, repeat('b', 64)::text
+        ) AS data_right_notice_accepted
+    `;
+
+    expect(surface).toEqual({
+      migration_recorded: true,
+      batches: 0,
+      contracts: 0,
+      attestations: 0,
+      policies: 3,
+      owner_only: true,
+      persistence_held: true,
+      standing_notice_valid: true,
+      data_right_notice_accepted: false,
+    });
+  });
+
   test("keeps one-time memory data-right requests empty, owner-only, and inactive", async () => {
     const [surface] = await admin`
       SELECT

@@ -132,7 +132,6 @@ describe("database pool sizing", () => {
     }
   });
 });
-
 describe("database pool acquisition", () => {
   it("reserves and releases the correct pool for tenant queries and system transactions", async () => {
     const runtime = createMockPoolClient([{ source: "runtime" }]);
@@ -691,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the informed-notice authority boundary verification migration", () => {
+  it("pins the informed-notice governance evidence shadow migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 65,
-      name: "memory_informed_notice_authority_boundary_verification",
-      checksum: "6dacefc682e876fe123701a039428a11ba160a225025da0a86ef27045bcad476",
+      version: 66,
+      name: "memory_informed_notice_governance_evidence_shadow",
+      checksum: "8e845ac8182b025d6dea8014ec3877c141e55ad2dc551054b1a885e4bb680f6e",
     });
   });
 
