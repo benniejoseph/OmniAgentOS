@@ -492,12 +492,23 @@ describe("tool approval claims (file mode)", () => {
       role: "admin" as const,
       source: "default" as const,
     };
+    const executionScope = createExecutionScope({
+      tenantId: context.tenantId,
+      initiatingActorId: context.actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: context.actorId,
+      correlationId: "forced-risk-zero-run",
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+      purpose: "Test forced risk-zero approval execution.",
+    });
     const pending = await executeGovernedTool({
       toolId: "runs.list",
       input: { limit: 1 },
       dryRun: false,
       forceApproval: true,
       context,
+      executionScope,
     });
     expect(pending.record).toMatchObject({
       status: "approval_required",
@@ -515,6 +526,7 @@ describe("tool approval claims (file mode)", () => {
     });
     expect(claim.outcome).toBe("claimed");
 
+    const checkpointStatuses: string[] = [];
     const executed = await executeGovernedTool({
       toolId: "runs.list",
       input: { limit: 1 },
@@ -523,11 +535,16 @@ describe("tool approval claims (file mode)", () => {
       existingRecord: claim.record,
       executionClaimToken: claimToken,
       context,
+      executionScope,
+      checkpointBeforeEffect: async (input) => {
+        checkpointStatuses.push(input.record.status);
+      },
     });
     expect(executed.record).toMatchObject({
       status: "executed",
       riskLevel: 0,
     });
+    expect(checkpointStatuses).toEqual(["executing"]);
   });
 
   it("closes a durable claim when approved input no longer validates", async () => {

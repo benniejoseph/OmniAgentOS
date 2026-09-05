@@ -278,6 +278,13 @@ export type GovernedToolExecutionResult = {
   result: unknown;
 };
 
+export type GovernedToolCheckpointInput = Readonly<{
+  record: ToolExecutionRecord;
+  tool: ToolDefinition;
+  operationClass: "read_only" | "mutation";
+  executionScope: ExecutionScope;
+}>;
+
 export class ToolInputValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -300,6 +307,7 @@ export async function executeGovernedTool({
   mcpSessionScope,
   executionScope,
   effectBinding,
+  checkpointBeforeEffect,
 }: {
   toolId: string;
   input: Record<string, unknown>;
@@ -319,6 +327,10 @@ export async function executeGovernedTool({
   executionScope?: ExecutionScope;
   /** Exact persisted execution-plan binding for the P1.4 memory-write canary. */
   effectBinding?: GovernedToolEffectBinding;
+  /** Dormant checkpoint shadow hook invoked after intent persistence. */
+  checkpointBeforeEffect?: (
+    input: GovernedToolCheckpointInput,
+  ) => Promise<void>;
 }): Promise<GovernedToolExecutionResult> {
   assertRequestedToolExecutionScope(
     executionScope,
@@ -762,6 +774,7 @@ export async function executeGovernedTool({
             mcpSessionScope,
             executionScope,
             effectBinding,
+            checkpointBeforeEffect,
           });
         }
       }
@@ -1300,6 +1313,18 @@ export async function executeGovernedTool({
       } catch (error) {
         throw new EffectReceiptFinalizationError({ cause: error });
       }
+    }
+    if (
+      checkpointBeforeEffect &&
+      executionRecord &&
+      scopedRequest.executionScope
+    ) {
+      await checkpointBeforeEffect({
+        record: executionRecord,
+        tool,
+        operationClass: governedToolOperationClass(tool, preparedInput),
+        executionScope: scopedRequest.executionScope,
+      });
     }
     let result: unknown;
     try {
@@ -3061,6 +3086,17 @@ type ProviderEffectMaterial = Readonly<{
   targetSha256: string;
   expectedTargetStateSha256: string;
 }>;
+
+export function governedToolOperationClass(
+  tool: ToolDefinition,
+  input: Record<string, unknown>,
+): "read_only" | "mutation" {
+  if (tool.id === "http.request") {
+    const method = httpRequestSchema.parse(input).method || "GET";
+    return method === "GET" ? "read_only" : "mutation";
+  }
+  return tool.riskLevel === 0 ? "read_only" : "mutation";
+}
 
 function prepareProviderEffectMaterial(
   tool: ToolDefinition,

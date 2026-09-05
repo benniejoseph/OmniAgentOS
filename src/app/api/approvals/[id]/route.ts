@@ -12,6 +12,10 @@ import {
   wakeOperationJobByDedupeKey,
 } from "@/lib/operations/job-queue";
 import { rejectAgentRunApproval } from "@/lib/orchestration/agent-runner";
+import {
+  persistToolAfterCheckpointShadow,
+  persistToolBeforeCheckpointShadow,
+} from "@/lib/runs/tool-checkpoint-shadow";
 import { findAgentRunWaitingForToolApproval } from "@/lib/runs/store";
 import {
   approveAndClaimToolExecution,
@@ -23,7 +27,10 @@ import {
   rejectPendingToolExecution,
 } from "@/lib/tools/audit-store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { executeGovernedTool } from "@/lib/tools/executor";
+import {
+  executeGovernedTool,
+  type GovernedToolCheckpointInput,
+} from "@/lib/tools/executor";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM } from "@/lib/tools/types";
 import { toolApprovalMutationFromRequest } from "@/lib/tools/approval-events";
@@ -416,6 +423,33 @@ async function POSTHandler(
     { tenantId: securityContext.tenantId },
   );
   const waitingContext = waitingRun?.continuation?.context;
+  const waitingContinuation = waitingRun?.continuation;
+  let checkpointInput: GovernedToolCheckpointInput | undefined;
+  const checkpointBeforeEffect = async (
+    input: GovernedToolCheckpointInput,
+  ) => {
+    checkpointInput = input;
+    if (
+      !waitingRun ||
+      !waitingContinuation?.executionScope ||
+      !waitingContinuation.runContractEnvelope
+    ) return;
+    try {
+      await persistToolBeforeCheckpointShadow({
+        runId: waitingRun.id,
+        record: input.record,
+        tool: input.tool,
+        operationClass: input.operationClass,
+        executionScope: waitingContinuation.executionScope,
+        toolExecutionScope: input.executionScope,
+        runContractEnvelope: waitingContinuation.runContractEnvelope,
+        enrollment: waitingContinuation.checkpointShadowEnrollment,
+        recordedAt: new Date().toISOString(),
+      });
+    } catch {
+      console.warn("Approved tool before-checkpoint shadow failed.");
+    }
+  };
 
   const result = await executeGovernedTool({
     toolId: claim.record.toolId,
@@ -426,6 +460,7 @@ async function POSTHandler(
     existingRecord: claim.record,
     approvalReason: parsed.data.reason,
     executionClaimToken: claimToken,
+    checkpointBeforeEffect,
     mcpSessionScope: waitingRun && waitingContext
       ? {
           tenantId: waitingContext.tenantId,
@@ -434,6 +469,30 @@ async function POSTHandler(
         }
       : undefined,
   });
+  if (
+    checkpointInput &&
+    waitingRun &&
+    waitingContinuation?.executionScope &&
+    waitingContinuation.runContractEnvelope &&
+    result.record.status !== "executing" &&
+    result.record.status !== "approval_required" &&
+    !result.record.dryRun
+  ) {
+    try {
+      await persistToolAfterCheckpointShadow({
+        runId: waitingRun.id,
+        record: result.record,
+        tool: checkpointInput.tool,
+        operationClass: checkpointInput.operationClass,
+        executionScope: waitingContinuation.executionScope,
+        toolExecutionScope: checkpointInput.executionScope,
+        runContractEnvelope: waitingContinuation.runContractEnvelope,
+        enrollment: waitingContinuation.checkpointShadowEnrollment,
+      });
+    } catch {
+      console.warn("Approved tool after-checkpoint shadow failed.");
+    }
+  }
 
   const resumeJobs = await wakeOperationJobByDedupeKey(
     getAgentResumeJobDedupeKey(claim.record.id),
