@@ -280,7 +280,22 @@ function mergeMemorySearchResults(
 }
 
 function sanitizeContextPack(pack: ContextPack): ContextPack {
-  return redactSensitive(pack) as ContextPack;
+  const sanitized = redactSensitive(pack) as ContextPack;
+  return {
+    ...sanitized,
+    memoryResults: sanitized.memoryResults.map(withoutMemoryEmbedding),
+    results: sanitized.results.map((item) => item.kind === "memory"
+      ? { ...item, result: withoutMemoryEmbedding(item.result) }
+      : item),
+  };
+}
+
+function withoutMemoryEmbedding(
+  result: MemorySearchResult,
+): MemorySearchResult {
+  const record = { ...result.record };
+  delete record.embedding;
+  return { ...result, record };
 }
 
 export async function listRetrievalTraces(limit = 20, options: { tenantId?: string } = {}) {
