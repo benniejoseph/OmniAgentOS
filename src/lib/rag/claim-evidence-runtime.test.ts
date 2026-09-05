@@ -16,6 +16,13 @@ import {
 import { createKnowledgeDocument } from "@/lib/rag/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { buildCanonicalTextSourceWrite } from "@/lib/sources/text-lineage";
+import {
+  claimQueuedAgentRun,
+  completeAgentRun,
+  createQueuedAgentRun,
+  getAgentRun,
+} from "@/lib/runs/store";
+import { publicAgentRun } from "@/lib/runs/public";
 
 describe("runtime claim evidence", () => {
   let dataDirectory = "";
@@ -125,6 +132,29 @@ describe("runtime claim evidence", () => {
     expect(publicGrounding.claimEvidence?.claims).toHaveLength(2);
     expect(publicGrounding.claimEvidence).not.toHaveProperty(
       "claimEvidenceMap",
+    );
+
+    await createQueuedAgentRun({
+      id: "run-runtime",
+      tenantId: "tenant-runtime",
+      mode: "research",
+      prompt: "Check the launch plan",
+      messages: [{ role: "user", content: "Check the launch plan" }],
+      agentId: "atlas",
+    });
+    await claimQueuedAgentRun("run-runtime", { tenantId: "tenant-runtime" });
+    expect(
+      await completeAgentRun("run-runtime", answer, grounding, {
+        tenantId: "tenant-runtime",
+      }),
+    ).toBe(true);
+    const stored = await getAgentRun("run-runtime", {
+      tenantId: "tenant-runtime",
+    });
+    expect(stored?.grounding?.claimEvidence?.claimEvidenceMap.claims)
+      .toHaveLength(2);
+    expect(JSON.stringify(publicAgentRun(stored!))).not.toContain(
+      "actor-runtime",
     );
   });
 
