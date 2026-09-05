@@ -115,15 +115,17 @@ shadow. It rereads one tenant's stored rows, reference indexes, typed events,
 approval decision, and effect-receipt state; it does not open continuation
 contents. Empty and mismatched samples fail closed.
 
-Migration v69 provides the dormant resume fence. Claims bind the exact
+Migration v69 provides the resume fence. Claims bind the exact
 checkpoint digest and operation job, persist only hashed credentials, advance
 their generation only after expiry, and require the exact live token for
 heartbeat or completion. Acquisition rechecks rollout, scope, run, decision,
-tool, and effect state transactionally. No harness path invokes it yet, and its
-claim receipts explicitly deny resume authority. A separate dormant binder can
-co-commit the fence and run transition, emitting authority without storing the
-raw token. Worker heartbeat and final/next-wait mutations still need the same
-token fence before canary activation.
+tool state transactionally. Claim receipts explicitly deny resume authority.
+The queue may call the binder only for the separately configured risk-0,
+read-only, no-effect canary pin. It co-commits the fence and run transition
+without storing the raw token; the same token and generation then fence claim
+heartbeat and every terminal or next-wait run write. Production must remain on
+shadow until the bounded reconciliation command returns a non-empty matched
+sample.
 
 ## One harness receipt per run
 

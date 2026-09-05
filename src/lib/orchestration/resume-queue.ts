@@ -1,5 +1,5 @@
 import { OPERATION_QUEUE_LEASE_SECONDS } from "@/lib/config";
-import { runWithDatabaseTenantScope } from "@/lib/db/client";
+import { getSql, runWithDatabaseTenantScope } from "@/lib/db/client";
 import {
   completeOperationJob,
   deferOperationJob,
@@ -14,11 +14,21 @@ import {
   resumeAgentRunAfterToolApproval,
 } from "@/lib/orchestration/agent-runner";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
+import { parseApprovalCheckpointShadowEnrollment } from "@/lib/runs/approval-checkpoint-shadow";
+import {
+  authorizeLatestAgentRunCheckpointResume,
+  heartbeatRunCheckpointResumeClaim,
+  type AuthorizeRunCheckpointResumeResult,
+} from "@/lib/runs/checkpoint-resume-claim";
+import type { RunCheckpointWriterSql } from "@/lib/runs/checkpoint-store";
 import {
   appendRunEvent,
   failAgentRun,
   getAgentRun,
+  type AgentRunResumeFence,
 } from "@/lib/runs/store";
+import type { AgentRunContinuation } from "@/lib/runs/types";
+import { parsePersistedExecutionScope } from "@/lib/security/execution-scope";
 import { getToolExecution } from "@/lib/tools/audit-store";
 
 type AgentResumeJobResult = {
@@ -161,7 +171,8 @@ async function processAgentResumeJob(
         base,
       );
     }
-    if (run.status === "resuming") {
+    const checkpointCanary = isCheckpointCanary(run.continuation);
+    if (run.status === "resuming" && !checkpointCanary) {
       const message =
         "Approved run resume was interrupted; side effects were not replayed.";
       const actorId = run.continuation.context.actorId;
@@ -209,6 +220,60 @@ async function processAgentResumeJob(
       );
     }
 
+    let resumeFence: AgentRunResumeFence | undefined;
+    if (checkpointCanary) {
+      if (run.continuation.toolPolicy?.readOnly !== true) {
+        return failResumeJob(
+          job,
+          "Checkpoint canary continuation exceeded its read-only boundary.",
+          base,
+        );
+      }
+      const executionScope = parsePersistedExecutionScope(
+        run.continuation.executionScope,
+      );
+      if (!executionScope || executionScope.tenantId !== job.tenantId) {
+        return failResumeJob(
+          job,
+          "Checkpoint canary continuation lost its execution scope.",
+          base,
+        );
+      }
+      if (!job.leaseOwner) {
+        return { ...base, status: "stale", message: "Resume lease was stale." };
+      }
+      const authorization = await getSql().transaction(
+        (sql: RunCheckpointWriterSql) =>
+          authorizeLatestAgentRunCheckpointResume({
+            tenantId: job.tenantId,
+            runId: run.id,
+            approvalExecutionId: executionId,
+            operationJobId: job.id,
+            leaseOwner: job.leaseOwner || "",
+            leaseSeconds: OPERATION_QUEUE_LEASE_SECONDS,
+            executionScope,
+          }, sql),
+      ) as AuthorizeRunCheckpointResumeResult;
+      if (authorization.outcome === "already_completed") {
+        return completeResumeJob(
+          job,
+          "Checkpoint continuation was already committed.",
+          base,
+        );
+      }
+      if (authorization.outcome !== "authorized") {
+        return deferResumeJob(
+          job,
+          `Checkpoint continuation paused: ${authorization.reason}.`,
+          base,
+        );
+      }
+      resumeFence = {
+        claim: authorization.claim,
+        executionScope,
+      };
+    }
+
     const controller = new AbortController();
     let leaseLost = false;
     let heartbeatChain = Promise.resolve();
@@ -226,6 +291,43 @@ async function processAgentResumeJob(
           leaseLost = true;
           controller.abort(new Error("Agent resume queue lease was lost."));
           return;
+        }
+        if (resumeFence) {
+          const claimRenewed = await getSql().transaction(
+            (sql: RunCheckpointWriterSql) =>
+              heartbeatRunCheckpointResumeClaim(
+                {
+                  ...resumeFence.claim,
+                  leaseSeconds: OPERATION_QUEUE_LEASE_SECONDS,
+                },
+                sql,
+              ),
+          ) as boolean;
+          if (!claimRenewed) {
+            const settledRun = await getAgentRun(agentRunId, {
+              tenantId: job.tenantId,
+            });
+            const settledByFencedWrite = Boolean(
+              settledRun &&
+              (
+                ["completed", "failed", "canceled"].includes(
+                  settledRun.status,
+                ) ||
+                (
+                  settledRun.status === "waiting_approval" &&
+                  settledRun.continuation?.pendingToolCall.executionId !==
+                    executionId
+                )
+              ),
+            );
+            if (!settledByFencedWrite) {
+              leaseLost = true;
+              controller.abort(
+                new Error("Checkpoint resume claim lease was lost."),
+              );
+            }
+            return;
+          }
         }
         const currentRun = await getAgentRun(agentRunId, {
           tenantId: job.tenantId,
@@ -272,6 +374,7 @@ async function processAgentResumeJob(
           result: toolExecution.output,
         },
         abortSignal: controller.signal,
+        resumeFence,
       });
     } finally {
       clearInterval(timer);
@@ -315,6 +418,17 @@ async function processAgentResumeJob(
       base,
     );
   }
+}
+
+function isCheckpointCanary(
+  continuation: AgentRunContinuation,
+): boolean {
+  const enrollment = parseApprovalCheckpointShadowEnrollment(
+    continuation.checkpointShadowEnrollment,
+  );
+  return Boolean(
+    enrollment?.enginePin.rolloutMode === "canary",
+  );
 }
 
 async function completeResumeJob(

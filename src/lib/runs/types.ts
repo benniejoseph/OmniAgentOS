@@ -43,7 +43,7 @@ export type AgentRunContinuation = {
   executionScope?: ExecutionScope;
   /** P0.2 shadow snapshot retained only while an approval-paused run resumes. */
   runContractEnvelope?: RunContractEnvelopeV1;
-  /** New-run-only P1.6 shadow pin. It never grants resume authority. */
+  /** New-run-only P1.6 rollout pin. The pin alone grants no resume authority. */
   checkpointShadowEnrollment?: ApprovalCheckpointShadowEnrollment;
   /** Metadata-only checkpoint fence; the raw claim token is never persisted. */
   checkpointResumeClaim?: {

@@ -850,6 +850,15 @@ canary receipt as additive evidence, but its contract stays `posthoc` and
 cannot project `succeeded`; external effects and broader requirement binding
 remain future P1.4 work.
 
+The first executable P1.6 path is implemented behind a distinct checkpoint
+canary configuration. It atomically claims the exact approval successor and
+run transition, keeps the raw lease token process-local, and uses that same
+token and generation for worker heartbeat plus terminal or next-wait writes.
+It is intentionally limited to risk-0, read-only, no-effect continuations;
+shadow remains the production mode until a non-empty stored checkpoint sample
+passes the bounded reconciliation gate. Model, tool, delegation, and verifier
+boundary expansion remains pending P1.6 work.
+
 The first P2.1 slice is an additive, write-only lineage shadow for newly
 accepted API, Capture, portable-restore, and governed knowledge-tool text. It
 introduces strict metadata-only `SourceItem`, immutable `SourceRevision`,
