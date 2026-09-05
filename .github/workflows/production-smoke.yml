@@ -2,6 +2,11 @@ name: Production Smoke
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_revision:
+        description: "Exact deployed Git revision to verify; omit to discover the currently served revision."
+        required: false
+        type: string
   schedule:
     - cron: "17 3 * * *"
 
@@ -15,7 +20,6 @@ jobs:
     timeout-minutes: 35
     env:
       BASE_URL: ${{ vars.PRODUCTION_SMOKE_BASE_URL }}
-      SMOKE_EXPECTED_REVISION: ${{ vars.PRODUCTION_SMOKE_EXPECTED_REVISION }}
       SMOKE_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       SMOKE_SYNTHETIC_SOURCE: production-smoke
       SMOKE_REQUEST_TIMEOUT_MS: "300000"
@@ -33,6 +37,11 @@ jobs:
         with:
           node-version: "24.13.0"
           cache: npm
+
+      - name: Resolve production revision
+        env:
+          REQUESTED_SMOKE_REVISION: ${{ inputs.expected_revision }}
+        run: node scripts/resolve-production-smoke-revision.mjs
 
       - name: Install
         run: npm ci --omit=dev

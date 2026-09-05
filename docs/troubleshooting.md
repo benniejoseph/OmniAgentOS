@@ -55,6 +55,7 @@ For internal calls, the secret and identity headers must be sent together. Never
 ## Production smoke fails
 
 - Preflight: set an explicit HTTPS `BASE_URL`, all three smoke credentials, and `RELEASE_EVIDENCE_OUTPUT`.
+- Revision: scheduled GitHub runs resolve the currently served exact SHA from `/api/health`; manual canary checks must pass the intended `expected_revision`. A supplied mismatch is a deployment failure and is never replaced by discovery.
 - Timeout: inspect the failing method/path and `SMOKE_REQUEST_TIMEOUT_MS`; fix the slow dependency before increasing the bound.
 - Security: confirm anonymous protected routes return 401 and the admin cookie is secure.
 - Tenant/eval: confirm the internal secret is deployed and database RLS/evaluation state is current.

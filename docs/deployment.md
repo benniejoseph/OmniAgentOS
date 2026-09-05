@@ -231,6 +231,13 @@ The `Production Smoke` workflow supports schedule and manual dispatch. Configure
 - repository variable `PRODUCTION_SMOKE_BASE_URL`;
 - secrets `SMOKE_ADMIN_EMAIL`, `SMOKE_ADMIN_PASSWORD`, and `SMOKE_INTERNAL_AUTH_SECRET`.
 
+Scheduled runs resolve the exact revision from the healthy production
+`/api/health` response before any authenticated gate and publish that immutable
+SHA to the remaining steps. A manual dispatch may instead supply
+`expected_revision` to pin a canary or release candidate explicitly. Revision
+discovery accepts only a healthy response and an exact 40-character Git SHA;
+it is not a fallback for a supplied mismatch.
+
 The workflow has no fallback URL and never treats a missing credential as a pass. Preflight requires a healthy HTTPS target. Critical requests have bounded timeouts, gates run as separate diagnostic steps, release evidence is size-limited, and a missing artifact or failed upload fails the job.
 
 Expected production state is:
