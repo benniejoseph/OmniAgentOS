@@ -9,6 +9,7 @@ vi.mock("@/lib/events/store", () => ({
 import {
   acquireRunCheckpointResumeClaim,
   authorizeAgentRunCheckpointResume,
+  authorizeLatestAgentRunCheckpointResume,
   completeRunCheckpointResumeClaim,
   heartbeatRunCheckpointResumeClaim,
 } from "@/lib/runs/checkpoint-resume-claim";
@@ -233,6 +234,26 @@ describe("checkpoint resume claims", () => {
     );
   });
 
+  it.each([
+    [1, null],
+    [0, { schemaVersion: 1 }],
+  ])("rejects a canary tool outside the read-only no-effect boundary", async (
+    toolRiskLevel,
+    effectReceipt,
+  ) => {
+    const value = checkpoint();
+    const sql = fakeSql(value, { toolRiskLevel, effectReceipt });
+
+    await expect(acquireRunCheckpointResumeClaim(
+      acquireInput(value),
+      sql,
+    )).resolves.toMatchObject({
+      outcome: "paused",
+      reason: "tool_not_terminal",
+      resumeAuthorityGranted: false,
+    });
+  });
+
   it("authorizes the run transition only in the same claim transaction", async () => {
     const value = checkpoint();
     const sql = fakeSql(value, { authorizeTransition: true });
@@ -260,6 +281,27 @@ describe("checkpoint resume claims", () => {
       { sql },
     );
   });
+
+  it("resolves the exact latest checkpoint before authorization", async () => {
+    const value = checkpoint();
+    const sql = fakeSql(value, {
+      authorizeTransition: true,
+      resolveLatest: true,
+    });
+    const { checkpointId: _checkpointId, checkpointSha256: _digest, ...input } =
+      acquireInput(value);
+
+    await expect(authorizeLatestAgentRunCheckpointResume(
+      input,
+      sql,
+    )).resolves.toMatchObject({
+      outcome: "authorized",
+      claim: {
+        checkpointId: value.checkpointId,
+        checkpointSha256: value.checkpointSha256,
+      },
+    });
+  });
 });
 
 function acquireInput(value: RunCheckpointV1) {
@@ -284,10 +326,22 @@ function fakeSql(
     existingClaimExpired?: boolean;
     lifecycleUpdates?: boolean;
     authorizeTransition?: boolean;
+    resolveLatest?: boolean;
+    toolRiskLevel?: number;
+    effectReceipt?: unknown;
   } = {},
 ): RunCheckpointWriterSql {
   const query = async (text: string, params: unknown[] = []) => {
     options.calls?.push({ text, params });
+    if (
+      options.resolveLatest &&
+      text.includes("SELECT checkpoint_id, checkpoint_sha256")
+    ) {
+      return [{
+        checkpoint_id: value.checkpointId,
+        checkpoint_sha256: value.checkpointSha256,
+      }];
+    }
     if (text.includes("FROM omni_run_checkpoints")) {
       return [{ checkpoint_json: value }];
     }
@@ -315,7 +369,8 @@ function fakeSql(
         id: EXECUTION_ID,
         status: "executed",
         approval_decision: "approved",
-        effect_receipt: null,
+        effect_receipt: options.effectReceipt ?? null,
+        risk_level: options.toolRiskLevel ?? 0,
       }];
     }
     if (options.authorizeTransition && text.includes("UPDATE omni_agent_runs")) {

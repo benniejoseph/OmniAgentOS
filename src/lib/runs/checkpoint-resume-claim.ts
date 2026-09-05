@@ -14,8 +14,6 @@ import {
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
-import { parseEffectReceiptV1 } from "@/lib/tools/effect-receipt";
-import { parseEffectReceiptV2 } from "@/lib/tools/effect-receipt-v2";
 
 const leaseSecondsSchema = z.number().int().min(10).max(3_600);
 const generationSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
@@ -59,9 +57,40 @@ export type AuthorizeRunCheckpointResumeResult =
     }>
   | AcquireRunCheckpointResumeClaimResult;
 
+export async function authorizeLatestAgentRunCheckpointResume(
+  input: Omit<
+    Parameters<typeof acquireRunCheckpointResumeClaim>[0],
+    "checkpointId" | "checkpointSha256"
+  >,
+  sql: RunCheckpointWriterSql,
+): Promise<AuthorizeRunCheckpointResumeResult> {
+  requireTransaction(sql);
+  const tenantId = runContractIdSchema.parse(input.tenantId);
+  const runId = runContractIdSchema.parse(input.runId);
+  const rows = await sql.query(
+    `SELECT checkpoint_id, checkpoint_sha256
+     FROM omni_run_checkpoints
+     WHERE tenant_id = $1 AND run_id = $2
+     ORDER BY sequence DESC
+     LIMIT 1
+     FOR SHARE`,
+    [tenantId, runId],
+  );
+  if (rows.length === 0) return paused("checkpoint_not_latest");
+  return authorizeAgentRunCheckpointResume({
+    ...input,
+    tenantId,
+    runId,
+    checkpointId: runContractIdSchema.parse(rows[0]?.checkpoint_id),
+    checkpointSha256: z.string().regex(/^[a-f0-9]{64}$/).parse(
+      rows[0]?.checkpoint_sha256,
+    ),
+  }, sql);
+}
+
 /**
- * Atomically acquires the exact fence and moves its run to `resuming`. No
- * runtime calls this dormant binder until the canary gate is opened.
+ * Atomically acquires the exact fence and moves its run to `resuming`. The
+ * runtime calls this only for a separately activated compatible canary pin.
  */
 export async function authorizeAgentRunCheckpointResume(
   input: Parameters<typeof acquireRunCheckpointResumeClaim>[0],
@@ -144,7 +173,7 @@ export async function authorizeAgentRunCheckpointResume(
 
 /**
  * Acquires or reclaims one exact checkpoint fence inside a caller-owned
- * transaction. This store is dormant: acquisition alone never resumes a run.
+ * transaction. Acquisition alone never resumes a run.
  */
 export async function acquireRunCheckpointResumeClaim(
   input: {
@@ -250,14 +279,14 @@ export async function acquireRunCheckpointResumeClaim(
   }
 
   const toolRows = await sql.query(
-    `SELECT id, status, approval_decision, effect_receipt
+    `SELECT id, status, approval_decision, effect_receipt, risk_level
      FROM omni_tool_executions
      WHERE COALESCE(tenant_id, 'default') = $1 AND id = $2
      LIMIT 2
      FOR SHARE`,
     [tenantId, checkpoint.boundary.boundaryId],
   );
-  if (!terminalApprovedToolMatches(toolRows, checkpoint, tenantId)) {
+  if (!terminalApprovedToolMatches(toolRows, checkpoint)) {
     return paused("tool_not_terminal");
   }
 
@@ -481,13 +510,13 @@ async function liveRolloutMatches(
 function terminalApprovedToolMatches(
   rows: Record<string, unknown>[],
   checkpoint: RunCheckpointV1,
-  tenantId: string,
 ): boolean {
   if (rows.length !== 1) return false;
   const row = rows[0] as Record<string, unknown>;
   if (
     row.id !== checkpoint.boundary.boundaryId ||
     row.approval_decision !== "approved" ||
+    Number(row.risk_level) !== 0 ||
     !["executed", "failed", "blocked"].includes(String(row.status || ""))
   ) {
     return false;
@@ -503,25 +532,9 @@ function terminalApprovedToolMatches(
       reference.referenceId === checkpoint.boundary.boundaryId,
   );
   if (!hasToolReference || !hasDecisionReference) return false;
-  if (row.effect_receipt == null) return true;
-  const receipt = plainRecord(row.effect_receipt);
-  try {
-    if (receipt?.schemaVersion === 1) {
-      return Boolean(parseEffectReceiptV1(row.effect_receipt, {
-        tenantId,
-        executionId: String(row.id),
-      }));
-    }
-    if (receipt?.schemaVersion === 2) {
-      return Boolean(parseEffectReceiptV2(row.effect_receipt, {
-        tenantId,
-        executionId: String(row.id),
-      }));
-    }
-  } catch {
-    return false;
-  }
-  return false;
+  // The first executable checkpoint mode is deliberately read-only. An
+  // effect receipt here means the boundary exceeded that canary contract.
+  return row.effect_receipt == null;
 }
 
 function assertCheckpointScope(
@@ -653,11 +666,6 @@ function canonicalTimestamp(value: unknown): string {
     throw new Error("Checkpoint resume claim timestamp is invalid.");
   }
   return date.toISOString();
-}
-
-function plainRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
 }
 
 function requireTransaction(sql: RunCheckpointWriterSql) {

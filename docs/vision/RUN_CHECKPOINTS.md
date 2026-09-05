@@ -1,8 +1,8 @@
 # RunCheckpoint v1
 
-**Status:** P1.6 approval-boundary shadow chain and dormant resume fence
+**Status:** P1.6 approval-boundary shadow chain and canary-ready resume fence
 
-**Runtime effect:** Approval waiting/decision shadow writes; resume fence is not called
+**Runtime effect:** Approval shadow writes are active; fenced resume requires a separate canary rollout
 
 `RunCheckpointV1` defines the immutable metadata and reference boundary that a
 future durable run must record before work can be resumed safely. Migration
@@ -41,24 +41,26 @@ returns closed mismatch codes without loading continuation contents. An empty
 sample is `no_sample`, not a successful comparison, and the command exits
 nonzero for both empty and mismatched samples.
 
-Migration v69 adds the dormant checkpoint resume-claim store. One active claim
+Migration v69 adds the checkpoint resume-claim store. One active claim
 per tenant/run is bound by an exact checkpoint ID and digest foreign key,
 operation job, hashed token and owner, monotonic lease generation, and expiry.
 Only an expired generation can be reclaimed; heartbeat and completion require
 the exact unexpired generation and token. Claim acquisition revalidates the
 latest resumable checkpoint, its full execution scope, the exact active live
-rollout pin, waiting run, approved terminal tool, decision reference, and any
-effect receipt in one caller-owned transaction. Raw lease credentials never
-enter storage or events. Claim events remain metadata-only and explicitly set
-`resumeAuthorityGranted: false`.
+rollout pin, waiting run, approved terminal risk-0 tool, decision reference,
+and absence of an external effect in one caller-owned transaction. Raw lease
+credentials never enter storage or events. Claim events remain metadata-only
+and explicitly set `resumeAuthorityGranted: false`.
 
-No runtime calls this claim store. A claim alone cannot transition a run, open
-referenced state, execute a model or tool, or resume a continuation. A dormant atomic
-binder can acquire the fence and change `waiting_approval` (or an exactly
-fenced interrupted `resuming` run) to `resuming` in the same transaction. It
-stores only checkpoint/job/generation metadata in the continuation and emits
+The resume queue calls this store only for a separately pinned, active canary
+generation whose dedicated configuration limits execution to risk-0,
+read-only, no-effect work. Shadow pins remain legacy-authoritative. The binder
+co-commits the fence and change from `waiting_approval` (or an exactly fenced
+interrupted `resuming` run) to `resuming`. It stores only
+checkpoint/job/generation metadata in the continuation and emits
 `run.checkpoint.resume_authorized`; the raw token remains process-local. The
-worker does not call this binder until the non-empty shadow gate passes.
+same token and generation fence every worker heartbeat and terminal/next-wait
+run write, so a stale worker cannot commit canonical completion.
 
 ## Why this precedes resume
 
@@ -132,9 +134,10 @@ the continuation.
 The remaining slices must proceed in this order:
 
 1. accumulate a non-empty production approval-boundary sample and pass the
-   stored chain/reference/resource reconciliation operator check;
-2. fence worker heartbeat and terminal/next-wait writes, then canary only
-   supported pins after a non-empty shadow pass; and
+   stored chain/reference/resource reconciliation operator check before
+   registering or activating the canary generation;
+2. activate the implemented risk-0, read-only, no-effect canary and prove an
+   interrupted resume without a duplicate effect; and
 3. expand separately to model, tool, delegation, and verifier boundaries.
 
 P1.6 remains open until all required boundaries checkpoint durably and an

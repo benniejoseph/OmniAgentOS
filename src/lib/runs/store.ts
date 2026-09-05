@@ -997,7 +997,7 @@ export async function getAgentFeedbackGuidance(
     .filter((value): value is string => Boolean(value));
 }
 
-type AgentRunResumeFence = Readonly<{
+export type AgentRunResumeFence = Readonly<{
   claim: RunCheckpointResumeClaim;
   executionScope: ExecutionScope;
 }>;
@@ -1523,9 +1523,12 @@ async function setRunStatus(
       WHERE id = ${runId}
         AND tenant_id = ${tenantId}
         AND status NOT IN ('completed', 'failed', 'canceled')
-        AND NOT (
-          status = 'resuming'
-          AND continuation ? 'checkpointResumeClaim'
+        AND (
+          ${status} = 'canceled'
+          OR NOT (
+            status = 'resuming'
+            AND continuation ? 'checkpointResumeClaim'
+          )
         )
       RETURNING id
     `;

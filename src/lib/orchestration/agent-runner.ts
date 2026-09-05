@@ -82,6 +82,7 @@ import {
   getAgentRunExecutionScope,
   markAgentRunResuming,
   markAgentRunWaitingForApproval,
+  type AgentRunResumeFence,
   updateRunContextCount,
 } from "@/lib/runs/store";
 import {
@@ -624,6 +625,7 @@ export async function* runAgent(
             tenantId: runTenantId,
             executionScope,
             runContractEnvelope: shadowRunContract.envelope,
+            readOnly: agentToolPolicy.readOnly,
           });
       } catch (error) {
         logRunContractShadowFailure("checkpoint_enrollment", error);
@@ -1854,11 +1856,39 @@ async function assertPendingToolExecutionScope(
   }
 }
 
+function assertCheckpointResumeFence(
+  run: AgentRunRecord,
+  continuation: AgentRunContinuation,
+  executionScope: ExecutionScope | undefined,
+  resumeFence: AgentRunResumeFence | undefined,
+) {
+  if (!resumeFence) return;
+  const metadata = continuation.checkpointResumeClaim;
+  const enrollment = continuation.checkpointShadowEnrollment;
+  if (
+    run.status !== "resuming" ||
+    !executionScope ||
+    !executionScopesEqual(executionScope, resumeFence.executionScope) ||
+    resumeFence.claim.tenantId !== normalizeTenantId(run.tenantId) ||
+    resumeFence.claim.runId !== run.id ||
+    enrollment?.enginePin.rolloutMode !== "canary" ||
+    continuation.toolPolicy?.readOnly !== true ||
+    !metadata ||
+    metadata.checkpointId !== resumeFence.claim.checkpointId ||
+    metadata.checkpointSha256 !== resumeFence.claim.checkpointSha256 ||
+    metadata.operationJobId !== resumeFence.claim.operationJobId ||
+    metadata.leaseGeneration !== resumeFence.claim.leaseGeneration
+  ) {
+    throw new Error("Checkpoint resume fence does not match the continuation.");
+  }
+}
+
 export function resumeAgentRunAfterToolApproval(input: {
   executionId: string;
   toolExecution: { record: ToolExecutionRecord; result?: unknown };
   tenantId?: string;
   abortSignal?: AbortSignal;
+  resumeFence?: AgentRunResumeFence;
 }) {
   const tenantId =
     input.tenantId ||
@@ -1875,15 +1905,18 @@ async function resumeAgentRunAfterToolApprovalInScope({
   toolExecution,
   tenantId,
   abortSignal,
+  resumeFence,
 }: {
   executionId: string;
   toolExecution: { record: ToolExecutionRecord; result?: unknown };
   tenantId?: string;
   abortSignal?: AbortSignal;
+  resumeFence?: AgentRunResumeFence;
 }) {
   const run = await findAgentRunWaitingForToolApproval(executionId, { tenantId });
   const continuation = run?.continuation;
-  if (!run || !continuation || run.status !== "waiting_approval") {
+  const expectedStatus = resumeFence ? "resuming" : "waiting_approval";
+  if (!run || !continuation || run.status !== expectedStatus) {
     return { resumed: false, reason: "No waiting agent run continuation found." };
   }
   const executionScope = await resolveContinuationExecutionScope(
@@ -1896,6 +1929,16 @@ async function resumeAgentRunAfterToolApprovalInScope({
     toolExecution.record,
     executionScope,
   );
+  assertCheckpointResumeFence(
+    run,
+    continuation,
+    executionScope,
+    resumeFence,
+  );
+  const runMutationOptions = {
+    tenantId: normalizeTenantId(tenantId),
+    resumeFence,
+  };
 
   if (continuation.providerToolState) {
     return resumeProviderBoundAgentRunAfterApproval({
@@ -1906,6 +1949,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       tenantId,
       abortSignal,
       executionScope,
+      resumeFence,
     });
   }
 
@@ -1943,7 +1987,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
     resumeRuntimeModel.provider === "openai";
   if (!workspaceOpenAIAvailable && !hasOpenAIKey()) {
     const message = "Cannot resume the approved OpenAI continuation because its provider credential is no longer available.";
-    await failAgentRun(run.id, message);
+    const failed = await failAgentRun(run.id, message, runMutationOptions);
+    if (!failed) {
+      return { resumed: false, reason: "Checkpoint resume fence was lost." };
+    }
     await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
@@ -1954,7 +2001,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     return { resumed: false, reason: message };
   }
 
-  const claimed = await markAgentRunResuming(run.id);
+  const claimed = resumeFence ? true : await markAgentRunResuming(run.id);
   if (!claimed) {
     return { resumed: false, reason: "Run is already being resumed by another approval decision." };
   }
@@ -2108,7 +2155,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       });
 
       if (execution.record.status === "approval_required") {
-        await markAgentRunWaitingForApproval(run.id, {
+        const parked = await markAgentRunWaitingForApproval(run.id, {
           response,
           continuation: {
             executionScope,
@@ -2136,7 +2183,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
             citationSources,
             createdAt: new Date().toISOString(),
           },
-        });
+        }, { resumeFence });
+        if (!parked.parked) {
+          return { resumed: false, reason: "Checkpoint resume fence was lost." };
+        }
         await appendScopedRunEvent({
           type: "waiting_approval",
           executionId: execution.record.id,
@@ -2331,7 +2381,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         });
 
         if (execution.record.status === "approval_required") {
-          await markAgentRunWaitingForApproval(run.id, {
+          const parked = await markAgentRunWaitingForApproval(run.id, {
             response,
             continuation: {
               executionScope,
@@ -2359,7 +2409,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
               citationSources,
               createdAt: new Date().toISOString(),
             },
-          });
+          }, { resumeFence });
+          if (!parked.parked) {
+            return { resumed: false, reason: "Checkpoint resume fence was lost." };
+          }
           await appendScopedRunEvent({
             type: "waiting_approval",
             executionId: execution.record.id,
@@ -2400,7 +2453,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
 
     await flushDeltas();
     const grounding = verifyCitationSources(response, citationSources);
-    const completed = await completeAgentRun(run.id, response, grounding);
+    const completed = await completeAgentRun(
+      run.id,
+      response,
+      grounding,
+      runMutationOptions,
+    );
     if (!completed) {
       return {
         resumed: false,
@@ -2439,7 +2497,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
   } catch (error) {
     const message = error instanceof Error ? error.message : "Approved agent run resume failed.";
     await flushDeltas().catch(() => undefined);
-    await failAgentRun(run.id, message);
+    const failed = await failAgentRun(run.id, message, runMutationOptions);
+    if (!failed) {
+      return { resumed: false, reason: "Checkpoint resume fence was lost." };
+    }
     await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
@@ -2459,6 +2520,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   tenantId,
   abortSignal,
   executionScope,
+  resumeFence,
 }: {
   run: AgentRunRecord;
   continuation: AgentRunContinuation;
@@ -2467,8 +2529,13 @@ async function resumeProviderBoundAgentRunAfterApproval({
   tenantId?: string;
   abortSignal?: AbortSignal;
   executionScope?: ExecutionScope;
+  resumeFence?: AgentRunResumeFence;
 }) {
   const providerState = continuation.providerToolState;
+  const runMutationOptions = {
+    tenantId: normalizeTenantId(tenantId),
+    resumeFence,
+  };
   const appendScopedRunEvent = (event: AgentEvent) => appendRunEvent(
     run.id,
     event,
@@ -2491,7 +2558,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
     )
   ) {
     const message = "Cannot resume the approved run because its provider-bound continuation is invalid.";
-    await failAgentRun(run.id, message);
+    const failed = await failAgentRun(run.id, message, runMutationOptions);
+    if (!failed) {
+      return { resumed: false, reason: "Checkpoint resume fence was lost." };
+    }
     await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
@@ -2536,7 +2606,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
   ) {
     const message =
       `Cannot resume the approved ${providerState.provider} continuation because its provider credential is no longer available.`;
-    await failAgentRun(run.id, message);
+    const failed = await failAgentRun(run.id, message, runMutationOptions);
+    if (!failed) {
+      return { resumed: false, reason: "Checkpoint resume fence was lost." };
+    }
     await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
@@ -2551,7 +2624,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       ? "tenant_vault" as const
       : "deployment_environment" as const;
 
-  const claimed = await markAgentRunResuming(run.id);
+  const claimed = resumeFence ? true : await markAgentRunResuming(run.id);
   if (!claimed) {
     return {
       resumed: false,
@@ -2667,10 +2740,13 @@ async function resumeProviderBoundAgentRunAfterApproval({
       createdAt: new Date().toISOString(),
     };
     await flushDeltas();
-    await markAgentRunWaitingForApproval(run.id, {
+    const parked = await markAgentRunWaitingForApproval(run.id, {
       response,
       continuation: nextContinuation,
-    });
+    }, { resumeFence });
+    if (!parked.parked) {
+      return { resumed: false, reason: "Checkpoint resume fence was lost." };
+    }
     await appendScopedRunEvent({
       type: "waiting_approval",
       executionId: waiting.executionId,
@@ -2898,7 +2974,12 @@ async function resumeProviderBoundAgentRunAfterApproval({
     }
 
     const grounding = verifyCitationSources(response, citationSources);
-    const completed = await completeAgentRun(run.id, response, grounding);
+    const completed = await completeAgentRun(
+      run.id,
+      response,
+      grounding,
+      runMutationOptions,
+    );
     if (!completed) {
       return {
         resumed: false,
@@ -2939,7 +3020,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
       ? error.message
       : "Approved provider-bound agent run resume failed.";
     await flushDeltas().catch(() => undefined);
-    await failAgentRun(run.id, message);
+    const failed = await failAgentRun(run.id, message, runMutationOptions);
+    if (!failed) {
+      return { resumed: false, reason: "Checkpoint resume fence was lost." };
+    }
     await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",

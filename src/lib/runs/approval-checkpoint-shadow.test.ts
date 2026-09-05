@@ -5,6 +5,7 @@ import {
   parseApprovalCheckpointShadowEnrollment,
   recordApprovalDecisionCheckpointShadow,
   recordApprovalWaitingCheckpointShadow,
+  RUN_CHECKPOINT_CANARY_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_CAPABILITY_ID,
   RUN_CHECKPOINT_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_CONTRACT_VERSION_ID,
@@ -131,6 +132,65 @@ function waitingCheckpoint() {
 }
 
 describe("approval checkpoint shadow", () => {
+  it("accepts only the dedicated canary configuration for a canary pin", () => {
+    const canary = structuredClone(enrollment());
+    canary.enginePin.rolloutMode = "canary";
+    canary.enginePin.configurationSha256 =
+      RUN_CHECKPOINT_CANARY_CONFIGURATION_SHA256;
+
+    expect(() => buildApprovalWaitingCheckpointShadow({
+      runId: RUN_ID,
+      executionScope: SCOPE,
+      runContractEnvelope: CONTRACT.envelope,
+      enrollment: canary,
+      approvalExecutionId: EXECUTION_ID,
+      state: {
+        runRecordSha256: canonicalJsonSha256("run"),
+        approvalRequestSha256: canonicalJsonSha256("approval"),
+        toolExecutionSha256: canonicalJsonSha256("tool"),
+        continuationSha256: canonicalJsonSha256("continuation"),
+      },
+      resourceUsage: {
+        modelCallCount: 1,
+        modelInputTokenCount: 10,
+        modelOutputTokenCount: 5,
+        cachedInputTokenCount: 2,
+        toolCallCount: 1,
+        toolResultByteCount: 0,
+        externalEffectCount: 0,
+        elapsedMs: 5_000,
+      },
+      recordedAt: RECORDED_AT,
+    })).not.toThrow();
+
+    canary.enginePin.configurationSha256 =
+      RUN_CHECKPOINT_CONFIGURATION_SHA256;
+    expect(() => buildApprovalWaitingCheckpointShadow({
+      runId: RUN_ID,
+      executionScope: SCOPE,
+      runContractEnvelope: CONTRACT.envelope,
+      enrollment: canary,
+      approvalExecutionId: EXECUTION_ID,
+      state: {
+        runRecordSha256: canonicalJsonSha256("run"),
+        approvalRequestSha256: canonicalJsonSha256("approval"),
+        toolExecutionSha256: canonicalJsonSha256("tool"),
+        continuationSha256: canonicalJsonSha256("continuation"),
+      },
+      resourceUsage: {
+        modelCallCount: 1,
+        modelInputTokenCount: 10,
+        modelOutputTokenCount: 5,
+        cachedInputTokenCount: 2,
+        toolCallCount: 1,
+        toolResultByteCount: 0,
+        externalEffectCount: 0,
+        elapsedMs: 5_000,
+      },
+      recordedAt: RECORDED_AT,
+    })).toThrow(/binding changed/i);
+  });
+
   it("builds a metadata-only, non-resumable waiting shadow", () => {
     const checkpoint = buildApprovalWaitingCheckpointShadow({
       runId: RUN_ID,
