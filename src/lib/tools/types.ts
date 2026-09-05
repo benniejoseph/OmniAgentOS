@@ -21,6 +21,8 @@ export type ToolDefinition = {
   riskLevel: ToolRiskLevel;
   dryRunSupported: boolean;
   approvalRequired: boolean;
+  /** Trusted effect classification used by checkpoints and provider receipts. */
+  operationClass?: "read_only" | "mutation";
   /** Whether the effect can be undone. Irreversible actions never graduate to autonomy. Defaults to false (conservative). */
   reversible?: boolean;
   inputSchema: Record<string, unknown>;
