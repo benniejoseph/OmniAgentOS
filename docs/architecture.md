@@ -341,18 +341,20 @@ actor foreign key or generic administrator role, and it must append the typed
 event in the same transaction after those checks converge.
 
 Migration v49 adds the separate, empty standing-consent ledger for a canonical
-subject actor and one exact memory purpose. Each generation begins held, a
-grant can only be made by the subject in contract version 1, revocation is
-terminal, and a later grant requires the next generation. Export and forget
-are deliberately rejected because those are verified request-bound data
-rights, not standing permissions that a tenant can suppress. The table is
-owner-only, forced through tenant RLS, protected by a system-only holdback,
-and constrained to contain no granted row. It has no runtime reader, writer,
-event, inference, or backfill. Before activation, a later contract must bind
-the subject to a versioned membership epoch and informed-notice evidence;
-live user, same-tenant membership, tenant entitlement, and consent rows must
-then be locked separately in the operation transaction. Revocation must never
-depend on a currently active tenant entitlement.
+subject actor and one exact memory purpose. As installed, record contract
+version 1 made each generation begin held, allowed only the subject to grant,
+made revocation terminal, and required the next generation for a later grant.
+Migration v55 later advances the still-empty ledger to current record contract
+version 2, retains self-decision for grant and revocation, and supplies the exact
+membership-epoch and informed-notice-receipt binding. Export and forget remain
+deliberately rejected because those are verified request-bound data rights, not
+standing permissions that a tenant can suppress. The table is owner-only,
+forced through tenant RLS, protected by a system-only holdback, and constrained
+to contain no granted row. It has no runtime reader, writer, event, inference,
+or backfill. Future activation must still lock the live user, same-tenant
+membership, epoch, tenant entitlement, receipt, consent row, and decision actor
+separately in the operation transaction. Revocation must never depend on a
+currently active tenant entitlement.
 
 Migration v54 adds a separate, empty membership-epoch authority for one
 canonical subject actor inside one tenant. Epochs are monotonic, begin held,
@@ -362,10 +364,10 @@ migration does not infer an epoch from the mutable legacy membership row,
 because the bootstrap upsert lacks authoritative decision attribution and
 typed evidence. It does not alter current membership columns, writers, roles,
 sessions, request authorization, file fallback, the v45 deny hook, or the
-v48-v49 ledgers. A later informed-notice contract must bind its evidence and
-this exact epoch into the still-empty consent row in one migration before a
-consent grant writer is designed; live authorization must still lock the user,
-current same-tenant membership, epoch, entitlement, and consent separately.
+v48-v49 ledgers. Migration v55 subsequently binds informed-notice evidence and
+this exact epoch into the still-empty consent record without adding a consent
+grant writer; live authorization must still lock the user, current same-tenant
+membership, epoch, entitlement, receipt, and consent separately.
 
 Migration v55 adds the missing informed-notice evidence envelope without
 inventing notice copy or a user decision. An empty immutable notice-contract
@@ -378,6 +380,32 @@ consent grants, and the memory authorization hook remain physically blocked;
 future activation must separately live-lock current membership, the active
 epoch, entitlement, receipt, consent, and decision actor and append typed
 evidence atomically.
+
+The contract-only authority module now fixes event payload schema version 1 for
+the stable membership-epoch, purpose-entitlement, informed-notice-receipt, and
+purpose-consent families. Their underlying record schemas remain version 1,
+version 1, version 1, and version 2 respectively. Payloads use closed
+event-evidence coordinates keyed to record identities: record-local lifecycle
+coordinates plus cross-record management-authority, decision-epoch, and
+notice-digest evidence. The single `memory.informed_notice_receipt.recorded`
+event represents both presentation and acknowledgement; no separate presented
+event exists yet.
+
+A later writer must make duplicated payload tenant and decision actor fields
+(or the receipt acknowledgement actor) exactly equal the corresponding
+`ExecutionScope.tenantId` and `ExecutionScope.initiatingActorId`.
+Management-authority IDs, `decisionMembershipEpoch`, `noticeSha256`, and the
+receipt/consent structural tuple are durable evidence coordinates, never
+authorization. They cannot replace live locks or prove current membership, an
+active epoch/entitlement/consent, or mutation authority. The module contains
+pure builders, parsers, and structural checks only: it has no serving import or
+call site, writer, event append, or row mutation. It defines no fields for
+notice/consent text, credentials, private content, or private reasoning. Opaque
+identifier fields can contain `@` and are not semantically inspected, so a
+future writer must keep content out of them. Every v45 and v48-v55
+database/runtime hold remains. A notice contract ID/version/digest is evidence,
+not approval of legal/privacy copy; reviewed and pinned wording remains a
+prerequisite to issuance.
 
 Migration v50 adds an owner-only, append-only auth-user actor-identifier
 shadow. It records each v46 canonical actor as a self identifier and each exact

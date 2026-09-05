@@ -199,8 +199,12 @@ consent schema and records no actor decision. A future lifecycle writer must
 append `memory.purpose_consent.held`, `.granted`, or `.revoked` in the same SQL
 transaction as the row transition, keeping `subjectActorId` distinct from the
 decision actor and including only tenant, purpose, generation, revision, and
-bounded notice/evidence identifiers. Version 1 grants and revocations must be
-self-decisions. Events cannot contain consent text or memory content, and a
+bounded notice/evidence identifiers. As installed by v49, underlying record
+contract version 1 required grants and revocations to be self-decisions.
+Migration v55 advances the still-empty ledger to current record contract version
+2, retains that self-decision rule, and adds the exact epoch-and-receipt binding.
+Both record versions are distinct from typed event payload schema version 1. The
+event schema defines no fields for consent text or memory content, and a
 standing-consent event cannot represent an export or forget request. Those
 data-right flows require their own request-bound typed evidence.
 
@@ -440,6 +444,46 @@ typed notice-presentation and consent-decision evidence atomically with those
 facts. Events may reference the versioned notice contract, digest, receipt,
 purpose, consent generation, and membership epoch, but must not duplicate the
 notice text, credentials, private content, or model reasoning.
+
+The following contract-only slice fixes the future memory-authority event
+vocabulary in `src/lib/memory/authority-contracts.ts`; it does not append an
+event. Every closed payload uses event payload `schemaVersion: 1`. The separate
+`recordSchemaVersion` follows the underlying row contract: version 1 for
+membership epoch, purpose entitlement, and informed-notice receipt, and version
+2 for purpose consent.
+
+| Stable event family | Exact metadata-only payload coordinates after `schemaVersion`, `recordSchemaVersion`, and `payloadKind` |
+| --- | --- |
+| `memory.membership_epoch.held`, `.activated`, `.revoked` (`payloadKind: "memory_membership_epoch"`) | `tenantId`, `subjectActorId`, `membershipEpoch`, `decisionActorId`, `membershipManagementAuthorityId`, `decisionAt`, `state`, `lifecycleRevision` |
+| `memory.purpose_entitlement.held`, `.activated`, `.revoked` (`payloadKind: "memory_purpose_entitlement"`) | `tenantId`, `purposeId`, `entitlementGeneration`, `decisionActorId`, `decisionMembershipEpoch`, `entitlementManagementAuthorityId`, `decisionAt`, `state`, `lifecycleRevision` |
+| `memory.informed_notice_receipt.recorded` (`payloadKind: "memory_informed_notice_receipt"`) | `tenantId`, `subjectActorId`, `purposeId`, `consentGeneration`, `membershipEpoch`, `noticeReceiptId`, `noticeContractId`, `noticeContractVersion`, `noticeSha256`, `presentedAt`, `acknowledgedByActorId`, `acknowledgedAt` |
+| `memory.purpose_consent.held`, `.granted`, `.revoked` (`payloadKind: "memory_purpose_consent"`) | `tenantId`, `subjectActorId`, `purposeId`, `consentGeneration`, `membershipEpoch`, `noticeReceiptId`, `decisionActorId`, `decisionAt`, `state`, `lifecycleRevision` |
+
+Held lifecycle payloads use revision 0; activation or grant uses revision 1;
+revocation admits the transition-appropriate revision 1 or 2. The one
+`memory.informed_notice_receipt.recorded` fact carries both presentation and
+subject acknowledgement evidence (`presentedAt <= acknowledgedAt`); there is no
+separate `presented` event contract yet. Standing-purpose payloads still reject
+export and forget.
+
+These duplicated coordinates do not create authority. A future append boundary
+must require the payload `tenantId` and its decision actor (or receipt
+`acknowledgedByActorId`) to equal `ExecutionScope.tenantId` and
+`ExecutionScope.initiatingActorId`, as well as the event envelope.
+Management-authority IDs, `decisionMembershipEpoch`, and `noticeSha256` are
+cross-record evidence coordinates, not authorization. Exact equality of the
+receipt and consent structural tuple—`tenantId`,
+`subjectActorId`, `purposeId`, `consentGeneration`, `membershipEpoch`, and
+`noticeReceiptId`—also proves binding only; it does not prove current membership,
+an active epoch or entitlement, consent, or mutation authority. The schemas
+define no fields for notice text, consent text, credentials, private content,
+tool/model output, or private chain-of-thought. Opaque identifier fields remain
+opaque, their accepted grammar can contain `@`, and the validators do not prove
+their semantic contents; a future writer must keep content out of those fields.
+The pure module has no writer or serving import/call site and appends or persists
+no event or row; every v45 and v48-v55 database/runtime hold remains in force.
+A contract ID, version, or digest is not legal/privacy approval of the notice
+copy; issuance still requires reviewed, pinned wording.
 
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
