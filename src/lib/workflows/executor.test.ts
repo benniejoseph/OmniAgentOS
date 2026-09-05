@@ -4,8 +4,12 @@ import {
   isIndependentReadOnlyTool,
   reserveWorkflowToolBudget,
   shouldDryRunWorkflowTool,
+  workflowToolEffectBinding,
 } from "@/lib/workflows/executor";
-import type { WorkflowPlanNode } from "@/lib/workflows/types";
+import type {
+  WorkflowDynamicPlan,
+  WorkflowPlanNode,
+} from "@/lib/workflows/types";
 import type { ToolDefinition } from "@/lib/tools/types";
 
 const node: WorkflowPlanNode = {
@@ -32,8 +36,32 @@ const connectorTool: ToolDefinition = {
   riskLevel: 2,
   dryRunSupported: true,
   approvalRequired: true,
+  operationClass: "mutation",
   reversible: true,
   inputSchema: { type: "object", additionalProperties: true },
+};
+
+const plan: WorkflowDynamicPlan = {
+  objective: "Update the external system.",
+  summary: "Create one record.",
+  mode: "execute",
+  assumptions: [],
+  constraints: [],
+  risks: [],
+  acceptanceCriteria: ["External system was updated."],
+  nodes: [node],
+  edges: [],
+  selectedToolIds: [connectorTool.id],
+  connectorTargets: ["demo"],
+  executionPolicy: {
+    highestRiskLevel: 2,
+    requiresApproval: true,
+    defaultPolicy: "approval_required",
+    notes: [],
+  },
+  verificationPlan: [],
+  memoryPlan: [],
+  confidence: 0.9,
 };
 
 describe("workflow executor dry-run policy", () => {
@@ -82,6 +110,51 @@ describe("workflow executor dry-run policy", () => {
         workflowApproved: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("workflow effect binding", () => {
+  it("binds an approved provider mutation to the exact persisted plan", () => {
+    expect(workflowToolEffectBinding({
+      workflowRunId: "workflow-1",
+      plan,
+      planId: "plan-1",
+      node,
+      toolId: connectorTool.id,
+      tool: connectorTool,
+      toolInput: { recordId: "record-1" },
+      workflowApproved: true,
+      dryRun: false,
+      initiatingActorId: "owner-1",
+    })).toMatchObject({
+      workflowRunId: "workflow-1",
+      planId: "plan-1",
+      planSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      planNodeId: node.id,
+    });
+  });
+
+  it("does not bind read-only, preview, or actorless executions", () => {
+    const base = {
+      workflowRunId: "workflow-1",
+      plan,
+      planId: "plan-1",
+      node,
+      toolId: connectorTool.id,
+      tool: connectorTool,
+      toolInput: {},
+      workflowApproved: true,
+      dryRun: false,
+      initiatingActorId: "owner-1",
+    };
+    expect(workflowToolEffectBinding({
+      ...base,
+      tool: { ...connectorTool, operationClass: "read_only" },
+    })).toBeUndefined();
+    expect(workflowToolEffectBinding({ ...base, dryRun: true }))
+      .toBeUndefined();
+    expect(workflowToolEffectBinding({ ...base, initiatingActorId: null }))
+      .toBeUndefined();
   });
 });
 
