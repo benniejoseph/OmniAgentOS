@@ -40,13 +40,17 @@ import {
   evaluateApprovalBinding,
 } from "@/lib/tools/approval-binding";
 import { evaluateLostAcknowledgementRecovery } from "@/lib/tools/idempotent-delivery";
+import {
+  parseSavedProcedureContractV1,
+  toSupervisorKnownProcedures,
+} from "@/lib/workflows/saved-procedures";
 
 /**
  * Versioned, side-effect-free probes of behavior that the current runtime can
  * actually demonstrate offline. Missing probes fail closed instead of
  * reproducing a fixture's expected answer.
  */
-export const P05_OBSERVER_VERSION = "p0.5-observer-v1" as const;
+export const P05_OBSERVER_VERSION = "p0.5-observer-v2" as const;
 
 type JsonRecord = Record<string, P05JsonValue>;
 
@@ -181,18 +185,18 @@ function observeIntentRouting(testCase: P05Case): P05JsonValue {
 
   if (testCase.id === "intent-routing.portfolio-blog-automation") {
     const knownProcedure = jsonRecord(given.knownProcedure);
-    const workflowId = text(knownProcedure.id);
-    const aliases = strings(knownProcedure.aliases);
+    const procedure = parseSavedProcedureContractV1(
+      knownProcedure,
+      `synthetic:${testCase.id}`,
+    );
     const decision = routeAgentRequest(
       utterance,
       "orchestrate",
       undefined,
-      workflowId && aliases.length
-        ? [{ id: workflowId, aliases, requiredToolIds: [] }]
-        : [],
+      procedure ? toSupervisorKnownProcedures([procedure]) : [],
     );
     return {
-      adapterId: "supervisor-route-v3",
+      adapterId: "saved-procedure-supervisor-route-v1",
       adapterStatus: "observed",
       route: decision.route,
       workflowId: decision.procedure?.workflowId || null,
@@ -204,7 +208,7 @@ function observeIntentRouting(testCase: P05Case): P05JsonValue {
 
   const decision = routeAgentRequest(utterance, "orchestrate");
   return {
-    adapterId: "supervisor-route-v3",
+    adapterId: "supervisor-route-v4",
     adapterStatus: "observed",
     route: decision.route,
     ambiguityState: decision.ambiguity.state,

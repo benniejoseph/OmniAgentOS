@@ -18,6 +18,7 @@ import { getDataPath } from "@/lib/storage/paths";
 import type { ToolDefinition } from "@/lib/tools/types";
 import type { AiUsageScope } from "@/lib/usage/types";
 import { shouldUseLiveWebSearch } from "@/lib/web-search/search";
+import type { SavedProcedureToolBinding } from "@/lib/workflows/saved-procedures";
 import type {
   WorkflowDynamicPlan,
   WorkflowPlanNode,
@@ -42,6 +43,7 @@ type BuildWorkflowPlanInput = {
   source?: string;
   reuseExisting?: boolean;
   allowedToolIds?: string[];
+  requiredToolBindings?: readonly SavedProcedureToolBinding[];
   readOnlyTools?: boolean;
   agentInstructions?: string;
   abortSignal?: AbortSignal;
@@ -144,6 +146,13 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
   }
 
   const mode = input.mode || "orchestrate";
+  const requiredToolBindings = normalizeRequiredToolBindings(input.requiredToolBindings);
+  if (
+    input.allowedToolIds &&
+    requiredToolBindings.some((binding) => !input.allowedToolIds?.includes(binding.toolId))
+  ) {
+    throw new Error("Saved procedure requires a tool outside the selected agent's allowlist.");
+  }
   const planId = randomUUID();
   const usageActorId = effectivePlannerActorId(input.actorId, input.usageAttribution);
   const context = await buildContextPack(contextSelection?.query || goal, {
@@ -169,11 +178,13 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
   const availableCandidates = await getPlannerToolCandidates(goal, context.contextBlock, {
     tenantId,
     preferredToolIds: input.allowedToolIds,
+    requiredToolIds: requiredToolBindings.map((binding) => binding.toolId),
   });
   const allowedToolIds = input.allowedToolIds ? new Set(input.allowedToolIds) : undefined;
   const toolCandidates = (allowedToolIds
     ? availableCandidates.filter((tool) => allowedToolIds.has(tool.id))
     : availableCandidates).filter((tool) => !input.readOnlyTools || tool.riskLevel === 0);
+  assertRequiredToolsAvailable(requiredToolBindings, toolCandidates);
   const generated = await generatePlan({
     tenantId,
     actorId: usageActorId,
@@ -183,6 +194,7 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     contextBlock: context.contextBlock,
     contextTraceId: context.trace?.id,
     toolCandidates,
+    requiredToolBindings,
     agentInstructions: input.agentInstructions,
     abortSignal: input.abortSignal,
     sourceStreamId: input.workflowRunId
@@ -455,6 +467,7 @@ async function generatePlan({
   contextBlock,
   contextTraceId,
   toolCandidates,
+  requiredToolBindings,
   agentInstructions,
   abortSignal,
   sourceStreamId,
@@ -468,11 +481,26 @@ async function generatePlan({
   contextBlock: string;
   contextTraceId?: string;
   toolCandidates: PlannerToolCandidate[];
+  requiredToolBindings: readonly SavedProcedureToolBinding[];
   agentInstructions?: string;
   abortSignal?: AbortSignal;
   sourceStreamId: string;
   usageAttribution?: BuildWorkflowPlanInput["usageAttribution"];
 }): Promise<{ planner: WorkflowPlanRecord["planner"]; model: string; plan: WorkflowDynamicPlan }> {
+  if (requiredToolBindings.length) {
+    return {
+      planner: "deterministic",
+      model: "saved-procedure-v1",
+      plan: deterministicPlan({
+        goal,
+        mode,
+        requireApproval,
+        toolCandidates,
+        requiredToolBindings,
+        contextTraceId,
+      }),
+    };
+  }
   const runtimeModel = await resolveRuntimeModelAssignment({
     tenantId,
     actorId,
@@ -481,7 +509,14 @@ async function generatePlan({
     requiredFeature: "json_schema",
   });
   if (!runtimeModel.configured) {
-    const plan = deterministicPlan({ goal, mode, requireApproval, toolCandidates, contextTraceId });
+    const plan = deterministicPlan({
+      goal,
+      mode,
+      requireApproval,
+      toolCandidates,
+      requiredToolBindings,
+      contextTraceId,
+    });
     return {
       planner: "deterministic",
       model: "fallback",
@@ -505,6 +540,7 @@ async function generatePlan({
           `Operator requires approval: ${requireApproval ? "yes" : "no"}`,
           `Context trace: ${contextTraceId || "none"}`,
           `<untrusted_tool_metadata provenance="tool_registry">\n${escapeUntrustedPromptText(JSON.stringify(toolCandidates.slice(0, 18), null, 2))}\n</untrusted_tool_metadata>`,
+          `<saved_procedure_bindings provenance="validated_workflow_metadata">\n${escapeUntrustedPromptText(JSON.stringify(requiredToolBindings, null, 2))}\n</saved_procedure_bindings>`,
           `<untrusted_context_evidence provenance="memory_and_rag">\n${escapeUntrustedPromptText(contextBlock.slice(0, 6000))}\n</untrusted_context_evidence>`,
         ].join("\n\n"),
         abortSignal: abortSignal
@@ -537,12 +573,25 @@ async function generatePlan({
       planner: generated.provider === "local" ? "deterministic" : generated.provider,
       model: generated.model,
       plan: addRoutingWarnings(
-        normalizePlan(parsed as WorkflowDynamicPlan, { goal, mode, requireApproval, toolCandidates }),
+        normalizePlan(parsed as WorkflowDynamicPlan, {
+          goal,
+          mode,
+          requireApproval,
+          toolCandidates,
+          requiredToolBindings,
+        }),
         runtimeModel.warnings,
       ),
     };
   } catch (error) {
-    const fallback = deterministicPlan({ goal, mode, requireApproval, toolCandidates, contextTraceId });
+    const fallback = deterministicPlan({
+      goal,
+      mode,
+      requireApproval,
+      toolCandidates,
+      requiredToolBindings,
+      contextTraceId,
+    });
     return {
       planner: "deterministic",
       model: "fallback-after-model-error",
@@ -599,18 +648,37 @@ function addRoutingWarnings(
 async function getPlannerToolCandidates(
   goal: string,
   contextBlock: string,
-  options: TenantScopedOptions & { preferredToolIds?: readonly string[] } = {},
+  options: TenantScopedOptions & {
+    preferredToolIds?: readonly string[];
+    requiredToolIds?: readonly string[];
+  } = {},
 ): Promise<PlannerToolCandidate[]> {
-  const { definitions: tools } = await loadProgressiveAgentTools({
+  const { definitions: primaryTools } = await loadProgressiveAgentTools({
     tenantId: options.tenantId,
     query: `${goal}\n${contextBlock.slice(0, 12_000)}`,
     preferredToolIds: options.preferredToolIds,
   });
+  const requiredToolIds = unique([...(options.requiredToolIds || [])]);
+  const { definitions: requiredTools } = requiredToolIds.length && !options.preferredToolIds
+    ? await loadProgressiveAgentTools({
+        tenantId: options.tenantId,
+        query: `${goal}\n${contextBlock.slice(0, 12_000)}`,
+        preferredToolIds: requiredToolIds,
+      })
+    : { definitions: [] };
+  const tools = [...new Map(
+    [...primaryTools, ...requiredTools].map((tool) => [tool.id, tool]),
+  ).values()];
   const terms = tokenize(`${goal}\n${contextBlock}`);
+  const required = new Set(requiredToolIds);
 
   return tools
     .map((tool) => toolCandidate(tool, terms))
-    .sort((left, right) => right.score - left.score || left.riskLevel - right.riskLevel)
+    .sort((left, right) =>
+      Number(required.has(right.id)) - Number(required.has(left.id)) ||
+      right.score - left.score ||
+      left.riskLevel - right.riskLevel
+    )
     .slice(0, 24);
 }
 
@@ -667,16 +735,21 @@ function deterministicPlan({
   mode,
   requireApproval,
   toolCandidates,
+  requiredToolBindings = [],
 }: {
   goal: string;
   mode: WorkflowDynamicPlan["mode"];
   requireApproval: boolean;
   toolCandidates: PlannerToolCandidate[];
+  requiredToolBindings?: readonly SavedProcedureToolBinding[];
   contextTraceId?: string;
 }): WorkflowDynamicPlan {
-  const selectedToolIds = selectToolIds(goal, toolCandidates);
+  const selectedToolIds = unique([
+    ...requiredToolBindings.map((binding) => binding.toolId),
+    ...selectToolIds(goal, toolCandidates),
+  ]);
   const selectedTools = toolCandidates.filter((tool) => selectedToolIds.includes(tool.id));
-  const toolInputs = deterministicToolInputs(goal, selectedToolIds);
+  const toolInputs = deterministicToolInputs(goal, selectedToolIds, requiredToolBindings);
   const highestRiskLevel = clampRisk(Math.max(0, ...selectedTools.map((tool) => tool.riskLevel)));
   const requiresApproval =
     requireApproval ||
@@ -821,7 +894,7 @@ function deterministicPlan({
       ],
       confidence: selectedToolIds.length ? 0.78 : 0.62,
     },
-    { goal, mode, requireApproval, toolCandidates },
+    { goal, mode, requireApproval, toolCandidates, requiredToolBindings },
   );
 }
 
@@ -832,11 +905,16 @@ function normalizePlan(
     mode: WorkflowDynamicPlan["mode"];
     requireApproval: boolean;
     toolCandidates: PlannerToolCandidate[];
+    requiredToolBindings?: readonly SavedProcedureToolBinding[];
   },
 ): WorkflowDynamicPlan {
   const knownToolIds = new Set(context.toolCandidates.map((tool) => tool.id));
-  const nodes = normalizeNodes(input.nodes, knownToolIds);
+  const nodes = ensureRequiredToolBindings(
+    normalizeNodes(input.nodes, knownToolIds),
+    context.requiredToolBindings || [],
+  );
   const selectedToolIds = unique([
+    ...(context.requiredToolBindings || []).map((binding) => binding.toolId),
     ...input.selectedToolIds.filter((toolId) => knownToolIds.has(toolId)),
     ...nodes.flatMap((node) => node.toolIds),
   ]);
@@ -908,6 +986,31 @@ function normalizeNodes(nodes: WorkflowPlanNode[], knownToolIds: Set<string>) {
       policy: normalizePolicy(node.policy, node.riskLevel, node.approvalRequired),
       acceptanceCriteria: normalizeTextArray(node.acceptanceCriteria, 8),
       expectedOutputs: normalizeTextArray(node.expectedOutputs, 8),
+    };
+  });
+}
+
+function ensureRequiredToolBindings(
+  nodes: WorkflowPlanNode[],
+  bindings: readonly SavedProcedureToolBinding[],
+) {
+  if (!bindings.length) return nodes;
+  const requiredInputs = new Map(bindings.map((binding) => [
+    binding.toolId,
+    JSON.stringify(binding.input),
+  ]));
+  return nodes.map((node) => {
+    const nodeRequired = node.toolIds.filter((toolId) => requiredInputs.has(toolId));
+    if (!nodeRequired.length) return node;
+    return {
+      ...node,
+      toolInputs: [
+        ...(node.toolInputs || []).filter((input) => !requiredInputs.has(input.toolId)),
+        ...nodeRequired.map((toolId) => ({
+          toolId,
+          inputJson: requiredInputs.get(toolId) || "{}",
+        })),
+      ].slice(0, 8),
     };
   });
 }
@@ -1156,13 +1259,21 @@ function selectToolIds(goal: string, candidates: PlannerToolCandidate[]) {
 function deterministicToolInputs(
   goal: string,
   selectedToolIds: string[],
+  requiredToolBindings: readonly SavedProcedureToolBinding[] = [],
 ): WorkflowPlanNode["toolInputs"] {
+  const requiredInputs = requiredToolBindings.map((binding) => ({
+    toolId: binding.toolId,
+    inputJson: JSON.stringify(binding.input),
+  }));
   if (!selectedToolIds.includes("http.request")) {
-    return [];
+    return requiredInputs;
+  }
+  if (requiredToolBindings.some((binding) => binding.toolId === "http.request")) {
+    return requiredInputs;
   }
   const rawUrl = goal.match(/https?:\/\/[^\s<>"']+/i)?.[0];
   if (!rawUrl) {
-    return [];
+    return requiredInputs;
   }
   const url = rawUrl.replace(/[),.;!?]+$/, "");
   const method = /\bdelete\b/i.test(goal)
@@ -1173,6 +1284,7 @@ function deterministicToolInputs(
         ? "POST"
         : "GET";
   return [
+    ...requiredInputs.filter((binding) => binding.toolId !== "http.request"),
     {
       toolId: "http.request",
       inputJson: JSON.stringify({ url, method }),
@@ -1268,6 +1380,55 @@ function normalizeTextArray(values: string[], limit: number) {
 
 function unique(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)));
+}
+
+function normalizeRequiredToolBindings(
+  bindings: readonly SavedProcedureToolBinding[] | undefined,
+): readonly SavedProcedureToolBinding[] {
+  const normalized = (bindings || []).map((binding) => {
+    const toolId = binding.toolId.trim();
+    if (
+      !toolId ||
+      toolId.length > 240 ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/.test(toolId)
+    ) {
+      throw new Error("Saved procedure contains an invalid tool identifier.");
+    }
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(binding.input);
+    } catch {
+      throw new Error(`Saved procedure input for ${toolId} is not serializable.`);
+    }
+    if (Buffer.byteLength(serialized, "utf8") > 64_000) {
+      throw new Error(`Saved procedure input for ${toolId} exceeds 64,000 bytes.`);
+    }
+    const parsed: unknown = JSON.parse(serialized);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`Saved procedure input for ${toolId} must be a JSON object.`);
+    }
+    return Object.freeze({
+      toolId,
+      input: Object.freeze(parsed as Record<string, unknown>),
+    });
+  });
+  if (new Set(normalized.map((binding) => binding.toolId)).size !== normalized.length) {
+    throw new Error("Saved procedure tool bindings must be unique.");
+  }
+  return Object.freeze(normalized);
+}
+
+function assertRequiredToolsAvailable(
+  bindings: readonly SavedProcedureToolBinding[],
+  candidates: readonly PlannerToolCandidate[],
+) {
+  const available = new Set(candidates.map((candidate) => candidate.id));
+  const missing = bindings
+    .map((binding) => binding.toolId)
+    .filter((toolId) => !available.has(toolId));
+  if (missing.length) {
+    throw new Error(`Saved procedure dependencies are unavailable: ${missing.join(", ")}.`);
+  }
 }
 
 function parseObject(value: unknown) {

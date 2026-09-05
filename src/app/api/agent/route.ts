@@ -38,6 +38,12 @@ import {
   scheduleDurableSpecialistDrain,
 } from "@/lib/subagents/scheduler";
 import type { PreparedDurableSpecialist } from "@/lib/subagents/types";
+import {
+  buildWorkflowProcedureSnapshot,
+  listSavedProcedures,
+  parseWorkflowProcedureSnapshot,
+  toSupervisorKnownProcedures,
+} from "@/lib/workflows/saved-procedures";
 
 export const runtime = "nodejs";
 // gpt-5 research/orchestrate runs can exceed 60s; 300s is the Vercel Pro ceiling.
@@ -184,7 +190,28 @@ async function POSTHandler(request: Request) {
     toolIds: customAgent.toolIds,
     skills: customSkills.map(({ id, name, description, instructions, toolIds }) => ({ id, name, description, instructions, toolIds })),
   } : undefined;
-  const inferredDecision = routeAgentRequest(requestMessage, mode, requestedBuiltInAgent);
+  let savedProcedures;
+  try {
+    savedProcedures = await listSavedProcedures({
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+    });
+  } catch (error) {
+    console.error(
+      "Saved procedure catalog unavailable.",
+      String(redactSensitive(error instanceof Error ? error.message : "Unknown procedure catalog error.")),
+    );
+    return Response.json(
+      { error: "Saved procedures unavailable", message: "The saved procedure catalog could not be validated." },
+      { status: 503 },
+    );
+  }
+  const inferredDecision = routeAgentRequest(
+    requestMessage,
+    mode,
+    requestedBuiltInAgent,
+    toSupervisorKnownProcedures(savedProcedures),
+  );
   const preliminaryDecision = applySupervisorStrategy(
     inferredDecision,
     parsed.data.strategy,
@@ -346,6 +373,18 @@ async function POSTHandler(request: Request) {
             const executionMessage = parsed.data.missionId
               ? missionInstruction(mission, safeMessage)
               : safeMessage;
+            const matchedProcedure = decision.procedure
+              ? savedProcedures.find((procedure) => procedure.id === decision.procedure?.workflowId)
+              : undefined;
+            if (decision.procedure && !matchedProcedure) {
+              throw new Error("The matched saved procedure is no longer available.");
+            }
+            const savedProcedure = matchedProcedure && decision.procedure
+              ? buildWorkflowProcedureSnapshot(
+                  matchedProcedure,
+                  decision.procedure.matchedAlias,
+                )
+              : undefined;
             const { createWorkflowRun } = await import("@/lib/workflows/store");
             const detail = await createWorkflowRun({
               tenantId: context.tenantId,
@@ -379,6 +418,7 @@ async function POSTHandler(request: Request) {
                 specialistTaskIds: durableSpecialists.map((item) => item.taskId),
                 specialistRunIds: durableSpecialists.map((item) => item.runId),
                 learning: decision.learning,
+                ...(savedProcedure ? { savedProcedure } : {}),
                 ...(contextSelection ? { contextSelection } : {}),
               },
               idempotencyKey: `supervisor:${context.actorId}:${requestId}`,
@@ -388,6 +428,9 @@ async function POSTHandler(request: Request) {
             }
             if (!sameContextSelection(detail.run.input.metadata?.contextSelection, contextSelection)) {
               throw new Error("requestId was already used with a different context selection. Submit this work with a new requestId.");
+            }
+            if (!sameSavedProcedure(detail.run.input.metadata?.savedProcedure, savedProcedure)) {
+              throw new Error("requestId was already used with a different saved procedure. Submit this work with a new requestId.");
             }
             await bindDurableSpecialistsToWorkflow(
               durableSpecialists,
@@ -588,6 +631,14 @@ function sameContextSelection(
     && storedIds.length === value.evidenceIds.length
     && storedIds.length === expectedIds.length
     && storedIds.every((id, index) => id === expectedIds[index]);
+}
+
+function sameSavedProcedure(
+  stored: unknown,
+  expected: { snapshotSha256: string } | undefined,
+) {
+  if (!expected) return stored === undefined;
+  return parseWorkflowProcedureSnapshot(stored)?.snapshotSha256 === expected.snapshotSha256;
 }
 
 function resolveRequestId(request: Request, bodyRequestId?: string) {

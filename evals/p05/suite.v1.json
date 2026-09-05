@@ -156,7 +156,22 @@
       },
       "given": {
         "utterance": "Run my portfolio blog automation",
-        "knownProcedure": { "id": "workflow:portfolio-blog", "aliases": ["portfolio blog automation", "generate blog post"] }
+        "knownProcedure": {
+          "schemaVersion": 1,
+          "id": "workflow:portfolio-blog",
+          "aliases": ["portfolio blog automation", "generate blog post"],
+          "toolBindings": [
+            {
+              "toolId": "mcp:github:actions_run_trigger",
+              "input": {
+                "owner": "synthetic-owner",
+                "repo": "synthetic-portfolio",
+                "workflow_id": "blog.yml",
+                "ref": "main"
+              }
+            }
+          ]
+        }
       },
       "action": { "operation": "intent.route" },
       "assertions": [
