@@ -867,6 +867,26 @@ object, authority row, event, writer, serving grant, or runtime call site; a
 future notice, receipt, or consent writer migration must invoke this verifier
 again at its own boundary.
 
+The following pure informed-notice governance contract defines the reviewed
+batch that must precede such a writer. A canonical, domain-separated,
+length-framed digest covers the exact UTF-8 notice text and its independently
+recomputed SHA-256 together with purpose, immutable contract/version, locale,
+governance-policy, nonce, evidence, and batch coordinates. Contracts are
+unique and canonically ordered by the exact v55 primary key, are limited to
+standing-consent purposes, and preserve the v55 text and locale bounds. Exact
+legal-reviewer and privacy-reviewer records must use distinct canonical actors
+and review IDs and bind the same batch digest and governance policy.
+
+Those review records are structural evidence only: the pure parser does not
+authenticate either human, review system, policy authority, or review time.
+It contains no trust registry, signature verifier, database or event-store
+import, writer, route, environment lookup, row, event, serving call site, or
+activation. A later externally anchored verifier must authenticate both review
+records; only after that may a separately reviewed writer migration invoke the
+v65 boundary verifier, remove the exact seed hold, and atomically persist the
+approved catalog batch with its governed evidence. Notice receipt and consent
+issuance remain independently held.
+
 In Postgres, the receipt on `omni_tool_executions` and its typed event append
 commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
