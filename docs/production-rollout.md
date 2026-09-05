@@ -68,7 +68,7 @@ row counts.
 - [ ] Before any paid evaluation, verify the bounded Fly `/healthz` gate reports service `asael-openai-egress`, region `iad`, the exact release revision, and protocol `1`; then verify both configured gateway tokens reach the authorization boundary without an OpenAI request. Evidence and logs must contain only match/configuration booleans.
 - [ ] Confirm Fly used blue/green replacement and did not remove the serving gateway until the candidate passed `/healthz`; after Vercel promotion, confirm the worker switched to canonical via revision-gated `SIGHUP` without a second Fly deployment.
 - [ ] Run the bounded stateless paid sentinel through the primary token (`store: false`, at most 16 output tokens); verify the gateway and upstream request IDs, provider usage, exact release revision, and redacted output before the broader smoke suite.
-- [ ] Run `Production Smoke` through its protected `production` environment; confirm its configured URL and expected revision identify this canary.
+- [ ] Run `Production Smoke` through its protected `production` environment with the canary SHA supplied as `expected_revision`; confirm its configured URL and expected revision identify this canary. Scheduled monitoring discovers the currently healthy production SHA instead.
 - [ ] Download the non-empty release-evidence artifact and confirm the gate is passed/approved.
 
 ## Promote
