@@ -34,12 +34,13 @@ resurrection, or false success is a failure; this lane has no warning state.
 
 `baseline.v1.json` is the digest-bound current-system observation. Run
 `npm run check:p05-baseline` to reproduce it from the side-effect-free adapters
-in `src/lib/evals2/p05-observer.ts`. The result is intentionally red: 14 of 16
-cases pass (8,750 basis points). The remaining failures are explicit product
-gaps, not missing scorer glue: the known portfolio procedure has no persisted
-procedure-to-GitHub-tool binding, and the calendar positive-control has no
-write-capable connector/receipt path. The observer does not copy either
-normative answer into the baseline. Scope and actor visibility, transactional
+in `src/lib/evals2/p05-observer.ts`. The result is intentionally red: 15 of 16
+cases pass (9,375 basis points). The remaining failure is an explicit product
+gap, not missing scorer glue: the calendar positive-control has no
+write-capable connector/receipt path. The portfolio automation case now flows
+through the same strict saved-procedure contract used by production routing;
+its required GitHub tool binding is fixture input, not copied from the expected
+output. Scope and actor visibility, transactional
 page retry, tombstone convergence, lost-ack reconciliation, ambiguous intent
 clarification, explicit context selection, structured claim support, half-open
 temporal selection, material approval invalidation, and both terminal-receipt

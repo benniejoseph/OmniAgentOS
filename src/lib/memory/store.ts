@@ -62,6 +62,7 @@ type TenantScopedOptions = {
   tenantId?: string;
   limit?: number;
   includeInactive?: boolean;
+  type?: MemoryType;
   sql?: MemorySqlClient;
 };
 
@@ -77,14 +78,19 @@ export async function listMemories(options: TenantScopedOptions = {}) {
     }
     const sql = options.sql || getSql();
     const rows = options.includeInactive
-      ? await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
-      : await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`;
+      ? options.type
+        ? await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND type = ${options.type} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
+        : await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
+      : options.type
+        ? await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND type = ${options.type} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`
+        : await sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`;
     return rows.map(memoryFromRow);
   }
 
   const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
   return memories
     .filter((memory) => normalizeTenantId(memory.tenantId) === tenantId)
+    .filter((memory) => !options.type || memory.type === options.type)
     .filter((memory) => sanitizeMemoryRecord(memory).claimStatus !== "forgotten")
     .filter((memory) => options.includeInactive || isActiveMemory(sanitizeMemoryRecord(memory)))
     .slice(0, limit)

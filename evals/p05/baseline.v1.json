@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suiteId": "asael-p0.5-core-v1",
   "scorerVersion": "p0.5-v1",
-  "suiteSha256": "83c13fd60c49453ff4f862e22a6056977bd78b6c94fb144d1b760af57da47a52",
+  "suiteSha256": "288866d5c280368a4c4bde0d2c913bd58eeac0d2b51f16def880d8d2c2767f7d",
   "observations": [
     {
       "caseId": "scope.boundary-matrix",
@@ -81,19 +81,21 @@
     {
       "caseId": "intent-routing.portfolio-blog-automation",
       "value": {
-        "adapterId": "supervisor-route-v3",
+        "adapterId": "saved-procedure-supervisor-route-v1",
         "adapterStatus": "observed",
         "route": "durable_workflow",
         "workflowId": "workflow:portfolio-blog",
         "ambiguityState": "none",
-        "requiredToolIds": [],
+        "requiredToolIds": [
+          "mcp:github:actions_run_trigger"
+        ],
         "effectCountBeforeGovernedExecution": 0
       }
     },
     {
       "caseId": "intent-routing.ambiguous-delete-clarifies",
       "value": {
-        "adapterId": "supervisor-route-v3",
+        "adapterId": "supervisor-route-v4",
         "adapterStatus": "observed",
         "route": "clarify",
         "ambiguityState": "detected",

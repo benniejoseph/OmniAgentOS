@@ -27,6 +27,7 @@ import {
   buildDynamicWorkflowPlan,
   getWorkflowPlanById,
 } from "@/lib/workflows/planner";
+import { parseWorkflowProcedureSnapshot } from "@/lib/workflows/saved-procedures";
 import {
   approveWorkflowRun,
   appendWorkflowEvent,
@@ -941,6 +942,7 @@ async function verifyWithModel({
 async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
   const profile = workflowAgentProfile(detail);
   const contextSelection = workflowContextSelection(detail);
+  const savedProcedure = workflowSavedProcedure(detail);
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const replanEvent = [...detail.events]
     .reverse()
@@ -994,6 +996,7 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
       workflowRunId: detail.run.id,
       requireApproval: detail.run.approvalRequired,
       contextSelection,
+      requiredToolBindings: savedProcedure?.toolBindings,
       allowedToolIds: profile ? [...new Set([...profile.toolIds, ...profile.skills.flatMap((skill) => skill.toolIds)])] : undefined,
       readOnlyTools: profile ? profile.approvalPolicy === "read_only" || profile.autonomy === "assist" : undefined,
       agentInstructions: [
@@ -1009,6 +1012,7 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
     nodeCount: record.plan.nodes.length,
     highestRiskLevel: record.highestRiskLevel,
     approvalRequired: record.approvalRequired,
+    savedProcedureId: savedProcedure?.id,
   });
   return {
     id: record.id,
@@ -1314,6 +1318,16 @@ function workflowContextSelection(detail: WorkflowRunDetail): AgentRunRequest["c
     query: selection.query.trim(),
     evidenceIds,
   };
+}
+
+function workflowSavedProcedure(detail: WorkflowRunDetail) {
+  const value = detail.run.input.metadata?.savedProcedure;
+  if (value === undefined) return undefined;
+  const procedure = parseWorkflowProcedureSnapshot(value);
+  if (!procedure) {
+    throw new Error("The saved procedure snapshot is invalid or has changed.");
+  }
+  return procedure;
 }
 
 function contextSelectionMatchesGoal(selectionQuery: string, goal: string) {
