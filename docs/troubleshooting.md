@@ -21,6 +21,12 @@ If `/api/health` returns 503, inspect server logs for TLS, credentials, extensio
 
 If pgvector is unavailable, set `OMNIAGENT_LOG_PGVECTOR_FAILURES=true` temporarily. The app can use JSON embeddings, but vector-index status remains not ready until the extension, columns, dimensions, and HNSW indexes match.
 
+If system diagnostics reports OpenAI as degraded with
+`failureKind=authentication`, the environment contains a key but the
+authenticated model-readiness probe failed. Rotate or correct the deployment
+credential; a nonempty environment variable is not provider health. Provider
+error text and credential material are not persisted in the health record.
+
 ## Login does not work
 
 - Call `GET /api/auth/session` and inspect `authEnabled`, `bootstrapConfigured`, and `authenticated`.

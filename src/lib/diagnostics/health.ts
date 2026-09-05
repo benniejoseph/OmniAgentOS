@@ -24,7 +24,10 @@ import { getRunStats } from "@/lib/runs/store";
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
-import { hasOpenAIKey } from "@/lib/config";
+import {
+  getOpenAIReadiness,
+  type OpenAIReadiness,
+} from "@/lib/openai/client";
 
 export type HealthStatus = "healthy" | "degraded" | "unhealthy";
 
@@ -159,6 +162,7 @@ async function runSystemDiagnosticsForTenant(input: DiagnosticsInput) {
     memory,
     mcp,
     openapi,
+    openai,
   ] = await Promise.all([
     checkDatabase(),
     getVectorStoreStatus().catch((error) => ({
@@ -180,6 +184,7 @@ async function runSystemDiagnosticsForTenant(input: DiagnosticsInput) {
     getMemoryStats({ tenantId }),
     getMcpConnectorStats({ tenantId }),
     getOpenApiConnectorStats({ tenantId }),
+    getOpenAIReadiness({ timeoutMs: 5_000, maxAgeMs: 60_000 }),
   ]);
 
   const workflowHealth = summarizeWorkflowHealth(workflows, workflowRows);
@@ -211,15 +216,7 @@ async function runSystemDiagnosticsForTenant(input: DiagnosticsInput) {
         latencyMs: database.latencyMs,
       },
     },
-    {
-      id: "openai",
-      name: "OpenAI",
-      status: hasOpenAIKey() ? "healthy" : "degraded",
-      summary: hasOpenAIKey() ? "OpenAI API key is configured." : "OpenAI API key is missing; model-backed paths use fallback behavior.",
-      metrics: {
-        configured: hasOpenAIKey(),
-      },
-    },
+    openAIHealthComponent(openai),
     {
       id: "vector_store",
       name: "Vector Store",
@@ -442,6 +439,73 @@ async function checkDatabase() {
       error: error instanceof Error ? error.message : "Database check failed.",
     };
   }
+}
+
+export function openAIHealthComponent(
+  readiness: OpenAIReadiness,
+): HealthComponent {
+  if (!readiness.configured) {
+    return {
+      id: "openai",
+      name: "OpenAI",
+      status: "degraded",
+      summary: "OpenAI is not configured; dependent model and embedding paths use their declared fallback behavior.",
+      metrics: {
+        configured: false,
+        reachable: false,
+        model: readiness.model,
+        checkedAt: readiness.checkedAt,
+        failureKind: "not_configured",
+      },
+    };
+  }
+  if (readiness.reachable) {
+    return {
+      id: "openai",
+      name: "OpenAI",
+      status: "healthy",
+      summary: "OpenAI authentication and model readiness succeeded.",
+      metrics: {
+        configured: true,
+        reachable: true,
+        model: readiness.model,
+        checkedAt: readiness.checkedAt,
+      },
+    };
+  }
+  return {
+    id: "openai",
+    name: "OpenAI",
+    status: "degraded",
+    summary: "OpenAI is configured but its authenticated model-readiness check failed.",
+    metrics: {
+      configured: true,
+      reachable: false,
+      model: readiness.model,
+      checkedAt: readiness.checkedAt,
+      failureKind: openAIReadinessFailureKind(readiness.error),
+    },
+  };
+}
+
+function openAIReadinessFailureKind(error?: string) {
+  const normalized = String(error || "").toLowerCase();
+  if (
+    normalized.includes("401") ||
+    normalized.includes("403") ||
+    normalized.includes("api key") ||
+    normalized.includes("authentication") ||
+    normalized.includes("unauthorized")
+  ) {
+    return "authentication";
+  }
+  if (normalized.includes("429") || normalized.includes("rate limit")) {
+    return "rate_limited";
+  }
+  if (normalized.includes("timeout") || normalized.includes("abort")) {
+    return "timeout";
+  }
+  return "provider_unavailable";
 }
 
 export function summarizeWorkflowHealth(
