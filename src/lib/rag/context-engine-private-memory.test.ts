@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   searchKnowledge: vi.fn(async () => []),
   searchMemoryGraph: vi.fn(async () => []),
   searchMemories: vi.fn(),
+  setTransactionLocalDatabaseMemoryAccessScope: vi.fn(),
   updateJsonFile: vi.fn(),
 }));
 
@@ -16,6 +17,16 @@ vi.mock("@/lib/db/client", () => ({
   hasDatabaseUrl: vi.fn(() => true),
 }));
 vi.mock("@/lib/openai/client", () => ({ embedTexts: mocks.embedTexts }));
+vi.mock("@/lib/db/memory-access-scope", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/lib/db/memory-access-scope")
+  >();
+  return {
+    ...actual,
+    setTransactionLocalDatabaseMemoryAccessScope:
+      mocks.setTransactionLocalDatabaseMemoryAccessScope,
+  };
+});
 vi.mock("@/lib/memory/graph", () => ({
   searchMemoryGraph: mocks.searchMemoryGraph,
 }));
@@ -86,6 +97,19 @@ function memoryResult(
 describe("actor-scoped context retrieval", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    const transactionSql = Object.assign(vi.fn(async () => []), {
+      transactionScoped: true,
+    });
+    const rootSql = Object.assign(vi.fn(async () => []), {
+      transaction: vi.fn(async (
+        callback: (sql: typeof transactionSql) => Promise<unknown>,
+      ) => callback(transactionSql)),
+      transactionScoped: false,
+    });
+    mocks.getSql.mockReturnValue(rootSql);
+    mocks.setTransactionLocalDatabaseMemoryAccessScope.mockImplementation(
+      async (_sql: unknown, scope: unknown) => scope,
+    );
     mocks.searchMemories.mockImplementation(async (
       _query: string,
       options: { accessScope?: unknown },
@@ -94,7 +118,7 @@ describe("actor-scoped context retrieval", () => {
       : [memoryResult("legacy-memory", "Legacy preference", 0.8)]);
   });
 
-  it("merges isolated legacy and scoped memory without persisting a tenant trace", async () => {
+  it("persists only scoped memory in an actor-private trace", async () => {
     const pack = await buildContextPack("remember my deployment preference", {
       tenantId: "tenant-a",
       databaseMemoryAccessScope: accessScope(),
@@ -119,8 +143,32 @@ describe("actor-scoped context retrieval", () => {
     expect(pack.results.every((item) =>
       item.kind !== "memory" || item.result.record.embedding === undefined
     )).toBe(true);
-    expect(pack.trace).toBeUndefined();
-    expect(mocks.getSql).not.toHaveBeenCalled();
+    expect(pack.trace).toEqual(expect.objectContaining({
+      tenantId: "tenant-a",
+      accessBinding: expect.objectContaining({
+        ownerActorId: actorId,
+        visibility: "user_private",
+      }),
+      results: [expect.objectContaining({
+        id: "private-memory",
+        kind: "memory",
+      })],
+    }));
+    expect(pack.trace?.results).not.toContainEqual(
+      expect.objectContaining({ id: "legacy-memory" }),
+    );
+    expect(
+      pack.trace?.accessBinding?.allowedPurposeIds,
+    ).toEqual([
+      MEMORY_PURPOSE_IDS.export,
+      MEMORY_PURPOSE_IDS.forget,
+      MEMORY_PURPOSE_IDS.read,
+      MEMORY_PURPOSE_IDS.retrieve,
+    ]);
+    expect(
+      mocks.setTransactionLocalDatabaseMemoryAccessScope,
+    ).toHaveBeenCalledWith(expect.any(Function), accessScope());
+    expect(mocks.getSql).toHaveBeenCalled();
     expect(mocks.updateJsonFile).not.toHaveBeenCalled();
   });
 

@@ -7,9 +7,15 @@ import {
 } from "@/lib/db/client";
 import {
   parseDatabaseMemoryAccessScope,
+  setTransactionLocalDatabaseMemoryAccessScope,
   type DatabaseMemoryAccessScope,
 } from "@/lib/db/memory-access-scope";
-import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
+import {
+  buildUserPrivateMemoryAccessBindingV1,
+  memoryAccessBindingAllows,
+  memoryAccessBindingV1Schema,
+  MEMORY_PURPOSE_IDS,
+} from "@/lib/memory/access-binding";
 import {
   toLegacyTenantOptions,
   type MemoryAccessContext,
@@ -44,9 +50,9 @@ export type BuildContextPackOptions = {
    */
   accessContext?: MemoryAccessContext;
   /**
-   * Already-authorized database scope for non-legacy memory. Scoped results
-   * are served only to this caller and are never written to the tenant-wide
-   * retrieval trace until traces have their own actor-aware access contract.
+   * Already-authorized database scope for non-legacy memory. User-private
+   * results are recorded only in a separately scoped private trace; no scoped
+   * query or result is written to the tenant-wide compatibility trace.
    */
   databaseMemoryAccessScope?: DatabaseMemoryAccessScope;
   limit?: number;
@@ -101,6 +107,9 @@ export async function buildContextPack(
 ): Promise<ContextPack> {
   const startedAt = Date.now();
   const databaseMemoryAccessScope = resolveContextMemoryAccessScope(options);
+  const privateTraceAccessScope = resolvePrivateTraceAccessScope(
+    databaseMemoryAccessScope,
+  );
   const tenantId = resolveContextTenantId(options, databaseMemoryAccessScope);
   const normalizedQuery = String(redactSensitive(query.trim())).slice(0, 4_000);
   const evidenceIds = normalizeExplicitEvidenceIds(options.evidenceIds);
@@ -128,6 +137,16 @@ export async function buildContextPack(
         latencyMs: Date.now() - startedAt,
         results: [],
       });
+    } else if (options.persistTrace !== false && privateTraceAccessScope) {
+      pack.trace = await saveRetrievalTrace({
+        tenantId,
+        query: normalizedQuery,
+        profile,
+        resultCount: 0,
+        selectedCount: 0,
+        latencyMs: Date.now() - startedAt,
+        results: [],
+      }, { accessScope: privateTraceAccessScope });
     }
     return sanitizeContextPack(pack);
   }
@@ -192,10 +211,17 @@ export async function buildContextPack(
     confidence: roundScore(item.confidence),
     reasons: item.reasons.slice(0, 8),
   }));
+  const privateMemoryIds = new Set(
+    scopedMemoryResults.map((result) => result.record.id),
+  );
+  const privateTraceResults = traceResults.filter(
+    (result) => result.kind === "memory" && privateMemoryIds.has(result.id),
+  );
   const trace =
-    options.persistTrace === false || databaseMemoryAccessScope
+    options.persistTrace === false
       ? undefined
-      : await saveRetrievalTrace({
+      : !databaseMemoryAccessScope
+        ? await saveRetrievalTrace({
           tenantId,
           query: normalizedQuery,
           profile,
@@ -203,7 +229,18 @@ export async function buildContextPack(
           selectedCount: selected.length,
           latencyMs: Date.now() - startedAt,
           results: traceResults,
-        });
+        })
+        : privateTraceAccessScope
+          ? await saveRetrievalTrace({
+              tenantId,
+              query: normalizedQuery,
+              profile,
+              resultCount: scopedMemoryResults.length,
+              selectedCount: privateTraceResults.length,
+              latencyMs: Date.now() - startedAt,
+              results: privateTraceResults,
+            }, { accessScope: privateTraceAccessScope })
+          : undefined;
 
   return sanitizeContextPack({
     query: normalizedQuery,
@@ -262,6 +299,19 @@ function resolveContextMemoryAccessScope(
   return scope;
 }
 
+function resolvePrivateTraceAccessScope(
+  accessScope?: DatabaseMemoryAccessScope,
+) {
+  if (!accessScope) return undefined;
+  return accessScope.executingPrincipalType === "user" &&
+      accessScope.executingPrincipalId === accessScope.initiatingActorId &&
+      accessScope.workspaceId === null &&
+      accessScope.projectId === null &&
+      accessScope.missionId === null
+    ? accessScope
+    : undefined;
+}
+
 function mergeMemorySearchResults(
   legacyResults: MemorySearchResult[],
   scopedResults: MemorySearchResult[],
@@ -298,61 +348,100 @@ function withoutMemoryEmbedding(
   return { ...result, record };
 }
 
-export async function listRetrievalTraces(limit = 20, options: { tenantId?: string } = {}) {
+export async function listRetrievalTraces(
+  limit = 20,
+  options: {
+    tenantId?: string;
+    accessScope?: DatabaseMemoryAccessScope;
+  } = {},
+) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const boundedLimit = Math.min(Math.max(limit, 1), 100);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
+    const legacyRows = await getSql()`
       SELECT *
       FROM omni_retrieval_traces
       WHERE tenant_id = ${tenantId}
       ORDER BY created_at DESC
-      LIMIT ${limit}
+      LIMIT ${boundedLimit}
     `;
-    return rows.map(retrievalTraceFromRow);
+    const scopedRows = options.accessScope
+      ? await runWithRetrievalTraceAccessScope(
+          options.accessScope,
+          tenantId,
+          [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
+          (sql) => sql`
+            SELECT *
+            FROM omni_retrieval_traces
+            WHERE tenant_id = ${tenantId}
+            ORDER BY created_at DESC
+            LIMIT ${boundedLimit}
+          `,
+        )
+      : [];
+    return mergeRetrievalTraces(
+      legacyRows.map(retrievalTraceFromRow),
+      scopedRows.map(retrievalTraceFromRow),
+      boundedLimit,
+    );
   }
 
   const ledger = await readRetrievalTraceLedger();
-  return ledger.traces.filter((trace) => normalizeTenantId(trace.tenantId) === tenantId).slice(0, limit);
+  return ledger.traces
+    .filter((trace) =>
+      normalizeTenantId(trace.tenantId) === tenantId &&
+      retrievalTraceVisibleForScope(trace, options.accessScope)
+    )
+    .slice(0, boundedLimit);
 }
 
-export async function getContextEngineStats(options: { tenantId?: string } = {}): Promise<ContextEngineStats> {
+export async function getContextEngineStats(options: {
+  tenantId?: string;
+  accessScope?: DatabaseMemoryAccessScope;
+} = {}): Promise<ContextEngineStats> {
   const tenantId = normalizeTenantId(options.tenantId);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const [totals, modes] = await Promise.all([
-      getSql()`
-        SELECT COUNT(*)::int AS traces,
-               COALESCE(AVG(latency_ms), 0)::int AS average_latency_ms,
-               COALESCE(AVG(selected_count), 0)::float AS average_selected_count
-        FROM omni_retrieval_traces
-        WHERE tenant_id = ${tenantId}
-      `,
-      getSql()`
-        SELECT COALESCE(profile->>'mode', 'unknown') AS mode,
-               COUNT(*)::int AS count
-        FROM omni_retrieval_traces
-        WHERE tenant_id = ${tenantId}
-        GROUP BY mode
-      `,
-    ]);
-    const byMode = modes.reduce<Record<string, number>>((acc, row) => {
-      acc[String(row.mode)] = Number(row.count);
-      return acc;
-    }, {});
+    const legacy = await readContextEngineStats(getSql(), tenantId);
+    const scoped = options.accessScope
+      ? await runWithRetrievalTraceAccessScope(
+          options.accessScope,
+          tenantId,
+          [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
+          (sql) => readContextEngineStats(sql, tenantId),
+        )
+      : emptyContextEngineStats();
+    const traces = legacy.traces + scoped.traces;
     return {
-      traces: Number(totals[0]?.traces || 0),
-      averageLatencyMs: Number(totals[0]?.average_latency_ms || 0),
-      averageSelectedCount: Number(totals[0]?.average_selected_count || 0),
-      byMode,
-      latest: await listRetrievalTraces(5, { tenantId }),
+      traces,
+      averageLatencyMs: weightedAverage(
+        legacy.averageLatencyMs,
+        legacy.traces,
+        scoped.averageLatencyMs,
+        scoped.traces,
+      ),
+      averageSelectedCount: weightedAverage(
+        legacy.averageSelectedCount,
+        legacy.traces,
+        scoped.averageSelectedCount,
+        scoped.traces,
+      ),
+      byMode: mergeModeCounts(legacy.byMode, scoped.byMode),
+      latest: await listRetrievalTraces(5, {
+        tenantId,
+        accessScope: options.accessScope,
+      }),
     };
   }
 
   const ledger = await readRetrievalTraceLedger();
-  const traces = ledger.traces.filter((trace) => normalizeTenantId(trace.tenantId) === tenantId);
+  const traces = ledger.traces.filter((trace) =>
+    normalizeTenantId(trace.tenantId) === tenantId &&
+    retrievalTraceVisibleForScope(trace, options.accessScope)
+  );
   const byMode = traces.reduce<Record<string, number>>((acc, trace) => {
     acc[trace.profile.mode] = (acc[trace.profile.mode] || 0) + 1;
     return acc;
@@ -660,29 +749,83 @@ function positionalPack(items: ContextEvidenceItem[]) {
 
 async function saveRetrievalTrace(
   input: Omit<RetrievalTraceRecord, "id" | "createdAt">,
+  options: { accessScope?: DatabaseMemoryAccessScope } = {},
 ): Promise<RetrievalTraceRecord> {
   const safeInput = redactSensitive(
     input,
   ) as Omit<RetrievalTraceRecord, "id" | "createdAt">;
+  const createdAt = new Date().toISOString();
+  const tenantId = normalizeTenantId(safeInput.tenantId);
+  const accessScope = options.accessScope
+    ? requirePrivateTraceAccessScope(options.accessScope, tenantId)
+    : undefined;
+  const accessBinding = accessScope
+    ? buildUserPrivateMemoryAccessBindingV1({
+        tenantId,
+        ownerActorId: accessScope.initiatingActorId,
+        originPurpose: "context.retrieval.trace",
+        allowedPurposeIds: [
+          MEMORY_PURPOSE_IDS.read,
+          MEMORY_PURPOSE_IDS.retrieve,
+          MEMORY_PURPOSE_IDS.forget,
+          MEMORY_PURPOSE_IDS.export,
+        ],
+        accessBoundAt: createdAt,
+      })
+    : undefined;
+  if (
+    accessBinding &&
+    safeInput.results.some((result) => result.kind !== "memory")
+  ) {
+    throw new Error("Private retrieval traces may contain only scoped memory evidence.");
+  }
   const record: RetrievalTraceRecord = {
     id: randomUUID(),
-    createdAt: new Date().toISOString(),
+    createdAt,
     ...safeInput,
-    tenantId: normalizeTenantId(safeInput.tenantId),
+    tenantId,
+    accessBinding,
   };
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`
+    const insert = (sql: RetrievalTraceSqlClient) => sql`
       INSERT INTO omni_retrieval_traces (
-        id, tenant_id, query, profile, result_count, selected_count, latency_ms, results, created_at
+        id, tenant_id, query, profile, result_count, selected_count,
+        latency_ms, results, created_at, access_contract_version,
+        access_state, owner_actor_id, owner_agent_id, workspace_id,
+        project_id, mission_id, visibility, sensitivity, origin_purpose,
+        allowed_purpose_ids, access_scope_sha256, access_bound_at
       )
       VALUES (
         ${record.id}, ${record.tenantId}, ${record.query}, ${record.profile}::jsonb,
         ${record.resultCount}, ${record.selectedCount}, ${record.latencyMs},
-        ${record.results}::jsonb, ${record.createdAt}
+        ${record.results}::jsonb, ${record.createdAt},
+        ${accessBinding?.version || 0},
+        ${accessBinding?.state || "legacy_unattributed"},
+        ${accessBinding?.ownerActorId || null},
+        ${accessBinding?.ownerAgentId || null},
+        ${accessBinding?.workspaceId || null},
+        ${accessBinding?.projectId || null},
+        ${accessBinding?.missionId || null},
+        ${accessBinding?.visibility || null},
+        ${accessBinding?.sensitivity || null},
+        ${accessBinding?.originPurpose || null},
+        ${accessBinding?.allowedPurposeIds || null},
+        ${accessBinding?.accessScopeSha256 || null},
+        ${accessBinding?.accessBoundAt || null}
       )
     `;
+    if (accessScope) {
+      await runWithRetrievalTraceAccessScope(
+        accessScope,
+        tenantId,
+        [MEMORY_PURPOSE_IDS.retrieve],
+        insert,
+      );
+    } else {
+      await insert(getSql());
+    }
     return record;
   }
 
@@ -694,9 +837,28 @@ async function saveRetrievalTrace(
 }
 
 function retrievalTraceFromRow(row: Record<string, unknown>): RetrievalTraceRecord {
+  const accessBinding = Number(row.access_contract_version || 0) === 1
+    ? memoryAccessBindingV1Schema.parse({
+        version: 1,
+        state: row.access_state,
+        tenantId: row.tenant_id,
+        ownerActorId: row.owner_actor_id,
+        ownerAgentId: row.owner_agent_id,
+        workspaceId: row.workspace_id,
+        projectId: row.project_id,
+        missionId: row.mission_id,
+        visibility: row.visibility,
+        sensitivity: row.sensitivity,
+        originPurpose: row.origin_purpose,
+        allowedPurposeIds: row.allowed_purpose_ids,
+        accessScopeSha256: row.access_scope_sha256,
+        accessBoundAt: normalizeDate(row.access_bound_at),
+      })
+    : undefined;
   return {
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
+    accessBinding,
     query: String(row.query || ""),
     profile: parseProfile(row.profile),
     resultCount: Number(row.result_count || 0),
@@ -707,6 +869,128 @@ function retrievalTraceFromRow(row: Record<string, unknown>): RetrievalTraceReco
       : [],
     createdAt: normalizeDate(row.created_at),
   };
+}
+
+type RetrievalTraceSqlClient = {
+  (strings: TemplateStringsArray, ...params: unknown[]): Promise<Record<string, unknown>[]>;
+  readonly transactionScoped: boolean;
+};
+
+async function runWithRetrievalTraceAccessScope<T>(
+  accessScope: DatabaseMemoryAccessScope,
+  tenantId: string,
+  allowedPurposeIds: readonly string[],
+  operation: (sql: RetrievalTraceSqlClient) => Promise<T>,
+): Promise<T> {
+  const parsedScope = parseDatabaseMemoryAccessScope(accessScope);
+  if (
+    parsedScope.tenantId !== tenantId ||
+    !allowedPurposeIds.includes(parsedScope.purposeId)
+  ) {
+    throw new Error("Retrieval trace access scope does not match this operation.");
+  }
+  return getSql().transaction(async (sql) => {
+    await setTransactionLocalDatabaseMemoryAccessScope(sql, parsedScope);
+    return operation(sql);
+  }) as Promise<T>;
+}
+
+function requirePrivateTraceAccessScope(
+  accessScope: DatabaseMemoryAccessScope,
+  tenantId: string,
+) {
+  const parsed = parseDatabaseMemoryAccessScope(accessScope);
+  if (
+    parsed.tenantId !== tenantId ||
+    parsed.purposeId !== MEMORY_PURPOSE_IDS.retrieve ||
+    !resolvePrivateTraceAccessScope(parsed)
+  ) {
+    throw new Error("Private retrieval trace requires canonical user retrieval scope.");
+  }
+  return parsed;
+}
+
+function retrievalTraceVisibleForScope(
+  trace: RetrievalTraceRecord,
+  accessScope?: DatabaseMemoryAccessScope,
+) {
+  if (!trace.accessBinding) return true;
+  return accessScope
+    ? memoryAccessBindingAllows(accessScope, trace.accessBinding)
+    : false;
+}
+
+function mergeRetrievalTraces(
+  legacy: RetrievalTraceRecord[],
+  scoped: RetrievalTraceRecord[],
+  limit: number,
+) {
+  return [...new Map(
+    [...legacy, ...scoped].map((trace) => [trace.id, trace] as const),
+  ).values()]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, limit);
+}
+
+async function readContextEngineStats(
+  sql: RetrievalTraceSqlClient,
+  tenantId: string,
+) {
+  const totals = await sql`
+    SELECT COUNT(*)::int AS traces,
+           COALESCE(AVG(latency_ms), 0)::int AS average_latency_ms,
+           COALESCE(AVG(selected_count), 0)::float AS average_selected_count
+    FROM omni_retrieval_traces
+    WHERE tenant_id = ${tenantId}
+  `;
+  const modes = await sql`
+    SELECT COALESCE(profile->>'mode', 'unknown') AS mode,
+           COUNT(*)::int AS count
+    FROM omni_retrieval_traces
+    WHERE tenant_id = ${tenantId}
+    GROUP BY mode
+  `;
+  return {
+    traces: Number(totals[0]?.traces || 0),
+    averageLatencyMs: Number(totals[0]?.average_latency_ms || 0),
+    averageSelectedCount: Number(totals[0]?.average_selected_count || 0),
+    byMode: modes.reduce<Record<string, number>>((acc, row) => {
+      acc[String(row.mode)] = Number(row.count);
+      return acc;
+    }, {}),
+  };
+}
+
+function emptyContextEngineStats() {
+  return {
+    traces: 0,
+    averageLatencyMs: 0,
+    averageSelectedCount: 0,
+    byMode: {} as Record<string, number>,
+  };
+}
+
+function weightedAverage(
+  leftAverage: number,
+  leftCount: number,
+  rightAverage: number,
+  rightCount: number,
+) {
+  const count = leftCount + rightCount;
+  return count
+    ? Math.round((leftAverage * leftCount + rightAverage * rightCount) / count)
+    : 0;
+}
+
+function mergeModeCounts(
+  left: Record<string, number>,
+  right: Record<string, number>,
+) {
+  const merged = { ...left };
+  for (const [mode, count] of Object.entries(right)) {
+    merged[mode] = (merged[mode] || 0) + count;
+  }
+  return merged;
 }
 
 function normalizeTenantId(value?: string) {

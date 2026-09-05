@@ -61,13 +61,27 @@ async function GETHandler(request: Request) {
           credentialSource: "deployment_environment",
         },
       }),
-      stats: await getContextEngineStats({ tenantId: context.tenantId }),
+      stats: await getContextEngineStats({
+        tenantId: context.tenantId,
+        accessScope: requestAccess?.databaseAccessScope,
+      }),
     });
   }
 
+  const requestAccess = requestMemoryAccessFromSecurityContext(context, {
+    purposeId: MEMORY_PURPOSE_IDS.read,
+    auditPurpose: "api.retrieval.traces.read",
+    correlationId: `retrieval_traces_${randomUUID()}`,
+  });
   return Response.json({
-    traces: await listRetrievalTraces(limit, { tenantId: context.tenantId }),
-    stats: await getContextEngineStats({ tenantId: context.tenantId }),
+    traces: await listRetrievalTraces(limit, {
+      tenantId: context.tenantId,
+      accessScope: requestAccess?.databaseAccessScope,
+    }),
+    stats: await getContextEngineStats({
+      tenantId: context.tenantId,
+      accessScope: requestAccess?.databaseAccessScope,
+    }),
   });
 }
 
@@ -122,6 +136,9 @@ async function POSTHandler(request: Request) {
         credentialSource: "deployment_environment",
       },
     }),
-    stats: await getContextEngineStats({ tenantId: context.tenantId }),
+    stats: await getContextEngineStats({
+      tenantId: context.tenantId,
+      accessScope: requestAccess?.databaseAccessScope,
+    }),
   });
 }

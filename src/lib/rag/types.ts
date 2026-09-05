@@ -119,6 +119,8 @@ export type ContextEvidenceItem =
 export type RetrievalTraceRecord = {
   id: string;
   tenantId?: string;
+  /** Present only for actor-scoped private retrieval traces. */
+  accessBinding?: import("@/lib/memory/access-binding").MemoryAccessBindingV1;
   query: string;
   profile: RetrievalProfile;
   resultCount: number;

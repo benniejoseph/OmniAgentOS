@@ -59,9 +59,15 @@ describe("retrieval plan private-memory boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.authorizeRequest.mockResolvedValue(context);
-    mocks.requestMemoryAccessFromSecurityContext.mockReturnValue({
-      databaseAccessScope,
-    });
+    mocks.requestMemoryAccessFromSecurityContext.mockImplementation((
+      _context: unknown,
+      input: { purposeId: string },
+    ) => ({
+      databaseAccessScope: {
+        ...databaseAccessScope,
+        purposeId: input.purposeId,
+      },
+    }));
   });
 
   it("passes canonical user-private scope to GET context retrieval", async () => {
@@ -78,6 +84,10 @@ describe("retrieval plan private-memory boundary", () => {
       "remember my preference",
       expect.objectContaining({ databaseMemoryAccessScope: databaseAccessScope }),
     );
+    expect(mocks.getContextEngineStats).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      accessScope: databaseAccessScope,
+    });
   });
 
   it("passes canonical user-private scope to POST context retrieval", async () => {
@@ -95,5 +105,29 @@ describe("retrieval plan private-memory boundary", () => {
         limit: 5,
       }),
     );
+    expect(mocks.getContextEngineStats).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      accessScope: databaseAccessScope,
+    });
+  });
+
+  it("lists legacy and actor-private traces under read scope", async () => {
+    const response = await GET(
+      new Request("http://localhost/api/retrieval/plan?limit=4"),
+    );
+    const readScope = {
+      ...databaseAccessScope,
+      purposeId: MEMORY_PURPOSE_IDS.read,
+    };
+
+    expect(response.status).toBe(200);
+    expect(mocks.listRetrievalTraces).toHaveBeenCalledWith(4, {
+      tenantId: "tenant-a",
+      accessScope: readScope,
+    });
+    expect(mocks.getContextEngineStats).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      accessScope: readScope,
+    });
   });
 });
