@@ -322,7 +322,9 @@ export async function acquireRunCheckpointResumeClaim(
   if (current.status !== "claimed" || current.lease_expired !== true) {
     return closed("busy", "active_claim");
   }
-  const generation = generationSchema.parse(Number(current.lease_generation)) + 1;
+  const generation = generationSchema.parse(
+    Number(current.lease_generation) + 1,
+  );
   const reclaimedRows = await sql.query(
     `UPDATE omni_run_checkpoint_resume_claims
      SET operation_job_id = $5,
@@ -639,6 +641,10 @@ function claimDigest(kind: "token" | "owner", value: string): string {
     .update(`${CLAIM_DIGEST_DOMAIN}:${kind}:`)
     .update(value)
     .digest("hex");
+}
+
+export function runCheckpointResumeClaimTokenSha256(claimToken: string): string {
+  return claimDigest("token", claimTokenSchema.parse(claimToken));
 }
 
 function canonicalTimestamp(value: unknown): string {

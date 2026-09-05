@@ -33,6 +33,11 @@ import {
   parseApprovalCheckpointShadowEnrollment,
   recordApprovalWaitingCheckpointShadow,
 } from "@/lib/runs/approval-checkpoint-shadow";
+import {
+  completeRunCheckpointResumeClaim,
+  runCheckpointResumeClaimTokenSha256,
+  type RunCheckpointResumeClaim,
+} from "@/lib/runs/checkpoint-resume-claim";
 import type { AgentRunContinuation, AgentRunEventRecord, AgentRunFeedback, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
@@ -992,12 +997,26 @@ export async function getAgentFeedbackGuidance(
     .filter((value): value is string => Boolean(value));
 }
 
-export async function completeAgentRun(runId: string, response: string, grounding?: GroundingReport) {
-  return setRunStatus(runId, "completed", { response, grounding });
+type AgentRunResumeFence = Readonly<{
+  claim: RunCheckpointResumeClaim;
+  executionScope: ExecutionScope;
+}>;
+
+export async function completeAgentRun(
+  runId: string,
+  response: string,
+  grounding?: GroundingReport,
+  options: { tenantId?: string; resumeFence?: AgentRunResumeFence } = {},
+) {
+  return setRunStatus(runId, "completed", { response, grounding }, options);
 }
 
-export async function failAgentRun(runId: string, error: string) {
-  return setRunStatus(runId, "failed", { error });
+export async function failAgentRun(
+  runId: string,
+  error: string,
+  options: { tenantId?: string; resumeFence?: AgentRunResumeFence } = {},
+) {
+  return setRunStatus(runId, "failed", { error }, options);
 }
 
 export async function cancelAgentRun(runId: string, reason = "Canceled by the operator.") {
@@ -1040,6 +1059,10 @@ export async function repairStuckAgentRuns({
             ) <= ${staleBeforeEpoch}::timestamptz
           )
         )
+        AND NOT (
+          status = 'resuming'
+          AND continuation ? 'checkpointResumeClaim'
+        )
       RETURNING id
     `;
     return rows.length;
@@ -1081,6 +1104,7 @@ export async function repairStuckAgentRuns({
 export async function markAgentRunWaitingForApproval(
   runId: string,
   values: { response: string; continuation: AgentRunContinuation },
+  options: { resumeFence?: AgentRunResumeFence } = {},
 ) {
   const tenantId = normalizeTenantId(values.continuation.context.tenantId);
   const executionId = values.continuation.pendingToolCall.executionId;
@@ -1097,17 +1121,67 @@ export async function markAgentRunWaitingForApproval(
     await ensureDatabaseSchema();
     return getSql().transaction(
       async (sql: ReturnType<typeof getSql>) => {
-        const rows = await sql`
-          UPDATE omni_agent_runs
-          SET status = 'waiting_approval',
-              response = ${values.response ? safeRunText(values.response, 100_000) : null},
-              continuation = ${values.continuation}::jsonb,
-              completed_at = NULL
-          WHERE id = ${runId}
-            AND tenant_id = ${tenantId}
-            AND status IN ('running', 'resuming')
-          RETURNING id
-        `;
+        const resumeFence = options.resumeFence;
+        if (resumeFence) {
+          assertExecutionScopeTenant(resumeFence.executionScope, tenantId);
+          if (
+            resumeFence.claim.tenantId !== tenantId ||
+            resumeFence.claim.runId !== runId
+          ) {
+            throw new Error("Agent next-wait fence changed its run scope.");
+          }
+        }
+        const rows = resumeFence
+          ? await sql.query(
+              `UPDATE omni_agent_runs run
+               SET status = 'waiting_approval', response = $3,
+                   continuation = $4::jsonb, completed_at = NULL
+               WHERE run.id = $1 AND run.tenant_id = $2
+                 AND run.status = 'resuming'
+                 AND EXISTS (
+                   SELECT 1 FROM omni_run_checkpoint_resume_claims claim
+                   WHERE claim.tenant_id = run.tenant_id
+                     AND claim.run_id = run.id
+                     AND claim.checkpoint_id = $5
+                     AND claim.checkpoint_sha256 = $6
+                     AND claim.operation_job_id = $7
+                     AND claim.lease_generation = $8
+                     AND claim.claim_token_sha256 = $9
+                     AND claim.status = 'claimed'
+                     AND claim.lease_expires_at > statement_timestamp()
+                 )
+               RETURNING run.id`,
+              [
+                runId,
+                tenantId,
+                values.response
+                  ? safeRunText(values.response, 100_000)
+                  : null,
+                values.continuation,
+                resumeFence.claim.checkpointId,
+                resumeFence.claim.checkpointSha256,
+                resumeFence.claim.operationJobId,
+                resumeFence.claim.leaseGeneration,
+                runCheckpointResumeClaimTokenSha256(
+                  resumeFence.claim.claimToken,
+                ),
+              ],
+            )
+          : await sql`
+              UPDATE omni_agent_runs
+              SET status = 'waiting_approval',
+                  response = ${values.response ? safeRunText(values.response, 100_000) : null},
+                  continuation = ${values.continuation}::jsonb,
+                  completed_at = NULL
+              WHERE id = ${runId}
+                AND tenant_id = ${tenantId}
+                AND status IN ('running', 'resuming')
+                AND NOT (
+                  status = 'resuming'
+                  AND continuation ? 'checkpointResumeClaim'
+                )
+              RETURNING id
+            `;
         if (!rows[0]) {
           return { parked: false, resumeJob: undefined };
         }
@@ -1122,6 +1196,15 @@ export async function markAgentRunWaitingForApproval(
           response: values.response,
           recordedAt: values.continuation.createdAt,
         }, sql);
+        if (resumeFence) {
+          const completed = await completeRunCheckpointResumeClaim({
+            ...resumeFence.claim,
+            executionScope: resumeFence.executionScope,
+          }, sql);
+          if (!completed) {
+            throw new Error("Agent next-wait checkpoint fence became stale.");
+          }
+        }
         return { parked: true, resumeJob };
       },
     ) as Promise<{
@@ -1134,6 +1217,9 @@ export async function markAgentRunWaitingForApproval(
 
   // File mode has no cross-file transaction. Pre-arm the durable job first;
   // the resume worker defers it while the continuation write is incomplete.
+  if (options.resumeFence) {
+    throw new Error("Checkpoint resume fences require Postgres.");
+  }
   const resumeJob = await enqueueOperationJob(resumeJobInput);
   let parked = false;
   await updateFileRun(runId, (run) => {
@@ -1360,6 +1446,7 @@ async function setRunStatus(
   runId: string,
   status: RunStatus,
   values: { response?: string; error?: string; grounding?: GroundingReport },
+  options: { tenantId?: string; resumeFence?: AgentRunResumeFence } = {},
 ) {
   const completedAt = new Date().toISOString();
   const safeResponse = values.response
@@ -1369,19 +1456,84 @@ async function setRunStatus(
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const tenantId = normalizeTenantId(options.tenantId);
+    if (options.resumeFence) {
+      const resumeFence = options.resumeFence;
+      assertExecutionScopeTenant(resumeFence.executionScope, tenantId);
+      if (
+        resumeFence.claim.tenantId !== tenantId ||
+        resumeFence.claim.runId !== runId
+      ) {
+        throw new Error("Agent terminal fence changed its run scope.");
+      }
+      return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+        const rows = await sql.query(
+          `UPDATE omni_agent_runs run
+           SET status = $3, response = $4, grounding = $5::jsonb,
+               error = $6, continuation = NULL, completed_at = $7
+           WHERE run.id = $1 AND run.tenant_id = $2
+             AND run.status = 'resuming'
+             AND EXISTS (
+               SELECT 1 FROM omni_run_checkpoint_resume_claims claim
+               WHERE claim.tenant_id = run.tenant_id
+                 AND claim.run_id = run.id
+                 AND claim.checkpoint_id = $8
+                 AND claim.checkpoint_sha256 = $9
+                 AND claim.operation_job_id = $10
+                 AND claim.lease_generation = $11
+                 AND claim.claim_token_sha256 = $12
+                 AND claim.status = 'claimed'
+                 AND claim.lease_expires_at > statement_timestamp()
+             )
+           RETURNING run.id`,
+          [
+            runId,
+            tenantId,
+            status,
+            safeResponse || null,
+            values.grounding || null,
+            safeError || null,
+            completedAt,
+            resumeFence.claim.checkpointId,
+            resumeFence.claim.checkpointSha256,
+            resumeFence.claim.operationJobId,
+            resumeFence.claim.leaseGeneration,
+            runCheckpointResumeClaimTokenSha256(
+              resumeFence.claim.claimToken,
+            ),
+          ],
+        );
+        if (!rows[0]) return false;
+        const completed = await completeRunCheckpointResumeClaim({
+          ...resumeFence.claim,
+          executionScope: resumeFence.executionScope,
+        }, sql);
+        if (!completed) {
+          throw new Error("Agent terminal checkpoint fence became stale.");
+        }
+        return true;
+      }) as Promise<boolean>;
+    }
     const rows = await getSql()`
       UPDATE omni_agent_runs
-      SET status = ${status},
-          response = ${safeResponse || null},
+      SET status = ${status}, response = ${safeResponse || null},
           grounding = ${values.grounding || null}::jsonb,
-          error = ${safeError || null},
-          continuation = NULL,
+          error = ${safeError || null}, continuation = NULL,
           completed_at = ${completedAt}
       WHERE id = ${runId}
+        AND tenant_id = ${tenantId}
         AND status NOT IN ('completed', 'failed', 'canceled')
+        AND NOT (
+          status = 'resuming'
+          AND continuation ? 'checkpointResumeClaim'
+        )
       RETURNING id
     `;
     return Boolean(rows[0]);
+  }
+
+  if (options.resumeFence) {
+    throw new Error("Checkpoint resume fences require Postgres.");
   }
 
   let changed = false;
