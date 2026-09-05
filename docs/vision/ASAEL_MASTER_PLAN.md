@@ -468,6 +468,21 @@ open until authorized semantic verification and user-facing adoption are
 implemented behind compatibility gates. The normative boundary is documented
 in [ClaimEvidenceMap v1](CLAIM_EVIDENCE.md).
 
+P1.6 now has a first dormant contract foundation in
+`src/lib/runs/checkpoints.ts`. It defines a bounded, immutable,
+metadata-and-reference-only `RunCheckpointV1`, deterministic checkpoint
+identity and digest, exact parent-chain validation, monotonic budget and
+external-effect accounting, guarded waiting-boundary transitions, exact
+completed-call counting, and a safe-pause compatibility decision for inactive
+or unsupported engine, contract, configuration, or rollout pins. Mutation
+boundaries bind governed tool execution, persisted intent, idempotency, and
+effect-receipt identities rather than embedding provider state or trusting a
+model assertion. No store, migration, event, worker, API, continuation, or UI
+is changed, so P1.6 remains open until every required boundary is persisted
+and fenced canary resume proves it cannot duplicate an effect. The normative
+boundary and activation order are documented in
+[RunCheckpoint v1](RUN_CHECKPOINTS.md).
+
 ### Phase 2 — Convergent sources, canonical assets, and privacy lifecycle
 
 **Goal:** Ensure the system knows exactly what it has, which version it has, and what must disappear.
