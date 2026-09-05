@@ -700,6 +700,19 @@ audit guarantee. Authenticated bulk-read actions use a separate aggregate
 stream and the same exact request binding. Scheduler-generated notifications
 remain outside this cutover.
 
+## Connected-source knowledge deletion cutover
+
+Authenticated connected-source deletion now binds the tenant, initiating user,
+exact source-prefix digest, correlation, causation, and bounded idempotency key.
+Its strict v1 `knowledge.source_deleted` event contains only operation and digest
+metadata; source names and indexed content are excluded.
+
+In Postgres, matching knowledge removal, derived-memory retirement, retrieval
+trace and graph invalidation, rebuild scheduling, and the event append commit in
+one transaction. File fallback remains a non-atomic development compatibility
+path. Capture deletion still sequences its knowledge cleanup and asset deletion
+as separate transactions, so full cross-store P2.7 propagation remains open.
+
 ## Event shape
 
 ```ts

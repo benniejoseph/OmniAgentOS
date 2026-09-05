@@ -2,6 +2,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseBoundedInteger } from "@/lib/http/body";
 import { embedTexts } from "@/lib/openai/client";
 import { redactSensitive } from "@/lib/security/context";
+import { knowledgeDeletionMutationFromRequest } from "@/lib/rag/deletion-events";
 import {
   getKnowledgeStats,
   deleteKnowledgeDocumentsBySourcePrefix,
@@ -23,8 +24,22 @@ async function DELETEHandler(request: Request) {
   if (!source || !["google:", "google:mail:", "google:calendar:", "google:drive:"].includes(source)) {
     return Response.json({ error: "Choose a supported connected source." }, { status: 400 });
   }
-  const deleted = await deleteKnowledgeDocumentsBySourcePrefix(source, { tenantId: context.tenantId });
-  return Response.json({ deleted, source }, { headers: { "cache-control": "private, no-store" } });
+  try {
+    const deleted = await deleteKnowledgeDocumentsBySourcePrefix(source, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      mutation: knowledgeDeletionMutationFromRequest(request, context, source),
+    });
+    return Response.json({ deleted, source }, { headers: { "cache-control": "private, no-store" } });
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : "Knowledge deletion failed.";
+    return Response.json(
+      { error: message },
+      { status: message.startsWith("Idempotency-Key") ? 400 : 409 },
+    );
+  }
 }
 
 async function GETHandler(request: Request) {
