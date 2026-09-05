@@ -1240,10 +1240,12 @@ record. The private intent and approval evidence are removed from public tool
 records, and stale-claim recovery cannot replay the bound effect. An intent
 object alone cannot cause or authorize an effect.
 
-The initial adapter now routes directly approved `http.request` mutations
-through both barriers. It records the exact sealed input/endpoint binding before
-delivery and a metadata-only provider acknowledgement afterward. Because a
-generic HTTP endpoint has no uniform read-after-write operation, the receipt is
-`unverifiable/read_unavailable`, not verified. An uncertain delivery or
-finalization stays intent-bound and is not automatically replayed. Workflow
-HTTP mutations remain disabled until their plan identity can be persisted.
+The serving adapters now route `http.request` mutations, Google Calendar
+creation, governed OpenAPI non-read methods, and governed MCP mutation tools
+through both barriers. Direct effects require the initiating user principal;
+workflow effects bind the exact persisted workflow, plan digest, and node.
+Calendar performs deterministic provider read-after-write verification.
+Generic HTTP, MCP, and OpenAPI adapters record a metadata-only provider
+acknowledgement and the explicit `unverifiable/read_unavailable` state because
+they have no uniform safe read operation. An uncertain delivery or
+finalization stays intent-bound and is not automatically replayed.

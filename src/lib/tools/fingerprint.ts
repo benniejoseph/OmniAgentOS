@@ -10,6 +10,9 @@ export function toolApprovalFingerprint(tool: ToolDefinition) {
       status: tool.status,
       riskLevel: tool.riskLevel,
       approvalRequired: tool.approvalRequired,
+      ...(tool.operationClass
+        ? { operationClass: tool.operationClass }
+        : {}),
       inputSchema: tool.inputSchema,
     })
   );

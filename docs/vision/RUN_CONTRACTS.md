@@ -215,16 +215,18 @@ does not activate an adapter by itself. The compact event projection
 carries only the exact allowlisted IDs, hashes, booleans, and enums needed to
 audit that pre-effect binding; it contains no provider outcome or raw input.
 
-The first v2 serving adapter covers `http.request` POST, PUT, PATCH, and DELETE
-for a directly authorized user principal. The pending approval seals the exact
-request and binds its canonical endpoint digest. After approval, the executor
-persists `EffectIntentV2` before network delivery, uses the execution ID as the
-provider idempotency key, and finalizes from the bounded HTTP response. Generic
-HTTP cannot read an arbitrary provider's resulting resource, so its receipt is
-explicitly `unverifiable/read_unavailable`; it never claims verified state.
+The v2 serving adapters cover `http.request` POST, PUT, PATCH, and DELETE,
+Google Calendar creation, every governed OpenAPI non-read method, and governed
+MCP tools classified as mutations. Direct execution requires the initiating
+user principal; workflow execution requires the complete persisted workflow,
+plan, plan digest, and node binding. The pending approval seals the exact input
+and target binding before the executor persists `EffectIntentV2` and performs
+network delivery. Calendar creation performs a deterministic provider read and
+can produce `verified/state_matched`. Generic HTTP, MCP, and OpenAPI operations
+have no uniform safe read operation, so their provider-response receipts are
+explicitly `unverifiable/read_unavailable`; they never claim verified state.
 Provider or receipt uncertainty leaves the intent-bound claim unreplayed.
-GET behavior is unchanged, and workflow/system-principal HTTP mutations remain
-closed until their full workflow plan binding is available.
+HTTP GET and OpenAPI GET/HEAD/OPTIONS behavior is unchanged.
 
 ## Event payloads
 
