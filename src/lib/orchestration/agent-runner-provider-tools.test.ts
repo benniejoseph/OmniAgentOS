@@ -30,7 +30,11 @@ describe("non-OpenAI governed provider tool loop", () => {
       record: executionRecord(request.toolId, "executed"),
       result: { matches: [request.toolId] },
     }));
-    const beforeModelTurn = vi.fn(async () => undefined);
+    const beforeModelTurn = vi.fn(async (_input: {
+      attempt: number;
+      provider: "openai" | "google" | "anthropic" | "aws_bedrock";
+      tier: "fast" | "reasoning";
+    }) => undefined);
 
     const loop = runNonOpenAIProviderToolLoop({
       provider: "google",

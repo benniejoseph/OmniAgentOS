@@ -344,7 +344,10 @@ describe("approval checkpoint shadow", () => {
       throw new Error(`Unexpected tagged SQL: ${strings.join(" ")}`);
     }) as unknown as RunCheckpointWriterSql;
     sql.query = async (text, params = []) => {
-      if (text.includes("SELECT checkpoint_id")) return [];
+      if (
+        text.includes("FROM omni_run_checkpoints") &&
+        text.includes("ORDER BY sequence DESC")
+      ) return [];
       if (text.includes("FROM omni_agent_runs")) {
         return [{
           id: RUN_ID,
