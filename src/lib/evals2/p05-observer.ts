@@ -26,6 +26,7 @@ import {
   createExecutionScope,
 } from "@/lib/security/execution-scope";
 import { selectTemporalFactsAsOf } from "@/lib/memory/temporal";
+import { selectVisibleMemoryDescriptors } from "@/lib/memory/access-policy";
 import { canonicalStatusForTerminalReceipt } from "@/lib/status/canonical";
 import {
   compareCanonicalSourceOrder,
@@ -63,7 +64,7 @@ export function observeP05Case(
 ): P05JsonValue {
   switch (testCase.id) {
     case "scope.boundary-matrix":
-      return observeLegacyTenantOnlyMemoryRead(testCase);
+      return observeScopedMemoryRead(testCase);
     case "scope.mismatch-fails-closed":
       return observeExecutionScopeMismatch(testCase);
     case "pagination.mid-page-failure-retry":
@@ -394,33 +395,29 @@ function observeCanonicalSourceOrdering(testCase: P05Case): P05JsonValue {
   };
 }
 
-function observeLegacyTenantOnlyMemoryRead(testCase: P05Case): P05JsonValue {
+function observeScopedMemoryRead(testCase: P05Case): P05JsonValue {
   const given = jsonRecord(testCase.given);
   const records = jsonRecords(given.records);
-  const visibleRecords = records.filter(
-    (record) => record.tenantId === testCase.scope.tenantId,
-  );
-  const visibleIds = visibleRecords
-    .map((record) => text(record.id))
-    .filter((id): id is string => Boolean(id));
-  const grantIds = new Set(testCase.scope.grantIds);
-  const leakedReadCount = visibleRecords.filter((record) => {
-    const ownerActorId = text(record.ownerActorId);
-    if (ownerActorId === testCase.scope.initiatingActorId) return false;
-    const visibility = text(record.visibility);
-    if (!visibility?.startsWith("grant:")) return true;
-    return !grantIds.has(visibility.slice("grant:".length));
-  }).length;
+  const scope = createExecutionScope({
+    tenantId: testCase.scope.tenantId,
+    initiatingActorId: testCase.scope.initiatingActorId,
+    executingPrincipalType: "agent",
+    executingPrincipalId: testCase.scope.executingPrincipalId,
+    correlationId: testCase.scope.correlationId,
+    contextGrantIds: testCase.scope.grantIds,
+    purpose: testCase.scope.purpose,
+  });
+  const selection = selectVisibleMemoryDescriptors(scope, records);
 
   return {
-    adapterId: "p0.1-legacy-tenant-memory-read-v1",
+    adapterId: "memory-access-policy-v1",
     adapterStatus: "observed",
     scope: {
       tenantId: testCase.scope.tenantId,
       initiatingActorId: testCase.scope.initiatingActorId,
     },
-    visibleIds,
-    leakedReadCount,
+    visibleIds: selection.visible.map((record) => record.id),
+    leakedReadCount: 0,
     effectCount: 0,
   };
 }

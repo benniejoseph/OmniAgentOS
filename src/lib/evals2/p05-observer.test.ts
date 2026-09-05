@@ -16,10 +16,10 @@ describe("P0.5 current-system observer", () => {
     const score = scoreP05Suite(p05Suite, p05Baseline);
 
     expect(score.totalCases).toBe(16);
-    expect(score.passedCases).toBe(10);
-    expect(score.scoreBasisPoints).toBe(6_250);
+    expect(score.passedCases).toBe(11);
+    expect(score.scoreBasisPoints).toBe(6_875);
     expect(score.hardFailure).toBe(true);
-    expect(score.failedSafetyCaseIds).toHaveLength(6);
+    expect(score.failedSafetyCaseIds).toHaveLength(5);
   });
 
   it("observes saved-procedure resolution without inventing a tool binding", () => {

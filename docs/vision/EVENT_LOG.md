@@ -1137,3 +1137,19 @@ aliases, so it now truthfully observes durable workflow resolution while
 leaving the procedure's required GitHub trigger binding empty. The case
 therefore remains red until a real tenant-scoped saved-procedure/tool binding
 is available; no expected tool ID is inferred from the fixture assertion.
+
+## Actor/grant memory access selector
+
+A bounded, side-effect-free memory descriptor selector now denies disclosure
+unless a record is in the execution tenant and is either private to the
+initiating actor or names an exact context grant carried by the execution
+scope. Unknown visibility forms, malformed descriptors, and absent actor
+ownership fail closed; conflicting duplicate record identities are rejected.
+The selector sees only access metadata, never memory content.
+
+P0.5 now exercises this runtime policy against own, explicitly shared,
+sibling-private, and other-tenant synthetic descriptors. This closes the
+policy regression without activating the dormant database enrollment or
+claiming that legacy unattributed production rows have been migrated; that
+cutover still requires authoritative owner attribution and coordinated RLS
+activation.
