@@ -23,6 +23,7 @@ import {
   EffectReceiptFinalizationError,
   executeGovernedTool,
   governedToolOperationClass,
+  type GovernedToolEffectBinding,
 } from "@/lib/tools/executor";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { getGovernedTool } from "@/lib/tools/registry";
@@ -566,15 +567,18 @@ async function executePlanNode({
         ? executionScope.executingPrincipalId?.trim() || "omniagent-system"
         : "workflow");
     const toolInput = buildToolInput({ detail, plan, planId, node, toolId });
-    const operationClass = tool
-      ? governedToolOperationClass(tool, toolInput)
-      : undefined;
-    const receiptEligibleEffect = Boolean(
-      (toolId === "memory.write" && node.toolIds.length === 1) ||
-      (tool &&
-        operationClass === "mutation" &&
-        ["connector", "mcp", "openapi"].includes(tool.category)),
-    );
+    const effectBinding = workflowToolEffectBinding({
+      workflowRunId: detail.run.id,
+      plan,
+      planId,
+      node,
+      toolId,
+      tool,
+      toolInput,
+      workflowApproved,
+      dryRun,
+      initiatingActorId: executionScope?.initiatingActorId,
+    });
     const execution = await executeGovernedTool({
       toolId,
       input: toolInput,
@@ -604,18 +608,7 @@ async function executePlanNode({
             toolId,
           })
         : undefined,
-      effectBinding:
-        receiptEligibleEffect &&
-        executionScope?.initiatingActorId?.trim() &&
-        workflowApproved &&
-        !dryRun
-        ? {
-            workflowRunId: detail.run.id,
-            planId,
-            planSha256: canonicalJsonSha256({ id: planId, plan }),
-            planNodeId: node.id,
-          }
-        : undefined,
+      effectBinding,
     });
     return {
       id: execution.record.id,
@@ -687,6 +680,40 @@ async function executePlanNode({
     }
     throw error;
   }
+}
+
+export function workflowToolEffectBinding(input: {
+  workflowRunId: string;
+  plan: WorkflowDynamicPlan;
+  planId: string;
+  node: WorkflowPlanNode;
+  toolId: string;
+  tool?: ToolDefinition;
+  toolInput: Record<string, unknown>;
+  workflowApproved: boolean;
+  dryRun: boolean;
+  initiatingActorId?: string | null;
+}): GovernedToolEffectBinding | undefined {
+  const providerMutation = Boolean(
+    input.tool &&
+    governedToolOperationClass(input.tool, input.toolInput) === "mutation" &&
+    ["connector", "mcp", "openapi"].includes(input.tool.category),
+  );
+  const receiptEligible =
+    (input.toolId === "memory.write" && input.node.toolIds.length === 1) ||
+    providerMutation;
+  if (
+    !receiptEligible ||
+    !input.workflowApproved ||
+    input.dryRun ||
+    !input.initiatingActorId?.trim()
+  ) return undefined;
+  return Object.freeze({
+    workflowRunId: input.workflowRunId,
+    planId: input.planId,
+    planSha256: canonicalJsonSha256({ id: input.planId, plan: input.plan }),
+    planNodeId: input.node.id,
+  });
 }
 
 function workflowToolExecutionScope(
