@@ -112,6 +112,10 @@ function runBenchmark(
       BENCHMARK_READINESS_POLL_MS: "5",
       BENCHMARK_ENFORCE: "true",
       BENCHMARK_SESSION_FILE: "",
+      SMOKE_ADMIN_EMAIL: "",
+      SMOKE_ADMIN_PASSWORD: "",
+      OMNIAGENT_BOOTSTRAP_EMAIL: "",
+      OMNIAGENT_BOOTSTRAP_PASSWORD: "",
       ...overrides,
     });
     const child = spawn(process.execPath, ["scripts/benchmark-preview.mjs"], {
