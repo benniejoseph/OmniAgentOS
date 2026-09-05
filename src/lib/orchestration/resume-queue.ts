@@ -10,6 +10,7 @@ import {
   type OperationJobRecord,
 } from "@/lib/operations/job-queue";
 import {
+  CheckpointResumeInterruptedError,
   rejectAgentRunApproval,
   resumeAgentRunAfterToolApproval,
 } from "@/lib/orchestration/agent-runner";
@@ -412,6 +413,13 @@ async function processAgentResumeJob(
       base,
     );
   } catch (error) {
+    if (error instanceof CheckpointResumeInterruptedError) {
+      return {
+        ...base,
+        status: "stale",
+        message: "Checkpoint continuation was interrupted; its leases will expire for fenced recovery.",
+      };
+    }
     return failResumeJob(
       job,
       error instanceof Error ? error.message : "Agent resume job failed.",

@@ -145,6 +145,13 @@ type ContinuationQueueMarker = {
   calls: QueuedFunctionCall[];
 };
 
+export class CheckpointResumeInterruptedError extends Error {
+  constructor() {
+    super("Checkpoint canary resume transport was interrupted.");
+    this.name = "CheckpointResumeInterruptedError";
+  }
+}
+
 export async function* runAgent(
   request: AgentRunRequest,
   abortSignal?: AbortSignal,
@@ -3125,6 +3132,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
     await consolidation;
     return { resumed: true, status: "completed" };
   } catch (error) {
+    if (resumeFence && isCheckpointResumeTransportInterruption(error)) {
+      throw new CheckpointResumeInterruptedError();
+    }
     const message = error instanceof Error ? error.message : "Approved agent run resume failed.";
     await flushDeltas().catch(() => undefined);
     const failed = await failAgentRun(run.id, message, runMutationOptions);
@@ -3809,6 +3819,9 @@ async function resumeProviderBoundAgentRunAfterApproval({
     await consolidation;
     return { resumed: true, status: "completed" };
   } catch (error) {
+    if (resumeFence && isCheckpointResumeTransportInterruption(error)) {
+      throw new CheckpointResumeInterruptedError();
+    }
     const message = error instanceof Error
       ? error.message
       : "Approved provider-bound agent run resume failed.";
@@ -4601,6 +4614,14 @@ function handleCheckpointPersistenceFailure(
     throw error;
   }
   logRunContractShadowFailure(phase, error);
+}
+
+function isCheckpointResumeTransportInterruption(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  return error.name === "AbortError" ||
+    /^(terminated|the operation was aborted\.?|request aborted\.?)$/i.test(
+      error.message.trim(),
+    );
 }
 
 function stableToolboxFingerprint(tools: readonly ToolboxEntry[]) {
