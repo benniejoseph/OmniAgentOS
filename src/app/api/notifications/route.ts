@@ -3,6 +3,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { notificationBulkMutationFromRequest } from "@/lib/today/notification-events";
 import {
   getNotificationCenter,
   markAllNotificationsRead,
@@ -49,9 +50,20 @@ async function PATCHHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const notifications = await markAllNotificationsRead({
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-  });
-  return Response.json({ notifications, updated: notifications.length });
+  try {
+    const notifications = await markAllNotificationsRead({
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      mutation: notificationBulkMutationFromRequest(request, context),
+    });
+    return Response.json({ notifications, updated: notifications.length });
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : "Notification update failed.";
+    return Response.json(
+      { error: message },
+      { status: message.startsWith("Idempotency-Key") ? 400 : 409 },
+    );
+  }
 }

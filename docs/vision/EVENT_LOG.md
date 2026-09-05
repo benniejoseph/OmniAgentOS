@@ -685,6 +685,21 @@ remain unchanged. P1.3 can project the ID of a strictly bound, verified canary
 receipt as additive evidence, while its evaluation remains `posthoc` and
 cannot emit `succeeded`; full P1.4 remains open.
 
+## Notification mutation cutover
+
+Authenticated single-notification actions now require an exact user execution
+scope at the API boundary. Their stable event identity is derived from tenant,
+actor, and the bounded idempotency key. The strict v1 payload records only the
+notification and source IDs, action, resulting status, and a key digest; titles,
+message text, and reminder content are excluded.
+
+In Postgres, the notification row, a completed source Today item when
+applicable, and `notification.updated` append in one transaction. File fallback
+retains the development compatibility sequence and does not provide an atomic
+audit guarantee. Authenticated bulk-read actions use a separate aggregate
+stream and the same exact request binding. Scheduler-generated notifications
+remain outside this cutover.
+
 ## Event shape
 
 ```ts

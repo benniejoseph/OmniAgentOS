@@ -53,6 +53,7 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 - `/api/triggers` and `/api/triggers/:id/dispatch`.
 - `/api/operations`, `/api/approvals`, `/api/approvals/:id`, and `/api/workflows/tick`.
 - Tool decisions sent to `POST /api/approvals/:id` accept the same bounded `Idempotency-Key` format. Approved, quorum-pending, and rejected tool decisions persist a versioned metadata-only event atomically with the locked tool-execution row; private reasons and tool payloads are excluded.
+- `PATCH /api/notifications/:id` and the `read_all` action at `PATCH /api/notifications` accept the same bounded `Idempotency-Key` format. Read, dismiss, snooze, complete, and bulk-read actions bind the authenticated user and exact target to a versioned metadata-only event. In Postgres, affected notification rows, a completed source Today item when applicable, and the event commit in one transaction.
 
 ## Tools and connectors
 

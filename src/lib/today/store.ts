@@ -110,13 +110,15 @@ export async function updateTodayItem(
     tenantId?: string;
     actorId: string;
     requestActorBinding?: CanonicalRequestActorBindingV1;
+    sql?: ReturnType<typeof getSql>;
   },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const actorId = safeText(options.actorId, 200);
   const now = new Date().toISOString();
   if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
+    if (!options.sql) await ensureDatabaseSchema();
+    const sql = options.sql || getSql();
     const actorReadOrder = todayActorReadOrder(
       options.actorId,
       options.requestActorBinding,
@@ -124,7 +126,7 @@ export async function updateTodayItem(
     );
     const canonicalActorId = actorReadOrder[0];
     const exactActorId = actorReadOrder[1];
-    const rows = await getSql()`
+    const rows = await sql`
       UPDATE omni_today_items
       SET title = COALESCE(${input.title ? safeText(input.title, 280) : null}, title),
           status = COALESCE(${input.status || null}, status),

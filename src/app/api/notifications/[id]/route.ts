@@ -3,6 +3,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { updatePersonalNotification } from "@/lib/today/notifications";
+import { notificationMutationFromRequest } from "@/lib/today/notification-events";
 
 export const runtime = "nodejs";
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
@@ -40,12 +41,29 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const notification = await updatePersonalNotification(id, parsed.data.action, {
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    snoozeMinutes: parsed.data.action === "snooze" ? parsed.data.minutes : undefined,
-  });
-  return notification
-    ? Response.json({ notification })
-    : Response.json({ error: "Notification not found." }, { status: 404 });
+  try {
+    const notification = await updatePersonalNotification(
+      id,
+      parsed.data.action,
+      {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        snoozeMinutes: parsed.data.action === "snooze"
+          ? parsed.data.minutes
+          : undefined,
+        mutation: notificationMutationFromRequest(request, context, id),
+      },
+    );
+    return notification
+      ? Response.json({ notification })
+      : Response.json({ error: "Notification not found." }, { status: 404 });
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : "Notification update failed.";
+    return Response.json(
+      { error: message },
+      { status: message.startsWith("Idempotency-Key") ? 400 : 409 },
+    );
+  }
 }
