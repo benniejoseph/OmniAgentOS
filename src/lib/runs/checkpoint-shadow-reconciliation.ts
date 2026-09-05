@@ -5,6 +5,7 @@ import {
   RUN_CHECKPOINT_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_CONTRACT_VERSION_ID,
   RUN_CHECKPOINT_ENGINE_VERSION_ID,
+  RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256,
 } from "@/lib/runs/approval-checkpoint-shadow";
 import { runContractIdSchema } from "@/lib/runs/contracts";
@@ -38,7 +39,10 @@ export type ApprovalCheckpointShadowIssueCode =
   | "tool_effect_receipt_mismatch"
   | "boundary_pair_mismatch";
 
-export type CheckpointShadowReconciliationMode = "approval" | "expanded";
+export type CheckpointShadowReconciliationMode =
+  | "approval"
+  | "expanded"
+  | "expanded_canary";
 
 const expandedBoundaryPhases = Object.freeze([
   "model:before",
@@ -112,9 +116,7 @@ export async function reconcileStoredApprovalCheckpointShadows(
   const tenantId = runContractIdSchema.parse(input.tenantId);
   const limit = sampleLimitSchema.parse(input.limit ?? 100);
   const mode = input.mode || "approval";
-  const configurationSha256 = mode === "expanded"
-    ? RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256
-    : RUN_CHECKPOINT_CONFIGURATION_SHA256;
+  const configurationSha256 = checkpointConfigurationForMode(mode);
   const runRows = await sql.query(
     `SELECT run_id, MAX(recorded_at) AS latest_recorded_at
      FROM omni_run_checkpoints
@@ -152,7 +154,7 @@ export async function reconcileStoredApprovalCheckpointShadows(
     runs.flatMap((run) => run.boundaryPhases),
   )].sort());
   const missingBoundaryPhases = Object.freeze(
-    mode === "expanded"
+    isExpandedMode(mode)
       ? expandedBoundaryPhases.filter(
           (phase) => !observedBoundaryPhases.includes(phase),
         )
@@ -285,7 +287,7 @@ async function reconcileRun(
       addIssue(issues, "comparison_receipt_mismatch", checkpoint.checkpointId);
     }
   }
-  if (mode === "expanded") validateBoundaryPairs(checkpoints, issues);
+  if (isExpandedMode(mode)) validateBoundaryPairs(checkpoints, issues);
 
   const approvalCheckpoints = checkpoints.filter(
     (checkpoint) => checkpoint.boundary.kind === "approval",
@@ -319,7 +321,7 @@ async function reconcileRun(
     mode,
     issues,
   );
-  if (mode === "expanded") {
+  if (isExpandedMode(mode)) {
     reconcileToolBoundaries(tenantId, toolCheckpoints, toolRows, issues);
   }
   const comparisonReceiptCount = checkpoints.filter((checkpoint) =>
@@ -607,12 +609,26 @@ function supportedShadowPin(
     pin.rolloutCapabilityId === RUN_CHECKPOINT_CAPABILITY_ID &&
     pin.engineVersionId === RUN_CHECKPOINT_ENGINE_VERSION_ID &&
     pin.contractVersionId === RUN_CHECKPOINT_CONTRACT_VERSION_ID &&
-    pin.configurationSha256 === (mode === "expanded"
-      ? RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256
-      : RUN_CHECKPOINT_CONFIGURATION_SHA256) &&
-    pin.rolloutMode === "shadow" &&
+    pin.configurationSha256 === checkpointConfigurationForMode(mode) &&
+    pin.rolloutMode === (mode === "expanded_canary" ? "canary" : "shadow") &&
     pin.rolloutLifecycleStatus === "active"
   );
+}
+
+function isExpandedMode(mode: CheckpointShadowReconciliationMode) {
+  return mode === "expanded" || mode === "expanded_canary";
+}
+
+function checkpointConfigurationForMode(
+  mode: CheckpointShadowReconciliationMode,
+) {
+  if (mode === "expanded_canary") {
+    return RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256;
+  }
+  if (mode === "expanded") {
+    return RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256;
+  }
+  return RUN_CHECKPOINT_CONFIGURATION_SHA256;
 }
 
 function stateReferencesMatch(
