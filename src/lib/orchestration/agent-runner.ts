@@ -50,6 +50,7 @@ import {
   reviseCouncilResponse,
   runCouncilRound,
   type CouncilAgentId,
+  type CouncilCheckpointHooks,
   type CouncilContribution,
 } from "@/lib/orchestration/council";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
@@ -99,6 +100,11 @@ import {
   persistModelAfterCheckpointShadow,
   persistModelBeforeCheckpointShadow,
 } from "@/lib/runs/boundary-checkpoint-shadow";
+import {
+  councilDelegationBoundaryId,
+  councilVerifierBoundaryId,
+  persistCouncilCheckpointShadow,
+} from "@/lib/runs/council-checkpoint-shadow";
 import {
   persistToolAfterCheckpointShadow,
   persistToolBeforeCheckpointShadow,
@@ -417,6 +423,88 @@ export async function* runAgent(
       });
     } catch (error) {
       logRunContractShadowFailure("checkpoint_tool_after", error);
+    }
+  }
+
+  async function checkpointCouncilBoundary(input: {
+    kind: "delegation" | "verifier";
+    phase: "before" | "after";
+    boundaryId: string;
+    attempt: number;
+    referenceSha256: string;
+  }) {
+    if (!shadowRunContract) return;
+    try {
+      await persistCouncilCheckpointShadow({
+        runId,
+        ...input,
+        recordedAt: new Date().toISOString(),
+        executionScope,
+        runContractEnvelope: shadowRunContract.envelope,
+        enrollment: checkpointShadowEnrollment,
+      });
+    } catch (error) {
+      logRunContractShadowFailure(
+        input.kind === "delegation"
+          ? `checkpoint_delegation_${input.phase}`
+          : `checkpoint_verifier_${input.phase}`,
+        error,
+      );
+    }
+  }
+
+  async function checkpointAfterCouncilModel(input: Parameters<
+    NonNullable<CouncilCheckpointHooks["afterModel"]>
+  >[0]) {
+    if (!shadowRunContract) return;
+    const providerReceipt = input.error
+      ? getModelProviderResponseReceipt(input.error)
+      : undefined;
+    const usage = input.generated?.usage || providerReceipt?.usage || {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      totalTokens: 0,
+    };
+    const failedProvider = input.error instanceof ModelProviderError
+      ? input.error.provider
+      : undefined;
+    try {
+      await persistModelAfterCheckpointShadow({
+        runId,
+        event: {
+          id:
+            input.generated?.usageReceiptId ||
+            input.generated?.providerRequestId ||
+            `${runId}:${input.sourceId}:${input.attempt}:${input.status}`,
+          createdAt: new Date().toISOString(),
+          status: input.status,
+          failureKind:
+            input.error instanceof ModelProviderError
+              ? input.error.kind
+              : input.status === "failed"
+                ? "unknown"
+                : undefined,
+          provider: input.generated?.provider || failedProvider,
+          model: input.generated?.model || providerReceipt?.model || "unknown",
+          tier: "reasoning",
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cachedInputTokens: usage.cachedInputTokens,
+          totalTokens: usage.totalTokens,
+          latencyMs: input.generated?.latencyMs || providerReceipt?.latencyMs || 0,
+          iteration: input.attempt,
+          providerRequestId:
+            input.generated?.providerRequestId ||
+            providerReceipt?.providerRequestId,
+          usageReceiptId: input.generated?.usageReceiptId,
+        },
+        executionScope,
+        runContractEnvelope: shadowRunContract.envelope,
+        enrollment: checkpointShadowEnrollment,
+      });
+    } catch (error) {
+      logRunContractShadowFailure("checkpoint_model_after", error);
     }
   }
 
@@ -767,6 +855,66 @@ export async function* runAgent(
     const primaryAgentId = asCouncilAgentId(request.agentId || "atlas");
     const councilAgentIds = [...new Set([primaryAgentId, ...(request.specialistIds || []).map(asCouncilAgentId)])];
     const councilActive = hasModelProviderFeature("json_schema", "reasoning") && councilAgentIds.length > 1;
+    const councilCheckpointHooks: CouncilCheckpointHooks | undefined =
+      shadowRunContract &&
+        isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment)
+        ? {
+            serializeMembers: true,
+            beforeDelegation: async (input) => {
+              await checkpointCouncilBoundary({
+                kind: "delegation",
+                phase: "before",
+                boundaryId: councilDelegationBoundaryId(
+                  runId,
+                  input.agentId,
+                  input.attempt,
+                ),
+                attempt: input.attempt,
+                referenceSha256: input.requestSha256,
+              });
+            },
+            afterDelegation: async (input) => {
+              await checkpointCouncilBoundary({
+                kind: "delegation",
+                phase: "after",
+                boundaryId: councilDelegationBoundaryId(
+                  runId,
+                  input.agentId,
+                  input.attempt,
+                ),
+                attempt: input.attempt,
+                referenceSha256: input.receiptSha256,
+              });
+            },
+            beforeVerifier: async (input) => {
+              await checkpointCouncilBoundary({
+                kind: "verifier",
+                phase: "before",
+                boundaryId: councilVerifierBoundaryId(runId, input.attempt),
+                attempt: input.attempt,
+                referenceSha256: input.requestSha256,
+              });
+            },
+            afterVerifier: async (input) => {
+              await checkpointCouncilBoundary({
+                kind: "verifier",
+                phase: "after",
+                boundaryId: councilVerifierBoundaryId(runId, input.attempt),
+                attempt: input.attempt,
+                referenceSha256: input.receiptSha256,
+              });
+            },
+            beforeModel: async (input) => {
+              await checkpointBeforeModelTurn({
+                attempt: input.attempt,
+                provider: "model_gateway",
+                model: "auto",
+                tier: "reasoning",
+              });
+            },
+            afterModel: checkpointAfterCouncilModel,
+          }
+        : undefined;
     let councilContributions: CouncilContribution[] = [];
     if (councilActive) {
       for (const agentId of councilAgentIds.filter((agentId) => agentId !== primaryAgentId)) {
@@ -786,6 +934,7 @@ export async function* runAgent(
         contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
         tenantId: request.tenantId,
         abortSignal,
+        checkpointHooks: councilCheckpointHooks,
         ...(request.actorId
           ? {
               usageAttribution: {
@@ -1386,6 +1535,7 @@ export async function* runAgent(
           contributions: councilContributions,
           contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
           abortSignal,
+          checkpointHooks: councilCheckpointHooks,
           ...(request.actorId
             ? {
                 usageAttribution: {
@@ -1408,6 +1558,7 @@ export async function* runAgent(
             contributions: councilContributions,
             contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
             abortSignal,
+            checkpointHooks: councilCheckpointHooks,
             ...(request.actorId
               ? {
                   usageAttribution: {
@@ -4099,7 +4250,11 @@ function logRunContractShadowFailure(
     | "checkpoint_model_before"
     | "checkpoint_model_after"
     | "checkpoint_tool_before"
-    | "checkpoint_tool_after",
+    | "checkpoint_tool_after"
+    | "checkpoint_delegation_before"
+    | "checkpoint_delegation_after"
+    | "checkpoint_verifier_before"
+    | "checkpoint_verifier_after",
   error: unknown,
 ) {
   console.warn(
