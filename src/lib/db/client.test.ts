@@ -690,11 +690,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the daily-brief memory lineage repair migration", () => {
+  it("pins the deletion-barrier query-index migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 74,
-      name: "daily_brief_memory_lineage_column",
-      checksum: "b0aeed374d527136094316d0b7ba0c48cd84a243dcbbd6b17235fcc512a564aa",
+      version: 75,
+      name: "memory_deletion_barrier_query_indexes",
+      checksum: "c34aac5c2035a63afc8644f4e582ffcbb146b68c1e2debf14524424ee55198ed",
     });
   });
 

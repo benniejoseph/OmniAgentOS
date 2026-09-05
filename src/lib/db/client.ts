@@ -906,6 +906,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[73],
       up: ensureDailyBriefMemoryLineageColumn,
     },
+    {
+      ...databaseSchemaMigrations[74],
+      up: ensureMemoryDeletionBarrierQueryIndexes,
+    },
   ];
 }
 
@@ -2960,6 +2964,67 @@ async function ensureDailyBriefMemoryLineageColumn(sql: SqlClient) {
     )
     WHERE jsonb_typeof(brief.content) = 'object'
       AND (brief.content -> 'memoryIds') IS DISTINCT FROM to_jsonb(brief.memory_ids)
+  `;
+}
+
+async function ensureMemoryDeletionBarrierQueryIndexes(sql: SqlClient) {
+  // Every protected memory/graph row evaluates the deletion barrier through
+  // RLS. Materialize the immutable root+descendant set so PostgreSQL can use a
+  // single GIN probe instead of rebuilding and scanning every receipt array.
+  await sql`
+    ALTER TABLE omni_memory_deletion_receipts
+    ADD COLUMN IF NOT EXISTS blocked_memory_ids TEXT[]
+    GENERATED ALWAYS AS (
+      ARRAY[memory_id] || descendant_memory_ids
+    ) STORED
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_deletion_receipts_blocked_ids_idx
+    ON omni_memory_deletion_receipts USING GIN (blocked_memory_ids)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_graph_nodes_memory_ids_idx
+    ON omni_memory_graph_nodes USING GIN (memory_ids)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_graph_nodes_trace_ids_idx
+    ON omni_memory_graph_nodes USING GIN (trace_ids)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_graph_edges_memory_ids_idx
+    ON omni_memory_graph_edges USING GIN (memory_ids)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_graph_edges_trace_ids_idx
+    ON omni_memory_graph_edges USING GIN (trace_ids)
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_memory_ids_have_deletion_barrier(
+      row_tenant_id TEXT,
+      row_memory_ids TEXT[]
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT EXISTS (
+        SELECT 1
+        FROM public.omni_memory_deletion_receipts receipt
+        WHERE receipt.tenant_id = row_tenant_id
+          AND receipt.blocked_memory_ids &&
+            COALESCE(row_memory_ids, '{}'::TEXT[])
+      )
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_memory_ids_have_deletion_barrier(TEXT, TEXT[])
+    FROM PUBLIC
+  `;
+  await sql`
+    GRANT EXECUTE ON FUNCTION omni_memory_ids_have_deletion_barrier(TEXT, TEXT[])
+    TO PUBLIC
   `;
 }
 
