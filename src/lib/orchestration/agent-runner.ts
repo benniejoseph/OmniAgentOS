@@ -57,9 +57,9 @@ import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
 import {
   buildCitationSources,
+  buildClaimGroundingReport,
   buildWebCitationSources,
   mergeCitationSources,
-  verifyCitationSources,
   type CitationSource,
 } from "@/lib/rag/citations";
 import type { ContextPack } from "@/lib/rag/types";
@@ -1651,7 +1651,12 @@ export async function* runAgent(
       }
     }
 
-    const grounding = verifyCitationSources(response, citationSources);
+    const grounding = await buildClaimGroundingReport({
+      runId: run.id,
+      response,
+      sources: citationSources,
+      executionScope,
+    });
     const completed = await completeAgentRun(run.id, response, grounding);
     if (!completed) {
       yield await emit({
@@ -2202,6 +2207,26 @@ function agentToolExecutionScope(
   return deriveExecutionScope(runScope, {
     causationId: callId,
     purpose: "agent.tool.execute",
+  });
+}
+
+function claimEvidenceScopeForContinuation(
+  run: AgentRunRecord,
+  continuation: AgentRunContinuation,
+  boundScope?: ExecutionScope,
+) {
+  if (boundScope) return boundScope;
+  return createExecutionScope({
+    tenantId: normalizeTenantId(
+      run.tenantId || continuation.context.tenantId,
+    ),
+    initiatingActorId: continuation.context.actorId,
+    executingPrincipalType: "agent",
+    executingPrincipalId: run.agentId || "atlas",
+    correlationId: run.id,
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+    purpose: "agent.run.legacy-resume-claim-evidence",
   });
 }
 
@@ -2998,7 +3023,16 @@ async function resumeAgentRunAfterToolApprovalInScope({
     }
 
     await flushDeltas();
-    const grounding = verifyCitationSources(response, citationSources);
+    const grounding = await buildClaimGroundingReport({
+      runId: run.id,
+      response,
+      sources: citationSources,
+      executionScope: claimEvidenceScopeForContinuation(
+        run,
+        continuation,
+        executionScope,
+      ),
+    });
     const completed = await completeAgentRun(
       run.id,
       response,
@@ -3656,7 +3690,16 @@ async function resumeProviderBoundAgentRunAfterApproval({
       return await parkForApproval(result.waitingApproval);
     }
 
-    const grounding = verifyCitationSources(response, citationSources);
+    const grounding = await buildClaimGroundingReport({
+      runId: run.id,
+      response,
+      sources: citationSources,
+      executionScope: claimEvidenceScopeForContinuation(
+        run,
+        continuation,
+        executionScope,
+      ),
+    });
     const completed = await completeAgentRun(
       run.id,
       response,

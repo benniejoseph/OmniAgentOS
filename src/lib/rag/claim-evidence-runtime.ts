@@ -7,6 +7,8 @@ import {
   buildEvidenceAuthorizationDecisionReceiptV1,
   buildEvidenceUnitSnapshotV1,
   claimEvidenceDigestV1,
+  parseClaimEvidenceMapStructuralVerificationReceiptV1,
+  parseClaimEvidenceMapV1,
   verifyClaimEvidenceMapStructureV1,
   type ClaimEvidenceMapStructuralVerificationReceiptV1,
   type ClaimEvidenceMapV1,
@@ -248,6 +250,33 @@ export function publicClaimEvidenceV1(
       evidenceUnitIds: Object.freeze([...result.consideredEvidenceUnitIds]),
     }))),
   });
+}
+
+export function parseRuntimeClaimEvidenceV1(
+  value: unknown,
+): RuntimeClaimEvidenceV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Runtime claim evidence payload is invalid.");
+  }
+  const candidate = value as Record<string, unknown>;
+  const claimEvidenceMap = parseClaimEvidenceMapV1(candidate.claimEvidenceMap);
+  const structuralVerification =
+    parseClaimEvidenceMapStructuralVerificationReceiptV1(
+      candidate.structuralVerification,
+    );
+  if (
+    structuralVerification.claimEvidenceMapId !==
+      claimEvidenceMap.claimEvidenceMapId ||
+    structuralVerification.claimEvidenceMapSha256 !==
+      claimEvidenceMap.claimEvidenceMapSha256 ||
+    structuralVerification.runId !== claimEvidenceMap.runId ||
+    structuralVerification.answerId !== claimEvidenceMap.answer.answerId
+  ) {
+    throw new Error(
+      "Claim evidence structural receipt is bound to a different map.",
+    );
+  }
+  return Object.freeze({ claimEvidenceMap, structuralVerification });
 }
 
 export function decomposeMaterialClaimSpans(answerText: string): ClaimSpan[] {
