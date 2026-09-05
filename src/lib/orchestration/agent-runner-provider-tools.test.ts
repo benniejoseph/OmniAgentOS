@@ -30,6 +30,7 @@ describe("non-OpenAI governed provider tool loop", () => {
       record: executionRecord(request.toolId, "executed"),
       result: { matches: [request.toolId] },
     }));
+    const beforeModelTurn = vi.fn(async () => undefined);
 
     const loop = runNonOpenAIProviderToolLoop({
       provider: "google",
@@ -50,6 +51,8 @@ describe("non-OpenAI governed provider tool loop", () => {
         source: "default",
       },
       runId: "run-1",
+      modelAttemptOffset: 4,
+      beforeModelTurn,
       generateTurn,
       executeTool: executeTool as never,
     });
@@ -72,6 +75,15 @@ describe("non-OpenAI governed provider tool loop", () => {
       costKnown: true,
     });
     expect(collected.result.attempts).toHaveLength(2);
+    expect(beforeModelTurn.mock.calls.map(([call]) => call)).toEqual([
+      { attempt: 5, provider: "google", tier: "fast" },
+      { attempt: 6, provider: "google", tier: "fast" },
+    ]);
+    expect(
+      collected.events
+        .filter((event) => event.type === "model")
+        .map((event) => event.iteration),
+    ).toEqual([5, 6]);
   });
 
   it("parks approval-required calls without advancing the provider turn", async () => {

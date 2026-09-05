@@ -53,6 +53,16 @@ export const RUN_CHECKPOINT_CANARY_CONFIGURATION_SHA256 = canonicalJsonSha256({
   maxApprovalBoundaries: 1,
   schemaVersion: 1,
 });
+export const RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256 =
+  canonicalJsonSha256({
+    capabilityId: RUN_CHECKPOINT_CAPABILITY_ID,
+    engineVersionId: RUN_CHECKPOINT_ENGINE_VERSION_ID,
+    contractVersionId: RUN_CHECKPOINT_CONTRACT_VERSION_ID,
+    boundaries: ["model", "tool", "approval", "delegation", "verifier"],
+    persistence: "shadow_only",
+    resumeAuthority: false,
+    schemaVersion: 1,
+  });
 
 const enginePinSchema = z.object({
   rolloutCapabilityId: runContractIdSchema,
@@ -186,6 +196,14 @@ export function parseApprovalCheckpointShadowEnrollment(
 ): ApprovalCheckpointShadowEnrollment | undefined {
   if (value === undefined) return undefined;
   return approvalCheckpointShadowEnrollmentSchema.parse(value);
+}
+
+export function isExpandedCheckpointShadowEnrollment(
+  value: ApprovalCheckpointShadowEnrollment | undefined,
+): value is ApprovalCheckpointShadowEnrollment {
+  return value?.enginePin.rolloutMode === "shadow" &&
+    value.enginePin.configurationSha256 ===
+      RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256;
 }
 
 /** Builds the metadata-only waiting checkpoint from already verified rows. */
@@ -715,15 +733,17 @@ export async function recordApprovalDecisionCheckpointShadow(
 function isSupportedActiveCheckpointRollout(
   rollout: TenantCapabilityRollout | null,
 ): rollout is TenantCapabilityRollout {
-  const expectedConfigurationSha256 = rollout?.mode === "canary"
-    ? RUN_CHECKPOINT_CANARY_CONFIGURATION_SHA256
-    : RUN_CHECKPOINT_CONFIGURATION_SHA256;
+  const supportedConfiguration = rollout?.mode === "canary"
+    ? rollout.configurationSha256 === RUN_CHECKPOINT_CANARY_CONFIGURATION_SHA256
+    : rollout?.configurationSha256 === RUN_CHECKPOINT_CONFIGURATION_SHA256 ||
+      rollout?.configurationSha256 ===
+        RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256;
   return Boolean(
     rollout &&
       rollout.capabilityId === RUN_CHECKPOINT_CAPABILITY_ID &&
       rollout.engineVersion === RUN_CHECKPOINT_ENGINE_VERSION_ID &&
       rollout.contractVersionId === RUN_CHECKPOINT_CONTRACT_VERSION_ID &&
-      rollout.configurationSha256 === expectedConfigurationSha256 &&
+      supportedConfiguration &&
       (rollout.mode === "shadow" || rollout.mode === "canary") &&
       rollout.status === "active",
   );
@@ -736,10 +756,13 @@ function assertEnrollmentBinding(input: {
   runContractEnvelope: RunContractEnvelopeV1;
 }) {
   const { enrollment, executionScope, runContractEnvelope } = input;
-  const expectedConfigurationSha256 =
-    enrollment.enginePin.rolloutMode === "canary"
-      ? RUN_CHECKPOINT_CANARY_CONFIGURATION_SHA256
-      : RUN_CHECKPOINT_CONFIGURATION_SHA256;
+  const supportedConfiguration = enrollment.enginePin.rolloutMode === "canary"
+    ? enrollment.enginePin.configurationSha256 ===
+      RUN_CHECKPOINT_CANARY_CONFIGURATION_SHA256
+    : enrollment.enginePin.configurationSha256 ===
+        RUN_CHECKPOINT_CONFIGURATION_SHA256 ||
+      enrollment.enginePin.configurationSha256 ===
+        RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256;
   if (
     enrollment.runId !== input.runId ||
     enrollment.tenantId !== executionScope.tenantId ||
@@ -747,8 +770,7 @@ function assertEnrollmentBinding(input: {
     enrollment.enginePin.rolloutCapabilityId !== RUN_CHECKPOINT_CAPABILITY_ID ||
     enrollment.enginePin.engineVersionId !== RUN_CHECKPOINT_ENGINE_VERSION_ID ||
     enrollment.enginePin.contractVersionId !== RUN_CHECKPOINT_CONTRACT_VERSION_ID ||
-    enrollment.enginePin.configurationSha256 !==
-      expectedConfigurationSha256 ||
+    !supportedConfiguration ||
     enrollment.enginePin.runContractEnvelopeId !==
       runContractEnvelope.envelopeId ||
     enrollment.enginePin.runContractEnvelopeSha256 !==

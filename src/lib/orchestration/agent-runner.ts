@@ -94,6 +94,10 @@ import {
   resolveApprovalCheckpointShadowEnrollment,
   type ApprovalCheckpointShadowEnrollment,
 } from "@/lib/runs/approval-checkpoint-shadow";
+import {
+  persistModelAfterCheckpointShadow,
+  persistModelBeforeCheckpointShadow,
+} from "@/lib/runs/boundary-checkpoint-shadow";
 import type {
   AgentProviderToolContinuation,
   AgentRunContinuation,
@@ -315,12 +319,50 @@ export async function* runAgent(
   async function emit(event: AgentEvent) {
     await flushDeltas();
     const safeEvent = redactSensitive(event) as AgentEvent;
-    await appendRunEvent(run.id, safeEvent, {
+    const record = await appendRunEvent(run.id, safeEvent, {
       tenantId: request.tenantId,
       executionScope,
       runContractEnvelope: shadowRunContract?.envelope,
     });
+    if (safeEvent.type === "model" && shadowRunContract) {
+      try {
+        await persistModelAfterCheckpointShadow({
+          runId,
+          event: {
+            ...safeEvent,
+            id: record.id,
+            createdAt: record.createdAt,
+          },
+          executionScope,
+          runContractEnvelope: shadowRunContract.envelope,
+          enrollment: checkpointShadowEnrollment,
+        });
+      } catch (error) {
+        logRunContractShadowFailure("checkpoint_model_after", error);
+      }
+    }
     return safeEvent;
+  }
+
+  async function checkpointBeforeModelTurn(input: {
+    attempt: number;
+    provider: string;
+    model: string;
+    tier: "fast" | "reasoning";
+  }) {
+    if (!shadowRunContract) return;
+    try {
+      await persistModelBeforeCheckpointShadow({
+        runId,
+        ...input,
+        recordedAt: new Date().toISOString(),
+        executionScope,
+        runContractEnvelope: shadowRunContract.envelope,
+        enrollment: checkpointShadowEnrollment,
+      });
+    } catch (error) {
+      logRunContractShadowFailure("checkpoint_model_before", error);
+    }
   }
 
   try {
@@ -770,6 +812,13 @@ export async function* runAgent(
           abortSignal,
           forceApproval: agentToolPolicy?.forceApproval,
           bindModelRequest: (turnRequest) => runtimeModel.bind(turnRequest),
+          beforeModelTurn: ({ attempt, provider, tier }) =>
+            checkpointBeforeModelTurn({
+              attempt,
+              provider,
+              model: modelRoute.model,
+              tier,
+            }),
         });
         let result: NonOpenAIProviderLoopResult;
         try {
@@ -912,6 +961,12 @@ export async function* runAgent(
       for (;;) {
         const turnInput: ResponseTurnInput =
           conversationItems ?? initialConversationItems;
+        await checkpointBeforeModelTurn({
+          attempt: toolSteps + 1,
+          provider: "openai",
+          model: modelRoute.model,
+          tier: modelRoute.tier,
+        });
         const channel = createDeltaChannel();
         const turnStartedAt = Date.now();
         const usageReceiptId = request.actorId ? randomUUID() : undefined;
@@ -1429,8 +1484,14 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   continuation?: ModelToolTurnResult["continuation"];
   toolResults?: readonly ModelToolResult[];
   toolSteps?: number;
+  modelAttemptOffset?: number;
   generateTurn?: (request: ModelToolTurnRequest) => Promise<ModelToolTurnResult>;
   bindModelRequest?: (request: ModelToolTurnRequest) => ModelToolTurnRequest;
+  beforeModelTurn?: (input: {
+    attempt: number;
+    provider: "openai" | "google" | "anthropic" | "aws_bedrock";
+    tier: "fast" | "reasoning";
+  }) => Promise<void>;
   executeTool?: typeof executeGovernedTool;
 }): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
   const generateTurn = input.generateTurn || generateModelToolTurn;
@@ -1445,6 +1506,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   let continuation = input.continuation;
   let toolResults = input.toolResults ? [...input.toolResults] : undefined;
   let toolSteps = Math.max(0, input.toolSteps || 0);
+  const modelAttemptOffset = Math.max(0, input.modelAttemptOffset || 0);
   let turns = 0;
   let text = "";
   let model = "";
@@ -1484,6 +1546,12 @@ export async function* runNonOpenAIProviderToolLoop(input: {
 
   for (;;) {
     const toolsEnabled = toolSteps < AGENT_MAX_TOOL_STEPS;
+    const modelAttempt = modelAttemptOffset + turns + 1;
+    await input.beforeModelTurn?.({
+      attempt: modelAttempt,
+      provider: activeProvider,
+      tier: input.tier,
+    });
     const turnRequest: ModelToolTurnRequest = {
       input: input.prompt,
       instructions: input.instructions,
@@ -1550,7 +1618,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       fallbackUsed: turn.attempts.some((attempt) => attempt.status === "failed"),
       estimatedCostUsd: turn.estimatedCostUsd,
       costKnown: turn.costKnown,
-      iteration: turns,
+      iteration: modelAttempt,
       attemptCount: turn.attempts.length,
       failedAttemptCount: turn.attempts.filter((attempt) => attempt.status === "failed").length,
       callReceipts: turn.attempts.map((attempt) => ({
@@ -1953,15 +2021,52 @@ async function resumeAgentRunAfterToolApprovalInScope({
     });
   }
 
-  const appendScopedRunEvent = (event: AgentEvent) => appendRunEvent(
-    run.id,
-    event,
-    {
+  const appendScopedRunEvent = async (event: AgentEvent) => {
+    const record = await appendRunEvent(run.id, event, {
       tenantId,
       executionScope,
       runContractEnvelope: continuation.runContractEnvelope,
-    },
-  );
+    });
+    if (
+      event.type === "model" &&
+      executionScope &&
+      continuation.runContractEnvelope
+    ) {
+      try {
+        await persistModelAfterCheckpointShadow({
+          runId: run.id,
+          event: { ...event, id: record.id, createdAt: record.createdAt },
+          executionScope,
+          runContractEnvelope: continuation.runContractEnvelope,
+          enrollment: continuation.checkpointShadowEnrollment,
+        });
+      } catch (error) {
+        logRunContractShadowFailure("checkpoint_model_after", error);
+      }
+    }
+    return record;
+  };
+
+  const checkpointBeforeResumeModelTurn = async (input: {
+    attempt: number;
+    provider: string;
+    model: string;
+    tier: "fast" | "reasoning";
+  }) => {
+    if (!executionScope || !continuation.runContractEnvelope) return;
+    try {
+      await persistModelBeforeCheckpointShadow({
+        runId: run.id,
+        ...input,
+        recordedAt: new Date().toISOString(),
+        executionScope,
+        runContractEnvelope: continuation.runContractEnvelope,
+        enrollment: continuation.checkpointShadowEnrollment,
+      });
+    } catch (error) {
+      logRunContractShadowFailure("checkpoint_model_before", error);
+    }
+  };
 
   const resumeDeploymentRoute = selectAgentModel({
     message: run.prompt,
@@ -2212,6 +2317,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
     conversationItems = [...conversationItems, ...carriedOutputs];
 
     for (;;) {
+      await checkpointBeforeResumeModelTurn({
+        attempt: toolSteps + 1,
+        provider: "openai",
+        model: resumeModel,
+        tier: resumeTier,
+      });
       const turnStartedAt = Date.now();
       const usageReceiptId = continuation.context.actorId ? randomUUID() : undefined;
       let turn: Awaited<ReturnType<typeof streamResponseTurn>>;
@@ -2536,15 +2647,52 @@ async function resumeProviderBoundAgentRunAfterApproval({
     tenantId: normalizeTenantId(tenantId),
     resumeFence,
   };
-  const appendScopedRunEvent = (event: AgentEvent) => appendRunEvent(
-    run.id,
-    event,
-    {
+  const appendScopedRunEvent = async (event: AgentEvent) => {
+    const record = await appendRunEvent(run.id, event, {
       tenantId,
       executionScope,
       runContractEnvelope: continuation.runContractEnvelope,
-    },
-  );
+    });
+    if (
+      event.type === "model" &&
+      executionScope &&
+      continuation.runContractEnvelope
+    ) {
+      try {
+        await persistModelAfterCheckpointShadow({
+          runId: run.id,
+          event: { ...event, id: record.id, createdAt: record.createdAt },
+          executionScope,
+          runContractEnvelope: continuation.runContractEnvelope,
+          enrollment: continuation.checkpointShadowEnrollment,
+        });
+      } catch (error) {
+        logRunContractShadowFailure("checkpoint_model_after", error);
+      }
+    }
+    return record;
+  };
+
+  const checkpointBeforeResumeModelTurn = async (input: {
+    attempt: number;
+    provider: string;
+    model: string;
+    tier: "fast" | "reasoning";
+  }) => {
+    if (!executionScope || !continuation.runContractEnvelope) return;
+    try {
+      await persistModelBeforeCheckpointShadow({
+        runId: run.id,
+        ...input,
+        recordedAt: new Date().toISOString(),
+        executionScope,
+        runContractEnvelope: continuation.runContractEnvelope,
+        enrollment: continuation.checkpointShadowEnrollment,
+      });
+    } catch (error) {
+      logRunContractShadowFailure("checkpoint_model_before", error);
+    }
+  };
   if (
     !providerState ||
     providerState.continuation.provider !== providerState.provider ||
@@ -2887,9 +3035,17 @@ async function resumeProviderBoundAgentRunAfterApproval({
       continuation: providerState.continuation,
       toolResults: carriedResults,
       toolSteps,
+      modelAttemptOffset: toolSteps,
       bindModelRequest: runtimeCarriesProvider && resumeRuntimeModel.configured
         ? (turnRequest) => resumeRuntimeModel.bind(turnRequest)
         : undefined,
+      beforeModelTurn: ({ attempt, provider, tier }) =>
+        checkpointBeforeResumeModelTurn({
+          attempt,
+          provider,
+          model: resumeModel,
+          tier,
+        }),
     });
     let result: NonOpenAIProviderLoopResult;
     try {
@@ -3678,7 +3834,12 @@ function runContractScopeDecision(
 }
 
 function logRunContractShadowFailure(
-  phase: "initial" | "resolved" | "checkpoint_enrollment",
+  phase:
+    | "initial"
+    | "resolved"
+    | "checkpoint_enrollment"
+    | "checkpoint_model_before"
+    | "checkpoint_model_after",
   error: unknown,
 ) {
   console.warn(
