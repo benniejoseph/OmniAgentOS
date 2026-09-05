@@ -404,8 +404,13 @@ export async function executeGovernedTool({
   const effectiveForceApproval = forceApproval || Boolean(
     existingRecord?.approvalRequired && !registeredTool.approvalRequired && registeredTool.riskLevel > 0,
   );
+  const registeredApprovalFingerprint = toolApprovalFingerprint(registeredTool);
   const tool = effectiveForceApproval
-    ? { ...registeredTool, approvalRequired: true }
+    ? {
+        ...registeredTool,
+        approvalRequired: true,
+        approvalFingerprint: registeredApprovalFingerprint,
+      }
     : registeredTool;
   if (
     !dryRun &&
