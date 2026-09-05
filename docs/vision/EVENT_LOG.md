@@ -1208,9 +1208,8 @@ Its event builder emits only allowlisted IDs, hashes, booleans, and enums and
 omits provider request identity. The audit store now persists the receipt only
 when it exactly matches the preceding immutable intent and writes
 `tool.effect_receipt.recorded` atomically with the terminal database record.
-This slice registers no adapter, changes no executor path, performs no effect,
-and grants no authority; it is the stable contract required before a
-connector-specific acknowledgement and verifier can be activated.
+The contract and store support grant no authority by themselves; adapter
+activation remains an explicit connector-specific step.
 
 `EffectIntentV2` now supplies the matching pre-effect half of that boundary.
 It deterministically binds the full execution/scope/plan/tool/approval/input/
@@ -1221,6 +1220,13 @@ The audit store now persists it behind the exact execution-claim token, checks
 tenant/actor/principal, tool contract, input, and preapproved material binding,
 and emits `tool.effect_intent.recorded` atomically with the private database
 record. The private intent and approval evidence are removed from public tool
-records, and stale-claim recovery cannot replay the bound effect. It still has
-no executor or provider-adapter call site, so an intent object alone cannot
-cause or authorize an effect.
+records, and stale-claim recovery cannot replay the bound effect. An intent
+object alone cannot cause or authorize an effect.
+
+The initial adapter now routes directly approved `http.request` mutations
+through both barriers. It records the exact sealed input/endpoint binding before
+delivery and a metadata-only provider acknowledgement afterward. Because a
+generic HTTP endpoint has no uniform read-after-write operation, the receipt is
+`unverifiable/read_unavailable`, not verified. An uncertain delivery or
+finalization stays intent-bound and is not automatically replayed. Workflow
+HTTP mutations remain disabled until their plan identity can be persisted.

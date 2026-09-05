@@ -64,12 +64,14 @@ import {
   createToolExecutionRecord,
   getToolExecution,
   getToolExecutionApprovalFingerprint,
+  persistClaimedToolEffectIntentV2,
   reclaimStaleMemoryForgetToolExecutionClaim,
   repairFileToolEffectReceiptEvent,
   recoverStaleToolExecutionClaim,
   saveToolExecution,
   sealToolExecutionInput,
 } from "@/lib/tools/audit-store";
+import { approvalMaterialBindingSha256 } from "@/lib/tools/approval-binding";
 import { toolApprovalFingerprint } from "@/lib/tools/fingerprint";
 import { evaluateToolPolicy } from "@/lib/tools/policy";
 import type { SecurityContext } from "@/lib/security/types";
@@ -89,6 +91,11 @@ import {
   parseEffectReceiptV1,
   type EffectReceiptV1,
 } from "@/lib/tools/effect-receipt";
+import {
+  buildEffectIntentV2,
+  finalizeEffectIntentV2,
+  type EffectIntentV2,
+} from "@/lib/tools/effect-intent-v2";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/lib/tools/types";
 import { actionClassFor, recordActionOutcome, resolveAutonomy } from "@/lib/trust/ledger";
@@ -900,12 +907,22 @@ export async function executeGovernedTool({
       status: "approval_required" as const,
       output: undefined,
     });
+    const pendingHttpEffect = prepareHttpEffectMaterial(
+      tool,
+      preparedInput,
+    );
     const record = {
       ...pendingRecord,
       output: sealToolExecutionInput(
         preparedInput,
         pendingRecord,
         toolApprovalFingerprint(tool),
+        pendingHttpEffect
+          ? {
+              approvalMaterialBindingSha256:
+                pendingHttpEffect.approvalBindingSha256,
+            }
+          : {},
       ),
     };
     await bindToolScopeIfPresent({
@@ -1166,6 +1183,38 @@ export async function executeGovernedTool({
         throw new EffectReceiptFinalizationError({ cause: error });
       }
     }
+    let providerEffectIntent: EffectIntentV2 | undefined;
+    const httpEffectMaterial = prepareHttpEffectMaterial(tool, preparedInput);
+    if (httpEffectMaterial) {
+      try {
+        if (
+          !executionRecord ||
+          !activeExecutionClaimToken ||
+          !scopedRequest.executionScope
+        ) {
+          throw new Error(
+            "A mutating HTTP request requires a claimed scoped execution.",
+          );
+        }
+        providerEffectIntent = buildHttpEffectIntent({
+          record: executionRecord,
+          tool,
+          material: httpEffectMaterial,
+          executionScope: scopedRequest.executionScope,
+        });
+        const persistedIntent = await persistClaimedToolEffectIntentV2({
+          recordId: executionRecord.id,
+          tenantId: scopedRequest.executionScope.tenantId,
+          claimToken: activeExecutionClaimToken,
+          intent: providerEffectIntent,
+          executionScope: scopedRequest.executionScope,
+        });
+        if (!persistedIntent) throw new ExecutionClaimLostError();
+        executionRecord = persistedIntent;
+      } catch (error) {
+        throw new EffectReceiptFinalizationError({ cause: error });
+      }
+    }
     let result: unknown;
     try {
       result = await runTool(
@@ -1180,19 +1229,21 @@ export async function executeGovernedTool({
         executionRecord?.createdAt,
       );
     } catch (error) {
-      if (effectContext) {
+      if (effectContext || providerEffectIntent) {
         throw new EffectReceiptFinalizationError({ cause: error });
       }
       throw error;
     }
-    let effectReceipt: EffectReceiptV1 | undefined;
+    let effectReceipt: ToolExecutionRecord["effectReceipt"];
     try {
       effectReceipt = effectContext
         ? await buildMemoryWriteEffectReceipt({
             result,
             context: effectContext,
           })
-        : undefined;
+        : providerEffectIntent
+          ? finalizeHttpEffectIntent(providerEffectIntent, result)
+          : undefined;
     } catch (error) {
       throw new EffectReceiptFinalizationError({ cause: error });
     }
@@ -2775,6 +2826,130 @@ export function hasRisk3Quorum(record?: ToolExecutionRecord) {
       .map((approval) => approval.by),
   );
   return distinctAdmins.size >= RISK3_QUORUM;
+}
+
+type HttpEffectMaterial = Readonly<{
+  inputSha256: string;
+  approvalBindingSha256: string;
+  targetId: string;
+  targetSha256: string;
+  expectedTargetStateSha256: string;
+}>;
+
+function prepareHttpEffectMaterial(
+  tool: ToolDefinition,
+  input: Record<string, unknown>,
+): HttpEffectMaterial | undefined {
+  if (tool.id !== "http.request") return undefined;
+  const parsed = httpRequestSchema.parse(input);
+  const method = parsed.method || "GET";
+  if (method === "GET") return undefined;
+  const url = new URL(parsed.url).toString();
+  const inputSha256 = toolInputSha256(parsed);
+  const targetSha256 = canonicalJsonSha256({
+    targetType: "http_endpoint",
+    method,
+    url,
+  });
+  const targetId = `http_target_${targetSha256.slice(0, 52)}`;
+  return Object.freeze({
+    inputSha256,
+    approvalBindingSha256: approvalMaterialBindingSha256({
+      targetSha256,
+      inputSha256,
+    }),
+    targetId,
+    targetSha256,
+    expectedTargetStateSha256: canonicalJsonSha256({
+      expectation: "provider_acknowledged_exact_request",
+      targetSha256,
+      inputSha256,
+    }),
+  });
+}
+
+function buildHttpEffectIntent(input: {
+  record: ToolExecutionRecord;
+  tool: ToolDefinition;
+  material: HttpEffectMaterial;
+  executionScope: ExecutionScope;
+}) {
+  const { record, tool, material, executionScope } = input;
+  if (
+    !executionScope.initiatingActorId ||
+    executionScope.executingPrincipalType !== "user" ||
+    executionScope.executingPrincipalId !== executionScope.initiatingActorId
+  ) {
+    throw new Error(
+      "Mutating HTTP effects currently require a directly authorized user principal.",
+    );
+  }
+  return buildEffectIntentV2({
+    effectMode: "live",
+    reversible: tool.reversible ?? false,
+    executionKind: "direct",
+    executionId: record.id,
+    tenantId: executionScope.tenantId,
+    actorId: executionScope.initiatingActorId,
+    executingPrincipalType: executionScope.executingPrincipalType,
+    executingPrincipalId: executionScope.executingPrincipalId,
+    workflowRunId: null,
+    planId: null,
+    planSha256: null,
+    planNodeId: null,
+    toolId: tool.id,
+    toolContractSha256: canonicalJsonSha256({
+      approvalFingerprint: toolApprovalFingerprint(tool),
+    }),
+    approvalState: record.approvalRequired ? "approved" : "not_required",
+    approvalBindingSha256: record.approvalRequired
+      ? material.approvalBindingSha256
+      : null,
+    inputSha256: material.inputSha256,
+    idempotencyKeySha256: idempotencyKeySha256({
+      tenantId: executionScope.tenantId,
+      idempotencyKey: record.id,
+    }),
+    targetType: "http_endpoint",
+    targetId: material.targetId,
+    expectedTargetStateSha256: material.expectedTargetStateSha256,
+  });
+}
+
+function finalizeHttpEffectIntent(
+  intent: EffectIntentV2,
+  resultValue: unknown,
+) {
+  const result = z.object({
+    url: z.string().url(),
+    method: z.enum(["POST", "PUT", "PATCH", "DELETE"]),
+    status: z.number().int().min(100).max(599),
+    statusText: z.string(),
+    redirected: z.boolean(),
+    location: z.string().optional(),
+    contentType: z.string().optional(),
+    body: z.string(),
+  }).strict().parse(resultValue);
+  const acknowledgementSha256 = canonicalJsonSha256({
+    url: result.url,
+    method: result.method,
+    status: result.status,
+    statusText: result.statusText,
+    redirected: result.redirected,
+    location: result.location || null,
+    contentType: result.contentType || null,
+    bodySha256: canonicalJsonSha256(result.body),
+  });
+  return finalizeEffectIntentV2(intent, {
+    providerAcknowledgement: "provider_response",
+    providerAcknowledgementId:
+      `http_ack_${acknowledgementSha256.slice(0, 55)}`,
+    providerAcknowledgementSha256: acknowledgementSha256,
+    verificationMethod: "read_after_write",
+    verificationState: "unverifiable",
+    verificationReasonCode: "read_unavailable",
+    observedTargetStateSha256: null,
+  });
 }
 
 async function validateHttpRequestForApproval(

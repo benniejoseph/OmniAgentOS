@@ -1287,8 +1287,7 @@ function assertEffectReceiptV2Finalization(input: {
     terminal.actorId !== validated.actorId ||
     terminal.toolId !== validated.toolId ||
     terminal.status !== "executed" ||
-    terminal.dryRun ||
-    toolInputSha256(terminal.input) !== validated.inputSha256
+    terminal.dryRun
   ) {
     throw new Error(
       "Effect-receipt v2 does not match the claimed terminal execution.",
@@ -1466,13 +1465,20 @@ function assertEffectIntentV2RecordBinding(
   const expectedToolContractSha256 = approvalFingerprint
     ? canonicalJsonSha256({ approvalFingerprint })
     : undefined;
+  const claimedInputSha256 = record.status === "executing"
+    ? toolInputSha256(
+        record.approvalRequired
+          ? openToolExecutionInput(record)
+          : record.input,
+      )
+    : intent.inputSha256;
   if (
     record.id !== intent.executionId ||
     normalizeTenantId(record.tenantId) !== intent.tenantId ||
     record.actorId !== intent.actorId ||
     record.toolId !== intent.toolId ||
     record.dryRun ||
-    toolInputSha256(record.input) !== intent.inputSha256
+    claimedInputSha256 !== intent.inputSha256
   ) {
     throw new Error(
       "Effect intent does not match the claimed live tool execution.",
