@@ -734,7 +734,7 @@ function workerReleaseActivationArgs() {
       'kill -0 "$worker_pid"',
       'kill -USR1 "$worker_pid"',
       "attempt=0",
-      `while [ "$attempt" -lt 20 ]; do marker_revision=""; if IFS= read -r marker_revision < ${WORKER_RELEASE_ACTIVATION_FILE} && [ "$marker_revision" = "$expected_revision" ] && kill -0 "$worker_pid"; then exit 0; fi; attempt=$((attempt + 1)); sleep 1; done`,
+      `while [ "$attempt" -lt 20 ]; do marker_revision=""; if [ -r ${WORKER_RELEASE_ACTIVATION_FILE} ] && IFS= read -r marker_revision < ${WORKER_RELEASE_ACTIVATION_FILE} && [ "$marker_revision" = "$expected_revision" ] && kill -0 "$worker_pid"; then exit 0; fi; attempt=$((attempt + 1)); sleep 1; done`,
       "exit 1",
     ]),
   ];

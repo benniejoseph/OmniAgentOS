@@ -526,14 +526,14 @@ describe("dedicated worker startup cadence", () => {
     expect(child.kill("SIGHUP")).toBe(true);
     await waitFor(() => canonicalFast.length === 1);
     expect(child.kill("SIGUSR1")).toBe(true);
-    await waitFor(() => canonicalFast.length >= 3);
+    await waitFor(() => canonicalFast.length >= 2);
 
-    expect(canonicalFast.slice(0, 3).map(({ startup }) => startup)).toEqual([
-      true,
+    expect(canonicalFast.slice(0, 2).map(({ startup }) => startup)).toEqual([
       true,
       undefined,
     ]);
-    expect(canonicalFast[2].at - canonicalFast[1].at).toBeGreaterThanOrEqual(250);
+    expect(canonicalFast[1].at - canonicalFast[0].at).toBeGreaterThanOrEqual(250);
+    expect(canonicalFast[1].at - canonicalFast[0].at).toBeLessThan(500);
 
     const exit = once(child, "exit");
     child.kill("SIGTERM");
