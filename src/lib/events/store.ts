@@ -124,7 +124,10 @@ export async function appendDomainEvent(
     at: new Date().toISOString(),
   };
 
-  if (hasDatabaseUrl()) {
+  // An explicitly injected SQL client is already a database boundary. Honor
+  // it even when the ambient runtime has no DATABASE_URL so owner-only
+  // ceremony and migration transactions cannot silently fall back to files.
+  if (options.sql || hasDatabaseUrl()) {
     if (!options.sql) {
       await ensureDatabaseSchema();
     }
