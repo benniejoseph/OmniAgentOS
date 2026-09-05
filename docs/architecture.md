@@ -464,8 +464,33 @@ least-privilege ACL/RLS access may a governed writer create and activate the
 exact management grant under a separately versioned event contract. A separate
 later v54 lifecycle writer may then live-lock that active grant, its canonical
 grantee, and its exact subject while creating, activating, or revoking the
-subject's membership epoch and event in one transaction. Entitlement-management authority is
-deliberately not part of v56 and follows only after that membership root exists.
+subject's membership epoch and event in one transaction. Entitlement-management
+authority is deliberately not part of v56 and follows only after that
+membership root exists.
+
+The following contract-only slice mirrors one v56 row as a strict, frozen
+record with `schemaVersion`, `tenantId`, `subjectActorId`, `granteeActorId`,
+`managementAuthorityId`, `authorityGeneration`, `state`, `lifecycleRevision`,
+`createdByActorId`, `activatedByActorId`, `revokedByActorId`, `createdAt`,
+`activatedAt`, `revokedAt`, and `updatedAt`. Transition attribution remains
+explicit, including null fields: held revision 0 uses the creator and creation
+time, active revision 1 uses the activation actor and time, and direct or
+post-activation revocation uses the revocation actor and time at revision 1 or
+2 respectively.
+
+The same pure module fixes
+`memory.membership_management_authority.{held,activated,revoked}` with
+`payloadKind: "memory_membership_management_authority"`. Each closed payload
+requires the exact row identity, state, revision, state-specific decision actor
+and time, plus a required opaque `governanceDecisionId`. Its structural binding
+proves only record/event equality and lifecycle attribution. The governance
+coordinate is evidence, not bootstrap approval or permission, and its trust
+source and lifecycle remain a separate unmodeled prerequisite. Because v56 has
+no matching column, the helper validates this opaque ID's shape but neither
+binds nor authenticates it. This slice has
+no database or event-store import, writer, event append, registry or serving
+import, or call site. It leaves the v56 activation constraint, RLS/ACL barriers,
+zero-row state, and every earlier physical and runtime hold unchanged.
 
 Migration v50 adds an owner-only, append-only auth-user actor-identifier
 shadow. It records each v46 canonical actor as a self identifier and each exact

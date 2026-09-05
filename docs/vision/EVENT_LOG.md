@@ -445,15 +445,16 @@ facts. Events may reference the versioned notice contract, digest, receipt,
 purpose, consent generation, and membership epoch, but must not duplicate the
 notice text, credentials, private content, or model reasoning.
 
-The following contract-only slice fixes the future memory-authority event
-vocabulary in `src/lib/memory/authority-contracts.ts`; it does not append an
-event. Every closed payload uses event payload `schemaVersion: 1`. The separate
+Contract-only slices fix the future memory-authority event vocabulary in
+`src/lib/memory/authority-contracts.ts`; they do not append events. Every closed
+payload uses event payload `schemaVersion: 1`. The separate
 `recordSchemaVersion` follows the underlying row contract: version 1 for
-membership epoch, purpose entitlement, and informed-notice receipt, and version
-2 for purpose consent.
+membership-management authority, membership epoch, purpose entitlement, and
+informed-notice receipt, and version 2 for purpose consent.
 
 | Stable event family | Exact metadata-only payload coordinates after `schemaVersion`, `recordSchemaVersion`, and `payloadKind` |
 | --- | --- |
+| `memory.membership_management_authority.held`, `.activated`, `.revoked` (`payloadKind: "memory_membership_management_authority"`) | `tenantId`, `subjectActorId`, `granteeActorId`, `managementAuthorityId`, `authorityGeneration`, `governanceDecisionId`, `decisionActorId`, `decisionAt`, `state`, `lifecycleRevision` |
 | `memory.membership_epoch.held`, `.activated`, `.revoked` (`payloadKind: "memory_membership_epoch"`) | `tenantId`, `subjectActorId`, `membershipEpoch`, `decisionActorId`, `membershipManagementAuthorityId`, `decisionAt`, `state`, `lifecycleRevision` |
 | `memory.purpose_entitlement.held`, `.activated`, `.revoked` (`payloadKind: "memory_purpose_entitlement"`) | `tenantId`, `purposeId`, `entitlementGeneration`, `decisionActorId`, `decisionMembershipEpoch`, `entitlementManagementAuthorityId`, `decisionAt`, `state`, `lifecycleRevision` |
 | `memory.informed_notice_receipt.recorded` (`payloadKind: "memory_informed_notice_receipt"`) | `tenantId`, `subjectActorId`, `purposeId`, `consentGeneration`, `membershipEpoch`, `noticeReceiptId`, `noticeContractId`, `noticeContractVersion`, `noticeSha256`, `presentedAt`, `acknowledgedByActorId`, `acknowledgedAt` |
@@ -508,13 +509,32 @@ leaves the v45 and v48-v55 event and database holds unchanged.
 
 Eventful work remains dependency ordered. An explicitly reviewed
 bootstrap-governance decision and a separately reviewed activation/ACL/RLS
-cutover must precede the future management-grant writer and its versioned event
-contract. Only afterward may a separate v54 lifecycle writer lock that exact
+cutover must precede the future management-grant writer, event append, and
+event-store integration. Only afterward may a separate v54 lifecycle writer lock that exact
 active grant and append the existing
 `memory.membership_epoch.{held,activated,revoked}` event in the same transaction
-as the matching epoch transition. The grant-lifecycle event contract and the
-distinct entitlement-management authority are later contracts; v56 defines or
-emits neither.
+as the matching epoch transition. V56 defines or emits no grant-lifecycle event,
+and the distinct entitlement-management authority remains a later contract.
+
+The following pure contract slice defines that grant-lifecycle vocabulary but
+still emits no event. Its strict frozen record mirrors every v56 field:
+`schemaVersion`, `tenantId`, `subjectActorId`, `granteeActorId`,
+`managementAuthorityId`, `authorityGeneration`, `state`, `lifecycleRevision`,
+`createdByActorId`, `activatedByActorId`, `revokedByActorId`, `createdAt`,
+`activatedAt`, `revokedAt`, and `updatedAt`. Its event payload carries the exact
+record identity, state and revision, state-specific `decisionActorId` and
+`decisionAt`, and a required opaque `governanceDecisionId`. Structural binding
+requires exact record/event coordinates and maps held to creation attribution,
+active to activation attribution, and revoked to revocation attribution. That
+equality is evidence only; it proves neither a live/current row nor governance
+approval. Because v56 has no governance-decision column, the helper validates
+the opaque ID's shape but deliberately cannot bind or authenticate it.
+
+Bootstrap-governance authority, its decision lifecycle, and its trust source
+remain deliberately unmodeled. The contract module has no database or event-log
+import, writer, append, registry or serving import, or call site. It creates no
+row or event and leaves the v56 activation hold, forced RLS, owner-only ACLs,
+zero-row postflight, and every earlier event and runtime hold unchanged.
 
 Before any v55 notice, receipt, or consent writer can emit events, its existing
 exact postflight must become a shared read-only verifier required by that

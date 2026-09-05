@@ -1,10 +1,18 @@
 import { z } from "zod";
 
 export const MEMORY_AUTHORITY_EVENT_PAYLOAD_SCHEMA_VERSION = 1 as const;
+export const MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_RECORD_SCHEMA_VERSION =
+  1 as const;
 export const MEMORY_MEMBERSHIP_EPOCH_RECORD_SCHEMA_VERSION = 1 as const;
 export const MEMORY_PURPOSE_ENTITLEMENT_RECORD_SCHEMA_VERSION = 1 as const;
 export const MEMORY_INFORMED_NOTICE_RECEIPT_RECORD_SCHEMA_VERSION = 1 as const;
 export const MEMORY_PURPOSE_CONSENT_RECORD_SCHEMA_VERSION = 2 as const;
+
+export const MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES = Object.freeze({
+  held: "memory.membership_management_authority.held",
+  active: "memory.membership_management_authority.activated",
+  revoked: "memory.membership_management_authority.revoked",
+} as const);
 
 export const MEMORY_MEMBERSHIP_EPOCH_EVENT_TYPES = Object.freeze({
   held: "memory.membership_epoch.held",
@@ -28,6 +36,9 @@ export const MEMORY_PURPOSE_CONSENT_EVENT_TYPES = Object.freeze({
 } as const);
 
 export const memoryAuthorityEventTypeSchema = z.enum([
+  MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES.held,
+  MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES.active,
+  MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES.revoked,
   MEMORY_MEMBERSHIP_EPOCH_EVENT_TYPES.held,
   MEMORY_MEMBERSHIP_EPOCH_EVENT_TYPES.active,
   MEMORY_MEMBERSHIP_EPOCH_EVENT_TYPES.revoked,
@@ -93,6 +104,132 @@ export const memoryPurposeConsentLifecycleStateSchema = z.enum([
 const payloadEnvelopeShape = {
   schemaVersion: z.literal(MEMORY_AUTHORITY_EVENT_PAYLOAD_SCHEMA_VERSION),
 };
+
+const membershipManagementAuthorityRecordBaseSchema = z
+  .object({
+    schemaVersion: z.literal(
+      MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_RECORD_SCHEMA_VERSION,
+    ),
+    tenantId: opaqueIdSchema,
+    subjectActorId: canonicalActorIdSchema,
+    granteeActorId: canonicalActorIdSchema,
+    managementAuthorityId: opaqueIdSchema,
+    authorityGeneration: positiveSafeIntegerSchema,
+    createdByActorId: canonicalActorIdSchema,
+    createdAt: canonicalTimestampSchema,
+    updatedAt: canonicalTimestampSchema,
+  })
+  .strict();
+
+const membershipManagementAuthorityHeldRecordSchema =
+  membershipManagementAuthorityRecordBaseSchema.extend({
+    state: z.literal("held"),
+    lifecycleRevision: z.literal(0),
+    activatedByActorId: z.null(),
+    revokedByActorId: z.null(),
+    activatedAt: z.null(),
+    revokedAt: z.null(),
+  });
+
+const membershipManagementAuthorityActiveRecordSchema =
+  membershipManagementAuthorityRecordBaseSchema.extend({
+    state: z.literal("active"),
+    lifecycleRevision: z.literal(1),
+    activatedByActorId: canonicalActorIdSchema,
+    revokedByActorId: z.null(),
+    activatedAt: canonicalTimestampSchema,
+    revokedAt: z.null(),
+  });
+
+const membershipManagementAuthorityHeldRevokedRecordSchema =
+  membershipManagementAuthorityRecordBaseSchema.extend({
+    state: z.literal("revoked"),
+    lifecycleRevision: z.literal(1),
+    activatedByActorId: z.null(),
+    revokedByActorId: canonicalActorIdSchema,
+    activatedAt: z.null(),
+    revokedAt: canonicalTimestampSchema,
+  });
+
+const membershipManagementAuthorityActiveRevokedRecordSchema =
+  membershipManagementAuthorityRecordBaseSchema.extend({
+    state: z.literal("revoked"),
+    lifecycleRevision: z.literal(2),
+    activatedByActorId: canonicalActorIdSchema,
+    revokedByActorId: canonicalActorIdSchema,
+    activatedAt: canonicalTimestampSchema,
+    revokedAt: canonicalTimestampSchema,
+  });
+
+/**
+ * Mirrors the lifecycle shapes reserved by the v56 row contract. V56 currently
+ * permits only held rows; successful parsing does not prove that a shape is
+ * reachable, that a row exists or is current, or that it grants authority.
+ */
+export const memoryMembershipManagementAuthorityRecordV1Schema = z
+  .union([
+    membershipManagementAuthorityHeldRecordSchema,
+    membershipManagementAuthorityActiveRecordSchema,
+    membershipManagementAuthorityHeldRevokedRecordSchema,
+    membershipManagementAuthorityActiveRevokedRecordSchema,
+  ])
+  .superRefine(requireMembershipManagementAuthorityRecordChronology);
+
+export type MemoryMembershipManagementAuthorityRecordV1 = z.infer<
+  typeof memoryMembershipManagementAuthorityRecordV1Schema
+>;
+
+const membershipManagementAuthorityPayloadBaseSchema = z
+  .object({
+    ...payloadEnvelopeShape,
+    recordSchemaVersion: z.literal(
+      MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_RECORD_SCHEMA_VERSION,
+    ),
+    payloadKind: z.literal("memory_membership_management_authority"),
+    tenantId: opaqueIdSchema,
+    subjectActorId: canonicalActorIdSchema,
+    granteeActorId: canonicalActorIdSchema,
+    managementAuthorityId: opaqueIdSchema,
+    authorityGeneration: positiveSafeIntegerSchema,
+    governanceDecisionId: opaqueIdSchema,
+    decisionActorId: canonicalActorIdSchema,
+    decisionAt: canonicalTimestampSchema,
+  })
+  .strict();
+
+const membershipManagementAuthorityHeldPayloadSchema =
+  membershipManagementAuthorityPayloadBaseSchema.extend({
+    state: z.literal("held"),
+    lifecycleRevision: z.literal(0),
+  });
+
+const membershipManagementAuthorityActivePayloadSchema =
+  membershipManagementAuthorityPayloadBaseSchema.extend({
+    state: z.literal("active"),
+    lifecycleRevision: z.literal(1),
+  });
+
+const membershipManagementAuthorityRevokedPayloadSchema =
+  membershipManagementAuthorityPayloadBaseSchema.extend({
+    state: z.literal("revoked"),
+    lifecycleRevision: z.union([z.literal(1), z.literal(2)]),
+  });
+
+/**
+ * Records metadata-only lifecycle evidence. `governanceDecisionId` is an
+ * opaque cross-record coordinate, not proof that governance approved the
+ * transition; even an `active` payload grants no authority by itself.
+ */
+export const memoryMembershipManagementAuthorityEventPayloadV1Schema =
+  z.discriminatedUnion("state", [
+    membershipManagementAuthorityHeldPayloadSchema,
+    membershipManagementAuthorityActivePayloadSchema,
+    membershipManagementAuthorityRevokedPayloadSchema,
+  ]);
+
+export type MemoryMembershipManagementAuthorityEventPayloadV1 = z.infer<
+  typeof memoryMembershipManagementAuthorityEventPayloadV1Schema
+>;
 
 const membershipEpochPayloadBaseSchema = z
   .object({
@@ -281,6 +418,29 @@ export type MemoryPurposeConsentEventPayloadV1 = z.infer<
   typeof memoryPurposeConsentEventPayloadV1Schema
 >;
 
+const membershipManagementAuthorityHeldEventV1Schema = pairedEventSchema(
+  MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES.held,
+  membershipManagementAuthorityHeldPayloadSchema,
+);
+const membershipManagementAuthorityActiveEventV1Schema = pairedEventSchema(
+  MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES.active,
+  membershipManagementAuthorityActivePayloadSchema,
+);
+const membershipManagementAuthorityRevokedEventV1Schema = pairedEventSchema(
+  MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES.revoked,
+  membershipManagementAuthorityRevokedPayloadSchema,
+);
+
+export const memoryMembershipManagementAuthorityEventV1Schema = z.union([
+  membershipManagementAuthorityHeldEventV1Schema,
+  membershipManagementAuthorityActiveEventV1Schema,
+  membershipManagementAuthorityRevokedEventV1Schema,
+]);
+
+export type MemoryMembershipManagementAuthorityEventV1 = z.infer<
+  typeof memoryMembershipManagementAuthorityEventV1Schema
+>;
+
 const membershipEpochHeldEventV1Schema = pairedEventSchema(
   MEMORY_MEMBERSHIP_EPOCH_EVENT_TYPES.held,
   membershipEpochHeldPayloadSchema,
@@ -360,6 +520,9 @@ export type MemoryPurposeConsentEventV1 = z.infer<
 >;
 
 export const memoryAuthorityEventV1Schema = z.union([
+  membershipManagementAuthorityHeldEventV1Schema,
+  membershipManagementAuthorityActiveEventV1Schema,
+  membershipManagementAuthorityRevokedEventV1Schema,
   membershipEpochHeldEventV1Schema,
   membershipEpochActiveEventV1Schema,
   membershipEpochRevokedEventV1Schema,
@@ -379,6 +542,9 @@ export type MemoryAuthorityEventV1 = z.infer<
 type PayloadEnvelopeKey = "schemaVersion" | "recordSchemaVersion" | "payloadKind";
 type BuildPayloadInput<T> = T extends unknown ? Omit<T, PayloadEnvelopeKey> : never;
 
+export type BuildMemoryMembershipManagementAuthorityEventV1Input = Readonly<
+  BuildPayloadInput<MemoryMembershipManagementAuthorityEventPayloadV1>
+>;
 export type BuildMemoryMembershipEpochEventV1Input = Readonly<
   BuildPayloadInput<MemoryMembershipEpochEventPayloadV1>
 >;
@@ -391,6 +557,22 @@ export type BuildMemoryInformedNoticeReceiptEventV1Input = Readonly<
 export type BuildMemoryPurposeConsentEventV1Input = Readonly<
   BuildPayloadInput<MemoryPurposeConsentEventPayloadV1>
 >;
+
+export function buildMemoryMembershipManagementAuthorityEventV1(
+  input: BuildMemoryMembershipManagementAuthorityEventV1Input,
+): MemoryMembershipManagementAuthorityEventV1 {
+  const payload = parseMemoryMembershipManagementAuthorityEventPayloadV1({
+    ...input,
+    schemaVersion: MEMORY_AUTHORITY_EVENT_PAYLOAD_SCHEMA_VERSION,
+    recordSchemaVersion:
+      MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_RECORD_SCHEMA_VERSION,
+    payloadKind: "memory_membership_management_authority",
+  });
+  return parseMemoryMembershipManagementAuthorityEventV1({
+    type: MEMORY_MEMBERSHIP_MANAGEMENT_AUTHORITY_EVENT_TYPES[payload.state],
+    payload,
+  });
+}
 
 export function buildMemoryMembershipEpochEventV1(
   input: BuildMemoryMembershipEpochEventV1Input,
@@ -452,6 +634,22 @@ export function buildMemoryPurposeConsentEventV1(
   });
 }
 
+export function parseMemoryMembershipManagementAuthorityRecordV1(
+  value: unknown,
+): MemoryMembershipManagementAuthorityRecordV1 {
+  return freezeFlat(
+    memoryMembershipManagementAuthorityRecordV1Schema.parse(value),
+  );
+}
+
+export function parseMemoryMembershipManagementAuthorityEventPayloadV1(
+  value: unknown,
+): MemoryMembershipManagementAuthorityEventPayloadV1 {
+  return freezeFlat(
+    memoryMembershipManagementAuthorityEventPayloadV1Schema.parse(value),
+  );
+}
+
 export function parseMemoryMembershipEpochEventPayloadV1(
   value: unknown,
 ): MemoryMembershipEpochEventPayloadV1 {
@@ -476,6 +674,14 @@ export function parseMemoryPurposeConsentEventPayloadV1(
   value: unknown,
 ): MemoryPurposeConsentEventPayloadV1 {
   return freezeFlat(memoryPurposeConsentEventPayloadV1Schema.parse(value));
+}
+
+export function parseMemoryMembershipManagementAuthorityEventV1(
+  value: unknown,
+): MemoryMembershipManagementAuthorityEventV1 {
+  return freezeEvent(
+    memoryMembershipManagementAuthorityEventV1Schema.parse(value),
+  );
 }
 
 export function parseMemoryMembershipEpochEventV1(
@@ -506,6 +712,91 @@ export function parseMemoryAuthorityEventV1(
   value: unknown,
 ): MemoryAuthorityEventV1 {
   return freezeEvent(memoryAuthorityEventV1Schema.parse(value));
+}
+
+export type MemoryMembershipManagementAuthorityRecordEventBindingV1 = Readonly<{
+  tenantId: string;
+  subjectActorId: string;
+  granteeActorId: string;
+  managementAuthorityId: string;
+  authorityGeneration: number;
+  state: "held" | "active" | "revoked";
+  lifecycleRevision: 0 | 1 | 2;
+  decisionActorId: string;
+  decisionAt: string;
+}>;
+
+/**
+ * Proves only that one lifecycle event names the exact v56 record coordinates,
+ * state, revision, and state-specific decision attribution. It does not prove
+ * that the row exists, is current or active, that the governance decision is
+ * valid, or that any actor is authorized to change membership.
+ */
+export function assertMemoryMembershipManagementAuthorityRecordEventBindingV1(
+  recordValue: unknown,
+  eventValue: unknown,
+): MemoryMembershipManagementAuthorityRecordEventBindingV1 {
+  const record = parseMemoryMembershipManagementAuthorityRecordV1(recordValue);
+  const event = parseMemoryMembershipManagementAuthorityEventV1(eventValue);
+  const payload = event.payload;
+  const coordinateFields = [
+    "tenantId",
+    "subjectActorId",
+    "granteeActorId",
+    "managementAuthorityId",
+    "authorityGeneration",
+    "state",
+    "lifecycleRevision",
+  ] as const;
+
+  for (const field of coordinateFields) {
+    if (record[field] !== payload[field]) {
+      throw new Error(
+        `Membership management authority structural binding mismatch at ${field}; ` +
+          "coordinate equality does not authorize a membership change.",
+      );
+    }
+  }
+
+  const expectedDecision = record.state === "held"
+    ? {
+        actorId: record.createdByActorId,
+        at: record.createdAt,
+      }
+    : record.state === "active"
+      ? {
+          actorId: record.activatedByActorId,
+          at: record.activatedAt,
+        }
+      : {
+          actorId: record.revokedByActorId,
+          at: record.revokedAt,
+        };
+
+  if (payload.decisionActorId !== expectedDecision.actorId) {
+    throw new Error(
+      "Membership management authority structural binding mismatch at " +
+        "decisionActorId; coordinate equality does not authorize a membership change.",
+    );
+  }
+  if (payload.decisionAt !== expectedDecision.at) {
+    throw new Error(
+      "Membership management authority structural binding mismatch at decisionAt; " +
+        "coordinate equality does not authorize a membership change.",
+    );
+  }
+
+  return Object.freeze({
+    tenantId: record.tenantId,
+    subjectActorId: record.subjectActorId,
+    granteeActorId: record.granteeActorId,
+    managementAuthorityId: record.managementAuthorityId,
+    authorityGeneration: record.authorityGeneration,
+    state: record.state,
+    lifecycleRevision: record.lifecycleRevision,
+    decisionActorId: payload.decisionActorId,
+    decisionAt: payload.decisionAt,
+  });
 }
 
 export type MemoryConsentReceiptStructuralBindingV1 = Readonly<{
@@ -553,6 +844,73 @@ export function assertMemoryConsentReceiptStructuralBindingV1(
     membershipEpoch: receipt.membershipEpoch,
     noticeReceiptId: receipt.noticeReceiptId,
   });
+}
+
+function requireMembershipManagementAuthorityRecordChronology(
+  record: {
+    state: "held" | "active" | "revoked";
+    createdAt: string;
+    activatedAt: string | null;
+    revokedAt: string | null;
+    updatedAt: string;
+  },
+  context: z.RefinementCtx,
+) {
+  const createdAt = Date.parse(record.createdAt);
+  const activatedAt = record.activatedAt === null
+    ? null
+    : Date.parse(record.activatedAt);
+  const revokedAt = record.revokedAt === null
+    ? null
+    : Date.parse(record.revokedAt);
+  const updatedAt = Date.parse(record.updatedAt);
+
+  if (createdAt > updatedAt) {
+    context.addIssue({
+      code: "custom",
+      message: "A membership management authority cannot predate its creation.",
+      path: ["updatedAt"],
+    });
+  }
+  if (activatedAt !== null && createdAt > activatedAt) {
+    context.addIssue({
+      code: "custom",
+      message: "A membership management authority cannot activate before creation.",
+      path: ["activatedAt"],
+    });
+  }
+  if (revokedAt !== null && createdAt > revokedAt) {
+    context.addIssue({
+      code: "custom",
+      message: "A membership management authority cannot revoke before creation.",
+      path: ["revokedAt"],
+    });
+  }
+  if (
+    activatedAt !== null &&
+    revokedAt !== null &&
+    activatedAt > revokedAt
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "A membership management authority cannot revoke before activation.",
+      path: ["revokedAt"],
+    });
+  }
+
+  const expectedUpdatedAt = record.state === "held"
+    ? record.createdAt
+    : record.state === "active"
+      ? record.activatedAt
+      : record.revokedAt;
+  if (record.updatedAt !== expectedUpdatedAt) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "A membership management authority update timestamp must equal its latest transition.",
+      path: ["updatedAt"],
+    });
+  }
 }
 
 function requireConsentSelfDecision(
