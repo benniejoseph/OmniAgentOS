@@ -1,6 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { captureBrowserFrameAfterToolSafely } from "@/lib/browser/frames";
+import {
+  createGoogleCalendarEvent,
+  googleCalendarCreateSchema,
+  googleCalendarEventId,
+  googleCalendarTargetState,
+  reconcileGoogleCalendarEvent,
+} from "@/lib/connectors/google-calendar-write";
 import { embedTexts } from "@/lib/openai/client";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import { validateConnectorInput } from "@/lib/connectors/input-validation";
@@ -64,6 +71,7 @@ import {
   createToolExecutionRecord,
   getToolExecution,
   getToolExecutionApprovalFingerprint,
+  getToolExecutionEffectIntentV2,
   persistClaimedToolEffectIntentV2,
   reclaimStaleMemoryForgetToolExecutionClaim,
   repairFileToolEffectReceiptEvent,
@@ -427,6 +435,37 @@ export async function executeGovernedTool({
       }
     }
   }
+  if (
+    !dryRun &&
+    tool.id === "calendar.create" &&
+    existingRecord?.status === "executing" &&
+    executionClaimToken &&
+    executionClaimTokenFromRecord(existingRecord) === executionClaimToken &&
+    Boolean(getToolExecutionEffectIntentV2(existingRecord))
+  ) {
+    const parsedCalendarInput = googleCalendarCreateSchema.safeParse(input);
+    if (parsedCalendarInput.success) {
+      const scopedCalendarRequest = await resolveToolExecutionScopeRequest({
+        record: existingRecord,
+        toolInput: parsedCalendarInput.data,
+        requestedScope: executionScope,
+        context,
+        executionClaimToken,
+        mcpSessionScope,
+      });
+      const reconciled = await reconcileExistingGoogleCalendarEffect({
+        record: existingRecord,
+        tool,
+        preparedInput: parsedCalendarInput.data,
+        effectBinding,
+        executionScope: scopedCalendarRequest.executionScope,
+        abortSignal,
+      });
+      if (reconciled) {
+        return { record: reconciled, result: reconciled.output };
+      }
+    }
+  }
   if (existingRecord && executionClaimToken) {
     const reviewedFingerprint =
       getToolExecutionApprovalFingerprint(existingRecord);
@@ -681,6 +720,13 @@ export async function executeGovernedTool({
         tool,
         preparedInput,
         executionScope: scopedRequest.executionScope,
+      })) ?? (await reconcileExistingGoogleCalendarEffect({
+        record: existing,
+        tool,
+        preparedInput,
+        effectBinding,
+        executionScope: scopedRequest.executionScope,
+        abortSignal,
       }));
       if (
         !reconciled &&
@@ -907,9 +953,10 @@ export async function executeGovernedTool({
       status: "approval_required" as const,
       output: undefined,
     });
-    const pendingHttpEffect = prepareHttpEffectMaterial(
+    const pendingProviderEffect = prepareProviderEffectMaterial(
       tool,
       preparedInput,
+      pendingRecord.id,
     );
     const record = {
       ...pendingRecord,
@@ -917,10 +964,10 @@ export async function executeGovernedTool({
         preparedInput,
         pendingRecord,
         toolApprovalFingerprint(tool),
-        pendingHttpEffect
+        pendingProviderEffect
           ? {
               approvalMaterialBindingSha256:
-                pendingHttpEffect.approvalBindingSha256,
+                pendingProviderEffect.approvalBindingSha256,
             }
           : {},
       ),
@@ -965,6 +1012,11 @@ export async function executeGovernedTool({
       executionId: intendedExecutionId,
       idempotencyKey,
     });
+    const intendedProviderEffect = prepareProviderEffectMaterial(
+      tool,
+      preparedInput,
+      intendedExecutionId,
+    );
     const intent = createToolExecutionRecord({
       ...baseRecord,
       status: "executing",
@@ -1003,6 +1055,12 @@ export async function executeGovernedTool({
         preparedInput,
         intent,
         toolApprovalFingerprint(tool),
+        intendedProviderEffect
+          ? {
+              approvalMaterialBindingSha256:
+                intendedProviderEffect.approvalBindingSha256,
+            }
+          : {},
       ),
     };
     let claim: Awaited<ReturnType<typeof claimIdempotentToolExecution>>;
@@ -1062,6 +1120,13 @@ export async function executeGovernedTool({
         tool,
         preparedInput,
         executionScope: scopedRequest.executionScope,
+      })) ?? (await reconcileExistingGoogleCalendarEffect({
+        record: claim.record,
+        tool,
+        preparedInput,
+        effectBinding,
+        executionScope: scopedRequest.executionScope,
+        abortSignal,
       }));
       const recovered =
         !intendedEffectContext &&
@@ -1138,12 +1203,23 @@ export async function executeGovernedTool({
         },
       },
     });
+    const intendedProviderEffect = prepareProviderEffectMaterial(
+      tool,
+      preparedInput,
+      intent.id,
+    );
     intent.output = {
       ...asObjectRecord(intent.output),
       ...sealToolExecutionInput(
         preparedInput,
         intent,
         toolApprovalFingerprint(tool),
+        intendedProviderEffect
+          ? {
+              approvalMaterialBindingSha256:
+                intendedProviderEffect.approvalBindingSha256,
+            }
+          : {},
       ),
     };
     executionRecord = await saveToolExecution(intent);
@@ -1184,8 +1260,12 @@ export async function executeGovernedTool({
       }
     }
     let providerEffectIntent: EffectIntentV2 | undefined;
-    const httpEffectMaterial = prepareHttpEffectMaterial(tool, preparedInput);
-    if (httpEffectMaterial) {
+    const providerEffectMaterial = prepareProviderEffectMaterial(
+      tool,
+      preparedInput,
+      executionRecord?.id,
+    );
+    if (providerEffectMaterial) {
       try {
         if (
           !executionRecord ||
@@ -1196,11 +1276,12 @@ export async function executeGovernedTool({
             "A mutating HTTP request requires a claimed scoped execution.",
           );
         }
-        providerEffectIntent = buildHttpEffectIntent({
+        providerEffectIntent = buildProviderEffectIntent({
           record: executionRecord,
           tool,
-          material: httpEffectMaterial,
+          material: providerEffectMaterial,
           executionScope: scopedRequest.executionScope,
+          effectBinding,
         });
         const persistedIntent = await persistClaimedToolEffectIntentV2({
           recordId: executionRecord.id,
@@ -1225,7 +1306,7 @@ export async function executeGovernedTool({
         abortSignal,
         mcpSessionScope,
         scopedRequest.binding?.executionScope || executionScope,
-        effectContext?.targetId,
+        effectContext?.targetId || providerEffectIntent?.targetId,
         executionRecord?.createdAt,
       );
     } catch (error) {
@@ -1242,7 +1323,7 @@ export async function executeGovernedTool({
             context: effectContext,
           })
         : providerEffectIntent
-          ? finalizeHttpEffectIntent(providerEffectIntent, result)
+          ? finalizeProviderEffectIntent(tool, providerEffectIntent, result)
           : undefined;
     } catch (error) {
       throw new EffectReceiptFinalizationError({ cause: error });
@@ -1513,11 +1594,54 @@ async function assertExistingScopedToolReceipt(input: {
   const hasEffectReceipt = input.record.effectReceipt !== undefined;
   if (!input.effectBinding) {
     if (hasEffectReceipt) {
-      throw new Error(
-        "A workflow effect receipt cannot be reused without its persisted execution binding.",
-      );
+      const intent = getToolExecutionEffectIntentV2(input.record);
+      if (
+        !intent ||
+        intent.executionKind !== "direct" ||
+        intent.inputSha256 !== toolInputSha256(input.toolInput) ||
+        intent.tenantId !== normalizeTenantId(input.context?.tenantId) ||
+        intent.actorId !== input.context?.actorId
+      ) {
+        throw new Error(
+          "A direct effect receipt does not match its persisted execution binding.",
+        );
+      }
     }
     return;
+  }
+  if (input.tool.id === "calendar.create") {
+    if (!resolved.executionScope) {
+      throw new Error("Calendar workflow receipt is missing its execution scope.");
+    }
+    const intent = getToolExecutionEffectIntentV2(input.record);
+    const material = prepareProviderEffectMaterial(
+      input.tool,
+      input.toolInput,
+      input.record.id,
+    );
+    if (!intent || !material) {
+      throw new Error("Calendar workflow effect intent is missing.");
+    }
+    const expected = buildProviderEffectIntent({
+      record: input.record,
+      tool: input.tool,
+      material,
+      executionScope: resolved.executionScope,
+      effectBinding: input.effectBinding,
+    });
+    if (intent.effectIntentSha256 !== expected.effectIntentSha256) {
+      throw new Error("Calendar workflow effect intent does not match its reviewed plan.");
+    }
+    if (input.record.status === "executing" && !hasEffectReceipt) return;
+    if (
+      input.record.status === "executed" &&
+      input.record.effectReceipt?.schemaVersion === 2 &&
+      input.record.effectReceipt.executionId === intent.executionId &&
+      input.record.effectReceipt.inputSha256 === intent.inputSha256 &&
+      input.record.effectReceipt.targetId === intent.targetId &&
+      input.record.effectReceipt.expectedTargetStateSha256 === intent.expectedTargetStateSha256
+    ) return;
+    throw new Error("Calendar workflow effect is not in a reconcilable state.");
   }
   if (input.record.status === "executed" && !input.record.dryRun) {
     assertCompletedMemoryWriteEffectReceipt({
@@ -1757,6 +1881,86 @@ async function reconcileExistingMemoryWriteEffect(input: {
     throw new EffectReceiptFinalizationError({ cause: error });
   }
   return current;
+}
+
+async function reconcileExistingGoogleCalendarEffect(input: {
+  record: ToolExecutionRecord;
+  tool: ToolDefinition;
+  preparedInput: Record<string, unknown>;
+  effectBinding?: GovernedToolEffectBinding;
+  executionScope?: ExecutionScope;
+  abortSignal?: AbortSignal;
+}): Promise<ToolExecutionRecord | undefined> {
+  if (
+    input.record.status !== "executing" ||
+    input.tool.id !== "calendar.create" ||
+    !input.executionScope?.initiatingActorId
+  ) return undefined;
+  const claimToken = executionClaimTokenFromRecord(input.record);
+  if (!claimToken) return undefined;
+  let intent: EffectIntentV2;
+  try {
+    intent = getToolExecutionEffectIntentV2(input.record) as EffectIntentV2;
+    const material = prepareProviderEffectMaterial(
+      input.tool,
+      input.preparedInput,
+      input.record.id,
+    );
+    if (!material) return undefined;
+    const expected = buildProviderEffectIntent({
+      record: input.record,
+      tool: input.tool,
+      material,
+      executionScope: input.executionScope,
+      effectBinding: input.effectBinding,
+    });
+    if (intent.effectIntentSha256 !== expected.effectIntentSha256) {
+      throw new Error("Calendar reconciliation does not match the persisted effect intent.");
+    }
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  let result;
+  try {
+    result = await reconcileGoogleCalendarEvent(input.preparedInput, {
+      tenantId: input.executionScope.tenantId,
+      actorId: input.executionScope.initiatingActorId,
+      executionId: input.record.id,
+      abortSignal: input.abortSignal,
+    });
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  if (!result) return undefined;
+  let effectReceipt: ToolExecutionRecord["effectReceipt"];
+  try {
+    effectReceipt = finalizeProviderEffectIntent(input.tool, intent, result);
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  const terminalRecord: ToolExecutionRecord = {
+    ...input.record,
+    status: "executed",
+    output: redactSensitive(result),
+    effectReceipt,
+    completedAt: new Date().toISOString(),
+  };
+  try {
+    const saved = await completeClaimedToolExecution(
+      terminalRecord,
+      claimToken,
+      { executionScope: input.executionScope },
+    );
+    if (saved) return saved;
+    const current = await getToolExecution(input.record.id, {
+      tenantId: input.executionScope.tenantId,
+    });
+    return current?.status === "executed" && current.effectReceipt
+      ? current
+      : undefined;
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
 }
 
 async function reconcileExistingMemoryForgetEffect(input: {
@@ -2025,6 +2229,7 @@ function prepareMemoryWriteEffectContext(input: {
 }): PreparedMemoryWriteEffectContext | undefined {
   if (!input.effectBinding) return undefined;
   if (input.tool.id !== "memory.write") {
+    if (input.tool.id === "calendar.create") return undefined;
     throw new Error("This effect-receipt version supports memory.write only.");
   }
   if (input.tool.reversible !== true) {
@@ -2671,6 +2876,21 @@ async function runTool(
     });
   }
 
+  if (tool.id === "calendar.create") {
+    if (!context?.tenantId || !context.actorId || !idempotencyKey) {
+      throw new Error("Calendar event creation requires tenant, actor, and execution scope.");
+    }
+    return createGoogleCalendarEvent(
+      googleCalendarCreateSchema.parse(parsed),
+      {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        executionId: idempotencyKey,
+        abortSignal,
+      },
+    );
+  }
+
   if (tool.category === "mcp") {
     const mcpTool = await getMcpToolById(tool.id, { tenantId: context?.tenantId });
     if (!mcpTool) {
@@ -2828,18 +3048,44 @@ export function hasRisk3Quorum(record?: ToolExecutionRecord) {
   return distinctAdmins.size >= RISK3_QUORUM;
 }
 
-type HttpEffectMaterial = Readonly<{
+type ProviderEffectMaterial = Readonly<{
   inputSha256: string;
   approvalBindingSha256: string;
+  targetType: "http_endpoint" | "google_calendar_event";
   targetId: string;
   targetSha256: string;
   expectedTargetStateSha256: string;
 }>;
 
-function prepareHttpEffectMaterial(
+function prepareProviderEffectMaterial(
   tool: ToolDefinition,
   input: Record<string, unknown>,
-): HttpEffectMaterial | undefined {
+  executionId?: string,
+): ProviderEffectMaterial | undefined {
+  if (tool.id === "calendar.create") {
+    if (!executionId) return undefined;
+    const parsed = googleCalendarCreateSchema.parse(input);
+    const eventId = googleCalendarEventId(executionId);
+    const inputSha256 = toolInputSha256(parsed);
+    const targetSha256 = canonicalJsonSha256({
+      targetType: "google_calendar_event",
+      calendarId: parsed.calendarId,
+      eventId,
+    });
+    return Object.freeze({
+      inputSha256,
+      approvalBindingSha256: approvalMaterialBindingSha256({
+        targetSha256,
+        inputSha256,
+      }),
+      targetType: "google_calendar_event",
+      targetId: `google_calendar_event:${parsed.calendarId}:${eventId}`,
+      targetSha256,
+      expectedTargetStateSha256: canonicalJsonSha256(
+        googleCalendarTargetState(parsed, eventId),
+      ),
+    });
+  }
   if (tool.id !== "http.request") return undefined;
   const parsed = httpRequestSchema.parse(input);
   const method = parsed.method || "GET";
@@ -2858,6 +3104,7 @@ function prepareHttpEffectMaterial(
       targetSha256,
       inputSha256,
     }),
+    targetType: "http_endpoint",
     targetId,
     targetSha256,
     expectedTargetStateSha256: canonicalJsonSha256({
@@ -2868,35 +3115,54 @@ function prepareHttpEffectMaterial(
   });
 }
 
-function buildHttpEffectIntent(input: {
+function buildProviderEffectIntent(input: {
   record: ToolExecutionRecord;
   tool: ToolDefinition;
-  material: HttpEffectMaterial;
+  material: ProviderEffectMaterial;
   executionScope: ExecutionScope;
+  effectBinding?: GovernedToolEffectBinding;
 }) {
-  const { record, tool, material, executionScope } = input;
+  const { record, tool, material, executionScope, effectBinding } = input;
+  const isDirectUser = Boolean(
+    executionScope.initiatingActorId &&
+    executionScope.executingPrincipalType === "user" &&
+    executionScope.executingPrincipalId === executionScope.initiatingActorId
+  );
+  const isBoundWorkflow = Boolean(
+    tool.id === "calendar.create" &&
+    effectBinding &&
+    executionScope.initiatingActorId &&
+    executionScope.executingPrincipalType === "system" &&
+    executionScope.executingPrincipalId === `workflow:${effectBinding?.workflowRunId}`
+  );
   if (
-    !executionScope.initiatingActorId ||
-    executionScope.executingPrincipalType !== "user" ||
-    executionScope.executingPrincipalId !== executionScope.initiatingActorId
+    (tool.id === "http.request" && !isDirectUser) ||
+    (tool.id === "calendar.create" && !isDirectUser && !isBoundWorkflow)
   ) {
     throw new Error(
-      "Mutating HTTP effects currently require a directly authorized user principal.",
+      tool.id === "http.request"
+        ? "Mutating HTTP effects currently require a directly authorized user principal."
+        : "Calendar effects require a directly authorized user or an exact workflow-plan binding.",
     );
+  }
+  const actorId = executionScope.initiatingActorId;
+  const executingPrincipalId = executionScope.executingPrincipalId;
+  if (!actorId || !executingPrincipalId) {
+    throw new Error("Provider effects require a non-null initiating actor.");
   }
   return buildEffectIntentV2({
     effectMode: "live",
     reversible: tool.reversible ?? false,
-    executionKind: "direct",
+    executionKind: isBoundWorkflow ? "workflow" : "direct",
     executionId: record.id,
     tenantId: executionScope.tenantId,
-    actorId: executionScope.initiatingActorId,
+    actorId,
     executingPrincipalType: executionScope.executingPrincipalType,
-    executingPrincipalId: executionScope.executingPrincipalId,
-    workflowRunId: null,
-    planId: null,
-    planSha256: null,
-    planNodeId: null,
+    executingPrincipalId,
+    workflowRunId: isBoundWorkflow ? effectBinding?.workflowRunId || null : null,
+    planId: isBoundWorkflow ? effectBinding?.planId || null : null,
+    planSha256: isBoundWorkflow ? effectBinding?.planSha256 || null : null,
+    planNodeId: isBoundWorkflow ? effectBinding?.planNodeId || null : null,
     toolId: tool.id,
     toolContractSha256: canonicalJsonSha256({
       approvalFingerprint: toolApprovalFingerprint(tool),
@@ -2910,16 +3176,40 @@ function buildHttpEffectIntent(input: {
       tenantId: executionScope.tenantId,
       idempotencyKey: record.id,
     }),
-    targetType: "http_endpoint",
+    targetType: material.targetType,
     targetId: material.targetId,
     expectedTargetStateSha256: material.expectedTargetStateSha256,
   });
 }
 
-function finalizeHttpEffectIntent(
+function finalizeProviderEffectIntent(
+  tool: ToolDefinition,
   intent: EffectIntentV2,
   resultValue: unknown,
 ) {
+  if (tool.id === "calendar.create") {
+    const result = z.object({
+      calendarId: z.string().min(1),
+      eventId: z.string().min(1),
+      providerAcknowledgement: z.enum([
+        "provider_response",
+        "provider_idempotency_reconciliation",
+      ]),
+      providerAcknowledgementId: z.string().min(1),
+      providerAcknowledgementSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      observedTargetStateSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      htmlLink: z.string().url().optional(),
+    }).strict().parse(resultValue);
+    return finalizeEffectIntentV2(intent, {
+      providerAcknowledgement: result.providerAcknowledgement,
+      providerAcknowledgementId: result.providerAcknowledgementId,
+      providerAcknowledgementSha256: result.providerAcknowledgementSha256,
+      verificationMethod: "read_after_write",
+      verificationState: "verified",
+      verificationReasonCode: "state_matched",
+      observedTargetStateSha256: result.observedTargetStateSha256,
+    });
+  }
   const result = z.object({
     url: z.string().url(),
     method: z.enum(["POST", "PUT", "PATCH", "DELETE"]),
@@ -3347,6 +3637,10 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return httpRequestSchema.parse(input);
   }
 
+  if (tool.id === "calendar.create") {
+    return googleCalendarCreateSchema.parse(input);
+  }
+
   if (tool.category === "mcp" || tool.category === "openapi") {
     validateConnectorInput(tool.inputSchema, input);
     return input;
@@ -3413,6 +3707,14 @@ function describeSideEffects(toolId: string) {
       "outbound HTTP call to a public endpoint",
       "side effects depend on the target API and method",
       "SSRF-guarded; redirects are not followed; response is truncated in the audit record",
+    ];
+  }
+
+  if (toolId === "calendar.create") {
+    return [
+      "creates one event in the exact connected user's Google Calendar",
+      "uses a deterministic provider event ID to prevent duplicate delivery",
+      "requires read-after-write verification before reporting success",
     ];
   }
 

@@ -12,14 +12,14 @@ describe("P0.5 current-system observer", () => {
     expect(observeP05Suite(p05Suite)).toEqual(p05Baseline);
   });
 
-  it("records the remaining current gap as a hard failure", () => {
+  it("passes the complete P0.5 truth and safety contract", () => {
     const score = scoreP05Suite(p05Suite, p05Baseline);
 
     expect(score.totalCases).toBe(16);
-    expect(score.passedCases).toBe(15);
-    expect(score.scoreBasisPoints).toBe(9_375);
-    expect(score.hardFailure).toBe(true);
-    expect(score.failedSafetyCaseIds).toHaveLength(1);
+    expect(score.passedCases).toBe(16);
+    expect(score.scoreBasisPoints).toBe(10_000);
+    expect(score.hardFailure).toBe(false);
+    expect(score.failedSafetyCaseIds).toHaveLength(0);
   });
 
   it("observes a validated saved-procedure tool binding", () => {

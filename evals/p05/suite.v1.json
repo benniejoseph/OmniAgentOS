@@ -367,21 +367,30 @@
         "synthetic": true,
         "tenantId": "synthetic:tenant:alpha",
         "initiatingActorId": "synthetic:actor:owner",
-        "executingPrincipalId": "synthetic:principal:asael",
+        "executingPrincipalId": "synthetic:actor:owner",
         "purpose": "evaluation.p0_5.approvals",
         "correlationId": "synthetic:correlation:approval-exact",
         "grantIds": ["synthetic:grant:calendar-write", "synthetic:approval:calendar-delete"]
       },
       "given": {
-        "approvalBindingSha256": "5555555555555555555555555555555555555555555555555555555555555555",
-        "requestedBindingSha256": "5555555555555555555555555555555555555555555555555555555555555555"
+        "approvalBindingSha256": "e48f6759ca1420318ce01f066b1cf71d6c3f51d339c0d3e3dd3749f1cdb7475f",
+        "executionId": "synthetic:execution:calendar-create"
       },
-      "action": { "operation": "calendar.delete", "riskLevel": 2 },
+      "action": {
+        "operation": "calendar.create",
+        "riskLevel": 2,
+        "input": {
+          "summary": "Synthetic planning session",
+          "description": "P0.5 governed calendar receipt canary",
+          "start": "2026-09-08T10:00:00.000Z",
+          "end": "2026-09-08T11:00:00.000Z"
+        }
+      },
       "assertions": [
         { "op": "equals", "path": "/approvalAccepted", "value": true },
         { "op": "equals", "path": "/executor", "value": "governed_tool_executor" },
         { "op": "equals", "path": "/effectCount", "value": 1 },
-        { "op": "equals", "path": "/effectReceiptId", "value": "synthetic:receipt:calendar-delete" }
+        { "op": "equals", "path": "/effectReceiptId", "value": "effect_v2_df80b2c4a2c5cad40fad90cd97856c1d28d791f10b9aa79da0fef" }
       ]
     },
     {
