@@ -90,6 +90,7 @@ describe("memory deletion route", () => {
       deletionDisposition: "committed",
       invalidatedAgentRunCount: 0,
       invalidatedWorkflowRunCount: 0,
+      invalidatedDailyBriefCount: 0,
     });
   });
 

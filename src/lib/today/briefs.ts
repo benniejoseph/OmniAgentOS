@@ -75,6 +75,7 @@ const storedBriefContentSchema = z.object({
     title: storedExactText(180),
     context: storedExactText(240),
   }).strict()).max(3),
+  memoryIds: z.array(storedExactText(200)).max(12),
   generatedBy: z.enum(["ai", "system"]),
   model: storedExactText(200).nullable().optional(),
   sourceCounts: briefSourceCountsSchema,
@@ -602,6 +603,7 @@ export async function generateDailyBrief(options: {
     focus: content.focus.map((item) => ({ title: safeText(item.title, 180), reason: safeText(item.reason, 240) })),
     watchouts: content.watchouts.map((item) => safeText(item, 240)),
     resurfaced: content.resurfaced.map((item) => ({ title: safeText(item.title, 180), context: safeText(item.context, 240) })),
+    memoryIds: canonicalBriefMemoryIds(memories.map((memory) => memory.id)),
     generatedBy,
     model: generatedBy === "ai" ? AGENT_MODEL : undefined,
     sourceCounts: { items: openItems.length, memories: memories.length, threads: threads.length, activeWork: activeWork.length, projects: activeProjects.length },
@@ -724,16 +726,18 @@ async function saveDailyBrief(brief: DailyBrief) {
     const rows = await getSql()`
       INSERT INTO omni_daily_briefs (
         id, tenant_id, actor_id, local_date, content, generated_by, model,
-        source_counts, generated_at
+        source_counts, memory_ids, generated_at
       ) VALUES (
         ${brief.id}, ${brief.tenantId}, ${brief.actorId}, ${brief.localDate}, ${brief}::jsonb,
-        ${brief.generatedBy}, ${brief.model || null}, ${brief.sourceCounts}::jsonb, ${brief.generatedAt}
+        ${brief.generatedBy}, ${brief.model || null}, ${brief.sourceCounts}::jsonb,
+        ${brief.memoryIds}::text[], ${brief.generatedAt}
       )
       ON CONFLICT (tenant_id, actor_id, local_date) DO UPDATE SET
         content = EXCLUDED.content,
         generated_by = EXCLUDED.generated_by,
         model = EXCLUDED.model,
         source_counts = EXCLUDED.source_counts,
+        memory_ids = EXCLUDED.memory_ids,
         generated_at = EXCLUDED.generated_at
       RETURNING *
     `;
@@ -848,6 +852,7 @@ function requestReadableBriefFromRow(
     ? undefined
     : String(row.model);
   const generatedAt = normalizedInstant(row.generated_at);
+  const memoryIds = canonicalBriefMemoryIds(row.memory_ids);
   if (
     !content ||
     !parsedContent.success ||
@@ -864,6 +869,7 @@ function requestReadableBriefFromRow(
       ? undefined
       : String(content.model)) !== model ||
     normalizedInstant(content.generatedAt) !== generatedAt ||
+    !sameStringArray(parsedContent.data.memoryIds, memoryIds) ||
     !sameSourceCounts(
       parsedContent.data.sourceCounts,
       parsedSourceCounts.data,
@@ -889,6 +895,7 @@ function requestReadableBriefFromRow(
       title: projectTodayBriefText(item.title, 180),
       context: projectTodayBriefText(item.context, 240),
     })),
+    memoryIds,
     generatedBy,
     model: model
       ? projectTodayBriefText(model, 200) || undefined
@@ -911,6 +918,7 @@ function briefFromRow(row: Record<string, unknown>): DailyBrief {
     focus: Array.isArray(parsed.focus) ? parsed.focus.slice(0, 5) : [],
     watchouts: Array.isArray(parsed.watchouts) ? parsed.watchouts.slice(0, 4) : [],
     resurfaced: Array.isArray(parsed.resurfaced) ? parsed.resurfaced.slice(0, 3) : [],
+    memoryIds: canonicalBriefMemoryIds(row.memory_ids || parsed.memoryIds),
     generatedBy: String(row.generated_by) === "ai" ? "ai" : "system",
     model: row.model ? String(row.model) : undefined,
     sourceCounts: sourceCounts && typeof sourceCounts === "object"
@@ -967,6 +975,15 @@ function updateBriefLedger(mutate: (ledger: TodayBriefLedger) => TodayBriefLedge
 
 function safeText(value: unknown, max: number) {
   return String(redactSensitive(String(value || ""))).replace(/\s+/g, " ").trim().slice(0, max);
+}
+function canonicalBriefMemoryIds(value: unknown) {
+  const items = Array.isArray(value) ? value : [];
+  return [...new Set(items.map((item) => safeText(item, 200)).filter(Boolean))]
+    .sort()
+    .slice(0, 12);
+}
+function sameStringArray(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 function normalizeTenantId(value?: string) {
   return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default")

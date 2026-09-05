@@ -50,6 +50,7 @@ type MemoryDeletionResult = {
   deletionGuarantee: "scope_bound_receipt" | "legacy_unattributed_receipt" | "best_effort";
   invalidatedAgentRunCount: number;
   invalidatedWorkflowRunCount: number;
+  invalidatedDailyBriefCount: number;
   deletionReceipt: {
     id: string;
     memoryId: string;
@@ -297,7 +298,7 @@ function DeletionPreview({ preview }: { preview: MemoryDeletionPreview }) {
 
 function DeletionReceipt({ result, onClose }: { result: MemoryDeletionResult; onClose: () => void }) {
   const receipt = result.deletionReceipt;
-  return <div className={styles.deletionReceipt}><ShieldCheck size={25} aria-hidden="true" /><p>Deletion committed</p><h2>{receipt ? "Receipt verified" : "Best-effort local deletion"}</h2><span>{receipt ? `The permanent barrier was recorded ${formatDate(receipt.forgottenAt)}.` : "The memory was removed from the local development store."}</span>{receipt ? <><dl><dt>Descendant memories</dt><dd>{receipt.descendantMemoryCount}</dd><dt>Retrieval traces</dt><dd>{receipt.retrievalTraceCount}</dd><dt>Graph projections</dt><dd>{receipt.graphNodeCount + receipt.graphEdgeCount}</dd><dt>Runs canceled</dt><dd>{result.invalidatedAgentRunCount + result.invalidatedWorkflowRunCount}</dd></dl><code title={receipt.receiptSha256 || receipt.id}>{receipt.receiptSha256 || receipt.id}</code></> : null}<button type="button" onClick={onClose}>Back to memory</button></div>;
+  return <div className={styles.deletionReceipt}><ShieldCheck size={25} aria-hidden="true" /><p>Deletion committed</p><h2>{receipt ? "Receipt verified" : "Best-effort local deletion"}</h2><span>{receipt ? `The permanent barrier was recorded ${formatDate(receipt.forgottenAt)}.` : "The memory was removed from the local development store."}</span>{receipt ? <><dl><dt>Descendant memories</dt><dd>{receipt.descendantMemoryCount}</dd><dt>Retrieval traces</dt><dd>{receipt.retrievalTraceCount}</dd><dt>Graph projections</dt><dd>{receipt.graphNodeCount + receipt.graphEdgeCount}</dd><dt>Briefs invalidated</dt><dd>{result.invalidatedDailyBriefCount}</dd><dt>Runs canceled</dt><dd>{result.invalidatedAgentRunCount + result.invalidatedWorkflowRunCount}</dd></dl><code title={receipt.receiptSha256 || receipt.id}>{receipt.receiptSha256 || receipt.id}</code></> : null}<button type="button" onClick={onClose}>Back to memory</button></div>;
 }
 
 function CreateMemoryDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (memory: MemoryRecord) => void }) {

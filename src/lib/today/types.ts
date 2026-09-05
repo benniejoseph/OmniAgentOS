@@ -54,6 +54,7 @@ export type DailyBrief = {
   focus: DailyBriefFocus[];
   watchouts: string[];
   resurfaced: DailyBriefResurfaced[];
+  memoryIds: string[];
   generatedBy: "ai" | "system";
   model?: string;
   sourceCounts: {

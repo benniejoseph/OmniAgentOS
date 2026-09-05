@@ -231,6 +231,7 @@ function preferenceRow(ownerActorId: string) {
 }
 
 function briefRow(id: string, ownerActorId: string) {
+  const memoryIds = ["memory-a", "memory-b"];
   const sourceCounts = {
     items: 1,
     memories: 2,
@@ -253,6 +254,7 @@ function briefRow(id: string, ownerActorId: string) {
       focus: [{ title: "Ship safely", reason: "The release is ready." }],
       watchouts: [],
       resurfaced: [],
+      memoryIds,
       generatedBy: "system",
       sourceCounts,
       generatedAt,
@@ -260,6 +262,7 @@ function briefRow(id: string, ownerActorId: string) {
     generated_by: "system",
     model: null,
     source_counts: sourceCounts,
+    memory_ids: memoryIds,
     source_counts_are_valid: true,
     generated_at: generatedAt,
   };

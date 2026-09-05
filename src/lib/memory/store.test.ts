@@ -155,6 +155,7 @@ describe("memory persistence safety (file mode)", () => {
       deletionDisposition: "committed",
       invalidatedAgentRunCount: 0,
       invalidatedWorkflowRunCount: 0,
+      invalidatedDailyBriefCount: 0,
     });
     expect((await store.getMemory(descendant.id, { tenantId: "tenant-preview" }))?.claimStatus)
       .toBe("forgotten");
