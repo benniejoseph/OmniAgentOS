@@ -155,6 +155,11 @@ describe("unified mission kernel", () => {
       "mission.status.changed",
     ]);
     expect(events.every((event) => !("objective" in event.payload))).toBe(true);
+    expect(events.every((event) => event.payload.schemaVersion === 1)).toBe(true);
+    expect(events.every((event) => "payloadSha256" in event.payload)).toBe(true);
+    const serializedEvents = JSON.stringify(events);
+    expect(serializedEvents).not.toContain("Produce a verified launch brief");
+    expect(serializedEvents).not.toContain("Every claim has a source");
   });
 
   it("isolates missions and child writes by tenant and actor", async () => {
