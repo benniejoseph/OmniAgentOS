@@ -1112,3 +1112,12 @@ is valid at the requested instant and reports no match or overlap instead of
 choosing an arbitrary answer. The same predicate now filters live active
 memory and drives the P0.5 temporal regression, where the selected answer keeps
 its exact evidence ID and uncertainty state without invoking a model or tool.
+
+## Transactional source-page fault probe
+
+The source-sync harness now has a bounded all-or-nothing page transaction
+model. A fault injected after any item discards the staged item set and keeps
+the original cursor; a later attempt commits the complete unique manifest and
+next cursor together. Duplicate page identities and invalid retry budgets fail
+closed. P0.5 now measures the mid-page failure/retry invariant without touching
+a connector, database, clock, or external provider.

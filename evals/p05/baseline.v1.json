@@ -37,9 +37,18 @@
     {
       "caseId": "pagination.mid-page-failure-retry",
       "value": {
-        "adapterId": "p0.5-observer-v1:pagination",
-        "adapterStatus": "not_observable_offline",
-        "reasonCode": "no_side_effect_free_current_system_adapter"
+        "adapterId": "source-sync-page-transaction-v1",
+        "adapterStatus": "observed",
+        "attemptCount": 2,
+        "committedIds": [
+          "source:item-1",
+          "source:item-2"
+        ],
+        "committedCursor": "cursor:page-2",
+        "cursorAdvancedBeforeCommit": false,
+        "duplicateCount": 0,
+        "lostCount": 0,
+        "completed": true
       }
     },
     {

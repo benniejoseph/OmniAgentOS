@@ -31,6 +31,7 @@ import {
   compareCanonicalSourceOrder,
   type CanonicalSourceOrder,
 } from "@/lib/sources/convergence-store";
+import { evaluateSourceSyncPageRetry } from "@/lib/connectors/source-sync-page-transaction";
 import { routeAgentRequest } from "@/lib/orchestration/supervisor";
 
 /**
@@ -65,6 +66,8 @@ export function observeP05Case(
       return observeLegacyTenantOnlyMemoryRead(testCase);
     case "scope.mismatch-fails-closed":
       return observeExecutionScopeMismatch(testCase);
+    case "pagination.mid-page-failure-retry":
+      return observeSourceSyncPageRetry(testCase);
     case "update-delete.tombstone-blocks-stale-resurrection":
       return observeCanonicalSourceOrdering(testCase);
     case "intent-routing.portfolio-blog-automation":
@@ -117,6 +120,42 @@ function observeIntentRouting(testCase: P05Case): P05JsonValue {
     selectedToolIds: [],
     effectCount: 0,
   };
+}
+
+function observeSourceSyncPageRetry(testCase: P05Case): P05JsonValue {
+  const given = jsonRecord(testCase.given);
+  const action = jsonRecord(testCase.action);
+  const page = jsonRecord(given.page);
+  const initialCursor = text(given.initialCursor);
+  const nextCursor = text(page.nextCursor);
+  const failAfterItemId = text(given.firstAttemptFailsAfterItem);
+  const retryCount = number(action.retryCount);
+  if (!initialCursor || !nextCursor || retryCount === undefined) {
+    return unavailableObservation(testCase);
+  }
+
+  try {
+    const result = evaluateSourceSyncPageRetry({
+      initialCursor,
+      itemIds: strings(page.ids),
+      nextCursor,
+      failAfterItemId,
+      retryCount,
+    });
+    return {
+      adapterId: "source-sync-page-transaction-v1",
+      adapterStatus: "observed",
+      attemptCount: result.attemptCount,
+      committedIds: [...result.committedIds],
+      committedCursor: result.committedCursor,
+      cursorAdvancedBeforeCommit: result.cursorAdvancedBeforeCommit,
+      duplicateCount: result.duplicateCount,
+      lostCount: result.lostCount,
+      completed: result.completed,
+    };
+  } catch {
+    return unavailableObservation(testCase);
+  }
 }
 
 function observeVerifiedCompletion(testCase: P05Case): P05JsonValue {
