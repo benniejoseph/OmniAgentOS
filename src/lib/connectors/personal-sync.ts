@@ -21,6 +21,19 @@ type SyncItem = {
   sourceUpdatedAt?: string;
   capturedAt?: string;
 };
+type PersonalSourceId = SyncItem["kind"];
+type GoogleSourceObservation = Readonly<{
+  source: PersonalSourceId;
+  items: SyncItem[];
+  cursor: Partial<SyncCursor>;
+}>;
+type PersonalSourceSettlement = Readonly<{
+  source: PersonalSourceId;
+  status: "healthy" | "error";
+  imported: number;
+  removed: number;
+  error?: string;
+}>;
 
 export async function syncDuePersonalProviders(options: { tenantId: string; limit?: number; staleAfterMs?: number } ) {
   const limit = Math.min(Math.max(options.limit || 2, 1), 5);
@@ -32,7 +45,12 @@ export async function syncDuePersonalProviders(options: { tenantId: string; limi
   for (const grant of grants) {
     try {
       const synced = await syncPersonalProvider({ tenantId: grant.tenantId, actorId: grant.actorId, provider: grant.provider });
-      results.push({ provider: grant.provider, status: "healthy", imported: synced.imported });
+      results.push({
+        provider: grant.provider,
+        status: synced.status === "healthy" ? "healthy" : "error",
+        imported: synced.imported,
+        ...(synced.error ? { error: synced.error } : {}),
+      });
     } catch (error) {
       results.push({ provider: grant.provider, status: "error", error: error instanceof Error ? error.message : "Sync failed." });
     }
@@ -77,7 +95,7 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
     // owned promise and cannot alter legacy sync behavior.
     canonicalObservation = startDriveCanonical(accessToken);
     const cursor = parseCursor(secrets.syncCursor);
-    const result = await syncGoogle(
+    const observations = await observeGoogleSources(
       accessToken,
       cursor,
       input.abortSignal,
@@ -92,55 +110,121 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
       contextGrantIds: [secrets.grant.id],
       purpose: "connector.google.personal_sync.ingest",
     });
-    let imported = 0;
-    let removed = 0;
-    for (const item of result.items.slice(0, 40)) {
-      const idempotencyKey = `oauth:${input.provider}:${item.kind}:${item.id}`;
-      if (item.deleted) {
-        await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, { tenantId: input.tenantId });
-        removed += 1;
+    let nextCursor = { ...cursor };
+    const sources: PersonalSourceSettlement[] = [];
+    for (const observation of observations) {
+      if (observation.status === "rejected") {
+        sources.push({
+          source: observation.source,
+          status: "error",
+          imported: 0,
+          removed: 0,
+          error: safeSourceSyncError(observation.reason),
+        });
         continue;
       }
-      if (!item.content.trim()) continue;
-      if (!item.capturedAt) {
-        throw new Error(
-          `Google ${item.kind} item is missing a canonical provider timestamp.`,
-        );
+      let sourceImported = 0;
+      let sourceRemoved = 0;
+      try {
+        for (const item of observation.value.items.slice(0, 40)) {
+          const idempotencyKey = `oauth:${input.provider}:${item.kind}:${item.id}`;
+          if (item.deleted) {
+            await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+              tenantId: input.tenantId,
+            });
+            sourceRemoved += 1;
+            continue;
+          }
+          if (!item.content.trim()) continue;
+          if (!item.capturedAt) {
+            throw new Error(
+              `Google ${item.kind} item is missing a canonical provider timestamp.`,
+            );
+          }
+          await ingestTextDocument({
+            idempotencyKey,
+            tenantId: input.tenantId,
+            title: item.title,
+            content: item.content,
+            source: `${input.provider}:${item.kind}:${item.id}`,
+            sourceType: "api",
+            tags: ["connected-source", input.provider, item.kind],
+            abortSignal: input.abortSignal,
+            usageScope: {
+              tenantId: input.tenantId,
+              actorId: input.actorId,
+              sourceStreamId: `connector-sync:${input.provider}:${input.actorId}:${item.kind}`,
+              operation: "embedding",
+              purpose: `connector.${input.provider}.${item.kind}.ingest`,
+              credentialSource: "deployment_environment",
+            },
+            sourceLineage: {
+              executionScope: sourceExecutionScope,
+              connectionId: secrets.grant.id,
+              adapterId: `google.personal_sync.${item.kind}`,
+              adapterVersionId: "1",
+              externalItemId: `${item.kind}:${item.id}`,
+              providerRevisionId: item.providerRevisionId || null,
+              sourceKind: personalSourceKind(item.kind),
+              sourceCreatedAt: item.sourceCreatedAt || null,
+              sourceUpdatedAt: item.sourceUpdatedAt || null,
+              capturedAt: item.capturedAt,
+            },
+          });
+          sourceImported += 1;
+        }
+        const candidateCursor = { ...nextCursor, ...observation.value.cursor };
+        const checkpoint = await updateOAuthSyncState({
+          ...input,
+          status: "syncing",
+          cursor: JSON.stringify(candidateCursor),
+          syncedItems: sourceImported,
+        });
+        if (!checkpoint) {
+          throw new Error("Connected source was revoked during synchronization.");
+        }
+        nextCursor = candidateCursor;
+        sources.push({
+          source: observation.source,
+          status: "healthy",
+          imported: sourceImported,
+          removed: sourceRemoved,
+        });
+      } catch (error) {
+        sources.push({
+          source: observation.source,
+          status: "error",
+          imported: sourceImported,
+          removed: sourceRemoved,
+          error: safeSourceSyncError(error),
+        });
       }
-      await ingestTextDocument({
-        idempotencyKey,
-        tenantId: input.tenantId,
-        title: item.title,
-        content: item.content,
-        source: `${input.provider}:${item.kind}:${item.id}`,
-        sourceType: "api",
-        tags: ["connected-source", input.provider, item.kind],
-        abortSignal: input.abortSignal,
-        usageScope: {
-          tenantId: input.tenantId,
-          actorId: input.actorId,
-          sourceStreamId: `connector-sync:${input.provider}:${input.actorId}`,
-          operation: "embedding",
-          purpose: `connector.${input.provider}.${item.kind}.ingest`,
-          credentialSource: "deployment_environment",
-        },
-        sourceLineage: {
-          executionScope: sourceExecutionScope,
-          connectionId: secrets.grant.id,
-          adapterId: `google.personal_sync.${item.kind}`,
-          adapterVersionId: "1",
-          externalItemId: `${item.kind}:${item.id}`,
-          providerRevisionId: item.providerRevisionId || null,
-          sourceKind: personalSourceKind(item.kind),
-          sourceCreatedAt: item.sourceCreatedAt || null,
-          sourceUpdatedAt: item.sourceUpdatedAt || null,
-          capturedAt: item.capturedAt,
-        },
-      });
-      imported += 1;
     }
-    const grant = await updateOAuthSyncState({ ...input, status: "healthy", cursor: JSON.stringify(result.cursor), syncedItems: imported });
-    return { provider: input.provider, imported, removed, cursorAdvanced: JSON.stringify(cursor) !== JSON.stringify(result.cursor), grant };
+    const imported = sources.reduce((sum, source) => sum + source.imported, 0);
+    const removed = sources.reduce((sum, source) => sum + source.removed, 0);
+    const failed = sources.filter((source) => source.status === "error");
+    const status = failed.length
+      ? failed.length === sources.length ? "error" as const : "partial" as const
+      : "healthy" as const;
+    const error = failed.length
+      ? failed.map((source) => `${source.source}: ${source.error}`).join("; ")
+      : undefined;
+    const grant = await updateOAuthSyncState({
+      ...input,
+      status: status === "healthy" ? "healthy" : "error",
+      cursor: JSON.stringify(nextCursor),
+      error,
+    });
+    return {
+      provider: input.provider,
+      status,
+      imported,
+      removed,
+      cursorAdvanced: JSON.stringify(cursor) !== JSON.stringify(nextCursor),
+      sources,
+      error,
+      grant,
+    };
   } catch (error) {
     await updateOAuthSyncState({ ...input, status: "error", error: error instanceof Error ? error.message : "Sync failed." });
     throw error;
@@ -167,19 +251,64 @@ async function activeAccessToken(input: { tenantId: string; actorId: string; pro
   return String(refreshed.access_token);
 }
 
-async function syncGoogle(
+async function observeGoogleSources(
   accessToken: string,
   cursor: SyncCursor,
   signal?: AbortSignal,
   identity?: { tenantId: string; actorId: string; provider: OAuthProvider },
 ) {
   const headers = { authorization: `Bearer ${accessToken}`, accept: "application/json" };
-  const [mail, calendar, drive] = await Promise.all([
+  const settled = await Promise.allSettled([
     googleMail(headers, cursor.gmailHistoryId, signal),
     googleCalendar(headers, cursor.calendar, signal),
     googleDrive(headers, cursor.driveModifiedAfter, signal, identity),
-  ]);
-  return { items: [...mail.items, ...calendar.items, ...drive.items], cursor: { ...cursor, gmailHistoryId: mail.historyId, calendar: calendar.syncToken, driveModifiedAfter: drive.modifiedAfter } };
+  ] as const);
+  const mail = settled[0].status === "fulfilled"
+    ? {
+        source: "mail" as const,
+        status: "fulfilled" as const,
+        value: {
+          source: "mail" as const,
+          items: settled[0].value.items,
+          cursor: { gmailHistoryId: settled[0].value.historyId },
+        } satisfies GoogleSourceObservation,
+      }
+    : {
+        source: "mail" as const,
+        status: "rejected" as const,
+        reason: settled[0].reason,
+      };
+  const calendar = settled[1].status === "fulfilled"
+    ? {
+        source: "calendar" as const,
+        status: "fulfilled" as const,
+        value: {
+          source: "calendar" as const,
+          items: settled[1].value.items,
+          cursor: { calendar: settled[1].value.syncToken },
+        } satisfies GoogleSourceObservation,
+      }
+    : {
+        source: "calendar" as const,
+        status: "rejected" as const,
+        reason: settled[1].reason,
+      };
+  const drive = settled[2].status === "fulfilled"
+    ? {
+        source: "drive" as const,
+        status: "fulfilled" as const,
+        value: {
+          source: "drive" as const,
+          items: settled[2].value.items,
+          cursor: { driveModifiedAfter: settled[2].value.modifiedAfter },
+        } satisfies GoogleSourceObservation,
+      }
+    : {
+        source: "drive" as const,
+        status: "rejected" as const,
+        reason: settled[2].reason,
+      };
+  return [mail, calendar, drive] as const;
 }
 
 async function googleMail(headers: Record<string, string>, historyId?: string, signal?: AbortSignal) {
@@ -427,4 +556,9 @@ function optionalCanonicalProviderTimestamp(value: unknown) {
   return value === null || value === undefined || value === ""
     ? undefined
     : canonicalProviderTimestamp(value, "provider timestamp");
+}
+
+function safeSourceSyncError(error: unknown) {
+  const message = error instanceof Error ? error.message : "Source sync failed.";
+  return message.replace(/[\r\n<>]/g, " ").slice(0, 500);
 }
