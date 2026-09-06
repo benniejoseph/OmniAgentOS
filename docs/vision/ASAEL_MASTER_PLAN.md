@@ -2111,6 +2111,22 @@ from 0.3177 to 0.9688. A credential-free production canary returned exact local
 embedding and reranker receipts with no external disclosure. P4.5 lineage
 deduplication and tiered token budgeting is next.
 
+P4.5 is complete at production release
+`20dd3e91157fa177678077602875e973291aa2de`. Authorized evidence now receives a
+content-free lineage digest across canonical sources, knowledge/derived-memory
+copies, correction and duplicate chains, exact content, and bounded graph
+backing. A second complementary item from one lineage is penalized and cannot
+push duplicate-lineage tokens beyond 20%. Critical, procedural, semantic,
+episodic, summary, and graph tiers receive deterministic shares before unused
+capacity spills by rank. The complete formatted block is hard-capped to the
+smaller model/task allowance with a provider-neutral upper-bound estimator, and
+its content-free receipt persists in the existing retrieval profile. The
+16-case gate achieved 100% compliance, lineage accuracy, and priority-tier
+coverage with 0.96% average duplicate share and 97.26% utilization. Production
+returned matching pack/profile receipts and all web, gateway, and worker-lane
+health checks passed. P4.6 preview, exclusion, locking, and run-bound receipts
+is next.
+
 P5.1 is complete, and the first safe P5.2 foundation is deployed without
 replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
 types and 13 typed relations with mandatory scope, sensitivity, purpose,

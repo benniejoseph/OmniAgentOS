@@ -1348,6 +1348,25 @@ no query, evidence content, embedding values, tenant/actor identity,
 credentials, or private reasoning. Provider or credential unavailability falls
 back to the local space without widening retrieval scope.
 
+P4.5 assigns authorized candidates a content-free lineage digest before
+diversity selection. Canonical revisions and source items, knowledge documents
+and evidence units, derived memories, correction/duplicate chains, exact
+content copies, and single-memory graph projections therefore cannot appear as
+independent sources. A bounded second item may retain complementary passages,
+but receives a diversity penalty and all second-or-later items from a lineage
+share a hard 20% token ceiling.
+
+Packing maps memory policy tiers plus knowledge and graph evidence into
+critical, procedural, semantic, episodic, summary, and graph allocation tiers.
+The complete formatted block is measured with a provider-neutral UTF-8 byte
+upper bound and cannot exceed the smaller of the task context limit and model
+input capacity after its reserved prompt space. The allocator may truncate
+evidence content but never identifiers, headers, or authorization metadata. Its
+content-free `p4.5-context-budget:1` receipt is returned with the pack and
+stored in the existing retrieval profile JSON; it contains limits, allocation
+counts, lineage/duplicate counts, tier totals, and a digest, but no query,
+evidence content, raw lineage identifier, or private reasoning.
+
 ## Capture asset object plane
 
 Capture files and recording segments retain database bytes through the rollback
