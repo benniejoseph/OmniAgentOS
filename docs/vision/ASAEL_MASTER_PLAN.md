@@ -1909,6 +1909,21 @@ and web/Fly report exact healthy release
 representative production-like entity-resolution benchmark; legacy
 topic/co-occurrence projection remains unchanged pending P5.3/P5.4.
 
+The versioned `p5.2-entity-resolution-production-like-v1` offline suite now
+closes that final P5.2 gate. Its 27 synthetic cases cover canonical and alias
+matches, Unicode and punctuation normalization, duplicate names, alias
+collisions, fuzzy review holds, unseen identities, retired records, entity-type
+separation, and tenant, actor, and access-binding isolation. The schema prevents
+silently dropping a required dimension, and every case is replayed in reverse
+candidate order. Suite digest
+`414a29adcf92b9d390c4c135d51b411578bbbe4414cd324415371cfd6617f454`
+passes at 10,000 basis points for auto-link precision, auto-link recall, review
+recall, and decision accuracy, with zero false auto-merges, scope leaks, or
+nondeterministic cases. P5.2 is complete within the declared actor-private
+registry, memory, review, and canonical text-evidence scope. This evidence does
+not grant production merge or access-broadening authority, and the legacy graph
+projection remains unchanged until P5.3/P5.4.
+
 The first P6.1 delivery is active only for an exact, low-risk recent-runs read.
 An exact tenant rollout pins the Loop v2 engine, transition contract, and
 configuration. Migration v85 stores the immutable actor-owned checkpoint chain
