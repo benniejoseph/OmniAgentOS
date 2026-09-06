@@ -9,6 +9,11 @@ describe("capture files", () => {
   it("extracts supported text files with provenance", async () => {
     await expect(extractCaptureFile(new File(["# Notes"], "team-notes.md", { type: "text/markdown" }))).resolves.toMatchObject({
       title: "team notes", content: "# Notes", sourceType: "file",
+      extraction: {
+        sourceKind: "document",
+        state: "completed",
+        units: [{ locator: { kind: "text_span" } }],
+      },
     });
   });
   it("rejects unsupported and binary text files", async () => {
@@ -38,11 +43,58 @@ describe("capture files", () => {
     const result = await extractCaptureFile(new File([email], "project.eml"));
     expect(result.content).toContain("Subject: Project update");
     expect(result.content).toContain("The launch moved to Friday.");
+    expect(result.extraction.units.map((unit) => unit.locator.kind)).toEqual([
+      "email_section",
+      "email_section",
+    ]);
   });
   it("extracts useful calendar event fields", async () => {
     const calendar = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Weekly review\r\nDTSTART:20260904T100000Z\r\nLOCATION:Studio\r\nEND:VEVENT\r\nEND:VCALENDAR";
     const result = await extractCaptureFile(new File([calendar], "review.ics"));
     expect(result.content).toContain("SUMMARY: Weekly review");
     expect(result.content).toContain("DTSTART: 20260904T100000Z");
+  });
+
+  it("normalizes delimited rows into sheet-range evidence", async () => {
+    const result = await extractCaptureFile(new File([
+      "name,status\nAlpha,ready\nBeta,pending",
+    ], "projects.csv", { type: "text/csv" }));
+
+    expect(result.extraction).toMatchObject({
+      sourceKind: "spreadsheet",
+      format: "csv",
+      state: "completed",
+      units: [{
+        locator: {
+          kind: "sheet_range",
+          startRow: 1,
+          endRowExclusive: 4,
+          startColumn: 1,
+          endColumnExclusive: 3,
+        },
+      }],
+    });
+  });
+
+  it("preserves spreadsheet sheets and presentation slides as evidence units", async () => {
+    const JSZip = (await import("jszip")).default;
+    const workbook = new JSZip();
+    workbook.file("xl/sharedStrings.xml", "<sst><si><t>Alpha</t></si><si><t>Ready</t></si></sst>");
+    workbook.file("xl/worksheets/sheet1.xml", "<worksheet><sheetData><row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" t=\"s\"><v>1</v></c></row></sheetData></worksheet>");
+    const workbookBytes = await workbook.generateAsync({ type: "uint8array" });
+    const spreadsheet = await extractCaptureFile(new File([workbookBytes], "status.xlsx"));
+
+    const presentationArchive = new JSZip();
+    presentationArchive.file("ppt/slides/slide1.xml", "<p:sld><a:t>Quarterly review</a:t></p:sld>");
+    presentationArchive.file("ppt/slides/slide2.xml", "<p:sld><a:t>Next actions</a:t></p:sld>");
+    const presentationBytes = await presentationArchive.generateAsync({ type: "uint8array" });
+    const presentation = await extractCaptureFile(new File([presentationBytes], "review.pptx"));
+
+    expect(spreadsheet.extraction.units[0].locator.kind).toBe("sheet_range");
+    expect(spreadsheet.content).toContain("Alpha\tReady");
+    expect(presentation.extraction.units.map((unit) => unit.locator.kind)).toEqual([
+      "slide",
+      "slide",
+    ]);
   });
 });
