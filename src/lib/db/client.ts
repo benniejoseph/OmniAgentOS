@@ -1261,7 +1261,7 @@ export async function migrateDatabaseSchema(
             continue;
           }
           try {
-            await migration.up(sql);
+            await migration.up(withMigrationStatementContext(sql));
           } catch (error) {
             throw new Error(
               `Database migration ${migration.version} (${migration.name}) failed: ${
@@ -1314,6 +1314,41 @@ export async function migrateDatabaseSchema(
     schemaReady = null;
     throw error;
   }
+}
+
+function withMigrationStatementContext(sql: SqlClient): SqlClient {
+  let statementNumber = 0;
+  const runStatement = async <T>(operation: () => Promise<T>) => {
+    statementNumber += 1;
+    const currentStatement = statementNumber;
+    try {
+      return await operation();
+    } catch (error) {
+      throw new Error(
+        `migration statement ${currentStatement} failed: ${
+          error instanceof Error ? error.message : "unknown statement error"
+        }`,
+        { cause: error },
+      );
+    }
+  };
+
+  return new Proxy(sql, {
+    apply(target, thisArg, args: [TemplateStringsArray, ...unknown[]]) {
+      return runStatement(() => Reflect.apply(target, thisArg, args));
+    },
+    get(target, property, receiver) {
+      if (property !== "query" && property !== "unsafe") {
+        return Reflect.get(target, property, receiver);
+      }
+      const method = Reflect.get(target, property, target) as (
+        text: string,
+        params?: unknown[],
+      ) => Promise<SqlRow[]>;
+      return (text: string, params?: unknown[]) =>
+        runStatement(() => method.call(target, text, params));
+    },
+  });
 }
 
 async function setMigrationDatabaseRole(tx: postgres.TransactionSql<Record<string, never>>) {
