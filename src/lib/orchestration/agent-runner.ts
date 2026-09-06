@@ -29,6 +29,7 @@ import {
 } from "@/lib/capabilities/toolbox";
 import { CAPABILITY_MAX_QUERY_LENGTH } from "@/lib/capabilities/types";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
+import { databaseMemoryAccessScopeFromExecutionScope } from "@/lib/db/memory-access-scope";
 import { generateModelToolTurn } from "@/lib/models/gateway";
 import {
   MODEL_CONVERSATION_SCHEMA_VERSION,
@@ -42,6 +43,7 @@ import {
   createMemoryAccessContext,
   usesDurableMemory,
 } from "@/lib/memory/access-context";
+import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { resolveAgentPromptMemoryAccess } from "@/lib/memory/request-access";
 import type {
   ModelAttemptReceipt,
@@ -424,6 +426,15 @@ export async function* runAgent(
       memoryMode: memoryAccessContext.mode,
     },
   );
+  const agentPrivateMemoryAccessScope = request.contextScope === "agent_private"
+    ? databaseMemoryAccessScopeFromExecutionScope(executionScope, {
+        purposeId: MEMORY_PURPOSE_IDS.retrieve,
+        auditPurpose: "Retrieve memory owned by the assigned agent.",
+      })
+    : undefined;
+  const databaseMemoryAccessScope = promptMemoryAccessScope ||
+    agentPrivateMemoryAccessScope;
+  const isolatedMemoryContext = Boolean(databaseMemoryAccessScope);
   let pendingDeltaText = "";
   let lastDeltaFlush = Date.now();
   let deltaWriteChain: Promise<void> = Promise.resolve();
@@ -750,10 +761,12 @@ export async function* runAgent(
       ? buildContextPack(retrievalQuery, {
           limit: 8,
           tenantId: request.tenantId,
-          accessContext: promptMemoryAccessScope
+          accessContext: databaseMemoryAccessScope
             ? undefined
             : memoryAccessContext,
-          databaseMemoryAccessScope: promptMemoryAccessScope,
+          databaseMemoryAccessScope,
+          scopedMemoryOnly: Boolean(agentPrivateMemoryAccessScope),
+          ...(agentPrivateMemoryAccessScope ? { persistTrace: false } : {}),
           entityGraphAccess: request.promptEntityGraphAccess,
           ...(request.threadId
             ? { workingMemoryReference: `thread:${request.threadId}` as const }
@@ -806,7 +819,7 @@ export async function* runAgent(
       ...request.agentProfile.toolIds,
       ...request.agentProfile.skills.flatMap((skill) => skill.toolIds),
     ])] : undefined;
-    const groundToolDiscoveryInMemory = !promptMemoryAccessScope &&
+    const groundToolDiscoveryInMemory = !isolatedMemoryContext &&
       durableMemoryEnabled &&
       request.contextSelection?.evidenceIds.length !== 0 &&
       isShortOrReferentialRequest(query);
@@ -831,7 +844,8 @@ export async function* runAgent(
           WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS,
         )
       : Promise.resolve(undefined);
-    const feedbackGuidancePromise = durableMemoryEnabled &&
+    const feedbackGuidancePromise = !agentPrivateMemoryAccessScope &&
+      durableMemoryEnabled &&
       request.contextSelection?.evidenceIds.length !== 0 &&
       hasModelProviderFeature("text", modelRoute.tier)
       ? getAgentLearningGuidance(request.agentId || "atlas", {
@@ -1166,17 +1180,17 @@ export async function* runAgent(
     const councilAgentIds = [...new Set([primaryAgentId, ...(request.specialistIds || []).map(asCouncilAgentId)])];
     const councilRequested = hasModelProviderFeature("json_schema", "reasoning") &&
       councilAgentIds.length > 1;
-    const councilActive = councilRequested && !promptMemoryAccessScope;
+    const councilActive = councilRequested && !isolatedMemoryContext;
     reserveBudget({
       agents: councilActive ? councilAgentIds.length : 1,
       fanOut: councilActive ? Math.max(0, councilAgentIds.length - 1) : 0,
     });
-    if (councilRequested && promptMemoryAccessScope) {
+    if (councilRequested && isolatedMemoryContext) {
       yield await emit({
         type: "status",
         label: "private context isolated",
         detail:
-          "Explicit private memory stays with the assigned agent; sibling council delegation is disabled for this run.",
+          "Private memory stays with the assigned agent; sibling council delegation is disabled for this run.",
       });
     }
     const councilCheckpointHooks: CouncilCheckpointHooks =

@@ -78,6 +78,8 @@ export type BuildContextPackOptions = {
    * query or result is written to the tenant-wide compatibility trace.
    */
   databaseMemoryAccessScope?: DatabaseMemoryAccessScope;
+  /** Restricts retrieval to the authorized database scope, excluding legacy tenant stores. */
+  scopedMemoryOnly?: boolean;
   limit?: number;
   candidateLimit?: number;
   /** Exact thread/session evidence reference required by working memory. */
@@ -134,6 +136,9 @@ export async function buildContextPack(
 ): Promise<ContextPack> {
   const startedAt = Date.now();
   const databaseMemoryAccessScope = resolveContextMemoryAccessScope(options);
+  if (options.scopedMemoryOnly && !databaseMemoryAccessScope) {
+    throw new Error("Scoped-only context requires a database memory access scope.");
+  }
   const privateTraceAccessScope = resolvePrivateTraceAccessScope(
     databaseMemoryAccessScope,
   );
@@ -240,7 +245,8 @@ export async function buildContextPack(
   );
   const queryEmbedding = embeddingResult.vectors[0];
   const queryEmbeddingSpaceId = embeddingResult.receipt.spaceId;
-  const graphPathPromise = options.entityGraphAccess && databaseMemoryAccessScope &&
+  const graphPathPromise = !options.scopedMemoryOnly &&
+      options.entityGraphAccess && databaseMemoryAccessScope &&
       queryPlan.domains.some((domain) => domain === "entity" || domain === "relationship")
     ? retrieveGraphRelationshipPaths(normalizedQuery, {
         entityAccess: options.entityGraphAccess,
@@ -254,13 +260,15 @@ export async function buildContextPack(
       })
     : Promise.resolve(undefined);
   const [legacyMemoryResults, scopedMemoryResults, knowledgeResults, graphResults, graphPathResult] = await Promise.all([
-    searchMemories(retrievalQuery || normalizedQuery, {
-      limit: candidateLimit,
-      queryEmbedding,
-      queryEmbeddingSpaceId,
-      tenantId,
-      workingMemoryReference: options.workingMemoryReference,
-    }),
+    options.scopedMemoryOnly
+      ? Promise.resolve([])
+      : searchMemories(retrievalQuery || normalizedQuery, {
+          limit: candidateLimit,
+          queryEmbedding,
+          queryEmbeddingSpaceId,
+          tenantId,
+          workingMemoryReference: options.workingMemoryReference,
+        }),
     databaseMemoryAccessScope
       ? searchMemories(retrievalQuery || normalizedQuery, {
           limit: candidateLimit,
@@ -271,17 +279,21 @@ export async function buildContextPack(
           workingMemoryReference: options.workingMemoryReference,
         })
       : Promise.resolve([]),
-    searchKnowledge(retrievalQuery || normalizedQuery, {
-      limit: candidateLimit,
-      queryEmbedding,
-      queryEmbeddingSpaceId,
-      tenantId,
-    }),
-    searchMemoryGraph(retrievalQuery || normalizedQuery, {
-      limit: Math.min(candidateLimit, 24),
-      tenantId,
-      accessScope: databaseMemoryAccessScope,
-    }),
+    options.scopedMemoryOnly
+      ? Promise.resolve([])
+      : searchKnowledge(retrievalQuery || normalizedQuery, {
+          limit: candidateLimit,
+          queryEmbedding,
+          queryEmbeddingSpaceId,
+          tenantId,
+        }),
+    options.scopedMemoryOnly
+      ? Promise.resolve([])
+      : searchMemoryGraph(retrievalQuery || normalizedQuery, {
+          limit: Math.min(candidateLimit, 24),
+          tenantId,
+          accessScope: databaseMemoryAccessScope,
+        }),
     graphPathPromise,
   ]);
   const graphRelationshipPaths = graphPathResult?.paths || [];
