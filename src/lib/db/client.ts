@@ -1014,6 +1014,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[85],
       up: ensureEntityMemoryDeletionBarrier,
     },
+    {
+      ...databaseSchemaMigrations[86],
+      up: ensureEntityMemoryLineageOwnerProbe,
+    },
   ];
 }
 
@@ -5507,6 +5511,99 @@ async function ensureEntityMemoryDeletionBarrier(sql: SqlClient) {
           AND NOT tgisinternal
       ) <> 2 THEN
         RAISE EXCEPTION 'Entity memory deletion barrier is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureEntityMemoryLineageOwnerProbe(sql: SqlClient) {
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_active_memory_lineage_owned_by(
+      row_tenant_id TEXT,
+      row_owner_actor_id TEXT,
+      row_memory_ids TEXT[]
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        public.omni_current_tenant() = row_tenant_id
+        AND public.omni_actor_scope_v1_allows(
+          row_tenant_id,
+          row_owner_actor_id
+        )
+        AND cardinality(row_memory_ids) BETWEEN 1 AND 64
+        AND cardinality(ARRAY(
+          SELECT DISTINCT memory_id COLLATE "C"
+          FROM unnest(row_memory_ids) memory_id
+          ORDER BY memory_id COLLATE "C"
+        )) = cardinality(row_memory_ids)
+        AND NOT public.omni_memory_ids_have_deletion_barrier(
+          row_tenant_id,
+          row_memory_ids
+        )
+        AND (
+          SELECT count(*)
+          FROM public.omni_memories memory
+          WHERE memory.tenant_id = row_tenant_id
+            AND memory.owner_actor_id = row_owner_actor_id
+            AND memory.id = ANY(row_memory_ids)
+            AND memory.access_contract_version = 1
+            AND memory.access_state = 'scope_bound'
+            AND memory.visibility = 'user_private'
+            AND memory.claim_status = 'active'
+        ) = cardinality(row_memory_ids),
+        FALSE
+      )
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_active_memory_lineage_owned_by(
+      TEXT,
+      TEXT,
+      TEXT[]
+    ) FROM PUBLIC
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT EXECUTE ON FUNCTION omni_active_memory_lineage_owned_by(
+          TEXT,
+          TEXT,
+          TEXT[]
+        ) TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT EXECUTE ON FUNCTION omni_active_memory_lineage_owned_by(
+          TEXT,
+          TEXT,
+          TEXT[]
+        ) TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_proc procedure
+        JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+        WHERE procedure.proname = 'omni_active_memory_lineage_owned_by'
+          AND namespace.nspname = current_schema()
+          AND procedure.prosecdef
+          AND procedure.provolatile = 's'
+          AND pg_get_function_identity_arguments(procedure.oid) =
+            'row_tenant_id text, row_owner_actor_id text, row_memory_ids text[]'
+      ) THEN
+        RAISE EXCEPTION 'Entity memory lineage owner probe is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
