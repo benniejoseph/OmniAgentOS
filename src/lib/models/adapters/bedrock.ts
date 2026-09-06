@@ -18,6 +18,12 @@ import {
 } from "@/lib/models/types";
 import { estimateProviderCost } from "@/lib/models/pricing";
 import type { ModelUsage } from "@/lib/openai/model-router";
+import {
+  appendModelTurnToConversation,
+  modelConversationForToolTurn,
+  renderUntrustedObservation,
+  type ModelConversationItem,
+} from "@/lib/models/conversation";
 
 const PROVIDER = "aws_bedrock" as const;
 const AWS_SERVICE = "bedrock";
@@ -141,7 +147,13 @@ export function createBedrockModelAdapter(
       }
     },
     async generateToolTurn(request, target) {
-      const messages = bedrockToolMessages(request);
+      const conversation = modelConversationForToolTurn({
+        prompt: request.input,
+        conversation: request.conversation,
+        continuationConversation: request.continuation?.conversation,
+        toolResults: request.toolResults,
+      });
+      const messages = bedrockToolMessages(request, conversation);
       const result = await callBedrockConverse({
         request,
         target,
@@ -180,6 +192,10 @@ export function createBedrockModelAdapter(
           continuation: {
             provider: PROVIDER,
             state: [...messages, output.message],
+            conversation: appendModelTurnToConversation(conversation, {
+              text: output.text,
+              toolCalls: output.toolCalls,
+            }),
           },
         };
       } catch (error) {
@@ -714,7 +730,10 @@ function initialUserMessage(input: string): BedrockMessage {
   return { role: "user", content: [{ text: input }] };
 }
 
-function bedrockToolMessages(request: ModelToolTurnRequest): BedrockMessage[] {
+function bedrockToolMessages(
+  request: ModelToolTurnRequest,
+  conversation: readonly ModelConversationItem[],
+): BedrockMessage[] {
   if (request.continuation && request.continuation.provider !== PROVIDER) {
     throw new ModelProviderError(
       "Amazon Bedrock cannot consume another provider's continuation state.",
@@ -725,8 +744,11 @@ function bedrockToolMessages(request: ModelToolTurnRequest): BedrockMessage[] {
   }
   const messages = request.continuation?.state.length
     ? normalizeContinuation(request.continuation.state)
-    : [initialUserMessage(request.input)];
-  if (!request.toolResults?.length) return messages;
+    : bedrockMessagesFromConversation(conversation);
+  if (
+    !request.continuation?.state.length ||
+    !request.toolResults?.length
+  ) return messages;
 
   const pendingTools = new Map<string, string>();
   for (const message of messages) {
@@ -764,6 +786,66 @@ function bedrockToolMessages(request: ModelToolTurnRequest): BedrockMessage[] {
   });
   messages.push({ role: "user", content });
   return messages;
+}
+
+export function bedrockMessagesFromConversation(
+  conversation: readonly ModelConversationItem[],
+): BedrockMessage[] {
+  const messages: BedrockMessage[] = [];
+  const append = (
+    role: BedrockMessage["role"],
+    block: BedrockContentBlock,
+  ) => {
+    const prior = messages.at(-1);
+    if (prior?.role === role) {
+      prior.content.push(block);
+    } else {
+      messages.push({ role, content: [block] });
+    }
+  };
+  for (const item of conversation) {
+    if (item.type === "message") {
+      append(item.role, { text: item.content });
+    } else if (item.type === "observation") {
+      append("user", { text: renderUntrustedObservation(item) });
+    } else if (item.type === "tool_call") {
+      append("assistant", {
+        toolUse: {
+          toolUseId: item.callId,
+          name: item.name,
+          input: parseArgumentsObject(item.argumentsJson),
+        },
+      });
+    } else {
+      append("user", {
+        toolResult: {
+          toolUseId: item.callId,
+          content: [{ text: item.content }],
+          status: item.isError ? "error" : "success",
+        },
+      });
+    }
+  }
+  if (!messages.length) {
+    throw new ModelProviderError(
+      "Amazon Bedrock requires a non-empty conversation.",
+      PROVIDER,
+      "invalid_request",
+      false,
+    );
+  }
+  return messages;
+}
+
+function parseArgumentsObject(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function normalizeContinuation(
