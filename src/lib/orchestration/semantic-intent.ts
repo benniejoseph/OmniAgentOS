@@ -109,7 +109,11 @@ export function applySemanticIntentPolicy(input: {
   );
   const matchedCapabilities = [...new Set([
     ...candidate.candidateCapabilityIds,
-    ...semanticCapabilityPolicyIds(candidate, input.capabilityCandidates),
+    ...semanticCapabilityPolicyIds(
+      candidate,
+      input.capabilityCandidates,
+      input.message,
+    ),
   ])]
     .map((id) => capabilityById.get(id))
     .filter((capability): capability is CapabilityDescriptor =>
@@ -251,6 +255,7 @@ function semanticRoute(
 function semanticCapabilityPolicyIds(
   candidate: SemanticIntentCandidate,
   capabilities: readonly CapabilityDescriptor[],
+  message: string,
 ) {
   const available = new Set(capabilities.map((capability) => capability.id));
   const selected = new Set<string>();
@@ -261,6 +266,10 @@ function semanticCapabilityPolicyIds(
   const add = (id: string) => {
     if (available.has(id)) selected.add(id);
   };
+
+  if (/\bremember\b/i.test(message)) {
+    add("memory.write");
+  }
 
   if (candidate.workKinds.includes("memory")) {
     if (
