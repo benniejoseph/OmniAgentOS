@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import {
   appendDomainEvent,
@@ -13,6 +14,7 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import type { SecurityRole } from "@/lib/security/types";
+import { narrowRunBudgetLimits } from "@/lib/runs/budgets";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type {
@@ -73,6 +75,10 @@ export async function createWorkflowRun(
   const safeWorkflowInput = redactSensitive(
     workflowInput,
   ) as WorkflowRunInput;
+  safeWorkflowInput.budgetLimits = narrowRunBudgetLimits(
+    WORKFLOW_RUN_BUDGET_LIMITS,
+    workflowInput.budgetLimits,
+  );
   if (executionAuthority) {
     safeWorkflowInput.executionAuthorityRequired = true;
   }

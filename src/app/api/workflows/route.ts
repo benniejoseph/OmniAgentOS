@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   jsonBodyErrorResponse,
@@ -10,6 +11,10 @@ import { redactSensitive } from "@/lib/security/context";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getOperationJobStats } from "@/lib/operations/job-queue";
+import {
+  narrowRunBudgetLimits,
+  runBudgetCountersV1Schema,
+} from "@/lib/runs/budgets";
 import { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import {
   assertWorkflowRunExecutionAuthority,
@@ -42,6 +47,7 @@ const workflowStartSchema = z.object({
   planId: z.string().min(1).max(120).optional(),
   requireApproval: z.boolean().optional(),
   maxAttempts: z.number().int().min(1).max(5).optional(),
+  budgets: runBudgetCountersV1Schema.partial().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 
@@ -94,6 +100,25 @@ async function POSTHandler(request: Request) {
       { status: 400 },
     );
   }
+  let budgetLimits;
+  try {
+    budgetLimits = narrowRunBudgetLimits(
+      WORKFLOW_RUN_BUDGET_LIMITS,
+      parsed.data.budgets,
+    );
+  } catch (error) {
+    return Response.json(
+      {
+        error: "Invalid workflow budget",
+        message: error instanceof Error
+          ? error.message
+          : "The requested workflow budget is invalid.",
+      },
+      { status: 400 },
+    );
+  }
+  const { budgets: _requestedBudgets, ...workflowStart } = parsed.data;
+  void _requestedBudgets;
   let idempotencyKey: string | undefined;
   try {
     idempotencyKey = requestIdempotencyKey(request);
@@ -205,6 +230,15 @@ async function POSTHandler(request: Request) {
           { status: 409 },
         );
       }
+      if (stableJson(existing.run.input.budgetLimits ?? null) !== stableJson(budgetLimits)) {
+        return Response.json(
+          {
+            error: "The selected workflow plan already has different run budgets.",
+            message: "Generate a fresh plan to change workflow budgets.",
+          },
+          { status: 409 },
+        );
+      }
       try {
         await assertWorkflowRunExecutionAuthority(
           existing.run.id,
@@ -238,7 +272,8 @@ async function POSTHandler(request: Request) {
       });
     }
     const detail = await createWorkflowRun({
-      ...parsed.data,
+      ...workflowStart,
+      budgetLimits,
       executionAuthority,
       metadata: {
         ...(parsed.data.metadata || {}),
@@ -256,7 +291,8 @@ async function POSTHandler(request: Request) {
       idempotencyKey &&
       !selectedPlan &&
       !workflowRequestMatches(detail.run.input, {
-        ...parsed.data,
+        ...workflowStart,
+        budgetLimits,
         metadata: {
           ...(parsed.data.metadata || {}),
           actorId: context.actorId,
@@ -350,9 +386,12 @@ function workflowRequestMatches(
     mode?: "orchestrate" | "research" | "execute" | "learn";
     requireApproval?: boolean;
     maxAttempts?: number;
+    budgetLimits?: z.infer<typeof runBudgetCountersV1Schema>;
     metadata?: Record<string, unknown>;
   },
-  requested: z.infer<typeof workflowStartSchema>,
+  requested: Omit<z.infer<typeof workflowStartSchema>, "budgets"> & {
+    budgetLimits: z.infer<typeof runBudgetCountersV1Schema>;
+  },
 ) {
   const safeExisting = redactSensitive(existing) as typeof existing;
   const safeRequested = redactSensitive(requested) as typeof requested;
@@ -364,6 +403,8 @@ function workflowRequestMatches(
     (safeExisting.requireApproval ?? true) ===
       (safeRequested.requireApproval ?? true) &&
     (safeExisting.maxAttempts ?? 3) === (safeRequested.maxAttempts ?? 3) &&
+    stableJson(safeExisting.budgetLimits ?? null) ===
+      stableJson(safeRequested.budgetLimits) &&
     stableJson(safeExisting.metadata ?? null) ===
       stableJson(safeRequested.metadata ?? null)
   );

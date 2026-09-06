@@ -1,3 +1,5 @@
+import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
+
 export type WorkflowRunStatus =
   | "queued"
   | "running"
@@ -217,6 +219,7 @@ export type WorkflowRunInput = {
   planId?: string;
   requireApproval?: boolean;
   maxAttempts?: number;
+  budgetLimits?: RunBudgetCountersV1;
   metadata?: Record<string, unknown>;
   /** Internal fail-closed marker; public request schemas never accept it. */
   executionAuthorityRequired?: true;

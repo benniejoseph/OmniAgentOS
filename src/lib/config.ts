@@ -64,6 +64,45 @@ export const WORKFLOW_PLAN_NODES_PER_TICK = normalizePositiveInteger(
   process.env.OMNIAGENT_WORKFLOW_PLAN_NODES_PER_TICK,
   3,
 );
+export const WORKFLOW_RUN_BUDGET_LIMITS = Object.freeze({
+  modelTurns: normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKFLOW_MAX_MODEL_TURNS,
+    24,
+  ),
+  tokens: normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKFLOW_MAX_TOTAL_TOKENS,
+    160_000,
+  ),
+  costMicrousd: normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKFLOW_MAX_COST_MICROUSD,
+    5_000_000,
+  ),
+  wallTimeMs: normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKFLOW_MAX_WALL_CLOCK_MS,
+    900_000,
+  ),
+  toolCalls: WORKFLOW_PLAN_MAX_TOOL_CALLS,
+  browserActions: normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKFLOW_MAX_BROWSER_ACTIONS,
+    12,
+  ),
+  agents: normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKFLOW_MAX_AGENTS,
+    12,
+  ),
+  fanOut: normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKFLOW_MAX_FAN_OUT,
+    3,
+  ),
+  retries: normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKFLOW_MAX_RETRIES,
+    5,
+  ),
+  replans: normalizePositiveInteger(
+    process.env.OMNIAGENT_WORKFLOW_MAX_REPLANS,
+    1,
+  ),
+});
 
 export type OpenAIGatewayConfig = Readonly<{
   baseURL: string;

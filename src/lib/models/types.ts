@@ -109,6 +109,8 @@ export type ModelTextRequest = {
    * boundary. Same-provider model fallbacks remain available.
    */
   allowCrossProviderFallback?: boolean;
+  /** Maximum provider/model attempts for this logical call, including the first. */
+  maxAttempts?: number;
   maxOutputTokens?: number;
   abortSignal?: AbortSignal;
   /** Content-free tenant/actor attribution for the unified AI usage ledger. */
