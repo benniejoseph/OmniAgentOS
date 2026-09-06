@@ -233,6 +233,9 @@ describe("semantic intent policy", () => {
       }),
     });
     expect(background.decision.route).toBe("direct");
+    expect(background.receipt.matchedCapabilityIds).toEqual([
+      "memory.write",
+    ]);
 
     const comparison = applySemanticIntentPolicy({
       message: "Compare these two deployment options.",
