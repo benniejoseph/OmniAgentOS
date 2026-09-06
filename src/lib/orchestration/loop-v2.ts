@@ -295,33 +295,43 @@ export function replayLoopV2Checkpoints(
   for (let index = 1; index < checkpoints.length; index += 1) {
     const parent = checkpoints[index - 1];
     const child = checkpoints[index];
-    if (
-      child.sequence !== parent.sequence + 1 ||
-      child.parentCheckpointSha256 !== parent.checkpointSha256 ||
-      child.fromState !== parent.toState ||
-      child.runId !== parent.runId ||
-      child.tenantId !== parent.tenantId ||
-      child.ownerActorId !== parent.ownerActorId ||
-      child.executionScopeSha256 !== parent.executionScopeSha256 ||
-      sourceContractSha256(child.enginePin) !==
-        sourceContractSha256(parent.enginePin)
-    ) {
-      throw new Error("Loop v2 checkpoint chain is not contiguous.");
-    }
-    if (child.trigger === "started") {
-      throw new Error("Loop v2 checkpoint chain may only start once.");
-    }
-    const expected = resolveTransition(parent, child.trigger);
-    if (
-      child.toState !== expected.toState ||
-      child.terminalDisposition !== expected.terminalDisposition ||
-      child.retryCount !== expected.retryCount ||
-      child.replanCount !== expected.replanCount
-    ) {
-      throw new Error("Loop v2 checkpoint transition is invalid.");
-    }
+    validateLoopV2CheckpointSuccessor(parent, child);
   }
   return checkpoints.at(-1)!;
+}
+
+export function validateLoopV2CheckpointSuccessor(
+  parentValue: unknown,
+  childValue: unknown,
+) {
+  const parent = parseLoopV2Checkpoint(parentValue);
+  const child = parseLoopV2Checkpoint(childValue);
+  if (
+    child.sequence !== parent.sequence + 1 ||
+    child.parentCheckpointSha256 !== parent.checkpointSha256 ||
+    child.fromState !== parent.toState ||
+    child.runId !== parent.runId ||
+    child.tenantId !== parent.tenantId ||
+    child.ownerActorId !== parent.ownerActorId ||
+    child.executionScopeSha256 !== parent.executionScopeSha256 ||
+    sourceContractSha256(child.enginePin) !==
+      sourceContractSha256(parent.enginePin)
+  ) {
+    throw new Error("Loop v2 checkpoint chain is not contiguous.");
+  }
+  if (child.trigger === "started") {
+    throw new Error("Loop v2 checkpoint chain may only start once.");
+  }
+  const expected = resolveTransition(parent, child.trigger);
+  if (
+    child.toState !== expected.toState ||
+    child.terminalDisposition !== expected.terminalDisposition ||
+    child.retryCount !== expected.retryCount ||
+    child.replanCount !== expected.replanCount
+  ) {
+    throw new Error("Loop v2 checkpoint transition is invalid.");
+  }
+  return child;
 }
 
 function resolveTransition(

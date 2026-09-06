@@ -418,5 +418,10 @@
     "version": 84,
     "name": "entity_registry_v1",
     "checksum": "1b71fe283f418153227167375897aa254f3a4243c549215f054e70da45c027a3"
+  },
+  {
+    "version": 85,
+    "name": "loop_v2_transition_checkpoints",
+    "checksum": "30249731719188a92b1b6799d67607406b71ee37b5a5f4ea822cfd874a92e6de"
   }
 ]

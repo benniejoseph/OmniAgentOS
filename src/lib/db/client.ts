@@ -128,6 +128,7 @@ export const tenantRootPolicyTables = [
   "omni_entity_aliases",
   "omni_entity_resolutions",
   "omni_entity_merge_reviews",
+  "omni_agent_loop_v2_checkpoints",
   "omni_workflow_triggers",
   "omni_operation_jobs",
   "omni_system_health_checks",
@@ -1004,6 +1005,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[83],
       up: ensureEntityRegistryV1,
+    },
+    {
+      ...databaseSchemaMigrations[84],
+      up: ensureLoopV2TransitionCheckpoints,
     },
   ];
 }
@@ -5305,6 +5310,144 @@ async function ensureEntityRegistryV1(sql: SqlClient) {
           omni_entity_resolutions,
           omni_entity_merge_reviews
         TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureLoopV2TransitionCheckpoints(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_agent_loop_v2_checkpoints (
+      checkpoint_id TEXT PRIMARY KEY,
+      checkpoint_sha256 TEXT NOT NULL UNIQUE,
+      tenant_id TEXT NOT NULL,
+      run_id TEXT NOT NULL REFERENCES omni_agent_runs(id),
+      owner_actor_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      parent_checkpoint_sha256 TEXT,
+      from_state TEXT,
+      to_state TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      lifecycle_state TEXT NOT NULL,
+      terminal_disposition TEXT,
+      retry_count INTEGER NOT NULL,
+      replan_count INTEGER NOT NULL,
+      execution_scope_sha256 TEXT NOT NULL,
+      engine_version_id TEXT NOT NULL,
+      contract_version_id TEXT NOT NULL,
+      configuration_sha256 TEXT NOT NULL,
+      rollout_generation BIGINT NOT NULL,
+      rollout_lifecycle_revision BIGINT NOT NULL,
+      checkpoint_json JSONB NOT NULL,
+      transitioned_at TIMESTAMPTZ NOT NULL,
+      UNIQUE (tenant_id, run_id, sequence),
+      CHECK (sequence BETWEEN 1 AND 10000),
+      CHECK (char_length(owner_actor_id) BETWEEN 1 AND 320),
+      CHECK (from_state IS NULL OR from_state IN (
+        'understand', 'clarify', 'plan', 'act', 'observe', 'verify',
+        'replan', 'finish'
+      )),
+      CHECK (to_state IN (
+        'understand', 'clarify', 'plan', 'act', 'observe', 'verify',
+        'replan', 'finish'
+      )),
+      CHECK (trigger IN (
+        'started', 'ambiguity_detected', 'clarified', 'plan_bound',
+        'action_started', 'action_succeeded', 'action_failed',
+        'observation_recorded', 'verification_passed',
+        'verification_failed', 'retry_scheduled', 'replan_bound',
+        'canceled', 'budget_exhausted'
+      )),
+      CHECK (lifecycle_state IN ('active', 'waiting', 'terminal')),
+      CHECK (terminal_disposition IS NULL OR terminal_disposition IN (
+        'succeeded', 'failed', 'canceled'
+      )),
+      CHECK ((to_state = 'finish') = (terminal_disposition IS NOT NULL)),
+      CHECK (retry_count BETWEEN 0 AND 2),
+      CHECK (replan_count BETWEEN 0 AND 1),
+      CHECK (checkpoint_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (execution_scope_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (engine_version_id = 'agent_loop_v2_read_only_canary_1'),
+      CHECK (contract_version_id = 'agent_loop_transition_checkpoint_v1'),
+      CHECK (configuration_sha256 =
+        'e0d1898a2de59ca2e4ec6fa6d5b5442347bae76e43700a29cfadbfa88a4e308b'),
+      CHECK (rollout_generation >= 1),
+      CHECK (rollout_lifecycle_revision >= 1),
+      CHECK (checkpoint_json ->> 'checkpointId' = checkpoint_id),
+      CHECK (checkpoint_json ->> 'checkpointSha256' = checkpoint_sha256),
+      CHECK (checkpoint_json ->> 'tenantId' = tenant_id),
+      CHECK (checkpoint_json ->> 'runId' = run_id),
+      CHECK (checkpoint_json ->> 'ownerActorId' = owner_actor_id),
+      CHECK ((checkpoint_json ->> 'sequence')::INTEGER = sequence),
+      CHECK (checkpoint_json ->> 'toState' = to_state),
+      CHECK (checkpoint_json ->> 'trigger' = trigger),
+      CHECK (checkpoint_json ->> 'executionScopeSha256' = execution_scope_sha256)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_agent_loop_v2_checkpoints_run_idx
+    ON omni_agent_loop_v2_checkpoints (
+      tenant_id, run_id, sequence DESC
+    )
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_loop_v2_checkpoint_mutation()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Loop v2 transition checkpoints are immutable'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_agent_loop_v2_checkpoints_no_update_delete
+    ON omni_agent_loop_v2_checkpoints
+  `;
+  await sql`
+    CREATE TRIGGER omni_agent_loop_v2_checkpoints_no_update_delete
+    BEFORE UPDATE OR DELETE ON omni_agent_loop_v2_checkpoints
+    FOR EACH ROW EXECUTE FUNCTION omni_reject_loop_v2_checkpoint_mutation()
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_agent_loop_v2_checkpoints_no_truncate
+    ON omni_agent_loop_v2_checkpoints
+  `;
+  await sql`
+    CREATE TRIGGER omni_agent_loop_v2_checkpoints_no_truncate
+    BEFORE TRUNCATE ON omni_agent_loop_v2_checkpoints
+    FOR EACH STATEMENT EXECUTE FUNCTION omni_reject_loop_v2_checkpoint_mutation()
+  `;
+  await sql`REVOKE ALL ON TABLE omni_agent_loop_v2_checkpoints FROM PUBLIC`;
+  await ensureTenantIsolationPolicies(sql);
+  await sql`
+    DROP POLICY IF EXISTS omni_agent_loop_v2_checkpoints_actor_scope
+    ON omni_agent_loop_v2_checkpoints
+  `;
+  await sql`
+    CREATE POLICY omni_agent_loop_v2_checkpoints_actor_scope
+    ON omni_agent_loop_v2_checkpoints
+    AS RESTRICTIVE
+    FOR ALL
+    USING (
+      omni_system_scope_enabled()
+      OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+    )
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+    )
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT SELECT, INSERT ON omni_agent_loop_v2_checkpoints TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT SELECT, INSERT ON omni_agent_loop_v2_checkpoints TO omni_maintenance;
       END IF;
     END
     $migration$
