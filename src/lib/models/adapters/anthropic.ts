@@ -18,6 +18,12 @@ import {
 } from "@/lib/models/types";
 import type { ModelUsage } from "@/lib/openai/model-router";
 import { getModelRuntimeApiKey } from "@/lib/models/runtime-context";
+import {
+  appendModelTurnToConversation,
+  modelConversationForToolTurn,
+  renderUntrustedObservation,
+  type ModelConversationItem,
+} from "@/lib/models/conversation";
 
 const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 
@@ -89,7 +95,13 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
     return modelResult(result.body, target, result.latencyMs, JSON.stringify(toolUse.input));
   },
   async generateToolTurn(request, target) {
-    const messages = anthropicToolMessages(request);
+    const conversation = modelConversationForToolTurn({
+      prompt: request.input,
+      conversation: request.conversation,
+      continuationConversation: request.continuation?.conversation,
+      toolResults: request.toolResults,
+    });
+    const messages = anthropicToolMessages(request, conversation);
     const result = await callAnthropic(request, target, {
       messages,
       tools: request.tools.map((tool) => ({
@@ -138,6 +150,10 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
             content,
           },
         ],
+        conversation: appendModelTurnToConversation(conversation, {
+          text,
+          toolCalls,
+        }),
       },
     };
   },
@@ -187,7 +203,10 @@ async function callAnthropic(
   return result;
 }
 
-function anthropicToolMessages(request: ModelToolTurnRequest) {
+function anthropicToolMessages(
+  request: ModelToolTurnRequest,
+  conversation: readonly ModelConversationItem[],
+) {
   if (request.continuation && request.continuation.provider !== "anthropic") {
     throw new ModelProviderError(
       "Anthropic cannot consume another provider's continuation state.",
@@ -199,8 +218,8 @@ function anthropicToolMessages(request: ModelToolTurnRequest) {
   const prior = request.continuation?.state;
   const messages: Record<string, unknown>[] = prior?.length
     ? prior.map((message) => ({ ...message }))
-    : [{ role: "user", content: request.input }];
-  if (request.toolResults?.length) {
+    : anthropicMessagesFromConversation(conversation);
+  if (prior?.length && request.toolResults?.length) {
     messages.push({
       role: "user",
       content: request.toolResults.map((result) => ({
@@ -212,6 +231,62 @@ function anthropicToolMessages(request: ModelToolTurnRequest) {
     });
   }
   return messages;
+}
+
+function anthropicMessagesFromConversation(
+  conversation: readonly ModelConversationItem[],
+) {
+  const messages: Array<{
+    role: "user" | "assistant";
+    content: Record<string, unknown>[];
+  }> = [];
+  const append = (
+    role: "user" | "assistant",
+    block: Record<string, unknown>,
+  ) => {
+    const prior = messages.at(-1);
+    if (prior?.role === role) {
+      prior.content.push(block);
+    } else {
+      messages.push({ role, content: [block] });
+    }
+  };
+  for (const item of conversation) {
+    if (item.type === "message") {
+      append(item.role, { type: "text", text: item.content });
+    } else if (item.type === "observation") {
+      append("user", {
+        type: "text",
+        text: renderUntrustedObservation(item),
+      });
+    } else if (item.type === "tool_call") {
+      append("assistant", {
+        type: "tool_use",
+        id: item.callId,
+        name: item.name,
+        input: parseArgumentsObject(item.argumentsJson),
+      });
+    } else {
+      append("user", {
+        type: "tool_result",
+        tool_use_id: item.callId,
+        content: item.content,
+        ...(item.isError ? { is_error: true } : {}),
+      });
+    }
+  }
+  return messages;
+}
+
+function parseArgumentsObject(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function modelResult(body: AnthropicResponse, target: ModelTarget, latencyMs: number, text: string) {
