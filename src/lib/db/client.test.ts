@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the tool-execution retention-redaction migration", () => {
+  it("pins the actor-scoped event correlation migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 92,
-      name: "tool_execution_retention_redaction_v1",
-      checksum: "f0d1ff02fd7308ce715e744440ec6d7cb674cbdd43c4a23c79877397834fce70",
+      version: 93,
+      name: "actor_scoped_event_correlation_index",
+      checksum: "4f2b43c621892e37f7d1bf7ddb856c1b4e753cfdb65a47676e0d12fd9f33b07a",
     });
   });
 

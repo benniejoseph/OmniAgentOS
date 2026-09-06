@@ -1038,6 +1038,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[91],
       up: ensureToolExecutionRetentionRedactionV1,
     },
+    {
+      ...databaseSchemaMigrations[92],
+      up: ensureActorScopedEventCorrelationIndex,
+    },
   ];
 }
 
@@ -4996,6 +5000,34 @@ async function ensureToolExecutionRetentionRedactionV1(sql: SqlClient) {
       RETURN NEW;
     END
     $function$
+  `;
+}
+
+async function ensureActorScopedEventCorrelationIndex(sql: SqlClient) {
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_events_actor_correlation_seq_idx
+    ON omni_events (tenant_id, actor_id, correlation_id, seq ASC)
+    WHERE correlation_id IS NOT NULL
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_index index_record
+        JOIN pg_class index_relation
+          ON index_relation.oid = index_record.indexrelid
+        WHERE index_relation.relname =
+          'omni_events_actor_correlation_seq_idx'
+          AND index_record.indrelid = 'omni_events'::regclass
+          AND index_record.indisvalid
+          AND index_record.indpred IS NOT NULL
+      ) THEN
+        RAISE EXCEPTION 'Actor-scoped event correlation index is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
   `;
 }
 
