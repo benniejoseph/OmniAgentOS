@@ -25,6 +25,9 @@ function createSql(transactionScoped = false) {
     ) {
       return mocks.returnedMemoryRows;
     }
+    if (query.includes("UPDATE omni_memories") && query.includes("RETURNING id")) {
+      return [{ id: "feedback-memory" }];
+    }
     return [];
   }, {
     transactionScoped,
@@ -62,11 +65,14 @@ import {
   MEMORY_PURPOSE_IDS,
 } from "@/lib/memory/access-binding";
 import {
+  applyRunMemoryFeedback,
   listMemories,
   previewMemoryDeletion,
+  correctMemory,
   saveMemory,
   searchMemories,
 } from "@/lib/memory/store";
+import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const ownerActorId = "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6";
@@ -101,9 +107,21 @@ function executionScope(purposeId: string) {
 
 describe("Postgres memory recall", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     mocks.queries.length = 0;
     mocks.events.length = 0;
     mocks.returnedMemoryRows.length = 0;
+  });
+
+  it("fails closed before an unscoped production memory insert", async () => {
+    await expect(saveMemory({
+      tenantId: "tenant-a",
+      title: "Unscoped",
+      content: "This write must not reach Postgres.",
+    })).rejects.toThrow("requires an execution scope");
+    expect(mocks.queries.some((query) =>
+      query.includes("INSERT INTO omni_memories")
+    )).toBe(false);
   });
 
   it("ranks the projected lexical score from an outer query", async () => {
@@ -193,5 +211,64 @@ describe("Postgres memory recall", () => {
     );
     expect(traceQuery).toContain("trace.memory_ids &&");
     expect(traceQuery).not.toContain("jsonb_array_elements");
+  });
+
+  it("commits correction state and scoped events through one transaction client", async () => {
+    mocks.returnedMemoryRows.push({
+      id: "memory-original",
+      tenant_id: "tenant-a",
+      type: "fact",
+      title: "Original",
+      content: "Original value",
+      tags: [],
+      scope: "workspace",
+      source: "manual",
+      importance: 0.5,
+      confidence: 0.9,
+      claim_status: "active",
+      asserted_by: "user",
+      evidence_refs: [],
+      created_at: "2026-09-06T00:00:00.000Z",
+      updated_at: "2026-09-06T00:00:00.000Z",
+    });
+
+    await expect(correctMemory("memory-original", {
+      content: "Corrected value",
+    }, {
+      tenantId: "tenant-a",
+      actorId: ownerActorId,
+      executionScope: executionScope(MEMORY_PURPOSE_IDS.correct),
+    })).resolves.toMatchObject({
+      previous: { id: "memory-original", claimStatus: "superseded" },
+      corrected: { content: "Corrected value", supersedesId: "memory-original" },
+    });
+
+    expect(mocks.queries.some((query) => query.includes("FOR UPDATE"))).toBe(true);
+    expect(mocks.queries.some((query) =>
+      query.includes("SET claim_status")
+    )).toBe(true);
+    expect(vi.mocked(appendScopedDomainEvent)).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "memory.corrected" }),
+      expect.objectContaining({
+        sql: expect.objectContaining({ transactionScoped: true }),
+      }),
+    );
+  });
+
+  it("binds run feedback mutation to a deterministic scoped event", async () => {
+    await expect(applyRunMemoryFeedback("run-a", "useful", {
+      tenantId: "tenant-a",
+      executionScope: executionScope("feedback"),
+    })).resolves.toEqual(["feedback-memory"]);
+
+    expect(vi.mocked(appendScopedDomainEvent)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "memory.feedback_applied",
+        streamId: "agent_run:run-a",
+      }),
+      expect.objectContaining({
+        sql: expect.objectContaining({ transactionScoped: true }),
+      }),
+    );
   });
 });

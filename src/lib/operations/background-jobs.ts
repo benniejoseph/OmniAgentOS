@@ -543,9 +543,26 @@ async function executeBackgroundOperation(
       abortSignal,
     });
     const learnedCount = consolidation.saved.length;
+    const feedbackExecutionScope = executionScope
+      ? deriveExecutionScope(executionScope, {
+          executingPrincipalType: "system",
+          executingPrincipalId: "background-operations-worker",
+          causationId: job.id,
+          purpose: "memory.run_feedback.background",
+        })
+      : createExecutionScope({
+          tenantId: job.tenantId,
+          initiatingActorId: null,
+          executingPrincipalType: "system",
+          executingPrincipalId: "background-operations-worker",
+          correlationId: job.id,
+          causationId: parsed.runId,
+          purpose: "memory.run_feedback.background.legacy",
+        });
     const feedbackAdjustedMemoryIds = run.feedback
       ? await applyRunMemoryFeedback(run.id, run.feedback.verdict, {
           tenantId: job.tenantId,
+          executionScope: feedbackExecutionScope,
         })
       : [];
     await recordRunConsolidation(parsed.runId, {
@@ -582,9 +599,11 @@ async function executeBackgroundOperation(
     const parsed = knowledgeIngestJobRequestSchema.parse(request);
     const captureTarget = captureIngestTarget(parsed);
     const actorId = await resolveKnowledgeIngestActorId(job, parsed);
-    const sourceExecutionScope = actorId
-      ? knowledgeIngestSourceExecutionScope(job, actorId, Boolean(captureTarget))
-      : undefined;
+    const sourceExecutionScope = knowledgeIngestSourceExecutionScope(
+      job,
+      actorId,
+      Boolean(captureTarget),
+    );
     const captureExecutionScope = actorId && captureTarget
       ? captureIngestMutationExecutionScope(job, actorId)
       : undefined;
@@ -606,6 +625,7 @@ async function executeBackgroundOperation(
       tenantId: job.tenantId,
       idempotencyKey: job.id,
       abortSignal,
+      executionScope: sourceExecutionScope,
       ...(actorId ? {
         usageScope: {
           tenantId: job.tenantId,
@@ -619,7 +639,7 @@ async function executeBackgroundOperation(
           credentialSource: "deployment_environment" as const,
         },
       } : {}),
-      ...(sourceExecutionScope && actorId
+      ...(actorId
         ? {
             sourceLineage: {
               executionScope: sourceExecutionScope,
@@ -890,13 +910,13 @@ function captureIngestMutationExecutionScope(
 
 function knowledgeIngestSourceExecutionScope(
   job: OperationJobRecord,
-  actorId: string,
+  actorId: string | undefined,
   captureSource: boolean,
 ) {
   const persisted = parsePersistedExecutionScope(job.payload.executionScope);
   if (persisted) {
     assertExecutionScopeTenant(persisted, job.tenantId);
-    if (persisted.initiatingActorId !== actorId) {
+    if (actorId && persisted.initiatingActorId !== actorId) {
       throw new Error("Knowledge ingest job scope does not match its stored owner.");
     }
     return deriveExecutionScope(persisted, {
@@ -911,7 +931,7 @@ function knowledgeIngestSourceExecutionScope(
 
   return createExecutionScope({
     tenantId: job.tenantId,
-    initiatingActorId: actorId,
+    initiatingActorId: actorId || null,
     executingPrincipalType: "system",
     executingPrincipalId: "background-operations-worker",
     correlationId: job.id,

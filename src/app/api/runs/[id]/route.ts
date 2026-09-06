@@ -129,18 +129,20 @@ async function PATCHHandler(
       { status: 409 },
     );
   }
+  const feedbackExecutionScope = executionScopeFromSecurityContext(auth, {
+    executingPrincipalType: "user",
+    executingPrincipalId: auth.actorId,
+    correlationId:
+      request.headers.get("x-request-id")?.trim() || crypto.randomUUID(),
+    purpose: "run.feedback",
+  });
   const updated = await recordAgentRunFeedback(id, parsed.data, {
     tenantId: auth.tenantId,
-    executionScope: executionScopeFromSecurityContext(auth, {
-      executingPrincipalType: "user",
-      executingPrincipalId: auth.actorId,
-      correlationId:
-        request.headers.get("x-request-id")?.trim() || crypto.randomUUID(),
-      purpose: "run.feedback",
-    }),
+    executionScope: feedbackExecutionScope,
   });
   const affectedMemoryIds = await applyRunMemoryFeedback(id, parsed.data.verdict, {
     tenantId: auth.tenantId,
+    executionScope: feedbackExecutionScope,
   });
   const enteredNeedsWork = parsed.data.verdict === "needs_work" &&
     run.feedback?.verdict !== "needs_work";

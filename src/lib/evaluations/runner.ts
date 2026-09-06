@@ -1270,12 +1270,16 @@ async function evaluateMemoryGraph(
 
 async function ensureGraphEvalSeedMemory() {
   const title = "Graph memory evaluation seed";
+  const tenantId = getDatabaseTenantContext() ||
+    process.env.OMNIAGENT_DEFAULT_TENANT ||
+    "default";
   const memories = await listMemories();
   if (memories.some((memory) => memory.title === title)) {
     return;
   }
 
   await saveMemory({
+    tenantId,
     type: "procedure",
     title,
     content:
@@ -1284,6 +1288,14 @@ async function ensureGraphEvalSeedMemory() {
     source: "evaluation",
     scope: "workspace",
     importance: 0.9,
+    executionScope: createExecutionScope({
+      tenantId,
+      initiatingActorId: null,
+      executingPrincipalType: "system",
+      executingPrincipalId: "evaluation-harness",
+      correlationId: "evaluation_graph_seed_v1",
+      purpose: "evaluation.graph.seed",
+    }),
   });
 }
 
@@ -1721,6 +1733,15 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
       purpose: `evaluation.connector.${connectorKind}.tenant_isolation`,
     }),
   });
+  const memoryExecutionScope = (tenantId: string) => createExecutionScope({
+    tenantId,
+    initiatingActorId: null,
+    executingPrincipalType: "system",
+    executingPrincipalId: "evaluation-harness",
+    correlationId,
+    causationId: evalCase.id,
+    purpose: "evaluation.memory.tenant_isolation",
+  });
   let workflowA: Awaited<ReturnType<typeof createWorkflowRun>> | undefined;
   let workflowB: Awaited<ReturnType<typeof createWorkflowRun>> | undefined;
 
@@ -1733,6 +1754,7 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
         tags: ["eval", "tenant-isolation", markerA],
         source: "evaluation",
         importance: 0.8,
+        executionScope: memoryExecutionScope(tenantA),
       }),
     );
     const memoryB = await withDatabaseTenant(tenantB, () =>
@@ -1743,6 +1765,7 @@ async function evaluateTenantIsolation(evalCase: EvalCaseDefinition): Promise<Ca
         tags: ["eval", "tenant-isolation", markerB],
         source: "evaluation",
         importance: 0.8,
+        executionScope: memoryExecutionScope(tenantB),
       }),
     );
 

@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   ensureDatabaseSchema,
   getDatabaseTenantContext,
@@ -207,10 +207,25 @@ function memoryRecordFromInput(
   const source = String(
     redactSensitive(input.source || "manual"),
   ).slice(0, 2_000);
+  const evidenceRefs = normalizeEvidenceRefs(input.evidenceRefs || []);
+  const supersedesId = normalizeOptionalId(input.supersedesId);
+  const contradictionOfId = normalizeOptionalId(input.contradictionOfId);
   const textWasRedacted =
     title !== input.title || content !== input.content;
   return {
-    id: input.id?.trim().slice(0, 200) || randomUUID(),
+    id: input.id?.trim().slice(0, 200) ||
+      (input.executionScope
+        ? deterministicMemoryId(input.executionScope, {
+            tenantId,
+            title,
+            content,
+            source,
+            tags,
+            evidenceRefs,
+            supersedesId,
+            contradictionOfId,
+          })
+        : randomUUID()),
     tenantId,
     type: input.type || "fact",
     title,
@@ -222,16 +237,48 @@ function memoryRecordFromInput(
     confidence: clamp01(input.confidence ?? (source === "manual" ? 0.95 : 0.7)),
     claimStatus: normalizeClaimStatus(input.claimStatus),
     assertedBy: input.assertedBy || (source === "manual" ? "user" : source === "agent" || source === "consolidator" ? "agent" : "system"),
-    evidenceRefs: normalizeEvidenceRefs(input.evidenceRefs || []),
+    evidenceRefs,
     validFrom: normalizeOptionalDate(input.validFrom),
     validTo: normalizeOptionalDate(input.validTo),
-    supersedesId: normalizeOptionalId(input.supersedesId),
-    contradictionOfId: normalizeOptionalId(input.contradictionOfId),
+    supersedesId,
+    contradictionOfId,
     createdAt: now,
     updatedAt: now,
     embedding: textWasRedacted ? undefined : input.embedding,
     ...(accessBinding ? { accessBinding } : {}),
   };
+}
+
+function deterministicMemoryId(
+  executionScope: ExecutionScope,
+  input: {
+    tenantId: string;
+    title: string;
+    content: string;
+    source: string;
+    tags: readonly string[];
+    evidenceRefs: readonly string[];
+    supersedesId?: string;
+    contradictionOfId?: string;
+  },
+) {
+  const digest = createHash("sha256").update(JSON.stringify({
+    tenantId: input.tenantId,
+    correlationId: executionScope.correlationId,
+    purpose: executionScope.purpose,
+    titleSha256: createHash("sha256").update(input.title).digest("hex"),
+    contentSha256: createHash("sha256").update(input.content).digest("hex"),
+    sourceSha256: createHash("sha256").update(input.source).digest("hex"),
+    tags: input.tags,
+    evidenceRefs: input.evidenceRefs,
+    supersedesId: input.supersedesId || null,
+    contradictionOfId: input.contradictionOfId || null,
+  })).digest("hex");
+  return `memory_${digest.slice(0, 48)}`;
+}
+
+function memoryTextSha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 export async function saveMemory(input: CreateMemoryInput) {
@@ -259,9 +306,23 @@ export async function saveMemoryWithCommitStatus(input: CreateMemoryInput) {
   return result;
 }
 
+async function saveMemoryWithCommitStatusInTransaction(
+  input: CreateMemoryInput,
+  sql: MemorySqlClient,
+) {
+  const result = (await saveMemoriesWithCommitStatus([input], { sql }))[0];
+  if (!result) {
+    throw new Error("Memory persistence did not return a result.");
+  }
+  return result;
+}
+
 async function saveMemoriesWithCommitStatus(
   inputs: CreateMemoryInput[],
-  options: { captureIngestGuard?: CaptureIngestGuard } = {},
+  options: {
+    captureIngestGuard?: CaptureIngestGuard;
+    sql?: MemorySqlClient;
+  } = {},
 ) {
   if (!inputs.length) {
     return [];
@@ -296,9 +357,24 @@ async function saveMemoriesWithCommitStatus(
     }
   }
   validateMemoryFormationInputs(records, inputs);
+  const mutationScopes = inputs.map((input, index) => {
+    const scope = parsePersistedExecutionScope(input.executionScope);
+    const record = records[index];
+    if (scope && record) {
+      assertExecutionScopeTenant(scope, normalizeTenantId(record.tenantId));
+    }
+    return scope;
+  });
 
-  if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
+  if (options.sql || hasDatabaseUrl()) {
+    if (!options.sql) {
+      await ensureDatabaseSchema();
+    }
+    if (mutationScopes.some((scope) => !scope)) {
+      throw new Error(
+        "Memory persistence requires an execution scope for every record.",
+      );
+    }
     const payload = records.map((record) => ({
       id: record.id,
       tenant_id: record.tenantId,
@@ -403,26 +479,18 @@ async function saveMemoriesWithCommitStatus(
         ON memory.id = input.id
        AND memory.tenant_id = input.tenant_id
     `;
-    let rows: Array<Record<string, unknown>>;
-    if (options.captureIngestGuard) {
-      rows = await getSql().transaction(async (sql: MemorySqlClient) => {
+    const persistTransaction = async (sql: MemorySqlClient) => {
+      if (options.captureIngestGuard) {
         await lockActiveCaptureIngest(sql, options.captureIngestGuard!);
-        const persistedRows = await persistRows(sql);
-        await appendMemoryFormationEvents(
-          sql,
-          persistedRows,
-          records,
-          inputs,
-        );
-        return persistedRows;
-      }) as Array<Record<string, unknown>>;
-    } else if (databaseAccessScope) {
-      rows = await getSql().transaction(async (sql: MemorySqlClient) => {
+      }
+      if (databaseAccessScope) {
         await setTransactionLocalDatabaseMemoryAccessScope(
           sql,
           databaseAccessScope,
         );
-        const persistedRows = await persistRows(sql);
+      }
+      const persistedRows = await persistRows(sql);
+      if (databaseAccessScope) {
         await updateInsertedMemoryVectors(sql, persistedRows, records, tenantId);
         await appendBoundMemoryCreatedEvents(
           sql,
@@ -430,28 +498,26 @@ async function saveMemoriesWithCommitStatus(
           records,
           inputs,
         );
-        await appendMemoryFormationEvents(
-          sql,
-          persistedRows,
-          records,
-          inputs,
-        );
-        return persistedRows;
-      }) as Array<Record<string, unknown>>;
-    } else if (inputs.some((input) => input.formationOrigin)) {
-      rows = await getSql().transaction(async (sql: MemorySqlClient) => {
-        const persistedRows = await persistRows(sql);
-        await appendMemoryFormationEvents(
-          sql,
-          persistedRows,
-          records,
-          inputs,
-        );
-        return persistedRows;
-      }) as Array<Record<string, unknown>>;
-    } else {
-      rows = await persistRows(getSql());
-    }
+      }
+      await appendMemoryFormationEvents(
+        sql,
+        persistedRows,
+        records,
+        inputs,
+      );
+      await appendMemoryMutationEvents(
+        sql,
+        persistedRows,
+        records,
+        mutationScopes as ExecutionScope[],
+      );
+      return persistedRows;
+    };
+    const rows = options.sql
+      ? await persistTransaction(options.sql)
+      : await getSql().transaction(persistTransaction) as Array<
+          Record<string, unknown>
+        >;
     if (rows.length !== records.length) {
       throw new Error("Memory idempotency key collided with another tenant.");
     }
@@ -464,7 +530,7 @@ async function saveMemoriesWithCommitStatus(
         },
       ] as const),
     );
-    if (!databaseAccessScope) {
+    if (!databaseAccessScope && !options.sql) {
       await updateInsertedMemoryVectors(getSql(), rows, records, tenantId);
     }
     return records.map((record) => {
@@ -506,6 +572,15 @@ async function saveMemoriesWithCommitStatus(
     })),
     records,
     inputs,
+  );
+  await appendMemoryMutationEvents(
+    undefined,
+    records.map((record) => ({
+      id: record.id,
+      _inserted: Boolean(savedById.get(record.id)?.inserted),
+    })),
+    records,
+    mutationScopes,
   );
   return records.map((record) => {
     const result = savedById.get(record.id);
@@ -665,6 +740,11 @@ export async function getActiveMemoriesByIds(
   });
 }
 
+export type CorrectMemoryResult = {
+  previous: MemoryRecord;
+  corrected: MemoryRecord;
+};
+
 export async function correctMemory(
   id: string,
   correction: { title?: string; content?: string; confidence?: number; validTo?: string; contradiction?: boolean; embedding?: number[] },
@@ -674,15 +754,124 @@ export async function correctMemory(
     accessScope?: DatabaseMemoryAccessScope;
     executionScope?: ExecutionScope;
   } = {},
-) {
+): Promise<CorrectMemoryResult | null> {
   const tenantId = normalizeTenantId(options.tenantId);
+  const oldStatus: NonNullable<MemoryRecord["claimStatus"]> = correction.contradiction ? "contradicted" : "superseded";
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const executionScope = parsePersistedExecutionScope(options.executionScope);
+    if (!executionScope) {
+      throw new Error("Memory correction requires an execution scope.");
+    }
+    assertExecutionScopeTenant(executionScope, tenantId);
+    const result = await getSql().transaction(async (sql: MemorySqlClient) => {
+      if (options.accessScope) {
+        const accessScope = parseDatabaseMemoryAccessScope(options.accessScope);
+        if (
+          accessScope.tenantId !== tenantId ||
+          accessScope.purposeId !== MEMORY_PURPOSE_IDS.correct
+        ) {
+          throw new Error("Memory access scope does not match this operation.");
+        }
+        await setTransactionLocalDatabaseMemoryAccessScope(
+          sql,
+          accessScope,
+        );
+      }
+      const existingRows = await sql`
+        SELECT *
+        FROM omni_memories
+        WHERE id = ${id}
+          AND tenant_id = ${tenantId}
+          AND claim_status <> 'forgotten'
+        LIMIT 1
+        FOR UPDATE
+      `;
+      if (!existingRows[0]) return null;
+      const existing = memoryFromRow(existingRows[0]);
+      if (existing.accessBinding && !options.accessScope) {
+        throw new Error("Scoped memory correction requires an access scope.");
+      }
+      const correctedResult = await saveMemoryWithCommitStatusInTransaction(
+        correctionInput(existing, correction, options, executionScope),
+        sql,
+      );
+      await sql`
+        UPDATE omni_memories
+        SET claim_status = ${oldStatus},
+            valid_to = COALESCE(valid_to, NOW()),
+            updated_at = NOW()
+        WHERE id = ${id}
+          AND tenant_id = ${tenantId}
+          AND claim_status <> 'forgotten'
+      `;
+      await appendMemoryCorrectionEvent(sql, {
+        existing,
+        corrected: correctedResult.record,
+        oldStatus,
+        contradiction: Boolean(correction.contradiction),
+        executionScope,
+      });
+      return {
+        previous: { ...existing, claimStatus: oldStatus },
+        corrected: correctedResult.record,
+      };
+    }) as CorrectMemoryResult | null;
+    if (result && !result.corrected.accessBinding) {
+      await updateInsertedMemoryVectors(
+        getSql(),
+        [{ id: result.corrected.id, _inserted: true }],
+        [result.corrected],
+        tenantId,
+      );
+    }
+    return result;
+  }
+
   const existing = await getMemory(id, {
     tenantId,
     accessScope: options.accessScope,
   });
   if (!existing || existing.claimStatus === "forgotten") return null;
-  const corrected = await saveMemory({
-    tenantId,
+  const corrected = await saveMemory(
+    correctionInput(existing, correction, options, options.executionScope),
+  );
+  await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) => memories.map((memory) =>
+    memory.id === id && normalizeTenantId(memory.tenantId) === tenantId
+      ? { ...sanitizeMemoryRecord(memory), claimStatus: oldStatus, validTo: memory.validTo || new Date().toISOString(), updatedAt: new Date().toISOString() }
+      : memory,
+  ));
+  if (options.executionScope) {
+    await appendMemoryCorrectionEvent(undefined, {
+      existing,
+      corrected,
+      oldStatus,
+      contradiction: Boolean(correction.contradiction),
+      executionScope: options.executionScope,
+    });
+  }
+  return { previous: { ...existing, claimStatus: oldStatus }, corrected };
+}
+
+function correctionInput(
+  existing: MemoryRecord,
+  correction: {
+    title?: string;
+    content?: string;
+    confidence?: number;
+    validTo?: string;
+    contradiction?: boolean;
+    embedding?: number[];
+  },
+  options: {
+    tenantId?: string;
+    actorId?: string;
+    accessScope?: DatabaseMemoryAccessScope;
+  },
+  executionScope: ExecutionScope | undefined,
+): CreateMemoryInput {
+  return {
+    tenantId: existing.tenantId,
     type: existing.type,
     title: correction.title || existing.title,
     content: correction.content || existing.content,
@@ -699,38 +888,39 @@ export async function correctMemory(
     contradictionOfId: correction.contradiction ? existing.id : undefined,
     embedding: correction.embedding,
     accessBinding: existing.accessBinding,
-    databaseAccessScope: existing.accessBinding
-      ? options.accessScope
-      : undefined,
-    executionScope: existing.accessBinding
-      ? options.executionScope
-      : undefined,
-  });
-  const oldStatus: NonNullable<MemoryRecord["claimStatus"]> = correction.contradiction ? "contradicted" : "superseded";
-  if (hasDatabaseUrl()) {
-    const updatePrevious = (sql: MemorySqlClient) =>
-      sql`UPDATE omni_memories SET claim_status = ${oldStatus}, valid_to = COALESCE(valid_to, NOW()), updated_at = NOW() WHERE id = ${id} AND tenant_id = ${tenantId} AND claim_status <> 'forgotten'`;
-    if (existing.accessBinding) {
-      if (!options.accessScope) {
-        throw new Error("Scoped memory correction requires an access scope.");
-      }
-      await runWithDatabaseMemoryAccessScope(
-        options.accessScope,
-        tenantId,
-        updatePrevious,
-        [MEMORY_PURPOSE_IDS.correct],
-      );
-    } else {
-      await updatePrevious(getSql());
-    }
-  } else {
-    await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) => memories.map((memory) =>
-      memory.id === id && normalizeTenantId(memory.tenantId) === tenantId
-        ? { ...sanitizeMemoryRecord(memory), claimStatus: oldStatus, validTo: memory.validTo || new Date().toISOString(), updatedAt: new Date().toISOString() }
-        : memory,
-    ));
-  }
-  return { previous: { ...existing, claimStatus: oldStatus }, corrected };
+    databaseAccessScope: existing.accessBinding ? options.accessScope : undefined,
+    executionScope,
+  };
+}
+
+async function appendMemoryCorrectionEvent(
+  sql: MemorySqlClient | undefined,
+  input: {
+    existing: MemoryRecord;
+    corrected: MemoryRecord;
+    oldStatus: NonNullable<MemoryRecord["claimStatus"]>;
+    contradiction: boolean;
+    executionScope: ExecutionScope;
+  },
+) {
+  const eventDigest = memoryTextSha256(
+    `${input.existing.id}:${input.corrected.id}:${input.executionScope.correlationId}`,
+  );
+  await appendScopedDomainEvent({
+    id: `memory_mutation_corrected_${eventDigest}`,
+    streamId: `memory:${input.existing.id}`,
+    type: "memory.corrected",
+    executionScope: input.executionScope,
+    payload: {
+      schemaVersion: 1,
+      previousMemoryId: input.existing.id,
+      correctedMemoryId: input.corrected.id,
+      previousClaimStatus: input.oldStatus,
+      contradiction: input.contradiction,
+      correctedTitleSha256: memoryTextSha256(input.corrected.title),
+      correctedContentSha256: memoryTextSha256(input.corrected.content),
+    },
+  }, sql ? { sql } : undefined);
 }
 
 export type ForgetMemoryWithReceiptResult = {
@@ -1486,15 +1676,24 @@ function assertExpectedDeletionManifest(
 export async function applyRunMemoryFeedback(
   runId: string,
   verdict: "useful" | "needs_work",
-  options: { tenantId?: string } = {},
+  options: {
+    tenantId?: string;
+    executionScope?: ExecutionScope;
+  } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const evidenceRef = `run:${runId}`;
   const now = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = verdict === "useful"
-      ? await getSql()`
+    const executionScope = parsePersistedExecutionScope(options.executionScope);
+    if (!executionScope) {
+      throw new Error("Run memory feedback requires an execution scope.");
+    }
+    assertExecutionScopeTenant(executionScope, tenantId);
+    const rows = await getSql().transaction(async (sql: MemorySqlClient) => {
+      const changedRows = verdict === "useful"
+        ? await sql`
           UPDATE omni_memories
           SET confidence = LEAST(0.95, confidence + 0.10),
               tags = ARRAY(SELECT DISTINCT unnest(tags || ARRAY['owner-verified']::text[])),
@@ -1506,7 +1705,7 @@ export async function applyRunMemoryFeedback(
             AND NOT ('owner-verified' = ANY(tags))
           RETURNING id
         `
-      : await getSql()`
+        : await sql`
           UPDATE omni_memories
           SET confidence = LEAST(confidence, 0.35),
               claim_status = 'contradicted',
@@ -1519,6 +1718,13 @@ export async function applyRunMemoryFeedback(
             AND ${evidenceRef} = ANY(evidence_refs)
           RETURNING id
         `;
+      await appendRunMemoryFeedbackEvent(sql, {
+        runId,
+        verdict,
+        executionScope,
+      });
+      return changedRows;
+    }) as Array<Record<string, unknown>>;
     return rows.map((row) => String(row.id));
   }
 
@@ -1547,9 +1753,42 @@ export async function applyRunMemoryFeedback(
           validTo: memory.validTo || now,
           tags: normalizeTags([...memory.tags, "needs-review", "run-corrected"]),
           updatedAt: now,
-        };
+      };
   }));
+  if (options.executionScope) {
+    assertExecutionScopeTenant(options.executionScope, tenantId);
+    await appendRunMemoryFeedbackEvent(undefined, {
+      runId,
+      verdict,
+      executionScope: options.executionScope,
+    });
+  }
   return changed;
+}
+
+async function appendRunMemoryFeedbackEvent(
+  sql: MemorySqlClient | undefined,
+  input: {
+    runId: string;
+    verdict: "useful" | "needs_work";
+    executionScope: ExecutionScope;
+  },
+) {
+  const eventDigest = memoryTextSha256(
+    `${input.runId}:${input.verdict}:${input.executionScope.correlationId}`,
+  );
+  await appendScopedDomainEvent({
+    id: `memory_feedback_applied_${eventDigest}`,
+    streamId: `agent_run:${input.runId}`,
+    type: "memory.feedback_applied",
+    executionScope: input.executionScope,
+    payload: {
+      schemaVersion: 1,
+      runId: input.runId,
+      verdict: input.verdict,
+      evidenceRefSha256: memoryTextSha256(`run:${input.runId}`),
+    },
+  }, sql ? { sql } : undefined);
 }
 
 export async function getMemoryStats(options: { tenantId?: string } = {}) {
@@ -1804,6 +2043,42 @@ async function appendBoundMemoryCreatedEvents(
         accessBoundAt: record.accessBinding.accessBoundAt,
       },
     }, { sql });
+  }
+}
+
+async function appendMemoryMutationEvents(
+  sql: MemorySqlClient | undefined,
+  rows: readonly Record<string, unknown>[],
+  records: readonly MemoryRecord[],
+  scopes: readonly (ExecutionScope | undefined)[],
+) {
+  const insertedIds = new Set(
+    rows
+      .filter((row) => Boolean(row._inserted))
+      .map((row) => String(row.id)),
+  );
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const executionScope = scopes[index];
+    if (!record || !executionScope || !insertedIds.has(record.id)) continue;
+    await appendScopedDomainEvent({
+      id: `memory_mutation_created_${record.id}`,
+      streamId: `memory:${record.id}`,
+      type: "memory.created",
+      executionScope,
+      payload: {
+        schemaVersion: 1,
+        memoryId: record.id,
+        memoryType: record.type,
+        memoryScope: record.scope,
+        claimStatus: record.claimStatus,
+        assertedBy: record.assertedBy,
+        evidenceRefCount: record.evidenceRefs?.length || 0,
+        titleSha256: memoryTextSha256(record.title),
+        contentSha256: memoryTextSha256(record.content),
+        sourceSha256: memoryTextSha256(record.source),
+      },
+    }, sql ? { sql } : undefined);
   }
 }
 

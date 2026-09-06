@@ -2684,6 +2684,7 @@ async function runTool(
         source: "tool-executor",
         scope: "workspace",
         embedding,
+        executionScope,
       };
     if (effectTargetId) {
       const committed = await saveMemoryWithCommitStatus(memoryInput);
@@ -2714,7 +2715,11 @@ async function runTool(
     const result = await correctMemory(
       id,
       { ...safeCorrection, embedding },
-      { tenantId: context?.tenantId, actorId: context?.actorId },
+      {
+        tenantId: context?.tenantId,
+        actorId: context?.actorId,
+        executionScope,
+      },
     );
     if (!result) {
       throw new Error("Memory not found.");
@@ -2784,6 +2789,7 @@ async function runTool(
       sourceType: "manual",
       tags: safeValue.tags || ["tool-execution"],
       usageScope: aiUsageScope("embedding", "tool.knowledge.ingest"),
+      executionScope,
       ...(executionScope?.initiatingActorId && executionObservedAt
         ? {
             sourceLineage: {

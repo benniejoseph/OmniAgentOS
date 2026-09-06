@@ -148,9 +148,10 @@ export async function restorePortableArchive(archive: unknown, input: {
     databaseAccessScope: privateMemoryBinding
       ? input.memoryAccessScope
       : undefined,
-    executionScope: privateMemoryBinding
-      ? input.memoryExecutionScope
-      : undefined,
+    executionScope: input.memoryExecutionScope || deriveExecutionScope(
+      sourceExecutionScope,
+      { purpose: "portable.memory.restore" },
+    ),
   }));
   if (memoryInputs.length) await saveMemories(memoryInputs);
   let turns = 0;
