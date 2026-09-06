@@ -736,12 +736,15 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
     icon: CheckCircle2,
     endpoints: [
       { key: "evaluations", label: "Evaluation runs", path: "/api/evaluations?limit=12" },
+      { key: "failureFeedback", label: "Failure feedback", path: "/api/evaluations/failure-feedback?limit=50" },
       { key: "release", label: "Release evidence", path: "/api/release/evidence" },
       { key: "isolation", label: "Tenant isolation", path: "/api/security/isolation-report" },
     ],
     metrics: [
       { label: "Eval runs", description: "Recorded suite executions", value: (data) => numberPath(data, "evaluations.stats.total") },
       { label: "Cases", description: "Available regression cases", value: (data) => arrayPath(data, "evaluations.cases").length.toString() },
+      { label: "Recurring", description: "Active repeated failure categories", value: (data) => numberPath(data, "failureFeedback.summary.activeRecurring"), tone: "warning" },
+      { label: "Rule review", description: "Inactive harness proposals awaiting review", value: (data) => numberPath(data, "failureFeedback.summary.proposedRules"), tone: "warning" },
       { label: "Release gate", description: "Current production readiness", value: (data) => stringPath(data, "release.report.releaseGate.status", "unknown"), tone: "success" },
       { label: "Isolation", description: "Tenant data boundary proof", value: (data) => stringPath(data, "isolation.report.status", "unknown") },
     ],
@@ -763,6 +766,36 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
             meta: summaryValue(item.summary),
             time: stringValue(item.completedAt || item.createdAt),
             tone: toneForStatus(item.status),
+          })),
+      },
+      {
+        title: "Recurring failures",
+        description: "Minimized replay clusters derived from repeated case failures.",
+        emptyLabel: "No recurring failure category is active.",
+        rows: (data) =>
+          arrayPath(data, "failureFeedback.clusters").map((item) => ({
+            title: stringValue(item.caseId, "Evaluation case"),
+            status: stringValue(item.status, "unknown"),
+            meta: `${stringValue(item.failureCategory, "failure")} · ${numberValue(item.failureCount, 0)} total · ${numberValue(item.consecutiveFailures, 0)} consecutive`,
+            time: stringValue(item.updatedAt),
+            tone: stringValue(item.status) === "resolved" ? "success" : "warning",
+          })),
+      },
+      {
+        title: "Harness rule proposals",
+        description: "Versioned prompt, tool, runtime, and regression changes. Review never applies a change automatically.",
+        emptyLabel: "No harness rule proposal is waiting.",
+        rows: (data) =>
+          arrayPath(data, "failureFeedback.proposals").map((item) => ({
+            title: stringValue(item.target, "Harness rule"),
+            status: stringValue(item.status, "proposed"),
+            meta: `v${numberValue(item.version, 1)} · ${stringValue(item.kind, "rule")} · review only`,
+            time: stringValue(item.updatedAt),
+            tone: stringValue(item.status) === "approved"
+              ? "success"
+              : stringValue(item.status) === "rejected"
+                ? "neutral"
+                : "warning",
           })),
       },
       {
@@ -795,6 +828,26 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           { name: "maxSafetyMode", label: "Safety mode", type: "select", defaultValue: "synthetic", options: safetyModeOptions },
         ],
         buildPayload: (values) => ({ suite: textValue(values.suite, "operator-console"), maxSafetyMode: textValue(values.maxSafetyMode, "synthetic") }),
+      },
+      {
+        id: "review-harness-rule",
+        title: "Review harness rule",
+        description: "Approve or reject one versioned proposal. Approval records evidence but does not modify prompts, tools, or runtime code.",
+        method: "POST",
+        path: "/api/evaluations/failure-feedback",
+        fields: [
+          { name: "proposalId", label: "Proposal id", type: "text", placeholder: "Paste a proposal id from the review list" },
+          { name: "decision", label: "Decision", type: "select", defaultValue: "approved", options: [
+            { label: "Approve", value: "approved" },
+            { label: "Reject", value: "rejected" },
+          ] },
+          { name: "reason", label: "Review reason", type: "textarea", placeholder: "Explain how the minimized replay evidence supports this decision." },
+        ],
+        buildPayload: (values) => ({
+          proposalId: textValue(values.proposalId),
+          decision: textValue(values.decision, "approved"),
+          reason: textValue(values.reason),
+        }),
       },
     ],
   },
@@ -2245,6 +2298,8 @@ const metricResourceKeys: Record<DomainConsoleKey, Record<string, string>> = {
   evaluations: {
     "Eval runs": "evaluations",
     Cases: "evaluations",
+    Recurring: "failureFeedback",
+    "Rule review": "failureFeedback",
     "Release gate": "release",
     Isolation: "isolation",
   },
@@ -2295,6 +2350,8 @@ const sectionResourceKeys: Record<DomainConsoleKey, Record<string, string[]>> = 
   },
   evaluations: {
     "Evaluation runs": ["evaluations"],
+    "Recurring failures": ["failureFeedback"],
+    "Harness rule proposals": ["failureFeedback"],
     "Release gate": ["release"],
     Cases: ["evaluations"],
   },
