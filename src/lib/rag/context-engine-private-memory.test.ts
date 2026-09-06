@@ -267,6 +267,14 @@ describe("actor-scoped context retrieval", () => {
       selectedCount: 1,
       legacyOnlyCount: 1,
     });
+    expect(pack.compilerV2Canary?.receipt.decisions[0]).toMatchObject({
+      authorizationState: "authorized",
+      authorizationReason: "authorized",
+    });
+    expect(pack.compilerV2Canary?.receipt.decisions[1]).toMatchObject({
+      authorizationState: "rejected",
+      authorizationReason: "access_binding_missing",
+    });
     expect(pack.results.map((result) => result.id)).toEqual(["private-memory"]);
     expect(pack.contextBlock).toContain("Private preference");
     expect(pack.contextBlock).not.toContain("Legacy preference");

@@ -461,9 +461,16 @@ function mergeMemorySearchResults(
 }
 
 function sanitizeContextPack(pack: ContextPack): ContextPack {
-  const sanitized = redactSensitive(pack) as ContextPack;
+  const {
+    compilerV2Shadow,
+    compilerV2Canary,
+    ...redactionInput
+  } = pack;
+  const sanitized = redactSensitive(redactionInput) as ContextPack;
   return {
     ...sanitized,
+    ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
+    ...(compilerV2Canary ? { compilerV2Canary } : {}),
     memoryResults: sanitized.memoryResults.map(withoutMemoryEmbedding),
     results: sanitized.results.map((item) => item.kind === "memory"
       ? { ...item, result: withoutMemoryEmbedding(item.result) }
