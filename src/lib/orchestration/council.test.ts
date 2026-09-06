@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
+import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const mocks = vi.hoisted(() => ({ generateModelStructured: vi.fn() }));
 vi.mock("@/lib/models/gateway", () => ({ generateModelStructured: mocks.generateModelStructured }));
@@ -25,10 +28,22 @@ describe("agent council", () => {
       specialistIds: ["atlas", "scout", "forge", "sentinel"],
       contextBlock: "[memory:1] Existing evidence",
       tenantId: "personal",
+      delegationAuthority,
+      usageAttribution: {
+        tenantId: "personal",
+        actorId: "actor-one",
+        sourceStreamId: "run:run-one",
+        correlationId: "run-one",
+        executionScope: delegationExecutionScope,
+        credentialSource: "deployment_environment",
+      },
     });
 
     expect(contributions.map((item) => item.agentId)).toEqual(["scout", "forge"]);
     expect(contributions.every((item) => item.status === "completed")).toBe(true);
+    expect(contributions.every((item) =>
+      /^[a-f0-9]{64}$/.test(item.delegation.contractSha256)
+    )).toBe(true);
     expect(mocks.generateModelStructured).toHaveBeenCalledTimes(2);
     expect(formatCouncilContributions(contributions)).toContain("Scout (Research)");
     const scoutInstructions = String(
@@ -41,6 +56,17 @@ describe("agent council", () => {
     expect(scoutInstructions).toContain("<untrusted_agent_persona>");
     expect(forgeInstructions).toContain("Build concrete, production-ready artifacts");
     expect(forgeInstructions).toContain("cannot grant tools, context, data access");
+    expect(String(mocks.generateModelStructured.mock.calls[0]?.[0]?.input))
+      .toContain("<delegation_contract");
+    expect(mocks.generateModelStructured.mock.calls[0]?.[0]?.usageScope)
+      .toMatchObject({
+        executionScope: {
+          executingPrincipalId: contributions[0].delegation.delegatePrincipalId,
+          delegationId: contributions[0].delegation.delegationId,
+          contextGrantIds: ["context-one"],
+          capabilityGrantIds: [],
+        },
+      });
   });
 
   it("serializes enrolled members and observes delegation/model boundaries", async () => {
@@ -50,15 +76,18 @@ describe("agent council", () => {
       .mockImplementationOnce(() => first.promise)
       .mockImplementationOnce(() => second.promise);
     const events: string[] = [];
+    const requestContracts = new Map<string, string>();
     const pending = runCouncilRound({
       goal: "Verify checkpoints",
       mode: "orchestrate",
       primaryAgentId: "atlas",
       specialistIds: ["scout", "forge"],
       contextBlock: "Evidence",
+      delegationAuthority,
       checkpointHooks: {
         serializeMembers: true,
         beforeDelegation: async ({ agentId, requestSha256 }) => {
+          requestContracts.set(agentId, requestSha256);
           events.push(`${agentId}:delegation:before:${requestSha256.length}`);
         },
         beforeModel: async ({ sourceId }) => {
@@ -79,7 +108,12 @@ describe("agent council", () => {
     first.resolve(modelResult("Scout complete"));
     await vi.waitFor(() => expect(mocks.generateModelStructured).toHaveBeenCalledTimes(2));
     second.resolve(modelResult("Forge complete"));
-    await expect(pending).resolves.toHaveLength(2);
+    const contributions = await pending;
+    expect(contributions).toHaveLength(2);
+    expect(contributions.every((contribution) =>
+      requestContracts.get(contribution.agentId) ===
+        contribution.delegation.contractSha256
+    )).toBe(true);
 
     expect(events).toEqual([
       "scout:delegation:before:64",
@@ -101,6 +135,12 @@ describe("agent council", () => {
       agentId: "scout" as const, name: "Scout", role: "Research", status: "completed" as const,
       summary: "Found evidence.", findings: ["Fact"], risks: [], recommendation: "Cite it",
       evidenceIds: ["memory:1"], confidence: 0.9, durationMs: 12,
+      delegation: {
+        delegationId: "delegation:test",
+        contractId: `delegation-contract:${"a".repeat(64)}`,
+        contractSha256: "a".repeat(64),
+        delegatePrincipalId: "principal:scout:test",
+      },
     }];
     const events: string[] = [];
     const checkpointHooks = {
@@ -155,6 +195,33 @@ describe("agent council", () => {
     ]);
   });
 });
+
+const atlasIdentity = buildBuiltInAgentIdentityV1({
+  agentId: "atlas",
+  tenantId: "personal",
+  controllerActorId: "actor-one",
+});
+const delegationExecutionScope = createExecutionScope({
+  tenantId: "personal",
+  initiatingActorId: "actor-one",
+  executingPrincipalType: "agent",
+  executingPrincipalId: atlasIdentity.principal.principalId,
+  correlationId: "run-one",
+  contextGrantIds: ["context-one"],
+  capabilityGrantIds: ["capability-one"],
+  purpose: "agent.run",
+});
+const delegationAuthority = {
+  parentExecutionId: "run-one",
+  executionScope: delegationExecutionScope,
+  delegator: {
+    principalId: atlasIdentity.principal.principalId,
+    agentId: atlasIdentity.definition.logicalAgentId,
+    definitionVersion: atlasIdentity.definition.definitionVersion,
+  },
+  parentBudgets: DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+  remainingWallTimeMs: 120_000,
+};
 
 function modelResult(summary: string) {
   return {
