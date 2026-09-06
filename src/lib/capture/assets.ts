@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { captureActorReadOrder } from "@/lib/capture/actor-scope";
@@ -91,21 +91,34 @@ export async function saveCaptureAsset(input: ScopedOwner & {
   if (!input.bytes.byteLength) throw new CaptureAssetError("The selected file is empty.");
   if (input.bytes.byteLength > MAX_CAPTURE_ASSET_BYTES) throw new CaptureAssetError("Stored files must be 20 MB or smaller.", 413);
   const now = new Date().toISOString();
-  const id = randomUUID();
+  const tenantId = normalizeTenantId(input.tenantId);
+  const actorId = normalizeActorId(input.actorId);
+  const filename = safeFilename(input.filename);
+  const mediaType = normalizeMime(input.mediaType);
+  const contentSha256 = createHash("sha256").update(input.bytes).digest("hex");
+  const tags = normalizeTags(input.tags || []);
+  const metadata = sanitizeMetadata(input.metadata);
+  const id = `capture_asset_${sha256Json({
+    tenantId,
+    actorId,
+    correlationId: executionScope.correlationId,
+    contentSha256,
+    metadata,
+  }).slice(0, 48)}`;
   const asset: CaptureAsset = {
     id,
-    tenantId: normalizeTenantId(input.tenantId),
-    actorId: normalizeActorId(input.actorId),
-    filename: safeFilename(input.filename),
-    mediaType: normalizeMime(input.mediaType),
+    tenantId,
+    actorId,
+    filename,
+    mediaType,
     extension: fileExtension(input.filename),
     byteCount: input.bytes.byteLength,
-    contentSha256: createHash("sha256").update(input.bytes).digest("hex"),
+    contentSha256,
     storageKind: hasDatabaseUrl() ? "database" : "filesystem",
     status: "stored",
     extractionStatus: "pending",
-    tags: normalizeTags(input.tags || []),
-    metadata: sanitizeMetadata(input.metadata),
+    tags,
+    metadata,
     createdAt: now,
     updatedAt: now,
   };
@@ -123,11 +136,28 @@ export async function saveCaptureAsset(input: ScopedOwner & {
           ${asset.contentSha256}, 'database', ${Buffer.from(input.bytes)},
           ${asset.status}, ${asset.extractionStatus}, ${asset.tags},
           ${asset.metadata}::jsonb, ${now}, ${now}
-        ) RETURNING id, tenant_id, actor_id, filename, media_type, extension,
+        ) ON CONFLICT (id) DO NOTHING
+        RETURNING id, tenant_id, actor_id, filename, media_type, extension,
           byte_count, content_sha256, storage_kind, status, extraction_status,
           ingest_job_id, knowledge_document_id, error, tags, metadata, created_at,
           updated_at
       `;
+      if (!rows[0]) {
+        const existing = await sql`
+          SELECT id, tenant_id, actor_id, filename, media_type, extension,
+            byte_count, content_sha256, storage_kind, status, extraction_status,
+            ingest_job_id, knowledge_document_id, error, tags, metadata,
+            created_at, updated_at
+          FROM omni_capture_assets
+          WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId}
+            AND actor_id = ${asset.actorId}
+          LIMIT 1
+        `;
+        if (!existing[0]) {
+          throw new CaptureAssetError("Capture asset idempotency conflict.");
+        }
+        return assetFromRow(existing[0]);
+      }
       const saved = assetFromRow(rows[0]);
       await appendCaptureAssetEvent(saved, executionScope, "capture_asset.scope_bound", {
         schemaVersion: CAPTURE_ASSET_EVENT_SCHEMA_VERSION,
@@ -142,6 +172,12 @@ export async function saveCaptureAsset(input: ScopedOwner & {
       return saved;
     }) as Promise<CaptureAsset>;
   }
+  const existingLedger = await readJsonFile<CaptureAssetLedger>(
+    getAssetLedgerFile(),
+    { assets: [] },
+  );
+  const existingAsset = existingLedger.assets.find((item) => item.id === id);
+  if (existingAsset) return withoutContentPath(existingAsset);
   const directory = getAssetDirectory(asset.id);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const contentPath = path.join(directory, "original.bin");
@@ -561,6 +597,13 @@ async function appendCaptureAssetEvent(
   options: { sql?: ReturnType<typeof getSql> } = {},
 ) {
   await appendScopedDomainEvent({
+    id: `capture_asset_event_${sha256Json({
+      assetId: asset.id,
+      type,
+      correlationId: executionScope.correlationId,
+      causationId: executionScope.causationId,
+      payload,
+    })}`,
     streamId: `capture-asset:${asset.id}`,
     type,
     payload,
