@@ -2089,6 +2089,25 @@ and anonymous agent access remains closed. P6.8 trace hierarchy and
 outcome-oriented observability is next; P6.1 recovery/fault injection remains
 separately open, and P12/P13 remain deferred.
 
+P6.8 is complete at exact production release
+`e0dc873bcd38b0335871d3faee336220770b35d8`. Actor-owned run and durable
+workflow trajectories now project one bounded, correlation-driven journey
+across intent, plan, agent, model, tool, evidence, effect, verification, and
+memory. Each stage distinguishes observed, pending, missing, and
+not-applicable state; identifiers are exposed only as hashes, and prompt text,
+tool output, secrets, and private reasoning remain excluded. Command Activity
+shows the same hierarchy and prefers the active workflow trace. Migration 93
+adds the exact tenant/actor/correlation/sequence lookup index. Focused tests,
+lint, type validation, and the production build pass. A direct production
+canary observed every applicable required stage without retaining its prompt,
+and a separate workflow canary returned a real OpenAI structured plan with
+zero selected tools and no deterministic fallback. Canonical Vercel, the Fly
+protocol-1 gateway/worker, the dedicated Playwright service, and all active
+worker lanes are healthy; the activation marker matches and anonymous agent
+access remains closed. P6.9 recurring-failure minimization and harness-rule
+feedback is next; P6.1 interrupted-run recovery and broader fault injection
+remain separately open, and P12/P13 remain deferred.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

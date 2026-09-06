@@ -252,6 +252,16 @@ and its events remain unchanged.
 
 Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured output), persisted, and executed in bounded ready-node waves through queue leases (`omni_operation_jobs`): lease → tick → retry with backoff (max 5 attempts) → recovery for stale leases. Model-only and proven read-only branches may overlap; approval gates and possible mutations remain serialized. Downstream governed-tool inputs can bind only typed artifacts from declared direct dependencies through restricted content-field JSON Pointers. A failed assumption, observation, tool, or verification may produce one strict failed-subtree replan: the runtime retains the exact node set, restores unaffected node definitions, reuses only hash-bound completed executions, refreshes context, and invalidates prior approval and context/capability grants. Broad, missing-lineage, or no-op replans fail closed. Every run persists and reserves a complete budget before work: model turns, tokens, estimated cost, active wall time, governed tools, browser actions, agents, fan-out, retries, and replans. Queue redelivery, model fallback, retry, and replan consume the same authority; delegated children receive deterministic partitions that cannot exceed or broaden the parent. Approval nodes pause without consuming active wall time. The daily cron plus `after()` drains advance work; see [deployment.md](deployment.md) for cadence options.
 
+Run and workflow trajectories share a nine-stage trace projection: intent,
+plan, agent, model, tool, evidence, effect, verification, and memory. Projection
+starts only after the requested resource's persisted owner matches the
+authenticated actor, then loads events by the exact tenant, actor, and
+correlation ID. Stages report observed, pending, missing, or not-applicable
+state and derive a terminal outcome without claiming success from missing
+evidence. Public trajectory metadata hashes correlation, event, and causation
+identifiers and never includes prompts, model deliberation, tool output,
+secrets, or private reasoning.
+
 ## Storage
 
 - **Postgres mode** (`DATABASE_URL`): all ledgers, pgvector embeddings + HNSW indexes, forced row-level security on every tenant-scoped table.
