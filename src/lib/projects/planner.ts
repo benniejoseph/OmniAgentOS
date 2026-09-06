@@ -2,7 +2,14 @@ import { z } from "zod";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { AGENT_MODEL, hasOpenAIKey } from "@/lib/config";
 import { createStructuredResponse } from "@/lib/openai/client";
-import { createProjectTasks, getProject, replaceProjectTaskDependencies } from "@/lib/projects/store";
+import {
+  createProjectTasks,
+  getProject,
+  replaceProjectTaskDependencies,
+  type ProjectMutationContext,
+} from "@/lib/projects/store";
+import { projectMutationSha256 } from "@/lib/projects/events";
+import { deriveExecutionScope } from "@/lib/security/execution-scope";
 import { getAgentPerformance } from "@/lib/agents/performance";
 
 const agentIds = ["atlas", "scout", "forge", "sentinel", "mnemosyne"] as const;
@@ -48,6 +55,7 @@ export async function decomposeProject(input: {
   tenantId?: string;
   actorId: string;
   context?: string;
+  mutation: ProjectMutationContext;
 }) {
   const project = await getProject(input.projectId, input);
   if (!project) return undefined;
@@ -113,7 +121,14 @@ export async function decomposeProject(input: {
     priority: task.priority,
     agentId: task.agentId,
     origin: "agent" as const,
-  })), { tenantId: project.tenantId });
+  })), {
+    tenantId: project.tenantId,
+    actorId: project.actorId,
+    mutation: projectChildMutation(input.mutation, "project.plan.tasks", {
+      projectId: project.id,
+      taskCount: plan.tasks.length,
+    }),
+  });
   if (tasks.length === plan.tasks.length) {
     await replaceProjectTaskDependencies(project.id, tasks.map((task, index) => ({
       taskId: task.id,
@@ -121,7 +136,14 @@ export async function decomposeProject(input: {
         .filter((dependency) => dependency >= 0 && dependency < index)
         .map((dependency) => tasks[dependency]?.id)
         .filter((id): id is string => Boolean(id)),
-    })), { tenantId: project.tenantId });
+    })), {
+      tenantId: project.tenantId,
+      actorId: project.actorId,
+      mutation: projectChildMutation(input.mutation, "project.plan.dependencies", {
+        projectId: project.id,
+        taskIds: tasks.map((task) => task.id),
+      }),
+    });
   }
   const plannedTasks = await replaceProjectTaskDependencies(project.id, [], { tenantId: project.tenantId });
   return {
@@ -130,6 +152,21 @@ export async function decomposeProject(input: {
     generatedBy,
     model: generatedBy === "ai" ? AGENT_MODEL : undefined,
     tasks: plannedTasks.filter((task) => tasks.some((created) => created.id === task.id)),
+  };
+}
+
+function projectChildMutation(
+  parent: ProjectMutationContext,
+  purpose: string,
+  value: unknown,
+): ProjectMutationContext {
+  return {
+    executionScope: deriveExecutionScope(parent.executionScope, { purpose }),
+    idempotencyKey: `project-plan:${projectMutationSha256({
+      parentIdempotencyKey: parent.idempotencyKey,
+      purpose,
+      value,
+    })}`,
   };
 }
 

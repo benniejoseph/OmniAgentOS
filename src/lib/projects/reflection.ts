@@ -2,6 +2,7 @@ import { correctMemory, getMemory, saveMemory } from "@/lib/memory/store";
 import {
   getProjectArtifact,
   recordProjectArtifactFeedback,
+  type ProjectMutationContext,
 } from "@/lib/projects/store";
 import type { ProjectArtifactVerdict } from "@/lib/projects/types";
 
@@ -12,6 +13,7 @@ export async function reflectOnProjectArtifact(input: {
   actorId: string;
   verdict: ProjectArtifactVerdict;
   lesson: string;
+  mutation: ProjectMutationContext;
 }) {
   const artifact = await getProjectArtifact(input.artifactId, {
     tenantId: input.tenantId,
@@ -61,5 +63,10 @@ export async function reflectOnProjectArtifact(input: {
     verdict: input.verdict,
     lesson: input.lesson,
     reflectionMemoryId,
-  }, { tenantId: input.tenantId, projectId: input.projectId });
+  }, {
+    tenantId: input.tenantId,
+    projectId: input.projectId,
+    actorId: input.actorId,
+    mutation: input.mutation,
+  });
 }

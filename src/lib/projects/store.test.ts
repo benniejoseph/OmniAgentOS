@@ -306,8 +306,18 @@ describe("personal projects", () => {
       tenantId: "personal", actorId: "owner", title: "Create an agent research system",
       objective: "Research requests produce grounded reusable reports.",
     });
-    const first = await decomposeProject({ projectId: project.id, tenantId: "personal", actorId: "owner" });
-    const second = await decomposeProject({ projectId: project.id, tenantId: "personal", actorId: "owner" });
+    const first = await decomposeProject({
+      projectId: project.id,
+      tenantId: "personal",
+      actorId: "owner",
+      mutation: testProjectMutation(project.id, "plan-first"),
+    });
+    const second = await decomposeProject({
+      projectId: project.id,
+      tenantId: "personal",
+      actorId: "owner",
+      mutation: testProjectMutation(project.id, "plan-second"),
+    });
     const tasks = await listProjectTasks(project.id, { tenantId: "personal" });
     expect(first).toMatchObject({ generatedBy: "system", tasks: expect.any(Array) });
     expect(first?.tasks).toHaveLength(5);
@@ -371,6 +381,7 @@ describe("personal projects", () => {
       actorId: "owner",
       verdict: "useful",
       lesson: "Keep the evidence-first research sequence.",
+      mutation: testProjectMutation(project.id, "reflection-first"),
     });
     expect(firstReflection).toMatchObject({
       verdict: "useful",
@@ -394,6 +405,7 @@ describe("personal projects", () => {
       actorId: "owner",
       verdict: "needs_work",
       lesson: "Compare at least two sources before drawing the conclusion.",
+      mutation: testProjectMutation(project.id, "reflection-second"),
     });
     expect(revisedReflection).toMatchObject({
       verdict: "needs_work",
@@ -435,3 +447,18 @@ describe("personal projects", () => {
     expect(tasks.find((task) => task.id === second.id)?.workflowRunId).not.toBe(failedRunId);
   });
 });
+
+function testProjectMutation(projectId: string, key: string) {
+  return {
+    executionScope: createExecutionScope({
+      tenantId: "personal",
+      initiatingActorId: "owner",
+      executingPrincipalType: "user",
+      executingPrincipalId: "owner",
+      projectId,
+      correlationId: `project-test:${key}`,
+      purpose: `project.test.${key}`,
+    }),
+    idempotencyKey: `project-test:${key}`,
+  };
+}
