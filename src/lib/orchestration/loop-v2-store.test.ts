@@ -12,6 +12,7 @@ import {
 } from "@/lib/orchestration/loop-v2";
 import {
   finalizeLoopV2Run,
+  loopV2RecoveryClaimTokenSha256,
   readLoopV2CheckpointChain,
   recordLoopV2Checkpoint,
   resumeLoopV2Clarification,
@@ -250,13 +251,67 @@ describe("Loop v2 checkpoint store", () => {
       "plan",
     ]);
   });
+
+  it("accepts only the exact active recovery lease fence", async () => {
+    const root = initial();
+    const claimToken = "00000000-0000-4000-8000-000000000001";
+    const recovery = {
+      schemaVersion: 1,
+      checkpointSha256: root.checkpointSha256,
+      leaseGeneration: 2,
+      claimTokenSha256: loopV2RecoveryClaimTokenSha256(claimToken),
+      leaseOwnerSha256: "c".repeat(64),
+      claimedAt: "2026-09-06T03:00:00.000Z",
+      leaseExpiresAt: "2026-09-06T04:00:00.000Z",
+    };
+    const storage = fakeStorage({
+      runStatus: "resuming",
+      checkpoints: [root],
+      recovery,
+    });
+    const plan = advanceLoopV2Checkpoint({
+      current: root,
+      executionScope: executionScope(),
+      trigger: "plan_bound",
+      outputReceiptSha256: sourceContractSha256("recovered-plan"),
+      transitionedAt: "2026-09-06T03:01:00.000Z",
+    });
+    const fence = {
+      tenantId: "tenant-a",
+      runId: "run-a",
+      claimedCheckpointSha256: root.checkpointSha256,
+      leaseGeneration: 2,
+      claimToken,
+      leaseExpiresAt: recovery.leaseExpiresAt,
+    };
+
+    await expect(recordLoopV2Checkpoint({
+      checkpoint: plan,
+      executionScope: executionScope(),
+      recoveryFence: fence,
+    }, storage.sql)).resolves.toMatchObject({ inserted: true });
+    await expect(recordLoopV2Checkpoint({
+      checkpoint: plan,
+      executionScope: executionScope(),
+      recoveryFence: {
+        ...fence,
+        claimToken: "00000000-0000-4000-8000-000000000002",
+      },
+    }, storage.sql)).rejects.toThrow("stale or invalid");
+    await expect(recordLoopV2Checkpoint({
+      checkpoint: plan,
+      executionScope: executionScope(),
+    }, storage.sql)).rejects.toThrow("exact lease fence");
+  });
 });
 
 function fakeStorage(options: {
   runStatus?: string;
   rolloutStatus?: string;
+  checkpoints?: LoopV2Checkpoint[];
+  recovery?: Record<string, unknown>;
 } = {}) {
-  const checkpoints: LoopV2Checkpoint[] = [];
+  const checkpoints: LoopV2Checkpoint[] = [...(options.checkpoints || [])];
   let eventCount = 0;
   let currentRunStatus = options.runStatus || "running";
   let currentRolloutStatus = options.rolloutStatus || "active";
@@ -285,6 +340,10 @@ function fakeStorage(options: {
         thread_id: "thread-a",
         agent_id: "atlas",
         status: currentRunStatus,
+        continuation: options.recovery
+          ? { loopV2Recovery: options.recovery }
+          : null,
+        recovery_lease_active: Boolean(options.recovery),
       }];
     }
     if (text.includes("type = 'run.scope_bound'")) {

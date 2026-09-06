@@ -20,6 +20,7 @@ import {
   resumeLoopV2Clarification,
   waitForLoopV2Clarification,
   type LoopV2CheckpointWriterSql,
+  type LoopV2RecoveryFence,
 } from "@/lib/orchestration/loop-v2-store";
 import type {
   AgentEvent,
@@ -105,6 +106,11 @@ export type LoopV2ReadOnlyCanaryRequest = Readonly<{
   executionScope: ExecutionScope;
   enrollment: LoopV2ReadOnlyCanaryEnrollment;
   resumeRunId?: string;
+  recovery?: Readonly<{
+    runId: string;
+    checkpoint: LoopV2Checkpoint;
+    fence: LoopV2RecoveryFence;
+  }>;
 }>;
 
 export type LoopV2RuntimeDependencies = Readonly<{
@@ -203,7 +209,11 @@ export async function* runLoopV2ReadOnlyCanary(
       trigger,
       outputReceiptSha256: sourceContractSha256(receipt),
     });
-    await dependencies.persistCheckpoint(next, executionScope);
+    await dependencies.persistCheckpoint(
+      next,
+      executionScope,
+      request.recovery?.fence,
+    );
     current = next;
     return next;
   };
@@ -211,7 +221,17 @@ export async function* runLoopV2ReadOnlyCanary(
   try {
     assertRuntimeRequest(request);
     throwIfAborted(abortSignal);
-    if (request.resumeRunId) {
+    if (request.recovery) {
+      runId = request.recovery.runId;
+      current = request.recovery.checkpoint;
+      yield await emit({ type: "run", runId, threadId: request.threadId });
+      yield await emit({
+        type: "status",
+        label: "Loop v2 recovery",
+        detail:
+          "Resuming an interrupted idempotent read from its fenced checkpoint.",
+      });
+    } else if (request.resumeRunId) {
       const resumed = await dependencies.resumeClarification({
         tenantId: context.tenantId,
         runId: request.resumeRunId,
@@ -266,6 +286,9 @@ export async function* runLoopV2ReadOnlyCanary(
         detail: "Running one bounded read-only task through persisted checkpoints.",
       });
 
+    }
+
+    if (current.toState === "understand") {
       if (isAmbiguousRecentRunsIntent(request.message)) {
         const waiting = advanceLoopV2Checkpoint({
           current,
@@ -278,11 +301,20 @@ export async function* runLoopV2ReadOnlyCanary(
             ),
           }),
         });
-        await dependencies.waitForClarification(
-          waiting,
-          executionScope,
-          { clarificationPrompt: LOOP_V2_CLARIFICATION_PROMPT },
-        );
+        if (request.recovery) {
+          await dependencies.waitForClarification(
+            waiting,
+            executionScope,
+            { clarificationPrompt: LOOP_V2_CLARIFICATION_PROMPT },
+            request.recovery.fence,
+          );
+        } else {
+          await dependencies.waitForClarification(
+            waiting,
+            executionScope,
+            { clarificationPrompt: LOOP_V2_CLARIFICATION_PROMPT },
+          );
+        }
         current = waiting;
         if (request.threadId) {
           await dependencies.appendAssistantTurn({
@@ -326,18 +358,23 @@ export async function* runLoopV2ReadOnlyCanary(
       causationId: callId,
       purpose: "agent.tool.execute",
     });
-    await transition("action_started", {
-      toolId: "runs.list",
-      callIdSha256: sourceContractSha256(callId),
-      operationClass: "read_only",
-    });
-    yield await emit({
-      type: "tool",
-      toolId: "runs.list",
-      toolName: "List Runs",
-      status: "running",
-      riskLevel: 0,
-    });
+    if (current.toState === "plan") {
+      await transition("action_started", {
+        toolId: "runs.list",
+        callIdSha256: sourceContractSha256(callId),
+        operationClass: "read_only",
+      });
+      yield await emit({
+        type: "tool",
+        toolId: "runs.list",
+        toolName: "List Runs",
+        status: "running",
+        riskLevel: 0,
+      });
+    }
+    if (!["act", "observe", "verify"].includes(current.toState)) {
+      throw new Error("Loop v2 recovery checkpoint is not executable.");
+    }
 
     let execution: GovernedToolExecutionResult | undefined;
     for (let attempt = 0; attempt <= 2; attempt += 1) {
@@ -356,7 +393,7 @@ export async function* runLoopV2ReadOnlyCanary(
         break;
       } catch (error) {
         if (abortSignal?.aborted) throw error;
-        if (attempt >= 2) throw error;
+        if (attempt >= 2 || current.toState !== "act") throw error;
         await transition("retry_scheduled", {
           toolId: "runs.list",
           attempt: attempt + 1,
@@ -377,37 +414,43 @@ export async function* runLoopV2ReadOnlyCanary(
         `Loop v2 governed read ended with ${execution.record.status}.`,
       );
     }
-    await transition("action_succeeded", {
-      executionId: execution.record.id,
-      toolId: execution.record.toolId,
-      status: execution.record.status,
-      dryRun: execution.record.dryRun,
-      riskLevel: execution.record.riskLevel,
-      approvalRequired: execution.record.approvalRequired,
-      resultSha256: sourceContractSha256(jsonCompatibleReceipt(execution.result)),
-    });
-    yield await emit({
-      type: "tool",
-      toolId: "runs.list",
-      toolName: "List Runs",
-      status: "executed",
-      riskLevel: execution.record.riskLevel,
-      dryRun: execution.record.dryRun,
-      summary: execution.record.reason,
-      executionId: execution.record.id,
-    });
+    if (current.toState === "act") {
+      await transition("action_succeeded", {
+        executionId: execution.record.id,
+        toolId: execution.record.toolId,
+        status: execution.record.status,
+        dryRun: execution.record.dryRun,
+        riskLevel: execution.record.riskLevel,
+        approvalRequired: execution.record.approvalRequired,
+        resultSha256: sourceContractSha256(
+          jsonCompatibleReceipt(execution.result),
+        ),
+      });
+      yield await emit({
+        type: "tool",
+        toolId: "runs.list",
+        toolName: "List Runs",
+        status: "executed",
+        riskLevel: execution.record.riskLevel,
+        dryRun: execution.record.dryRun,
+        summary: execution.record.reason,
+        executionId: execution.record.id,
+      });
+    }
 
     const observed = runsListResultSchema.parse(execution.result);
     const recentRuns = observed.runs
       .filter((candidate) => candidate.id !== runId)
       .slice(0, LOOP_V2_RESULT_LIMIT);
-    await transition("observation_recorded", {
-      executionId: execution.record.id,
-      observedCount: recentRuns.length,
-      observedRunIdsSha256: sourceContractSha256(
-        recentRuns.map((candidate) => candidate.id),
-      ),
-    });
+    if (current.toState === "observe") {
+      await transition("observation_recorded", {
+        executionId: execution.record.id,
+        observedCount: recentRuns.length,
+        observedRunIdsSha256: sourceContractSha256(
+          recentRuns.map((candidate) => candidate.id),
+        ),
+      });
+    }
     throwIfAborted(abortSignal);
 
     const tool = getGovernedTool("runs.list");
@@ -438,11 +481,20 @@ export async function* runLoopV2ReadOnlyCanary(
         responseSha256: sourceContractSha256(response),
       }),
     });
-    await dependencies.finalizeRun(
-      terminal,
-      executionScope,
-      { response },
-    );
+    if (request.recovery) {
+      await dependencies.finalizeRun(
+        terminal,
+        executionScope,
+        { response },
+        request.recovery.fence,
+      );
+    } else {
+      await dependencies.finalizeRun(
+        terminal,
+        executionScope,
+        { response },
+      );
+    }
     current = terminal;
 
     if (request.threadId) {
@@ -472,6 +524,7 @@ export async function* runLoopV2ReadOnlyCanary(
     const message = canceled
       ? "Loop v2 run canceled after the client stopped the request."
       : safeErrorMessage(error);
+    let terminalFailure: unknown;
     let terminalCommitted = current?.toState === "finish" ||
       current?.toState === "clarify";
     if (runId && current && current.toState !== "finish") {
@@ -485,11 +538,20 @@ export async function* runLoopV2ReadOnlyCanary(
               reason: "request_aborted",
             }),
           });
-          await dependencies.finalizeRun(
-            terminal,
-            executionScope,
-            { error: message },
-          );
+          if (request.recovery) {
+            await dependencies.finalizeRun(
+              terminal,
+              executionScope,
+              { error: message },
+              request.recovery.fence,
+            );
+          } else {
+            await dependencies.finalizeRun(
+              terminal,
+              executionScope,
+              { error: message },
+            );
+          }
           current = terminal;
         } else {
           if (current.toState === "act") {
@@ -511,22 +573,32 @@ export async function* runLoopV2ReadOnlyCanary(
               replanCount: current.replanCount,
             }),
           });
-          await dependencies.finalizeRun(
-            terminal,
-            executionScope,
-            { error: message },
-          );
+          if (request.recovery) {
+            await dependencies.finalizeRun(
+              terminal,
+              executionScope,
+              { error: message },
+              request.recovery.fence,
+            );
+          } else {
+            await dependencies.finalizeRun(
+              terminal,
+              executionScope,
+              { error: message },
+            );
+          }
           current = terminal;
         }
         terminalCommitted = true;
       } catch (terminalError) {
+        terminalFailure = terminalError;
         console.error(
           "Loop v2 terminal checkpoint persistence failed.",
           safeErrorMessage(terminalError),
         );
       }
     }
-    if (runId && !terminalCommitted) {
+    if (runId && !terminalCommitted && !request.recovery) {
       await dependencies.failUncheckpointedRun(runId, message, {
         tenantId: context.tenantId,
       }).catch(() => undefined);
@@ -542,6 +614,9 @@ export async function* runLoopV2ReadOnlyCanary(
         context.tenantId,
         executionScope,
       );
+      if (request.recovery && !terminalCommitted) {
+        throw terminalFailure || error;
+      }
       yield event;
       return;
     }
@@ -550,6 +625,7 @@ export async function* runLoopV2ReadOnlyCanary(
 }
 
 function assertRuntimeRequest(request: LoopV2ReadOnlyCanaryRequest) {
+  const recovery = request.recovery;
   if (
     request.securityContext.tenantId !== request.executionScope.tenantId ||
     request.securityContext.actorId !==
@@ -559,6 +635,16 @@ function assertRuntimeRequest(request: LoopV2ReadOnlyCanaryRequest) {
     request.executionScope.purpose !== "agent.loop.v2.read_only_canary" ||
     request.mode !== "orchestrate" ||
     request.agentId !== "atlas" ||
+    (recovery && (
+      request.resumeRunId ||
+      recovery.runId !== recovery.checkpoint.runId ||
+      recovery.fence.runId !== recovery.runId ||
+      recovery.fence.tenantId !== request.securityContext.tenantId ||
+      recovery.checkpoint.ownerActorId !== request.securityContext.actorId ||
+      recovery.checkpoint.lifecycleState !== "active" ||
+      sourceContractSha256(recovery.checkpoint.enginePin) !==
+        sourceContractSha256(request.enrollment.enginePin)
+    )) ||
     (request.resumeRunId
       ? !request.threadId || !isClarificationConfirmation(request.message)
       : !isRecentRunsIntent(request.message) &&
@@ -638,6 +724,7 @@ function jsonCompatibleReceipt(value: unknown) {
 async function persistCheckpoint(
   checkpoint: LoopV2Checkpoint,
   executionScope: ExecutionScope,
+  recoveryFence?: LoopV2RecoveryFence,
 ) {
   return runWithDatabaseActorScope(
     checkpoint.tenantId,
@@ -645,7 +732,11 @@ async function persistCheckpoint(
     () =>
       getSql().transaction(
         (sql: LoopV2CheckpointWriterSql) =>
-          recordLoopV2Checkpoint({ checkpoint, executionScope }, sql),
+          recordLoopV2Checkpoint({
+            checkpoint,
+            executionScope,
+            recoveryFence,
+          }, sql),
       ) as Promise<Awaited<ReturnType<typeof recordLoopV2Checkpoint>>>,
   );
 }
@@ -654,6 +745,7 @@ async function persistClarificationWait(
   checkpoint: LoopV2Checkpoint,
   executionScope: ExecutionScope,
   wait: { clarificationPrompt: string },
+  recoveryFence?: LoopV2RecoveryFence,
 ) {
   return runWithDatabaseActorScope(
     checkpoint.tenantId,
@@ -665,6 +757,7 @@ async function persistClarificationWait(
             checkpoint,
             executionScope,
             clarificationPrompt: wait.clarificationPrompt,
+            recoveryFence,
           }, sql),
       ) as Promise<Awaited<ReturnType<typeof waitForLoopV2Clarification>>>,
   );
@@ -688,6 +781,7 @@ async function persistTerminalCheckpoint(
   checkpoint: LoopV2Checkpoint,
   executionScope: ExecutionScope,
   terminal: { response?: string; error?: string },
+  recoveryFence?: LoopV2RecoveryFence,
 ) {
   return runWithDatabaseActorScope(
     checkpoint.tenantId,
@@ -698,6 +792,7 @@ async function persistTerminalCheckpoint(
           finalizeLoopV2Run({
             checkpoint,
             executionScope,
+            recoveryFence,
             ...terminal,
           }, sql),
       ) as Promise<Awaited<ReturnType<typeof finalizeLoopV2Run>>>,

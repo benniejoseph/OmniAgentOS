@@ -259,6 +259,71 @@ describe("Loop v2 read-only canary runtime", () => {
     });
     expect(events.at(-1)).toMatchObject({ type: "done" });
   });
+
+  it.each(["understand", "plan", "act", "observe", "verify"] as const)(
+    "recovers an idempotent read from the fenced %s checkpoint",
+    async (state) => {
+      const harness = runtimeHarness();
+      const checkpoint = recoveryCheckpointAt(state);
+      const fence = recoveryFence(checkpoint);
+      const events = await collect(runLoopV2ReadOnlyCanary(
+        {
+          ...canaryRequest(),
+          recovery: {
+            runId: "run-canary",
+            checkpoint,
+            fence,
+          },
+        },
+        undefined,
+        harness.dependencies,
+      ));
+
+      expect(harness.createRun).not.toHaveBeenCalled();
+      expect(harness.bindRunScope).not.toHaveBeenCalled();
+      expect(harness.executeTool).toHaveBeenCalledTimes(1);
+      expect(harness.executeTool).toHaveBeenCalledWith(expect.objectContaining({
+        toolId: "runs.list",
+        idempotencyKey: "run-canary:runs.list:1",
+      }));
+      expect(harness.checkpoints.map((item) => item.toState)).toEqual(
+        recoveryExpectedStates(state),
+      );
+      expect(harness.finalizeRun).toHaveBeenCalledWith(
+        expect.objectContaining({ terminalDisposition: "succeeded" }),
+        expect.anything(),
+        expect.objectContaining({ response: expect.stringContaining("Prior run") }),
+        fence,
+      );
+      for (const call of harness.persistCheckpoint.mock.calls) {
+        expect(call[2]).toBe(fence);
+      }
+      expect(harness.failUncheckpointedRun).not.toHaveBeenCalled();
+      expect(events.at(-1)).toMatchObject({ type: "done" });
+    },
+  );
+
+  it("defers a stale recovery fence without mutating the run generically", async () => {
+    const harness = runtimeHarness();
+    const checkpoint = recoveryCheckpointAt("act");
+    const fence = recoveryFence(checkpoint);
+    harness.persistCheckpoint.mockRejectedValue(
+      new Error("Loop v2 recovery lease fence is stale or invalid."),
+    );
+    harness.finalizeRun.mockRejectedValue(
+      new Error("Loop v2 recovery lease fence is stale or invalid."),
+    );
+
+    await expect(collect(runLoopV2ReadOnlyCanary(
+      {
+        ...canaryRequest(),
+        recovery: { runId: "run-canary", checkpoint, fence },
+      },
+      undefined,
+      harness.dependencies,
+    ))).rejects.toThrow("stale or invalid");
+    expect(harness.failUncheckpointedRun).not.toHaveBeenCalled();
+  });
 });
 
 function canaryCandidate() {
@@ -435,12 +500,64 @@ function runtimeHarness() {
     createRun,
     bindRunScope,
     executeTool,
+    persistCheckpoint,
     waitForClarification,
     resumeClarification,
     finalizeRun,
     appendAssistantTurn,
     failUncheckpointedRun,
   };
+}
+
+function recoveryCheckpointAt(
+  target: "understand" | "plan" | "act" | "observe" | "verify",
+) {
+  const scope = canaryRequest().executionScope;
+  let current = createInitialLoopV2Checkpoint({
+    tenantId: "tenant-a",
+    runId: "run-canary",
+    ownerActorId: "actor-a",
+    executionScope: scope,
+    enginePin: enginePin(),
+    transitionedAt: "2026-09-06T05:00:00.000Z",
+  });
+  for (const [state, trigger] of [
+    ["plan", "plan_bound"],
+    ["act", "action_started"],
+    ["observe", "action_succeeded"],
+    ["verify", "observation_recorded"],
+  ] as const) {
+    if (target === current.toState) break;
+    current = advanceLoopV2Checkpoint({
+      current,
+      executionScope: scope,
+      trigger,
+      outputReceiptSha256: "b".repeat(64),
+      transitionedAt: new Date(
+        Date.parse("2026-09-06T05:00:00.000Z") + current.sequence * 1_000,
+      ).toISOString(),
+    });
+    if (target === state) break;
+  }
+  return current;
+}
+
+function recoveryFence(checkpoint: LoopV2Checkpoint) {
+  return {
+    tenantId: "tenant-a",
+    runId: "run-canary",
+    claimedCheckpointSha256: checkpoint.checkpointSha256,
+    leaseGeneration: 1,
+    claimToken: "00000000-0000-4000-8000-000000000001",
+    leaseExpiresAt: "2026-09-06T06:30:00.000Z",
+  } as const;
+}
+
+function recoveryExpectedStates(
+  state: "understand" | "plan" | "act" | "observe" | "verify",
+) {
+  const states = ["understand", "plan", "act", "observe", "verify"] as const;
+  return [...states.slice(states.indexOf(state) + 1), "finish"];
 }
 
 async function collect(iterable: AsyncIterable<AgentEvent>) {
