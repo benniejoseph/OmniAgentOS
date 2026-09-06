@@ -2046,17 +2046,27 @@ legacy-compatibility lanes; P3.1 still holds agent/mission/project/workspace
 sharing and any scope-broadening control until its authority resolver is active.
 P12/P13 remain deferred.
 
-The first P4.1 delivery is active only as a shadow comparison. Context Compiler
-v2 independently gates canonical source evidence, bound memory claims and
-summaries, and bound graph neighborhoods by exact tenant, actor, scope, grant,
-purpose, retention, temporal validity, source currentness, and active backing
-memory. Explicit empty selection is preserved. The existing adaptive pack is
-still the only prompt input; v2 records the difference as a digest-verified
+The first P4.1 delivery retains shadow comparison for general direct runs while
+promoting one narrow path. Context Compiler v2 independently gates canonical
+source evidence, bound memory claims and summaries, and bound graph
+neighborhoods by exact tenant, actor, scope, grant, purpose, retention,
+temporal validity, source currentness, and active backing memory. Explicit empty
+selection is preserved. General retrieval keeps the existing adaptive pack as
+the prompt input and records a digest-verified
 `run.context_compiler_v2.shadow` event with hashed references and counts only.
-New canonical text revisions carry the v2 purpose, while historical revisions
-are not silently rewritten. P4.1 remains open until production comparison
-evidence supports promotion and authorization moves ahead of all candidate
-retrieval/ranking paths.
+
+For a non-empty explicit actor-private selection, v2 is now authoritative only
+as the intersection of the legacy-selected set and independently authorized
+evidence: it may remove a candidate but cannot add one. The metadata-only
+`run.context_compiler_v2.canary` receipt must persist to the actor-bound run
+stream before the model provider is called, so malformed or unavailable receipt
+persistence blocks disclosure. An authenticated live-provider canary proved
+authorized inclusion, unauthorized exclusion, and raw-identifier-free receipt
+storage at production release
+`cf7ef2c27172ed3d065433ccc662b8c6b91a0533`. New canonical text revisions carry
+the v2 purpose, while historical revisions are not silently rewritten. P4.1
+remains open until authorization moves before automatic/shared candidate
+retrieval and ranking; P3.1 remains the prerequisite for broader scopes.
 
 P5.1 is complete, and the first safe P5.2 foundation is deployed without
 replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
