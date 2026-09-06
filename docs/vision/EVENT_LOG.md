@@ -1326,3 +1326,20 @@ success memory. Migration v83 records
 `memory.response_derived.quarantined` for each legacy active response-derived
 record before changing it to `candidate`, deleting its graph and daily-brief
 projections, and queuing a graph rebuild.
+
+## Context Compiler v2 shadow comparison
+
+P4.1 adds `run.context_compiler_v2.shadow` to the already actor-bound run
+stream. Its schema-closed receipt pins compiler and policy versions, purpose,
+query hash, as-of time, hashed candidate and source-revision references,
+authorization and selection decisions, legacy/v2 comparison counts, decision
+root, selected-context hash, and receipt hash. It excludes query text, evidence
+content, titles, raw evidence/source IDs, embeddings, and reasoning.
+
+The shadow rejects unbound or inactive claims, absent authorization scope,
+tenant/actor/scope/grant/purpose mismatch, expired or non-current canonical
+source evidence, and graph neighborhoods without active authorized backing
+memory. The receipt observes only; it grants no access and does not change the
+legacy prompt pack. New canonical text revisions advertise
+`agent.context.compile.v2`; existing immutable source revisions are not
+backfilled by this event.
