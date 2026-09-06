@@ -37,6 +37,9 @@ export type AgentCouncilEvent = {
 export type AgentHarnessEvent = {
   type: "harness";
   version: 1 | 2;
+  conversationSchemaVersion?: 1;
+  conversationRolesPreserved?: boolean;
+  observationsStructured?: boolean;
   mode: AgentMode;
   provider: "openai" | "google" | "anthropic" | "aws_bedrock" | "fallback";
   model: string;

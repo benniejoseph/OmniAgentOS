@@ -227,6 +227,9 @@ describe("agent memory scope", () => {
     }));
     expect(events).toContainEqual(expect.objectContaining({
       type: "harness",
+      conversationSchemaVersion: 1,
+      conversationRolesPreserved: true,
+      observationsStructured: true,
       contextDecision: "disabled_project_unavailable",
       contextMode: "project_unavailable",
       contextCount: 0,

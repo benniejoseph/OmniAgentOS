@@ -16,7 +16,10 @@ import {
 import { CAPABILITY_MAX_QUERY_LENGTH } from "@/lib/capabilities/types";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { generateModelToolTurn } from "@/lib/models/gateway";
-import type { ModelConversationItem } from "@/lib/models/conversation";
+import {
+  MODEL_CONVERSATION_SCHEMA_VERSION,
+  type ModelConversationItem,
+} from "@/lib/models/conversation";
 import {
   getModelProviderResponseReceipt,
   ModelProviderError,
@@ -936,6 +939,9 @@ export async function* runAgent(
     yield await emit({
       type: "harness",
       version: 2,
+      conversationSchemaVersion: MODEL_CONVERSATION_SCHEMA_VERSION,
+      conversationRolesPreserved: true,
+      observationsStructured: true,
       mode,
       provider: providerConfigured ? modelRoute.provider : "fallback",
       model: providerConfigured ? modelRoute.model : "fallback",
