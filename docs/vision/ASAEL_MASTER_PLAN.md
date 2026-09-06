@@ -1836,6 +1836,23 @@ are not silently rewritten. P4.1 remains open until production comparison
 evidence supports promotion and authorization moves ahead of all candidate
 retrieval/ranking paths.
 
+P5.1 is complete, and the first safe P5.2 foundation is deployed without
+replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
+types and 13 typed relations with mandatory scope, sensitivity, purpose,
+lineage, and temporal semantics, so later ontology versions do not rewrite
+historical records. Migration v84 adds actor-private entity records, aliases,
+immutable resolution decisions, and reversible merge-review records. Tenant
+and actor RLS is forced on every table; identity and access coordinates are
+immutable; fuzzy or ambiguous candidates always require review; and every
+accepted write has a digest-verified contract plus metadata-only event. The
+focused synthetic precision gate had no false auto-merges or cross-actor
+candidates, and the rolled-back production isolation probe returned one owner
+row and zero sibling rows. P5.2 remains open until canonical extraction uses
+the registry and a representative production-like benchmark establishes both
+precision and recall. Legacy topic/co-occurrence graph projection remains
+unchanged until P5.3/P5.4 introduce temporal claims and transactional truth
+projection.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
