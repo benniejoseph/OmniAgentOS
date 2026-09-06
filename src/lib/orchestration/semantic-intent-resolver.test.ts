@@ -125,6 +125,55 @@ describe("semantic intent resolver", () => {
     );
   });
 
+  it("adds only top tenant-catalog matches from the semantic query", async () => {
+    const deps = dependencies(modelResult({
+      text: JSON.stringify({
+        intent: "create",
+        executionShape: "single_action",
+        workKinds: ["memory"],
+        consequential: false,
+        needsClarification: false,
+        entities: [],
+        capabilityQueries: ["remember preference memory write"],
+        candidateCapabilityIds: [],
+        confidence: 0.91,
+      }),
+    }));
+    deps.searchCapabilities
+      .mockResolvedValueOnce({
+        capabilities: [],
+        query: "remember",
+        total: 0,
+        limit: 48,
+        hasMore: false,
+      })
+      .mockResolvedValueOnce({
+        capabilities: [],
+        query: "",
+        total: 0,
+        limit: 24,
+        hasMore: false,
+      })
+      .mockResolvedValueOnce({
+        capabilities: [capability],
+        query: "remember preference memory write",
+        total: 1,
+        limit: 3,
+        hasMore: false,
+      });
+
+    const resolution = await createSemanticIntentResolver(deps)(input());
+
+    expect(resolution.receipt.matchedCapabilityIds).toEqual([
+      "calendar.create",
+    ]);
+    expect(deps.searchCapabilities).toHaveBeenLastCalledWith({
+      tenantId: "tenant-a",
+      query: "remember preference memory write",
+      limit: 3,
+    });
+  });
+
   it("does not call the model for deterministic clarification", async () => {
     const deps = dependencies();
     const resolution = await createSemanticIntentResolver(deps)(
