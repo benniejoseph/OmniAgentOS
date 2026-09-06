@@ -151,6 +151,9 @@
 .inspector :global(.memory-provenance > p) { color: var(--day-primary); }
 .inspector :global(.memory-provenance dt), .inspector :global(.memory-inspector-empty), .inspector :global(.memory-node-inspector), .inspector :global(.memory-inspector-empty p), .inspector :global(.memory-node-inspector > span) { color: var(--day-muted); }
 .inspector :global(.memory-provenance code) { border-radius: 999px; color: var(--day-muted); background: var(--day-paper-soft); }
+.lifecycleActions { display: grid; grid-template-columns: 1fr 1fr; gap: .45rem; }
+.lifecycleActions button { display: inline-flex; min-height: 2.45rem; align-items: center; justify-content: center; gap: .35rem; border: 1px solid var(--day-line); border-radius: .8rem; color: var(--day-primary); background: var(--day-paper-soft); font-size: .59rem; font-weight: 760; }
+.lifecycleActions button:disabled { cursor: not-allowed; opacity: .48; }
 .inspector :global(.memory-inspector-actions button) { min-height: 2.45rem; border-color: var(--day-line); border-radius: 999px; }
 .inspector :global(.memory-inspector-actions .memory-save) { border-color: color-mix(in oklab, var(--day-primary) 38%, var(--day-line)); color: var(--day-primary); background: var(--day-mint); }
 .inspector :global(.memory-inspector-empty h2), .inspector :global(.memory-node-inspector h2) { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.3rem; color: var(--day-ink); }
@@ -258,6 +261,8 @@
 .reconciliationDialog { overflow-y: auto; }
 .reconciliationList { display: grid; gap: .85rem; margin-top: .8rem; }
 .reconciliationCard { display: grid; gap: .75rem; border: 1px solid color-mix(in oklab, var(--danger) 25%, var(--day-line)); border-radius: 1.3rem; padding: .9rem; background: color-mix(in oklab, var(--day-peach) 26%, var(--day-paper)); }
+.maintenanceLineage { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .45rem; color: var(--day-muted); font-size: .56rem; }
+.maintenanceLineage code { border-radius: 999px; padding: .28rem .45rem; background: var(--day-paper-soft); }
 .reconciliationCard > header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
 .reconciliationCard > header > span { display: inline-flex; align-items: center; gap: .35rem; color: var(--danger); font-size: .59rem; font-weight: 780; letter-spacing: .04em; text-transform: uppercase; }
 .reconciliationCard > header small { color: var(--day-muted); font-size: .53rem; }

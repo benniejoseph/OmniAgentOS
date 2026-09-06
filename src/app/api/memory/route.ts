@@ -23,6 +23,10 @@ import {
   resolveMemoryTier,
 } from "@/lib/memory/tier-policy";
 import type { MemoryRecord } from "@/lib/memory/types";
+import {
+  memoryLifecyclePolicyV1,
+  memoryRetrievalPriorityMultiplier,
+} from "@/lib/memory/lifecycle";
 import { embedTexts } from "@/lib/openai/client";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
@@ -193,7 +197,9 @@ function publicMemoryRecord(record: MemoryRecord) {
       confidence: record.confidence ?? 0.7,
       lastUsedAt: record.lastUsedAt || null,
       useCount: record.useCount || 0,
-      validity: retentionExpired
+      validity: record.archivedAt
+        ? "archived"
+        : retentionExpired
         ? "retention_expired"
         : temporallyInvalid
           ? "outside_validity_interval"
@@ -202,6 +208,17 @@ function publicMemoryRecord(record: MemoryRecord) {
       validTo: record.validTo || null,
       retentionExpiresAt: record.retentionExpiresAt || null,
       policy,
+      lifecycle: {
+        policyVersion: memoryLifecyclePolicyV1.version,
+        pinned: Boolean(record.pinnedAt),
+        pinnedAt: record.pinnedAt || null,
+        archived: Boolean(record.archivedAt),
+        archivedAt: record.archivedAt || null,
+        archiveReason: record.archiveReason || null,
+        duplicateOfMemoryId: record.duplicateOfMemoryId || null,
+        retrievalPriorityMultiplier: memoryRetrievalPriorityMultiplier(record),
+        historicalTruthChanged: false,
+      },
     },
   };
 }
