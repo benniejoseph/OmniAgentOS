@@ -2071,6 +2071,24 @@ activation marker matches, and anonymous agent access remains closed. P6.7
 complete budgets is next; P6.1 recovery/fault injection remains separately
 open, and P12/P13 remain deferred.
 
+P6.7 is complete at exact production release
+`c245885488f41c2cf0b9a8af47ecc688c40ba613`. Direct runs, approval resumes,
+durable subagents, workflow planning and execution, queue redelivery,
+verification, synthesis, retry, and replan share a strict ten-dimensional
+budget contract covering model turns, tokens, estimated cost, active wall
+time, governed tools, browser actions, agents, fan-out, retries, and replans.
+Every dimension is reserved before work; delegated authority is partitioned
+and can only narrow; legacy state upgrades conservatively; and exhaustion
+persists a typed terminal event before another attempt can begin. Focused
+validation passed 66 budget, gateway, route, runner, workflow, queue, and
+council cases plus lint and type checks. Migration 92 is installed with its
+declared checksum. The authenticated production canary returned exactly
+`P67_RELEASE_OK`; canonical Vercel, Fly protocol 1, the dedicated Playwright
+service, and every worker lane are healthy, the activation marker matches,
+and anonymous agent access remains closed. P6.8 trace hierarchy and
+outcome-oriented observability is next; P6.1 recovery/fault injection remains
+separately open, and P12/P13 remain deferred.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
