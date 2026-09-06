@@ -41,6 +41,7 @@ import {
   compileThreadContext,
   routeAgentRequest,
 } from "@/lib/orchestration/supervisor";
+import { resolveSemanticIntent } from "@/lib/orchestration/semantic-intent-resolver";
 import { redactSensitive } from "@/lib/security/context";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -233,16 +234,99 @@ async function POSTHandler(request: Request) {
       { status: 503 },
     );
   }
-  const inferredDecision = routeAgentRequest(
+  let safeMessages = (parsed.data.messages || []).map((message) => ({
+    ...message,
+    content: String(redactSensitive(message.content)),
+  }));
+  const semanticConversation = safeMessages.length
+    ? safeMessages
+    : [{ role: "user" as const, content: safeRequestMessage }];
+  const deterministicDecision = routeAgentRequest(
     requestMessage,
     mode,
     requestedBuiltInAgent,
     toSupervisorKnownProcedures(savedProcedures),
   );
+  const semanticExecutionScope = executionScopeFromSecurityContext(context, {
+    executingPrincipalType: "agent",
+    executingPrincipalId:
+      customAgent?.id || requestedBuiltInAgent || "atlas",
+    correlationId: requestId,
+    purpose: "agent.intent.semantic_resolution",
+  });
+  const semanticResolution = await resolveSemanticIntent({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    requestId,
+    message: safeRequestMessage,
+    recentConversation: semanticConversation,
+    mode,
+    baseline: deterministicDecision,
+    preferredAgentId: requestedBuiltInAgent,
+    executionScope: semanticExecutionScope,
+  });
   const preliminaryDecision = applySupervisorStrategy(
-    inferredDecision,
+    semanticResolution.decision,
     parsed.data.strategy,
   );
+
+  try {
+    await appendScopedDomainEvent({
+      id: semanticIntentEventId(
+        context.tenantId,
+        context.actorId,
+        requestId,
+      ),
+      streamId: `intent:${requestId}`,
+      type: "intent.semantic_resolved",
+      executionScope: semanticExecutionScope,
+      payload: {
+        schemaVersion: semanticResolution.receipt.schemaVersion,
+        policyVersion: semanticResolution.receipt.policyVersion,
+        source: semanticResolution.receipt.source,
+        intent: semanticResolution.receipt.intent,
+        executionShape: semanticResolution.receipt.executionShape,
+        confidence: semanticResolution.receipt.confidence,
+        entityCount: semanticResolution.receipt.entityCount,
+        unresolvedEntityCount:
+          semanticResolution.receipt.unresolvedEntityCount,
+        capabilityQuerySha256: semanticResolution.capabilitySearchQuery
+          ? createHash("sha256")
+              .update(semanticResolution.capabilitySearchQuery)
+              .digest("hex")
+          : null,
+        matchedCapabilityIds:
+          semanticResolution.receipt.matchedCapabilityIds,
+        semanticRoute: semanticResolution.receipt.route,
+        appliedRoute: preliminaryDecision.route,
+        requiresApproval: preliminaryDecision.requiresApproval,
+        clarificationAdvisory:
+          semanticResolution.receipt.clarificationAdvisory,
+        model: semanticResolution.receipt.model || null,
+        fallbackReasonCode:
+          semanticResolution.receipt.fallbackReasonCode || null,
+        selectedTargetIds: [],
+        selectedToolIds: [],
+        effectCount: 0,
+      },
+    });
+  } catch (error) {
+    console.error(
+      "Semantic intent receipt persistence failed.",
+      String(redactSensitive(
+        error instanceof Error
+          ? error.message
+          : "Unknown semantic receipt error.",
+      )),
+    );
+    return Response.json(
+      {
+        error: "Intent routing unavailable",
+        message: "The routing decision could not be recorded. Try again shortly.",
+      },
+      { status: 503 },
+    );
+  }
 
   if (preliminaryDecision.route === "durable_workflow") {
     try {
@@ -259,10 +343,6 @@ async function POSTHandler(request: Request) {
 
   const encoder = new TextEncoder();
   let threadId = parsed.data.threadId;
-  let safeMessages = (parsed.data.messages || []).map((message) => ({
-    ...message,
-    content: String(redactSensitive(message.content)),
-  }));
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
@@ -627,6 +707,13 @@ async function POSTHandler(request: Request) {
                 mode: parsed.data.mode,
                 threadId,
                 messages: safeMessages,
+                semanticRouting: {
+                  capabilitySearchQuery:
+                    semanticResolution.capabilitySearchQuery,
+                  matchedCapabilityIds:
+                    semanticResolution.receipt.matchedCapabilityIds,
+                  policyVersion: semanticResolution.receipt.policyVersion,
+                },
                 contextSelection,
                 promptMemoryAccess,
                 executionScope: directExecutionScope,
@@ -766,6 +853,16 @@ function missionTitle(message: string) {
 
 function normalizeTaskQuery(value: string) {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function semanticIntentEventId(
+  tenantId: string,
+  actorId: string,
+  requestId: string,
+) {
+  return `intent-semantic:${createHash("sha256")
+    .update(`${tenantId}\u0000${actorId}\u0000${requestId}`)
+    .digest("hex")}`;
 }
 
 function sameContextSelection(

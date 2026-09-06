@@ -196,6 +196,25 @@ describe("agent memory scope", () => {
       .not.toContain("DURABLE_MEMORY_CONTEXT");
   });
 
+  it("uses semantic capability terms as discovery hints without an allowlist", async () => {
+    const scopedRequest = request("session");
+    scopedRequest.semanticRouting = {
+      capabilitySearchQuery: "create calendar event",
+      matchedCapabilityIds: ["calendar.create"],
+      policyVersion: "semantic-intent-policy-v1",
+    };
+
+    await collectRequest(scopedRequest);
+
+    expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: "paid-test-tenant",
+        query: expect.stringMatching(/^create calendar event\b/),
+        preferredToolIds: [],
+      }),
+    );
+  });
+
   it("fails project mode closed instead of broadening it to tenant memory", async () => {
     const events = await collectRun("project");
 

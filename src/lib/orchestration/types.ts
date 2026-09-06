@@ -108,6 +108,16 @@ export type AgentEvent =
 
 export type AgentRunRequest = {
   messages: ChatMessage[];
+  /**
+   * Descriptive semantic discovery hints produced before the run. These are
+   * never capability grants or allowlists; the toolbox still resolves active,
+   * tenant-scoped tools through the governed catalog.
+   */
+  semanticRouting?: {
+    capabilitySearchQuery: string;
+    matchedCapabilityIds: readonly string[];
+    policyVersion: string;
+  };
   /** Trusted server-created attribution; authorization remains in SecurityContext. */
   executionScope?: ExecutionScope;
   /** Server-validated saved-context selection using canonical `kind:id` evidence IDs. */

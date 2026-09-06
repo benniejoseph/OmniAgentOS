@@ -11,6 +11,7 @@ const routeMocks = vi.hoisted(() => ({
   listThreadTurns: vi.fn(),
   resolveLoopV2ModelTextEnrollment: vi.fn(),
   resolveLoopV2ReadOnlyCanaryEnrollment: vi.fn(),
+  resolveSemanticIntent: vi.fn(),
   runAgent: vi.fn(),
   runLoopV2ModelText: vi.fn(),
   runLoopV2ReadOnlyCanary: vi.fn(),
@@ -63,6 +64,10 @@ vi.mock("@/lib/orchestration/loop-v2-model-text-runtime", () => ({
   runLoopV2ModelText: routeMocks.runLoopV2ModelText,
 }));
 
+vi.mock("@/lib/orchestration/semantic-intent-resolver", () => ({
+  resolveSemanticIntent: routeMocks.resolveSemanticIntent,
+}));
+
 import { POST } from "@/app/api/agent/route";
 
 const context = {
@@ -91,6 +96,27 @@ beforeEach(() => {
     .mockResolvedValue(null);
   routeMocks.resolveLoopV2ModelTextEnrollment.mockReset()
     .mockResolvedValue(null);
+  routeMocks.resolveSemanticIntent.mockReset()
+    .mockImplementation(async ({ baseline }) => ({
+      decision: baseline,
+      capabilitySearchQuery: "",
+      receipt: {
+        schemaVersion: 1,
+        policyVersion: "semantic-intent-policy-v1",
+        source: "deterministic_fallback",
+        intent: "not_evaluated",
+        executionShape: "not_evaluated",
+        confidence: null,
+        entityCount: 0,
+        unresolvedEntityCount: 0,
+        capabilityQuery: "",
+        matchedCapabilityIds: [],
+        route: baseline.route,
+        requiresApproval: baseline.requiresApproval,
+        clarificationAdvisory: false,
+        fallbackReasonCode: "model_unavailable",
+      },
+    }));
   routeMocks.runAgent.mockReset();
   routeMocks.runLoopV2ModelText.mockReset();
   routeMocks.runLoopV2ReadOnlyCanary.mockReset();
@@ -150,6 +176,89 @@ describe("agent intent clarification", () => {
       },
     });
     expect(routeMocks.authorizeRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("agent semantic intent routing", () => {
+  it("records the validated decision and passes only discovery hints to the runner", async () => {
+    routeMocks.resolveSemanticIntent.mockResolvedValue({
+      decision: {
+        route: "direct",
+        score: 1,
+        reasons: ["Semantic single action."],
+        requiresApproval: false,
+        primaryAgentId: "scout",
+        specialistIds: ["scout"],
+        ambiguity: { state: "none" },
+      },
+      capabilitySearchQuery: "list github issues",
+      receipt: {
+        schemaVersion: 1,
+        policyVersion: "semantic-intent-policy-v1",
+        source: "model",
+        intent: "retrieve",
+        executionShape: "single_action",
+        confidence: 0.98,
+        entityCount: 1,
+        unresolvedEntityCount: 0,
+        capabilityQuery: "list github issues",
+        matchedCapabilityIds: ["github.issues.list"],
+        route: "direct",
+        requiresApproval: false,
+        clarificationAdvisory: false,
+        model: {
+          provider: "openai",
+          model: "router-model",
+          usageReceiptRecorded: true,
+          usageReceiptId: "usage-route-a",
+        },
+      },
+    });
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-legacy", threadId: "thread-a" };
+      yield { type: "done", response: "Issue list." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Show repository issues.",
+        requestId: "semantic-route-a",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "intent.semantic_resolved",
+        streamId: "intent:semantic-route-a",
+        executionScope: expect.objectContaining({
+          tenantId: "tenant-a",
+          initiatingActorId: "actor-a",
+          purpose: "agent.intent.semantic_resolution",
+        }),
+        payload: expect.objectContaining({
+          source: "model",
+          intent: "retrieve",
+          matchedCapabilityIds: ["github.issues.list"],
+          selectedToolIds: [],
+          effectCount: 0,
+        }),
+      }),
+    );
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "scout",
+        semanticRouting: {
+          capabilitySearchQuery: "list github issues",
+          matchedCapabilityIds: ["github.issues.list"],
+          policyVersion: "semantic-intent-policy-v1",
+        },
+      }),
+      expect.any(AbortSignal),
+    );
   });
 });
 

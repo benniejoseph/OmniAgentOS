@@ -13,6 +13,7 @@ import {
   capabilityFunctionName,
   loadProgressiveAgentTools,
 } from "@/lib/capabilities/toolbox";
+import { CAPABILITY_MAX_QUERY_LENGTH } from "@/lib/capabilities/types";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { generateModelToolTurn } from "@/lib/models/gateway";
 import {
@@ -170,7 +171,10 @@ export async function* runAgent(
     request: query,
     recentConversation: safeMessages,
   };
-  const baseCapabilitySearchQuery = buildCapabilitySearchQuery(autonomyQuery);
+  const baseCapabilitySearchQuery = combineSemanticCapabilityQuery(
+    request.semanticRouting?.capabilitySearchQuery,
+    buildCapabilitySearchQuery(autonomyQuery),
+  );
   const browserCapabilityIntent = analyzeBrowserCapabilityIntent(query);
   const automaticRetrievalQuery = buildAutomaticRetrievalQuery(autonomyQuery);
   const deploymentModelRoute = selectAgentModel({
@@ -707,10 +711,13 @@ export async function* runAgent(
       );
     }
     const capabilitySearchQuery = groundToolDiscoveryInMemory
-      ? buildCapabilitySearchQuery({
-          ...autonomyQuery,
-          relevantMemoryHints: retrieval.results.map((item) => item.title),
-        })
+      ? combineSemanticCapabilityQuery(
+          request.semanticRouting?.capabilitySearchQuery,
+          buildCapabilitySearchQuery({
+            ...autonomyQuery,
+            relevantMemoryHints: retrieval.results.map((item) => item.title),
+          }),
+        )
       : baseCapabilitySearchQuery;
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
       query: capabilitySearchQuery || query,
@@ -3983,6 +3990,19 @@ type ToolboxEntry = {
   definition: ToolDefinition;
   functionName: string;
 };
+
+function combineSemanticCapabilityQuery(
+  semanticQuery: string | undefined,
+  lexicalQuery: string,
+) {
+  return [semanticQuery, lexicalQuery]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, CAPABILITY_MAX_QUERY_LENGTH);
+}
 
 async function buildAgentToolbox(
   tenantId?: string,
