@@ -20,6 +20,11 @@ import {
   recordLoopV2Checkpoint,
   type LoopV2CheckpointWriterSql,
 } from "@/lib/orchestration/loop-v2-store";
+import {
+  buildLoopV2PreExecutionRunContract,
+  buildLoopV2TerminalRunContract,
+  type LoopV2RunContractSnapshot,
+} from "@/lib/orchestration/loop-v2-outcome";
 import type { AgentEvent, AgentMode } from "@/lib/orchestration/types";
 import {
   getCurrentTenantCapabilityRollout,
@@ -146,6 +151,7 @@ export async function* runLoopV2ModelText(
   const executionScope = request.executionScope;
   let runId: string | undefined;
   let current: LoopV2Checkpoint | undefined;
+  let runContract: LoopV2RunContractSnapshot | undefined;
 
   const emit = async (event: AgentEvent) => {
     if (!runId) throw new Error("Loop v2 cannot emit before creating its run.");
@@ -198,7 +204,17 @@ export async function* runLoopV2ModelText(
       executionScope,
       enginePin: request.enrollment.enginePin,
     });
-    await dependencies.persistCheckpoint(root, executionScope);
+    runContract = buildLoopV2PreExecutionRunContract({
+      rootCheckpoint: root,
+      executionScope,
+      requestSha256: sourceContractSha256(request.message),
+      requestedOutcomeSha256: sourceContractSha256({
+        taskClass: "bounded_user_text_summary",
+        semanticCorrectness: "model_assertion",
+      }),
+      agentId: request.agentId,
+    });
+    await dependencies.persistCheckpoint(root, executionScope, runContract);
     current = root;
 
     yield await emit({ type: "run", runId, threadId: request.threadId });
@@ -316,10 +332,15 @@ export async function* runLoopV2ModelText(
         toolCount: 0,
       }),
     });
+    const terminalRunContract = buildLoopV2TerminalRunContract({
+      preExecution: runContract,
+      terminalCheckpoint: terminal,
+      response,
+    });
     await dependencies.finalizeRun(
       terminal,
       executionScope,
-      { response },
+      { response, terminalRunContract },
     );
     current = terminal;
 
@@ -388,7 +409,15 @@ export async function* runLoopV2ModelText(
         await dependencies.finalizeRun(
           terminal,
           executionScope,
-          { error: message },
+          {
+            error: message,
+            terminalRunContract: runContract
+              ? buildLoopV2TerminalRunContract({
+                  preExecution: runContract,
+                  terminalCheckpoint: terminal,
+                })
+              : undefined,
+          },
         );
         current = terminal;
         terminalCommitted = true;
@@ -543,6 +572,7 @@ function safeErrorMessage(error: unknown) {
 async function persistCheckpoint(
   checkpoint: LoopV2Checkpoint,
   executionScope: ExecutionScope,
+  runContractBinding?: LoopV2RunContractSnapshot,
 ) {
   return runWithDatabaseActorScope(
     checkpoint.tenantId,
@@ -550,7 +580,11 @@ async function persistCheckpoint(
     () =>
       getSql().transaction(
         (sql: LoopV2CheckpointWriterSql) =>
-          recordLoopV2Checkpoint({ checkpoint, executionScope }, sql),
+          recordLoopV2Checkpoint({
+            checkpoint,
+            executionScope,
+            runContractBinding,
+          }, sql),
       ) as Promise<Awaited<ReturnType<typeof recordLoopV2Checkpoint>>>,
   );
 }
@@ -558,7 +592,11 @@ async function persistCheckpoint(
 async function persistTerminalCheckpoint(
   checkpoint: LoopV2Checkpoint,
   executionScope: ExecutionScope,
-  terminal: { response?: string; error?: string },
+  terminal: {
+    response?: string;
+    error?: string;
+    terminalRunContract?: LoopV2RunContractSnapshot;
+  },
 ) {
   return runWithDatabaseActorScope(
     checkpoint.tenantId,

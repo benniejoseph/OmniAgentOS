@@ -1415,6 +1415,8 @@ const runContractEventPayloadBaseSchema = z.object({
   outcomeContractId: runContractIdSchema,
   outcomeContractSha256: runContractSha256Schema,
   harnessManifestId: runContractIdSchema,
+  /** Added after the initial shadow slice; absent only on legacy events. */
+  harnessManifestSha256: runContractSha256Schema.optional(),
   contextManifestCount: boundedCountSchema,
   toolContractCount: boundedCountSchema,
   skillCount: boundedCountSchema,
@@ -1516,6 +1518,7 @@ export type RunContractEventPayload = RunContractEventPayloadV1;
 export type BuildRunContractEventPayloadV1Input = {
   envelope: RunContractEnvelopeV1;
   envelopeSha256: string;
+  harnessManifestSha256?: string;
 };
 
 /** Builds a compact event projection; it never spreads full contracts. */
@@ -1537,6 +1540,9 @@ export function buildRunContractEventPayloadV1(
     outcomeContractId: envelope.outcomeContract.outcomeContractId,
     outcomeContractSha256: envelope.harnessManifest.outcomeContractSha256,
     harnessManifestId: envelope.harnessManifest.harnessManifestId,
+    ...(input.harnessManifestSha256
+      ? { harnessManifestSha256: input.harnessManifestSha256 }
+      : {}),
     contextManifestCount: envelope.contextManifests.length,
     toolContractCount: envelope.harnessManifest.toolContractCount,
     skillCount: envelope.harnessManifest.skillCount,

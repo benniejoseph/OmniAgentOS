@@ -10,6 +10,7 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
   advanceLoopV2Checkpoint,
   LOOP_V2_CAPABILITY_ID,
+  LOOP_V2_MODEL_TEXT_CAPABILITY_ID,
   loopV2ExecutionScopeSha256,
   parseLoopV2Checkpoint,
   type LoopV2Checkpoint,
@@ -18,6 +19,10 @@ import {
   runLoopV2ReadOnlyCanary,
   type LoopV2ReadOnlyCanaryRequest,
 } from "@/lib/orchestration/loop-v2-runtime";
+import {
+  buildLoopV2PreExecutionRunContract,
+  buildLoopV2TerminalRunContract,
+} from "@/lib/orchestration/loop-v2-outcome";
 import {
   finalizeLoopV2Run,
   loopV2RecoveryClaimTokenSha256,
@@ -396,6 +401,24 @@ async function failClosedClaimedRun(
   claimed: ClaimedLoopV2Recovery,
   decision: LoopV2RecoveryDecision,
 ) {
+  const preExecution = buildLoopV2PreExecutionRunContract({
+    rootCheckpoint: claimed.checkpoint,
+    executionScope: claimed.executionScope,
+    requestSha256: sourceContractSha256(claimed.run.prompt),
+    requestedOutcomeSha256: sourceContractSha256(
+      claimed.checkpoint.enginePin.capabilityId ===
+          LOOP_V2_MODEL_TEXT_CAPABILITY_ID
+        ? {
+            taskClass: "bounded_user_text_summary",
+            semanticCorrectness: "model_assertion",
+          }
+        : {
+            taskClass: "single_read_only_governed_tool",
+            toolId: "runs.list",
+          },
+    ),
+    agentId: claimed.run.agentId,
+  });
   const terminal = advanceLoopV2Checkpoint({
     current: claimed.checkpoint,
     executionScope: claimed.executionScope,
@@ -406,6 +429,10 @@ async function failClosedClaimedRun(
       replayedExternalEffectCount: 0,
     }),
   });
+  const terminalRunContract = buildLoopV2TerminalRunContract({
+    preExecution,
+    terminalCheckpoint: terminal,
+  });
   await runWithDatabaseActorScope(
     claimed.run.tenantId,
     [claimed.run.ownerActorId],
@@ -414,6 +441,7 @@ async function failClosedClaimedRun(
         checkpoint: terminal,
         executionScope: claimed.executionScope,
         recoveryFence: claimed.fence,
+        terminalRunContract,
         error:
           "Interrupted Loop v2 work crossed a non-replayable boundary; automatic replay was blocked.",
       }, sql)

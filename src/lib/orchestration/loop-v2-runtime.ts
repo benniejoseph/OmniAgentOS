@@ -22,6 +22,11 @@ import {
   type LoopV2CheckpointWriterSql,
   type LoopV2RecoveryFence,
 } from "@/lib/orchestration/loop-v2-store";
+import {
+  buildLoopV2PreExecutionRunContract,
+  buildLoopV2TerminalRunContract,
+  type LoopV2RunContractSnapshot,
+} from "@/lib/orchestration/loop-v2-outcome";
 import type {
   AgentEvent,
   AgentMode,
@@ -188,6 +193,8 @@ export async function* runLoopV2ReadOnlyCanary(
   let executionScope = request.executionScope;
   let runId: string | undefined;
   let current: LoopV2Checkpoint | undefined;
+  let runContract: LoopV2RunContractSnapshot | undefined;
+  let contractRequest = request.message;
 
   const emit = async (event: AgentEvent) => {
     if (!runId) throw new Error("Loop v2 cannot emit before creating its run.");
@@ -224,6 +231,16 @@ export async function* runLoopV2ReadOnlyCanary(
     if (request.recovery) {
       runId = request.recovery.runId;
       current = request.recovery.checkpoint;
+      runContract = buildLoopV2PreExecutionRunContract({
+        rootCheckpoint: current,
+        executionScope,
+        requestSha256: sourceContractSha256(contractRequest),
+        requestedOutcomeSha256: sourceContractSha256({
+          taskClass: "single_read_only_governed_tool",
+          toolId: "runs.list",
+        }),
+        agentId: request.agentId,
+      });
       yield await emit({ type: "run", runId, threadId: request.threadId });
       yield await emit({
         type: "status",
@@ -247,6 +264,17 @@ export async function* runLoopV2ReadOnlyCanary(
       runId = resumed.runId;
       executionScope = resumed.executionScope;
       current = resumed.checkpoint;
+      contractRequest = resumed.originalPrompt?.trim() || request.message;
+      runContract = buildLoopV2PreExecutionRunContract({
+        rootCheckpoint: current,
+        executionScope,
+        requestSha256: sourceContractSha256(contractRequest),
+        requestedOutcomeSha256: sourceContractSha256({
+          taskClass: "single_read_only_governed_tool",
+          toolId: "runs.list",
+        }),
+        agentId: request.agentId,
+      });
       yield await emit({ type: "run", runId, threadId: resumed.threadId });
       yield await emit({
         type: "status",
@@ -276,7 +304,22 @@ export async function* runLoopV2ReadOnlyCanary(
         executionScope,
         enginePin: request.enrollment.enginePin,
       });
-      await dependencies.persistCheckpoint(root, executionScope);
+      runContract = buildLoopV2PreExecutionRunContract({
+        rootCheckpoint: root,
+        executionScope,
+        requestSha256: sourceContractSha256(contractRequest),
+        requestedOutcomeSha256: sourceContractSha256({
+          taskClass: "single_read_only_governed_tool",
+          toolId: "runs.list",
+        }),
+        agentId: request.agentId,
+      });
+      await dependencies.persistCheckpoint(
+        root,
+        executionScope,
+        undefined,
+        runContract,
+      );
       current = root;
 
       yield await emit({ type: "run", runId, threadId: request.threadId });
@@ -288,6 +331,9 @@ export async function* runLoopV2ReadOnlyCanary(
 
     }
 
+    if (!runContract) {
+      throw new Error("Loop v2 run contract binding is unavailable.");
+    }
     if (current.toState === "understand") {
       if (isAmbiguousRecentRunsIntent(request.message)) {
         const waiting = advanceLoopV2Checkpoint({
@@ -470,29 +516,36 @@ export async function* runLoopV2ReadOnlyCanary(
       throw new Error("Loop v2 read-only verification failed.");
     }
     const response = formatRecentRunsResponse(recentRuns);
+    const verificationReceipt = {
+      executionId: execution.record.id,
+      operationClass: "read_only" as const,
+      effectReceiptPresent: false as const,
+      responseSha256: sourceContractSha256(response),
+    };
     const terminal = advanceLoopV2Checkpoint({
       current,
       executionScope,
       trigger: "verification_passed",
-      outputReceiptSha256: sourceContractSha256({
-        executionId: execution.record.id,
-        operationClass: "read_only",
-        effectReceiptPresent: false,
-        responseSha256: sourceContractSha256(response),
-      }),
+      outputReceiptSha256: sourceContractSha256(verificationReceipt),
+    });
+    const terminalRunContract = buildLoopV2TerminalRunContract({
+      preExecution: runContract,
+      terminalCheckpoint: terminal,
+      response,
+      verificationReceipt,
     });
     if (request.recovery) {
       await dependencies.finalizeRun(
         terminal,
         executionScope,
-        { response },
+        { response, terminalRunContract },
         request.recovery.fence,
       );
     } else {
       await dependencies.finalizeRun(
         terminal,
         executionScope,
-        { response },
+        { response, terminalRunContract },
       );
     }
     current = terminal;
@@ -538,18 +591,24 @@ export async function* runLoopV2ReadOnlyCanary(
               reason: "request_aborted",
             }),
           });
+          const terminalRunContract = runContract
+            ? buildLoopV2TerminalRunContract({
+                preExecution: runContract,
+                terminalCheckpoint: terminal,
+              })
+            : undefined;
           if (request.recovery) {
             await dependencies.finalizeRun(
               terminal,
               executionScope,
-              { error: message },
+              { error: message, terminalRunContract },
               request.recovery.fence,
             );
           } else {
             await dependencies.finalizeRun(
               terminal,
               executionScope,
-              { error: message },
+              { error: message, terminalRunContract },
             );
           }
           current = terminal;
@@ -573,18 +632,24 @@ export async function* runLoopV2ReadOnlyCanary(
               replanCount: current.replanCount,
             }),
           });
+          const terminalRunContract = runContract
+            ? buildLoopV2TerminalRunContract({
+                preExecution: runContract,
+                terminalCheckpoint: terminal,
+              })
+            : undefined;
           if (request.recovery) {
             await dependencies.finalizeRun(
               terminal,
               executionScope,
-              { error: message },
+              { error: message, terminalRunContract },
               request.recovery.fence,
             );
           } else {
             await dependencies.finalizeRun(
               terminal,
               executionScope,
-              { error: message },
+              { error: message, terminalRunContract },
             );
           }
           current = terminal;
@@ -725,6 +790,7 @@ async function persistCheckpoint(
   checkpoint: LoopV2Checkpoint,
   executionScope: ExecutionScope,
   recoveryFence?: LoopV2RecoveryFence,
+  runContractBinding?: LoopV2RunContractSnapshot,
 ) {
   return runWithDatabaseActorScope(
     checkpoint.tenantId,
@@ -736,6 +802,7 @@ async function persistCheckpoint(
             checkpoint,
             executionScope,
             recoveryFence,
+            runContractBinding,
           }, sql),
       ) as Promise<Awaited<ReturnType<typeof recordLoopV2Checkpoint>>>,
   );
@@ -780,7 +847,11 @@ async function persistClarificationResume(
 async function persistTerminalCheckpoint(
   checkpoint: LoopV2Checkpoint,
   executionScope: ExecutionScope,
-  terminal: { response?: string; error?: string },
+  terminal: {
+    response?: string;
+    error?: string;
+    terminalRunContract?: LoopV2RunContractSnapshot;
+  },
   recoveryFence?: LoopV2RecoveryFence,
 ) {
   return runWithDatabaseActorScope(

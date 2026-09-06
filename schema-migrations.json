@@ -473,5 +473,10 @@
     "version": 95,
     "name": "loop_v2_interruption_recovery_v1",
     "checksum": "cfaff4bf0ecbade79687b4e3c30700321556e96a545fefeffaba3d7789c7c5a1"
+  },
+  {
+    "version": 96,
+    "name": "agent_run_terminal_receipts_v1",
+    "checksum": "423502a50edaef9e43b7b518506ed097893c901dcb1d8aa10619044ed5d2bc6d"
   }
 ]

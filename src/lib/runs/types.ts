@@ -1,7 +1,10 @@
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
-import type { RunContractEnvelopeV1 } from "@/lib/runs/contracts";
+import type {
+  RunContractEnvelopeV1,
+  TerminalReceiptV1,
+} from "@/lib/runs/contracts";
 import type { ApprovalCheckpointShadowEnrollment } from "@/lib/runs/approval-checkpoint-shadow";
 import type { RunBudgetStateV1 } from "@/lib/runs/budgets";
 import type {
@@ -113,6 +116,8 @@ export type AgentRunRecord = {
   error?: string;
   consolidationError?: string;
   continuation?: AgentRunContinuation;
+  /** Exact metadata-only outcome receipt; absent on legacy runs. */
+  terminalReceipt?: TerminalReceiptV1;
   startedAt: string;
   completedAt?: string;
   consolidatedAt?: string;

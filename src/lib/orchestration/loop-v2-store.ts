@@ -5,6 +5,12 @@ import {
   type DomainEvent,
 } from "@/lib/events/store";
 import {
+  loopV2RunContractBindingEventPayload,
+  loopV2RunContractComponentsMatch,
+  loopV2RunContractTerminalEventPayload,
+  type LoopV2RunContractSnapshot,
+} from "@/lib/orchestration/loop-v2-outcome";
+import {
   advanceLoopV2Checkpoint,
   loopV2ExecutionScopeSha256,
   parseLoopV2Checkpoint,
@@ -60,6 +66,7 @@ export type ResumeLoopV2ClarificationResult = Readonly<{
   executionScope: ExecutionScope;
   runId: string;
   threadId: string;
+  originalPrompt: string;
   inserted: boolean;
 }>;
 
@@ -68,6 +75,7 @@ export async function recordLoopV2Checkpoint(
     checkpoint: unknown;
     executionScope: ExecutionScope;
     recoveryFence?: LoopV2RecoveryFence;
+    runContractBinding?: LoopV2RunContractSnapshot;
   },
   sql: LoopV2CheckpointWriterSql,
 ): Promise<RecordLoopV2CheckpointResult> {
@@ -84,6 +92,19 @@ export async function recordLoopV2Checkpoint(
       loopV2ExecutionScopeSha256(executionScope)
   ) {
     throw new Error("Loop v2 checkpoint scope does not match its writer.");
+  }
+  const contractBinding = input.runContractBinding
+    ? loopV2RunContractBindingEventPayload(input.runContractBinding)
+    : undefined;
+  if (
+    contractBinding &&
+    (
+      checkpoint.sequence !== 1 ||
+      contractBinding.runId !== checkpoint.runId ||
+      !contractBinding.harnessManifestSha256
+    )
+  ) {
+    throw new Error("Loop v2 run contracts must bind at the root checkpoint.");
   }
 
   const runRows = await sql.query(
@@ -201,6 +222,16 @@ export async function recordLoopV2Checkpoint(
     );
   }
 
+  if (contractBinding) {
+    await appendScopedDomainEvent({
+      id: `run-loop-v2-contract:${checkpoint.runId}`,
+      streamId: `run:${checkpoint.runId}`,
+      type: "run.contracts.bound",
+      executionScope,
+      payload: contractBinding,
+    }, { sql });
+  }
+
   const event = await appendScopedDomainEvent({
     id: `run-loop-v2-transition:${checkpoint.checkpointSha256}`,
     streamId: `run:${checkpoint.runId}`,
@@ -258,6 +289,7 @@ export async function finalizeLoopV2Run(
     response?: string;
     error?: string;
     recoveryFence?: LoopV2RecoveryFence;
+    terminalRunContract?: LoopV2RunContractSnapshot;
   },
   sql: LoopV2CheckpointWriterSql,
 ): Promise<FinalizeLoopV2RunResult> {
@@ -288,6 +320,24 @@ export async function finalizeLoopV2Run(
       );
   if (runStatus === "completed" && !response) {
     throw new Error("A successful Loop v2 run requires a response.");
+  }
+  const terminalContract = input.terminalRunContract
+    ? loopV2RunContractTerminalEventPayload(input.terminalRunContract)
+    : undefined;
+  const contractDisposition =
+    input.terminalRunContract?.envelope.terminalReceipt?.disposition;
+  const dispositionMatches = checkpoint.terminalDisposition === "succeeded"
+    ? contractDisposition === "succeeded" || contractDisposition === "unverified"
+    : contractDisposition === checkpoint.terminalDisposition;
+  if (
+    terminalContract &&
+    (
+      terminalContract.runId !== checkpoint.runId ||
+      !terminalContract.harnessManifestSha256 ||
+      !dispositionMatches
+    )
+  ) {
+    throw new Error("Loop v2 terminal contract does not match the checkpoint.");
   }
 
   const recorded = await recordLoopV2Checkpoint({
@@ -352,6 +402,60 @@ export async function finalizeLoopV2Run(
     );
   if (rows.length !== 1) {
     throw new Error("Loop v2 terminal run disposition did not commit.");
+  }
+  if (terminalContract && input.terminalRunContract) {
+    const boundRows = await sql.query(
+      `SELECT payload
+       FROM omni_events
+       WHERE tenant_id = $1
+         AND stream_id = $2
+         AND type = 'run.contracts.bound'
+       ORDER BY seq ASC
+       LIMIT 2
+       FOR SHARE`,
+      [checkpoint.tenantId, `run:${checkpoint.runId}`],
+    );
+    if (boundRows.length > 1) {
+      throw new Error("Loop v2 run has conflicting pre-execution contracts.");
+    }
+    const boundPayload = boundRows[0]?.payload;
+    if (
+      boundPayload &&
+      !loopV2RunContractComponentsMatch(boundPayload, terminalContract)
+    ) {
+      throw new Error(
+        "Loop v2 terminal contract differs from its pre-execution binding.",
+      );
+    }
+    if (boundPayload) {
+      const receipt = input.terminalRunContract.envelope.terminalReceipt;
+      const receiptRows = await sql.query(
+        `UPDATE omni_agent_runs
+         SET terminal_receipt = $4::jsonb
+         WHERE tenant_id = $1
+           AND id = $2
+           AND owner_actor_id = $3
+           AND status = $5
+         RETURNING id`,
+        [
+          checkpoint.tenantId,
+          checkpoint.runId,
+          checkpoint.ownerActorId,
+          receipt,
+          runStatus,
+        ],
+      );
+      if (receiptRows.length !== 1) {
+        throw new Error("Loop v2 terminal receipt did not commit.");
+      }
+      await appendScopedDomainEvent({
+        id: `run-loop-v2-terminal:${checkpoint.checkpointSha256}`,
+        streamId: `run:${checkpoint.runId}`,
+        type: "run.terminal_receipt.recorded",
+        executionScope: input.executionScope,
+        payload: terminalContract,
+      }, { sql });
+    }
   }
   if (input.recoveryFence) {
     await appendLoopV2RecoveryCompletionEvent({
@@ -500,7 +604,7 @@ export async function resumeLoopV2Clarification(
   }
 
   const runRows = await sql.query(
-    `SELECT id, owner_actor_id, thread_id, agent_id, status
+    `SELECT id, owner_actor_id, thread_id, agent_id, status, prompt
      FROM omni_agent_runs
      WHERE tenant_id = $1 AND id = $2
      LIMIT 2
@@ -515,6 +619,10 @@ export async function resumeLoopV2Clarification(
     !["waiting_clarification", "resuming"].includes(String(run.status))
   ) {
     throw new Error("Loop v2 clarification run binding is invalid.");
+  }
+  const originalPrompt = boundedTerminalText(run.prompt, 30_000);
+  if (!originalPrompt) {
+    throw new Error("Loop v2 clarification original prompt is missing.");
   }
 
   const scopeRows = await sql.query(
@@ -567,6 +675,7 @@ export async function resumeLoopV2Clarification(
       executionScope: originalExecutionScope,
       runId: input.runId,
       threadId: input.threadId,
+      originalPrompt,
       inserted: false,
     });
   }
@@ -608,6 +717,7 @@ export async function resumeLoopV2Clarification(
     executionScope: originalExecutionScope,
     runId: input.runId,
     threadId: input.threadId,
+    originalPrompt,
     inserted: recorded.inserted,
   });
 }

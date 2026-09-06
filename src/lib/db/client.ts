@@ -1053,6 +1053,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[94],
       up: ensureLoopV2InterruptionRecoveryV1,
     },
+    {
+      ...databaseSchemaMigrations[95],
+      up: ensureAgentRunTerminalReceiptsV1,
+    },
   ];
 }
 
@@ -5348,6 +5352,79 @@ async function ensureLoopV2InterruptionRecoveryV1(sql: SqlClient) {
         )
       THEN
         RAISE EXCEPTION 'Loop v2 interruption recovery invariant is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureAgentRunTerminalReceiptsV1(sql: SqlClient) {
+  await sql`
+    ALTER TABLE omni_agent_runs
+    ADD COLUMN IF NOT EXISTS terminal_receipt JSONB
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'omni_agent_runs'::regclass
+          AND conname = 'omni_agent_runs_terminal_receipt_check'
+      ) THEN
+        ALTER TABLE omni_agent_runs
+        ADD CONSTRAINT omni_agent_runs_terminal_receipt_check
+        CHECK (
+          terminal_receipt IS NULL
+          OR COALESCE(
+            jsonb_typeof(terminal_receipt) = 'object'
+            AND terminal_receipt ->> 'schemaVersion' = '1'
+            AND terminal_receipt ->> 'runId' = id
+            AND terminal_receipt ->> 'source' = 'outcome_evaluator'
+            AND terminal_receipt ->> 'outcomeContractId' IS NOT NULL
+            AND terminal_receipt ->> 'terminalReceiptId' IS NOT NULL
+            AND (
+              status = 'completed'
+              AND terminal_receipt ->> 'disposition' IN (
+                'succeeded', 'partial', 'unverified'
+              )
+              OR status = 'failed'
+              AND terminal_receipt ->> 'disposition' = 'failed'
+              OR status = 'canceled'
+              AND terminal_receipt ->> 'disposition' = 'canceled'
+            ),
+            FALSE
+          )
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_agent_runs
+    VALIDATE CONSTRAINT omni_agent_runs_terminal_receipt_check
+  `;
+  await sql`
+    DO $migration$
+    DECLARE
+      receipt_constraint TEXT;
+    BEGIN
+      SELECT pg_get_constraintdef(oid)
+      INTO receipt_constraint
+      FROM pg_constraint
+      WHERE conrelid = 'omni_agent_runs'::regclass
+        AND conname = 'omni_agent_runs_terminal_receipt_check'
+        AND contype = 'c'
+        AND convalidated;
+
+      IF receipt_constraint IS NULL
+        OR receipt_constraint NOT LIKE '%outcome_evaluator%'
+        OR receipt_constraint NOT LIKE '%outcomeContractId%'
+        OR receipt_constraint NOT LIKE '%terminalReceiptId%'
+        OR receipt_constraint NOT LIKE '%runId%'
+      THEN
+        RAISE EXCEPTION 'Agent-run terminal receipt invariant is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
