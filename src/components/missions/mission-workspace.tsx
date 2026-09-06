@@ -54,6 +54,12 @@ type AgentOption = {
   name: string;
   role?: string;
   selectable: boolean;
+  charter?: string;
+  voice?: string;
+  visualIdentity?: string;
+  allowedDomains: string[];
+  escalationBehavior?: string;
+  successMeasures: string[];
 };
 type BoardComment = { id: string; body: string; authorName?: string; createdAt: string; taskId?: string };
 
@@ -783,7 +789,7 @@ export function MissionWorkspace({
     async function loadAgents() {
       try {
         const payload = await readJson("/api/agents?ownerScope=readable", { signal: controller.signal });
-        if (!controller.signal.aborted) setAgents(agentOptions(payload));
+        if (!controller.signal.aborted) setAgents(missionAgentOptions(payload));
       } catch {
         // Assignment remains optional when the agent catalog is unavailable.
       }
@@ -1004,7 +1010,10 @@ export function MissionWorkspace({
 
   const visibleMissions = useMemo(() => missions.filter((mission) => showArchived || mission.status !== "archived"), [missions, showArchived]);
   const tasks = useMemo(() => selectedDetail?.tasks || [], [selectedDetail]);
-  const agentNameMap = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents]);
+  const agentNameMap = useMemo(() => new Map(agents.map((agent) => [
+    agent.id,
+    agent.role ? `${agent.name} · ${agent.role}` : agent.name,
+  ])), [agents]);
   const filteredTasks = useMemo(() => tasks.filter((task) => {
     const column = boardColumnForTask(task, tasks);
     const query = search.trim().toLowerCase();
@@ -1477,12 +1486,14 @@ function TaskCreateDialog({ missionTitle, agents, creating, error, onClose, onCr
   const assignableAgents = agents.filter((agent) => agent.selectable);
   const [title, setTitle] = useState(""); const [instructions, setInstructions] = useState(""); const [definitionOfDone, setDefinitionOfDone] = useState("");
   const [priority, setPriority] = useState<MissionSummaryView["priority"]>("normal"); const [assigneeId, setAssigneeId] = useState(""); const [reviewRequired, setReviewRequired] = useState(true); const [boardStage, setBoardStage] = useState<"inbox" | "ready">("inbox");
+  const selectedAgent = assignableAgents.find((agent) => agent.id === assigneeId);
   return <div className={styles.dialogBackdrop} onMouseDown={(event) => event.target === event.currentTarget && onClose()}><form className={clsx(styles.dialog, styles.taskCreateDialog)} role="dialog" aria-modal="true" aria-labelledby="new-task-title" onSubmit={(event) => { event.preventDefault(); void onCreate({ title: title.trim(), instructions: instructions.trim(), definitionOfDone: definitionOfDone.trim(), priority, assigneeId, reviewRequired, boardStage }); }}>
     <header><div><p>{missionTitle}</p><h2 id="new-task-title">New task</h2></div><button ref={closeRef} type="button" onClick={onClose} aria-label="Close"><X size={16} /></button></header>
     <label>Task title<input value={title} onChange={(event) => setTitle(event.currentTarget.value)} maxLength={240} placeholder="What needs to happen?" autoFocus /></label>
     <label>Working instructions<textarea value={instructions} onChange={(event) => setInstructions(event.currentTarget.value)} maxLength={8000} rows={4} placeholder="Useful context, constraints, and boundaries." /></label>
     <label>Definition of done<textarea value={definitionOfDone} onChange={(event) => setDefinitionOfDone(event.currentTarget.value)} maxLength={2000} rows={3} placeholder="The observable outcome and required evidence." /></label>
     <div className={styles.formGrid}><label>Start in<select value={boardStage} onChange={(event) => setBoardStage(event.currentTarget.value as "inbox" | "ready")}><option value="inbox">Inbox — shape first</option><option value="ready">Ready — clear to start</option></select></label><label>Priority<select value={priority} onChange={(event) => setPriority(event.currentTarget.value as MissionSummaryView["priority"])}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label><label>Assignee<select value={assigneeId} onChange={(event) => setAssigneeId(event.currentTarget.value)}><option value="">Unassigned</option>{assignableAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}{agent.role ? ` · ${agent.role}` : ""}</option>)}</select></label></div>
+    {selectedAgent ? <AgentAssignmentIdentity agent={selectedAgent} /> : null}
     <label className={styles.checkLabel}><input type="checkbox" checked={reviewRequired} onChange={(event) => setReviewRequired(event.currentTarget.checked)} /><span><strong>Require review</strong><small>Move to Review before this task can be accepted.</small></span></label>
     {error ? <p className={styles.dialogError} role="alert">{error}</p> : null}
     <footer><button type="button" onClick={onClose}>Cancel</button><button type="submit" disabled={creating || !title.trim() || !definitionOfDone.trim()}>{creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Add task</button></footer>
@@ -1502,6 +1513,7 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, di
   const assignmentOptions = agents.filter(
     (agent) => agent.selectable || agent.id === assigneeId,
   );
+  const selectedAgent = assignmentOptions.find((agent) => agent.id === assigneeId);
   function save(event: React.FormEvent) {
     event.preventDefault();
     if (disabledReason) return;
@@ -1534,6 +1546,7 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, di
       <label>Working instructions<textarea value={instructions} onChange={(event) => setInstructions(event.currentTarget.value)} rows={5} maxLength={8000} disabled={Boolean(disabledReason)} /></label>
       <label>Definition of done<textarea value={definitionOfDone} onChange={(event) => setDefinitionOfDone(event.currentTarget.value)} rows={4} maxLength={2000} disabled={Boolean(disabledReason)} /></label>
       <div className={styles.formGrid}><label>Priority<select value={priority} onChange={(event) => setPriority(event.currentTarget.value as BoardTask["priority"])} disabled={Boolean(disabledReason)}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label><label>Assignee<select value={assigneeId} onChange={(event) => setAssigneeId(event.currentTarget.value)} disabled={Boolean(disabledReason)}><option value="">Unassigned</option>{assignmentOptions.map((agent) => <option key={agent.id} value={agent.id} disabled={!agent.selectable}>{agent.name}{agent.selectable ? "" : " · read only"}</option>)}</select></label></div>
+      {selectedAgent ? <AgentAssignmentIdentity agent={selectedAgent} /> : null}
       <label className={styles.checkLabel}><input type="checkbox" checked={reviewRequired} onChange={(event) => setReviewRequired(event.currentTarget.checked)} disabled={Boolean(disabledReason)} /><span><strong>Review required</strong><small>Require evidence acceptance before completion.</small></span></label>
       <label>Blocker or requested input<textarea value={blockerReason} onChange={(event) => setBlockerReason(event.currentTarget.value)} rows={2} maxLength={2000} placeholder="Describe exactly what is needed to continue." disabled={Boolean(disabledReason)} /></label>
       <details className={styles.drawerDisclosure} open><summary><span><GitBranch size={14} aria-hidden="true" /> Dependencies</span><b>{dependencyIds.length}</b></summary><div className={styles.dependencyEditor}>{allTasks.filter((candidate) => candidate.id !== task.id).length ? allTasks.filter((candidate) => candidate.id !== task.id).map((candidate) => <label key={candidate.id}><input type="checkbox" checked={dependencyIds.includes(candidate.id)} onChange={() => toggleDependency(candidate.id)} disabled={Boolean(disabledReason)} /><span><strong>{candidate.title}</strong><small>{boardColumnLabel(boardColumnForTask(candidate, allTasks))}</small></span></label>) : <p>No other tasks can be linked yet.</p>}</div></details>
@@ -1544,6 +1557,25 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, di
     <section className={styles.drawerSection} aria-labelledby="attempts-title"><header><div><p>Execution</p><h3 id="attempts-title">Attempt history</h3></div><span>{attempts.length}</span></header><div className={styles.timeline}>{attempts.length ? attempts.map((attempt) => <article key={attempt.id}><i className={statusToneClass(attempt.status)} aria-hidden="true" /><div><strong>{attempt.executorType.replaceAll("_", " ")}</strong><p>{attemptStatusCopy(attempt.status)}</p><small>{relativeTime(attempt.updatedAt, asOf)}</small></div></article>) : <p>No agent attempt has been attached to this task.</p>}</div></section>
     <section className={styles.drawerSection} aria-labelledby="evidence-title"><header><div><p>Proof</p><h3 id="evidence-title">Evidence & handoffs</h3></div><span>{artifacts.length}</span></header><div className={styles.evidenceList}>{artifacts.length ? artifacts.map((artifact) => <article key={artifact.id}><span>{isHandoffArtifact(artifact) ? <CheckCircle2 size={15} /> : <FileText size={15} />}</span><div><strong>{artifact.title}</strong><p>{artifactPreview(artifact) || `${artifact.kind.replaceAll("_", " ")} recorded for this task.`}</p><small>{relativeTime(artifact.createdAt, asOf)}</small></div></article>) : <p>Receipts, files, and structured handoffs will appear here.</p>}</div></section>
   </aside></div>;
+}
+
+function AgentAssignmentIdentity({ agent }: { agent: AgentOption }) {
+  return (
+    <aside className={styles.agentPersona} aria-label={`${agent.name} identity`}>
+      <div>
+        <span aria-hidden="true"><Bot size={15} /></span>
+        <p><strong>{agent.name}</strong>{agent.role ? ` · ${agent.role}` : ""}</p>
+      </div>
+      {agent.charter ? <p>{agent.charter}</p> : null}
+      <dl>
+        {agent.voice ? <><dt>Voice</dt><dd>{agent.voice}</dd></> : null}
+        {agent.allowedDomains.length ? <><dt>Domains</dt><dd>{agent.allowedDomains.join(" · ")}</dd></> : null}
+        {agent.escalationBehavior ? <><dt>Escalates</dt><dd>{agent.escalationBehavior}</dd></> : null}
+        {agent.successMeasures.length ? <><dt>Success</dt><dd>{agent.successMeasures.join(" · ")}</dd></> : null}
+      </dl>
+      <small title={agent.visualIdentity}>Behavioral identity only. Assignment does not expand this Agent&apos;s authority.</small>
+    </aside>
+  );
 }
 
 type TaskAction = "promote" | "start" | "block" | "unblock" | "complete" | "cancel";
@@ -1626,7 +1658,7 @@ function boardColumnForTask(task: BoardTask, allTasks: BoardTask[]): BoardColumn
 function taskCue(task: BoardTask, column: BoardColumnId) { const changesRequested = stringValue(taskMeta(task).changesRequestedReason); if (column === "needs-you") return taskBlockerReason(task) || "Input required"; if (column === "review") return "Review requested"; if (changesRequested && !["review", "done"].includes(column)) return "Changes requested"; if (column === "waiting" && isFutureTask(task)) return "Scheduled"; if (column === "waiting") return "Waiting on dependencies"; if (column === "done" && task.status !== "succeeded") return task.status === "failed" ? "Failed" : "Canceled"; return ""; }
 function taskMeta(task: BoardTask) { const direct = record(task.metadata); const input = record((task as unknown as Record<string, unknown>).input); const board = record(direct.board); return { ...input, ...direct, ...board }; }
 function taskAssigneeId(task: BoardTask) { const meta = taskMeta(task); const direct = task as unknown as Record<string, unknown>; const assignee = record(meta.assignee); return stringValue(task.assigneeId, direct.assigneeId, meta.assigneeId, meta.assigneeKey, meta.agentId, assignee.id) || "unassigned"; }
-function taskAssigneeLabel(task: BoardTask, agents: Map<string, string>) { const meta = taskMeta(task); const assignee = record(meta.assignee); const id = taskAssigneeId(task); return task.assigneeName || stringValue(meta.assigneeName, meta.agentName, assignee.name) || agents.get(id) || "Unassigned"; }
+function taskAssigneeLabel(task: BoardTask, agents: Map<string, string>) { const meta = taskMeta(task); const assignee = record(meta.assignee); const id = taskAssigneeId(task); return agents.get(id) || task.assigneeName || stringValue(meta.assigneeName, meta.agentName, assignee.name) || "Unassigned"; }
 function taskReviewRequired(task: BoardTask) { const meta = taskMeta(task); return boolValue(task.reviewRequired, meta.reviewRequired, meta.requiresReview) ?? false; }
 function taskBlockerReason(task: BoardTask) { const meta = taskMeta(task); const blocker = record(meta.blocker); return task.blockerReason || stringValue(meta.blockerReason, meta.blockReason, meta.requestedInput, blocker.reason) || ""; }
 function taskRetryCount(task: BoardTask, attemptCount: number) { const meta = taskMeta(task); return numberValue(task.retryCount, meta.retryCount, meta.retries) ?? Math.max(0, attemptCount - 1); }
@@ -1817,13 +1849,14 @@ function isIsoTimestamp(value: unknown): value is string {
   }
 }
 
-function agentOptions(payload: Record<string, unknown>): AgentOption[] {
+export function missionAgentOptions(payload: Record<string, unknown>): AgentOption[] {
   const combined = [
     ...(Array.isArray(payload.builtIns) ? payload.builtIns : []).map((value) => ({ value, builtIn: true })),
     ...(Array.isArray(payload.agents) ? payload.agents : []).map((value) => ({ value, builtIn: false })),
   ];
   return combined.flatMap(({ value, builtIn }) => {
     const item = record(value);
+    const persona = record(item.persona);
     const id = stringValue(item.id, item.slug);
     const name = stringValue(item.name);
     return id && name
@@ -1832,6 +1865,12 @@ function agentOptions(payload: Record<string, unknown>): AgentOption[] {
           name,
           role: stringValue(item.role),
           selectable: builtIn || item.selectable === true,
+          charter: stringValue(persona.charter),
+          voice: stringValue(persona.voice),
+          visualIdentity: stringValue(persona.visualIdentity),
+          allowedDomains: stringList(persona.allowedDomains),
+          escalationBehavior: stringValue(persona.escalationBehavior),
+          successMeasures: stringList(persona.successMeasures),
         }]
       : [];
   }).filter((agent, index, items) =>
@@ -1872,5 +1911,6 @@ async function readJson(path: string, init?: RequestInit) { const response = awa
 function friendlyMessage(error: unknown, operation: "load" | "create" | "update") { if (error instanceof ApiRequestError) { if (error.status === 401) return "Your session has ended. Sign in and try again."; if (error.status === 403) return "You do not have permission to make this change."; if (error.status === 404) return "This mission or task is no longer available."; if (error.status === 409) return "The task changed elsewhere. Refresh it before trying again."; if (error.status === 429) return "The workspace is busy. Wait a moment and try again."; if (error.status >= 500) return "The mission service is temporarily unavailable. Your existing board is still safe."; } if (operation === "load") return "Missions could not be loaded. Check your connection and try again."; if (operation === "create") return "That item could not be created. Review the details and try again."; return "That change could not be saved. Refresh the task and try again."; }
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function stringValue(...values: unknown[]) { return values.find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim(); }
+function stringList(value: unknown) { return Array.isArray(value) ? value.flatMap((item) => typeof item === "string" && item.trim() ? [item.trim()] : []) : []; }
 function boolValue(...values: unknown[]) { return values.find((value): value is boolean => typeof value === "boolean"); }
 function numberValue(...values: unknown[]) { return values.find((value): value is number => typeof value === "number" && Number.isFinite(value)); }
