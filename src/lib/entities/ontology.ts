@@ -188,6 +188,20 @@ export function getEntityTypeDefinition(
   return definition;
 }
 
+export function getEntityRelationDefinition(
+  ontologyVersionId: string,
+  relationTypeId: EntityRelationTypeId,
+) {
+  if (ontologyVersionId !== asaelOntologyV1.ontologyVersionId) {
+    throw new Error("Entity relation references an unsupported ontology version.");
+  }
+  const definition = asaelOntologyV1.relationTypes.find(
+    (candidate) => candidate.relationTypeId === relationTypeId,
+  );
+  if (!definition) throw new Error("Entity relation type is not registered.");
+  return definition;
+}
+
 function entity(
   typeId: EntityTypeId,
   label: string,
