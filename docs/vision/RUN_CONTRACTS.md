@@ -131,11 +131,12 @@ binds the contract and receipt with SHA-256 digests, and stores the validated
 evaluation under the workflow result. During this initial display-only slice,
 legacy `status` remains authoritative for execution behavior.
 
-The derived workflow contract carries `outcomeContractBindingState: "posthoc"`.
-Its source plan existed before execution, but the exact outcome-contract object
-and digest were not pre-bound. That qualifier is preserved in the private
-evaluation, compact event, and public outcome projection. A posthoc contract is
-never eligible for `succeeded`.
+New plans carry `outcomeContractBindingState: "pre_execution"`: the exact
+metadata-only contract and digest are stored in the plan-step result before
+approval or execution. Historical plans without that value remain
+`outcomeContractBindingState: "posthoc"`. The qualifier is preserved in the
+private evaluation, compact event, and public outcome projection, and a posthoc
+contract is never eligible for `succeeded`.
 
 Current workflow verification can include model assertions and generated
 summaries, which are evidence metadata but are not strong verifier methods.
@@ -176,9 +177,23 @@ verified, and strictly bound to the approved workflow plus its execution-time
 plan, node, tenant, and tool execution. The current approval timestamp does not
 cryptographically bind that exact plan digest. This additive evidence therefore
 does not satisfy an outcome requirement:
-the workflow contract remains `posthoc` and still cannot project `succeeded`.
-External providers, additional tools, and pre-execution requirement binding
-remain later P1.4 work.
+the current workflow criterion remains a model assertion and still cannot
+project `succeeded`, even when its contract was pre-bound. External providers,
+additional tools, and stronger deterministic criterion verifiers remain later
+P1.4/evidence work.
+
+### Direct Loop v2 terminal receipts
+
+Loop v2 read and bounded model-summary runs bind the principal, intent,
+outcome, and harness component digests atomically with the root checkpoint.
+Terminal finalization reconstructs the same components, rejects any mismatch,
+stores the strict `TerminalReceiptV1`, and appends
+`run.terminal_receipt.recorded` in the same transaction. The deterministic
+read-only canary may report `succeeded` only when its exact governed execution,
+no-effect assertion, response digest, and terminal checkpoint receipt match.
+Structurally valid model output remains `unverified`; failures and authorized
+cancellations preserve their exact disposition. Legacy direct runs without the
+root binding remain on the legacy-unverified projection.
 
 ### Generic provider effect receipt v2
 

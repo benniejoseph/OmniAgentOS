@@ -468,6 +468,22 @@ access remains closed. This gate changes no serving behavior or authority.
 
 **Phase gate:** zero false `succeeded` outcomes in negative/partial/dry-run fixtures; every accepted effect is attributable and idempotent; projection replay parity is 100%.
 
+P1.3 is complete at exact production release
+`780adca53b008b3e6eceaf1beeaa1128cec5c254`. New workflow plans persist a
+metadata-only `OutcomeContract` binding before approval or execution; legacy
+plans remain explicitly `posthoc`. Loop v2 direct runs bind the same contract
+components with their root checkpoint and atomically persist exact terminal
+receipts at finalization. A deterministic read can report canonical
+`succeeded` only when its governed-tool receipt and response digest match;
+model-asserted output remains `unverified`, and failed or canceled work keeps
+its exact non-success disposition. Migration 96 adds the validated agent-run
+terminal-receipt projection. The protected production gate passed 15/15 cases,
+including 14 negative cases, with zero false success, one exactly verified
+success, two rejected tamper cases, zero effects, and immutable replay. Vercel,
+the Fly protocol-1 gateway/worker and all three worker lanes, and the dedicated
+Playwright service are healthy. P1.1 and P1.2 remain open, so the Phase 1 gate
+is not yet complete.
+
 P1.5 is complete for the agent-answer serving path. Every final answer now
 receives deterministic exact-span claim decomposition and a structurally
 verified `ClaimEvidenceMapV1`. Only tenant-, owner-, scope-, purpose-,
@@ -887,11 +903,13 @@ The first safe delivery sequence is intentionally narrow:
 11. P5.1/P5.2 ontology and entity registry without replacing current graph UI.
 12. P6.1 Loop v2 for one low-risk, read-only canary task.
 
-The first P1.3 workflow slice is implemented as an additive shadow projection:
-completion persists a validated outcome evaluation, public reads display its
-canonical outcome beside legacy status, and existing workflow controls remain
-unchanged. Strong effect verification and broader terminal-path convergence
-continue in P1.4 and later P1.3 expansion slices.
+P1.3 is implemented as an additive truthful projection: new plans bind their
+exact outcome contract before execution, completion persists a validated
+evaluation, and public reads display its canonical outcome beside the unchanged
+legacy control status. Older plans without the exact binding remain `posthoc`
+and cannot report success. Direct Loop v2 runs now persist the same component
+binding and exact evaluated terminal receipt atomically with their root and
+terminal transitions.
 
 The first P1.4 canary was additive and did not by itself complete the phase. Only
 live `memory.write` from a single-tool plan node in an approved workflow with
@@ -902,11 +920,12 @@ persists the receipt on the tool record with a typed event atomically in
 Postgres. Migration v36 adds that storage; the file fallback is a non-atomic,
 best-effort development path. Legacy records, system-triggered workflows
 without an initiating actor, dry runs, direct calls, and other tools are
-unchanged. P1.3 may surface the ID of a strictly bound, verified
-canary receipt as additive evidence, but its contract stays `posthoc` and
-cannot project `succeeded`. The later v2 adapter expansion covers the registered
-external mutation surface; pre-execution outcome-requirement binding remains
-separate P1.3/P1.5 work.
+unchanged. P1.3 may surface the ID of a strictly bound, verified canary receipt
+as additive evidence. New workflow contracts are pre-bound, but their current
+criteria remain model assertions and therefore cannot project `succeeded` from
+an effect receipt alone. The later v2 adapter expansion covers the registered
+external mutation surface; stronger workflow criterion verifiers remain
+separate effect/evidence work.
 
 P1.6 is complete behind exact rollout pins. Generation 3 established the
 full-boundary production shadow, and active generation 4 applies that chain to
