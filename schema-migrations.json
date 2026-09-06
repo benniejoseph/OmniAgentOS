@@ -463,5 +463,10 @@
     "version": 93,
     "name": "actor_scoped_event_correlation_index",
     "checksum": "4f2b43c621892e37f7d1bf7ddb856c1b4e753cfdb65a47676e0d12fd9f33b07a"
+  },
+  {
+    "version": 94,
+    "name": "recurring_failure_feedback_v1",
+    "checksum": "900cced9921f7ad9fa9062104efefd06151b1ff6837ecdf420d7536c89163641"
   }
 ]
