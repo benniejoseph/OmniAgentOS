@@ -433,5 +433,10 @@
     "version": 87,
     "name": "entity_memory_lineage_owner_probe",
     "checksum": "decb49443bcccf48ece051e6e402ad11e146d4ded97711d48e61e3cfc34d9c30"
+  },
+  {
+    "version": 88,
+    "name": "entity_registry_identity_trigger_dispatch",
+    "checksum": "630688d84ad89c7107f3c6aedbc240a8dd5f597017cc2371e6366271a07f3126"
   }
 ]
