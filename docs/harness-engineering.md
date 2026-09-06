@@ -223,6 +223,16 @@ cluster and incident. Replay is allowed only while the stored case-definition
 digest equals the current canonical case and still passes ordinary evaluation
 governance without inherited mutation permission.
 
+## Loop v2 interruption recovery gate
+
+The fixed P6.1 suite interrupts the read-only Loop v2 canary at every resumable
+state and exercises transient failures, cancellation, verification rejection,
+stale fences, replans, non-replayable model boundaries, exhausted claims, and
+invalid clarification state. Release requires at least 99% eligible recovery,
+complete progress traces, and zero duplicate effects, false successes,
+unfenced writes, or generic failure mutations. It invokes only the governed
+`runs.list` read and grants no mutation or external-effect authority.
+
 ## What not to copy from a blueprint
 
 Waku optimizes for a small, local, single-user assistant. Asael is a

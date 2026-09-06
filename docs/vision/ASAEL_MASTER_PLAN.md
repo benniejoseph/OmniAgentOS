@@ -2126,8 +2126,24 @@ production `system.readiness` evaluation completed through the active worker
 and produced exactly one pass observation with no false cluster or proposal.
 Canonical Vercel, the Fly protocol-1 gateway/worker, the dedicated Playwright
 service, and all worker lanes are healthy; anonymous agent access remains
-closed. P6.1 interrupted-run recovery and broader bounded fault injection are
-the remaining work before the Phase 6 gate. P12/P13 remain deferred.
+closed.
+
+P6.1 and the Phase 6 gate are complete at exact production release
+`62f51f0244cf40f906a98d01815d102bc7cccb6d`. Stale active Loop v2 reads are
+claimed under a transaction-scoped row lock with generation, token-digest, and
+expiry fencing, then resumed with the exact persisted actor, execution scope,
+capability pin, and original governed-tool idempotency key. Model-text
+boundaries, replans, and exhausted claims fail closed; stale fences defer, and
+generic repair cannot mutate an active Loop v2 chain. Migration 95 installs a
+validated continuation constraint and partial recovery-candidate index with
+its declared checksum. Sixty-five focused checks pass. The fixed 15-case
+production suite recovered all 7 eligible interruption cases (100%) with zero
+duplicate effects, false successes, unfenced writes, generic failure
+mutations, incomplete traces, or missing first-progress evidence, while
+executing zero external effects. Canonical Vercel, the Fly protocol-1
+gateway/worker, the dedicated Playwright service, and all worker lanes are
+healthy; anonymous agent access remains closed. The internal worker credential
+was rotated and its previous value is invalid. P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
@@ -2158,7 +2174,7 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [ ] **Phase 3 — persistent memory:** P3.1–P3.7 complete.
 - [ ] **Phase 4 — Context Management:** P4.1–P4.7 complete.
 - [ ] **Phase 5 — Graph Engineering:** P5.1–P5.6 complete.
-- [ ] **Phase 6 — Loop and Harness Engineering:** P6.1–P6.9 complete.
+- [x] **Phase 6 — Loop and Harness Engineering:** P6.1–P6.9 complete.
 - [ ] **Phase 7 — agent identity and lifecycle:** P7.1–P7.6 complete.
 - [ ] **Phase 8 — delegation and A2A:** P8.1–P8.7 complete.
 - [ ] **Phase 9 — app control, browser, voice, notifications, communications, and AP2:** P9.1–P9.19 complete.
