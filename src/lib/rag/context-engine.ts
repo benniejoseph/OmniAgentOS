@@ -537,6 +537,7 @@ export async function listRetrievalTraces(
       normalizeTenantId(trace.tenantId) === tenantId &&
       retrievalTraceVisibleForScope(trace, options.accessScope)
     )
+    .map(normalizeRetrievalTraceProfile)
     .slice(0, boundedLimit);
 }
 
@@ -581,10 +582,12 @@ export async function getContextEngineStats(options: {
   }
 
   const ledger = await readRetrievalTraceLedger();
-  const traces = ledger.traces.filter((trace) =>
-    normalizeTenantId(trace.tenantId) === tenantId &&
-    retrievalTraceVisibleForScope(trace, options.accessScope)
-  );
+  const traces = ledger.traces
+    .filter((trace) =>
+      normalizeTenantId(trace.tenantId) === tenantId &&
+      retrievalTraceVisibleForScope(trace, options.accessScope)
+    )
+    .map(normalizeRetrievalTraceProfile);
   const byMode = traces.reduce<Record<string, number>>((acc, trace) => {
     acc[trace.profile.mode] = (acc[trace.profile.mode] || 0) + 1;
     return acc;
@@ -863,6 +866,8 @@ function formatContextPack(items: ContextEvidenceItem[], profile: RetrievalProfi
     "Context Engine Profile",
     `mode: ${profile.mode}`,
     `intent: ${profile.intent}`,
+    `query domains: ${profile.queryPlan.domains.join(", ")}`,
+    `temporal mode: ${profile.queryPlan.temporal.mode}`,
     `complexity: ${profile.complexity.toFixed(2)}`,
     `rationale: ${profile.rationale.join(" ")}`,
     "",
@@ -1005,7 +1010,7 @@ function retrievalTraceFromRow(row: Record<string, unknown>): RetrievalTraceReco
     tenantId: String(row.tenant_id || "default"),
     accessBinding,
     query: String(row.query || ""),
-    profile: parseProfile(row.profile),
+    profile: parseProfile(row.profile, String(row.query || "")),
     resultCount: Number(row.result_count || 0),
     selectedCount: Number(row.selected_count || 0),
     latencyMs: Number(row.latency_ms || 0),
@@ -1145,14 +1150,17 @@ function normalizeTenantId(value?: string) {
     .slice(0, 120) || "default";
 }
 
-function parseProfile(value: unknown): RetrievalProfile {
+function parseProfile(
+  value: unknown,
+  fallbackQuery = "",
+): RetrievalProfile {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const profile = value as Partial<RetrievalProfile>;
     return {
       ...(profile as RetrievalProfile),
       queryPlan: profile.queryPlan ||
         buildDeterministicRetrievalQueryPlan(
-          profile.expandedQueries?.[0] || "",
+          profile.expandedQueries?.[0] || fallbackQuery,
         ),
     };
   }
@@ -1166,6 +1174,15 @@ function parseProfile(value: unknown): RetrievalProfile {
     expandedQueries: [],
     rationale: ["Profile unavailable."],
     queryPlan: buildDeterministicRetrievalQueryPlan(""),
+  };
+}
+
+function normalizeRetrievalTraceProfile(
+  trace: RetrievalTraceRecord,
+): RetrievalTraceRecord {
+  return {
+    ...trace,
+    profile: parseProfile(trace.profile, trace.query),
   };
 }
 
