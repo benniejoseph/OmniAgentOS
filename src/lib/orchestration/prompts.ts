@@ -1,6 +1,16 @@
 import type { ModelConversationSeedItem } from "@/lib/models/conversation";
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 
+export const AGENT_PROMPT_CONTRACT_VERSION_ID =
+  "agent-instructions:1" as const;
+
+export type BuiltInAgentId =
+  | "atlas"
+  | "scout"
+  | "forge"
+  | "sentinel"
+  | "mnemosyne";
+
 export function buildAgentInstructions({
   mode,
   agentId = "atlas",
@@ -36,10 +46,14 @@ export function buildAgentInstructions({
     : undefined;
   const identity = profile
     ? { name: profile.name, role: profile.role, mandate: profile.description }
-    : agentIdentity(isAgentId(agentId) ? agentId : "atlas");
+    : getBuiltInAgentPromptIdentity(
+        isBuiltInPromptAgentId(agentId) ? agentId : "atlas",
+      );
   const supportingAgents = Array.from(new Set(specialistIds))
-    .filter((id): id is Parameters<typeof agentIdentity>[0] => id !== agentId && isAgentId(id))
-    .map((id) => agentIdentity(id));
+    .filter((id): id is BuiltInAgentId =>
+      id !== agentId && isBuiltInPromptAgentId(id)
+    )
+    .map((id) => getBuiltInAgentPromptIdentity(id));
   const collaboration = supportingAgents.length
     ? `\nSupporting perspectives:\n${supportingAgents.map((agent) => `- ${agent.name}, ${agent.role}: ${agent.mandate}`).join("\n")}\nApply these perspectives before answering, but do not claim that separate agents executed work unless a tool or workflow trace proves it.`
     : "";
@@ -85,11 +99,11 @@ Core behavior:
 `;
 }
 
-function isAgentId(value: string): value is "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne" {
+export function isBuiltInPromptAgentId(value: string): value is BuiltInAgentId {
   return ["atlas", "scout", "forge", "sentinel", "mnemosyne"].includes(value);
 }
 
-function agentIdentity(agentId: "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne") {
+export function getBuiltInAgentPromptIdentity(agentId: BuiltInAgentId) {
   return {
     atlas: { name: "Atlas", role: "supervisor", mandate: "Coordinate the work, choose the smallest useful plan, verify completion, and synthesize the result." },
     scout: { name: "Scout", role: "research specialist", mandate: "Find and compare evidence, distinguish facts from inference, cite sources, and report uncertainty." },
