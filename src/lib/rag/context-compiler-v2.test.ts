@@ -63,9 +63,14 @@ describe("Context Compiler v2 shadow", () => {
       candidates: [
         preparedCandidate("memory:private", "claim", "authorized", 0.9),
         preparedCandidate("memory:legacy", "claim", "access_binding_missing", 0.8),
+        preparedCandidate("memory:not-in-legacy-pack", "claim", "authorized", 0.99),
       ],
       legacySelectedEvidenceIds: ["memory:private", "memory:legacy"],
-      explicitEvidenceIds: ["memory:private", "memory:legacy"],
+      explicitEvidenceIds: [
+        "memory:private",
+        "memory:legacy",
+        "memory:not-in-legacy-pack",
+      ],
       limit: 8,
       asOfTime,
     });
@@ -76,6 +81,7 @@ describe("Context Compiler v2 shadow", () => {
       explicitSelectionState: "selected",
       selectedCount: 1,
       legacyOnlyCount: 1,
+      v2OnlyCount: 0,
     });
     expect(() => parseContextCompilerV2ShadowReceipt(canary.receipt))
       .toThrow("not a shadow");
