@@ -30,6 +30,13 @@ const dbMocks = vi.hoisted(() => {
   };
 });
 
+const identityMocks = vi.hoisted(() => ({
+  createAgentIdentityMutationScope: vi.fn(() => ({ purpose: "test" })),
+  createCustomAgentIdentityWithSql: vi.fn(async () => undefined),
+  revokeCustomAgentIdentityWithSql: vi.fn(async () => undefined),
+  updateCustomAgentIdentityWithSql: vi.fn(async () => undefined),
+}));
+
 vi.mock("@/lib/db/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/db/client")>()),
   ensureDatabaseSchema: dbMocks.ensureDatabaseSchema,
@@ -38,10 +45,13 @@ vi.mock("@/lib/db/client", async (importOriginal) => ({
   hasDatabaseUrl: dbMocks.hasDatabaseUrl,
 }));
 
+vi.mock("@/lib/agents/identity-store", () => identityMocks);
+
 import {
   AgentSkillAssignmentError,
   CustomAgentReadConflictError,
   createCustomAgent,
+  deleteCustomAgent,
   getCustomAgent,
   getCustomAgentForRequest,
   listCustomAgentsForRequest,
@@ -67,6 +77,7 @@ beforeEach(() => {
   dbMocks.getSql.mockClear();
   dbMocks.sql.mockClear();
   dbMocks.transaction.mockClear();
+  for (const mock of Object.values(identityMocks)) mock.mockClear();
 });
 
 describe("Postgres custom Agent Skill integrity", () => {
@@ -100,6 +111,12 @@ describe("Postgres custom Agent Skill integrity", () => {
     expect(dbMocks.statements.some((statement) =>
       /INSERT INTO omni_custom_agents/.test(statement.text)
     )).toBe(true);
+    expect(identityMocks.createCustomAgentIdentityWithSql).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: expect.objectContaining({ id: "agent-a" }),
+        sql: dbMocks.sql,
+      }),
+    );
   });
 
   it("fails closed before insert when a custom Skill is missing or belongs to another actor", async () => {
@@ -149,6 +166,13 @@ describe("Postgres custom Agent Skill integrity", () => {
     expect(dbMocks.statements[2].text).toMatch(
       /UPDATE omni_custom_agents/,
     );
+    expect(identityMocks.updateCustomAgentIdentityWithSql).toHaveBeenCalledWith(
+      expect.objectContaining({
+        current: expect.objectContaining({ id: "agent-a" }),
+        next: expect.objectContaining({ description: "Updated description" }),
+        sql: dbMocks.sql,
+      }),
+    );
   });
 
   it("translates the migration trigger constraint without leaking database details", async () => {
@@ -190,6 +214,25 @@ describe("Postgres custom Agent Skill integrity", () => {
     await expect(updateCustomAgent("agent-a", {
       skillIds: [customSkillId],
     }, scope)).rejects.toBeInstanceOf(AgentSkillAssignmentError);
+  });
+
+  it("revokes the split principal before deleting the compatibility row", async () => {
+    dbMocks.responses.push(
+      [agentRow("agent-a", [])],
+      [{ id: "agent-a" }],
+    );
+
+    await expect(deleteCustomAgent("agent-a", scope)).resolves.toBe(true);
+
+    expect(dbMocks.transaction).toHaveBeenCalledTimes(1);
+    expect(identityMocks.revokeCustomAgentIdentityWithSql).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: expect.objectContaining({ id: "agent-a" }),
+        sql: dbMocks.sql,
+      }),
+    );
+    expect(dbMocks.statements[0].text).toMatch(/FOR UPDATE/);
+    expect(dbMocks.statements[1].text).toMatch(/DELETE FROM omni_custom_agents/);
   });
 });
 

@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { arsenalAgents } from "@/lib/agents/arsenal";
+import {
+  createAgentIdentityMutationScope,
+  createCustomAgentIdentityWithSql,
+  revokeCustomAgentIdentityWithSql,
+  updateCustomAgentIdentityWithSql,
+} from "@/lib/agents/identity-store";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
@@ -225,7 +231,7 @@ export async function createCustomAgent(input: Omit<CustomAgentDefinition, "id" 
     await ensureDatabaseSchema();
     try {
       return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
-        await assertAgentSkillAssignmentsWithSql(
+        const skills = await resolveAgentSkillAssignmentsWithSql(
           agent.skillIds,
           agent.tenantId,
           agent.actorId,
@@ -247,7 +253,14 @@ export async function createCustomAgent(input: Omit<CustomAgentDefinition, "id" 
           )
           RETURNING *
         `;
-        return agentFromRow(rows[0]);
+        const saved = agentFromRow(rows[0]);
+        await createCustomAgentIdentityWithSql({
+          agent: saved,
+          skills,
+          executionScope: createAgentIdentityMutationScope(saved, "create"),
+          sql,
+        });
+        return saved;
       }) as CustomAgentDefinition;
     } catch (error) {
       throw translatedAgentSkillConstraintError(error);
@@ -287,7 +300,7 @@ export async function updateCustomAgent(id: string, input: Partial<Omit<CustomAg
         if (!currentRows[0]) return undefined;
         const current = agentFromRow(currentRows[0]);
         const next = updatedCustomAgent(current, input);
-        await assertAgentSkillAssignmentsWithSql(
+        const skills = await resolveAgentSkillAssignmentsWithSql(
           next.skillIds,
           tenantId,
           actorId,
@@ -305,7 +318,16 @@ export async function updateCustomAgent(id: string, input: Partial<Omit<CustomAg
           WHERE id = ${id} AND tenant_id = ${tenantId} AND actor_id = ${actorId}
           RETURNING *
         `;
-        return rows[0] ? agentFromRow(rows[0]) : undefined;
+        if (!rows[0]) return undefined;
+        const saved = agentFromRow(rows[0]);
+        await updateCustomAgentIdentityWithSql({
+          current,
+          next: saved,
+          skills,
+          executionScope: createAgentIdentityMutationScope(saved, "update"),
+          sql,
+        });
+        return saved;
       }) as CustomAgentDefinition | undefined;
     } catch (error) {
       throw translatedAgentSkillConstraintError(error);
@@ -349,7 +371,29 @@ export async function updateCustomAgent(id: string, input: Partial<Omit<CustomAg
 
 export async function deleteCustomAgent(id: string, options: Scope) {
   const tenantId = tenant(options.tenantId); const actorId = safe(options.actorId, 200);
-  if (hasDatabaseUrl()) { await ensureDatabaseSchema(); const rows = await getSql()`DELETE FROM omni_custom_agents WHERE id=${id} AND tenant_id=${tenantId} AND actor_id=${actorId} RETURNING id`; return Boolean(rows[0]); }
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const currentRows = await sql`
+        SELECT * FROM omni_custom_agents
+        WHERE id = ${id} AND tenant_id = ${tenantId} AND actor_id = ${actorId}
+        FOR UPDATE
+      `;
+      if (!currentRows[0]) return false;
+      const current = agentFromRow(currentRows[0]);
+      await revokeCustomAgentIdentityWithSql({
+        agent: current,
+        executionScope: createAgentIdentityMutationScope(current, "delete"),
+        sql,
+      });
+      const rows = await sql`
+        DELETE FROM omni_custom_agents
+        WHERE id = ${id} AND tenant_id = ${tenantId} AND actor_id = ${actorId}
+        RETURNING id
+      `;
+      return Boolean(rows[0]);
+    }) as boolean;
+  }
   let removed = false; await updateLedger((ledger) => ({ ...ledger, agents: ledger.agents.filter((item) => { const match = item.id === id && item.tenantId === tenantId && item.actorId === actorId; if (match) removed = true; return !match; }) })); return removed;
 }
 
@@ -509,23 +553,24 @@ function customAgentForExactFileRequest(
   return { ...agent, selectable: true, manageable: true };
 }
 
-async function assertAgentSkillAssignmentsWithSql(
+async function resolveAgentSkillAssignmentsWithSql(
   skillIds: string[],
   tenantId: string,
   actorId: string,
   sql: ReturnType<typeof getSql>,
 ) {
   const customSkillIds = skillIds.filter((id) => !builtInSkillIds.has(id));
-  if (!customSkillIds.length) return;
-  const rows = await sql`
-    SELECT id, tenant_id, actor_id
-    FROM omni_custom_skills
-    WHERE tenant_id COLLATE "C" = ${tenantId}::text COLLATE "C"
-      AND actor_id COLLATE "C" = ${actorId}::text COLLATE "C"
-      AND id COLLATE "C" = ANY(${customSkillIds}::text[])
-    ORDER BY id COLLATE "C"
-    FOR KEY SHARE
-  `;
+  const rows = customSkillIds.length
+    ? await sql`
+        SELECT *
+        FROM omni_custom_skills
+        WHERE tenant_id COLLATE "C" = ${tenantId}::text COLLATE "C"
+          AND actor_id COLLATE "C" = ${actorId}::text COLLATE "C"
+          AND id COLLATE "C" = ANY(${customSkillIds}::text[])
+        ORDER BY id COLLATE "C"
+        FOR KEY SHARE
+      `
+    : [];
   const requested = new Set(customSkillIds);
   if (rows.some((row) =>
     String(row.tenant_id) !== tenantId ||
@@ -538,6 +583,10 @@ async function assertAgentSkillAssignmentsWithSql(
   if (customSkillIds.some((id) => !found.has(id))) {
     throw new AgentSkillAssignmentError();
   }
+  return [
+    ...builtInSkills.filter((skill) => skillIds.includes(skill.id)),
+    ...rows.map(skillFromRow),
+  ];
 }
 
 function assertAgentSkillAssignmentsInLedger(
@@ -568,7 +617,7 @@ function updatedCustomAgent(
     ...current,
     ...normalizeAgent({ ...current, ...input }),
     slug: input.name ? slug(input.name) : current.slug,
-    updatedAt: new Date().toISOString(),
+    updatedAt: monotonicTimestamp(current.updatedAt),
   };
 }
 
@@ -599,3 +648,4 @@ function slug(value: string) { return safe(value, 120).toLowerCase().replace(/[^
 function ids(values: unknown, max: number) { return [...new Set((Array.isArray(values) ? values : []).map((item) => safe(item, 120)).filter(Boolean))].slice(0, max); }
 function strings(value: unknown) { return Array.isArray(value) ? value.map(String) : []; }
 function date(value: unknown) { return value instanceof Date ? value.toISOString() : String(value); }
+function monotonicTimestamp(previous: string) { const now = Date.now(); const before = new Date(previous).getTime(); return new Date(Number.isFinite(before) ? Math.max(now, before + 1) : now).toISOString(); }

@@ -244,13 +244,16 @@ function agent(): CustomAgentDefinition {
 function fakeSql(responses: Record<string, unknown>[][]) {
   const queued = [...responses];
   const statements: Array<{ text: string; params: unknown[] }> = [];
-  const sql = Object.assign(
+  const callable = Object.assign(
     async (strings: TemplateStringsArray, ...params: unknown[]) => {
       statements.push({ text: renderStatement(strings, params), params });
       return queued.shift() || [];
     },
     { transaction: vi.fn() },
   );
+  const sql = callable as unknown as Parameters<
+    typeof createCustomAgentIdentityWithSql
+  >[0]["sql"];
   return { sql, statements };
 }
 
