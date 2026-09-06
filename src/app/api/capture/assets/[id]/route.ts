@@ -23,6 +23,7 @@ import {
   projectOperationJobStatus,
 } from "@/lib/operations/job-queue";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import { redactSensitive } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { z } from "zod";
 
@@ -220,10 +221,25 @@ function assetErrorResponse(
       { status: error.status, headers: privateNoStoreHeaders },
     );
   }
+  console.error(JSON.stringify({
+    level: "error",
+    event: "capture_asset.request_failed",
+    errorName: error instanceof Error ? error.name : "UnknownError",
+    errorMessage: error instanceof Error
+      ? String(redactSensitive(error.message)).slice(0, 500)
+      : "Unknown capture asset failure.",
+    errorCode: safeErrorCode(error),
+  }));
   return Response.json(
     { error: "Captured file request failed." },
     { status: 500, headers: privateNoStoreHeaders },
   );
+}
+
+function safeErrorCode(error: unknown) {
+  if (!error || typeof error !== "object" || !("code" in error)) return undefined;
+  const code = String(error.code);
+  return /^[A-Za-z0-9._:-]{1,80}$/.test(code) ? code : undefined;
 }
 
 function safeInlineMediaType(mediaType: string) {
