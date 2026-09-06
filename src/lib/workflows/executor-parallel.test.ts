@@ -39,6 +39,10 @@ vi.mock("@/lib/workflows/store", () => ({
 
 import { executeDynamicWorkflowPlan } from "@/lib/workflows/executor";
 import { withWorkflowNodeContract } from "@/lib/workflows/node-contract";
+import {
+  applyWorkflowSubtreeReplan,
+  createWorkflowReplanDirective,
+} from "@/lib/workflows/replan";
 import type {
   WorkflowDynamicPlan,
   WorkflowPlanNode,
@@ -248,6 +252,88 @@ describe("workflow parallel DAG scheduling", () => {
       ],
     });
   });
+
+  it("reuses hash-bound unaffected executions and reruns only the affected subtree", async () => {
+    let callCount = 0;
+    mocks.generateModelStructured.mockImplementation(async () => {
+      callCount += 1;
+      return successfulModelResult(callCount);
+    });
+    const sourceA = agentNode("source-a");
+    const sourceB = agentNode("source-b");
+    const join = withWorkflowNodeContract({
+      ...agentNode("join"),
+      dependsOn: [sourceA.id, sourceB.id],
+    });
+    const report = withWorkflowNodeContract({
+      ...agentNode("report"),
+      dependsOn: [join.id],
+    });
+    const oldNodes = [sourceA, sourceB, join, report];
+    const oldDetail = workflowDetail("workflow-subtree-replan", oldNodes);
+    oldDetail.steps[0].output = {
+      ...oldDetail.steps[0].output,
+      id: "plan-subtree-old",
+    };
+    const oldSummary = await executeDynamicWorkflowPlan(oldDetail);
+    expect(oldSummary).toMatchObject({
+      status: "running",
+      completedNodes: 3,
+      totalNodes: 4,
+    });
+    const oldPlan = workflowPlan(oldNodes);
+    const directive = createWorkflowReplanDirective({
+      previousPlanId: "plan-subtree-old",
+      previousPlan: oldPlan,
+      nodeExecutions: oldSummary?.nodeExecutions || [],
+      verificationFailures: ["join failed to combine both sources"],
+      approvalInvalidated: false,
+    });
+    const candidatePlan = workflowPlan(oldNodes.map((node) =>
+      node.id === "join" || node.id === "report"
+        ? withWorkflowNodeContract({
+            ...node,
+            description: `${node.description} Address the verified evidence gap.`,
+          })
+        : node
+    ));
+    const replanned = applyWorkflowSubtreeReplan({
+      previousPlanId: "plan-subtree-old",
+      previousPlan: oldPlan,
+      candidatePlan,
+      directive,
+    });
+    const replannedDetail = workflowDetail("workflow-subtree-replan", replanned.nodes);
+    replannedDetail.steps[0].output = {
+      ...replannedDetail.steps[0].output,
+      id: "plan-subtree-new",
+      plan: replanned,
+    };
+
+    const summary = await executeDynamicWorkflowPlan(replannedDetail);
+
+    expect(summary).toMatchObject({
+      status: "completed",
+      completedNodes: 4,
+      totalNodes: 4,
+      nodeExecutions: [
+        { nodeId: "source-a", planId: "plan-subtree-old" },
+        { nodeId: "source-b", planId: "plan-subtree-old" },
+        {
+          nodeId: "join",
+          planId: "plan-subtree-new",
+          input: {
+            dependencies: [
+              { nodeId: "source-a", executionId: expect.any(String) },
+              { nodeId: "source-b", executionId: expect.any(String) },
+            ],
+          },
+        },
+        { nodeId: "report", planId: "plan-subtree-new" },
+      ],
+    });
+    expect(callCount).toBe(5);
+  });
 });
 
 function agentNode(id: string): WorkflowPlanNode {
@@ -288,32 +374,7 @@ function workflowDetail(
   workflowRunId: string,
   nodes: WorkflowPlanNode[],
 ): WorkflowRunDetail {
-  const plan: WorkflowDynamicPlan = {
-    objective: "Execute a bounded test workflow.",
-    summary: "Exercise DAG scheduling and typed dependencies.",
-    mode: "orchestrate",
-    assumptions: [],
-    constraints: [],
-    risks: [],
-    acceptanceCriteria: nodes.flatMap((node) => node.acceptanceCriteria),
-    nodes,
-    edges: nodes.flatMap((node) => node.dependsOn.map((dependencyId) => ({
-      from: dependencyId,
-      to: node.id,
-      condition: "completed",
-    }))),
-    selectedToolIds: [...new Set(nodes.flatMap((node) => node.toolIds))],
-    connectorTargets: [],
-    executionPolicy: {
-      highestRiskLevel: Math.max(0, ...nodes.map((node) => node.riskLevel)) as 0 | 1 | 2 | 3,
-      requiresApproval: nodes.some((node) => node.approvalRequired),
-      defaultPolicy: "auto",
-      notes: [],
-    },
-    verificationPlan: [],
-    memoryPlan: [],
-    confidence: 1,
-  };
+  const plan = workflowPlan(nodes);
   return {
     run: {
       id: workflowRunId,
@@ -350,6 +411,35 @@ function workflowDetail(
       updatedAt: "2026-09-06T00:00:01.000Z",
     }],
     events: [],
+  };
+}
+
+function workflowPlan(nodes: WorkflowPlanNode[]): WorkflowDynamicPlan {
+  return {
+    objective: "Execute a bounded test workflow.",
+    summary: "Exercise DAG scheduling and typed dependencies.",
+    mode: "orchestrate",
+    assumptions: [],
+    constraints: [],
+    risks: [],
+    acceptanceCriteria: nodes.flatMap((node) => node.acceptanceCriteria),
+    nodes,
+    edges: nodes.flatMap((node) => node.dependsOn.map((dependencyId) => ({
+      from: dependencyId,
+      to: node.id,
+      condition: "completed",
+    }))),
+    selectedToolIds: [...new Set(nodes.flatMap((node) => node.toolIds))],
+    connectorTargets: [],
+    executionPolicy: {
+      highestRiskLevel: Math.max(0, ...nodes.map((node) => node.riskLevel)) as 0 | 1 | 2 | 3,
+      requiresApproval: nodes.some((node) => node.approvalRequired),
+      defaultPolicy: "auto",
+      notes: [],
+    },
+    verificationPlan: [],
+    memoryPlan: [],
+    confidence: 1,
   };
 }
 

@@ -20,6 +20,7 @@ import type { AiUsageScope } from "@/lib/usage/types";
 import { shouldUseLiveWebSearch } from "@/lib/web-search/search";
 import { normalizeWorkflowNodeInputBindings } from "@/lib/workflows/dependency-bindings";
 import { withWorkflowNodeContract } from "@/lib/workflows/node-contract";
+import { applyWorkflowSubtreeReplan } from "@/lib/workflows/replan";
 import type { SavedProcedureToolBinding } from "@/lib/workflows/saved-procedures";
 import type {
   WorkflowDynamicPlan,
@@ -29,6 +30,7 @@ import type {
   WorkflowPlanRecord,
   WorkflowPlanStats,
   WorkflowPlanValidation,
+  WorkflowReplanDirectiveV1,
 } from "@/lib/workflows/types";
 
 type BuildWorkflowPlanInput = {
@@ -48,6 +50,11 @@ type BuildWorkflowPlanInput = {
   requiredToolBindings?: readonly SavedProcedureToolBinding[];
   readOnlyTools?: boolean;
   agentInstructions?: string;
+  replan?: {
+    previousPlanId: string;
+    previousPlan: WorkflowDynamicPlan;
+    directive: WorkflowReplanDirectiveV1;
+  };
   abortSignal?: AbortSignal;
   usageAttribution?: Pick<AiUsageScope, "actorId" | "executionScope" | "correlationId" | "causationId">;
 };
@@ -145,6 +152,7 @@ const dynamicPlanSchema = z.object({
   verificationPlan: z.array(z.string()),
   memoryPlan: z.array(z.string()),
   confidence: z.number().min(0).max(1),
+  replan: z.unknown().optional(),
 });
 
 export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
@@ -212,16 +220,25 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     contextTraceId: context.trace?.id,
     toolCandidates,
     requiredToolBindings,
-    agentInstructions: input.agentInstructions,
+    agentInstructions: [
+      input.agentInstructions,
+      input.replan ? workflowSubtreeReplanInstructions(input.replan) : undefined,
+    ].filter(Boolean).join("\n\n") || undefined,
     abortSignal: input.abortSignal,
     sourceStreamId: input.workflowRunId
       ? `workflow:${input.workflowRunId}`
       : `workflow-plan:${planId}`,
     usageAttribution: input.usageAttribution,
   });
-  const safePlan = redactSensitive(
-    generated.plan,
-  ) as WorkflowDynamicPlan;
+  const admittedPlan = input.replan
+    ? applyWorkflowSubtreeReplan({
+        previousPlanId: input.replan.previousPlanId,
+        previousPlan: input.replan.previousPlan,
+        candidatePlan: generated.plan,
+        directive: input.replan.directive,
+      })
+    : generated.plan;
+  const safePlan = redactSensitive(admittedPlan) as WorkflowDynamicPlan;
   const validation = validateWorkflowPlan(safePlan);
   const missingExecutableInput = validation.policyWarnings.some((warning) =>
     warning.startsWith("Missing executable input"),
@@ -1221,6 +1238,21 @@ async function mutateWorkflowPlanLedger(mutator: (ledger: WorkflowPlanLedger) =>
     { plans: [] },
     (ledger) => ({ plans: mutator(ledger).plans.slice(0, 500) }),
   );
+}
+
+function workflowSubtreeReplanInstructions(
+  replan: NonNullable<BuildWorkflowPlanInput["replan"]>,
+) {
+  const allNodeIds = replan.previousPlan.nodes.map((node) => node.id);
+  const affected = new Set(replan.directive.affectedNodeIds);
+  return [
+    "This is one bounded subtree replan of an already executed workflow.",
+    `Return exactly these node IDs and no others: ${allNodeIds.join(", ")}.`,
+    `Materially revise only these affected nodes: ${replan.directive.affectedNodeIds.join(", ")}.`,
+    `Keep these reusable nodes semantically unchanged: ${allNodeIds.filter((id) => !affected.has(id)).join(", ") || "none"}.`,
+    "Preserve dependencies outside the affected subtree. Do not broaden tools, connectors, context, or authority for reusable nodes.",
+    "At least one affected node must change in a way that addresses the supplied failure evidence; a no-op replan is invalid.",
+  ].join("\n");
 }
 
 function buildPlannerInstructions(agentInstructions?: string) {

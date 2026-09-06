@@ -51,6 +51,7 @@ import {
   getWorkflowRunExecutionAuthority,
   type WorkflowExecutionAuthority,
 } from "@/lib/workflows/store";
+import { resolveWorkflowReusedNodeExecutions } from "@/lib/workflows/replan";
 import type {
   WorkflowDynamicPlan,
   WorkflowPlanExecutionSummary,
@@ -174,20 +175,35 @@ export async function executeDynamicWorkflowPlan(
   if (!parsedPlan) {
     return null;
   }
-  const executionAuthority = await getWorkflowRunExecutionAuthority(detail.run.id, {
+  const rootExecutionAuthority = await getWorkflowRunExecutionAuthority(detail.run.id, {
     tenantId: detail.run.tenantId,
   });
-  if (detail.run.input.executionAuthorityRequired && !executionAuthority) {
+  if (detail.run.input.executionAuthorityRequired && !rootExecutionAuthority) {
     throw new Error("Workflow execution authority is missing.");
   }
+  const executionAuthority = rootExecutionAuthority && parsedPlan.plan.replan
+    ? {
+        ...rootExecutionAuthority,
+        executionScope: deriveExecutionScope(rootExecutionAuthority.executionScope, {
+          causationId: `workflow.replan:${parsedPlan.id}`,
+          contextGrantIds: [],
+          capabilityGrantIds: [],
+          purpose: "workflow.replan.execute",
+        }),
+      }
+    : rootExecutionAuthority;
 
   const sortedNodes = topologicalSort(parsedPlan.plan.nodes);
   const priorRecords = await listWorkflowPlanNodeExecutionsForRun(detail.run.id, 250);
   const planRecords = priorRecords.filter(
     (record) => record.planId === parsedPlan.id,
   );
+  const reusedRecords = resolveWorkflowReusedNodeExecutions(
+    parsedPlan.plan,
+    priorRecords,
+  );
   const existingByNode = new Map(
-    planRecords.map((record) => [record.nodeId, record]),
+    [...reusedRecords, ...planRecords].map((record) => [record.nodeId, record]),
   );
   const priorToolExecutions = planRecords.flatMap((record) =>
     parseToolSummaries(record.output)
@@ -490,6 +506,7 @@ export async function executeDynamicWorkflowPlan(
     toolCalls: budget.toolCalls,
     costUnits: budget.costUnits,
     elapsedMs: summary.elapsedMs,
+    reusedNodes: reusedRecords.length,
     },
   );
 
