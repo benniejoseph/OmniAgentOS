@@ -2520,6 +2520,21 @@ gateway/worker, the dedicated Playwright service, and all worker lanes are
 healthy; anonymous agent access remains closed. The internal worker credential
 was rotated and its previous value is invalid. P12/P13 remain deferred.
 
+P7.5 repository implementation is complete through commit
+`3012848b1b9dde95607dd21a556186f76cb3bcac`. Behavioral changes remain drafts
+until an immutable exact-baseline evaluation is promoted; rollback uses the
+same atomic evaluated transition, runtime resolves the promoted snapshot, and
+in-flight runs retain their pinned identity. Retirement is terminal and keeps
+historical definitions, evaluations, and evidence. Arsenal and Settings expose
+the complete owner-only lifecycle. Production migrations 113 and 114 install
+the forced-RLS release ledgers and security-invoker initial enrollment trigger;
+readback found two channels for two custom Agents and no enrollment gaps.
+Ninety-one focused checks, affected lint, TypeScript, and the Next 16 production
+build pass. Application promotion remains pending because Vercel rejected the
+complete-feature deployment for the team's overdue balance; Fly remains on the
+last paired release. P7.6 measurable adaptation states is next, and P12/P13
+remain deferred.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition

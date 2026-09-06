@@ -1421,6 +1421,27 @@ held-to-active/revoked and active-to-revoked transitions, preserves every
 authority coordinate as immutable, forces tenant/actor RLS, and gives serving
 roles no delete, truncate, table-wide update, or authority-field update.
 
+P7.5 separates an Agent's latest behavioral draft from its active release.
+Definition changes remain append-only, while every new execution resolves only
+the exact definition named by the actor-owned active release channel. A
+candidate must first produce an immutable `p7.5-agent-release-evaluation:1`
+record bound to the current active baseline, exact definition digests, declared
+material fields, persona contract, and Skill pins. Promotion and rollback then
+lock that channel and advance its revision atomically; the database trigger
+rejects a stale baseline, mismatched evaluation, authority change, or mutable
+evaluation history. The evaluated definition snapshot is the runtime source of
+truth after a transition, and existing run identity manifests stay pinned.
+
+Retirement first revokes the Agent principal and then makes the release channel
+terminal; it does not delete definition or evaluation evidence. Arsenal and
+Settings expose active versus latest versions, evaluation, promotion,
+evaluation-backed rollback, history, and typed retirement confirmation only to
+the exact owner. Migration v113 installs the forced-RLS release and evaluation
+ledgers with lifecycle-only serving-role updates. Migration v114 adds a
+security-invoker definition-insert trigger so both current and rollback-window
+application versions enroll each initial Agent release, and the application
+initializer converges idempotently with that database invariant.
+
 P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
 provider sees the redacted query and planning time, not authorization coordinates. Its
 `p4.3-query-plan:1` output contains only bounded domain enums, search rewrites,
