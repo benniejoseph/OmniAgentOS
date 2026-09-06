@@ -149,6 +149,29 @@ Only the deterministic read-only canary can currently satisfy every required
 criterion and project canonical `succeeded`; bounded model summaries remain
 truthfully `unverified`.
 
+P7.1 separates an Agent's behavioral identity from its authority. Migration
+v108 appends immutable `omni_agent_definition_versions` and
+`omni_agent_principal_policies` records while reusing the canonical
+`omni_tenant_execution_principals` security identity. Custom-Agent creation,
+behavior edits, Skill changes, authority edits, revocation, and deletion
+dual-write the split records in the same transaction as the compatibility row.
+Behavior-only changes create a definition version without rotating the
+principal; authority changes rotate only the principal policy generation.
+Definition text and Skill metadata remain untrusted configuration and never
+grant tools, context, capability, budget, or approval authority.
+
+Before direct, Loop v2, resumed, or checkpoint-fork execution, the server
+resolves the exact active definition and principal and writes one immutable,
+metadata-only `run.agent_identity.bound` event. Its run-scoped event identity
+makes exact retries idempotent and rejects any attempted rebind. The pin names
+the definition, persona, model policy, prompt contract, Skill revisions,
+principal generation, and policy digests used by the run; the harness and
+terminal contracts carry the same pin. Historical and in-flight runs therefore
+remain reproducible after later behavior or authority changes. Built-in Agents
+use compile-pinned definition/principal versions, while file-mode compatibility
+constructs the same strict contract without pretending to be durable split
+storage.
+
 The first P1.4 canary is deliberately narrower than that phase's target. Only
 live `memory.write` from a single-tool plan node in an approved workflow with
 explicit tenant and initiating-actor scope creates an `EffectReceiptV1`. Its memory target is
