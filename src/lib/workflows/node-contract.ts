@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { DelegationContractV1 } from "@/lib/delegation/contracts";
 import { redactSensitive } from "@/lib/security/context";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import type {
@@ -95,6 +96,14 @@ export type WorkflowNodeExecutionReceiptV1 = Readonly<{
     type: "approval";
     approved: boolean;
     approvedAt?: string;
+  }>;
+  delegation?: Readonly<{
+    delegationId: string;
+    contractId: string;
+    contractSha256: string;
+    delegatePrincipalId: string;
+    verifierAgentId: string;
+    verifierDefinitionVersion: number;
   }>;
 }>;
 
@@ -309,6 +318,7 @@ export function assertWorkflowNodeExecutionReceipt(
   input: WorkflowNodeInputV1,
   output: WorkflowNodeResultV1,
   receipt: WorkflowNodeExecutionReceiptV1,
+  delegationContract?: DelegationContractV1,
 ) {
   if (
     receipt.schemaVersion !== WORKFLOW_NODE_CONTRACT_VERSION ||
@@ -327,6 +337,15 @@ export function assertWorkflowNodeExecutionReceipt(
     if (
       output.completionBasis !== "model_receipt" ||
       !receipt.model ||
+      !delegationContract ||
+      !receipt.delegation ||
+      receipt.delegation.delegationId !== delegationContract.delegationId ||
+      receipt.delegation.contractId !== delegationContract.contractId ||
+      receipt.delegation.contractSha256 !== delegationContract.contractSha256 ||
+      receipt.delegation.delegatePrincipalId !== delegationContract.delegate.principalId ||
+      receipt.delegation.verifierAgentId !== delegationContract.verifier.agentId ||
+      receipt.delegation.verifierDefinitionVersion !==
+        delegationContract.verifier.definitionVersion ||
       receipt.model.attemptCount < 1 ||
       receipt.toolExecutionIds.length
     ) {
