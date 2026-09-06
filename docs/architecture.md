@@ -1151,9 +1151,10 @@ shared coordinates, direct agent principal, and personal `all` memory mode
 before resolving the selected IDs. Automatic retrieval and session/project
 modes do not receive that scope. A run carrying private context disables
 sibling council delegation and verification instead of forwarding the context.
-Workflows, forks, specialist/background workers, standing formation,
-agent-private/shared visibility, and the full authority resolver remain closed,
-so P3.1 is still incomplete.
+It also receives an empty toolbox until capability grants can authorize data
+disclosure to individual operations. Workflows, forks, specialist/background
+workers, standing formation, agent-private/shared visibility, and the full
+authority resolver remain closed, so P3.1 is still incomplete.
 
 ## Where things live
 
