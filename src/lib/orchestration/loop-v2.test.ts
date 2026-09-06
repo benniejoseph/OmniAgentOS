@@ -73,6 +73,29 @@ describe("Loop v2 transition checkpoints", () => {
     });
   });
 
+  it("can fail closed from every active pre-terminal phase", () => {
+    const root = initial();
+    const plan = next(root, "plan_bound", 1);
+    const act = next(plan, "action_started", 2);
+    const observe = next(act, "action_succeeded", 3);
+    const verify = next(observe, "observation_recorded", 4);
+    const replan = next(act, "action_failed", 5);
+
+    for (const [checkpoint, minute] of [
+      [root, 10],
+      [plan, 11],
+      [act, 12],
+      [observe, 13],
+      [verify, 14],
+      [replan, 15],
+    ] as const) {
+      expect(next(checkpoint, "budget_exhausted", minute)).toMatchObject({
+        toState: "finish",
+        terminalDisposition: "failed",
+      });
+    }
+  });
+
   it("rejects unsupported rollouts, invalid edges, scope changes, and chain tampering", () => {
     expect(() => buildLoopV2EnginePin({ ...rollout(), mode: "enabled" })).toThrow(
       "active supported canary",

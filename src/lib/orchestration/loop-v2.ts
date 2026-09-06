@@ -348,7 +348,7 @@ function resolveTransition(
   }
   if (
     trigger === "budget_exhausted" &&
-    ["act", "verify", "replan"].includes(current.toState)
+    current.toState !== "clarify"
   ) {
     return result("finish", "failed", current.retryCount, current.replanCount);
   }
