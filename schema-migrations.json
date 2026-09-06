@@ -543,5 +543,10 @@
     "version": 109,
     "name": "agent_definition_persona_v1",
     "checksum": "4c853b38ba5b8a2643c10c9a17789f0c2762feeb4dcc50e7eae1e2b0a086dc89"
+  },
+  {
+    "version": 110,
+    "name": "agent_private_memory_v1",
+    "checksum": "7472b7f5f3ce4099e0b74f6a71bd661cc5de465b014b0df06d9e85571d4ce54b"
   }
 ]
