@@ -118,4 +118,57 @@ describe("Anthropic model adapter tool turns", () => {
       ]),
     });
   });
+
+  it("replays a canonical tool transcript without provider-owned state", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      model: "claude-test",
+      content: [{ type: "text", text: "Ada found." }],
+      usage: { input_tokens: 11, output_tokens: 2 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await anthropicModelAdapter.generateToolTurn!({
+      input: "fallback is not used",
+      preferredProvider: "anthropic",
+      tools: [],
+      conversation: [
+        { type: "message", role: "user", content: "Find Ada." },
+        { type: "message", role: "assistant", content: "I will search." },
+        {
+          type: "tool_call",
+          callId: "call-1",
+          name: "memory_search",
+          argumentsJson: "{\"query\":\"Ada\"}",
+        },
+        {
+          type: "tool_result",
+          callId: "call-1",
+          name: "memory_search",
+          content: "{\"name\":\"Ada Lovelace\"}",
+        },
+      ],
+    }, target);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.messages.map((message: { role: string }) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+    ]);
+    expect(body.messages[1].content).toEqual([
+      { type: "text", text: "I will search." },
+      {
+        type: "tool_use",
+        id: "call-1",
+        name: "memory_search",
+        input: { query: "Ada" },
+      },
+    ]);
+    expect(body.messages[2].content).toEqual([{
+      type: "tool_result",
+      tool_use_id: "call-1",
+      content: "{\"name\":\"Ada Lovelace\"}",
+    }]);
+  });
 });
