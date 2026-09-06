@@ -11,6 +11,7 @@ import {
   type LoopV2Checkpoint,
 } from "@/lib/orchestration/loop-v2";
 import {
+  finalizeLoopV2Run,
   readLoopV2CheckpointChain,
   recordLoopV2Checkpoint,
   type LoopV2CheckpointWriterSql,
@@ -96,6 +97,50 @@ describe("Loop v2 checkpoint store", () => {
       executionScope: wrongScope,
     }, fakeStorage().sql)).rejects.toThrow("scope does not match");
   });
+
+  it("commits the terminal checkpoint and run disposition together", async () => {
+    const storage = fakeStorage();
+    let current = initial();
+    await recordLoopV2Checkpoint({
+      checkpoint: current,
+      executionScope: executionScope(),
+    }, storage.sql);
+    for (const [trigger, minute] of [
+      ["plan_bound", 1],
+      ["action_started", 2],
+      ["action_succeeded", 3],
+      ["observation_recorded", 4],
+    ] as const) {
+      current = advanceLoopV2Checkpoint({
+        current,
+        executionScope: executionScope(),
+        trigger,
+        outputReceiptSha256: sourceContractSha256(trigger),
+        transitionedAt: `2026-09-06T03:0${minute}:00.000Z`,
+      });
+      await recordLoopV2Checkpoint({
+        checkpoint: current,
+        executionScope: executionScope(),
+      }, storage.sql);
+    }
+    const terminal = advanceLoopV2Checkpoint({
+      current,
+      executionScope: executionScope(),
+      trigger: "verification_passed",
+      outputReceiptSha256: sourceContractSha256("verified"),
+      transitionedAt: "2026-09-06T03:05:00.000Z",
+    });
+
+    await expect(finalizeLoopV2Run({
+      checkpoint: terminal,
+      executionScope: executionScope(),
+      response: "Five recent runs.",
+    }, storage.sql)).resolves.toMatchObject({
+      runStatus: "completed",
+      checkpoint: { terminalDisposition: "succeeded" },
+    });
+    expect(storage.runStatus()).toBe("completed");
+  });
 });
 
 function fakeStorage(options: {
@@ -104,6 +149,7 @@ function fakeStorage(options: {
 } = {}) {
   const checkpoints: LoopV2Checkpoint[] = [];
   let eventCount = 0;
+  let currentRunStatus = options.runStatus || "running";
   const sql = (async (
     strings: TemplateStringsArray,
     ..._params: unknown[]
@@ -123,7 +169,7 @@ function fakeStorage(options: {
   sql.unsafe = async () => [];
   sql.query = async (text: string, params: unknown[] = []) => {
     if (text.includes("FROM omni_agent_runs")) {
-      return [{ owner_actor_id: "actor-a", status: options.runStatus || "running" }];
+      return [{ owner_actor_id: "actor-a", status: currentRunStatus }];
     }
     if (text.includes("type = 'run.scope_bound'")) {
       return [{ payload: { _executionScope: executionScope() } }];
@@ -175,9 +221,18 @@ function fakeStorage(options: {
         .sort((left, right) => left.sequence - right.sequence)
         .map((checkpoint) => ({ checkpoint_json: checkpoint }));
     }
+    if (text.includes("UPDATE omni_agent_runs")) {
+      if (!["running", "resuming"].includes(currentRunStatus)) return [];
+      currentRunStatus = String(params[3]);
+      return [{ id: "run-a" }];
+    }
     throw new Error(`Unexpected query SQL: ${text}`);
   };
-  return { sql, eventCount: () => eventCount };
+  return {
+    sql,
+    eventCount: () => eventCount,
+    runStatus: () => currentRunStatus,
+  };
 }
 
 function initial() {

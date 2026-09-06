@@ -18,6 +18,7 @@ import {
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
+import { redactSensitive } from "@/lib/security/context";
 
 type SqlRow = Record<string, unknown>;
 
@@ -35,6 +36,11 @@ export type RecordLoopV2CheckpointResult = Readonly<{
   inserted: boolean;
   executionAuthorityGranted: false;
 }>;
+
+export type FinalizeLoopV2RunResult = RecordLoopV2CheckpointResult &
+  Readonly<{
+    runStatus: "completed" | "failed" | "canceled";
+  }>;
 
 export async function recordLoopV2Checkpoint(
   input: {
@@ -203,6 +209,78 @@ export async function recordLoopV2Checkpoint(
   });
 }
 
+/** Commits the terminal checkpoint and matching run disposition atomically. */
+export async function finalizeLoopV2Run(
+  input: {
+    checkpoint: unknown;
+    executionScope: ExecutionScope;
+    response?: string;
+    error?: string;
+  },
+  sql: LoopV2CheckpointWriterSql,
+): Promise<FinalizeLoopV2RunResult> {
+  if (!sql.transactionScoped) {
+    throw new Error("Loop v2 finalization requires an existing transaction.");
+  }
+  const checkpoint = parseLoopV2Checkpoint(input.checkpoint);
+  if (
+    checkpoint.toState !== "finish" ||
+    !checkpoint.terminalDisposition
+  ) {
+    throw new Error("Loop v2 finalization requires a terminal checkpoint.");
+  }
+  const runStatus = checkpoint.terminalDisposition === "succeeded"
+    ? "completed"
+    : checkpoint.terminalDisposition;
+  const response = runStatus === "completed"
+    ? boundedTerminalText(input.response, 100_000)
+    : null;
+  const error = runStatus === "completed"
+    ? null
+    : boundedTerminalText(
+        input.error ||
+          (runStatus === "canceled"
+            ? "Canceled by the operator."
+            : "Loop v2 execution failed."),
+        2_000,
+      );
+  if (runStatus === "completed" && !response) {
+    throw new Error("A successful Loop v2 run requires a response.");
+  }
+
+  const recorded = await recordLoopV2Checkpoint({
+    checkpoint,
+    executionScope: input.executionScope,
+  }, sql);
+  const rows = await sql.query(
+    `UPDATE omni_agent_runs
+     SET status = $4,
+         response = $5,
+         grounding = NULL,
+         error = $6,
+         continuation = NULL,
+         completed_at = $7
+     WHERE tenant_id = $1
+       AND id = $2
+       AND owner_actor_id = $3
+       AND status IN ('running', 'resuming')
+     RETURNING id`,
+    [
+      checkpoint.tenantId,
+      checkpoint.runId,
+      checkpoint.ownerActorId,
+      runStatus,
+      response,
+      error,
+      checkpoint.transitionedAt,
+    ],
+  );
+  if (rows.length !== 1) {
+    throw new Error("Loop v2 terminal run disposition did not commit.");
+  }
+  return Object.freeze({ ...recorded, runStatus });
+}
+
 export async function readLoopV2CheckpointChain(
   input: { tenantId: string; runId: string },
   sql: LoopV2CheckpointWriterSql,
@@ -298,4 +376,8 @@ function plainRecord(value: unknown): Record<string, unknown> {
     throw new Error("Loop v2 scope event payload is invalid.");
   }
   return value as Record<string, unknown>;
+}
+
+function boundedTerminalText(value: unknown, maxChars: number) {
+  return String(redactSensitive(value || "")).trim().slice(0, maxChars);
 }
