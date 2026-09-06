@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   createRunForkFromCheckpoint: vi.fn(),
   claimQueuedAgentRun: vi.fn(),
   getAgentRun: vi.fn(),
+  resolveAgentIdentityForExecution: vi.fn(),
   runAgent: vi.fn(),
 }));
 
@@ -33,6 +34,14 @@ vi.mock("@/lib/runs/store", () => ({
 vi.mock("@/lib/orchestration/agent-runner", () => ({
   runAgent: mocks.runAgent,
 }));
+vi.mock("@/lib/agents/identity-store", () => ({
+  resolveAgentIdentityForExecution: mocks.resolveAgentIdentityForExecution,
+}));
+
+const agentIdentity = {
+  definition: { definitionVersionId: "definition:built-in:atlas:v1" },
+  principal: { principalVersionId: "principal:atlas:g1" },
+};
 
 const sourceRun = {
   id: "source-run",
@@ -79,6 +88,7 @@ describe("checkpoint correction fork route", () => {
       role: "admin",
     });
     mocks.checkSharedRateLimit.mockResolvedValue({ allowed: true, retryAfterSeconds: 0 });
+    mocks.resolveAgentIdentityForExecution.mockResolvedValue(agentIdentity);
   });
 
   it("creates a fresh-scoped fork and executes the new trace", async () => {
@@ -128,7 +138,10 @@ describe("checkpoint correction fork route", () => {
       }),
     );
     expect(mocks.runAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ preclaimedRunId: targetRun.id }),
+      expect.objectContaining({
+        preclaimedRunId: targetRun.id,
+        agentIdentity,
+      }),
     );
   });
 

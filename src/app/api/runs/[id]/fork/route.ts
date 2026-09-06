@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
+import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
 import { AGENT_RUNS_PER_MINUTE } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -173,6 +174,7 @@ async function POSTHandler(
     actorId: auth.actorId,
     role: auth.role,
     agentId,
+    agentIdentity: profileResult.identity,
     specialistIds: claimed.specialistIds,
     agentProfile: profileResult.profile,
   })) {
@@ -210,7 +212,15 @@ async function resolveAgentProfile(
   agentId: string,
   owner: { tenantId: string; actorId: string },
 ) {
-  if (isBuiltInAgentId(agentId)) return { profile: undefined };
+  if (isBuiltInAgentId(agentId)) {
+    return {
+      profile: undefined,
+      identity: await resolveAgentIdentityForExecution({
+        ...owner,
+        agentId,
+      }),
+    };
+  }
   const agent = await getCustomAgent(agentId, owner);
   if (!agent) return { error: "The source run's custom agent no longer exists.", status: 409 as const };
   if (agent.status === "paused") {
@@ -219,21 +229,28 @@ async function resolveAgentProfile(
   const skills = (await listAgentSkills(owner)).filter(
     (skill) => agent.skillIds.includes(skill.id) && skill.status === "active",
   );
+  const identity = await resolveAgentIdentityForExecution({
+    ...owner,
+    agentId,
+    customAgent: agent,
+    customSkills: skills,
+  });
   return {
     profile: {
-      name: agent.name,
-      role: agent.role,
-      description: agent.description,
-      instructions: agent.instructions,
-      modelPolicy: agent.modelPolicy,
-      autonomy: agent.autonomy,
-      approvalPolicy: agent.approvalPolicy,
-      memoryScope: agent.memoryScope,
-      toolIds: agent.toolIds,
+      name: identity.definition.name,
+      role: identity.definition.role,
+      description: identity.definition.description,
+      instructions: identity.definition.instructions,
+      modelPolicy: identity.definition.modelPolicy,
+      autonomy: identity.principal.autonomy,
+      approvalPolicy: identity.principal.approvalPolicy,
+      memoryScope: identity.principal.memoryScope,
+      toolIds: identity.principal.toolGrantIds,
       skills: skills.map(({ id, name, description, instructions, toolIds }) => ({
         id, name, description, instructions, toolIds,
       })),
     },
+    identity,
   };
 }
 
