@@ -124,6 +124,10 @@ export const tenantRootPolicyTables = [
   "omni_memory_graph_edges",
   "omni_memory_graph_builds",
   "omni_memory_graph_rebuild_queue",
+  "omni_entity_records",
+  "omni_entity_aliases",
+  "omni_entity_resolutions",
+  "omni_entity_merge_reviews",
   "omni_workflow_triggers",
   "omni_operation_jobs",
   "omni_system_health_checks",
@@ -996,6 +1000,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[82],
       up: ensureEvidenceBasedMemoryFormation,
+    },
+    {
+      ...databaseSchemaMigrations[83],
+      up: ensureEntityRegistryV1,
     },
   ];
 }
@@ -5001,6 +5009,305 @@ async function ensureEvidenceBasedMemoryFormation(sql: SqlClient) {
       last_error = NULL,
       updated_at = NOW(),
       generation = rebuild.generation + 1
+  `;
+}
+
+async function ensureEntityRegistryV1(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_entity_records (
+      tenant_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      ontology_version_id TEXT NOT NULL,
+      entity_type_id TEXT NOT NULL,
+      canonical_label TEXT NOT NULL,
+      normalized_label_sha256 TEXT NOT NULL,
+      state TEXT NOT NULL,
+      merged_into_entity_id TEXT,
+      access_scope_sha256 TEXT NOT NULL,
+      contract JSONB NOT NULL,
+      entity_sha256 TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, id),
+      FOREIGN KEY (tenant_id, merged_into_entity_id)
+        REFERENCES omni_entity_records(tenant_id, id),
+      CHECK (char_length(owner_actor_id) BETWEEN 1 AND 320),
+      CHECK (ontology_version_id = 'asael-ontology:1'),
+      CHECK (entity_type_id IN (
+        'person', 'organization', 'account', 'project', 'work_item',
+        'event', 'meeting', 'place', 'asset', 'decision', 'commitment',
+        'preference', 'risk', 'goal', 'product', 'case', 'opportunity'
+      )),
+      CHECK (state IN ('active', 'merged', 'retired')),
+      CHECK ((state = 'merged') = (merged_into_entity_id IS NOT NULL)),
+      CHECK (normalized_label_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (access_scope_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (entity_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (contract ->> 'entityId' = id),
+      CHECK (contract ->> 'ontologyVersionId' = ontology_version_id),
+      CHECK (contract ->> 'entityTypeId' = entity_type_id),
+      CHECK (contract ->> 'state' = state),
+      CHECK (contract ->> 'entitySha256' = entity_sha256),
+      CHECK (contract #>> '{accessBinding,tenantId}' = tenant_id),
+      CHECK (contract #>> '{accessBinding,ownerActorId}' = owner_actor_id),
+      CHECK (
+        contract #>> '{accessBinding,accessScopeSha256}' = access_scope_sha256
+      )
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_entity_records_resolution_idx
+    ON omni_entity_records (
+      tenant_id, owner_actor_id, entity_type_id, access_scope_sha256,
+      normalized_label_sha256
+    )
+    WHERE state = 'active'
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_entity_aliases (
+      tenant_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      normalized_alias_sha256 TEXT NOT NULL,
+      access_scope_sha256 TEXT NOT NULL,
+      state TEXT NOT NULL,
+      contract JSONB NOT NULL,
+      alias_sha256 TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, id),
+      FOREIGN KEY (tenant_id, entity_id)
+        REFERENCES omni_entity_records(tenant_id, id),
+      CHECK (char_length(owner_actor_id) BETWEEN 1 AND 320),
+      CHECK (state IN ('active', 'retired')),
+      CHECK (normalized_alias_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (access_scope_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (alias_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (contract ->> 'aliasId' = id),
+      CHECK (contract ->> 'entityId' = entity_id),
+      CHECK (contract ->> 'state' = state),
+      CHECK (contract ->> 'accessScopeSha256' = access_scope_sha256),
+      CHECK (contract ->> 'aliasSha256' = alias_sha256)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_entity_aliases_resolution_idx
+    ON omni_entity_aliases (
+      tenant_id, owner_actor_id, access_scope_sha256,
+      normalized_alias_sha256
+    )
+    WHERE state = 'active'
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_entity_resolutions (
+      tenant_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      entity_type_id TEXT NOT NULL,
+      access_scope_sha256 TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      selected_entity_id TEXT,
+      contract JSONB NOT NULL,
+      decision_sha256 TEXT NOT NULL,
+      decided_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, id),
+      FOREIGN KEY (tenant_id, selected_entity_id)
+        REFERENCES omni_entity_records(tenant_id, id),
+      CHECK (char_length(owner_actor_id) BETWEEN 1 AND 320),
+      CHECK (decision IN ('auto_link', 'review_required', 'create_new')),
+      CHECK ((decision = 'auto_link') = (selected_entity_id IS NOT NULL)),
+      CHECK (access_scope_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (decision_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (contract ->> 'resolutionId' = id),
+      CHECK (contract ->> 'tenantId' = tenant_id),
+      CHECK (contract ->> 'ownerActorId' = owner_actor_id),
+      CHECK (contract ->> 'entityTypeId' = entity_type_id),
+      CHECK (contract ->> 'decision' = decision),
+      CHECK (contract ->> 'accessScopeSha256' = access_scope_sha256),
+      CHECK (contract ->> 'decisionSha256' = decision_sha256)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_entity_resolutions_actor_at_idx
+    ON omni_entity_resolutions (tenant_id, owner_actor_id, decided_at DESC)
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_entity_merge_reviews (
+      tenant_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      resolution_id TEXT NOT NULL,
+      source_entity_id TEXT NOT NULL,
+      target_entity_id TEXT NOT NULL,
+      access_scope_sha256 TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      previous_review_id TEXT,
+      reviewer_actor_id TEXT NOT NULL,
+      contract JSONB NOT NULL,
+      review_sha256 TEXT NOT NULL,
+      reviewed_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, id),
+      FOREIGN KEY (tenant_id, resolution_id)
+        REFERENCES omni_entity_resolutions(tenant_id, id),
+      FOREIGN KEY (tenant_id, source_entity_id)
+        REFERENCES omni_entity_records(tenant_id, id),
+      FOREIGN KEY (tenant_id, target_entity_id)
+        REFERENCES omni_entity_records(tenant_id, id),
+      FOREIGN KEY (tenant_id, previous_review_id)
+        REFERENCES omni_entity_merge_reviews(tenant_id, id),
+      CHECK (char_length(owner_actor_id) BETWEEN 1 AND 320),
+      CHECK (reviewer_actor_id = owner_actor_id),
+      CHECK (decision IN ('approved', 'rejected', 'reversed')),
+      CHECK ((decision = 'reversed') = (previous_review_id IS NOT NULL)),
+      CHECK (access_scope_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (review_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (contract ->> 'reviewId' = id),
+      CHECK (contract ->> 'resolutionId' = resolution_id),
+      CHECK (contract ->> 'tenantId' = tenant_id),
+      CHECK (contract ->> 'ownerActorId' = owner_actor_id),
+      CHECK (contract ->> 'decision' = decision),
+      CHECK (contract ->> 'accessScopeSha256' = access_scope_sha256),
+      CHECK (contract ->> 'reviewSha256' = review_sha256)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_entity_merge_reviews_actor_at_idx
+    ON omni_entity_merge_reviews (tenant_id, owner_actor_id, reviewed_at DESC)
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_entity_merge_reviews_one_reversal_idx
+    ON omni_entity_merge_reviews (tenant_id, previous_review_id)
+    WHERE decision = 'reversed'
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_entity_registry_identity_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF TG_TABLE_NAME = 'omni_entity_records' AND ROW(
+        OLD.tenant_id, OLD.id, OLD.owner_actor_id, OLD.ontology_version_id,
+        OLD.entity_type_id, OLD.canonical_label, OLD.normalized_label_sha256,
+        OLD.access_scope_sha256, OLD.created_at
+      ) IS DISTINCT FROM ROW(
+        NEW.tenant_id, NEW.id, NEW.owner_actor_id, NEW.ontology_version_id,
+        NEW.entity_type_id, NEW.canonical_label, NEW.normalized_label_sha256,
+        NEW.access_scope_sha256, NEW.created_at
+      ) THEN
+        RAISE EXCEPTION 'Entity identity and access scope are immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      IF TG_TABLE_NAME = 'omni_entity_aliases' AND ROW(
+        OLD.tenant_id, OLD.id, OLD.owner_actor_id, OLD.entity_id,
+        OLD.normalized_alias_sha256, OLD.access_scope_sha256, OLD.created_at
+      ) IS DISTINCT FROM ROW(
+        NEW.tenant_id, NEW.id, NEW.owner_actor_id, NEW.entity_id,
+        NEW.normalized_alias_sha256, NEW.access_scope_sha256, NEW.created_at
+      ) THEN
+        RAISE EXCEPTION 'Entity alias identity and access scope are immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_entity_records_identity_immutable
+    ON omni_entity_records
+  `;
+  await sql`
+    CREATE TRIGGER omni_entity_records_identity_immutable
+    BEFORE UPDATE ON omni_entity_records
+    FOR EACH ROW EXECUTE FUNCTION omni_reject_entity_registry_identity_change()
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_entity_aliases_identity_immutable
+    ON omni_entity_aliases
+  `;
+  await sql`
+    CREATE TRIGGER omni_entity_aliases_identity_immutable
+    BEFORE UPDATE ON omni_entity_aliases
+    FOR EACH ROW EXECUTE FUNCTION omni_reject_entity_registry_identity_change()
+  `;
+  await ensureTenantIsolationPolicies(sql);
+  await sql`
+    DO $migration$
+    DECLARE
+      relation_name TEXT;
+      policy_name TEXT;
+    BEGIN
+      FOREACH relation_name IN ARRAY ARRAY[
+        'omni_entity_records',
+        'omni_entity_aliases',
+        'omni_entity_resolutions',
+        'omni_entity_merge_reviews'
+      ] LOOP
+        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', relation_name);
+        EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', relation_name);
+        policy_name := relation_name || '_actor_select';
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I', policy_name, relation_name);
+        EXECUTE format(
+          'CREATE POLICY %I ON %I AS RESTRICTIVE FOR SELECT USING '
+          || '(omni_system_scope_enabled() OR '
+          || 'omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
+          policy_name,
+          relation_name
+        );
+        policy_name := relation_name || '_actor_insert';
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I', policy_name, relation_name);
+        EXECUTE format(
+          'CREATE POLICY %I ON %I AS RESTRICTIVE FOR INSERT WITH CHECK '
+          || '(omni_system_scope_enabled() OR '
+          || 'omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
+          policy_name,
+          relation_name
+        );
+      END LOOP;
+      FOREACH relation_name IN ARRAY ARRAY[
+        'omni_entity_records',
+        'omni_entity_aliases'
+      ] LOOP
+        policy_name := relation_name || '_actor_update';
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I', policy_name, relation_name);
+        EXECUTE format(
+          'CREATE POLICY %I ON %I AS RESTRICTIVE FOR UPDATE USING '
+          || '(omni_system_scope_enabled() OR '
+          || 'omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) '
+          || 'WITH CHECK (omni_system_scope_enabled() OR '
+          || 'omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
+          policy_name,
+          relation_name
+        );
+      END LOOP;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT SELECT, INSERT, UPDATE ON
+          omni_entity_records,
+          omni_entity_aliases
+        TO omni_runtime;
+        GRANT SELECT, INSERT ON
+          omni_entity_resolutions,
+          omni_entity_merge_reviews
+        TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT SELECT, INSERT, UPDATE ON
+          omni_entity_records,
+          omni_entity_aliases
+        TO omni_maintenance;
+        GRANT SELECT, INSERT ON
+          omni_entity_resolutions,
+          omni_entity_merge_reviews
+        TO omni_maintenance;
+      END IF;
+    END
+    $migration$
   `;
 }
 

@@ -8,6 +8,7 @@ import {
   labelSha256,
   normalizeEntityLabel,
   resolveEntityIdentity,
+  transitionEntityRecord,
 } from "@/lib/entities/registry";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 
@@ -125,9 +126,15 @@ describe("entity identity registry", () => {
       decision: "approved",
       reviewedAt: "2026-09-06T00:01:00.000Z",
     });
+    const mergedSecond = transitionEntityRecord({
+      entity: second,
+      state: "merged",
+      mergedIntoEntityId: first.entityId,
+      updatedAt: approval.reviewedAt,
+    });
     const reversal = buildEntityMergeReview({
       resolution,
-      sourceEntity: second,
+      sourceEntity: mergedSecond,
       targetEntity: first,
       reviewerActorId: "actor-a",
       decision: "reversed",

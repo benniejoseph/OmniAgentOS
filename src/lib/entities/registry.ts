@@ -191,6 +191,62 @@ export type EntityResolutionDecision = z.infer<
 >;
 export type EntityMergeReview = z.infer<typeof entityMergeReviewSchema>;
 
+export function parseEntityAccessBinding(value: unknown): EntityAccessBinding {
+  const binding = entityAccessBindingSchema.parse(value);
+  const { accessScopeSha256, ...body } = binding;
+  if (sourceContractSha256(body) !== accessScopeSha256) {
+    throw new Error("Entity access binding digest is invalid.");
+  }
+  return binding;
+}
+
+export function parseEntityRecord(value: unknown): EntityRecord {
+  const entity = entityRecordSchema.parse(value);
+  parseEntityAccessBinding(entity.accessBinding);
+  getEntityTypeDefinition(entity.ontologyVersionId, entity.entityTypeId);
+  if (labelSha256(entity.canonicalLabel) !== entity.normalizedLabelSha256) {
+    throw new Error("Entity canonical label digest is invalid.");
+  }
+  const { entitySha256, ...body } = entity;
+  if (sourceContractSha256(body) !== entitySha256) {
+    throw new Error("Entity record digest is invalid.");
+  }
+  return entity;
+}
+
+export function parseEntityAlias(value: unknown): EntityAlias {
+  const alias = entityAliasSchema.parse(value);
+  if (labelSha256(alias.alias) !== alias.normalizedAliasSha256) {
+    throw new Error("Entity alias label digest is invalid.");
+  }
+  const { aliasSha256, ...body } = alias;
+  if (sourceContractSha256(body) !== aliasSha256) {
+    throw new Error("Entity alias digest is invalid.");
+  }
+  return alias;
+}
+
+export function parseEntityResolutionDecision(
+  value: unknown,
+): EntityResolutionDecision {
+  const decision = entityResolutionDecisionSchema.parse(value);
+  getEntityTypeDefinition(decision.ontologyVersionId, decision.entityTypeId);
+  const { decisionSha256, ...body } = decision;
+  if (sourceContractSha256(body) !== decisionSha256) {
+    throw new Error("Entity resolution digest is invalid.");
+  }
+  return decision;
+}
+
+export function parseEntityMergeReview(value: unknown): EntityMergeReview {
+  const review = entityMergeReviewSchema.parse(value);
+  const { reviewSha256, ...body } = review;
+  if (sourceContractSha256(body) !== reviewSha256) {
+    throw new Error("Entity merge review digest is invalid.");
+  }
+  return review;
+}
+
 export function buildEntityAccessBinding(input: {
   tenantId: string;
   ownerActorId: string;
@@ -254,6 +310,32 @@ export function buildEntityRecord(input: {
     lineage: input.lineage,
     createdAt,
     updatedAt: createdAt,
+  });
+  return entityRecordSchema.parse({
+    ...body,
+    entitySha256: sourceContractSha256(body),
+  });
+}
+
+export function transitionEntityRecord(input: {
+  entity: EntityRecord;
+  state: "active" | "merged" | "retired";
+  mergedIntoEntityId?: string | null;
+  updatedAt?: string;
+}): EntityRecord {
+  const current = parseEntityRecord(input.entity);
+  const updatedAt = canonicalTimestamp(input.updatedAt || new Date().toISOString());
+  if (new Date(updatedAt).getTime() < new Date(current.updatedAt).getTime()) {
+    throw new Error("Entity state transition cannot move backward in time.");
+  }
+  const { entitySha256: _currentSha256, ...currentBody } = current;
+  void _currentSha256;
+  const body = entityRecordBodySchema.parse({
+    ...currentBody,
+    state: input.state,
+    mergedIntoEntityId:
+      input.state === "merged" ? input.mergedIntoEntityId || null : null,
+    updatedAt,
   });
   return entityRecordSchema.parse({
     ...body,
@@ -407,7 +489,9 @@ export function buildEntityMergeReview(input: {
   reviewedAt?: string;
 }): EntityMergeReview {
   if (
+    input.resolution.decision !== "review_required" ||
     input.sourceEntity.entityId === input.targetEntity.entityId ||
+    (input.decision !== "reversed" && input.targetEntity.state !== "active") ||
     input.sourceEntity.entityTypeId !== input.targetEntity.entityTypeId ||
     input.sourceEntity.accessBinding.accessScopeSha256 !==
       input.targetEntity.accessBinding.accessScopeSha256 ||
@@ -421,8 +505,28 @@ export function buildEntityMergeReview(input: {
     throw new Error("Entity merge review does not match its scoped candidates.");
   }
   if (
+    (
+      input.decision === "reversed" &&
+      (
+        input.sourceEntity.state !== "merged" ||
+        input.sourceEntity.mergedIntoEntityId !== input.targetEntity.entityId
+      )
+    ) ||
+    (input.decision !== "reversed" && input.sourceEntity.state !== "active")
+  ) {
+    throw new Error("Entity merge review does not match the current entity state.");
+  }
+  if (
     input.decision === "reversed" &&
-    (!input.previousReview || input.previousReview.decision !== "approved")
+    (
+      !input.previousReview ||
+      input.previousReview.decision !== "approved" ||
+      input.previousReview.resolutionId !== input.resolution.resolutionId ||
+      input.previousReview.sourceEntityId !== input.sourceEntity.entityId ||
+      input.previousReview.targetEntityId !== input.targetEntity.entityId ||
+      input.previousReview.ownerActorId !== input.resolution.ownerActorId ||
+      input.previousReview.accessScopeSha256 !== input.resolution.accessScopeSha256
+    )
   ) {
     throw new Error("Entity merge reversal requires the exact prior approval.");
   }

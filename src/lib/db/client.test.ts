@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the evidence-based memory formation migration", () => {
+  it("pins the entity registry migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 83,
-      name: "evidence_based_memory_formation",
-      checksum: "d34797aa2f52c819226621c673f288f54bfd7d751dadf5c7fa75785a28854e80",
+      version: 84,
+      name: "entity_registry_v1",
+      checksum: "1b71fe283f418153227167375897aa254f3a4243c549215f054e70da45c027a3",
     });
   });
 
