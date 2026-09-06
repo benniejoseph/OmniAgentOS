@@ -32,6 +32,7 @@ import {
   type WorkflowBudgetSession,
 } from "@/lib/workflows/budgets";
 import {
+  buildWorkflowOutcomeContractBindingV1,
   buildWorkflowOutcomeEvaluationV1,
   workflowOutcomeEffectReceiptCandidateExecutionIds,
   workflowOutcomeEventPayloadV1,
@@ -1217,6 +1218,12 @@ async function buildPlan(
       abortSignal: workflowRunBudgetAbortSignal(budget, abortSignal),
       modelMaxAttempts: modelBudget.maxAttempts,
     });
+  const outcomeContractBinding = buildWorkflowOutcomeContractBindingV1({
+    workflowRunId: detail.run.id,
+    goal: detail.run.goal,
+    planId: record.id,
+    plan: record.plan,
+  });
   await appendWorkflowEvent(detail.run.id, "workflow.dynamic_plan.created", {
     planId: record.id,
     planner: record.planner,
@@ -1227,6 +1234,9 @@ async function buildPlan(
     previousPlanId: record.plan.replan?.previousPlanId,
     affectedNodeCount: record.plan.replan?.affectedNodeIds.length,
     reusedNodeCount: record.plan.replan?.reusedNodes.length,
+    outcomeContractId:
+      outcomeContractBinding.outcomeContract.outcomeContractId,
+    outcomeContractSha256: outcomeContractBinding.outcomeContractSha256,
   });
   if (record.plan.replan) {
     await appendWorkflowEvent(detail.run.id, "workflow.subtree_replanned", {
@@ -1259,6 +1269,7 @@ async function buildPlan(
     approvalRequired: record.approvalRequired,
     confidence: record.confidence,
     plan: record.plan,
+    outcomeContractBinding,
     objective: detail.run.goal,
     tasks: record.plan.nodes.map((node) => node.label),
     acceptanceCriteria: record.plan.acceptanceCriteria,

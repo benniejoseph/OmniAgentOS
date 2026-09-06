@@ -58,6 +58,11 @@ const verificationEvidenceSourceSchema = z.enum([
   "unassessed",
 ]);
 
+const outcomeContractBindingStateSchema = z.enum([
+  "pre_execution",
+  "posthoc",
+]);
+
 const boundedCountSchema = z.number().int().min(0).max(MAX_COUNT);
 
 function uniqueIdList(max = MAX_METADATA_IDS) {
@@ -90,7 +95,7 @@ export const workflowOutcomeEvidenceV1Schema = z.object({
   planId: runContractIdSchema.nullable(),
   planSha256: runContractSha256Schema.nullable(),
   planBindingState: bindingStateSchema,
-  outcomeContractBindingState: z.literal("posthoc"),
+  outcomeContractBindingState: outcomeContractBindingStateSchema,
   executionWorkflowRunId: runContractIdSchema.nullable(),
   executionPlanId: runContractIdSchema.nullable(),
   planExecutionSha256: runContractSha256Schema.nullable(),
@@ -200,7 +205,7 @@ const workflowOutcomeEvaluationBaseSchema = z.object({
   schemaVersion: z.literal(WORKFLOW_OUTCOME_EVALUATION_SCHEMA_VERSION),
   evaluationId: runContractIdSchema,
   workflowRunId: runContractIdSchema,
-  outcomeContractBindingState: z.literal("posthoc"),
+  outcomeContractBindingState: outcomeContractBindingStateSchema,
   evidence: workflowOutcomeEvidenceV1Schema,
   evidenceSha256: runContractSha256Schema,
   outcomeContract: outcomeContractV1Schema,
@@ -217,6 +222,113 @@ export const workflowOutcomeEvaluationV1Schema =
 export type WorkflowOutcomeEvaluationV1 = z.infer<
   typeof workflowOutcomeEvaluationV1Schema
 >;
+
+const workflowOutcomeContractBindingBaseSchema = z.object({
+  schemaVersion: z.literal(WORKFLOW_OUTCOME_EVALUATION_SCHEMA_VERSION),
+  bindingState: z.literal("pre_execution"),
+  workflowRunId: runContractIdSchema,
+  goalSha256: runContractSha256Schema,
+  planId: runContractIdSchema,
+  planSha256: runContractSha256Schema,
+  outcomeContract: outcomeContractV1Schema,
+  outcomeContractSha256: runContractSha256Schema,
+}).strict();
+
+export const workflowOutcomeContractBindingV1Schema =
+  workflowOutcomeContractBindingBaseSchema.superRefine((value, context) => {
+    const expectedContractId = workflowOutcomeContractId(
+      value.workflowRunId,
+      value.goalSha256,
+      value.planSha256,
+    );
+    if (
+      value.outcomeContract.runId !== value.workflowRunId ||
+      value.outcomeContract.intentSpecId !==
+        workflowIntentSpecId(value.workflowRunId, value.goalSha256) ||
+      value.outcomeContract.outcomeContractId !== expectedContractId
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["outcomeContract"],
+        message: "The pre-execution outcome contract has different workflow bindings.",
+      });
+    }
+    if (value.outcomeContract.contractState !== "declared") {
+      context.addIssue({
+        code: "custom",
+        path: ["outcomeContract", "contractState"],
+        message: "A pre-execution outcome contract must be declared.",
+      });
+    }
+    if (sha256Json(value.outcomeContract) !== value.outcomeContractSha256) {
+      context.addIssue({
+        code: "custom",
+        path: ["outcomeContractSha256"],
+        message: "The pre-execution outcome-contract digest does not match.",
+      });
+    }
+  });
+
+export type WorkflowOutcomeContractBindingV1 = z.infer<
+  typeof workflowOutcomeContractBindingV1Schema
+>;
+
+/**
+ * Declares the workflow outcome contract from the accepted plan, before the
+ * approval and execution steps can run. It retains hashes and requirement
+ * identifiers only; private goal and criterion text stay in their scoped
+ * workflow stores.
+ */
+export function buildWorkflowOutcomeContractBindingV1(input: {
+  workflowRunId: string;
+  goal: string;
+  planId: string;
+  plan: Record<string, unknown>;
+}): WorkflowOutcomeContractBindingV1 {
+  const workflowRunId = runContractIdSchema.parse(input.workflowRunId);
+  const planId = runContractIdSchema.parse(input.planId);
+  const goalSha256 = sha256Text(input.goal.trim());
+  const planSha256 = canonicalJsonSha256({ id: planId, plan: input.plan });
+  const criteria = declaredCriteria(input.goal, input.plan)
+    .slice(0, MAX_OUTCOME_REQUIREMENTS);
+  const outcomeContract = buildOutcomeContractV1({
+    outcomeContractId: workflowOutcomeContractId(
+      workflowRunId,
+      goalSha256,
+      planSha256,
+    ),
+    runId: workflowRunId,
+    intentSpecId: workflowIntentSpecId(workflowRunId, goalSha256),
+    contractState: "declared",
+    acceptanceCriteria: criteria.map((criterion, index) => {
+      const criterionSha256 = sha256Text(criterion);
+      return {
+        criterionId: opaqueDerivedId(
+          "workflow-criterion",
+          workflowRunId,
+          String(index),
+          criterionSha256,
+        ),
+        criterionSha256,
+        requirementLevel: "required" as const,
+        verificationMethod: "model_assertion" as const,
+        verifierId: null,
+      };
+    }),
+    artifactRequirements: [],
+    effectRequirements: [],
+  });
+  return workflowOutcomeContractBindingV1Schema.parse({
+    schemaVersion: WORKFLOW_OUTCOME_EVALUATION_SCHEMA_VERSION,
+    bindingState: "pre_execution",
+    workflowRunId,
+    goalSha256,
+    planId,
+    planSha256,
+    outcomeContract,
+    outcomeContractSha256: sha256Json(outcomeContract),
+  });
+}
 
 export type BuildWorkflowOutcomeEvaluationV1Input = Readonly<{
   detail: WorkflowRunDetail;
@@ -293,6 +405,18 @@ export function buildWorkflowOutcomeEvaluationV1({
   const planSha256 = plan
     ? canonicalJsonSha256({ id: stepPlanId || null, plan })
     : null;
+  const preExecutionBinding = parsePreExecutionBinding(
+    planOutput?.outcomeContractBinding,
+    {
+      workflowRunId,
+      goalSha256,
+      planId: stepPlanId,
+      planSha256,
+    },
+  );
+  const outcomeContractBindingState = preExecutionBinding
+    ? "pre_execution" as const
+    : "posthoc" as const;
   const workflowTenantId = stringValue(detail.run.tenantId);
 
   const executeOutput = recordValue(stepOutput(detail, "execute"));
@@ -383,19 +507,20 @@ export function buildWorkflowOutcomeEvaluationV1({
       };
     });
 
-  const outcomeContract = buildOutcomeContractV1({
-    outcomeContractId: workflowOutcomeContractId(
-      workflowRunId,
-      goalSha256,
-      planSha256,
-    ),
-    runId: workflowRunId,
-    intentSpecId: workflowIntentSpecId(workflowRunId, goalSha256),
-    contractState: "declared",
-    acceptanceCriteria,
-    artifactRequirements: [],
-    effectRequirements: [],
-  });
+  const outcomeContract = preExecutionBinding?.outcomeContract ||
+    buildOutcomeContractV1({
+      outcomeContractId: workflowOutcomeContractId(
+        workflowRunId,
+        goalSha256,
+        planSha256,
+      ),
+      runId: workflowRunId,
+      intentSpecId: workflowIntentSpecId(workflowRunId, goalSha256),
+      contractState: "declared",
+      acceptanceCriteria,
+      artifactRequirements: [],
+      effectRequirements: [],
+    });
 
   const pendingApprovalIds = executionProjection.pendingApprovalIds.length
     ? executionProjection.pendingApprovalIds
@@ -425,7 +550,7 @@ export function buildWorkflowOutcomeEvaluationV1({
     planId,
     planSha256,
     planBindingState,
-    outcomeContractBindingState: "posthoc",
+    outcomeContractBindingState,
     executionWorkflowRunId,
     executionPlanId,
     planExecutionSha256,
@@ -511,7 +636,7 @@ export function buildWorkflowOutcomeEvaluationV1({
       terminalReceiptSha256,
     ),
     workflowRunId,
-    outcomeContractBindingState: "posthoc",
+    outcomeContractBindingState,
     evidence,
     evidenceSha256,
     outcomeContract,
@@ -553,7 +678,7 @@ const workflowOutcomeEventPayloadV1Schema = z.object({
   terminalVerificationState: terminalVerificationStateSchema,
   terminalSource: terminalReceiptSourceSchema,
   terminalReasonCode: terminalReasonCodeSchema,
-  outcomeContractBindingState: z.literal("posthoc"),
+  outcomeContractBindingState: outcomeContractBindingStateSchema,
   legacyWorkflowStatus: z.literal("completed"),
   planId: runContractIdSchema.nullable(),
   planSha256: runContractSha256Schema.nullable(),
@@ -860,15 +985,41 @@ function validateSucceededEvaluation(
   value: EvaluationBase,
   addIssue: (message: string, path: Array<string | number>) => void,
 ) {
-  if (value.terminalReceipt.disposition !== "succeeded") return;
-  // V1 derives its compatibility contract after execution. Internal hashes
-  // prevent accidental/tampered cross-binding, but cannot authenticate a
-  // pre-execution declaration. A future version with an external contract pin
-  // may add the strong-receipt success path.
-  addIssue(
-    "A post-hoc workflow outcome evaluation cannot claim succeeded.",
-    ["terminalReceipt", "disposition"],
-  );
+  if (
+    value.terminalReceipt.disposition === "succeeded" &&
+    value.outcomeContractBindingState !== "pre_execution"
+  ) {
+    addIssue(
+      "A post-hoc workflow outcome evaluation cannot claim succeeded.",
+      ["terminalReceipt", "disposition"],
+    );
+  }
+}
+
+function parsePreExecutionBinding(
+  value: unknown,
+  expected: {
+    workflowRunId: string;
+    goalSha256: string;
+    planId: string | undefined;
+    planSha256: string | null;
+  },
+) {
+  if (value === undefined) return undefined;
+  const parsed = workflowOutcomeContractBindingV1Schema.parse(value);
+  if (
+    !expected.planId ||
+    !expected.planSha256 ||
+    parsed.workflowRunId !== expected.workflowRunId ||
+    parsed.goalSha256 !== expected.goalSha256 ||
+    parsed.planId !== expected.planId ||
+    parsed.planSha256 !== expected.planSha256
+  ) {
+    throw new Error(
+      "The pre-execution outcome contract does not match the persisted workflow plan.",
+    );
+  }
+  return parsed;
 }
 
 type ExecutionProjection = {

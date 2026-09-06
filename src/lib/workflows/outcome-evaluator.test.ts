@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   WORKFLOW_OUTCOME_EVALUATION_SCHEMA_VERSION,
+  buildWorkflowOutcomeContractBindingV1,
   buildWorkflowOutcomeEvaluationV1,
   parseWorkflowOutcomeEvaluationV1,
   workflowOutcomeEffectReceiptCandidateExecutionIds,
@@ -369,6 +370,56 @@ function reverseObjectKeys(value: unknown): unknown {
 }
 
 describe("workflow outcome evaluator v1", () => {
+  it("binds the hashed outcome contract to the persisted plan before execution", () => {
+    const input = fixture();
+    const planStep = input.detail.steps.find((step) => step.stepKey === "plan");
+    const planOutput = requiredRecord(planStep?.output);
+    const plan = requiredRecord(planOutput.plan);
+    const binding = buildWorkflowOutcomeContractBindingV1({
+      workflowRunId: RUN_ID,
+      goal: PRIVATE_GOAL,
+      planId: PLAN_ID,
+      plan,
+    });
+    planOutput.outcomeContractBinding = binding;
+
+    const evaluation = buildWorkflowOutcomeEvaluationV1(input);
+
+    expect(binding.bindingState).toBe("pre_execution");
+    expect(binding.outcomeContract.contractState).toBe("declared");
+    expect(binding.outcomeContract.requiredCriterionCount).toBeGreaterThan(0);
+    expect(evaluation.outcomeContractBindingState).toBe("pre_execution");
+    expect(evaluation.evidence.outcomeContractBindingState).toBe(
+      "pre_execution",
+    );
+    expect(evaluation.outcomeContract).toEqual(binding.outcomeContract);
+    expect(evaluation.outcomeContractSha256).toBe(
+      binding.outcomeContractSha256,
+    );
+    expect(evaluation.terminalReceipt.disposition).toBe("unverified");
+    expect(JSON.stringify(binding)).not.toContain(PRIVATE_GOAL);
+    expect(JSON.stringify(binding)).not.toContain(PRIVATE_CRITERION);
+  });
+
+  it("fails closed when a persisted pre-execution binding is tampered", () => {
+    const input = fixture();
+    const planStep = input.detail.steps.find((step) => step.stepKey === "plan");
+    const planOutput = requiredRecord(planStep?.output);
+    const plan = requiredRecord(planOutput.plan);
+    const binding = buildWorkflowOutcomeContractBindingV1({
+      workflowRunId: RUN_ID,
+      goal: PRIVATE_GOAL,
+      planId: PLAN_ID,
+      plan,
+    });
+    planOutput.outcomeContractBinding = {
+      ...binding,
+      planSha256: "0".repeat(64),
+    };
+
+    expect(() => buildWorkflowOutcomeEvaluationV1(input)).toThrow();
+  });
+
   it("keeps a model-asserted legacy completion unverified", () => {
     const input = fixture();
     const evaluation = buildWorkflowOutcomeEvaluationV1(input);
