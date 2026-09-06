@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
@@ -6,6 +7,7 @@ import {
   parseJsonBody,
 } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import {
   createWorkflowTrigger,
   getWorkflowTriggerStats,
@@ -93,9 +95,18 @@ async function POSTHandler(request: Request) {
   }
 
   try {
+    const requestIdentity =
+      request.headers.get("x-idempotency-key")?.trim().slice(0, 240) ||
+      request.headers.get("x-request-id")?.trim().slice(0, 240) ||
+      `workflow-trigger:${randomUUID()}`;
     const trigger = await createWorkflowTrigger({
       ...parsed.data,
       tenantId: context.tenantId,
+      idempotencyKey: requestIdentity,
+      executionScope: executionScopeFromSecurityContext(context, {
+        correlationId: requestIdentity,
+        purpose: "workflow.trigger.create",
+      }),
     });
     return Response.json({
       trigger,

@@ -1027,7 +1027,7 @@ async function runEvalCase(
   }
 
   if (evalCase.id === "workflow.webhook_triggers") {
-    return evaluateWebhookTriggers(evalCase);
+    return evaluateWebhookTriggers(evalCase, usageContext);
   }
 
   if (evalCase.id === "security.rbac_controls") {
@@ -1600,13 +1600,23 @@ async function evaluatePlanExecutor(
   };
 }
 
-async function evaluateWebhookTriggers(evalCase: EvalCaseDefinition): Promise<CaseResult> {
+async function evaluateWebhookTriggers(
+  evalCase: EvalCaseDefinition,
+  usageContext?: EvalUsageContext,
+): Promise<CaseResult> {
   const eventType = String(evalCase.input.eventType || "workflow.event");
   const source = String(evalCase.input.source || "evaluation-webhook");
   const summary = String(evalCase.input.summary || "Evaluate webhook trigger dispatch.");
   const evaluationSecretEnv = "OMNIAGENT_TRIGGER_EVALUATION_SECRET";
   const evaluationSecret = process.env[evaluationSecretEnv]?.trim();
+  const authority = evaluationWorkflowAuthority(
+    evalCase.id,
+    "webhook-trigger-create",
+    usageContext?.tenantId,
+    usageContext?.actorId,
+  );
   const trigger = await createWorkflowTrigger({
+    tenantId: usageContext?.tenantId,
     name: "Evaluation webhook trigger",
     source,
     authMode: evaluationSecret ? "hmac_sha256" : "none",
@@ -1618,6 +1628,8 @@ async function evaluateWebhookTriggers(evalCase: EvalCaseDefinition): Promise<Ca
       source: "evaluation",
       caseId: evalCase.id,
     },
+    executionScope: authority.executionScope,
+    idempotencyKey: authority.executionScope.correlationId,
   });
   const bodyText = JSON.stringify({
     type: eventType,
