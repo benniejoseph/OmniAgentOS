@@ -263,6 +263,39 @@ describe("agent semantic intent routing", () => {
     );
   });
 
+  it("drops caller-supplied history from current-turn scope", async () => {
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-current-turn-array" };
+      yield { type: "done", response: "Latest message only." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "user", content: "Private prior message." },
+          { role: "assistant", content: "Private prior response." },
+          { role: "user", content: "Use only this latest message." },
+        ],
+        requestId: "current-turn-array-a",
+        strategy: "direct",
+        contextScope: "current_turn",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [
+          { role: "user", content: "Use only this latest message." },
+        ],
+      }),
+      expect.any(AbortSignal),
+    );
+  });
+
   it("records the validated decision and passes only discovery hints to the runner", async () => {
     routeMocks.resolveSemanticIntent.mockResolvedValue({
       decision: {

@@ -222,6 +222,7 @@ describe("agent memory scope", () => {
     expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
     expect(events).toContainEqual(expect.objectContaining({
       type: "harness",
+      contextScope: "session",
       contextDecision: "disabled_session",
       contextRationale: [
         "The user limited this run to the current conversation.",
