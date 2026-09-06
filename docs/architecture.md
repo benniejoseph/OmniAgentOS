@@ -1249,6 +1249,25 @@ purposes. Existing revisions are not mutated and therefore fail the v2 purpose
 gate until independently reauthorized or re-ingested. Promotion and a
 pre-retrieval authorization cutover remain later P4.1 work.
 
+## Capture asset object plane
+
+Capture files and recording segments still store database bytes as the serving
+authority while the migration is additive. The same source transaction stages
+an immutable private-object metadata row and background intent. The bounded
+worker re-enters the owner actor scope, reads the legacy bytes, uploads to an
+opaque tenant/owner/version/hash locator, reads the object back, and commits
+`ready` only after exact checksum and size parity. Failures remain inaccessible
+and retry through the durable operation queue.
+
+Clients never receive the Blob locator. An authenticated route issues a
+five-minute actor-and-purpose-bound application token; redemption revalidates
+the current metadata, source row, purpose, owner, and deletion barrier before
+streaming verified bytes. Source deletion marks the object deleted and queues
+physical scrub in the same transaction before removing the source. The
+deletion barrier is immediate and cannot be disabled by a later reader
+rollback. P2.5 owns historical backfill and the persisted tenant read cutover;
+until that gate passes, ordinary Capture reads remain on the legacy bytes.
+
 ## Where things live
 
 | Concern | Path |
@@ -1263,4 +1282,5 @@ pre-retrieval authorization cutover remain later P4.1 work.
 | Security / auth | `src/lib/security/`, `src/lib/auth/` |
 | Observability / incidents / alerts | `src/lib/observability/`, `src/lib/diagnostics/` |
 | Evaluations + signed reports | `src/lib/evaluations/`, `src/lib/release/` |
+| Private asset objects + signed delivery | `src/lib/storage/object-plane.ts`, `src/app/api/assets/delivery/` |
 | UI shell + workspaces | `src/components/`, `src/app/app/` |
