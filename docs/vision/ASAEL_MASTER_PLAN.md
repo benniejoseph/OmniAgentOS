@@ -1977,6 +1977,24 @@ current rollout, while an already admitted run continues under its immutable
 pin after pause or supersession. P6.1 remains open for broader interrupted-run
 recovery and bounded production fault injection; legacy v1 runs are unchanged.
 
+P6.2 is complete at exact production release
+`ce2f167cdfdfe21ad58711eafbac733d95c2487b`. Eligible requests now use the
+tenant's assigned orchestrator model for bounded semantic intent, entity, work
+shape, and capability-query resolution. Strict schema validation and recorded
+usage are mandatory; failure returns to the deterministic supervisor without
+broadening authority. Model-proposed capability IDs are intersected with the
+active tenant catalog, semantic matches are discovery hints rather than grants,
+and saved procedures, destructive ambiguity, approval, tenant scope, and tool
+execution policy remain authoritative. A metadata-only
+`intent.semantic_resolved` event makes each decision observable without storing
+prompt content or raw entity text. The protected, idempotent, side-effect-free
+24-case `p6.2-semantic-routing-v1` production-like suite recorded route accuracy
+1.0, required-tool recall 1.0, model coverage 1.0, and zero unexpected
+clarification. Vercel and Fly report the exact release healthy, and all three
+worker lanes completed with HTTP 200. P6.3 native conversation roles and
+structured observations is the next independent slice; P6.1 recovery/fault
+injection remains open, while P12/P13 are intentionally deferred.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
