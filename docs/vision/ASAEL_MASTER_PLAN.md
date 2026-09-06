@@ -1991,9 +1991,29 @@ prompt content or raw entity text. The protected, idempotent, side-effect-free
 24-case `p6.2-semantic-routing-v1` production-like suite recorded route accuracy
 1.0, required-tool recall 1.0, model coverage 1.0, and zero unexpected
 clarification. Vercel and Fly report the exact release healthy, and all three
-worker lanes completed with HTTP 200. P6.3 native conversation roles and
-structured observations is the next independent slice; P6.1 recovery/fault
-injection remains open, while P12/P13 are intentionally deferred.
+worker lanes completed with HTTP 200. This cleared the independent P6.3 slice;
+P6.1 recovery/fault injection remains open, while P12/P13 are intentionally
+deferred.
+
+P6.3 is complete at exact production release
+`99fd32dfe9ce70bf11e94902b4a7e4afee90212b`. The agent no longer flattens
+recent user and assistant turns into one pseudo-user transcript. A strict
+provider-neutral schema preserves native roles and represents workspace,
+memory/RAG, web, council, tool-call, and tool-result material as explicitly
+typed observations. Untrusted observations remain outside privileged
+instructions and are escaped and labeled at each provider boundary. OpenAI,
+Gemini Interactions, Anthropic Messages, and Bedrock Converse now map the same
+canonical contract to native message and tool structures. Every newly returned
+tool continuation must carry a validated canonical replay transcript alongside
+any provider-owned state, and approval-paused runs persist that portable form.
+The v2 run harness records conversation schema v1, native-role preservation,
+and structured-observation enforcement. Focused provider, gateway, loop,
+resume, and storage checks pass. A live three-message canary preserved its
+assistant turn, returned the expected token, and recorded completed provider
+usage. Matching Vercel and Fly services are healthy, all three worker lanes
+returned HTTP 200, and anonymous agent access remains closed. P6.4 bounded
+workflow-node execution is next; P6.1 recovery/fault injection remains open,
+and P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
