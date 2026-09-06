@@ -10405,7 +10405,27 @@ async function ensureAgentAdaptationLifecycleV1(sql: SqlClient) {
       CHECK (evidence_sha256 ~ '^[a-f0-9]{64}$'),
       CHECK (confidence BETWEEN 0 AND 1),
       CHECK (effect_kind = 'instruction_guidance'),
-      CHECK (jsonb_typeof(effect_payload) = 'object'),
+      CHECK (
+        jsonb_typeof(effect_payload) = 'object'
+        AND effect_payload ?& ARRAY[
+          'kind', 'guidance', 'guidanceSha256',
+          'authorityImpact', 'effectSha256'
+        ]
+        AND COALESCE(effect_payload->>'kind' = effect_kind, FALSE)
+        AND COALESCE(
+          char_length(effect_payload->>'guidance') BETWEEN 3 AND 1000,
+          FALSE
+        )
+        AND COALESCE(
+          effect_payload->>'guidanceSha256' ~ '^[a-f0-9]{64}$', FALSE
+        )
+        AND COALESCE(
+          effect_payload->>'authorityImpact' = 'none', FALSE
+        )
+        AND COALESCE(
+          effect_payload->>'effectSha256' ~ '^[a-f0-9]{64}$', FALSE
+        )
+      ),
       CHECK (evaluation IS NULL OR jsonb_typeof(evaluation) = 'object'),
       CHECK (
         evaluation_sha256 IS NULL
@@ -10521,6 +10541,26 @@ async function ensureAgentAdaptationLifecycleV1(sql: SqlClient) {
         IF NEW.evaluation IS NULL
           OR NEW.evaluation_sha256 IS NULL
           OR NEW.evaluated_definition_version IS NULL
+          OR NEW.evaluated_definition_version IS DISTINCT FROM
+            NEW.observed_definition_version
+          OR NEW.evaluation->>'version' IS DISTINCT FROM
+            'p7.6-agent-adaptation-evaluation:1'
+          OR NEW.evaluation->>'policyVersionId' IS DISTINCT FROM
+            'agent-adaptation-policy:1'
+          OR (NEW.evaluation->>'definitionVersion')::BIGINT IS DISTINCT FROM
+            NEW.observed_definition_version
+          OR (
+            NEW.evaluation->>'verdict' IS DISTINCT FROM 'passed'
+            AND NEW.evaluation->>'verdict' IS DISTINCT FROM 'held'
+          )
+          OR (
+            NEW.confidence >= 0.75
+            AND NEW.evaluation->>'verdict' IS DISTINCT FROM 'passed'
+          )
+          OR (
+            NEW.confidence < 0.75
+            AND NEW.evaluation->>'verdict' IS DISTINCT FROM 'held'
+          )
           OR NEW.activation_version IS NOT NULL
           OR NEW.activated_at IS NOT NULL
           OR NEW.rolled_back_at IS NOT NULL
@@ -10641,6 +10681,26 @@ async function ensureAgentAdaptationLifecycleV1(sql: SqlClient) {
           AND tgname = 'omni_agent_adaptation_protect'
           AND NOT tgisinternal AND tgenabled = 'O'
       ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_agent_adaptations'::regclass
+          AND tgname = 'omni_agent_adaptation_no_truncate'
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_proc
+        WHERE oid = 'omni_protect_agent_adaptation_v1()'::regprocedure
+          AND NOT prosecdef
+      ) OR EXISTS (
+        SELECT 1
+        FROM pg_proc function_row
+        CROSS JOIN LATERAL aclexplode(COALESCE(
+          function_row.proacl,
+          acldefault('f', function_row.proowner)
+        )) function_acl
+        WHERE function_row.oid =
+          'omni_protect_agent_adaptation_v1()'::regprocedure
+          AND function_acl.grantee = 0
+          AND function_acl.privilege_type = 'EXECUTE'
+      ) OR NOT EXISTS (
         SELECT 1 FROM pg_policy
         WHERE polrelid = 'omni_agent_adaptations'::regclass
           AND polname = 'omni_agent_adaptations_actor'
@@ -10655,6 +10715,18 @@ async function ensureAgentAdaptationLifecycleV1(sql: SqlClient) {
           AND table_name = 'omni_agent_adaptations'
           AND grantee IN ('omni_runtime', 'omni_maintenance')
           AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.role_column_grants
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_agent_adaptations'
+          AND grantee IN ('omni_runtime', 'omni_maintenance')
+          AND privilege_type = 'UPDATE'
+          AND column_name NOT IN (
+            'state', 'lifecycle_revision', 'evaluation',
+            'evaluation_sha256', 'evaluated_definition_version',
+            'activation_version', 'updated_at', 'evaluated_at',
+            'activated_at', 'rolled_back_at'
+          )
       ) THEN
         RAISE EXCEPTION 'Agent adaptation lifecycle boundary is invalid'
           USING ERRCODE = '55000';
