@@ -1,16 +1,26 @@
 import {
   CaptureAssetContentIntegrityError,
   CaptureAssetError,
+  CaptureAssetExtractionIntegrityError,
   CaptureAssetReadConflictError,
   getCaptureAsset,
   getCaptureAssetForRequest,
   getCaptureAssetContent,
   getCaptureAssetContentForRequest,
+  getCaptureAssetExtractionForRequest,
   updateCaptureAssetStatus,
 } from "@/lib/capture/assets";
 import { deleteCaptureAssetWithKnowledge } from "@/lib/capture/deletion";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { CaptureFileError, captureTitle, extractCaptureFile } from "@/lib/capture/files";
+import {
+  appendCaptureNote,
+  captureExtractionReceipt,
+  renderCaptureExtractionUnits,
+  terminalCaptureExtractionReceipt,
+  type CaptureExtractionReceipt,
+  type CaptureStructuredExtraction,
+} from "@/lib/capture/extraction";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
@@ -43,6 +53,7 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
   const { id } = await route.params;
   const requestUrl = new URL(request.url);
   const contentRequested = requestUrl.searchParams.get("content") === "1";
+  const extractionRequested = requestUrl.searchParams.get("extraction") === "1";
   let context;
   try {
     context = await authorizeRequest({ request, action: "read", resourceType: "capture_asset", resourceId: id });
@@ -75,6 +86,16 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
       requestActorBinding,
     });
     if (!asset) return Response.json({ error: "Captured file not found." }, { status: 404, headers: privateNoStoreHeaders });
+    if (extractionRequested) {
+      return Response.json({
+        asset,
+        extraction: await getCaptureAssetExtractionForRequest(asset, {
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          requestActorBinding,
+        }),
+      }, { headers: privateNoStoreHeaders });
+    }
     return Response.json({ asset }, { headers: privateNoStoreHeaders });
   } catch (error) {
     return assetErrorResponse(error, contentRequested ? "content" : "metadata");
@@ -138,6 +159,8 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     let title = parsed.data.title || captureTitle(asset.filename);
     let content = "";
     let contentOrigin: "extracted" | "supplied_note" = "extracted";
+    let extraction: CaptureStructuredExtraction | undefined;
+    let extractionReceipt: CaptureExtractionReceipt | undefined;
     try {
       const extracted = await extractCaptureFile(
         new File([bytes], asset.filename, { type: asset.mediaType }),
@@ -154,14 +177,25 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
       );
       title = parsed.data.title || extracted.title;
       content = extracted.content;
+      extraction = extracted.extraction;
     } catch (error) {
       if (!note || !(error instanceof CaptureFileError)) throw error;
       contentOrigin = "supplied_note";
+      extractionReceipt = terminalCaptureExtractionReceipt({
+        format: error.format || asset.extension || "unknown",
+        state: error.status === 415 ? "unsupported" : "failed",
+        warningCode: error.code,
+      });
     }
     if (note) {
-      const separator = content ? "\n\n---\nCapture note:\n" : "";
-      content = `${content.slice(0, Math.max(0, 900_000 - separator.length - note.length))}${separator}${note}`;
+      if (extraction) {
+        extraction = appendCaptureNote(extraction, note);
+        content = renderCaptureExtractionUnits(extraction.units);
+      } else {
+        content = note;
+      }
     }
+    if (extraction) extractionReceipt = captureExtractionReceipt(extraction);
     if (!content.trim()) throw new CaptureFileError("The stored asset has no extractable or supplied text to index.", 400, "no_readable_text", asset.extension);
     const job = await enqueueKnowledgeIngestJob({
       tenantId: context.tenantId,
@@ -174,11 +208,27 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
         source: `capture:asset:${asset.id}`,
         sourceType: "file",
         tags: ["capture", "asset", ...(parsed.data.tags || asset.tags)],
-        metadata: { captureAssetId: asset.id, actorId: asset.actorId, filename: asset.filename, mediaType: asset.mediaType, byteCount: asset.byteCount, contentOrigin },
+        metadata: {
+          captureAssetId: asset.id,
+          actorId: asset.actorId,
+          filename: asset.filename,
+          mediaType: asset.mediaType,
+          byteCount: asset.byteCount,
+          contentOrigin,
+          structuredSourceKind: extraction?.sourceKind || "file",
+          extractionState: extractionReceipt?.state || "completed",
+          extractionReceiptSha256: extractionReceipt?.receiptSha256 || "",
+        },
         evidenceRefs: [`capture-asset:${asset.id}`],
+        ...(extraction ? { structuredUnits: extraction.units } : {}),
       },
     });
-    const updated = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, { status: "queued", extractionStatus: "completed", ingestJobId: job.id });
+    const updated = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
+      status: "queued",
+      extractionStatus: extractionReceipt?.state || "completed",
+      extractionReceipt,
+      ingestJobId: job.id,
+    });
     return Response.json({ asset: updated, job: projectOperationJobStatus(job) }, { status: 202, headers: { location: `/api/operations/jobs/${job.id}`, "retry-after": "2", "cache-control": "private, no-store" } });
   } catch (error) {
     if (error instanceof BackgroundJobIdempotencyConflictError) return Response.json({ error: error.message }, { status: 409, headers: privateNoStoreHeaders });
@@ -188,6 +238,11 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
         status: error.status === 415 ? "unsupported" : "failed",
         extractionStatus: error.status === 415 ? "unsupported" : "failed",
         error: error.message,
+        extractionReceipt: terminalCaptureExtractionReceipt({
+          format: error.format || existing.extension || "unknown",
+          state: error.status === 415 ? "unsupported" : "failed",
+          warningCode: error.code,
+        }),
       }) : undefined;
       return Response.json({ asset, ingestion: { status: asset?.extractionStatus || "failed", code: error.code, reason: error.message } }, { status: 202, headers: { "cache-control": "private, no-store" } });
     }
@@ -202,6 +257,12 @@ function assetErrorResponse(
   if (error instanceof CaptureAssetContentIntegrityError) {
     return Response.json(
       { error: "Captured file content could not be verified safely." },
+      { status: 409, headers: privateNoStoreHeaders },
+    );
+  }
+  if (error instanceof CaptureAssetExtractionIntegrityError) {
+    return Response.json(
+      { error: "Captured file extraction evidence could not be verified safely." },
       { status: 409, headers: privateNoStoreHeaders },
     );
   }

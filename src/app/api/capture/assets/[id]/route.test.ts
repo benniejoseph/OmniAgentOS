@@ -19,8 +19,15 @@ const routeMocks = vi.hoisted(() => {
       this.name = "CaptureAssetContentIntegrityError";
     }
   }
+  class CaptureAssetExtractionIntegrityError extends Error {
+    constructor(message = "Capture asset extraction evidence failed integrity validation.") {
+      super(message);
+      this.name = "CaptureAssetExtractionIntegrityError";
+    }
+  }
   return {
     CaptureAssetContentIntegrityError,
+    CaptureAssetExtractionIntegrityError,
     CaptureAssetError,
     CaptureAssetReadConflictError,
     authorizeRequest: vi.fn(),
@@ -30,6 +37,7 @@ const routeMocks = vi.hoisted(() => {
     getCaptureAssetForRequest: vi.fn(),
     getCaptureAssetContent: vi.fn(),
     getCaptureAssetContentForRequest: vi.fn(),
+    getCaptureAssetExtractionForRequest: vi.fn(),
   };
 });
 
@@ -52,6 +60,8 @@ vi.mock("@/lib/security/canonical-actor", () => ({
 vi.mock("@/lib/capture/assets", () => ({
   CaptureAssetContentIntegrityError:
     routeMocks.CaptureAssetContentIntegrityError,
+  CaptureAssetExtractionIntegrityError:
+    routeMocks.CaptureAssetExtractionIntegrityError,
   CaptureAssetError: routeMocks.CaptureAssetError,
   CaptureAssetReadConflictError: routeMocks.CaptureAssetReadConflictError,
   getCaptureAsset: routeMocks.getCaptureAsset,
@@ -59,6 +69,8 @@ vi.mock("@/lib/capture/assets", () => ({
   getCaptureAssetContent: routeMocks.getCaptureAssetContent,
   getCaptureAssetContentForRequest:
     routeMocks.getCaptureAssetContentForRequest,
+  getCaptureAssetExtractionForRequest:
+    routeMocks.getCaptureAssetExtractionForRequest,
   updateCaptureAssetStatus: vi.fn(),
 }));
 
@@ -152,6 +164,10 @@ beforeEach(() => {
     asset,
     bytes: Buffer.from("test"),
   });
+  routeMocks.getCaptureAssetExtractionForRequest.mockReset().mockResolvedValue({
+    evidenceAvailable: true,
+    units: [{ index: 0, evidenceUnitId: "evidence-a" }],
+  });
 });
 
 describe("request-bound Capture asset detail route", () => {
@@ -198,6 +214,23 @@ describe("request-bound Capture asset detail route", () => {
       routeMocks.canonicalRequestActorBindingFromSecurityContext,
     ).toHaveBeenCalledWith(context);
     expect(routeMocks.getCaptureAssetContent).not.toHaveBeenCalled();
+  });
+
+  it("returns integrity-checked structured evidence only when requested", async () => {
+    const response = await GET(
+      new Request("http://localhost/api/capture/assets/asset-a?extraction=1"),
+      { params: Promise.resolve({ id: "asset-a" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).extraction).toMatchObject({
+      evidenceAvailable: true,
+      units: [{ evidenceUnitId: "evidence-a" }],
+    });
+    expect(routeMocks.getCaptureAssetExtractionForRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "asset-a" }),
+      { tenantId: "tenant-a", actorId, requestActorBinding },
+    );
   });
 
   it("returns a private conflict when request ownership cannot be validated", async () => {

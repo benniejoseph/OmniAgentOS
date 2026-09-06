@@ -49,7 +49,12 @@ type CaptureAsset = {
   byteCount: number;
   storageKind: "database" | "filesystem";
   status: "stored" | "queued" | "indexed" | "unsupported" | "failed";
-  extractionStatus: "pending" | "completed" | "unsupported" | "failed";
+  extractionStatus: "pending" | "completed" | "partial" | "unsupported" | "failed";
+  extractionReceipt?: {
+    unitCount: number;
+    locatorKinds: string[];
+    warningCodes: string[];
+  };
   error?: string;
   tags: string[];
   contentAvailable?: boolean;
@@ -358,7 +363,7 @@ export function CaptureWorkspace() {
                     {file ? (
                       <><span className="grid size-12 place-items-center rounded-lg bg-primary/10 text-primary"><FileText size={23} aria-hidden="true" /></span><p className="mt-3 max-w-full truncate font-semibold">{file.name}</p><p className="mt-1 text-xs text-muted">{formatBytes(file.size)} · ready to store</p><button type="button" onClick={() => chooseFile(undefined)} className="mt-3 action-button"><X size={15} aria-hidden="true" />Remove</button></>
                     ) : (
-                      <><span className="grid size-12 place-items-center rounded-lg bg-surface-raised text-primary"><Upload size={23} aria-hidden="true" /></span><p className="mt-3 font-semibold">Drop any file here</p><p className="mt-1 max-w-lg text-sm leading-6 text-muted">Every original up to 5 MB is preserved. Documents, email, calendar files, images, office formats and common code or text files are indexed; unsupported formats stay available in your library.</p><div className="mt-4 flex flex-wrap justify-center gap-2"><button type="button" onClick={() => inputRef.current?.click()} className="primary-button"><Paperclip size={15} aria-hidden="true" />Choose file</button><button type="button" onClick={() => cameraInputRef.current?.click()} className="action-button"><ScanLine size={15} aria-hidden="true" />Scan with camera</button></div></>
+                      <><span className="grid size-12 place-items-center rounded-lg bg-surface-raised text-primary"><Upload size={23} aria-hidden="true" /></span><p className="mt-3 font-semibold">Drop any file here</p><p className="mt-1 max-w-lg text-sm leading-6 text-muted">Every original up to 20 MB is preserved. Documents, spreadsheets, slides, PDFs, images, audio, video, email, calendar files, and common code or text files are indexed with format-aware evidence; unsupported formats stay available in your library.</p><div className="mt-4 flex flex-wrap justify-center gap-2"><button type="button" onClick={() => inputRef.current?.click()} className="primary-button"><Paperclip size={15} aria-hidden="true" />Choose file</button><button type="button" onClick={() => cameraInputRef.current?.click()} className="action-button"><ScanLine size={15} aria-hidden="true" />Scan with camera</button></div></>
                     )}
                   </div>
                   <label className="mt-4 block text-xs font-semibold text-muted">Capture note <span className="font-normal">(optional)</span><textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={20_000} rows={3} placeholder="Why this matters, what to remember, or how Asael should use it…" className="mt-2 w-full resize-y rounded-lg border border-line bg-background px-3 py-3 text-sm leading-6 text-foreground outline-none focus:border-primary" /></label>
@@ -492,6 +497,7 @@ function assetStatusLabel(asset: CaptureAsset) {
   if (asset.status === "queued") return "Stored · indexing queued";
   if (asset.status === "unsupported") return "Stored · not indexed";
   if (asset.status === "failed") return "Stored · processing failed";
+  if (asset.extractionStatus === "partial") return "Stored · partially extracted";
   return asset.extractionStatus === "pending" ? "Stored · waiting for extraction" : "Stored privately";
 }
 

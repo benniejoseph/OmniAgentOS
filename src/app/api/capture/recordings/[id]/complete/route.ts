@@ -4,6 +4,11 @@ import {
   prepareCaptureRecordingCompletion,
 } from "@/lib/capture/recordings";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
+import {
+  captureExtractionReceipt,
+  captureRecordingExtraction,
+  renderCaptureExtractionUnits,
+} from "@/lib/capture/extraction";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   BackgroundJobIdempotencyConflictError,
@@ -36,6 +41,11 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     if (recording.ingestJobId) {
       return Response.json({ recording, job: { id: recording.ingestJobId } }, { headers: { "cache-control": "private, no-store" } });
     }
+    const extraction = captureRecordingExtraction({
+      durationMs: recording.durationMs,
+      segments: recording.segments,
+    });
+    const extractionReceipt = captureExtractionReceipt(extraction);
     const job = await enqueueKnowledgeIngestJob({
       tenantId: context.tenantId,
       actorId: context.actorId,
@@ -43,7 +53,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
       idempotencyKey: `capture-recording:${recording.id}`,
       request: {
         title: recording.title,
-        content: recording.transcript.slice(0, 900_000),
+        content: renderCaptureExtractionUnits(extraction.units),
         source: recording.source,
         sourceType: "file",
         tags: ["capture", "recording", "conversation", ...recording.tags],
@@ -54,9 +64,13 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
           segmentCount: recording.segmentCount,
           failedSegmentCount: recording.segments.filter((segment) => segment.transcriptionStatus === "failed").length,
           completedAt: recording.completedAt || "",
-          transcriptTruncated: recording.transcript.length > 900_000,
+          transcriptTruncated: extraction.warningCodes.includes("recording_transcript_truncated"),
+          structuredSourceKind: extraction.sourceKind,
+          extractionState: extraction.state,
+          extractionReceiptSha256: extractionReceipt.receiptSha256,
         },
         evidenceRefs: [`capture-recording:${recording.id}`],
+        structuredUnits: extraction.units,
       },
     });
     const updated = await markCaptureRecordingIngestQueued(
@@ -67,6 +81,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     return Response.json({
       recording: updated,
       job: projectOperationJobStatus(job),
+      extractionReceipt,
       warnings: recording.segments.filter((segment) => segment.transcriptionStatus === "failed").length
         ? [`${recording.segments.filter((segment) => segment.transcriptionStatus === "failed").length} stored audio segment(s) could not be transcribed and were not included in the RAG text.`]
         : [],

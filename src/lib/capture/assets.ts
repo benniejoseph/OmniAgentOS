@@ -2,6 +2,14 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { captureActorReadOrder } from "@/lib/capture/actor-scope";
+import {
+  captureExtractionReceiptSchema,
+  type CaptureExtractionReceipt,
+} from "@/lib/capture/extraction";
+import {
+  evidenceLocatorV1Schema,
+  type EvidenceLocatorV1,
+} from "@/lib/sources/contracts";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
@@ -52,6 +60,10 @@ type CaptureAssetEventPayload = {
   knowledgeDocumentId?: string;
   errorSha256?: string;
   errorByteCount?: number;
+  extractionReceiptSha256?: string;
+  extractionUnitCount?: number;
+  extractionLocatorKinds?: string[];
+  extractionWarningCodes?: string[];
   scopeVersion?: ExecutionScope["version"];
   scopeSha256?: string;
 };
@@ -84,6 +96,13 @@ export class CaptureAssetContentIntegrityError extends Error {
   constructor(message = "Capture asset content failed integrity validation.") {
     super(message);
     this.name = "CaptureAssetContentIntegrityError";
+  }
+}
+
+export class CaptureAssetExtractionIntegrityError extends Error {
+  constructor(message = "Capture asset extraction evidence failed integrity validation.") {
+    super(message);
+    this.name = "CaptureAssetExtractionIntegrityError";
   }
 }
 
@@ -146,14 +165,14 @@ export async function saveCaptureAsset(input: ScopedOwner & {
         ) ON CONFLICT (id) DO NOTHING
         RETURNING id, tenant_id, actor_id, filename, media_type, extension,
           byte_count, content_sha256, storage_kind, status, extraction_status,
-          ingest_job_id, knowledge_document_id, error, tags, metadata, created_at,
+          ingest_job_id, knowledge_document_id, error, extraction_receipt, tags, metadata, created_at,
           updated_at
       `;
       if (!rows[0]) {
         const existing = await sql`
           SELECT id, tenant_id, actor_id, filename, media_type, extension,
             byte_count, content_sha256, storage_kind, status, extraction_status,
-            ingest_job_id, knowledge_document_id, error, tags, metadata,
+            ingest_job_id, knowledge_document_id, error, extraction_receipt, tags, metadata,
             created_at, updated_at
           FROM omni_capture_assets
           WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId}
@@ -227,7 +246,7 @@ export async function listCaptureAssets(
     const rows = await getSql()`
       SELECT id, tenant_id, actor_id, filename, media_type, extension, byte_count,
         content_sha256, storage_kind, status, extraction_status, ingest_job_id,
-        knowledge_document_id, error, tags, metadata, created_at, updated_at
+        knowledge_document_id, error, extraction_receipt, tags, metadata, created_at, updated_at
       FROM omni_capture_assets
       WHERE tenant_id = ${tenantId}
         AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
@@ -266,7 +285,7 @@ export async function listInternalCaptureAssets(
     const rows = await getSql()`
       SELECT id, tenant_id, actor_id, filename, media_type, extension, byte_count,
         content_sha256, storage_kind, status, extraction_status, ingest_job_id,
-        knowledge_document_id, error, tags, metadata, created_at, updated_at
+        knowledge_document_id, error, extraction_receipt, tags, metadata, created_at, updated_at
       FROM omni_capture_assets
       WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
         AND metadata->>'internalKind' = ${kind}
@@ -297,7 +316,7 @@ export async function getCaptureAsset(id: string, owner: Owner) {
     const rows = await getSql()`
       SELECT id, tenant_id, actor_id, filename, media_type, extension, byte_count,
         content_sha256, storage_kind, status, extraction_status, ingest_job_id,
-        knowledge_document_id, error, tags, metadata, created_at, updated_at
+        knowledge_document_id, error, extraction_receipt, tags, metadata, created_at, updated_at
       FROM omni_capture_assets
       WHERE id = ${assetId} AND tenant_id = ${tenantId} AND actor_id = ${actorId}
       LIMIT 1
@@ -339,7 +358,7 @@ export async function getCaptureAssetForRequest(
   const rows = await getSql()`
     SELECT id, tenant_id, actor_id, filename, media_type, extension, byte_count,
       content_sha256, storage_kind, status, extraction_status, ingest_job_id,
-      knowledge_document_id, error, tags, metadata, created_at, updated_at
+      knowledge_document_id, error, extraction_receipt, tags, metadata, created_at, updated_at
     FROM omni_capture_assets
     WHERE id = ${assetId}
       AND tenant_id = ${tenantId}
@@ -398,7 +417,7 @@ export async function getCaptureAssetContentForRequest(
   const rows = await getSql()`
     SELECT id, tenant_id, actor_id, filename, media_type, extension, byte_count,
       content_sha256, storage_kind, status, extraction_status,
-      ingest_job_id, knowledge_document_id, error, tags, metadata, created_at,
+      ingest_job_id, knowledge_document_id, error, extraction_receipt, tags, metadata, created_at,
       updated_at
     FROM omni_capture_assets
     WHERE id = ${assetId}
@@ -422,6 +441,80 @@ export async function getCaptureAssetContentForRequest(
     asset: captureAssetForRequest(asset, exactActorId),
     bytes: await readCaptureAssetBytes(asset),
   };
+}
+
+export async function getCaptureAssetExtractionForRequest(
+  asset: RequestCaptureAsset,
+  owner: CaptureAssetListOwner,
+) {
+  const receipt = asset.extractionReceipt;
+  if (
+    !receipt ||
+    !asset.knowledgeDocumentId ||
+    !["completed", "partial"].includes(receipt.state) ||
+    receipt.unitCount === 0
+  ) {
+    return { receipt, evidenceAvailable: false, units: [] };
+  }
+  if (!hasDatabaseUrl()) {
+    return { receipt, evidenceAvailable: false, units: [] };
+  }
+  const tenantId = normalizeTenantId(owner.tenantId);
+  const requestActorId = normalizeActorId(owner.actorId);
+  const [canonicalActorId, exactActorId] = captureActorReadOrder(
+    owner.actorId,
+    owner.requestActorBinding,
+    requestActorId,
+  );
+  const rows = await getSql()`
+    SELECT chunk.id, chunk.chunk_index, chunk.content, chunk.metadata,
+      evidence.id AS evidence_unit_id,
+      evidence.owner_actor_id, evidence.evidence_content_sha256,
+      evidence.locator
+    FROM omni_knowledge_chunks AS chunk
+    INNER JOIN omni_evidence_units AS evidence
+      ON evidence.tenant_id = chunk.tenant_id
+      AND evidence.id = chunk.evidence_unit_id
+      AND evidence.source_revision_id = chunk.source_revision_id
+    WHERE chunk.tenant_id = ${tenantId}
+      AND chunk.document_id = ${asset.knowledgeDocumentId}
+      AND evidence.owner_actor_id IN (${canonicalActorId}, ${exactActorId})
+    ORDER BY chunk.chunk_index ASC, chunk.id COLLATE "C" ASC
+    LIMIT ${receipt.unitCount + 1}
+  `;
+  if (rows.length !== receipt.unitCount) {
+    throw new CaptureAssetExtractionIntegrityError();
+  }
+  const units = rows.map((row, index) => {
+    const content = String(row.content || "");
+    if (
+      Number(row.chunk_index) !== index ||
+      createHash("sha256").update(content).digest("hex") !==
+        String(row.evidence_content_sha256)
+    ) {
+      throw new CaptureAssetExtractionIntegrityError();
+    }
+    const locator = evidenceLocatorV1Schema.safeParse(row.locator);
+    if (!locator.success || !receipt.locatorKinds.includes(locator.data.kind)) {
+      throw new CaptureAssetExtractionIntegrityError();
+    }
+    const metadata = record(row.metadata);
+    if (
+      metadata.extractionReceiptSha256 !== receipt.receiptSha256 ||
+      metadata.structuredSourceKind !== receipt.sourceKind ||
+      metadata.extractionState !== receipt.state
+    ) {
+      throw new CaptureAssetExtractionIntegrityError();
+    }
+    return {
+      index,
+      evidenceUnitId: String(row.evidence_unit_id),
+      label: safeText(metadata.evidenceLabel, 240) || `Evidence ${index + 1}`,
+      content,
+      locator: locator.data as EvidenceLocatorV1,
+    };
+  });
+  return { receipt, evidenceAvailable: true, units };
 }
 
 /**
@@ -538,11 +631,18 @@ export async function updateCaptureAssetStatus(id: string, owner: ScopedOwner, i
   ingestJobId?: string;
   knowledgeDocumentId?: string;
   error?: string;
+  extractionReceipt?: CaptureExtractionReceipt;
 }) {
   const executionScope = requireCaptureAssetMutationScope(owner);
   const asset = await requireCaptureAsset(id, owner);
   const now = new Date().toISOString();
   const error = safeText(input.error, 1_000);
+  const extractionReceipt = input.extractionReceipt
+    ? captureExtractionReceiptSchema.parse(input.extractionReceipt)
+    : undefined;
+  if (extractionReceipt && extractionReceipt.state !== input.extractionStatus) {
+    throw new CaptureAssetError("Extraction receipt state does not match the asset state.");
+  }
   if (hasDatabaseUrl()) {
     return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
       const rows = await sql`
@@ -550,11 +650,17 @@ export async function updateCaptureAssetStatus(id: string, owner: ScopedOwner, i
         SET status = ${input.status}, extraction_status = ${input.extractionStatus},
           ingest_job_id = ${input.ingestJobId || null},
           knowledge_document_id = ${input.knowledgeDocumentId || null},
-          error = ${error || null}, updated_at = ${now}
+          error = ${error || null},
+          extraction_receipt = CASE
+            WHEN ${Boolean(extractionReceipt)}
+            THEN ${extractionReceipt || null}::jsonb
+            ELSE extraction_receipt
+          END,
+          updated_at = ${now}
         WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId} AND actor_id = ${asset.actorId}
         RETURNING id, tenant_id, actor_id, filename, media_type, extension,
           byte_count, content_sha256, storage_kind, status, extraction_status,
-          ingest_job_id, knowledge_document_id, error, tags, metadata, created_at,
+          ingest_job_id, knowledge_document_id, error, extraction_receipt, tags, metadata, created_at,
           updated_at
       `;
       const updated = assetFromRow(rows[0]);
@@ -570,7 +676,13 @@ export async function updateCaptureAssetStatus(id: string, owner: ScopedOwner, i
       return updated;
     }) as Promise<CaptureAsset>;
   }
-  const next: CaptureAsset = { ...asset, ...input, error: error || undefined, updatedAt: now };
+  const next: CaptureAsset = {
+    ...asset,
+    ...input,
+    extractionReceipt: extractionReceipt || asset.extractionReceipt,
+    error: error || undefined,
+    updatedAt: now,
+  };
   await updateJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] }, (ledger) => ({
     assets: ledger.assets.map((item) => item.id === asset.id && item.actorId === asset.actorId ? { ...item, ...next, contentPath: item.contentPath } : item),
   }));
@@ -687,6 +799,10 @@ async function appendCaptureAssetStatusEvent(
     knowledgeDocumentId: next.knowledgeDocumentId,
     errorSha256: error ? sha256Text(error) : undefined,
     errorByteCount: error ? Buffer.byteLength(error, "utf8") : undefined,
+    extractionReceiptSha256: next.extractionReceipt?.receiptSha256,
+    extractionUnitCount: next.extractionReceipt?.unitCount,
+    extractionLocatorKinds: next.extractionReceipt?.locatorKinds,
+    extractionWarningCodes: next.extractionReceipt?.warningCodes,
   }, options);
 }
 
@@ -726,9 +842,20 @@ function assetFromRow(row: Record<string, unknown>): CaptureAsset {
     storageKind: String(row.storage_kind) as CaptureAsset["storageKind"], status: String(row.status) as CaptureAssetStatus,
     extractionStatus: String(row.extraction_status) as CaptureAsset["extractionStatus"],
     ingestJobId: optionalString(row.ingest_job_id), knowledgeDocumentId: optionalString(row.knowledge_document_id),
-    error: optionalString(row.error), tags: Array.isArray(row.tags) ? row.tags.map(String) : [], metadata: record(row.metadata),
+    error: optionalString(row.error),
+    extractionReceipt: optionalExtractionReceipt(row.extraction_receipt),
+    tags: Array.isArray(row.tags) ? row.tags.map(String) : [], metadata: record(row.metadata),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
+}
+
+function optionalExtractionReceipt(value: unknown) {
+  if (value === null || value === undefined) return undefined;
+  const parsed = captureExtractionReceiptSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new CaptureAssetError("Stored extraction receipt is invalid.");
+  }
+  return parsed.data;
 }
 
 function captureAssetForRequest(

@@ -51,7 +51,7 @@ export type AssetObjectRecord = Readonly<{
   allowedPurposeIds: string[];
   retentionPolicyId: string;
   retentionExpiresAt: string | null;
-  extractionState: "pending" | "completed" | "unsupported" | "failed";
+  extractionState: "pending" | "completed" | "partial" | "unsupported" | "failed";
   uploadJobId: string | null;
   failureCount: number;
   failureCode: string | null;
