@@ -68,6 +68,7 @@ describe("P7.6 Agent adaptation route", () => {
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toMatchObject({ definitionVersion: 3 });
     expect(mocks.list).toHaveBeenCalledWith(
       "scout",
       expect.objectContaining({
@@ -79,6 +80,7 @@ describe("P7.6 Agent adaptation route", () => {
   it("observes evidence only through an explicit refresh", async () => {
     const response = await post({ action: "refresh" });
     expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ definitionVersion: 3 });
     expect(mocks.observe).toHaveBeenCalledWith(
       "scout",
       3,
