@@ -218,7 +218,18 @@ describe("workflow execution budgets", () => {
         category: "knowledge",
         riskLevel: 0,
         approvalRequired: false,
+        operationClass: "read_only",
       }),
     ).toBe(true);
+    expect(
+      isIndependentReadOnlyTool({
+        ...connectorTool,
+        id: "knowledge.search",
+        category: "knowledge",
+        riskLevel: 0,
+        approvalRequired: false,
+        operationClass: "mutation",
+      }),
+    ).toBe(false);
   });
 });
