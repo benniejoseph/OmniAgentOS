@@ -43,6 +43,7 @@ vi.mock("@/lib/rag/query-planner", async (importOriginal) => {
 
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { LOCAL_MULTILINGUAL_EMBEDDING_SPACE } from "@/lib/rag/retrieval-embedding";
 import type { RetrievalQueryPlan } from "@/lib/rag/types";
 
 const accessScope = {
@@ -142,21 +143,29 @@ describe("context-engine P4.3 query-plan integration", () => {
         }),
       }),
     );
-    expect(mocks.embedTexts).toHaveBeenCalledWith(
-      [retrievalQuery],
-      undefined,
-      expect.objectContaining({ tenantId: "tenant-a" }),
-    );
+    expect(mocks.embedTexts).not.toHaveBeenCalled();
     expect(mocks.searchMemories).toHaveBeenNthCalledWith(
       2,
       retrievalQuery,
-      expect.objectContaining({ accessScope }),
+      expect.objectContaining({
+        accessScope,
+        queryEmbeddingSpaceId: LOCAL_MULTILINGUAL_EMBEDDING_SPACE,
+      }),
     );
     expect(mocks.searchMemoryGraph).toHaveBeenCalledWith(
       retrievalQuery,
       expect.objectContaining({ accessScope }),
     );
     expect(pack.profile.queryPlan).toEqual(semanticRelationshipPlan());
+    expect(pack.profile.embedding).toMatchObject({
+      provider: "local",
+      requiresCredential: false,
+      externalDisclosure: false,
+    });
+    expect(pack.profile.reranker).toMatchObject({
+      algorithm: "pairwise_logistic_regression",
+      externalDisclosure: false,
+    });
     expect(pack.results[0]).toMatchObject({
       kind: "graph",
       id: "graph-orion",
