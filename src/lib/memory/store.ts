@@ -599,6 +599,70 @@ export async function getMemory(
     : null;
 }
 
+/**
+ * Resolves a bounded exact set of active memories without scanning unrelated
+ * content. Context Compiler v2 uses this to validate graph lineage before it
+ * considers a neighborhood for ranking.
+ */
+export async function getActiveMemoriesByIds(
+  ids: readonly string[],
+  options: {
+    tenantId?: string;
+    accessScope?: DatabaseMemoryAccessScope;
+  } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const exactIds = [...new Set(ids.map(normalizeOptionalId).filter(Boolean))]
+    .slice(0, 128) as string[];
+  if (!exactIds.length) return [];
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const readRows = (sql: MemorySqlClient) => sql`
+      SELECT *
+      FROM omni_memories
+      WHERE tenant_id = ${tenantId}
+        AND id = ANY(${exactIds})
+        AND claim_status = 'active'
+        AND (valid_from IS NULL OR valid_from <= NOW())
+        AND (valid_to IS NULL OR valid_to > NOW())
+    `;
+    const rows = options.accessScope
+      ? await runWithDatabaseMemoryAccessScope(
+          options.accessScope,
+          tenantId,
+          readRows,
+          [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
+        )
+      : await readRows(getSql());
+    const byId = new Map(rows.map((row) => {
+      const memory = memoryFromRow(row);
+      return [memory.id, memory] as const;
+    }));
+    return exactIds.flatMap((id) => {
+      const memory = byId.get(id);
+      return memory ? [memory] : [];
+    });
+  }
+
+  const idSet = new Set(exactIds);
+  const byId = new Map(
+    (await readJsonFile<MemoryRecord[]>(getMemoryFile(), []))
+      .map(sanitizeMemoryRecord)
+      .filter((memory) =>
+        idSet.has(memory.id) &&
+        normalizeTenantId(memory.tenantId) === tenantId &&
+        memoryVisibleForScope(memory, options.accessScope) &&
+        isActiveMemory(memory)
+      )
+      .map((memory) => [memory.id, memory] as const),
+  );
+  return exactIds.flatMap((id) => {
+    const memory = byId.get(id);
+    return memory ? [memory] : [];
+  });
+}
+
 export async function correctMemory(
   id: string,
   correction: { title?: string; content?: string; confidence?: number; validTo?: string; contradiction?: boolean; embedding?: number[] },
