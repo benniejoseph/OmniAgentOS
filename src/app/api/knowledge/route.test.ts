@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const routeMocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
   deleteKnowledgeDocumentsBySourcePrefix: vi.fn(),
+  getKnowledgeStats: vi.fn(),
+  searchKnowledge: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -23,14 +25,15 @@ vi.mock("@/lib/openai/client", () => ({
 vi.mock("@/lib/rag/store", () => ({
   deleteKnowledgeDocumentsBySourcePrefix:
     routeMocks.deleteKnowledgeDocumentsBySourcePrefix,
-  getKnowledgeStats: vi.fn(),
+  getKnowledgeStats: routeMocks.getKnowledgeStats,
   listKnowledgeChunks: vi.fn(),
   listKnowledgeDocuments: vi.fn(),
-  searchKnowledge: vi.fn(),
+  searchKnowledge: routeMocks.searchKnowledge,
 }));
 
-import { DELETE } from "@/app/api/knowledge/route";
+import { DELETE, GET } from "@/app/api/knowledge/route";
 import { knowledgeDeletionTargetId } from "@/lib/rag/deletion-events";
+import { LOCAL_MULTILINGUAL_EMBEDDING_SPACE } from "@/lib/rag/retrieval-embedding";
 
 describe("knowledge deletion route", () => {
   beforeEach(() => {
@@ -43,6 +46,13 @@ describe("knowledge deletion route", () => {
     routeMocks.deleteKnowledgeDocumentsBySourcePrefix
       .mockReset()
       .mockResolvedValue({ documents: 1, memories: 1 });
+    routeMocks.getKnowledgeStats.mockReset().mockResolvedValue({
+      documents: 1,
+      chunks: 1,
+      characters: 32,
+      embedded: 0,
+    });
+    routeMocks.searchKnowledge.mockReset().mockResolvedValue([]);
   });
 
   it("binds supported source deletion to the authenticated request", async () => {
@@ -78,5 +88,49 @@ describe("knowledge deletion route", () => {
         },
       },
     );
+  });
+
+  it("uses the local embedding space for authenticated search", async () => {
+    routeMocks.searchKnowledge.mockResolvedValue([{
+      chunk: {
+        id: "chunk-a",
+        tenantId: "tenant-a",
+        documentId: "document-a",
+        chunkIndex: 0,
+        title: "Database restore",
+        content: "Restore the latest backup.",
+        tags: [],
+        source: "manual",
+        tokenEstimate: 8,
+        characterCount: 26,
+        createdAt: "2026-09-06T00:00:00.000Z",
+        updatedAt: "2026-09-06T00:00:00.000Z",
+      },
+      score: 0.8,
+      vectorScore: 0.7,
+      lexicalScore: 0,
+      recencyScore: 0.6,
+      reasons: ["semantic match"],
+    }]);
+
+    const response = await GET(new Request(
+      "http://localhost/api/knowledge?q=restaurar%20base%20de%20datos",
+    ));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(routeMocks.searchKnowledge).toHaveBeenCalledWith(
+      "restaurar base de datos",
+      expect.objectContaining({
+        queryEmbeddingSpaceId: LOCAL_MULTILINGUAL_EMBEDDING_SPACE,
+      }),
+    );
+    expect(body).toMatchObject({
+      results: [{ chunk: { id: "chunk-a" } }],
+      retrieval: {
+        embedding: { provider: "local", externalDisclosure: false },
+        reranker: { algorithm: "pairwise_logistic_regression" },
+      },
+    });
   });
 });

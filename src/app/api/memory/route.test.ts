@@ -48,6 +48,7 @@ vi.mock("@/lib/threads/store", () => ({ getOwnedThread: vi.fn() }));
 
 import { GET, POST } from "@/app/api/memory/route";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
+import { LOCAL_MULTILINGUAL_EMBEDDING_SPACE } from "@/lib/rag/retrieval-embedding";
 
 const context = {
   tenantId: "tenant-a",
@@ -170,6 +171,49 @@ describe("memory API private canary", () => {
         createdCount: 0,
         linkedCount: 0,
         reviewRequiredCount: 0,
+      },
+    });
+  });
+
+  it("uses local multilingual search and returns its governed receipts", async () => {
+    routeMocks.searchMemories
+      .mockReset()
+      .mockResolvedValueOnce([{
+        record: {
+          ...legacyMemory,
+          type: "procedure",
+          scope: "user",
+          source: "manual",
+          importance: 0.8,
+          claimStatus: "active",
+          createdAt: legacyMemory.updatedAt,
+        },
+        score: 0.7,
+        reasons: ["semantic match"],
+      }])
+      .mockResolvedValueOnce([]);
+
+    const response = await GET(new Request(
+      "http://localhost/api/memory?q=restaurar%20base%20de%20datos",
+    ));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(routeMocks.embedTexts).not.toHaveBeenCalled();
+    expect(routeMocks.searchMemories).toHaveBeenCalledWith(
+      "restaurar base de datos",
+      expect.objectContaining({
+        queryEmbeddingSpaceId: LOCAL_MULTILINGUAL_EMBEDDING_SPACE,
+      }),
+    );
+    expect(body).toMatchObject({
+      results: [{ record: { id: "legacy-a" } }],
+      retrieval: {
+        embedding: { provider: "local", externalDisclosure: false },
+        reranker: {
+          algorithm: "pairwise_logistic_regression",
+          externalDisclosure: false,
+        },
       },
     });
   });
