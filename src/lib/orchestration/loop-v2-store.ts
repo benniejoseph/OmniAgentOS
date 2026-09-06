@@ -5,9 +5,6 @@ import {
 import {
   advanceLoopV2Checkpoint,
   LOOP_V2_CAPABILITY_ID,
-  LOOP_V2_CONFIGURATION_SHA256,
-  LOOP_V2_CONTRACT_VERSION_ID,
-  LOOP_V2_ENGINE_VERSION_ID,
   loopV2ExecutionScopeSha256,
   parseLoopV2Checkpoint,
   replayLoopV2Checkpoints,
@@ -112,33 +109,6 @@ export async function recordLoopV2Checkpoint(
     throw new Error("Loop v2 checkpoint scope differs from the run binding.");
   }
 
-  const rolloutRows = await sql.query(
-    `SELECT rollout_generation, engine_version, contract_version_id,
-            configuration_sha256, mode, status, lifecycle_revision
-     FROM omni_tenant_capability_rollouts
-     WHERE tenant_id = $1
-       AND capability_id = $2
-       AND status <> 'superseded'
-     ORDER BY rollout_generation DESC
-     LIMIT 2
-     FOR SHARE`,
-    [checkpoint.tenantId, LOOP_V2_CAPABILITY_ID],
-  );
-  const rollout = exactlyOne(rolloutRows, "Loop v2 rollout");
-  if (
-    Number(rollout.rollout_generation) !==
-      checkpoint.enginePin.rolloutGeneration ||
-    rollout.engine_version !== LOOP_V2_ENGINE_VERSION_ID ||
-    rollout.contract_version_id !== LOOP_V2_CONTRACT_VERSION_ID ||
-    rollout.configuration_sha256 !== LOOP_V2_CONFIGURATION_SHA256 ||
-    rollout.mode !== "canary" ||
-    rollout.status !== "active" ||
-    Number(rollout.lifecycle_revision) !==
-      checkpoint.enginePin.rolloutLifecycleRevision
-  ) {
-    throw new Error("Loop v2 rollout changed before the transition committed.");
-  }
-
   const currentRows = await sql.query(
     `SELECT checkpoint_json
      FROM omni_agent_loop_v2_checkpoints
@@ -164,6 +134,9 @@ export async function recordLoopV2Checkpoint(
     checkpoint.trigger !== "started"
   ) {
     throw new Error("Loop v2 checkpoint chain must start at understand.");
+  }
+  if (!current) {
+    await assertLoopV2RootAdmission(checkpoint, sql);
   }
 
   const insertedRows = await sql.query(
@@ -221,6 +194,39 @@ export async function recordLoopV2Checkpoint(
     inserted,
     executionAuthorityGranted: false as const,
   });
+}
+
+async function assertLoopV2RootAdmission(
+  checkpoint: LoopV2Checkpoint,
+  sql: LoopV2CheckpointWriterSql,
+) {
+  const rolloutRows = await sql.query(
+    `SELECT rollout_generation, engine_version, contract_version_id,
+            configuration_sha256, mode, status, lifecycle_revision
+     FROM omni_tenant_capability_rollouts
+     WHERE tenant_id = $1
+       AND capability_id = $2
+       AND status <> 'superseded'
+     ORDER BY rollout_generation DESC
+     LIMIT 2
+     FOR SHARE`,
+    [checkpoint.tenantId, LOOP_V2_CAPABILITY_ID],
+  );
+  const rollout = exactlyOne(rolloutRows, "Loop v2 rollout");
+  if (
+    Number(rollout.rollout_generation) !==
+      checkpoint.enginePin.rolloutGeneration ||
+    rollout.engine_version !== checkpoint.enginePin.engineVersionId ||
+    rollout.contract_version_id !== checkpoint.enginePin.contractVersionId ||
+    rollout.configuration_sha256 !==
+      checkpoint.enginePin.configurationSha256 ||
+    rollout.mode !== checkpoint.enginePin.rolloutMode ||
+    rollout.status !== "active" ||
+    Number(rollout.lifecycle_revision) !==
+      checkpoint.enginePin.rolloutLifecycleRevision
+  ) {
+    throw new Error("Loop v2 rollout changed before root admission committed.");
+  }
 }
 
 /** Commits the terminal checkpoint and matching run disposition atomically. */
