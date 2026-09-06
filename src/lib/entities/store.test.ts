@@ -11,6 +11,7 @@ import {
 import {
   readEntityRegistry,
   resolveAndRecordEntityIdentity,
+  retireEntityEvidenceLineage,
   reviewEntityMerge,
   saveEntityAlias,
   saveEntityRecord,
@@ -185,6 +186,46 @@ describe("durable entity registry", () => {
     })).rejects.toThrow("does not match");
     const snapshot = await readEntityRegistry({
       accessBinding: actorABinding,
+      executionScope: scope("actor-a", "entity.read.v1"),
+    });
+    expect(snapshot.entities).toEqual([]);
+  });
+
+  it("retires an actor's entity when its final evidence lineage is removed", async () => {
+    const binding = accessBinding("actor-a");
+    const entity = buildEntityRecord({
+      entityId: "entity-evidence-retirement",
+      entityTypeId: "product",
+      canonicalLabel: "Asael",
+      accessBinding: binding,
+      lineage: [lineage("evidence-retirement")],
+      createdAt: recordedAt,
+    });
+    await saveEntityRecord({
+      entity,
+      executionScope: scope("actor-a", "entity.write.v1"),
+    });
+
+    await expect(retireEntityEvidenceLineage({
+      tenantId: "tenant-a",
+      ownerActorId: "actor-a",
+      evidenceUnitIds: ["evidence-retirement"],
+      executionScope: scope("actor-a", "entity.write.v1"),
+      retiredAt: "2026-09-06T00:02:00.000Z",
+    })).rejects.toThrow("governed lifecycle scope");
+    const retirement = await retireEntityEvidenceLineage({
+      tenantId: "tenant-a",
+      ownerActorId: "actor-a",
+      evidenceUnitIds: ["evidence-retirement"],
+      executionScope: scope("actor-a", "entity.source.lifecycle.v1"),
+      retiredAt: "2026-09-06T00:02:00.000Z",
+    });
+    expect(retirement).toMatchObject({
+      affectedEntityIds: [entity.entityId],
+      retiredEntityIds: [entity.entityId],
+    });
+    const snapshot = await readEntityRegistry({
+      accessBinding: binding,
       executionScope: scope("actor-a", "entity.read.v1"),
     });
     expect(snapshot.entities).toEqual([]);

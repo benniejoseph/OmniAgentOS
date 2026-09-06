@@ -14,6 +14,7 @@ import {
 } from "@/lib/sources/contracts";
 import {
   assertCanonicalAdapterOutputReceipt,
+  retireEntityLineageForSourceRevision,
   storedAdapterEnvelopeMatches,
   type SourceSqlClient,
 } from "@/lib/sources/store";
@@ -209,6 +210,16 @@ export async function applyPreparedCanonicalSourceUpsert(
   await persistConvergentSourceRevision(sql, output);
   await persistConvergentEvidenceUnits(sql, output);
 
+  if (lockedCurrentRevisionId) {
+    await retireEntityLineageForSourceRevision(sql, {
+      tenantId: item.tenantId,
+      ownerActorId: item.ownerActorId,
+      sourceRevisionId: lockedCurrentRevisionId,
+      executionScope,
+      retiredAt: output.observedAt,
+    });
+  }
+
   const advancedItem = await sql`
     UPDATE omni_source_items
     SET current_revision_id = ${revision.sourceRevisionId},
@@ -381,6 +392,15 @@ export async function applyPreparedCanonicalSourceDelete(
   }
 
   await assertCanonicalAdapterOutputReceipt(sql, output);
+  if (lockedCurrentRevisionId) {
+    await retireEntityLineageForSourceRevision(sql, {
+      tenantId: output.tenantId,
+      ownerActorId: output.ownerActorId,
+      sourceRevisionId: lockedCurrentRevisionId,
+      executionScope,
+      retiredAt: output.observedAt,
+    });
+  }
   await persistCanonicalSourceTombstone(sql, output, tombstone);
   await compareAndSwapCanonicalHead(sql, {
     output,
