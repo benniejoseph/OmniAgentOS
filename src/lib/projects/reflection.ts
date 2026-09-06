@@ -35,7 +35,11 @@ export async function reflectOnProjectArtifact(input: {
       title: `Reflection: ${artifact.title}`,
       content,
       confidence: 0.98,
-    }, { tenantId: input.tenantId, actorId: input.actorId });
+    }, {
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      executionScope: input.mutation.executionScope,
+    });
     reflectionMemoryId = correction?.corrected.id;
   } else if (!existing) {
     const memory = await saveMemory({
@@ -55,6 +59,7 @@ export async function reflectOnProjectArtifact(input: {
         `workflow:${artifact.workflowRunId}`,
         ...(artifact.memoryId ? [`memory:${artifact.memoryId}`] : []),
       ],
+      executionScope: input.mutation.executionScope,
     });
     reflectionMemoryId = memory.id;
   }

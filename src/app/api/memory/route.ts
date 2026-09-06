@@ -20,6 +20,7 @@ import { listMemories, listThreadMemories, saveMemory, searchMemories } from "@/
 import { embedTexts } from "@/lib/openai/client";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getOwnedThread } from "@/lib/threads/store";
 
@@ -205,10 +206,13 @@ async function POSTHandler(request: Request) {
       purpose: "api.memory.write",
       credentialSource: "deployment_environment",
     }))?.[0];
+    const correlationId = request.headers.get("x-idempotency-key")?.trim().slice(0, 200) ||
+      request.headers.get("x-request-id")?.trim().slice(0, 200) ||
+      `memory_write_${randomUUID()}`;
     const requestAccess = requestMemoryAccessFromSecurityContext(context, {
       purposeId: MEMORY_PURPOSE_IDS.write,
       auditPurpose: "api.memory.write",
-      correlationId: `memory_write_${randomUUID()}`,
+      correlationId,
     });
     const accessBinding = requestAccess
       ? buildUserPrivateMemoryAccessBindingV1({
@@ -226,7 +230,11 @@ async function POSTHandler(request: Request) {
       embedding,
       accessBinding,
       databaseAccessScope: requestAccess?.databaseAccessScope,
-      executionScope: requestAccess?.executionScope,
+      executionScope: requestAccess?.executionScope ||
+        executionScopeFromSecurityContext(context, {
+          correlationId,
+          purpose: "api.memory.write",
+        }),
     });
     let entityProjection:
       | {

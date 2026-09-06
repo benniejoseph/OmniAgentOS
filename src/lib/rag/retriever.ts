@@ -15,6 +15,7 @@ import {
 } from "@/lib/sources/text-lineage";
 import type { AiUsageScope } from "@/lib/usage/types";
 import type { CaptureIngestGuard } from "@/lib/capture/ingest-guard";
+import type { ExecutionScope } from "@/lib/security/execution-scope";
 
 export async function ingestTextDocument({
   idempotencyKey,
@@ -30,6 +31,7 @@ export async function ingestTextDocument({
   usageScope,
   sourceLineage,
   captureIngestGuard,
+  executionScope,
 }: {
   idempotencyKey?: string;
   tenantId?: string;
@@ -44,6 +46,7 @@ export async function ingestTextDocument({
   usageScope?: AiUsageScope;
   sourceLineage?: TextSourceLineageInput;
   captureIngestGuard?: CaptureIngestGuard;
+  executionScope?: ExecutionScope;
 }) {
   if ((usageScope?.actorId || captureIngestGuard?.actorId) && !sourceLineage) {
     throw new Error(
@@ -140,10 +143,13 @@ export async function ingestTextDocument({
         ...evidenceRefs.map((reference) => String(redactSensitive(reference)).trim().slice(0, 500)).filter(Boolean),
       ],
       embedding: embeddings?.[chunk.index],
-      ...(canonicalSourceWrite
+      ...((canonicalSourceWrite || executionScope)
         ? {
-            executionScope: canonicalSourceWrite.executionScope,
-            formationOrigin: "source_observation" as const,
+            executionScope:
+              canonicalSourceWrite?.executionScope || executionScope,
+            ...(canonicalSourceWrite
+              ? { formationOrigin: "source_observation" as const }
+              : {}),
           }
         : {}),
     })),

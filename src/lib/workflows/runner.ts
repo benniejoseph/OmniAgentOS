@@ -1492,6 +1492,9 @@ async function persistWorkflowReport(detail: WorkflowRunDetail, abortSignal?: Ab
   ].filter(Boolean).join("\n\n");
   const threadId = detail.run.input.metadata?.threadId;
   const { executionScope } = await workflowAttribution(detail);
+  if (!executionScope) {
+    throw new Error("Workflow report persistence requires an execution scope.");
+  }
   const memory = await saveMemory({
     id: `workflow_report_${detail.run.id}`,
     tenantId: detail.run.tenantId,
@@ -1510,12 +1513,8 @@ async function persistWorkflowReport(detail: WorkflowRunDetail, abortSignal?: Ab
         ? [`thread:${threadId.trim()}`]
         : []),
     ],
-    ...(executionScope
-      ? {
-          executionScope,
-          formationOrigin: "assistant_inference" as const,
-        }
-      : {}),
+    executionScope,
+    formationOrigin: "assistant_inference" as const,
   });
 
   return {

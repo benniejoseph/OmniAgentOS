@@ -103,10 +103,13 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   if (!parsed.success) return Response.json({ error: "Invalid correction", details: parsed.error.flatten() }, { status: 400 });
   let context;
   try { context = await authorize(request, id, "write.memory"); } catch (error) { return forbiddenResponse(error); }
+  const correlationId = request.headers.get("x-idempotency-key")?.trim().slice(0, 200) ||
+    request.headers.get("x-request-id")?.trim().slice(0, 200) ||
+    `memory_correct_${randomUUID()}`;
   const requestAccess = requestMemoryAccessFromSecurityContext(context, {
     purposeId: MEMORY_PURPOSE_IDS.correct,
     auditPurpose: "api.memory.correct",
-    correlationId: `memory_correct_${randomUUID()}`,
+    correlationId,
   });
   const scopedExisting = requestAccess
     ? await getMemory(id, {
@@ -136,9 +139,12 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
     accessScope: scopedExisting
       ? requestAccess?.databaseAccessScope
       : undefined,
-    executionScope: scopedExisting
-      ? requestAccess?.executionScope
-      : undefined,
+    executionScope: scopedExisting && requestAccess
+      ? requestAccess.executionScope
+      : executionScopeFromSecurityContext(context, {
+          correlationId,
+          purpose: "api.memory.correct",
+        }),
   });
   if (!result) return Response.json({ error: "Memory not found." }, { status: 404 });
   if (result.corrected.accessBinding && requestAccess) {

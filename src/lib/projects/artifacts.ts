@@ -41,6 +41,7 @@ export async function ensureProjectWorkflowArtifact(input: {
       assertedBy: "agent",
       evidenceRefs: sourceMemoryId ? [...evidenceRefs, `memory:${sourceMemoryId}`] : evidenceRefs,
       embedding: sourceMemory?.embedding,
+      executionScope: input.mutation.executionScope,
     });
     memoryId = memory.id;
   }
