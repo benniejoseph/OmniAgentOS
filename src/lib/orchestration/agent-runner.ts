@@ -1216,12 +1216,7 @@ export async function* runAgent(
 
       let providerTextCompleted = false;
       if (modelRoute.provider !== "openai" || runtimeModel.allowCrossProviderFallback) {
-        const securityContext: SecurityContext = {
-          tenantId: normalizeTenantId(request.tenantId),
-          actorId: request.actorId || "agent",
-          role: normalizeRole(request.role),
-          source: "default",
-        };
+        const securityContext = agentToolSecurityContext(request);
         const providerLoop = runNonOpenAIProviderToolLoop({
           provider: modelRoute.provider,
           tier: modelRoute.tier,
@@ -1402,12 +1397,7 @@ export async function* runAgent(
       }
 
       if (!providerTextCompleted) {
-      const securityContext: SecurityContext = {
-        tenantId: normalizeTenantId(request.tenantId),
-        actorId: request.actorId || "agent",
-        role: normalizeRole(request.role),
-        source: "default",
-      };
+      const securityContext = agentToolSecurityContext(request);
 
       // ZDR-safe multi-turn: build a full conversation array instead of
       // relying on previous_response_id (blocked when org has Zero Data Retention).
@@ -4925,6 +4915,26 @@ function modelAttemptsFromError(error: unknown): ModelAttemptReceipt[] {
     typeof (attempt as { provider?: unknown }).provider === "string" &&
     typeof (attempt as { model?: unknown }).model === "string",
   ));
+}
+
+function agentToolSecurityContext(request: AgentRunRequest): SecurityContext {
+  const fallback: SecurityContext = {
+    tenantId: normalizeTenantId(request.tenantId),
+    actorId: request.actorId || "agent",
+    role: normalizeRole(request.role),
+    source: "default",
+  };
+  const live = request.securityContext;
+  if (!live) return fallback;
+  if (
+    live.tenantId !== fallback.tenantId ||
+    live.actorId !== fallback.actorId ||
+    live.role !== fallback.role ||
+    (live.source !== "session" && live.source !== "mobile")
+  ) {
+    throw new Error("Live tool identity does not match the agent run owner.");
+  }
+  return live;
 }
 
 function normalizeRole(role?: string): SecurityRole {
