@@ -141,6 +141,25 @@ type BrowserActivityItem = {
   };
   frameStatus?: "captured" | "suppressed" | "unavailable";
 };
+type TraceStageStatus = "observed" | "pending" | "missing" | "not_applicable";
+type RunTraceStage = {
+  id: "intent" | "plan" | "agent" | "model" | "tool" | "evidence" | "effect" | "verification" | "memory";
+  label: string;
+  ordinal: number;
+  required: boolean;
+  status: TraceStageStatus;
+  eventCount: number;
+  events: Array<{
+    eventRef: string;
+    parentEventRef?: string;
+    causationRef?: string;
+    streamKind: string;
+    type: string;
+    seq: number;
+    at: string;
+    summary: string;
+  }>;
+};
 type TabKey = "memory" | "context" | "plan" | "execute" | "evidence";
 
 type StreamEvent =
@@ -2612,6 +2631,12 @@ export function AgentRunsWorkspace({
                     </Link>
                   </div>
                 ) : null}
+                {selectedActivityRunId || activeAgentRunId ? (
+                  <RunTraceJourney
+                    runId={selectedActivityRunId || activeAgentRunId}
+                    live={loading === "agent" && (!selectedActivityRunId || selectedActivityRunId === activeAgentRunId)}
+                  />
+                ) : null}
                 <BrowserActivityTimeline
                   runId={selectedActivityRunId}
                   items={browserActivity}
@@ -3133,6 +3158,198 @@ function InlineBrowserView({
       </button>
     </article>
   );
+}
+
+function RunTraceJourney({ runId, live }: { runId: string; live: boolean }) {
+  const [stages, setStages] = useState<RunTraceStage[]>([]);
+  const [traceRef, setTraceRef] = useState("");
+  const [outcome, setOutcome] = useState("");
+  const [state, setState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [error, setError] = useState<string>();
+  const [refreshVersion, setRefreshVersion] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const loadTrace = async (showLoading: boolean) => {
+      if (showLoading) setState("loading");
+      try {
+        const payload = asRecord(await readJson(
+          `/api/runs/${encodeURIComponent(runId)}/trajectory`,
+          { signal: controller.signal },
+        ));
+        if (controller.signal.aborted) return;
+        const hierarchy = asRecord(payload.traceHierarchy);
+        const parsedStages = Array.isArray(hierarchy.stages)
+          ? hierarchy.stages.map(asRecord).flatMap(parseRunTraceStage)
+          : [];
+        setStages(parsedStages.sort((left, right) => left.ordinal - right.ordinal));
+        setTraceRef(stringValue(hierarchy.traceId).slice(0, 12));
+        setOutcome(stringValue(hierarchy.outcome));
+        setError(undefined);
+        setState("ready");
+      } catch (loadError) {
+        if (controller.signal.aborted) return;
+        setError(loadError instanceof Error ? loadError.message : "Trace could not be loaded.");
+        setState("error");
+      }
+    };
+    void loadTrace(true);
+    if (live) timer = setInterval(() => void loadTrace(false), 4_000);
+    return () => {
+      controller.abort();
+      if (timer) clearInterval(timer);
+    };
+  }, [live, refreshVersion, runId]);
+
+  const observed = stages.filter((stage) => stage.status === "observed").length;
+  const gaps = stages.filter((stage) => stage.status === "missing").length;
+
+  return (
+    <section className="mb-4 overflow-hidden rounded-md border border-line bg-background" aria-label="Run trace journey">
+      <header className="flex flex-col gap-3 border-b border-line px-3 py-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold">Trace journey</p>
+            {outcome ? <StatusPill label={outcome} tone={toneForStatus(outcome)} /> : null}
+          </div>
+          <p className="mt-1 text-xs leading-5 text-muted">
+            Intent through verified outcome and memory, joined across owner-scoped event streams.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {traceRef ? <span className="font-mono text-[10px] text-muted">trace {traceRef}</span> : null}
+          <button
+            type="button"
+            onClick={() => setRefreshVersion((version) => version + 1)}
+            disabled={state === "loading"}
+            className="inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={state === "loading" ? "animate-spin" : ""} aria-hidden="true" />
+            Refresh
+          </button>
+        </div>
+      </header>
+      {state === "loading" && !stages.length ? (
+        <p className="flex items-center gap-2 px-3 py-4 text-sm text-muted" role="status">
+          <Loader2 size={14} className="animate-spin" aria-hidden="true" /> Loading correlated trace…
+        </p>
+      ) : state === "error" ? (
+        <p className="m-3 rounded-md border border-warning/35 bg-warning/10 px-3 py-2 text-xs leading-5 text-muted" role="status">
+          {error || "Trace could not be loaded."}
+        </p>
+      ) : stages.length ? (
+        <>
+          <div className="grid grid-cols-3 gap-px bg-line lg:grid-cols-9">
+            {stages.map((stage) => (
+              <details key={stage.id} className="group min-w-0 bg-background open:col-span-3 lg:open:col-span-3">
+                <summary className="flex min-h-24 cursor-pointer list-none flex-col justify-between gap-2 px-2.5 py-3 [&::-webkit-details-marker]:hidden">
+                  <span className="flex items-center justify-between gap-2">
+                    <span className={clsx(
+                      "grid size-6 shrink-0 place-items-center rounded-full text-[10px] font-semibold",
+                      traceStageClasses(stage.status),
+                    )}>
+                      {stage.status === "observed" ? <Check size={12} aria-hidden="true" /> : stage.ordinal + 1}
+                    </span>
+                    <ChevronRight size={12} className="text-muted transition group-open:rotate-90" aria-hidden="true" />
+                  </span>
+                  <span>
+                    <span className="block truncate text-xs font-semibold">{stage.label}</span>
+                    <span className="mt-1 block text-[10px] text-muted">{traceStageLabel(stage.status)}</span>
+                  </span>
+                </summary>
+                <div className="border-t border-line px-3 py-3">
+                  {stage.events.length ? (
+                    <ol className="space-y-2">
+                      {stage.events.map((event) => (
+                        <li key={event.eventRef} className="rounded-md bg-surface px-2.5 py-2 text-[11px] leading-5">
+                          <span className="flex items-center justify-between gap-2">
+                            <span className="truncate font-mono text-primary">{event.type}</span>
+                            <time className="shrink-0 text-muted" dateTime={event.at}>{formatRelativeThreadTime(event.at)}</time>
+                          </span>
+                          <span className="mt-0.5 block text-muted">{event.summary}</span>
+                          <span className="mt-0.5 block font-mono text-[10px] text-muted">
+                            {event.streamKind} · event {event.eventRef.slice(0, 8)}
+                            {event.parentEventRef || event.causationRef ? " · linked" : ""}
+                          </span>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="text-xs leading-5 text-muted">
+                      {stage.status === "not_applicable"
+                        ? "This run did not use this stage."
+                        : stage.status === "pending"
+                          ? "This required stage has not been reached yet."
+                          : "Required trace evidence is missing."}
+                    </p>
+                  )}
+                </div>
+              </details>
+            ))}
+          </div>
+          <p className="border-t border-line px-3 py-2 text-[11px] leading-5 text-muted">
+            {observed} of 9 stages observed{gaps ? ` · ${gaps} required gap${gaps === 1 ? "" : "s"}` : ""}. Event references are hashed; prompts, outputs, credentials, and private reasoning are excluded.
+          </p>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function parseRunTraceStage(stage: JsonRecord): RunTraceStage[] {
+  const id = stringValue(stage.id);
+  const status = stringValue(stage.status);
+  if (!isRunTraceStageId(id) || !isTraceStageStatus(status)) return [];
+  const events = Array.isArray(stage.events)
+    ? stage.events.map(asRecord).flatMap((event) => {
+        const eventRef = stringValue(event.eventRef);
+        const type = stringValue(event.type);
+        const at = stringValue(event.at);
+        if (!eventRef || !type || !at) return [];
+        return [{
+          eventRef,
+          parentEventRef: stringValue(event.parentEventRef) || undefined,
+          causationRef: stringValue(event.causationRef) || undefined,
+          streamKind: stringValue(event.streamKind, "event"),
+          type,
+          seq: numberValue(event.seq, 0),
+          at,
+          summary: stringValue(event.summary, "Trace event recorded"),
+        }];
+      })
+    : [];
+  return [{
+    id,
+    label: stringValue(stage.label, id),
+    ordinal: numberValue(stage.ordinal, 0),
+    required: Boolean(stage.required),
+    status,
+    eventCount: numberValue(stage.eventCount, events.length),
+    events,
+  }];
+}
+
+function isRunTraceStageId(value: string): value is RunTraceStage["id"] {
+  return ["intent", "plan", "agent", "model", "tool", "evidence", "effect", "verification", "memory"].includes(value);
+}
+
+function isTraceStageStatus(value: string): value is TraceStageStatus {
+  return ["observed", "pending", "missing", "not_applicable"].includes(value);
+}
+
+function traceStageLabel(status: TraceStageStatus) {
+  if (status === "observed") return "Observed";
+  if (status === "pending") return "Pending";
+  if (status === "missing") return "Missing";
+  return "Not used";
+}
+
+function traceStageClasses(status: TraceStageStatus) {
+  if (status === "observed") return "bg-success/15 text-success";
+  if (status === "pending") return "bg-primary/15 text-primary";
+  if (status === "missing") return "bg-danger/15 text-danger";
+  return "bg-surface-raised text-muted";
 }
 
 function BrowserActivityTimeline({
