@@ -26,6 +26,10 @@ import {
 } from "@/lib/memory/evidence-formation";
 import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { runAgent } from "@/lib/orchestration/agent-runner";
+import {
+  resolveLoopV2ReadOnlyCanaryEnrollment,
+  runLoopV2ReadOnlyCanary,
+} from "@/lib/orchestration/loop-v2-runtime";
 import { getAgentPerformance } from "@/lib/agents/performance";
 import {
   adaptSupervisorDecision,
@@ -264,6 +268,35 @@ async function POSTHandler(request: Request) {
             return [];
           }),
         );
+        let loopV2CanaryEnrollment;
+        try {
+          loopV2CanaryEnrollment =
+            await resolveLoopV2ReadOnlyCanaryEnrollment({
+              tenantId: context.tenantId,
+              message: requestMessage,
+              mode,
+              route: decision.route,
+              requiresApproval: decision.requiresApproval,
+              requestUsesMessageField: Boolean(
+                parsed.data.message && !parsed.data.messages?.length,
+              ),
+              requestedAgentId: parsed.data.agentId,
+              requestedSpecialistIds: parsed.data.specialistIds,
+              missionId: parsed.data.missionId,
+              contextEvidenceIds: contextSelection?.evidenceIds,
+            });
+        } catch (error) {
+          console.warn(
+            "Loop v2 canary enrollment was unavailable.",
+            String(
+              redactSensitive(
+                error instanceof Error
+                  ? error.message
+                  : "Unknown Loop v2 rollout error.",
+              ),
+            ).slice(0, 1_000),
+          );
+        }
         const missionOwner = {
           tenantId: context.tenantId,
           actorId: context.actorId,
@@ -512,33 +545,54 @@ async function POSTHandler(request: Request) {
           safeMessages = includeMissionContext(safeMessages, mission);
         }
         const executingAgentId = customAgent?.id || decision.primaryAgentId;
+        const directExecutionScope = executionScopeFromSecurityContext(
+          context,
+          {
+            executingPrincipalType: "agent",
+            executingPrincipalId: executingAgentId,
+            missionId: mission?.id,
+            correlationId: requestId,
+            purpose: loopV2CanaryEnrollment
+              ? "agent.loop.v2.read_only_canary"
+              : "agent.run",
+          },
+        );
+        const directEvents = loopV2CanaryEnrollment
+          ? runLoopV2ReadOnlyCanary(
+              {
+                message: requestMessage,
+                messages: safeMessages,
+                mode,
+                threadId,
+                agentId: executingAgentId,
+                securityContext: context,
+                executionScope: directExecutionScope,
+                enrollment: loopV2CanaryEnrollment,
+              },
+              request.signal,
+            )
+          : runAgent(
+              {
+                mode: parsed.data.mode,
+                threadId,
+                messages: safeMessages,
+                contextSelection,
+                promptMemoryAccess,
+                executionScope: directExecutionScope,
+                tenantId: context.tenantId,
+                actorId: context.actorId,
+                role: context.role,
+                agentId: executingAgentId,
+                specialistIds: decision.specialistIds,
+                learning: decision.learning,
+                agentProfile,
+              },
+              request.signal,
+            );
         let directExecutorId = "";
         let directTerminal = false;
         let directMissionAttachment: Promise<{ error?: unknown }> | undefined;
-        for await (const event of runAgent(
-          {
-            mode: parsed.data.mode,
-            threadId,
-            messages: safeMessages,
-            contextSelection,
-            promptMemoryAccess,
-            executionScope: executionScopeFromSecurityContext(context, {
-              executingPrincipalType: "agent",
-              executingPrincipalId: executingAgentId,
-              missionId: mission?.id,
-              correlationId: requestId,
-              purpose: "agent.run",
-            }),
-            tenantId: context.tenantId,
-            actorId: context.actorId,
-            role: context.role,
-            agentId: executingAgentId,
-            specialistIds: decision.specialistIds,
-            learning: decision.learning,
-            agentProfile,
-          },
-          request.signal,
-        )) {
+        for await (const event of directEvents) {
           if (event.type === "run") {
             directExecutorId = event.runId;
             controller.enqueue(encoder.encode(encodeSse(
@@ -595,7 +649,11 @@ async function POSTHandler(request: Request) {
               status: "canceled",
             }, missionOwner);
           }
-          if (event.type === "done" && directExecutorId) {
+          if (
+            event.type === "done" &&
+            directExecutorId &&
+            !loopV2CanaryEnrollment
+          ) {
             await formAssistantInferenceCandidate({
               context,
               requestId,
