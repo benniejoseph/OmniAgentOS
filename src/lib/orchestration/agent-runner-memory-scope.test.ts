@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   appendContextCompilerV2CanaryEvent: vi.fn(),
   appendContextCompilerV2ShadowEventSafely: vi.fn(),
   appendContextUseReceiptEvent: vi.fn(),
+  appendAgentRunIdentityPin: vi.fn(),
   appendRunContractEventSafely: vi.fn(),
   appendRunEvent: vi.fn(),
   bindAgentRunExecutionScope: vi.fn(),
@@ -89,6 +90,7 @@ vi.mock("@/lib/runs/store", () => ({
   appendContextCompilerV2ShadowEventSafely:
     mocks.appendContextCompilerV2ShadowEventSafely,
   appendContextUseReceiptEvent: mocks.appendContextUseReceiptEvent,
+  appendAgentRunIdentityPin: mocks.appendAgentRunIdentityPin,
   appendRunContractEventSafely: mocks.appendRunContractEventSafely,
   appendRunEvent: mocks.appendRunEvent,
   bindAgentRunExecutionScope: mocks.bindAgentRunExecutionScope,
@@ -124,6 +126,7 @@ describe("agent memory scope", () => {
     mocks.appendContextCompilerV2CanaryEvent.mockResolvedValue(undefined);
     mocks.appendContextCompilerV2ShadowEventSafely.mockResolvedValue(undefined);
     mocks.appendContextUseReceiptEvent.mockResolvedValue(undefined);
+    mocks.appendAgentRunIdentityPin.mockResolvedValue(undefined);
     mocks.appendRunContractEventSafely.mockResolvedValue(undefined);
     mocks.bindAgentRunExecutionScope.mockResolvedValue({ id: "run-memory-scope" });
     mocks.completeAgentRun.mockResolvedValue({ id: "run-memory-scope" });

@@ -69,6 +69,7 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
     ]),
     eventTypes: Object.freeze([
       "run.scope_bound",
+      "run.agent_identity.bound",
       "run.contracts.bound",
       "run.manifests.resolved",
       "run.context_compiler_v2.shadow",

@@ -63,6 +63,11 @@ import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { recordAiUsage } from "@/lib/usage/ledger";
 import { modelConversationSchema } from "@/lib/models/conversation";
+import {
+  agentRunIdentityPinV1Schema,
+  parseAgentRunIdentityPinV1,
+  type AgentRunIdentityPinV1,
+} from "@/lib/agents/identity-contracts";
 
 export async function createAgentRun(input: {
   tenantId?: string;
@@ -305,6 +310,57 @@ export type RunContractLifecycleEventType =
   | "run.contracts.bound"
   | "run.manifests.resolved"
   | "run.terminal_receipt.recorded";
+
+export async function appendAgentRunIdentityPin(
+  runId: string,
+  pinValue: AgentRunIdentityPinV1,
+  options: { tenantId: string; executionScope: ExecutionScope },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  assertExecutionScopeTenant(options.executionScope, tenantId);
+  const pin = parseAgentRunIdentityPinV1(pinValue);
+  const run = await getAgentRun(runId, { tenantId });
+  if (
+    pin.runId !== runId ||
+    pin.tenantId !== tenantId ||
+    !run ||
+    pin.logicalAgentId !== run.agentId ||
+    options.executionScope.executingPrincipalType !== "agent" ||
+    options.executionScope.executingPrincipalId !== run.agentId
+  ) {
+    throw new Error("Agent run identity pin does not match its run boundary.");
+  }
+  const boundScope = await getAgentRunExecutionScope(runId, { tenantId });
+  if (!boundScope || !executionScopesEqual(boundScope, options.executionScope)) {
+    throw new Error("Agent run identity pin scope does not match the run binding.");
+  }
+  return appendScopedDomainEvent({
+    id: `run-agent-identity:${runId}:${pin.pinSha256.slice(0, 48)}`,
+    streamId: `run:${runId}`,
+    type: "run.agent_identity.bound",
+    payload: agentRunIdentityPinV1Schema.parse(pin),
+    executionScope: options.executionScope,
+  });
+}
+
+export async function getAgentRunIdentityPin(
+  runId: string,
+  options: { tenantId?: string } = {},
+) {
+  const events = await listStreamEvents(`run:${runId}`, {
+    tenantId: normalizeTenantId(options.tenantId),
+    limit: 2_000,
+    order: "asc",
+  });
+  const pins = events.filter((event) => event.type === "run.agent_identity.bound");
+  if (pins.length > 1) {
+    throw new Error("Agent run has conflicting identity bindings.");
+  }
+  if (!pins[0]) return undefined;
+  const { _executionScope: _scope, ...payload } = pins[0].payload;
+  void _scope;
+  return parseAgentRunIdentityPinV1(payload);
+}
 
 /**
  * Strict, scoped writer for the additive P0.2 shadow contract lifecycle.
