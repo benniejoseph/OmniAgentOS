@@ -259,6 +259,8 @@ function runtimeHarness() {
           status: "completed",
           prompt: "Prior run",
           agentId: "forge",
+          grounding: undefined,
+          waitingApproval: undefined,
           startedAt: "2026-09-06T05:00:00.000Z",
           completedAt: "2026-09-06T05:01:00.000Z",
         },
