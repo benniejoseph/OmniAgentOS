@@ -1,4 +1,9 @@
 import {
+  buildAgentRunIdentityPinV1,
+  buildBuiltInAgentIdentityV1,
+  type ResolvedAgentIdentityV1,
+} from "@/lib/agents/identity-contracts";
+import {
   getSql,
   hasDatabaseUrl,
   runWithDatabaseActorScope,
@@ -31,6 +36,7 @@ import {
 } from "@/lib/rollouts/tenant-capability-rollouts";
 import {
   appendRunEvent,
+  appendAgentRunIdentityPin,
   bindAgentRunExecutionScope,
   createAgentRun,
   failAgentRun,
@@ -76,6 +82,7 @@ export type LoopV2ModelTextRequest = Readonly<{
   securityContext: SecurityContext;
   executionScope: ExecutionScope;
   enrollment: LoopV2ModelTextEnrollment;
+  agentIdentity?: ResolvedAgentIdentityV1;
 }>;
 
 export type LoopV2ModelTextDependencies = Readonly<{
@@ -88,6 +95,7 @@ export type LoopV2ModelTextDependencies = Readonly<{
   persistCheckpoint: typeof persistCheckpoint;
   finalizeRun: typeof persistTerminalCheckpoint;
   failUncheckpointedRun: typeof failAgentRun;
+  appendIdentityPin?: typeof appendAgentRunIdentityPin;
 }>;
 
 const runtimeDependencies: LoopV2ModelTextDependencies = Object.freeze({
@@ -100,6 +108,7 @@ const runtimeDependencies: LoopV2ModelTextDependencies = Object.freeze({
   persistCheckpoint,
   finalizeRun: persistTerminalCheckpoint,
   failUncheckpointedRun: failAgentRun,
+  appendIdentityPin: appendAgentRunIdentityPin,
 });
 
 export function isLoopV2ModelTextCandidate(
@@ -197,6 +206,18 @@ export async function* runLoopV2ModelText(
     await dependencies.bindRunScope(runId, executionScope, {
       tenantId: context.tenantId,
     });
+    const identity = request.agentIdentity || buildBuiltInAgentIdentityV1({
+      agentId: "atlas",
+      tenantId: context.tenantId,
+      controllerActorId: context.actorId,
+    });
+    const agentIdentityPin = buildAgentRunIdentityPinV1({ runId, identity });
+    if (dependencies.appendIdentityPin) {
+      await dependencies.appendIdentityPin(runId, agentIdentityPin, {
+        tenantId: context.tenantId,
+        executionScope,
+      });
+    }
     const root = createInitialLoopV2Checkpoint({
       tenantId: context.tenantId,
       runId,
@@ -213,6 +234,7 @@ export async function* runLoopV2ModelText(
         semanticCorrectness: "model_assertion",
       }),
       agentId: request.agentId,
+      agentIdentityPin,
     });
     await dependencies.persistCheckpoint(root, executionScope, runContract);
     current = root;

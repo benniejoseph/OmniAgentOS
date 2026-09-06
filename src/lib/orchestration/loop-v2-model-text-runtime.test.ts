@@ -74,6 +74,14 @@ describe("Loop v2 model-text runtime", () => {
     ));
 
     expect(harness.generateText).toHaveBeenCalledTimes(1);
+    expect(harness.appendIdentityPin).toHaveBeenCalledWith(
+      "run-model-v2",
+      expect.objectContaining({
+        logicalAgentId: "atlas",
+        definitionVersionId: "definition:built-in:atlas:v1",
+      }),
+      expect.objectContaining({ tenantId: "tenant-a" }),
+    );
     expect(harness.generateText).toHaveBeenCalledWith(expect.objectContaining({
       input: sourceText(),
       tier: "fast",
@@ -309,6 +317,7 @@ function runtimeHarness() {
     },
   );
   const failUncheckpointedRun = vi.fn().mockResolvedValue(true);
+  const appendIdentityPin = vi.fn().mockResolvedValue(undefined);
   const dependencies = {
     createRun,
     bindRunScope,
@@ -319,6 +328,7 @@ function runtimeHarness() {
     persistCheckpoint,
     finalizeRun,
     failUncheckpointedRun,
+    appendIdentityPin,
   } as unknown as LoopV2ModelTextDependencies;
   return {
     dependencies,
@@ -327,6 +337,7 @@ function runtimeHarness() {
     finalizeRun,
     appendAssistantTurn,
     failUncheckpointedRun,
+    appendIdentityPin,
   };
 }
 

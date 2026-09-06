@@ -29,6 +29,7 @@ import {
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import type { AgentRunIdentityPinV1 } from "@/lib/agents/identity-contracts";
 import { getGovernedTool } from "@/lib/tools/registry";
 
 export const LOOP_V2_OUTCOME_CONTRACT_VERSION = 1 as const;
@@ -59,6 +60,7 @@ export function buildLoopV2PreExecutionRunContract(input: {
   requestSha256: string;
   requestedOutcomeSha256: string;
   agentId: string;
+  agentIdentityPin?: AgentRunIdentityPinV1;
 }): LoopV2RunContractSnapshot {
   const root = parseLoopV2Checkpoint(input.rootCheckpoint);
   if (root.lifecycleState === "terminal" || root.terminalDisposition !== null) {
@@ -70,6 +72,7 @@ export function buildLoopV2PreExecutionRunContract(input: {
     runId: root.runId,
     tenantId: root.tenantId,
     agentId: input.agentId,
+    agentIdentityPin: input.agentIdentityPin,
     executionScope: input.executionScope,
     requestSha256: input.requestSha256,
     requestedOutcomeSha256: input.requestedOutcomeSha256,
