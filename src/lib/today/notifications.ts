@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   ensureDatabaseSchema,
   getDatabaseTenantContext,
@@ -10,7 +9,9 @@ import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-ac
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
+  createExecutionScope,
   parsePersistedExecutionScope,
+  type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
@@ -24,6 +25,7 @@ import { listTodayItems, updateTodayItem } from "@/lib/today/store";
 import {
   NOTIFICATION_EVENT_SCHEMA_VERSION,
   notificationBulkMutationEventPayloadSchema,
+  notificationDueMutationEventPayloadSchema,
   notificationMutationEventId,
   notificationMutationEventPayloadSchema,
   notificationSha256,
@@ -116,6 +118,12 @@ export async function processDueNotifications(options: {
         urgency: dueAt <= now.getTime() ? "overdue" : "due_soon",
         dueAt: item.dueAt,
         now,
+        mutation: dueNotificationMutation({
+          tenantId: preference.tenantId,
+          actorId: ownerActorId,
+          sourceId: item.id,
+          occurrenceKey: item.dueAt,
+        }),
       }));
     }
   }
@@ -251,11 +259,12 @@ export async function updatePersonalNotification(
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    if (mutation) {
-      return getSql().transaction(
-        (sql: NotificationSqlClient) => apply(sql),
-      ) as Promise<PersonalNotification | undefined>;
+    if (!mutation) {
+      throw new Error("Notification updates require a mutation envelope.");
     }
+    return getSql().transaction(
+      (sql: NotificationSqlClient) => apply(sql),
+    ) as Promise<PersonalNotification | undefined>;
   }
   return apply();
 }
@@ -280,30 +289,24 @@ export async function markAllNotificationsRead(options: {
     : undefined;
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    if (mutation) {
-      return getSql().transaction(async (sql: NotificationSqlClient) => {
-        const rows = await sql`
-          UPDATE omni_personal_notifications
-          SET status = 'read', read_at = ${now}, updated_at = ${now}
-          WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND status = 'unread'
-          RETURNING *
-        `;
-        await appendNotificationBulkMutationEvent(
-          tenantId,
-          actorId,
-          mutation,
-          sql,
-        );
-        return rows.map(notificationFromRow);
-      }) as Promise<PersonalNotification[]>;
+    if (!mutation) {
+      throw new Error("Bulk notification updates require a mutation envelope.");
     }
-    const rows = await getSql()`
-      UPDATE omni_personal_notifications
-      SET status = 'read', read_at = ${now}, updated_at = ${now}
-      WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND status = 'unread'
-      RETURNING *
-    `;
-    return rows.map(notificationFromRow);
+    return getSql().transaction(async (sql: NotificationSqlClient) => {
+      const rows = await sql`
+        UPDATE omni_personal_notifications
+        SET status = 'read', read_at = ${now}, updated_at = ${now}
+        WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND status = 'unread'
+        RETURNING *
+      `;
+      await appendNotificationBulkMutationEvent(
+        tenantId,
+        actorId,
+        mutation,
+        sql,
+      );
+      return rows.map(notificationFromRow);
+    }) as Promise<PersonalNotification[]>;
   }
   const updated: PersonalNotification[] = [];
   await updateLedger((ledger) => ({
@@ -340,37 +343,110 @@ async function upsertNotification(input: {
   urgency: PersonalNotification["urgency"];
   dueAt: string;
   now: Date;
+  mutation: NotificationDueMutationContext;
 }) {
   const now = input.now.toISOString();
-  const existing = await findNotificationByOccurrence(input);
-  if (existing) {
-    if (existing.status === "dismissed" || existing.status === "acted") return existing;
-    if (existing.status === "snoozed" && existing.snoozedUntil && Date.parse(existing.snoozedUntil) > input.now.getTime()) return existing;
-    return saveNotification({
-      ...existing,
+  const apply = async (sql?: NotificationSqlClient) => {
+    const existing = await findNotificationByOccurrence(input, sql, Boolean(sql));
+    if (existing) {
+      if (existing.status === "dismissed" || existing.status === "acted") {
+        return existing;
+      }
+      if (
+        existing.status === "snoozed" &&
+        existing.snoozedUntil &&
+        Date.parse(existing.snoozedUntil) > input.now.getTime()
+      ) {
+        return existing;
+      }
+      const next = {
+        ...existing,
+        title: safeText(input.title, 280),
+        urgency: input.urgency,
+        status: existing.status === "snoozed" ? "unread" : existing.status,
+        snoozedUntil: undefined,
+        updatedAt: now,
+      };
+      if (
+        next.title === existing.title &&
+        next.urgency === existing.urgency &&
+        next.status === existing.status &&
+        next.snoozedUntil === existing.snoozedUntil &&
+        next.dueAt === existing.dueAt
+      ) {
+        return existing;
+      }
+      const saved = await saveNotification(next, sql);
+      await appendNotificationDueMutationEvent(
+        saved,
+        "refreshed",
+        input.mutation,
+        sql,
+      );
+      return saved;
+    }
+    const notification: PersonalNotification = {
+      id: `notification_${notificationSha256({
+        tenantId: input.tenantId,
+        actorId: input.actorId,
+        sourceId: input.sourceId,
+        occurrenceKey: input.occurrenceKey,
+      }).slice(0, 48)}`,
+      tenantId: input.tenantId,
+      actorId: input.actorId,
       title: safeText(input.title, 280),
+      kind: "reminder",
+      sourceType: "today_item",
+      sourceId: input.sourceId,
+      occurrenceKey: input.occurrenceKey,
       urgency: input.urgency,
-      status: existing.status === "snoozed" ? "unread" : existing.status,
-      snoozedUntil: undefined,
+      status: "unread",
+      dueAt: input.dueAt,
+      createdAt: now,
       updatedAt: now,
-    });
-  }
-  const notification: PersonalNotification = {
-    id: randomUUID(),
-    tenantId: input.tenantId,
-    actorId: input.actorId,
-    title: safeText(input.title, 280),
-    kind: "reminder",
-    sourceType: "today_item",
-    sourceId: input.sourceId,
-    occurrenceKey: input.occurrenceKey,
-    urgency: input.urgency,
-    status: "unread",
-    dueAt: input.dueAt,
-    createdAt: now,
-    updatedAt: now,
+    };
+    const saved = await saveNotification(notification, sql);
+    await appendNotificationDueMutationEvent(
+      saved,
+      "created",
+      input.mutation,
+      sql,
+    );
+    return saved;
   };
-  return saveNotification(notification);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(
+      (sql: NotificationSqlClient) => apply(sql),
+    ) as Promise<PersonalNotification>;
+  }
+  return apply();
+}
+
+type NotificationDueMutationContext = Readonly<{
+  executionScope: ExecutionScope;
+  idempotencyKey: string;
+}>;
+
+function dueNotificationMutation(input: {
+  tenantId: string;
+  actorId: string;
+  sourceId: string;
+  occurrenceKey: string;
+}): NotificationDueMutationContext {
+  const idempotencyKey = `notification_due_${notificationSha256(input)}`;
+  return {
+    idempotencyKey,
+    executionScope: createExecutionScope({
+      tenantId: input.tenantId,
+      initiatingActorId: input.actorId,
+      executingPrincipalType: "system",
+      executingPrincipalId: "notification-scheduler",
+      correlationId: idempotencyKey,
+      causationId: input.sourceId,
+      purpose: "notification.due.process",
+    }),
+  };
 }
 
 type NotificationSqlClient = ReturnType<typeof getSql>;
@@ -401,16 +477,18 @@ async function findNotificationByOccurrence(input: {
   actorId: string;
   sourceId: string;
   occurrenceKey: string;
-}) {
+}, transactionSql?: NotificationSqlClient, forUpdate = false) {
   if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    const rows = await getSql()`
-      SELECT * FROM omni_personal_notifications
-      WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId}
-        AND source_type = 'today_item' AND source_id = ${input.sourceId}
-        AND occurrence_key = ${input.occurrenceKey}
-      LIMIT 1
-    `;
+    if (!transactionSql) await ensureDatabaseSchema();
+    const sql = transactionSql || getSql();
+    const rows = await sql.query(
+      `SELECT * FROM omni_personal_notifications
+       WHERE tenant_id = $1 AND actor_id = $2
+         AND source_type = 'today_item' AND source_id = $3
+         AND occurrence_key = $4
+       LIMIT 1${forUpdate ? " FOR UPDATE" : ""}`,
+      [input.tenantId, input.actorId, input.sourceId, input.occurrenceKey],
+    );
     return rows[0] ? notificationFromRow(rows[0]) : undefined;
   }
   const ledger = await readLedger();
@@ -517,6 +595,61 @@ async function appendNotificationBulkMutationEvent(
     streamId: `notifications:${notificationSha256({ tenantId, actorId })}`,
     type: "notifications.read_all",
     executionScope: mutation.executionScope,
+    payload,
+  }, sql ? { sql } : {});
+}
+
+async function appendNotificationDueMutationEvent(
+  notification: PersonalNotification,
+  operation: "created" | "refreshed",
+  mutation: NotificationDueMutationContext,
+  sql?: NotificationSqlClient,
+) {
+  const executionScope = parsePersistedExecutionScope(mutation.executionScope);
+  if (
+    !executionScope ||
+    executionScope.tenantId !== notification.tenantId ||
+    executionScope.initiatingActorId !== notification.actorId ||
+    executionScope.executingPrincipalType !== "system" ||
+    executionScope.executingPrincipalId !== "notification-scheduler" ||
+    executionScope.causationId !== notification.sourceId ||
+    executionScope.purpose !== "notification.due.process"
+  ) {
+    throw new Error("Due notification mutation scope is invalid.");
+  }
+  const titleSha256 = notificationSha256(notification.title);
+  const eventIdempotencyKey = [
+    mutation.idempotencyKey,
+    operation,
+    notification.status,
+    notification.urgency,
+    titleSha256,
+  ].join(":");
+  const payload = notificationDueMutationEventPayloadSchema.parse({
+    schemaVersion: NOTIFICATION_EVENT_SCHEMA_VERSION,
+    notificationId: notification.id,
+    sourceType: notification.sourceType,
+    sourceId: notification.sourceId,
+    occurrenceKeySha256: notificationSha256(notification.occurrenceKey),
+    titleSha256,
+    operation,
+    status: notification.status,
+    urgency: notification.urgency,
+    idempotencyKeySha256: notificationSha256({
+      tenantId: notification.tenantId,
+      actorId: notification.actorId,
+      idempotencyKey: mutation.idempotencyKey,
+    }),
+  });
+  await appendScopedDomainEvent({
+    id: notificationMutationEventId({
+      tenantId: notification.tenantId,
+      actorId: notification.actorId,
+      idempotencyKey: eventIdempotencyKey,
+    }),
+    streamId: `notification:${notification.id}`,
+    type: "notification.due_upserted",
+    executionScope,
     payload,
   }, sql ? { sql } : {});
 }
