@@ -2081,6 +2081,22 @@ and Fly are healthy at production release
 `91e798b58cf90d23df985b14bd639287f5d5bc8a`. P4.2 remains open for those five
 P3.1-dependent scopes and for the durable workflow and Loop v2 runtimes.
 
+P4.3 is complete at production release
+`2cd0d40b24514cc2b7ffd39716c068e1c4f18115`. Every retrieval now starts with a
+versioned, bounded plan covering semantic, temporal, entity, relationship, and
+procedural domains. The optional fast semantic router uses a strict structured
+schema and a recorded usage receipt; its suggestions can add only search hints.
+The original query remains anchored, deterministic temporal meaning wins a
+conflict, explicit-empty context makes no provider call, and the planner has no
+output field capable of changing tenant, actor, scope, grant, purpose,
+visibility, tool, or policy authority. Agent and workflow callers reserve the
+model turn before disclosure, and provider/schema/receipt failure falls back to
+the deterministic plan inside the same already-authorized search boundary. A
+frozen 32-case gate measured 100% domain precision, domain recall, temporal-mode
+accuracy, and original-query anchoring. The live structured-provider canary
+correctly routed a historical ownership paraphrase to temporal, entity, and
+relationship retrieval while preserving `as_of` and recording model usage.
+
 P5.1 is complete, and the first safe P5.2 foundation is deployed without
 replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
 types and 13 typed relations with mandatory scope, sensitivity, purpose,
