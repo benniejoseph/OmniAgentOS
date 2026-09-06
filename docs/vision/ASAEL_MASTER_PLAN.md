@@ -2015,6 +2015,27 @@ returned HTTP 200, and anonymous agent access remains closed. P6.4 bounded
 workflow-node execution is next; P6.1 recovery/fault injection remains open,
 and P12/P13 remain deferred.
 
+P6.4 is complete at exact production release
+`7ef1a95db58883efe4fa3531190d9d0d4105b86f`. Every newly planned workflow
+node now carries a server-derived schema-v1 execution contract that fixes its
+agent, tool, or control executor; exact dependency IDs and tool grants; and
+bounded model, tool, and output limits. The executor persists only the typed
+input assembled from declared dependency artifacts. Governed tool results,
+deterministic approval decisions, or one bounded structured model call produce
+typed artifacts and acceptance checks, then a content-free receipt binds the
+input/output hashes and exact dependency/model/tool/control evidence. A
+tool-less node receives no tool or context grants, cannot claim a side effect,
+and fails if it only restates its description. Seventeen focused checks pass.
+The staged production gate completed five nodes with zero node failures, v1
+input/result/receipt contracts on every node, and both model and governed-tool
+receipt paths. Matching Vercel and Fly services are healthy, all three worker
+lanes returned HTTP 200, the worker activation marker matches the release, and
+anonymous agent access remains closed. The synthetic workflow also exposed an
+older bounded-replan ordering defect after node completion: failed verification
+resets `plan` and `execute` but immediately re-enters `verify`. That remains
+pending under P6.6/recovery work. P6.5 dependency binding and parallel DAG
+scheduling is next; P12/P13 remain deferred.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
