@@ -27,7 +27,6 @@ import {
 } from "@/lib/runs/checkpoint-resume-claim";
 import type { RunCheckpointWriterSql } from "@/lib/runs/checkpoint-store";
 import {
-  appendRunEvent,
   failAgentRun,
   getAgentRun,
   type AgentRunResumeFence,
@@ -201,8 +200,11 @@ async function processAgentResumeJobInActorScope(
       const message =
         "Approved run resume was interrupted; side effects were not replayed.";
       const actorId = run.continuation.context.actorId;
-      await failAgentRun(run.id, message);
-      await appendRunEvent(run.id, { type: "error", message });
+      await failAgentRun(run.id, message, {
+        tenantId: job.tenantId,
+        executionScope: run.continuation.executionScope,
+        runContractEnvelope: run.continuation.runContractEnvelope,
+      });
       await syncMissionExecutorSafely({
         executorType: "agent_run",
         executorId: run.id,

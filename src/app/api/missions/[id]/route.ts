@@ -10,6 +10,7 @@ import {
   MissionTransitionError,
   transitionMission,
   transitionMissionTask,
+  type MissionOwner,
 } from "@/lib/missions/store";
 import { toMissionDetailView, toMissionSummaryView } from "@/lib/missions/public";
 import type { MissionDetail } from "@/lib/missions/types";
@@ -21,7 +22,6 @@ import {
   getAgentResumeJobDedupeKey,
 } from "@/lib/operations/job-queue";
 import {
-  appendRunEvent,
   cancelAgentRun,
   getAgentRun,
 } from "@/lib/runs/store";
@@ -200,7 +200,7 @@ async function PATCHHandler(
   }
 }
 
-type CancellationOwner = { tenantId: string; actorId: string };
+type CancellationOwner = MissionOwner & { tenantId: string };
 
 type CancellationTarget =
   | {
@@ -272,12 +272,14 @@ async function cancelLinkedExecutors(
     if (target.kind === "agent_run") {
       const reason = "Canceled with the parent mission.";
       if (target.status !== "canceled") {
-        await cancelAgentRun(target.id, reason);
+        await cancelAgentRun(target.id, reason, {
+          tenantId: owner.tenantId,
+          executionScope: owner.executionScope,
+        });
         const current = await getAgentRun(target.id, { tenantId: owner.tenantId });
         if (current?.status !== "canceled") {
           throw new MissionCancellationBlockedError("The linked agent run did not acknowledge cancellation.", { type: target.kind, id: target.id });
         }
-        await appendRunEvent(target.id, { type: "canceled", message: reason }, { tenantId: owner.tenantId });
       }
       if (target.executionId) {
         await cancelOperationJobByDedupeKey(

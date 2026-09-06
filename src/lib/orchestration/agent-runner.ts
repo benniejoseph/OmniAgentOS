@@ -1886,7 +1886,11 @@ export async function* runAgent(
       sources: citationSources,
       executionScope,
     });
-    const completed = await completeAgentRun(run.id, response, grounding);
+    const completed = await completeAgentRun(run.id, response, grounding, {
+      tenantId: runTenantId,
+      executionScope,
+      runContractEnvelope: shadowRunContract?.envelope,
+    });
     if (!completed) {
       yield await emit({
         type: "status",
@@ -1912,23 +1916,16 @@ export async function* runAgent(
           response,
         })
       : Promise.resolve();
-    yield await emit({ type: "done", response, grounding });
+    yield { type: "done", response, grounding };
     await consolidation;
   } catch (error) {
     if (abortSignal?.aborted) {
       const message = "Agent run canceled after the client stopped the request.";
-      const canceled = await cancelAgentRun(run.id, message);
-      if (canceled) {
-        await appendRunEvent(
-          run.id,
-          { type: "canceled", message },
-          {
-            tenantId: request.tenantId,
-            executionScope,
-            runContractEnvelope: shadowRunContract?.envelope,
-          },
-        );
-      }
+      await cancelAgentRun(run.id, message, {
+        tenantId: runTenantId,
+        executionScope,
+        runContractEnvelope: shadowRunContract?.envelope,
+      });
       yield await emit({ type: "status", label: "Canceled", detail: message });
       return;
     }
@@ -1955,8 +1952,12 @@ export async function* runAgent(
         message,
       });
     }
-    await failAgentRun(run.id, message);
-    yield await emit({ type: "error", message });
+    await failAgentRun(run.id, message, {
+      tenantId: runTenantId,
+      executionScope,
+      runContractEnvelope: shadowRunContract?.envelope,
+    });
+    yield { type: "error", message };
   }
 }
 
@@ -2718,6 +2719,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const runMutationOptions = {
     tenantId: normalizeTenantId(tenantId),
     resumeFence,
+    executionScope,
+    runContractEnvelope: continuation.runContractEnvelope,
   };
 
   if (continuation.providerToolState) {
@@ -2889,7 +2892,6 @@ async function resumeAgentRunAfterToolApprovalInScope({
     if (!failed) {
       return { resumed: false, reason: "Checkpoint resume fence was lost." };
     }
-    await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -3462,7 +3464,6 @@ async function resumeAgentRunAfterToolApprovalInScope({
           prompt: run.prompt,
           response,
         });
-    await appendScopedRunEvent({ type: "done", response, grounding });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -3507,7 +3508,6 @@ async function resumeAgentRunAfterToolApprovalInScope({
         message,
       });
     }
-    await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -3541,6 +3541,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
   const runMutationOptions = {
     tenantId: normalizeTenantId(tenantId),
     resumeFence,
+    executionScope,
+    runContractEnvelope: continuation.runContractEnvelope,
   };
   let runBudgetState = restoreAgentRunBudgetState(run, continuation);
   const resumeWallBudget = agentBudgetWallAbortSignal(
@@ -3683,7 +3685,6 @@ async function resumeProviderBoundAgentRunAfterApproval({
     if (!failed) {
       return { resumed: false, reason: "Checkpoint resume fence was lost." };
     }
-    await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -3731,7 +3732,6 @@ async function resumeProviderBoundAgentRunAfterApproval({
     if (!failed) {
       return { resumed: false, reason: "Checkpoint resume fence was lost." };
     }
-    await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -4195,7 +4195,6 @@ async function resumeProviderBoundAgentRunAfterApproval({
           prompt: run.prompt,
           response,
         });
-    await appendScopedRunEvent({ type: "done", response, grounding });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -4242,7 +4241,6 @@ async function resumeProviderBoundAgentRunAfterApproval({
         message,
       });
     }
-    await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -4313,8 +4311,7 @@ export async function rejectAgentRunApproval({
     return { rejected: false };
   }
   const message = reason ? `Approval rejected: ${reason}` : "Approval rejected by operator.";
-  await failAgentRun(run.id, message);
-  await appendRunEvent(run.id, { type: "error", message }, {
+  await failAgentRun(run.id, message, {
     tenantId,
     executionScope: run.continuation?.executionScope,
     runContractEnvelope: run.continuation?.runContractEnvelope,

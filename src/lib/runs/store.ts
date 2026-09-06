@@ -1111,11 +1111,18 @@ export type AgentRunResumeFence = Readonly<{
   executionScope: ExecutionScope;
 }>;
 
+export type AgentRunTerminalOptions = Readonly<{
+  tenantId?: string;
+  resumeFence?: AgentRunResumeFence;
+  executionScope?: ExecutionScope;
+  runContractEnvelope?: RunContractEnvelopeV1;
+}>;
+
 export async function completeAgentRun(
   runId: string,
   response: string,
   grounding?: GroundingReport,
-  options: { tenantId?: string; resumeFence?: AgentRunResumeFence } = {},
+  options: AgentRunTerminalOptions = {},
 ) {
   return setRunStatus(runId, "completed", { response, grounding }, options);
 }
@@ -1123,13 +1130,17 @@ export async function completeAgentRun(
 export async function failAgentRun(
   runId: string,
   error: string,
-  options: { tenantId?: string; resumeFence?: AgentRunResumeFence } = {},
+  options: AgentRunTerminalOptions = {},
 ) {
   return setRunStatus(runId, "failed", { error }, options);
 }
 
-export async function cancelAgentRun(runId: string, reason = "Canceled by the operator.") {
-  return setRunStatus(runId, "canceled", { error: reason });
+export async function cancelAgentRun(
+  runId: string,
+  reason = "Canceled by the operator.",
+  options: AgentRunTerminalOptions = {},
+) {
+  return setRunStatus(runId, "canceled", { error: reason }, options);
 }
 
 /** Fail stale initial runs and interrupted resume claims without replaying work. */
@@ -1575,17 +1586,38 @@ async function setRunStatus(
   runId: string,
   status: RunStatus,
   values: { response?: string; error?: string; grounding?: GroundingReport },
-  options: { tenantId?: string; resumeFence?: AgentRunResumeFence } = {},
+  options: AgentRunTerminalOptions = {},
 ) {
   const completedAt = new Date().toISOString();
   const safeResponse = values.response
     ? safeRunText(values.response, 100_000)
     : undefined;
   const safeError = values.error ? safeRunText(values.error, 2_000) : undefined;
+  const terminalEvent = redactSensitive(
+    status === "completed"
+      ? { type: "done", response: safeResponse || "", grounding: values.grounding }
+      : status === "canceled"
+        ? { type: "canceled", message: safeError || "Canceled." }
+        : { type: "error", message: safeError || "Agent run failed." },
+  ) as AgentEvent;
+  const terminalEventRecord: AgentRunEventRecord = {
+    id: randomUUID(),
+    runId,
+    type: terminalEvent.type,
+    payload: terminalEvent,
+    createdAt: completedAt,
+  };
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const tenantId = normalizeTenantId(options.tenantId);
+    const executionScope = options.executionScope ||
+      options.resumeFence?.executionScope ||
+      await getAgentRunExecutionScope(runId, { tenantId });
+    if (executionScope) {
+      assertExecutionScopeTenant(executionScope, tenantId);
+    }
+    terminalEventRecord.tenantId = tenantId;
     if (options.resumeFence) {
       const resumeFence = options.resumeFence;
       assertExecutionScopeTenant(resumeFence.executionScope, tenantId);
@@ -1595,7 +1627,7 @@ async function setRunStatus(
       ) {
         throw new Error("Agent terminal fence changed its run scope.");
       }
-      return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const changed = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
         const rows = await sql.query(
           `UPDATE omni_agent_runs run
            SET status = $3, response = $4, grounding = $5::jsonb,
@@ -1640,28 +1672,69 @@ async function setRunStatus(
         if (!completed) {
           throw new Error("Agent terminal checkpoint fence became stale.");
         }
+        await appendTerminalRunEventInTransaction({
+          sql,
+          tenantId,
+          executionScope,
+          record: terminalEventRecord,
+          event: terminalEvent,
+        });
         return true;
-      }) as Promise<boolean>;
+      }) as boolean;
+      if (changed) {
+        await appendLegacyRunTerminalReceiptSafely(
+          runId,
+          terminalEvent,
+          terminalEventRecord.id,
+          tenantId,
+          executionScope,
+          options.runContractEnvelope,
+        );
+      }
+      return changed;
     }
-    const rows = await getSql()`
-      UPDATE omni_agent_runs
-      SET status = ${status}, response = ${safeResponse || null},
-          grounding = ${values.grounding || null}::jsonb,
-          error = ${safeError || null}, continuation = NULL,
-          completed_at = ${completedAt}
-      WHERE id = ${runId}
-        AND tenant_id = ${tenantId}
-        AND status NOT IN ('completed', 'failed', 'canceled')
-        AND (
-          ${status} = 'canceled'
-          OR NOT (
-            status = 'resuming'
-            AND continuation ? 'checkpointResumeClaim'
-          )
-        )
-      RETURNING id
-    `;
-    return Boolean(rows[0]);
+    const changed = await getSql().transaction(
+      async (sql: ReturnType<typeof getSql>) => {
+        const rows = await sql`
+          UPDATE omni_agent_runs
+          SET status = ${status}, response = ${safeResponse || null},
+              grounding = ${values.grounding || null}::jsonb,
+              error = ${safeError || null}, continuation = NULL,
+              completed_at = ${completedAt}
+          WHERE id = ${runId}
+            AND tenant_id = ${tenantId}
+            AND status NOT IN ('completed', 'failed', 'canceled')
+            AND (
+              ${status} = 'canceled'
+              OR NOT (
+                status = 'resuming'
+                AND continuation ? 'checkpointResumeClaim'
+              )
+            )
+          RETURNING id
+        `;
+        if (!rows[0]) return false;
+        await appendTerminalRunEventInTransaction({
+          sql,
+          tenantId,
+          executionScope,
+          record: terminalEventRecord,
+          event: terminalEvent,
+        });
+        return true;
+      },
+    ) as boolean;
+    if (changed) {
+      await appendLegacyRunTerminalReceiptSafely(
+        runId,
+        terminalEvent,
+        terminalEventRecord.id,
+        tenantId,
+        executionScope,
+        options.runContractEnvelope,
+      );
+    }
+    return changed;
   }
 
   if (options.resumeFence) {
@@ -1681,7 +1754,39 @@ async function setRunStatus(
     run.continuation = undefined;
     run.completedAt = completedAt;
   });
+  if (changed) {
+    await appendRunEvent(runId, terminalEvent, {
+      tenantId: options.tenantId,
+      executionScope: options.executionScope,
+      runContractEnvelope: options.runContractEnvelope,
+    });
+  }
   return changed;
+}
+
+async function appendTerminalRunEventInTransaction(input: {
+  sql: ReturnType<typeof getSql>;
+  tenantId: string;
+  executionScope?: ExecutionScope;
+  record: AgentRunEventRecord;
+  event: AgentEvent;
+}) {
+  await appendDomainEvent({
+    streamId: `run:${input.record.runId}`,
+    type: `run.${input.event.type}`,
+    tenantId: input.tenantId,
+    payload: domainEventPayload(input.event),
+    correlationId: input.executionScope?.correlationId || input.record.runId,
+    executionScope: input.executionScope,
+  }, { sql: input.sql });
+  await input.sql`
+    INSERT INTO omni_agent_events (id, tenant_id, run_id, type, payload, created_at)
+    VALUES (
+      ${input.record.id}, ${input.tenantId}, ${input.record.runId},
+      ${input.record.type}, ${input.record.payload}::jsonb,
+      ${input.record.createdAt}
+    )
+  `;
 }
 
 function safeRunText(value: string, maxChars: number) {

@@ -23,7 +23,6 @@ import {
 } from "@/lib/operations/job-queue";
 import {
   AgentRunExecutionScopeBindingError,
-  appendRunEvent,
   claimQueuedAgentRun,
   failAgentRun,
   getAgentRunExecutionScope,
@@ -192,12 +191,10 @@ async function processSpecialistJob(
     const abandoned = await getAgentRun(payload.runId, { tenantId: job.tenantId });
     if (abandoned && !["completed", "failed", "canceled"].includes(abandoned.status)) {
       const message = "Durable specialist initialization expired before a parent workflow was bound.";
-      await failAgentRun(abandoned.id, message);
-      await appendRunEvent(
-        abandoned.id,
-        { type: "error", message },
-        { tenantId: job.tenantId, executionScope },
-      );
+      await failAgentRun(abandoned.id, message, {
+        tenantId: job.tenantId,
+        executionScope,
+      });
       const terminal = await getAgentRun(abandoned.id, { tenantId: job.tenantId });
       if (terminal) return finalizeTerminalRun(job, payload, terminal);
     }
@@ -220,12 +217,10 @@ async function processSpecialistJob(
   if (run.status !== "queued") {
     const message =
       "A claimed durable specialist run was interrupted; it was not replayed.";
-    await failAgentRun(run.id, message);
-    await appendRunEvent(
-      run.id,
-      { type: "error", message },
-      { tenantId: job.tenantId, executionScope },
-    );
+    await failAgentRun(run.id, message, {
+      tenantId: job.tenantId,
+      executionScope,
+    });
     run = (await getAgentRun(run.id, { tenantId: job.tenantId })) || run;
     return finalizeTerminalRun(job, payload, run);
   }
@@ -308,14 +303,10 @@ async function processSpecialistJob(
   } catch (error) {
     if (!leaseLost) {
       const message = error instanceof Error ? error.message : "Durable specialist execution failed.";
-      const changed = await failAgentRun(run.id, message);
-      if (changed) {
-        await appendRunEvent(
-          run.id,
-          { type: "error", message },
-          { tenantId: job.tenantId, executionScope },
-        );
-      }
+      await failAgentRun(run.id, message, {
+        tenantId: job.tenantId,
+        executionScope,
+      });
     }
   } finally {
     clearTimeout(deadlineTimer);
@@ -391,15 +382,11 @@ async function processSpecialistJobSafelyInActorScope(
       ) {
         const interrupted =
           `Durable specialist delivery was interrupted and will not be replayed: ${message}`;
-        const changed = await failAgentRun(run.id, interrupted).catch(() => false);
+        const changed = await failAgentRun(run.id, interrupted, {
+          tenantId: job.tenantId,
+          executionScope: boundScope,
+        }).catch(() => false);
         failedRun = changed;
-        if (changed && boundScope) {
-          await appendRunEvent(
-            run.id,
-            { type: "error", message: interrupted },
-            { tenantId: job.tenantId, executionScope: boundScope },
-          ).catch(() => undefined);
-        }
       }
       if (
         run &&
@@ -435,14 +422,10 @@ async function interruptClaimedRun(
 ) {
   const message =
     "Durable specialist execution ended without a terminal receipt; it was not replayed.";
-  const changed = await failAgentRun(run.id, message);
-  if (changed) {
-    await appendRunEvent(
-      run.id,
-      { type: "error", message },
-      { tenantId: job.tenantId, executionScope },
-    );
-  }
+  await failAgentRun(run.id, message, {
+    tenantId: job.tenantId,
+    executionScope,
+  });
   const terminal = (await getAgentRun(run.id, { tenantId: job.tenantId })) || run;
   return finalizeTerminalRun(job, payload, terminal);
 }
