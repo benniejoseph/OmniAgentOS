@@ -22,6 +22,7 @@ import {
   AgentMascot,
   getAgentMascotIdentity,
 } from "@/components/agents/agent-mascot";
+import { AgentGrantEditor } from "@/components/agents/agent-grant-editor";
 import { upsertById } from "@/lib/agents/client-state";
 import { arsenalAgents, type ArsenalAgent } from "@/lib/agents/arsenal";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
@@ -372,6 +373,24 @@ export function AgentArsenalWorkspace() {
             }
             icon="eye"
           />
+          {selected.custom?.manageable === true ? (
+            <div className="mt-4">
+              <AgentGrantEditor
+                agentId={selected.id}
+                agentName={selected.name}
+                compact
+              />
+            </div>
+          ) : (
+            <div className="autonomy-note mt-4">
+              <strong>Context and capability grants</strong>
+              <p>
+                {selected.custom
+                  ? "This compatibility profile is read only. Its explicit authority cannot be changed here."
+                  : "Built-in Agent authority is reviewed server policy. It has no user-authored explicit grant IDs."}
+              </p>
+            </div>
+          )}
           <InspectorList
             title="Learns from"
             items={selected.learningSignals}

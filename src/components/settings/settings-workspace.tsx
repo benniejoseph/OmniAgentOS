@@ -5,6 +5,7 @@ import {
   AlertCircle,
   ArrowRight,
   BrainCircuit,
+  Bot,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -29,6 +30,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { PersonalDataControls } from "@/components/settings/personal-data-controls";
+import { AgentGrantSettingsPanel } from "@/components/agents/agent-grant-editor";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import styles from "@/components/settings/settings-workspace.module.css";
 import {
@@ -46,7 +48,7 @@ import {
   type SettingsSnapshot,
 } from "@/lib/settings/types";
 
-type SettingsSection = "overview" | "providers" | "models" | "api" | "data";
+type SettingsSection = "overview" | "providers" | "models" | "agents" | "api" | "data";
 type ProviderDraft = {
   provider: SettingsModelProvider;
   label: string;
@@ -62,6 +64,7 @@ const sections: Array<{
   { id: "overview", label: "Workspace", description: "Readiness and defaults", icon: Settings2 },
   { id: "providers", label: "AI providers", description: "Credentials and catalogs", icon: Cloud },
   { id: "models", label: "Model routing", description: "Assign work by role", icon: BrainCircuit },
+  { id: "agents", label: "Agent grants", description: "Context and capabilities", icon: Bot },
   { id: "api", label: "API & MCP", description: "Programmatic access", icon: Code2 },
   { id: "data", label: "Data & privacy", description: "Ownership and recovery", icon: ShieldCheck },
 ];
@@ -488,6 +491,9 @@ export function SettingsWorkspace() {
               const id = encodeURIComponent(connection.id);
               return request(`validate:${connection.id}`, `/api/settings/providers/${id}/validate`, "POST");
             }} />
+          ) : null}
+          {!loading && snapshot && section === "agents" ? (
+            <AgentGrantSettingsPanel />
           ) : null}
           {!loading && snapshot && section === "api" ? (
             <ApiSection
